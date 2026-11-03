@@ -20,7 +20,9 @@ import type {
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChatProjectMethods } from './chatProject';
+import { createManagedMessageId } from '~/utils/managed';
 import { createResponseStorage } from './response';
+import { responseReference } from './responseRoot';
 import { createModels } from '../models';
 
 jest.mock('~/config/winston', () => ({
@@ -3737,27 +3739,61 @@ describe('Conversation Operations', () => {
       });
 
       async function seedResponse(conversationId: string, tenantId?: string) {
-        return runAsSystem(() =>
-          mongoose.models.StoredResponse.create({
+        return tenantStorage.run({ tenantId, userId: 'user123' }, async () => {
+          const storage = createResponseStorage(mongoose);
+          const reserved = await storage.reserve({
             userId: 'user123',
             tenantId,
             conversationId,
-            responseId: uuidv4(),
+            responseId: createManagedMessageId(),
             requestKey: uuidv4(),
             fingerprint: 'request',
             agentId: 'agent',
             requestJSON: '{"input":"private"}',
-            responseJSON: '{"output":"private"}',
             parentMessageId: 'root',
-            status: 'completed',
-          }),
-        );
+          });
+          if (!reserved.ok) throw new Error('Response fixture reservation failed');
+          const binding = { generationCreatedAt: Date.now(), providerExecutionId: uuidv4() };
+          const enrolled = await storage.enrollExecution(reserved.record, binding, '{}');
+          if (!enrolled.ok || !(await storage.bindExecution(enrolled.record, binding)))
+            throw new Error('Response fixture enrollment failed');
+          const receipt = {
+            ...binding,
+            status: 'completed' as const,
+            responseJSON: '{"output":"private"}',
+          };
+          const staged = await storage.stageTerminal(
+            enrolled.record,
+            enrolled.record.responseId,
+            { execution: enrolled.record },
+            receipt,
+          );
+          if (
+            !staged.ok ||
+            !(await storage.settleExecution(responseReference(staged.record), binding, 'complete'))
+          )
+            throw new Error('Response fixture settlement failed');
+          const current = await storage.read(staged.record, staged.record.responseId);
+          if (!current) throw new Error('Response fixture disappeared');
+          const finished = await storage.finishTerminal(
+            current,
+            current.responseId,
+            current.revision,
+            receipt,
+          );
+          if (
+            !finished.ok ||
+            !(await storage.acknowledgeExecutionRelease(finished.record, binding))
+          )
+            throw new Error('Response fixture completion failed');
+          return finished.record;
+        });
       }
 
-      it('rejects background reservation on standalone Mongo before storing private state', async () => {
+      it('accepts background reservation on standalone Mongo through managed ownership', async () => {
         const result = await createResponseStorage(mongoose).reserve({
           userId: 'user123',
-          responseId: uuidv4(),
+          responseId: createManagedMessageId(),
           requestKey: uuidv4(),
           fingerprint: 'request',
           agentId: 'agent',
@@ -3765,9 +3801,11 @@ describe('Conversation Operations', () => {
           conversationId: uuidv4(),
           parentMessageId: 'root',
         });
-        expect(result).toEqual({ ok: false, code: 'response_unavailable' });
-        expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
-        expect(await mongoose.models.ResponseScope.countDocuments({})).toBe(0);
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error('Response reservation failed');
+        expect(result.record.storageTarget).toMatchObject({ kind: 'response' });
+        expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(1);
+        expect(await mongoose.models.ResponseScope.countDocuments({})).toBe(2);
       });
 
       it('erases only the selected tenant and keeps ordinary deletion nontransactional', async () => {
@@ -10084,32 +10122,42 @@ describe('stampForcedRetention', () => {
     expect((await ConversationTag.findOne({ user: userId, tag: 'work' }).lean())?.count).toBe(0);
   });
 
-  it('gives a stamped message the deadline a concurrent stamp stored first', async () => {
-    const winningDeadline = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const originalUpdateOne = Conversation.updateOne.bind(Conversation);
-    const updateOne = jest
-      .spyOn(Conversation, 'updateOne')
-      .mockImplementationOnce(((filter, update, options) =>
-        originalUpdateOne(
-          { conversationId },
-          { $set: { isTemporary: true, expiredAt: winningDeadline, tags: [] } },
-          { timestamps: false },
-        ).then(() => originalUpdateOne(filter, update, options))) as typeof Conversation.updateOne);
-
-    try {
-      await methods.stampForcedRetention(
-        { userId, interfaceConfig: ephemeral },
-        { conversationId, messageIds: [messageId] },
-      );
-    } finally {
-      updateOne.mockRestore();
-    }
-
-    const convo = await Conversation.findOne({ conversationId }).lean();
-    const message = await MessageModel().findOne({ messageId }).lean();
-    expect(convo?.expiredAt).toEqual(winningDeadline);
-    expect(message?.expiredAt).toEqual(winningDeadline);
-  });
+  it.each([5 * 60 * 1000, 24 * 60 * 60 * 1000])(
+    'keeps conversation and message at the earliest deadline after a concurrent %p ms stamp',
+    async (delay) => {
+      const started = Date.now();
+      const concurrentDeadline = new Date(started + delay);
+      const previousUpdatedAt = (await Conversation.findOne({ conversationId }).lean())?.updatedAt;
+      const originalUpdateMany = Conversation.updateMany.bind(Conversation);
+      const updateMany = jest
+        .spyOn(Conversation, 'updateMany')
+        .mockImplementationOnce(((filter, update, options) =>
+          Conversation.updateOne(
+            { conversationId },
+            { $set: { isTemporary: true, expiredAt: concurrentDeadline, tags: [] } },
+            { timestamps: false },
+          ).then(() =>
+            originalUpdateMany(filter, update, options),
+          )) as typeof Conversation.updateMany);
+      try {
+        await methods.stampForcedRetention(
+          { userId, interfaceConfig: ephemeral },
+          { conversationId, messageIds: [messageId] },
+        );
+      } finally {
+        updateMany.mockRestore();
+      }
+      const convo = await Conversation.findOne({ conversationId }).lean();
+      const message = await MessageModel().findOne({ messageId }).lean();
+      expect(message?.expiredAt).toEqual(convo?.expiredAt);
+      expect(convo?.updatedAt).toEqual(previousUpdatedAt);
+      if (delay < 60 * 60 * 1000) expect(convo?.expiredAt).toEqual(concurrentDeadline);
+      else {
+        expect(convo?.expiredAt?.getTime()).toBeGreaterThanOrEqual(started + 60 * 60 * 1000);
+        expect(convo?.expiredAt?.getTime()).toBeLessThanOrEqual(Date.now() + 60 * 60 * 1000);
+      }
+    },
+  );
 
   it('does not release the bookmark count again when the converted chat is deleted', async () => {
     await Conversation.create({

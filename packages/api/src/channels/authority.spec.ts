@@ -10,6 +10,7 @@ import {
   createChannelIdentityStorage,
   createChannelRunStorage,
   createResponseStorage,
+  createManagedMessageId,
   hashToken,
   tenantStorage,
   runAsSystem,
@@ -62,6 +63,8 @@ let responseCredential: jest.Mock<Promise<string>, [ChannelRunRecord]>;
 let app: express.Express;
 let fakeNow: number | undefined;
 let interactive: Pick<BackgroundResponsesHost, 'readInteractiveReview' | 'submitInteractiveReview'>;
+const fixtureResponseId = (label: string) =>
+  'resp_d_' + createHash('sha256').update(label).digest('hex').slice(0, 32);
 const tenantId = 'tenant-channel-authority';
 const token = 'test-channel-service-bearer-32-characters';
 const scoped = (work: () => Promise<void>) => () => tenantStorage.run({ tenantId }, work);
@@ -214,27 +217,8 @@ beforeEach(async () => {
       if (advanceError) throw advanceError;
       invoked.push(run);
       if (nextSnapshot.status === 'completed' && !run.execution?.responseId) {
-        const responseId = nextSnapshot.responseId ?? `resp_${run.runId}`;
-        const execution = run.execution!;
-        await models.StoredResponse.create({
-          tenantId,
-          userId: run.principal.userId,
-          responseId,
-          requestKey: `channel:${run.runId}`,
-          sourceKeyId: execution.apiKeyId,
-          agentId: run.agentId,
-          fingerprint: 'fixture',
-          requestJSON: JSON.stringify({
-            model: run.agentId,
-            input: run.admission.input,
-            background: true,
-            store: true,
-          }),
-          conversationId: execution.conversationId,
-          parentMessageId: execution.parentMessageId,
-          status: 'queued',
-          revision: 0,
-        });
+        const responseId = nextSnapshot.responseId ?? createManagedMessageId();
+        await reserveFixtureResponse(run, responseId);
         const bound = await storage.bindResponse(
           tenantId,
           { runId: run.runId, owner: run.leaseOwner!, epoch: run.leaseEpoch },
@@ -288,9 +272,9 @@ function event(actor = 'U1', eventId = `Ev-${actor}`): ChannelRunAdmission {
   };
 }
 
-async function bindFixtureResponse(run: ChannelRunRecord, responseId: string) {
+async function reserveFixtureResponse(run: ChannelRunRecord, responseId: string) {
   const execution = run.execution!;
-  await models.StoredResponse.create({
+  const result = await createResponseStorage(mongoose).reserve({
     tenantId,
     userId: run.principal.userId,
     responseId,
@@ -306,9 +290,14 @@ async function bindFixtureResponse(run: ChannelRunRecord, responseId: string) {
     }),
     conversationId: execution.conversationId,
     parentMessageId: execution.parentMessageId,
-    status: 'queued',
-    revision: 0,
   });
+  if (!result.ok) throw new Error('Fixture Response reservation failed');
+  return result.record;
+}
+
+async function bindFixtureResponse(run: ChannelRunRecord, responseId: string) {
+  const execution = run.execution!;
+  await reserveFixtureResponse(run, responseId);
   await models.Message.create({
     tenantId,
     user: run.principal.userId,
@@ -407,7 +396,7 @@ it(
     const reserved = await createResponseStorage(mongoose).reserve({
       tenantId,
       userId: users[0].id,
-      responseId: `resp_${admitted.body.runId}`,
+      responseId: createManagedMessageId(),
       requestKey: prepared.body.requestKey,
       fingerprint: 'request',
       agentId: 'agent',
@@ -475,7 +464,7 @@ it(
     const reserved = await createResponseStorage(mongoose).reserve({
       tenantId,
       userId: users[0].id,
-      responseId: `resp_${admitted.body.runId}`,
+      responseId: createManagedMessageId(),
       requestKey: `channel:${admitted.body.runId}`,
       sourceKeyId: 'issued-key',
       fingerprint: 'late-request',
@@ -525,7 +514,7 @@ it.each(['per_user', 'shared'] as const)(
       const prepared = await post(`${base}/response/prepare`)
         .send({ fence: claimed.body.fence })
         .expect(200);
-      const responseId = `resp_${admitted.body.runId}`;
+      const responseId = createManagedMessageId();
       await createResponseStorage(mongoose).reserve({
         tenantId,
         userId: users[0].id,
@@ -797,12 +786,17 @@ it(
     await post(`runs/${admitted.body.runId}/advance`).send({ fence }).expect(200);
     await bindFixtureResponse(
       (await storage.read(tenantId, 'channel', admitted.body.runId))!,
-      'reply-1',
+      fixtureResponseId('reply-1'),
     );
     await storage.saveSnapshot(
       tenantId,
       fence,
-      { status: 'completed', responseId: 'reply-1', text: '# Answer', elapsedMs: 1 },
+      {
+        status: 'completed',
+        responseId: fixtureResponseId('reply-1'),
+        text: '# Answer',
+        elapsedMs: 1,
+      },
       Date.now(),
     );
     const payload = JSON.stringify([
@@ -856,12 +850,17 @@ it(
     await post(`${route}/advance`).send({ fence }).expect(200);
     await bindFixtureResponse(
       (await storage.read(tenantId, 'channel', admitted.body.runId))!,
-      'reply-1',
+      fixtureResponseId('reply-1'),
     );
     await storage.saveSnapshot(
       tenantId,
       fence,
-      { status: 'completed', responseId: 'reply-1', text: 'Answer', elapsedMs: 1 },
+      {
+        status: 'completed',
+        responseId: fixtureResponseId('reply-1'),
+        text: 'Answer',
+        elapsedMs: 1,
+      },
       Date.now(),
     );
     const plan: ChannelDeliveryPlan = {
@@ -1186,19 +1185,19 @@ it.each(['revoked', 'renewed', 'expired', 'replaced'] as const)(
       const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
       const fence = claimed.body.fence;
       const run = await storage.prepareExecution(tenantId, fence, Date.now());
-      await bindFixtureResponse(run, 'response');
+      await bindFixtureResponse(run, fixtureResponseId('artifact-response'));
       const file = await db.publishRunArtifactFile({
         scope: {
           userId: users[0].id,
           tenantId,
           conversationId: run.execution!.conversationId,
-          runId: 'response',
+          runId: fixtureResponseId('artifact-response'),
           executionId: 'execution',
           agentId: 'agent',
           sourceFileId: 'source',
         },
         provenance: {
-          runId: 'response',
+          runId: fixtureResponseId('artifact-response'),
           executionId: 'execution',
           agentId: 'agent',
           sourceFileId: 'source',
@@ -1226,7 +1225,7 @@ it.each(['revoked', 'renewed', 'expired', 'replaced'] as const)(
         fence,
         {
           status: 'completed',
-          responseId: 'response',
+          responseId: fixtureResponseId('artifact-response'),
           text: 'answer',
           elapsedMs: 1,
           artifacts: [descriptor],
@@ -1441,10 +1440,10 @@ it(
     const credentials = responseCredentials();
     await credentials.provision(run);
     const saved = (await storage.read(tenantId, 'channel', run.runId))!;
-    await bindFixtureResponse(saved, 'resp_cancel');
+    await bindFixtureResponse(saved, fixtureResponseId('cancel'));
     const probe = express();
     probe.post('/probe', async (req, res) => {
-      req.originalUrl = '/api/agents/v1/responses/resp_cancel/cancel';
+      req.originalUrl = `/api/agents/v1/responses/${fixtureResponseId('cancel')}/cancel`;
       res.json({
         allowed: await credentials.authorizeRequest({
           keyId: saved.execution!.apiKeyId!,
@@ -1708,7 +1707,7 @@ it(
     const response = await createResponseStorage(mongoose).reserve({
       tenantId,
       userId: users[0].id,
-      responseId: `resp_${run.runId}`,
+      responseId: createManagedMessageId(),
       requestKey: `channel:${run.runId}`,
       sourceKeyId: saved.execution!.apiKeyId,
       agentId: 'agent',

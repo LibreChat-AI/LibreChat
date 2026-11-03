@@ -50,6 +50,7 @@ import {
   prepareResponseConversation,
 } from './responseConversation';
 import { retiredResponseUpdate, finishResponseErasure } from './responseErasure';
+import { createResponseAllocationReclaimer } from './responseMaintenance';
 import { createResponseCheckpointStorage } from './responseCheckpoint';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { allocateManagedTarget, managedTargetFilter } from './managed';
@@ -328,6 +329,8 @@ export interface ResponseStorage {
     now: number,
   ): Promise<ResponseMutationResult>;
   reserve(input: ResponseReservation): Promise<ResponseReservationResult>;
+  /** Existing maintenance owns bounded, metadata-only allocation reclamation. */
+  reclaimAllocations(limit: number, activity: { found: boolean }): Promise<number>;
   /** SYSTEM metadata scan only; request/answer/key material never crosses this boundary. */
   listRecoveryCandidates(
     cursor: string | undefined,
@@ -397,12 +400,13 @@ export function createResponseStorage(
   mongoose: typeof import('mongoose'),
   options?: {
     getMCPAppMessageBudget?: () => Promise<number | undefined>;
-    getDurableStorageConfig?: () => Promise<DurableStorageConfig>;
+    getDurableStorageConfig?: () => Promise<Partial<DurableStorageConfig>>;
   },
 ): ResponseStorage {
   const model = createStoredResponseModel(mongoose);
   const storageConfig = async () =>
     durableStorageConfigSchema.parse((await options?.getDurableStorageConfig?.()) ?? {});
+  const reclaimUnpublished = createResponseAllocationReclaimer(mongoose, storageConfig);
   let indexPromise: Promise<void> | undefined;
   function ensureIndexes() {
     indexPromise ??= prepareResponseRootStorage(mongoose)
@@ -1441,6 +1445,10 @@ export function createResponseStorage(
       )
         return { ok: true, record: existing };
       return { ok: false, code: 'response_conflict' };
+    },
+    async reclaimAllocations(limit, activity) {
+      await ensureIndexes();
+      return reclaimUnpublished(limit, activity);
     },
     async reserve(input) {
       input = { ...input };

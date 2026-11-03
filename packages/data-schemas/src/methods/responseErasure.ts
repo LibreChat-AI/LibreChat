@@ -187,7 +187,10 @@ export async function finishResponseErasure(
       },
     ],
   });
-  return deleted.deletedCount === 1;
+  return (
+    deleted.deletedCount === 1 ||
+    !(await includeManagedAllocations(records.exists(physical)).read('primary'))
+  );
 }
 
 /** Historical cleanup stays explicitly owner-filtered even when strict mode denies unscoped queries. */
@@ -444,10 +447,14 @@ async function eraseOwnedResponses(
   );
   await eraseChannelFeedbackForOwner(mongoose, owner, conversationIds);
   const relatedScopes = new Set(keys.filter((key) => key !== ownerKey));
-  for (const key of keys) {
-    // One authority has a configured bounded pending list; do not load all owners' lists.
-    const anchor = await scopes.findById(key).select('closed expiredAt pending').lean();
-    if (!anchor || (!anchor.closed && !(anchor.expiredAt && anchor.expiredAt <= new Date())))
+  // Closed empty scopes need no individual read. Stream one bounded pending list at a time.
+  const pendingScopes = scopes
+    .find({ _id: { $in: keys }, 'pending.0': { $exists: true } })
+    .select('closed expiredAt pending')
+    .lean()
+    .cursor({ batchSize: 1 });
+  for await (const anchor of pendingScopes) {
+    if (!anchor.closed && !(anchor.expiredAt && anchor.expiredAt <= new Date()))
       throw new Error('Response erasure requires closed admission');
     const roots = (anchor.pending ?? []).filter((entry) => entry.target.kind === 'response');
     await inResponseErasurePartition(owner, async () => {
@@ -505,7 +512,7 @@ async function eraseOwnedResponses(
           ...(after && { _id: { $gt: after } }),
         }),
       )
-        .select('_id +_managed')
+        .select({ _id: 1, _managed: 1 })
         .sort({ _id: 1 })
         .limit(ERASURE_BATCH_SIZE)
         .read('primary')
@@ -533,7 +540,6 @@ async function eraseOwnedResponses(
   }
   const filter = responseErasureFilter(owner, conversationIds);
   let after: import('mongoose').Types.ObjectId | undefined;
-  let pending = false;
   for (;;) {
     const page = await includeManagedAllocations(
       records.find({ ...filter, ...(after ? { _id: { $gt: after } } : {}) }),
@@ -556,14 +562,11 @@ async function eraseOwnedResponses(
     );
     for (const root of page) {
       if (!root.storageTarget) throw new Error('Response cleanup root identity is unavailable');
-      if (
-        !(await finishResponseErasure(mongoose, {
-          ...owner,
-          responseId: root.responseId,
-          target: root.storageTarget,
-        }))
-      )
-        pending = true;
+      await finishResponseErasure(mongoose, {
+        ...owner,
+        responseId: root.responseId,
+        target: root.storageTarget,
+      });
     }
     await reconcileErasedResponseTargets(mongoose, owner, [
       ...new Set(page.map((root) => responseScopeKeys(owner, root.conversationId)[1])),
@@ -571,14 +574,18 @@ async function eraseOwnedResponses(
     after = page[page.length - 1]._id;
   }
   await reconcileErasedResponseTargets(mongoose, owner, [...relatedScopes]);
-  if (pending || (await includeManagedAllocations(records.exists(filter)).read('primary')))
+  if (await includeManagedAllocations(records.exists(filter)).read('primary'))
     throw new ResponseErasurePendingError();
   const completionScopes = conversationIds
     ? conversationIds.map((id) => responseScopeKeys(owner, id)[1])
     : [ownerKey];
-  for (const key of completionScopes) {
-    const remaining = await scopes.findById(key).select('pendingCount pending').lean();
-    if (remaining?.pendingCount || remaining?.pending?.length)
-      throw new ResponseErasurePendingError();
-  }
+  if (
+    await scopes
+      .exists({
+        _id: { $in: completionScopes },
+        $or: [{ pendingCount: { $nin: [null, 0] } }, { 'pending.0': { $exists: true } }],
+      })
+      .read('primary')
+  )
+    throw new ResponseErasurePendingError();
 }

@@ -40,7 +40,7 @@ export async function shortenExpiration<T extends RetentionFilterDocument>(
   await model.updateMany(
     { ...filter, expiredAt: { $gt: expiredAt } },
     { $min: { expiredAt } },
-    { upsert: false, ...(session ? { session } : {}) },
+    { upsert: false, timestamps: false, ...(session ? { session } : {}) },
   );
 }
 

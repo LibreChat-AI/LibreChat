@@ -64,17 +64,23 @@ export function createResponseDispatchOutbox(deps: {
   return {
     async recoverPending(limit: number, activity: { found: boolean }): Promise<number> {
       if (!deps.isReady()) return 0;
+      let progress = 0;
+      try {
+        progress += await deps.storage.reclaimAllocations(limit, activity);
+      } catch (error) {
+        activity.found = true;
+        report(deps.onError, error);
+      }
       let page: Awaited<ReturnType<ResponseStorage['listRecoveryCandidates']>>;
       try {
         page = await runAsSystem(() => deps.storage.listRecoveryCandidates(cursor, limit));
       } catch (error) {
         activity.found = true;
         report(deps.onError, error);
-        return 0;
+        return progress;
       }
       cursor = page.next;
       if (page.responses.length) activity.found = true;
-      let progress = 0;
       for (const owner of page.responses) {
         await tenantStorage.run({ tenantId: owner.tenantId || undefined }, async () => {
           try {

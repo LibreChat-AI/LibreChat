@@ -387,6 +387,8 @@ export function createStoredResponseModel(
     { timestamps: true, minimize: false, read: 'primary' },
   );
   schema.index({ tenantId: 1, userId: 1, responseId: 1 }, { unique: true });
+  // Global maintenance scans only the allocation namespace, across owner partitions.
+  schema.index({ responseId: 1 });
   // Expiry hides payload immediately; the recovery owner retains this root until drain.
   schema.index({ expiredAt: 1, _id: 1 });
   schema.index({ 'dispatchOutbox.state': 1, _id: 1 });

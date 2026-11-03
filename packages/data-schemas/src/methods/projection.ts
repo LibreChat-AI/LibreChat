@@ -7,8 +7,8 @@ import type {
   StoredResponseRecord,
 } from '~/models/response';
 import type { ManagedPublication, ResponseCanonicalTarget } from '~/types/managed';
+import type { ManagedTarget, ManagedState } from '~/types/managed';
 import type { ManagedAllocationPage } from './managed';
-import type { ManagedTarget } from '~/types/managed';
 import {
   allocateManagedTarget,
   discardManagedAllocation,
@@ -402,41 +402,78 @@ export async function sweepResponseTargetOrphans(
     'registering',
     'registered',
   ]);
-  if (!listed.allocations.length) return { deleted: 0 };
+  const deleted = await discardResponseTargetOrphans(mongoose, page.tenantId, listed.allocations);
+  return { deleted, ...(listed.next && { next: listed.next }) };
+}
+
+/** Selection must be read from the primary before retiring any pinned child. */
+export async function discardResponseTargetOrphans(
+  mongoose: typeof import('mongoose'),
+  tenantId: string | undefined,
+  allocations: Array<{ target: ManagedTarget; state: ManagedState }>,
+): Promise<number> {
+  if (!allocations.length) return 0;
+  assertManagedTenant(tenantId);
   const parentIds = [
     ...new Set(
-      listed.allocations.map(({ state }) => {
+      allocations.map(({ state }) => {
         if (!state.parentId || !/^[a-f\d]{24}$/i.test(state.parentId))
           throw new Error('Managed target has no valid owning parent');
         return state.parentId.toLowerCase();
       }),
     ),
   ];
-  const parents = await createStoredResponseModel(mongoose)
-    .find({
-      _id: { $in: parentIds.map((id) => new mongoose.Types.ObjectId(id)) },
-      tenantId: page.tenantId || { $in: [null, ''] },
-    })
-    .select({ canonicalTargets: 1 })
-    .read('primary')
-    .lean<Array<{ _id: Types.ObjectId; canonicalTargets?: ResponseCanonicalTarget[] }>>();
+  // A Root may retain a large completed-turn map; return only this page's exact selections.
+  const parents = await includeManagedAllocations(
+    createStoredResponseModel(mongoose).aggregate<{
+      _id: Types.ObjectId;
+      canonicalTargets?: ResponseCanonicalTarget[];
+    }>([
+      {
+        $match: {
+          _id: { $in: parentIds.map((id) => new mongoose.Types.ObjectId(id)) },
+          tenantId: tenantId || { $in: [null, ''] },
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          canonicalTargets: {
+            $filter: {
+              input: { $ifNull: ['$canonicalTargets', []] },
+              as: 'selection',
+              cond: {
+                $or: allocations.map(({ target }) => ({
+                  $and: [
+                    { $eq: ['$$selection.target.kind', target.kind] },
+                    { $eq: ['$$selection.target.id', target.id] },
+                    { $eq: ['$$selection.target.incarnation', target.incarnation] },
+                  ],
+                })),
+              },
+            },
+          },
+        },
+      },
+    ]),
+  ).read('primary');
   const selections = new Map(
     parents.map((parent) => [String(parent._id), parent.canonicalTargets]),
   );
   let deleted = 0;
-  for (const { target, state } of listed.allocations) {
+  for (const { target, state } of allocations) {
     const live = selections
       .get(state.parentId!.toLowerCase())
       ?.some(
         (entry) =>
           entry.phase !== 'retired' &&
-          entry.target.kind === kind &&
+          entry.target.kind === target.kind &&
           entry.target.id === target.id &&
           entry.target.incarnation === target.incarnation,
       );
     if (!live && (await retireManagedAllocation(mongoose, target, state.parentId!))) deleted++;
   }
-  return { deleted, ...(listed.next && { next: listed.next }) };
+  return deleted;
 }
 
 /** Advance journal metadata only after the exact target proves the corresponding durable phase. */

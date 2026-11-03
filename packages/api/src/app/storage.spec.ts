@@ -38,17 +38,25 @@ it('rejects invalid bounds and propagates config outages', async () => {
 });
 
 it('reads live deployment-wide durable capacity with schema defaults', async () => {
-  const config = { durableStorage: { maxPendingTargetsPerScope: 2 } };
+  const config = { durableStorage: { maxPendingTargetsPerScope: 2, allocationGraceMs: 1000 } };
   const read = jest.fn(async () => config as AppConfig);
   const effective = createStorageConfigReader();
   await expect(effective.getDurableConfig()).rejects.toThrow('not been initialized');
   effective.initialize(read);
-  expect(await effective.getDurableConfig()).toEqual({ maxPendingTargetsPerScope: 2 });
+  expect(await effective.getDurableConfig()).toEqual({
+    maxPendingTargetsPerScope: 2,
+    allocationGraceMs: 1000,
+  });
   config.durableStorage.maxPendingTargetsPerScope = 3;
+  config.durableStorage.allocationGraceMs = 2000;
   expect((await effective.getDurableConfig()).maxPendingTargetsPerScope).toBe(3);
+  expect((await effective.getDurableConfig()).allocationGraceMs).toBe(2000);
   expect(read).toHaveBeenLastCalledWith({ baseOnly: true });
   effective.initialize(async () => ({}) as AppConfig);
-  expect(await effective.getDurableConfig()).toEqual({ maxPendingTargetsPerScope: 256 });
+  expect(await effective.getDurableConfig()).toEqual({
+    maxPendingTargetsPerScope: 256,
+    allocationGraceMs: 300_000,
+  });
 });
 
 it('rejects invalid durable bounds and propagates config outages', async () => {

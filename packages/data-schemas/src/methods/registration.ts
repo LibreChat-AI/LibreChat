@@ -337,12 +337,15 @@ export async function reconcileErasedResponseTargets(
     throw new TypeError('Invalid Response cleanup scope');
   const scopes = createResponseScopeModel(mongoose);
   let count = 0;
-  for (const key of keys) {
-    const anchor = await scopes.findById(key).lean();
-    if (!anchor?.pending?.length) continue;
+  const pendingScopes = scopes
+    .find({ _id: { $in: keys }, 'pending.0': { $exists: true } })
+    .lean()
+    .cursor({ batchSize: 1 });
+  for await (const anchor of pendingScopes) {
+    const key = anchor._id;
     const absent: ManagedRegistration[] = [];
     for (const kind of ['message', 'conversation', 'response'] as const) {
-      const entries = anchor.pending.filter((entry) => entry.target.kind === kind);
+      const entries = anchor.pending!.filter((entry) => entry.target.kind === kind);
       if (!entries.length) continue;
       const model = mongoose.model(managedTargetModels[kind]);
       const rows = await includeManagedAllocations(
@@ -354,7 +357,7 @@ export async function reconcileErasedResponseTargets(
           }),
         }),
       )
-        .select('_id +_managed')
+        .select({ _id: 1, _managed: 1 })
         .read('primary')
         .lean<SettlementTarget[]>();
       const present = new Set(rows.map((row) => `${row._id}:${row._managed.incarnation}`));

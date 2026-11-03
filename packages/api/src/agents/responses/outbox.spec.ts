@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createResponseStorage,
+  createModels,
   responseReference,
   tenantStorage,
   runAsSystem,
@@ -39,6 +40,7 @@ beforeAll(async () => {
     instanceOpts: [{ args: ['--nounixsocket'] }],
   });
   await mongoose.connect(mongo.getUri(), { autoIndex: false });
+  createModels(mongoose);
   storage = createResponseStorage(mongoose);
 });
 afterAll(async () => {
@@ -383,4 +385,43 @@ it('settles a consumed resume after another pause without enqueueing it again', 
       state: 'pending',
     });
   });
+});
+
+it('reclaims a crash-left allocation through the production recovery callback even with no published Responses', async () => {
+  const db = mongoose.connection.db!;
+  const original = db.command.bind(db);
+  const allocation = jest.spyOn(db, 'command').mockImplementation(async (...args) => {
+    const result = await original(...args);
+    if (args[0].insert === mongoose.models.StoredResponse.collection.name)
+      throw new Error('fixture crash after allocation');
+    return result;
+  });
+  try {
+    await expect(reserve('allocation-crash')).rejects.toThrow('fixture crash after allocation');
+  } finally {
+    allocation.mockRestore();
+  }
+  const row = await runAsSystem(() =>
+    mongoose.models.StoredResponse.collection.findOne(
+      {
+        responseId: { $regex: '^__allocation_' },
+      },
+      { projection: { _id: 1 } },
+    ),
+  );
+  expect(row).not.toBeNull();
+  await runAsSystem(() =>
+    mongoose.models.StoredResponse.collection.updateOne(
+      { _id: row!._id },
+      { $set: { createdAt: new Date(0) } },
+    ),
+  );
+  const f = fixture();
+  const activity = { found: false };
+  for (let turn = 0; turn < 3; turn++) await f.outbox.recoverPending(1, activity);
+  expect(activity.found).toBe(true);
+  expect(
+    await runAsSystem(() => mongoose.models.StoredResponse.collection.findOne({ _id: row!._id })),
+  ).toBeNull();
+  expect(f.enqueue).not.toHaveBeenCalled();
 });

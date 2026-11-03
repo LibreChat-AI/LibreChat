@@ -50,6 +50,8 @@ export const DEFAULT_SKILL_DELETION_BATCH_SIZE = 100;
 export const DEFAULT_DURABLE_PENDING_TARGETS = 256;
 export const durableStorageConfigSchema = z
   .object({
+    /** Reclaim abandoned metadata allocations after fresh publishers have had time to finish. */
+    allocationGraceMs: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(300_000),
     /** Pending metadata per authority; each entry is separately bounded to 512 BSON bytes. */
     maxPendingTargetsPerScope: z
       .number()

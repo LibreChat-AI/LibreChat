@@ -50,18 +50,19 @@ import {
   responseScopeKeys,
 } from './responseScope';
 import {
+  activeExpirationFilter,
+  buildRetentionVisibilityFilter,
+  createFallbackRetentionDate,
+  initializeExpiration,
+  shortenExpiration,
+} from '~/utils/retention';
+import {
   isManagedConversationId,
   isAllocationId,
   stripManagedFields,
   managedVisibilityFilter,
   stripManagedIdentityFields,
 } from '~/utils/managed';
-import {
-  activeExpirationFilter,
-  buildRetentionVisibilityFilter,
-  createFallbackRetentionDate,
-  initializeExpiration,
-} from '~/utils/retention';
 import {
   discoverResponseErasureConversations,
   retireResponseRecords,
@@ -2404,11 +2405,7 @@ export function createConversationMethods(
     }
 
     await retainResponses({ userId, tenantId: stored.tenantId }, conversationId, expiredAt);
-    const initialization = initializeExpiration({ _id: stored._id }, expiredAt);
-    await Conversation.updateOne(initialization.filter, initialization.update, {
-      upsert: initialization.upsert,
-      timestamps: initialization.timestamps,
-    });
+    await shortenExpiration(Conversation, { _id: stored._id }, expiredAt);
     if (stored.isTemporary !== true) {
       /**
        * Conditional on the transition, so concurrent stamps release the bookmark counts once;
