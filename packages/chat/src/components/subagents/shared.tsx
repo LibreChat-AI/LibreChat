@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useAtom } from 'jotai';
 import {
   OGDialog,
   useLocalize,
@@ -9,6 +8,7 @@ import {
 } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import type { ActiveSubagentPanel } from '../../react/subagents/state';
 import {
   messageAuthor,
   findAgentLaneId,
@@ -19,7 +19,6 @@ import {
 import { adaptLivePersistedActivity } from '../../react/subagents/adapters';
 import { resolveSubagentAgentId } from '../../react/subagents/identity';
 import { MessageSurfaceContext } from '../../react/messages/surface';
-import { activeSubagentPanel } from '../../react/subagents/state';
 import { useSubagentsHost } from '../../react/subagents/host';
 import { SubagentActivityScrollSurface } from './transcript';
 import SubagentConversation from './conversation';
@@ -28,14 +27,18 @@ import SubagentConversation from './conversation';
 export default function SharedSubagentActivityDialog({
   shareId,
   messages,
+  selected,
+  setSelected,
 }: {
   shareId?: string;
   /** The shared thread, which names the agent that dispatched the child. */
   messages?: TMessage[];
+  /** The app's open subagent panel selection; the dialog shows it when it belongs to this share. */
+  selected: ActiveSubagentPanel | null;
+  setSelected: (selection: ActiveSubagentPanel | null) => void;
 }): ReactNode {
   const localize = useLocalize();
   const agentsMap = useSubagentsHost().useAgentsMap();
-  const [selected, setSelected] = useAtom(activeSubagentPanel);
   const resetSelection = useCallback(() => setSelected(null), [setSelected]);
   const selection = selected?.host === 'share' && selected.shareId === shareId ? selected : null;
   const restoreSelectionRef = useRef(selection);

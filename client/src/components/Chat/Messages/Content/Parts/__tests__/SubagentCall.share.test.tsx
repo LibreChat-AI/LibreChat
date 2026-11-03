@@ -1,5 +1,7 @@
 import React from 'react';
+import { useAtom } from 'jotai';
 import { ContentTypes } from 'librechat-data-provider';
+import { activeSubagentPanel } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { SharedSubagentActivityDialog } from '@librechat/chat/components';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
@@ -40,15 +42,17 @@ jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
   /** The dialog's own rendering is specced in the package (shared.spec); here it only shows
    *  which shared selection the card opened, and with what content. */
-  SharedSubagentActivityDialog: ({ shareId }: { shareId?: string }) => {
-    const { useAtomValue } = jest.requireActual<typeof import('jotai')>('jotai');
-    const { activeSubagentPanel } =
-      jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
-    const selection = useAtomValue(activeSubagentPanel);
-    if (selection?.host !== 'share' || selection.shareId !== shareId) return null;
+  SharedSubagentActivityDialog: ({
+    shareId,
+    selected,
+  }: {
+    shareId?: string;
+    selected: { host: string; shareId?: string; persistedContent?: TMessageContentParts[] } | null;
+  }) => {
+    if (selected?.host !== 'share' || selected.shareId !== shareId) return null;
     return (
       <div role="dialog">
-        {selection.persistedContent?.map((part, index) =>
+        {selected.persistedContent?.map((part, index) =>
           part.type === 'text' && typeof part.text === 'string' ? (
             <span key={index}>{part.text}</span>
           ) : null,
@@ -102,6 +106,19 @@ const sharedMessages: TMessage[] = [
   },
 ];
 
+/** The dialog as ShareView mounts it: the app's panel selection, passed in. */
+function SharedDialog({ messages }: { messages: TMessage[] }) {
+  const [selected, setSelected] = useAtom(activeSubagentPanel);
+  return (
+    <SharedSubagentActivityDialog
+      shareId="share-1"
+      messages={messages}
+      selected={selected}
+      setSelected={setSelected}
+    />
+  );
+}
+
 function renderSharedCall(input: {
   output?: string;
   persistedContent?: TMessageContentParts[];
@@ -134,10 +151,7 @@ function renderSharedCall(input: {
             subagentIdentity={input.subagentIdentity}
             persistedContent={input.persistedContent}
           />
-          <SharedSubagentActivityDialog
-            shareId="share-1"
-            messages={input.messages ?? sharedMessages}
-          />
+          <SharedDialog messages={input.messages ?? sharedMessages} />
         </MessageContext.Provider>
       </ShareContext.Provider>
     </ChatSurfaceHarness>,

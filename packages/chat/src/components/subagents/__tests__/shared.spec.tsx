@@ -3,7 +3,7 @@
  */
 import React, { useState } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
-import { Provider as JotaiProvider, createStore } from 'jotai';
+import { Provider as JotaiProvider, createStore, useAtom } from 'jotai';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ActiveSubagentPanel } from '../../../react/subagents/state';
@@ -14,6 +14,7 @@ import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { useOpenSubagentPanel } from '../../../react/subagents/surface';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { SubagentsHostProvider } from '../../../react/subagents/host';
+import { activeSubagentPanel } from '../../../react/subagents/state';
 import { MessagesHostProvider } from '../../../react/messages/host';
 import { MessagePartsHostProvider } from '../../../react/host';
 import SharedSubagentActivityDialog from '../shared';
@@ -192,6 +193,19 @@ const sharedMessages: TMessage[] = [
   },
 ];
 
+/** The dialog as ShareView mounts it: the app's panel selection, passed in. */
+function SharedDialog({ messages }: { messages: TMessage[] }) {
+  const [selected, setSelected] = useAtom(activeSubagentPanel);
+  return (
+    <SharedSubagentActivityDialog
+      shareId="share-1"
+      messages={messages}
+      selected={selected}
+      setSelected={setSelected}
+    />
+  );
+}
+
 function renderSharedCall(input: {
   output?: string;
   persistedContent?: TMessageContentParts[];
@@ -218,7 +232,7 @@ function renderSharedCall(input: {
   return render(
     <ChatSurfaceHarness>
       <SharedCallTrigger selection={selection} />
-      <SharedSubagentActivityDialog shareId="share-1" messages={input.messages ?? sharedMessages} />
+      <SharedDialog messages={input.messages ?? sharedMessages} />
     </ChatSurfaceHarness>,
   );
 }
