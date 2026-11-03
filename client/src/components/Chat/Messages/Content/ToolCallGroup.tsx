@@ -260,9 +260,10 @@ export default function ToolCallGroup({
     () => parts.some((p) => p.part.type === ContentTypes.THINK),
     [parts],
   );
-  /** One call and nothing else has no tree to draw, so it lays out like the
-   *  same call without a title: no rail, no indent. */
-  const soleCall = count === 1 && !hasReasoning;
+  /** A lone call and nothing else has no tree to draw, so it lays out like the
+   *  same call without a title: no rail, no indent. Inside a phase the group is
+   *  one branch of the phase's tree and keeps its own. */
+  const soleCall = count === 1 && !hasReasoning && !withinActivityPhase;
 
   /** Subagent tool calls get their own label verb ("Running/Ran N agents")
    *  since "Used N tools" reads oddly when the "tools" are actually child

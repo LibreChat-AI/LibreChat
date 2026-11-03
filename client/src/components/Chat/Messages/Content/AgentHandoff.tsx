@@ -189,7 +189,7 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
             </span>
           </span>
           <span className="tool-status-text text-text-secondary min-w-0 truncate font-medium">
-            {localize('com_ui_transferred_to')}{' '}
+            <span>{localize('com_ui_transferred_to')}</span>{' '}
             <span className="text-text-primary">{agentName}</span>
           </span>
           {hasInfo && (
