@@ -33,7 +33,9 @@ import { managedTargetFilter, managedRegistration } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createChannelLaneRootStorage } from './channelLaneRoot';
 import { readChannelRunOwnership } from './channelOwnership';
+import { includeManagedAllocations } from '~/utils/managed';
 import { responseScopeKeys } from './responseScope';
+import { managedTargetPredicate } from './managed';
 
 type Control = ChannelControlLaneRecord & { _id: Types.ObjectId; _managed: ManagedState };
 type Principal = ChannelPrincipalLaneRecord & { _id: Types.ObjectId; _managed: ManagedState };
@@ -55,6 +57,8 @@ interface ChannelRunControl {
     cleanup?: boolean,
   ): Promise<PhysicalChannelRun | null>;
   isActive(run: PhysicalChannelRun): Promise<boolean>;
+  /** Called only after canonical owner erasure and the private Run publication fence. */
+  fenceErasedRun(target: ManagedTarget<'channelRun'>): Promise<void>;
   repairTerminal(run: PhysicalChannelRun, now: number): Promise<PhysicalChannelRun>;
   observeStop(
     scope: ChannelLaneScope,
@@ -96,10 +100,12 @@ export function createChannelRunControl(
       ? run
       : null;
   }
-  async function readControl(target: ManagedTarget<'channelLane'>) {
+  async function readControl(target: ManagedTarget<'channelLane'>, cleanup = false) {
     return lanes
       .findOne({
-        ...managedTargetFilter(mongoose, target),
+        ...(cleanup
+          ? managedTargetPredicate(mongoose, target)
+          : managedTargetFilter(mongoose, target)),
         kind: 'control',
         '_managed.phase': 'published',
       })
@@ -122,7 +128,11 @@ export function createChannelRunControl(
     )
       throw new ManagedDocumentTooLargeError();
   }
-  async function updateControl(row: Control, update: UpdateQuery<ChannelControlLaneRecord>) {
+  async function updateControl(
+    row: Control,
+    update: UpdateQuery<ChannelControlLaneRecord>,
+    cleanup = false,
+  ) {
     if (
       !Number.isSafeInteger(row.revision) ||
       row.revision < 0 ||
@@ -132,7 +142,9 @@ export function createChannelRunControl(
     assertLaneBudget(row, { ...update.$set, revision: row.revision + 1 }, update.$unset);
     return lanes.updateOne(
       {
-        ...managedTargetFilter(mongoose, controlTarget(row)),
+        ...(cleanup
+          ? managedTargetPredicate(mongoose, controlTarget(row))
+          : managedTargetFilter(mongoose, controlTarget(row))),
         kind: 'control',
         '_managed.phase': 'published',
         revision: row.revision,
@@ -387,6 +399,57 @@ export function createChannelRunControl(
   }
   return {
     isActive: active,
+    async fenceErasedRun(target) {
+      const run = await includeManagedAllocations(
+        runs.findOne({ ...managedTargetPredicate(mongoose, target), '_managed.phase': 'retired' }),
+      )
+        .select(CHANNEL_RUN_METADATA_FIELDS)
+        .read('primary')
+        .lean<ChannelRunMetadata | null>();
+      if (!run) {
+        if (
+          !(await includeManagedAllocations(
+            runs.exists(managedTargetPredicate(mongoose, target)),
+          ).read('primary'))
+        )
+          return;
+        throw new Error('Erased Run retirement proof unavailable');
+      }
+      if (!run.publication || run._managed.parentId !== target.id)
+        throw new Error('Erased Run retirement proof unavailable');
+      const binding = run.publication.control;
+      for (;;) {
+        const control = await readControl(binding, true);
+        if (!control) {
+          // An unpublished control hidden by normal visibility is not physical absence.
+          if (
+            await includeManagedAllocations(
+              lanes.exists(managedTargetPredicate(mongoose, binding)),
+            ).read('primary')
+          )
+            throw new Error('Erased Run control retirement is pending');
+          return;
+        }
+        if (!same(control.channelRef, run.publication.channel))
+          throw new Error('Erased Run control authority changed');
+        const ownAssignment = same(control.assignment?.run.target, target);
+        const stop = control.stop;
+        const resolveStop = stop?.phase === 'selecting' && (ownAssignment || !control.assignment);
+        // Every grant selector reads this revision before re-reading the published Run.
+        // Touch it even without an assignment, invalidating a paused pre-retirement selector.
+        const fenced = await updateControl(
+          control,
+          {
+            ...(ownAssignment && { $unset: { assignment: 1 } }),
+            ...(resolveStop && {
+              $set: { stop: { ...stop, phase: 'selected', selection: { result: 'none' } } },
+            }),
+          },
+          true,
+        );
+        if (fenced.matchedCount) return;
+      }
+    },
     repairTerminal,
     async claim(initial, owner, now, leaseMs, cleanup = false) {
       if (!initial.publication) throw new Error('Run publication unavailable');

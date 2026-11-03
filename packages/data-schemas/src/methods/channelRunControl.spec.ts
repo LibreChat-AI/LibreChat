@@ -1,8 +1,12 @@
 import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer, MongoMemoryReplSet } from 'mongodb-memory-server';
+import type { PhysicalChannelRun } from './channelRunWrite';
 import { allocateManagedTarget, managedRegistration } from './managed';
+import { createResponseOwnerErasureMethods } from './responseErasure';
+import { eraseChannelPersistenceForUser } from './channelErasure';
 import { createChannelIdentityStorage } from './channelIdentity';
+import { createChannelRunControl } from './channelRunControl';
 import { createManagedMessageId } from '~/utils/managed';
 import { registerResponseTarget } from './registration';
 import { createChannelRunStorage } from './channelRun';
@@ -35,6 +39,7 @@ describe.each(engines)('actor control handoff on %s', (engine) => {
     async function fixture(admit = true, mode: 'shared' | 'per_user' = 'shared') {
       const owner = String(new mongoose.Types.ObjectId());
       const channelId = randomUUID();
+      const linkId = randomUUID();
       await createAgentChannelMethods(mongoose).createAgentChannel({
         channelId,
         createdBy: mode === 'shared' ? owner : String(new mongoose.Types.ObjectId()),
@@ -52,7 +57,7 @@ describe.each(engines)('actor control handoff on %s', (engine) => {
         principal: {
           userId: owner,
           channelRevision: 'one',
-          ...(mode === 'per_user' && { linkId: 'link-one', linkRevision: 'one' }),
+          ...(mode === 'per_user' && { linkId, linkRevision: 'one' }),
         },
         admission: {
           eventId: 'first',
@@ -67,7 +72,7 @@ describe.each(engines)('actor control handoff on %s', (engine) => {
         await createChannelIdentityStorage(mongoose).saveChannelIdentity(
           {
             tenantId: input.tenantId,
-            linkId: 'link-one',
+            linkId,
             revision: 'one',
             state: 'active',
             userId: owner,
@@ -89,6 +94,345 @@ describe.each(engines)('actor control handoff on %s', (engine) => {
       if (admit) await storage.admit(input, 100);
       return { input, storage, owner };
     }
+    async function eraseOwner(userId: string) {
+      const owner = { userId, ...(tenantId && { tenantId }) };
+      await createResponseOwnerErasureMethods(mongoose).prepareUserResponseErasure(owner);
+      await eraseChannelPersistenceForUser(mongoose, owner);
+    }
+    it('erases an owner only after fencing its control and preserves the selected Stop receipt', () =>
+      scoped(async () => {
+        const f = await fixture(true, 'per_user');
+        const claimed = (await f.storage.claim(
+          f.input.tenantId,
+          f.input.channelId,
+          'worker',
+          101,
+          1000,
+        ))!;
+        await f.storage.observeThreadStop(f.input, 102, 103);
+        const lanes = mongoose.models.ChannelLane.collection;
+        const before = await lanes.findOne({ channelId: f.input.channelId, kind: 'control' });
+        await eraseOwner(f.owner);
+        const after = await lanes.findOne({ _id: before!._id });
+        expect(after!.assignment).toBeUndefined();
+        expect(after!.stop).toEqual(before!.stop);
+        expect(after!.revision).toBeGreaterThan(before!.revision);
+        expect(
+          await mongoose.models.ChannelRun.collection.findOne({ runId: claimed.runId }),
+        ).toBeNull();
+        expect(
+          await lanes.findOne({ channelId: f.input.channelId, kind: 'principal', userId: f.owner }),
+        ).toBeNull();
+        expect(await f.storage.renew(f.input.tenantId, fence(claimed), 104, 1000)).toBe(false);
+        await createResponseOwnerErasureMethods(mongoose).assertUserStorageErased({
+          userId: f.owner,
+          ...(tenantId && { tenantId }),
+        });
+      }));
+    it.each(['selection', 'lease'] as const)(
+      'fences a paused %s grant before completing owner erasure',
+      (point) =>
+        scoped(async () => {
+          const f = await fixture(true, 'per_user');
+          let entered!: () => void;
+          let release!: () => void;
+          const started = new Promise<void>((resolve) => {
+            entered = resolve;
+          });
+          const gate = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          let paused = false;
+          const lanes = mongoose.models.ChannelLane.collection;
+          const runs = mongoose.models.ChannelRun.collection;
+          const update = lanes.updateOne.bind(lanes);
+          const lease = runs.findOneAndUpdate.bind(runs);
+          const controlSpy = jest.spyOn(lanes, 'updateOne').mockImplementation(async (...args) => {
+            if (
+              point === 'selection' &&
+              !Array.isArray(args[1]) &&
+              args[1].$set?.assignment &&
+              !paused
+            ) {
+              paused = true;
+              entered();
+              await gate;
+            }
+            return update(...args);
+          });
+          const leaseSpy = jest
+            .spyOn(runs, 'findOneAndUpdate')
+            .mockImplementation(async (...args) => {
+              if (
+                point === 'lease' &&
+                !Array.isArray(args[1]) &&
+                args[1].$set?.leaseGrantId &&
+                !paused
+              ) {
+                paused = true;
+                entered();
+                await gate;
+              }
+              return lease(...args);
+            });
+          const claiming = f.storage.claim(
+            f.input.tenantId,
+            f.input.channelId,
+            'paused',
+            101,
+            1000,
+          );
+          const timeout = setTimeout(release, 10000);
+          try {
+            await started;
+            await eraseOwner(f.owner);
+            release();
+            expect(await claiming).toBeNull();
+            const control = await lanes.findOne({ channelId: f.input.channelId, kind: 'control' });
+            expect(control!.assignment).toBeUndefined();
+            expect(await runs.findOne({ channelId: f.input.channelId })).toBeNull();
+          } finally {
+            clearTimeout(timeout);
+            release();
+            controlSpy.mockRestore();
+            leaseSpy.mockRestore();
+          }
+        }),
+    );
+    it('recovers an applied control-fence command whose reply was lost before deleting the Run', () =>
+      scoped(async () => {
+        const f = await fixture(true, 'per_user');
+        const claimed = (await f.storage.claim(
+          f.input.tenantId,
+          f.input.channelId,
+          'worker',
+          101,
+          1000,
+        ))!;
+        const collection = mongoose.models.ChannelLane.collection;
+        const update = collection.updateOne.bind(collection);
+        let failed = false;
+        const spy = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
+          const result = await update(...args);
+          if (!Array.isArray(args[1]) && args[1].$unset?.assignment && !failed) {
+            failed = true;
+            throw new Error('synthetic lost control acknowledgment');
+          }
+          return result;
+        });
+        await expect(eraseOwner(f.owner)).rejects.toThrow('synthetic lost control acknowledgment');
+        expect(
+          await mongoose.models.ChannelRun.collection.findOne({ runId: claimed.runId }),
+        ).toMatchObject({ _managed: { phase: 'retired' } });
+        spy.mockRestore();
+        await eraseOwner(f.owner);
+        expect(
+          await mongoose.models.ChannelRun.collection.findOne({ runId: claimed.runId }),
+        ).toBeNull();
+        expect(
+          await collection.findOne({ channelId: f.input.channelId, kind: 'control' }),
+        ).not.toHaveProperty('assignment');
+      }));
+    it('fences private staging while its final publication command is paused', () =>
+      scoped(async () => {
+        const f = await fixture(false, 'per_user');
+        const collection = mongoose.models.ChannelRun.collection;
+        const update = collection.updateOne.bind(collection);
+        let entered!: () => void;
+        let release!: () => void;
+        const started = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let paused = false;
+        const spy = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
+          if (
+            !Array.isArray(args[1]) &&
+            args[1].$set?.['_managed.phase'] === 'published' &&
+            !paused
+          ) {
+            paused = true;
+            entered();
+            await gate;
+          }
+          return update(...args);
+        });
+        const admitting = f.storage.admit(f.input, 100).then(
+          () => 'published',
+          () => 'rejected',
+        );
+        const timeout = setTimeout(release, 10000);
+        try {
+          await started;
+          await eraseOwner(f.owner);
+          release();
+          expect(await admitting).toBe('rejected');
+          expect(await collection.findOne({ channelId: f.input.channelId })).toBeNull();
+          expect(
+            await mongoose.models.ChannelLane.collection.findOne({
+              channelId: f.input.channelId,
+              kind: 'principal',
+            }),
+          ).toBeNull();
+        } finally {
+          clearTimeout(timeout);
+          release();
+          spy.mockRestore();
+        }
+      }));
+    it('keeps the Run and control while canonical provider drain is still pending', () =>
+      scoped(async () => {
+        const f = await fixture(true, 'per_user');
+        const claimed = (await f.storage.claim(
+          f.input.tenantId,
+          f.input.channelId,
+          'worker',
+          101,
+          1000,
+        ))!;
+        const capability = fence(claimed);
+        await f.storage.prepareExecution(f.input.tenantId, capability, 102);
+        const run = await f.storage.attachResponseCredential(
+          f.input.tenantId,
+          capability,
+          { apiKeyId: 'key', encryptedApiKey: 'synthetic' },
+          103,
+        );
+        const responses = createResponseStorage(mongoose);
+        const reserved = await responses.reserve({
+          ...(tenantId && { tenantId }),
+          userId: f.owner,
+          agentId: 'agent',
+          sourceKeyId: 'key',
+          responseId: createManagedMessageId(),
+          requestKey: `channel:${run.runId}`,
+          fingerprint: 'accepted',
+          conversationId: run.execution!.conversationId,
+          parentMessageId: run.execution!.parentMessageId,
+          requestJSON: JSON.stringify({
+            model: 'agent',
+            input: f.input.admission.input,
+            background: true,
+            store: true,
+          }),
+        });
+        if (!reserved.ok) throw new Error('Reservation failed');
+        await f.storage.bindResponse(f.input.tenantId, capability, reserved.record.responseId, 104);
+        const binding = { generationCreatedAt: Date.now(), providerExecutionId: randomUUID() };
+        const enrolled = await responses.enrollExecution(reserved.record, binding, '{}');
+        if (!enrolled.ok || !(await responses.bindExecution(enrolled.record, binding)))
+          throw new Error('Enrollment failed');
+        await expect(eraseOwner(f.owner)).rejects.toMatchObject({
+          code: 'response_erasure_pending',
+        });
+        expect(
+          await mongoose.models.ChannelRun.collection.findOne({ runId: run.runId }),
+        ).toMatchObject({ _managed: { phase: 'published' } });
+        expect(
+          await mongoose.models.ChannelLane.collection.findOne({
+            channelId: f.input.channelId,
+            kind: 'control',
+          }),
+        ).toMatchObject({ assignment: { run: { runId: run.runId } } });
+      }));
+    it('erases a queued former principal without clearing the new linked owner active assignment', () =>
+      scoped(async () => {
+        const f = await fixture(true, 'per_user');
+        const owner = String(new mongoose.Types.ObjectId());
+        const linkId = randomUUID();
+        const identities = createChannelIdentityStorage(mongoose);
+        const previous = await identities.readChannelIdentity({
+          ...f.input.principal,
+          tenantId: f.input.tenantId,
+          channelId: f.input.channelId,
+          agentId: 'agent',
+          teamId: 'T1',
+          externalUserId: f.input.admission.actor.externalUserId,
+        });
+        if (!previous) throw new Error('Fixture identity missing');
+        expect(
+          await identities.saveChannelIdentity(
+            { ...previous, userId: owner, linkId, revision: 'two', ticketHash: randomUUID() },
+            'one',
+          ),
+        ).toBe(true);
+        const nextInput = {
+          ...nextEvent(f),
+          principal: { userId: owner, channelRevision: 'one', linkId, linkRevision: 'two' },
+        };
+        const admitted = await f.storage.admit(nextInput, 105);
+        const exact = await mongoose.models.ChannelRun.findOne({ runId: admitted.run.runId })
+          .select('+_managed')
+          .lean<PhysicalChannelRun | null>();
+        if (!exact) throw new Error('Fixture Run missing');
+        const claimed = await createChannelRunControl(mongoose, async () => ({})).claim(
+          exact,
+          'new-worker',
+          106,
+          1000,
+        );
+        expect(claimed?.runId).toBe(admitted.run.runId);
+        await f.storage.observeThreadStop(nextInput, 107, 107);
+        const before = await mongoose.models.ChannelLane.collection.findOne({
+          channelId: f.input.channelId,
+          kind: 'control',
+        });
+        await eraseOwner(f.owner);
+        const after = await mongoose.models.ChannelLane.collection.findOne({ _id: before!._id });
+        expect(after!.assignment).toEqual(before!.assignment);
+        expect(after!.stop).toEqual(before!.stop);
+        expect(after!.revision).toBeGreaterThan(before!.revision);
+        expect(
+          await mongoose.models.ChannelRun.collection.findOne({
+            channelId: f.input.channelId,
+            'principal.userId': f.owner,
+          }),
+        ).toBeNull();
+        expect(
+          await mongoose.models.ChannelRun.collection.findOne({ runId: admitted.run.runId }),
+        ).toMatchObject({ _managed: { phase: 'published' } });
+        expect(
+          await mongoose.models.ChannelLane.collection.findOne({
+            channelId: f.input.channelId,
+            kind: 'principal',
+            userId: owner,
+          }),
+        ).not.toBeNull();
+      }));
+    it('retains another account execution and control assignment when its channel creator is erased', () =>
+      scoped(async () => {
+        const f = await fixture(true, 'per_user');
+        const claimed = (await f.storage.claim(
+          f.input.tenantId,
+          f.input.channelId,
+          'worker',
+          101,
+          1000,
+        ))!;
+        const channel = await mongoose.models.AgentChannel.collection.findOne({
+          channelId: f.input.channelId,
+        });
+        const before = await mongoose.models.ChannelLane.collection.findOne({
+          channelId: f.input.channelId,
+          kind: 'control',
+        });
+        await eraseOwner(channel!.createdBy);
+        expect(
+          await mongoose.models.ChannelRun.collection.findOne({ runId: claimed.runId }),
+        ).toMatchObject({ _managed: { phase: 'published' }, principal: { userId: f.owner } });
+        expect(
+          await mongoose.models.ChannelLane.collection.findOne({ _id: before!._id }),
+        ).toMatchObject({ assignment: before!.assignment });
+        expect(
+          await mongoose.models.ChannelLane.collection.findOne({
+            channelId: f.input.channelId,
+            kind: 'principal',
+            userId: f.owner,
+          }),
+        ).not.toBeNull();
+      }));
     const nextEvent = (f: Awaited<ReturnType<typeof fixture>>) => ({
       ...f.input,
       admission: { ...f.input.admission, eventId: 'next' },

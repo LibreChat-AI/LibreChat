@@ -643,7 +643,6 @@ export function createUserMethods(
         );
         const responses = createResponseOwnerErasureMethods(mongoose);
         await responses.prepareUserResponseErasure({ userId, tenantId: owner.tenantId });
-        await responses.eraseUserResponses({ userId, tenantId: owner.tenantId });
         // Each domain finishes its own registered/indexed cleanup before the shared barrier.
         await eraseChannelPersistenceForUser(
           mongoose,

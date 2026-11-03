@@ -3,8 +3,8 @@ import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { ManagedState, ManagedStorageTarget } from '~/types/managed';
 import type { ResponseOwner } from '~/models/response';
+import { ResponseErasurePendingError, createResponseOwnerErasureMethods } from './responseErasure';
 import { reconcileErasedResponseTargets, settleRedactedChannelTarget } from './registration';
-import { createChannelRunModel, createChannelLaneModel } from '~/models/channelRun';
 import { createAgentChannelModel, CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
 import { responseScopeKeys, assertResponseErasureOwner } from './responseScope';
 import { managedTargetPredicate, retireManagedAllocation } from './managed';
@@ -13,7 +13,8 @@ import { eraseChannelIdentitiesForOwner } from './channelIdentityErasure';
 import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createResponseScopeModel } from '~/models/responseScope';
-import { ResponseErasurePendingError } from './responseErasure';
+import { createChannelRunModel } from '~/models/channelRun';
+import { eraseOwnedChannelRuns } from './channelRunErasure';
 import { includeManagedAllocations } from '~/utils/managed';
 import { eraseChannelKeysForOwner } from './channelKey';
 import { createIndexesWithRetry } from '~/utils/retry';
@@ -35,6 +36,8 @@ export async function eraseChannelPersistenceForUser(
 ): Promise<void> {
   const config = resolveChannelErasureConfig(options);
   assertResponseErasureOwner(owner);
+  // Provider and checkpoint retirement must positively complete before removing any Run.
+  await createResponseOwnerErasureMethods(mongoose).eraseUserResponses(owner);
   for (const partition of owner.tenantId ? [owner, { userId: owner.userId }] : [owner])
     await tenantStorage.run({ tenantId: partition.tenantId || SYSTEM_TENANT_ID }, () =>
       eraseChannelPartition(mongoose, partition, config.erasureBatchSize),
@@ -53,10 +56,7 @@ async function eraseChannelPartition(
   const tenantId = owner.tenantId || '_';
   await eraseChannelKeysForOwner(mongoose, owner, anchor.pending ?? []);
   const runs = createChannelRunModel(mongoose);
-  const lanes = createChannelLaneModel(mongoose);
-  const filter = { tenantId, 'principal.userId': owner.userId };
-  await lanes.deleteMany({ tenantId, userId: owner.userId });
-  await runs.deleteMany(filter);
+  await eraseOwnedChannelRuns(mongoose, owner, anchor.pending ?? [], batchSize);
   const channels = createAgentChannelModel(mongoose);
   await createIndexesWithRetry(channels);
   const partition = owner.tenantId || { $in: [null, ''] };
