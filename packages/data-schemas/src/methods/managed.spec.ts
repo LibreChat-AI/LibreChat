@@ -1030,6 +1030,13 @@ describe('managed target allocation on real storage', () => {
       expect(await f.storage.acknowledgeCheckpointErasure(f.record, proof)).toBe(true);
       // An idempotent late closer preserves the physical erasure acknowledgment.
       expect(await checkpoint.settle()).toBe(true);
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      expect(
+        await f.storage.acknowledgeExecutionRelease(f.record, { ...proof, ownerId: randomUUID() }),
+      ).toBe(false);
+      expect(await f.storage.acknowledgeExecutionRelease(f.record, proof)).toBe(true);
       await eraseResponseRecords(db, f.input);
       expect(
         await includeManagedAllocations(f.model.exists(responseRootFilter(db, f.reference))),
@@ -1096,6 +1103,12 @@ describe('managed target allocation on real storage', () => {
       ).toBeNull();
       expect(await pinManagedTarget(db, late, publication.parentId)).toBe(false);
       expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      const proof = await f.storage.readExecutionProof(f.record);
+      if (!proof) throw new Error('Provider drain proof missing');
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      expect(await f.storage.acknowledgeExecutionRelease(f.record, proof)).toBe(true);
       await eraseResponseRecords(db, f.input);
       expect(
         await includeManagedAllocations(f.model.exists(responseRootFilter(db, f.reference))),

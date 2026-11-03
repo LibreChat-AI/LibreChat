@@ -487,6 +487,15 @@ export function createResponseExecutionRuntime(
               return;
             }
           }
+          if (
+            current &&
+            !executionEnrolled &&
+            current.generationCreatedAt == null &&
+            ['completed', 'failed', 'cancelled', 'incomplete'].includes(current.status)
+          ) {
+            await completion!.finish(current);
+            return;
+          }
           if (!current || current.generationCreatedAt !== execution.createdAt)
             throw new Error('Background response settlement identity changed');
           if (['completed', 'failed', 'cancelled', 'incomplete'].includes(current.status)) {
@@ -495,8 +504,6 @@ export function createResponseExecutionRuntime(
           }
           if (current.pendingTerminal || current.preparedTerminal) {
             admission.record = await completion!.finish(current);
-            if (admission.record.preparedTerminal || admission.record.pendingTerminal)
-              throw new Error('Background response terminal publication is pending');
             return;
           }
           // Normal manager teardown aborts the local signal too; only durable outcome/intent classifies Stop.

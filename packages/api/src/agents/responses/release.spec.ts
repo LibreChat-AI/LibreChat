@@ -53,6 +53,25 @@ afterEach(async () => {
   jest.restoreAllMocks();
 });
 
+async function publishTerminal(record: StoredResponseRecord, receipt: ResponseTerminalReceipt) {
+  const current = (await storage.read(record, record.responseId))!;
+  const staged = await storage.stageTerminal(
+    current,
+    current.responseId,
+    { execution: current },
+    receipt,
+  );
+  if (!staged.ok) throw new Error('Fixture terminal stage failed');
+  const finished = await storage.finishTerminal(
+    staged.record,
+    record.responseId,
+    staged.record.revision,
+    receipt,
+  );
+  if (!finished.ok) throw new Error('Fixture terminal publication failed');
+  return finished.record;
+}
+
 async function fixture(phase: 'running' | 'terminal' | 'drained' = 'drained') {
   const responseId = createManagedMessageId();
   const conversationId = createManagedConversationId();
@@ -106,6 +125,7 @@ async function fixture(phase: 'running' | 'terminal' | 'drained' = 'drained') {
   };
   if (phase !== 'running')
     expect((await jobs.getJob(responseId))?.metadata.terminalPersistencePending).toBe(true);
+  if (phase === 'drained') await publishTerminal(record, receipt);
   return { record, receipt, release: createResponseExecutionRelease(jobs, storage) };
 }
 
@@ -130,6 +150,7 @@ it('confirms a prepared result only after the exact persisted provider outcome a
     expect((await jobs.getJob(f.record.responseId))?.metadata.terminalPersistencePending).toBe(
       true,
     );
+    await publishTerminal(f.record, f.receipt);
     await f.release(f.record, f.receipt);
     expect(await confirm(f.record, f.receipt)).toBe('complete');
   }));
@@ -257,7 +278,7 @@ it('does not substitute a drained transient job for a missing physical Root', ()
       await createResponseExecutionConfirmation(storage, jobs)(f.record, f.receipt),
     ).toBeNull();
     await expect(f.release(f.record, f.receipt)).rejects.toThrow(
-      'durable execution proof is unavailable',
+      'durable release authority is unavailable',
     );
     const retire = createResponseRetirement({ storage, jobs });
     await expect(retire(f.record, f.record.responseId, f.record)).rejects.toThrow(
@@ -470,7 +491,7 @@ it('imports matching transient drain without clearing an unresolved checkpoint',
     expect(await confirm(f.record, f.receipt)).toBeNull();
     expect(await storage.readExecutionProof(f.record)).toBeNull();
     await expect(f.release(f.record, f.receipt)).rejects.toThrow(
-      'durable execution proof is unavailable',
+      'durable release authority is unavailable',
     );
     expect(await writer.settle()).toBe(true);
     expect(await confirm(f.record, f.receipt)).toBe('complete');
@@ -532,3 +553,54 @@ it('releases a bound unused job when retirement fences its root before enrollmen
       await mongoose.models.StoredResponse.collection.countDocuments({ ...owner, responseId }),
     ).toBe(0);
   }));
+
+it('requires canonical terminal publication before releasing a caller-projected terminal result', () =>
+  scope(async () => {
+    const f = await fixture('terminal');
+    await jobs.markProviderExecutionDrained(
+      f.record.responseId,
+      f.receipt.generationCreatedAt,
+      f.receipt.providerExecutionId,
+      true,
+    );
+    await storage.settleExecution(responseReference(f.record), f.receipt, 'complete');
+    const release = jest.spyOn(jobs, 'finishProviderTerminalPersistence');
+    await expect(f.release(f.record, f.receipt)).rejects.toThrow(
+      'release authority is unavailable',
+    );
+    await expect(
+      f.release({ ...f.record, retirement: 'owner_deleted' }, f.receipt),
+    ).rejects.toThrow('release authority is unavailable');
+    expect(release).not.toHaveBeenCalled();
+    await publishTerminal(f.record, f.receipt);
+    await f.release(f.record, f.receipt);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(await storage.readExecutionProof(f.record)).toMatchObject({
+      releaseReady: true,
+      releaseAcknowledged: true,
+    });
+  }));
+
+it.each(['before_commit', 'after_commit'] as const)(
+  'recovers a lost durable release acknowledgement %s after actual job cleanup',
+  (failure) =>
+    scope(async () => {
+      const f = await fixture();
+      const acknowledge = storage.acknowledgeExecutionRelease.bind(storage);
+      const ack = jest
+        .spyOn(storage, 'acknowledgeExecutionRelease')
+        .mockImplementationOnce(async (...args) => {
+          if (failure === 'after_commit') expect(await acknowledge(...args)).toBe(true);
+          throw new Error('Injected durable release acknowledgement loss');
+        });
+      await expect(f.release(f.record, f.receipt)).rejects.toThrow('acknowledgement loss');
+      expect(await jobs.getJob(f.record.responseId)).toBeUndefined();
+      ack.mockRestore();
+      await expect(
+        createResponseExecutionRelease(jobs, createResponseStorage(mongoose))(f.record, f.receipt),
+      ).resolves.toBeUndefined();
+      expect(await storage.readExecutionProof(f.record)).toMatchObject({
+        releaseAcknowledged: true,
+      });
+    }),
+);

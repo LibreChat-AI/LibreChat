@@ -183,11 +183,18 @@ function responseExecutionFilter(
 }
 
 export interface ResponseExecutionProof extends ResponseExecutionBinding {
+  /** Actual canonical disposition permits releasing the transient provider barrier. */
+  releaseReady?: boolean;
+  releaseAcknowledged?: boolean;
   outcome?: ResponseProviderExecution['outcome'];
   checkpointNamespace?: string;
   checkpointConfigJSON?: string;
   checkpointWriterId?: string;
 }
+
+export type ResponseReleaseAuthority =
+  | { kind: 'unused'; releaseAcknowledged: boolean }
+  | { kind: 'provider'; proof: ResponseExecutionProof };
 
 export interface ResponseStorage {
   readConversationTarget(
@@ -205,6 +212,19 @@ export interface ResponseStorage {
   ): Promise<ResponseMutationResult>;
   /** Positive proof on the exact retained root; missing jobs are never substituted. */
   readExecutionProof(identity: ResponseCleanupIdentity): Promise<ResponseExecutionProof | null>;
+  readReleaseAuthority(identity: ResponseCleanupIdentity): Promise<ResponseReleaseAuthority | null>;
+  finishUnstartedExecution(
+    record: StoredResponseRecord,
+    binding: ResponseExecutionBinding & {
+      outcome: NonNullable<ResponseProviderExecution['outcome']>;
+    },
+    status: 'failed' | 'cancelled',
+    responseJSON: string,
+  ): Promise<ResponseMutationResult>;
+  acknowledgeExecutionRelease(
+    identity: ResponseCleanupIdentity,
+    proof?: ResponseExecutionProof,
+  ): Promise<boolean>;
   /** Fence enrollment and scrub private data before using provider proof for physical cleanup. */
   retireExecution(identity: ResponseCleanupIdentity): Promise<boolean>;
   finishErasure(identity: ResponseCleanupIdentity): Promise<boolean>;
@@ -274,10 +294,9 @@ export interface ResponseStorage {
   ): Promise<ResponseMutationResult>;
   reserve(input: ResponseReservation): Promise<ResponseReservationResult>;
   /** SYSTEM metadata scan only; request/answer/key material never crosses this boundary. */
-  listPendingDispatches(
+  listRecoveryCandidates(
     cursor: string | undefined,
     limit: number,
-    includeResume: boolean,
   ): Promise<{
     responses: Array<
       Pick<StoredResponseRecord, 'userId' | 'tenantId' | 'responseId' | 'storageTarget'>
@@ -392,6 +411,48 @@ export function createResponseStorage(
       ? conflict
       : result;
   }
+  async function readExecutionProof(
+    identity: ResponseCleanupIdentity,
+  ): Promise<ResponseExecutionProof | null> {
+    if (!identity.storageTarget || identity.generationCreatedAt == null) return null;
+    const record = await includeManagedAllocations(
+      model
+        .findOne({
+          ...responseRootFilter(mongoose, {
+            ...identity,
+            target: identity.storageTarget,
+          }),
+          agentId: identity.agentId,
+          conversationId: identity.conversationId,
+          generationCreatedAt: identity.generationCreatedAt,
+          'providerExecution.drained': true,
+          $or: [{ checkpoint: { $exists: false } }, { 'checkpoint.state': 'settled' }],
+        })
+        .select(
+          'generationCreatedAt status retiredAt releaseAcknowledged +providerExecution +checkpoint',
+        )
+        .lean(),
+    );
+    if (!record?.providerExecution || record.generationCreatedAt == null) return null;
+    return {
+      generationCreatedAt: record.generationCreatedAt,
+      releaseReady:
+        (record.retiredAt != null ||
+          ['completed', 'failed', 'incomplete', 'cancelled'].includes(record.status)) &&
+        (!record.checkpoint || record.checkpoint.erased === true),
+      releaseAcknowledged: record.releaseAcknowledged === true,
+      providerExecutionId: record.providerExecution.id,
+      ...(record.providerExecution.ownerId ? { ownerId: record.providerExecution.ownerId } : {}),
+      ...(record.providerExecution.outcome ? { outcome: record.providerExecution.outcome } : {}),
+      ...(record.checkpoint
+        ? {
+            checkpointWriterId: record.checkpoint.writerId,
+            checkpointNamespace: record.checkpoint.namespace,
+            checkpointConfigJSON: record.checkpoint.configJSON,
+          }
+        : {}),
+    };
+  }
   return {
     async readConversationTarget(owner, conversationId) {
       ownerScope(owner);
@@ -461,39 +522,119 @@ export function createResponseStorage(
       );
       return result.matchedCount === 1;
     },
-    async readExecutionProof(identity) {
-      if (!identity.storageTarget || identity.generationCreatedAt == null) return null;
-      const record = await includeManagedAllocations(
-        model
-          .findOne({
-            ...responseRootFilter(mongoose, {
-              ...identity,
-              target: identity.storageTarget,
-            }),
-            agentId: identity.agentId,
-            conversationId: identity.conversationId,
-            generationCreatedAt: identity.generationCreatedAt,
-            'providerExecution.drained': true,
-            $or: [{ checkpoint: { $exists: false } }, { 'checkpoint.state': 'settled' }],
-          })
-          .select('generationCreatedAt +providerExecution +checkpoint')
-          .lean(),
+    async finishUnstartedExecution(record, binding, status, responseJSON) {
+      assertResponseExecutionBinding(binding);
+      if (!['complete', 'error', 'aborted'].includes(binding.outcome))
+        throw new TypeError('Invalid unstarted Response outcome');
+      return mutateInOpenScope<ResponseMutationResult>(
+        record,
+        record.responseId,
+        async () => {
+          const saved = await model
+            .findOneAndUpdate(
+              {
+                ...scope(record),
+                revision: record.revision,
+                status: 'queued',
+                generationCreatedAt: { $exists: false },
+                providerExecution: { $exists: false },
+                cancellationRequestedAt: record.cancellationRequestedAt ?? { $exists: false },
+                pendingTerminal: { $exists: false },
+                preparedTerminal: { $exists: false },
+              },
+              {
+                $set: {
+                  generationCreatedAt: binding.generationCreatedAt,
+                  providerExecution: {
+                    id: binding.providerExecutionId,
+                    ...(binding.ownerId ? { ownerId: binding.ownerId } : {}),
+                    drained: true,
+                    outcome: binding.outcome,
+                  },
+                  status,
+                  responseJSON,
+                },
+                $inc: { revision: 1 },
+              },
+              { new: true, upsert: false },
+            )
+            .lean();
+          return saved ? { ok: true, record: saved } : { ok: false, code: 'response_conflict' };
+        },
+        { ok: false, code: 'response_conflict' },
       );
-      if (!record?.providerExecution || record.generationCreatedAt == null) return null;
-      return {
-        generationCreatedAt: record.generationCreatedAt,
-        providerExecutionId: record.providerExecution.id,
-        ...(record.providerExecution.ownerId ? { ownerId: record.providerExecution.ownerId } : {}),
-        ...(record.providerExecution.outcome ? { outcome: record.providerExecution.outcome } : {}),
-        ...(record.checkpoint
-          ? {
-              checkpointWriterId: record.checkpoint.writerId,
-              checkpointNamespace: record.checkpoint.namespace,
-              checkpointConfigJSON: record.checkpoint.configJSON,
-            }
-          : {}),
-      };
     },
+    async acknowledgeExecutionRelease(identity, proof) {
+      if (!identity.storageTarget) return false;
+      if (proof) assertResponseExecutionBinding(proof);
+      if (
+        (identity.generationCreatedAt == null) !== (proof == null) ||
+        (proof && identity.generationCreatedAt !== proof.generationCreatedAt)
+      )
+        return false;
+      const result = await model.updateOne(
+        {
+          ...responseRootFilter(mongoose, { ...identity, target: identity.storageTarget }),
+          agentId: identity.agentId,
+          conversationId: identity.conversationId,
+          $or: [
+            { retiredAt: { $exists: true } },
+            { status: { $in: ['completed', 'failed', 'incomplete', 'cancelled'] } },
+          ],
+          ...(proof
+            ? {
+                generationCreatedAt: proof.generationCreatedAt,
+                'providerExecution.id': proof.providerExecutionId,
+                'providerExecution.ownerId': proof.ownerId ?? { $exists: false },
+                'providerExecution.drained': true,
+                $and: [
+                  {
+                    $or: [
+                      { checkpoint: { $exists: false } },
+                      { 'checkpoint.state': 'settled', 'checkpoint.erased': true },
+                    ],
+                  },
+                ],
+              }
+            : {
+                generationCreatedAt: { $exists: false },
+                providerExecution: { $exists: false },
+                checkpoint: { $exists: false },
+              }),
+        },
+        { $set: { releaseAcknowledged: true } },
+        { upsert: false },
+      );
+      return result.matchedCount === 1;
+    },
+    async readReleaseAuthority(identity) {
+      if (!identity.storageTarget) return null;
+      if (identity.generationCreatedAt != null) {
+        const proof = await readExecutionProof(identity);
+        return proof?.releaseReady ? { kind: 'provider', proof } : null;
+      }
+      const record = await includeManagedAllocations(
+        model.findOne({
+          ...responseRootFilter(mongoose, { ...identity, target: identity.storageTarget }),
+          agentId: identity.agentId,
+          conversationId: identity.conversationId,
+          generationCreatedAt: { $exists: false },
+          providerExecution: { $exists: false },
+          checkpoint: { $exists: false },
+          $or: [
+            { retiredAt: { $exists: true } },
+            { status: { $in: ['completed', 'failed', 'incomplete', 'cancelled'] } },
+          ],
+        }),
+      )
+        .select('releaseAcknowledged')
+        .read('primary')
+        .lean();
+      return record
+        ? { kind: 'unused', releaseAcknowledged: record.releaseAcknowledged === true }
+        : null;
+    },
+    readExecutionProof,
     createCheckpointWriter: (reference, checkpoint) =>
       createResponseCheckpointStorage(mongoose, reference, checkpoint),
     async enrollExecution(current, binding, responseJSON) {
@@ -1083,7 +1224,7 @@ export function createResponseStorage(
         throw error;
       }
     },
-    async listPendingDispatches(cursor, limit, includeResume) {
+    async listRecoveryCandidates(cursor, limit) {
       if (getTenantId() !== SYSTEM_TENANT_ID)
         throw new Error('Response dispatch scan requires system context');
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
@@ -1091,16 +1232,24 @@ export function createResponseStorage(
       if (cursor != null && !/^[a-f\d]{24}$/i.test(cursor))
         throw new TypeError('Invalid response dispatch cursor');
       await ensureIndexes();
-      const pending: Record<string, unknown> = {
-        'dispatchOutbox.state': 'pending',
-        'dispatchOutbox.kind': { $in: includeResume ? ['create', 'resume'] : ['create'] },
-      };
-      const rows = await model
-        .find({
+      const rows = await includeManagedAllocations(
+        model.find({
           ...(cursor ? { _id: { $gt: new mongoose.Types.ObjectId(cursor) } } : {}),
-          $and: [activeExpirationFilter<StoredResponseRecord>()],
-          ...pending,
-        })
+          userId: { $exists: true },
+          storageTarget: { $exists: true },
+          '_managed.phase': { $in: ['published', 'retired'] },
+          $or: [
+            { status: { $in: ['queued', 'in_progress', 'requires_action', 'materializing'] } },
+            { retiredAt: { $exists: true } },
+            { expiredAt: { $lte: new Date() } },
+            { 'dispatchOutbox.state': 'pending' },
+            {
+              status: { $in: ['completed', 'failed', 'incomplete', 'cancelled'] },
+              releaseAcknowledged: { $ne: true },
+            },
+          ],
+        }),
+      )
         .select('_id tenantId userId responseId storageTarget')
         .sort({ _id: 1 })
         .limit(limit + 1)

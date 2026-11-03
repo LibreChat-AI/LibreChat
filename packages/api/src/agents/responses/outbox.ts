@@ -1,5 +1,5 @@
 import { runAsSystem, tenantStorage } from '@librechat/data-schemas';
-import type { ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
+import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { BackgroundResponseQueue } from './queue';
 
 const terminal = (record: StoredResponseRecord) =>
@@ -55,7 +55,8 @@ export function createResponseDispatchOutbox(deps: {
   create: Pick<BackgroundResponseQueue, 'enqueue' | 'deliveryKey'>;
   resume?: Pick<BackgroundResponseQueue, 'enqueue'>;
   authorize: (record: StoredResponseRecord) => Promise<boolean>;
-  retire: (record: StoredResponseRecord) => Promise<'stopped' | 'pending'>;
+  retire: (owner: ResponseOwner & { responseId: string }) => Promise<'stopped' | 'pending'>;
+  recover: (record: StoredResponseRecord) => Promise<StoredResponseRecord | null>;
   onError: (error: unknown) => void;
   isReady: () => boolean;
 }) {
@@ -63,11 +64,9 @@ export function createResponseDispatchOutbox(deps: {
   return {
     async recoverPending(limit: number, activity: { found: boolean }): Promise<number> {
       if (!deps.isReady()) return 0;
-      let page: Awaited<ReturnType<ResponseStorage['listPendingDispatches']>>;
+      let page: Awaited<ReturnType<ResponseStorage['listRecoveryCandidates']>>;
       try {
-        page = await runAsSystem(() =>
-          deps.storage.listPendingDispatches(cursor, limit, deps.resume != null),
-        );
+        page = await runAsSystem(() => deps.storage.listRecoveryCandidates(cursor, limit));
       } catch (error) {
         activity.found = true;
         report(deps.onError, error);
@@ -79,7 +78,20 @@ export function createResponseDispatchOutbox(deps: {
       for (const owner of page.responses) {
         await tenantStorage.run({ tenantId: owner.tenantId || undefined }, async () => {
           try {
-            const record = await deps.storage.read(owner, owner.responseId);
+            let record = await deps.storage.read(owner, owner.responseId);
+            if (!record) {
+              const identity = await deps.storage.readCleanupIdentity(owner, owner.responseId);
+              if (identity?.retirement && (await deps.retire(owner)) === 'stopped') progress++;
+              return;
+            }
+            if (
+              !terminal(record) &&
+              (record.cancellationRequestedAt != null || !(await deps.authorize(record)))
+            ) {
+              if ((await deps.retire(record)) === 'stopped') progress++;
+              return;
+            }
+            record = await deps.recover(record);
             if (!record) return;
             if (
               !record.dispatchOutbox ||
@@ -95,25 +107,6 @@ export function createResponseDispatchOutbox(deps: {
                 : (record.resume?.intentId ?? record.dispatchOutbox.id);
             if (record.dispatchOutbox.id !== tokenId || record.dispatchOutbox.state === 'settled')
               return;
-            if (
-              !terminal(record) &&
-              (record.cancellationRequestedAt != null || !(await deps.authorize(record)))
-            ) {
-              if ((await deps.retire(record)) !== 'stopped') return;
-              const current = await deps.storage.read(owner, owner.responseId);
-              if (!current || !terminal(current)) return;
-              if (
-                (
-                  await publishResponseDispatch(
-                    { storage: deps.storage, enqueue: async () => {}, onError: deps.onError },
-                    current,
-                    kind,
-                  )
-                ).settled
-              )
-                progress++;
-              return;
-            }
             const queue = kind === 'create' ? deps.create : deps.resume!;
             const result = await publishResponseDispatch(
               {

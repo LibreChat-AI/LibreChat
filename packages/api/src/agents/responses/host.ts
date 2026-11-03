@@ -38,6 +38,7 @@ import { resolveResponseContinuation } from './persistence';
 import { cleanupResponseCheckpoint } from './checkpoint';
 import { createResponseRetirement } from './retirement';
 import { createResponseDispatchOutbox } from './outbox';
+import { createResponseRecovery } from './maintenance';
 import { createResponseReview } from './review';
 import { responseTenantId } from './scope';
 
@@ -113,6 +114,12 @@ export function createBackgroundResponsesHost(
     releaseExecution: createResponseExecutionRelease(deps.jobs, deps.storage),
     confirmExecution: createResponseExecutionConfirmation(deps.storage, deps.jobs),
   });
+  const recover = createResponseRecovery({
+    storage: deps.storage,
+    jobs: deps.jobs,
+    completion,
+    now: deps.now,
+  });
   const retire = createResponseRetirement({
     storage: deps.storage,
     jobs: deps.jobs,
@@ -166,6 +173,7 @@ export function createBackgroundResponsesHost(
     resume: resumeQueue ?? (decisions ? { enqueue: decisions.enqueue } : undefined),
     authorize: (record) => authorize(record, record.agentId, record.sourceKeyId),
     retire: (record) => retire(record, record.responseId),
+    recover,
     onError: deps.onError,
   });
 

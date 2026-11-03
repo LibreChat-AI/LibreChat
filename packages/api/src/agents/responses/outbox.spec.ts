@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { createHash } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createResponseStorage,
@@ -6,13 +7,28 @@ import {
   runAsSystem,
   getTenantId,
   SYSTEM_TENANT_ID,
+  createManagedConversationId,
 } from '@librechat/data-schemas';
 import type { ResponseOwner, StoredResponseRecord, ResponseStorage } from '@librechat/data-schemas';
+import {
+  createResponseCompletion,
+  createResponseExecutionRelease,
+  createResponseExecutionConfirmation,
+} from './completion';
+import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
+import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import { cleanupResponseCheckpoint } from './checkpoint';
 import { createResponseDispatchOutbox } from './outbox';
 import { backgroundResponseDeliveryKey } from './queue';
+import { createResponseRetirement } from './retirement';
+import { createResponseRecovery } from './maintenance';
 
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
+let jobs: GenerationJobManagerClass;
+const managedId = (label: string) =>
+  'resp_d_' + createHash('sha256').update(label).digest('hex').slice(0, 32);
 const owner: ResponseOwner = { userId: 'owner', tenantId: 'named' };
 const scoped = <T>(principal: ResponseOwner, fn: () => Promise<T>) =>
   tenantStorage.run({ tenantId: principal.tenantId }, fn);
@@ -28,13 +44,24 @@ afterAll(async () => {
   await mongoose.disconnect();
   await mongo?.stop();
 });
-beforeEach(async () =>
-  runAsSystem(async () => {
+beforeEach(async () => {
+  jobs = new GenerationJobManagerClass();
+  jobs.configure({
+    jobStore: new InMemoryJobStore(),
+    eventTransport: new InMemoryEventTransport(),
+    cleanupOnComplete: false,
+  });
+  jobs.initialize();
+  await runAsSystem(async () => {
     await mongoose.models.StoredResponse.deleteMany({});
     await mongoose.models.ResponseScope?.deleteMany({});
-  }),
-);
-async function reserve(id: string, principal = owner, dispatch = true, background = true) {
+  });
+});
+afterEach(async () => {
+  await jobs.destroy();
+});
+async function reserve(label: string, principal = owner, dispatch = true, background = true) {
+  const id = managedId(label);
   const result = await scoped(principal, () =>
     storage.reserve({
       ...principal,
@@ -48,7 +75,7 @@ async function reserve(id: string, principal = owner, dispatch = true, backgroun
         background,
         store: true,
       }),
-      conversationId: id,
+      conversationId: createManagedConversationId(),
       parentMessageId: 'root',
       dispatch,
     }),
@@ -68,11 +95,11 @@ function fixture() {
   const contexts: Array<{ kind: string; tenantId?: string }> = [];
   const proxy = new Proxy(storage, {
     get(target, property, receiver) {
-      if (property === 'listPendingDispatches')
-        return async (...args: Parameters<ResponseStorage['listPendingDispatches']>) => {
+      if (property === 'listRecoveryCandidates')
+        return async (...args: Parameters<ResponseStorage['listRecoveryCandidates']>) => {
           contexts.push({ kind: 'metadata', tenantId: getTenantId() });
           expect(getTenantId()).toBe(SYSTEM_TENANT_ID);
-          return target.listPendingDispatches(...args);
+          return target.listRecoveryCandidates(...args);
         };
       if (property === 'read')
         return async (principal: ResponseOwner, id: string) => {
@@ -84,20 +111,26 @@ function fixture() {
       return Reflect.get(target, property, receiver);
     },
   });
-  const retire = jest.fn(async (record: StoredResponseRecord) => {
-    const cancelled = await storage.requestCancellation(record, record.responseId, Date.now());
-    if (!cancelled) return 'pending' as const;
-    const result = await storage.publish(record, record.responseId, cancelled.revision, {
-      status: 'cancelled',
-      responseJSON: '{"status":"cancelled"}',
-    });
-    return result.ok ? ('stopped' as const) : ('pending' as const);
+  const completion = createResponseCompletion({
+    storage,
+    cleanupCheckpoint: cleanupResponseCheckpoint,
+    confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+    releaseExecution: createResponseExecutionRelease(jobs, storage),
   });
+  const stop = createResponseRetirement({
+    storage,
+    jobs,
+    cleanupCheckpoint: cleanupResponseCheckpoint,
+  });
+  const retire = jest.fn((record: ResponseOwner & { responseId: string }) =>
+    stop(record, record.responseId),
+  );
   const onError = jest.fn();
   const deps = {
     storage: proxy,
     create: { enqueue, deliveryKey: backgroundResponseDeliveryKey },
-    authorize: async (record: StoredResponseRecord) => record.responseId !== 'denied',
+    authorize: async (record: StoredResponseRecord) => record.responseId !== managedId('denied'),
+    recover: createResponseRecovery({ storage, jobs, completion }),
     retire,
     onError,
     isReady: () => ready,
@@ -114,7 +147,7 @@ function fixture() {
       ready = value;
     },
     setFailure: (id?: string) => {
-      fail = id;
+      fail = id == null ? undefined : managedId(id);
     },
   };
 }
@@ -125,12 +158,9 @@ it('uses bounded pages and canonical tenant contexts without a failed first inte
   const f = fixture();
   f.setFailure('record-0');
   for (let i = 0; i < 5; i++) await f.outbox.recoverPending(1, { found: false });
-  expect([...f.published.values()].sort()).toEqual([
-    'record-1',
-    'record-2',
-    'record-3',
-    'record-4',
-  ]);
+  expect([...f.published.values()].sort()).toEqual(
+    ['record-1', 'record-2', 'record-3', 'record-4'].map(managedId).sort(),
+  );
   expect(f.onError).toHaveBeenCalledTimes(1);
   f.setFailure();
   await f.outbox.recoverPending(1, { found: false });
@@ -138,9 +168,12 @@ it('uses bounded pages and canonical tenant contexts without a failed first inte
   expect(new Set(f.contexts.filter((x) => x.kind === 'record').map((x) => x.tenantId))).toEqual(
     new Set(['named', undefined]),
   );
-  expect(
-    (await runAsSystem(() => storage.listPendingDispatches(undefined, 10, false))).responses,
-  ).toEqual([]);
+  const remaining = await runAsSystem(() => storage.listRecoveryCandidates(undefined, 10));
+  expect(remaining.responses).toHaveLength(5);
+  for (const record of remaining.responses)
+    expect(
+      (await scoped(record, () => storage.read(record, record.responseId)))?.dispatchOutbox?.state,
+    ).toBe('settled');
 });
 
 it('preserves immutable delivery identity under concurrent inline/recovery-style publishers', async () => {
@@ -171,17 +204,16 @@ it('retires denied or cancelled work and never executes expired or closed scopes
   await reserve('expired');
   await runAsSystem(() =>
     mongoose.models.StoredResponse.updateOne(
-      { responseId: 'expired' },
+      { responseId: managedId('expired') },
       { $set: { expiredAt: new Date(0) } },
     ),
   );
   const f = fixture();
   await f.outbox.recoverPending(10, { found: false });
   expect(f.enqueue).not.toHaveBeenCalled();
-  expect(f.retire.mock.calls.map(([record]) => record.responseId).sort()).toEqual([
-    'cancelled',
-    'denied',
-  ]);
+  expect(f.retire.mock.calls.map(([record]) => record.responseId).sort()).toEqual(
+    ['cancelled', 'denied', 'closed', 'expired'].map(managedId).sort(),
+  );
   expect(f.onError).not.toHaveBeenCalled();
 });
 
@@ -196,14 +228,14 @@ it('leaves unready publication untouched and ignores records without a dispatch 
   await f.outbox.recoverPending(5, { found: false });
   expect([...f.published.values()]).toEqual([]);
   expect(
-    (await scoped(owner, () => storage.read(owner, 'foreground')))?.dispatchOutbox,
+    (await scoped(owner, () => storage.read(owner, managedId('foreground'))))?.dispatchOutbox,
   ).toBeUndefined();
 });
 
 it('fails closed on unknown future dispatch formats', async () => {
   await reserve('future');
   await mongoose.models.StoredResponse.collection.updateOne(
-    { responseId: 'future' },
+    { responseId: managedId('future') },
     { $set: { dispatchOutbox: { kind: 'future', id: 'future', state: 'pending' } } },
   );
   const f = fixture();
@@ -211,7 +243,10 @@ it('fails closed on unknown future dispatch formats', async () => {
   expect(f.enqueue).not.toHaveBeenCalled();
   expect(
     await scoped(owner, () =>
-      storage.settleDispatch(owner, 'future', { kind: 'create', id: 'future' }),
+      storage.settleDispatch(owner, managedId('future'), {
+        kind: 'create',
+        id: managedId('future'),
+      }),
     ),
   ).toBe(false);
 });
@@ -302,7 +337,7 @@ it('settles a consumed resume after another pause without enqueueing it again', 
     ).toBe(true);
     const activity = { found: false };
     expect(await outbox.recoverPending(10, activity)).toBe(0);
-    expect(activity.found).toBe(false);
+    expect(activity.found).toBe(true);
     expect(
       (
         await storage.reserveResume(

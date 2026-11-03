@@ -12,7 +12,7 @@ import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { ResponseCheckpointIdentity } from './checkpoint';
 import { eraseResponseExecutionCheckpoint } from './checkpoint';
 import { projectCanonicalResponseTurn } from './turnProjection';
-import { matchesResponseRoot, responseTenantId } from './scope';
+import { matchesResponseJob, responseTenantId } from './scope';
 
 /** A retirement result carries cleanup authority only and must never render private output. */
 export interface ResponseCompletionRecord extends StoredResponseRecord {
@@ -83,14 +83,7 @@ async function readExecutionJob(
       ? record.resume.providerExecutionId
       : record.review?.providerExecutionId);
   if (
-    job.createdAt !== record.generationCreatedAt ||
-    !matchesResponseRoot(record, job.metadata) ||
-    job.metadata.userId !== record.userId ||
-    responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
-    job.metadata.agent_id !== record.agentId ||
-    job.metadata.endpoint !== 'responses' ||
-    job.metadata.responseMessageId !== record.responseId ||
-    job.metadata.conversationId !== record.conversationId ||
+    !matchesResponseJob(record, job) ||
     !job.metadata.providerExecutionId ||
     (expectedProvider != null && job.metadata.providerExecutionId !== expectedProvider) ||
     (receipt != null && job.metadata.providerExecutionOwnerId !== receipt.ownerId)
@@ -149,7 +142,7 @@ export function createResponseExecutionConfirmation(
 /** Release transient provider proof only after its canonical terminal result is durable. */
 export function createResponseExecutionRelease(
   jobs: Pick<GenerationJobManagerClass, 'getJob' | 'finishProviderTerminalPersistence'>,
-  storage: Pick<ResponseStorage, 'readExecutionProof'>,
+  storage: Pick<ResponseStorage, 'readReleaseAuthority' | 'acknowledgeExecutionRelease'>,
 ): (
   record: ExecutionReleaseIdentity,
   receipt?: Pick<ResponseTerminalReceipt, 'providerExecutionId' | 'ownerId'>,
@@ -161,30 +154,61 @@ export function createResponseExecutionRelease(
       !(record.expiredAt && record.expiredAt.getTime() <= Date.now())
     )
       throw new Error('Response terminal publication is unavailable');
-    if (record.generationCreatedAt == null) return;
-    const durable = await storage.readExecutionProof(record);
-    if (!durable) throw new Error('Response durable execution proof is unavailable');
+    const authority = await storage.readReleaseAuthority(record);
+    if (!authority) throw new Error('Response durable release authority is unavailable');
+    if (authority.kind === 'unused') {
+      const job = await jobs.getJob(record.responseId);
+      if (!job && authority.releaseAcknowledged) return;
+      if (job) {
+        if (!matchesResponseJob(record, job))
+          throw new Error('Response terminal execution identity changed');
+        if (
+          !['complete', 'error', 'aborted'].includes(job.status) ||
+          job.metadata.providerDrained !== true
+        )
+          return;
+        if (job.metadata.providerExecutionStartedId != null || !job.metadata.providerExecutionId)
+          throw new Error('Response unused execution started outside its canonical fence');
+        if (
+          !(await jobs.finishProviderTerminalPersistence(
+            record.responseId,
+            job.createdAt,
+            job.metadata.providerExecutionId,
+            job.metadata.providerExecutionOwnerId,
+          ))
+        )
+          throw new Error('Response terminal execution release is unavailable');
+      }
+      if (!(await storage.acknowledgeExecutionRelease(record)))
+        throw new Error('Response execution release acknowledgment conflicted');
+      return;
+    }
+    const durable = authority.proof;
     if (
       receipt &&
       (durable.providerExecutionId !== receipt.providerExecutionId ||
         durable.ownerId !== receipt.ownerId)
     )
       throw new Error('Response terminal execution identity changed');
+    if (durable.releaseAcknowledged) return;
     const proof = await readExecutionJob(jobs, record, durable);
-    if (!proof) return;
-    const { job, providerExecutionId } = proof;
-    if (
-      !['complete', 'error', 'aborted'].includes(job.status) ||
-      job.metadata.providerDrained !== true
-    )
-      throw new Error('Response terminal execution identity changed');
-    const released = await jobs.finishProviderTerminalPersistence(
-      record.responseId,
-      record.generationCreatedAt,
-      providerExecutionId,
-      receipt?.ownerId ?? job.metadata.providerExecutionOwnerId,
-    );
-    if (!released) throw new Error('Response terminal execution release is unavailable');
+    if (proof) {
+      const { job, providerExecutionId } = proof;
+      if (
+        !['complete', 'error', 'aborted'].includes(job.status) ||
+        job.metadata.providerDrained !== true
+      )
+        throw new Error('Response terminal execution identity changed');
+      const released = await jobs.finishProviderTerminalPersistence(
+        record.responseId,
+        durable.generationCreatedAt,
+        providerExecutionId,
+        receipt?.ownerId ?? job.metadata.providerExecutionOwnerId,
+      );
+      if (!released) throw new Error('Response terminal execution release is unavailable');
+    }
+    if (!(await storage.acknowledgeExecutionRelease(record, durable)))
+      throw new Error('Response execution release acknowledgment conflicted');
   };
 }
 

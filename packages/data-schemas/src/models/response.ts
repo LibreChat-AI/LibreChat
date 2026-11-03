@@ -123,6 +123,7 @@ export interface ResponseDispatchOutbox {
 }
 
 export interface StoredResponseRecord {
+  releaseAcknowledged?: boolean;
   storageTarget?: ManagedTarget<'response'>;
   conversationTarget?: CanonicalConversationTarget;
   providerExecution?: ResponseProviderExecution;
@@ -244,6 +245,7 @@ export function createStoredResponseModel(
         select: false,
       },
       retiredAt: Date,
+      releaseAcknowledged: Boolean,
       canonicalTargets: {
         type: [
           {
@@ -355,6 +357,8 @@ export function createStoredResponseModel(
   // Expiry hides payload immediately; the recovery owner retains this root until drain.
   schema.index({ expiredAt: 1, _id: 1 });
   schema.index({ 'dispatchOutbox.state': 1, _id: 1 });
+  schema.index({ retiredAt: 1, _id: 1 });
+  schema.index({ releaseAcknowledged: 1, _id: 1 });
   schema.index({ status: 1, _id: 1 });
   schema.index({ 'resume.state': 1, status: 1, _id: 1 });
   schema.index({ tenantId: 1, userId: 1, requestKey: 1 }, { unique: true });

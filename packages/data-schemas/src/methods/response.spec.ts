@@ -2201,7 +2201,7 @@ it('atomically reserves a dispatch outbox and exposes only bounded maintenance i
       ok: true,
       record: { dispatchOutbox: { kind: 'create', id: oneId, state: 'pending' } },
     });
-    const page = await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false));
+    const page = await runAsSystem(() => storage.listRecoveryCandidates(undefined, 1));
     expect(page.responses).toEqual([
       {
         ...owner,
@@ -2214,8 +2214,10 @@ it('atomically reserves a dispatch outbox and exposes only bounded maintenance i
     expect(await storage.settleDispatch(owner, oneId, { kind: 'create', id: 'wrong' })).toBe(false);
     expect(await storage.settleDispatch(owner, oneId, { kind: 'create', id: oneId })).toBe(true);
     expect(
-      (await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false))).responses,
-    ).toEqual([]);
+      (await runAsSystem(() => storage.listRecoveryCandidates(undefined, 1))).responses.map(
+        (row) => row.responseId,
+      ),
+    ).toEqual([oneId]);
   }));
 
 it('fences late create acknowledgements from a newer resume and does not bump execution revision', () =>
@@ -2233,14 +2235,16 @@ it('fences late create acknowledgements from a newer resume and does not bump ex
     );
     expect((await storage.read(owner, oneId))!.revision).toBe(before.revision);
     expect(
-      (await runAsSystem(() => storage.listPendingDispatches(undefined, 10, true))).responses,
-    ).toEqual([]);
+      (await runAsSystem(() => storage.listRecoveryCandidates(undefined, 10))).responses.map(
+        (row) => row.responseId,
+      ),
+    ).toEqual([oneId]);
   }));
 
 it('recovers pending dispatch tokens without acknowledging another tenant or closed scope', () =>
   scoped(async () => {
     await storage.reserve(reservation({ dispatch: true }));
-    const page = await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false));
+    const page = await runAsSystem(() => storage.listRecoveryCandidates(undefined, 1));
     expect(page.responses).toEqual([
       {
         ...owner,
@@ -2248,13 +2252,13 @@ it('recovers pending dispatch tokens without acknowledging another tenant or clo
         storageTarget: (await storage.read(owner, oneId))?.storageTarget,
       },
     ]);
-    await expect(storage.listPendingDispatches(undefined, 1, false)).rejects.toThrow('system');
-    await expect(
-      runAsSystem(() => storage.listPendingDispatches(undefined, 0, false)),
-    ).rejects.toThrow('page');
-    await expect(
-      runAsSystem(() => storage.listPendingDispatches('invalid', 1, false)),
-    ).rejects.toThrow('cursor');
+    await expect(storage.listRecoveryCandidates(undefined, 1)).rejects.toThrow('system');
+    await expect(runAsSystem(() => storage.listRecoveryCandidates(undefined, 0))).rejects.toThrow(
+      'page',
+    );
+    await expect(runAsSystem(() => storage.listRecoveryCandidates('invalid', 1))).rejects.toThrow(
+      'cursor',
+    );
     await closeResponseScopes(mongoose, owner, ['conversation-one']);
     expect(await storage.settleDispatch(owner, oneId, { kind: 'create', id: oneId })).toBe(false);
   }));
@@ -2268,17 +2272,16 @@ it('does not repair an inconsistent resume marker from an earlier create', () =>
       { $set: { dispatchOutbox: { kind: 'create', id: oneId, state: 'settled' } } },
     );
     expect(
-      (await runAsSystem(() => storage.listPendingDispatches(undefined, 10, false))).responses,
-    ).toEqual([]);
-    expect(
-      (await runAsSystem(() => storage.listPendingDispatches(undefined, 10, true))).responses,
-    ).toEqual([]);
+      (await runAsSystem(() => storage.listRecoveryCandidates(undefined, 10))).responses.map(
+        (row) => row.responseId,
+      ),
+    ).toEqual([oneId]);
     expect(await storage.settleDispatch(owner, oneId, { kind: 'resume', id: 'intent-one' })).toBe(
       false,
     );
   }));
 
-it('bounds metadata pages across named and default tenants and omits expired requests', async () => {
+it('bounds metadata pages across named and default tenants including expired cleanup authority', async () => {
   for (let i = 0; i < 4; i++) {
     const tenantId = i % 2 ? undefined : owner.tenantId;
     await tenantStorage.run({ tenantId }, () =>
@@ -2292,26 +2295,33 @@ it('bounds metadata pages across named and default tenants and omits expired req
       ),
     );
   }
+  const expiredId = createManagedMessageId();
   await scoped(() =>
     storage.reserve(
       reservation({
-        responseId: createManagedMessageId(),
+        responseId: expiredId,
         requestKey: 'expired',
         conversationId: 'expired-conversation',
-        expiredAt: new Date(0),
+        expiredAt: new Date(Date.now() + 60000),
         dispatch: true,
       }),
+    ),
+  );
+  await scoped(() =>
+    mongoose.models.StoredResponse.updateOne(
+      { responseId: expiredId },
+      { $set: { expiredAt: new Date(0) } },
     ),
   );
   const found: Array<{ tenantId?: string; userId: string; responseId: string }> = [];
   let cursor: string | undefined;
   do {
-    const page = await runAsSystem(() => storage.listPendingDispatches(cursor, 1, false));
+    const page = await runAsSystem(() => storage.listRecoveryCandidates(cursor, 1));
     expect(page.responses.length).toBeLessThanOrEqual(1);
     found.push(...page.responses);
     cursor = page.next;
   } while (cursor);
-  expect(found.map((row) => row.responseId).sort()).toEqual([...pageResponseIds].sort());
+  expect(found.map((row) => row.responseId).sort()).toEqual([...pageResponseIds, expiredId].sort());
   expect(new Set(found.map((row) => row.tenantId))).toEqual(new Set([undefined, owner.tenantId]));
 });
 
@@ -2334,7 +2344,7 @@ it('does not adopt a replacement root through an earlier maintenance page', () =
   scoped(async () => {
     const first = await storage.reserve({ ...reservation(), dispatch: true });
     if (!first.ok) throw new Error('Reservation failed');
-    const page = await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false));
+    const page = await runAsSystem(() => storage.listRecoveryCandidates(undefined, 1));
     expect(page.responses[0]?.storageTarget).toEqual(first.record.storageTarget);
     await mongoose.models.StoredResponse.deleteOne({ responseId: oneId });
     const replacement = await storage.reserve({ ...reservation(), dispatch: true });

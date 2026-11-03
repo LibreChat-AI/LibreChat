@@ -92,6 +92,7 @@ export async function finishResponseErasure(
       { generationCreatedAt: { $exists: false } },
       {
         'providerExecution.drained': true,
+        releaseAcknowledged: true,
         $or: [
           { checkpoint: { $exists: false } },
           { 'checkpoint.state': 'settled', 'checkpoint.erased': true },

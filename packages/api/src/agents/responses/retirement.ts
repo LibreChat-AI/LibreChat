@@ -239,7 +239,7 @@ export function createResponseRetirement(
         responseJSON: JSON.stringify(response),
       });
       // This CAS beats enrollment publication, which must succeed before provider startup.
-      if (cancelled.ok) return 'stopped';
+      if (cancelled.ok) return recoverState(cancelled.record);
       record = await deps.storage.read(owner, responseId);
       if (!record) {
         const retired = await finishRetired(owner, responseId, false, retained);
