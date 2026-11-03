@@ -79,11 +79,11 @@ jobs:
       github.ref == 'refs/heads/dev' &&
       (github.event_name != 'push' || vars.CODEGRAPH_E2E_VOTE_MIN_HOURS == '' || vars.CODEGRAPH_E2E_VOTE_MIN_HOURS == '0')
     runs-on: ubuntu-latest
-    # Sized from e2e/timings.mock.json: 6,151 recorded seconds over 10 shards plans ~10.3 min
-    # of tests per shard. PR CI's memory shards (same plan, same workers: 1) ran their test
-    # step in 8.3-16.5 min on 2026-10-21/22, up to 1.6x the plan, and the single vote job ran
+    # Sized from e2e/timings.mock.json: 8,033 recorded seconds over 10 shards plans ~13.4 min
+    # of tests per shard. Scored against two held-out PR runs of 2026-11-03 (same plan, same
+    # workers: 1), the slowest shard measured 14.2-14.5 min, and the single vote job ran
     # ~7.7 s per test (17 min for a tenth of 1,321). VOTE_TEST_MINUTES gives the tests 28 min
-    # (2.7x the plan); the job adds setup (about 2.5 min with npm ci, 70 s of it) and margin.
+    # (2.1x the plan); the job adds setup (about 2.5 min with npm ci, 70 s of it) and margin.
     timeout-minutes: 40
     # Separate runners isolate each shard's user, MongoDB and fixture state. Keep workers: 1
     # in Playwright; shared-user cleanup is not worker-safe.
