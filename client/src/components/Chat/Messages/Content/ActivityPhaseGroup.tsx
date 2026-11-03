@@ -37,6 +37,7 @@ import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { getActivityLabelText } from '~/utils/activityLabels';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { MessageSurfaceContext } from '../ui/surface';
+import { HeaderActionSlotContext } from './slot';
 import { StackedToolIcons } from './ToolOutput';
 import { getSourceDomains } from './sources';
 import { mapAttachments } from '~/utils/map';
@@ -500,6 +501,7 @@ export default function ActivityPhaseGroup({
 
   /** One call and nothing else has no tree to draw, so it lays out like the
    *  same call without a title: no rail, no indent. */
+  const [actionSlot, setActionSlot] = useState<HTMLSpanElement | null>(null);
   const soleCall =
     toolCount === 1 && !outcomeParts?.some((part) => part?.type === ContentTypes.THINK);
 
@@ -795,6 +797,7 @@ export default function ActivityPhaseGroup({
             />
           </button>
           <FailedRevealPill count={failedCount} total={toolCount} onReveal={handleRevealFailed} />
+          <span ref={setActionSlot} className="flex shrink-0 items-center empty:hidden" />
         </div>
       </div>
       <div
@@ -814,11 +817,13 @@ export default function ActivityPhaseGroup({
               <FoldRail hover={railHover} expanded={isExpanded} onCollapse={handleRailCollapse} />
             )}
             <FoldHeaderContext.Provider value={railScope}>
-              <FailedRevealContext.Provider value={revealValue}>
-                <GeneratedToolLabelContext.Provider value={toolCount === 1 && label.length > 0}>
-                  {children}
-                </GeneratedToolLabelContext.Provider>
-              </FailedRevealContext.Provider>
+              <HeaderActionSlotContext.Provider value={actionSlot}>
+                <FailedRevealContext.Provider value={revealValue}>
+                  <GeneratedToolLabelContext.Provider value={toolCount === 1 && label.length > 0}>
+                    {children}
+                  </GeneratedToolLabelContext.Provider>
+                </FailedRevealContext.Provider>
+              </HeaderActionSlotContext.Provider>
             </FoldHeaderContext.Provider>
           </div>
         )}

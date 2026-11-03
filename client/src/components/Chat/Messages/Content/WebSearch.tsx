@@ -1,4 +1,5 @@
 import { useMemo, useState, useContext } from 'react';
+import { createPortal } from 'react-dom';
 import { Tools } from 'librechat-data-provider';
 import { parseJsonField } from '@librechat/chat';
 import { Globe, ChevronDown, Info } from 'lucide-react';
@@ -32,6 +33,7 @@ import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { isError } from './ToolOutput/OutputRenderer';
 import { useToolPreparation } from './preparation';
+import { HeaderActionSlotContext } from './slot';
 import { useSearchContext } from '~/Providers';
 import SearchVerticals from './verticals';
 import ToolCall from './ToolCall';
@@ -209,6 +211,7 @@ export default function WebSearch({
   const progressText = preparationText ?? intent ?? genericProgressText;
 
   const generatedLabel = useContext(GeneratedToolLabelContext);
+  const headerSlot = useContext(HeaderActionSlotContext);
   const bare = generatedLabel && complete && !error && !cancelled && allSources.length > 0;
   const rowRef = useRowHandoff(bare);
   const sourceCount = allSources.length;
@@ -255,6 +258,8 @@ export default function WebSearch({
     const query = parseJsonField(args, 'query');
     const hasDetails = !!query || !!answerBox;
 
+    /** A generated title replaced the row, so its action moves to the title line. */
+    const inHeader = bare && headerSlot != null;
     const details = (
       <HoverCard openDelay={50} open={showDetails} onOpenChange={setShowDetails}>
         {/* Composed through `asChild` so the shared Button owns the
@@ -266,9 +271,10 @@ export default function WebSearch({
             variant="quiet"
             size="icon"
             className={cn(
-              'ms-auto size-auto cursor-help rounded-md p-1 opacity-0',
-              'group-focus-within/websearch:opacity-100 group-hover/websearch:opacity-100',
-              'focus-visible:opacity-100',
+              'ms-auto size-auto cursor-help rounded-md p-1',
+              /** On the title line it sits beside the always-visible chevron. */
+              !inHeader &&
+                'opacity-0 group-focus-within/websearch:opacity-100 group-hover/websearch:opacity-100 focus-visible:opacity-100',
             )}
             onFocus={() => setShowDetails(true)}
             onBlur={() => setShowDetails(false)}
@@ -359,6 +365,7 @@ export default function WebSearch({
             </Button>
           )}
           {hasDetails && !bare && details}
+          {hasDetails && inHeader && headerSlot && createPortal(details, headerSlot)}
         </div>
         {hasSourceData && (
           <div style={sourceExpandStyle} onTransitionEnd={handleTransitionEnd}>
@@ -370,19 +377,6 @@ export default function WebSearch({
                     'border-border-light mt-1.5 max-h-[17.5rem] overflow-y-auto rounded-lg border',
                   )}
                 >
-                  {/* With the row replaced by a generated title, the query and its
-                      details ride the panel's own header strip instead of
-                      floating over its edge. */}
-                  {bare && hasDetails && (
-                    <div className="bg-surface-secondary border-border-inset sticky top-0 z-[1] flex items-center gap-2 border-b px-3 py-1.5">
-                      {query && (
-                        <span className="text-text-secondary min-w-0 truncate text-xs">
-                          {query}
-                        </span>
-                      )}
-                      {details}
-                    </div>
-                  )}
                   {allSources.map((source, i) => {
                     const domain = getCleanDomain(source.link);
                     const snippet = 'snippet' in source ? source.snippet : undefined;

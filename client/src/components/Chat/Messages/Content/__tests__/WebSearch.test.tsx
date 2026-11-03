@@ -11,6 +11,7 @@ import type {
   ValidSource,
   PartMetadata,
 } from 'librechat-data-provider';
+import { HeaderActionSlotContext } from '../slot';
 import { FailedRevealContext } from '../reveal';
 import { SearchContext } from '~/Providers';
 import WebSearch from '../WebSearch';
@@ -625,5 +626,30 @@ describe('generated single-search label', () => {
   it('shows the source links directly', () => {
     search();
     expect(screen.getByRole('link', { name: /Example result/ })).toBeInTheDocument();
+  });
+  it('puts its details on the title line when the header offers a slot', () => {
+    const slot = document.createElement('span');
+    document.body.appendChild(slot);
+    render(
+      <RecoilRoot>
+        <SearchContext.Provider
+          value={{
+            searchResults: makeSearchResults({
+              0: { organic: [makeSource('https://example.com', 'Example result')] },
+            }),
+          }}
+        >
+          <HeaderActionSlotContext.Provider value={slot}>
+            <GeneratedToolLabelContext.Provider value>
+              <WebSearch initialProgress={1} isSubmitting={false} args={{ query: 'example' }} />
+            </GeneratedToolLabelContext.Provider>
+          </HeaderActionSlotContext.Provider>
+        </SearchContext.Provider>
+      </RecoilRoot>,
+    );
+    const details = screen.getByRole('button', { name: 'Search details' });
+    expect(slot).toContainElement(details);
+    expect(details).not.toHaveClass('opacity-0');
+    slot.remove();
   });
 });
