@@ -10,6 +10,9 @@ on:
       - 'scripts/typecheck.mts'
       - '.dockerignore'
       - 'docker-compose.channels.yml'
+      - 'docker-compose.yml'
+      - 'librechat.example.yaml'
+      - '.env.example'
       - '.github/workflows/channel-gateway.yml'
   push:
     branches: [dev]
@@ -21,6 +24,9 @@ on:
       - 'scripts/typecheck.mts'
       - '.dockerignore'
       - 'docker-compose.channels.yml'
+      - 'docker-compose.yml'
+      - 'librechat.example.yaml'
+      - '.env.example'
       - '.github/workflows/channel-gateway.yml'
   workflow_dispatch:
 
@@ -54,6 +60,11 @@ jobs:
         run: npm run test:ci --workspace @librechat/channel-gateway
       - name: Build gateway
         run: npm run build --workspace @librechat/channel-gateway
+      - name: Validate optional Compose setup
+        run: |
+          cp .env.example .env
+          cp librechat.example.yaml librechat.yaml
+          env UID=1000 GID=1000 docker compose --env-file .env -f docker-compose.yml -f docker-compose.channels.yml --profile channels config --quiet
       - name: Build standalone image
         run: docker build -f packages/channel-gateway/Dockerfile -t channel-gateway:ci .
       - name: Verify standalone image and fail-closed startup
