@@ -5,6 +5,7 @@ export * from './crypto';
 export * from './schema';
 export * from './utils';
 export { createModels } from './models';
+export { responseReceiptKey } from './utils/receipt';
 export { createResponseStorage, sameResponseTerminalReceipt } from './methods/response';
 export {
   ResponseErasurePendingError,

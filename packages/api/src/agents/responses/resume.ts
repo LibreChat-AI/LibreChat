@@ -289,6 +289,7 @@ export function createResponseResumeAdmission(deps: ResponseResumeAdmissionDepen
     const review = record?.review;
     if (
       !record ||
+      record.persistenceFailure != null ||
       record.pendingTerminal != null ||
       !intent ||
       !review ||

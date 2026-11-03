@@ -55,8 +55,9 @@ export async function materializeResponseTurn(
   writes: ResponseTurnWrites,
   getMCPAppMessageBudget?: () => Promise<number | undefined>,
   bounds: Partial<DurableStorageConfig> = {},
-): Promise<boolean> {
-  if (!record.storageTarget || !record.conversationTarget) return false;
+): Promise<{ ok: true } | { ok: false; code: 'response_conflict' | 'target_retired' }> {
+  if (!record.storageTarget || !record.conversationTarget)
+    return { ok: false, code: 'target_retired' };
   const target = record.conversationTarget;
   if (
     target.userId !== record.userId ||
@@ -70,7 +71,7 @@ export async function materializeResponseTurn(
       $and: [activeExpirationFilter()],
     })
     .read('primary');
-  if (!present) return false;
+  if (!present) return { ok: false, code: 'target_retired' };
   const ids: string[] = [];
   for (const message of writes.messages) {
     const published = await publishResponseTarget(
@@ -100,8 +101,9 @@ export async function materializeResponseTurn(
       },
       { ...bounds, expiredAt: writes.context.expiredAt },
     );
-    if (!published || published.value.messageId !== message.messageId || !published.value._id)
-      return false;
+    if (!published.ok) return published;
+    if (published.value.messageId !== message.messageId || !published.value._id)
+      throw new Error('Response canonical Message identity changed');
     ids.push(String(published.value._id));
   }
   const messages = createMessageMethods(mongoose);
@@ -113,10 +115,14 @@ export async function materializeResponseTurn(
     appendMessageIds: ids,
     context: 'Responses API - append confirmed canonical turn',
   });
-  return (
+  const appended =
     !!saved &&
     '_id' in saved &&
     String(saved._id) === target.id &&
-    saved.conversationId === record.conversationId
-  );
+    saved.conversationId === record.conversationId;
+  if (appended) return { ok: true };
+  const remaining = await createConversationModel(mongoose)
+    .exists({ ...canonicalConversationFilter(mongoose, target), $and: [activeExpirationFilter()] })
+    .read('primary');
+  return { ok: false, code: remaining ? 'response_conflict' : 'target_retired' };
 }

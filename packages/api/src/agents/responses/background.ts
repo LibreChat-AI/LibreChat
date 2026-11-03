@@ -107,7 +107,11 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
   }
 
   function hasTerminalWork(record: StoredResponseRecord): boolean {
-    return record.preparedTerminal != null || hasTerminalResult(record);
+    return (
+      record.persistenceFailure != null ||
+      record.preparedTerminal != null ||
+      hasTerminalResult(record)
+    );
   }
 
   async function canonicalView(record: StoredResponseRecord): Promise<Response | null> {

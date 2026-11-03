@@ -1,5 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
-import { responseReference, sameResponseTerminalReceipt } from '@librechat/data-schemas';
+import {
+  responseReference,
+  sameResponseTerminalReceipt,
+  responseReceiptKey,
+} from '@librechat/data-schemas';
 import type {
   ResponseStorage,
   StoredResponseRecord,
@@ -10,6 +14,7 @@ import type {
 } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { ResponseCheckpointIdentity } from './checkpoint';
+import { buildAggregatedResponse, createResponseAggregator } from './service';
 import { eraseResponseExecutionCheckpoint } from './checkpoint';
 import { projectCanonicalResponseTurn } from './turnProjection';
 import { matchesResponseJob, responseTenantId } from './scope';
@@ -337,8 +342,68 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       status: receipt.status,
     };
   }
+  function failureReceipt(record: StoredResponseRecord): ResponseTerminalReceipt {
+    const failure = record.persistenceFailure;
+    if (!failure) throw new Error('Response persistence failure is unavailable');
+    // The fallback must not copy an oversized request, prior view or immutable result.
+    const response = {
+      ...buildAggregatedResponse(
+        {
+          responseId: record.responseId,
+          model: record.agentId,
+          createdAt: Math.floor(record.createdAt.getTime() / 1000),
+        },
+        createResponseAggregator(),
+      ),
+      status: 'failed' as const,
+      output: [],
+      background: true,
+      store: true,
+      error: {
+        type: 'server_error' as const,
+        code: 'response_persistence_failed',
+        message: 'The Agent result could not be saved.',
+      },
+    };
+    return {
+      generationCreatedAt: failure.generationCreatedAt,
+      providerExecutionId: failure.providerExecutionId,
+      ...(failure.ownerId ? { ownerId: failure.ownerId } : {}),
+      status: 'failed',
+      responseJSON: JSON.stringify(response),
+    };
+  }
+  async function finishFailure(record: StoredResponseRecord): Promise<ResponseCompletionRecord> {
+    const receipt = failureReceipt(record);
+    if (terminal(record)) {
+      await deps.releaseExecution(record, receipt);
+      return record;
+    }
+    if ((await deps.confirmExecution(record, receipt)) == null) return record;
+    const proof = await deps.storage.readExecutionProof(record);
+    if (!proof) return record;
+    await eraseResponseExecutionCheckpoint(deps.storage, record, proof, deps.cleanupCheckpoint);
+    let current: StoredResponseRecord | null;
+    try {
+      const finished = await deps.storage.finishPersistenceFailure(record, receipt.responseJSON);
+      current = finished.ok ? finished.record : await deps.storage.read(record, record.responseId);
+    } catch (error) {
+      current = await deps.storage.read(record, record.responseId);
+      if (!current?.persistenceFailure || current.status !== 'failed') throw error;
+    }
+    if (!current) {
+      const retired = await discardRetired(record, receipt);
+      if (retired) return retired;
+      throw new Error('Response persistence failure journal is unavailable');
+    }
+    if (terminal(current)) await deps.releaseExecution(current, receipt);
+    return current;
+  }
   async function finish(record: StoredResponseRecord): Promise<ResponseCompletionRecord> {
-    const authority = record.pendingTerminal ?? record.preparedTerminal;
+    const authority =
+      record.pendingTerminal ??
+      record.preparedTerminal ??
+      (record.persistenceFailure ? failureReceipt(record) : undefined);
     if (authority) {
       const retired = await readRetirement(record, authority);
       if (retired) {
@@ -353,6 +418,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
         return retired;
       }
     }
+    if (record.persistenceFailure) return finishFailure(record);
     if (authority?.turnJSON != null && record.status !== 'materializing')
       throw new Error('Response private terminal phase is unavailable');
     const receipt = record.pendingTerminal;
@@ -405,6 +471,20 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
         receipt,
         projectCanonicalResponseTurn(record, receipt),
       );
+      if (!result.ok && result.code === 'target_retired') {
+        const failed = await deps.storage.recordPersistenceFailure(record, {
+          generationCreatedAt: receipt.generationCreatedAt,
+          providerExecutionId: receipt.providerExecutionId,
+          ...(receipt.ownerId ? { ownerId: receipt.ownerId } : {}),
+          code: 'target_retired',
+          receiptKey: responseReceiptKey(receipt),
+        });
+        const saved = failed.ok
+          ? failed.record
+          : await deps.storage.read(record, record.responseId);
+        if (!saved) throw new Error('Response persistence failure journal is unavailable');
+        return saved.persistenceFailure ? finish(saved) : saved;
+      }
       current = result.ok ? result.record : await deps.storage.read(record, record.responseId);
     } catch (error) {
       current = await deps.storage.read(record, record.responseId);

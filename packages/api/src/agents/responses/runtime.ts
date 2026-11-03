@@ -493,7 +493,7 @@ export function createResponseExecutionRuntime(
             await completion!.finish(current);
             return;
           }
-          if (current.pendingTerminal || current.preparedTerminal) {
+          if (current.persistenceFailure || current.pendingTerminal || current.preparedTerminal) {
             admission.record = await completion!.finish(current);
             return;
           }

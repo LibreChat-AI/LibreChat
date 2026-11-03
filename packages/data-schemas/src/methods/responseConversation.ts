@@ -176,7 +176,7 @@ export async function prepareResponseConversation(
     },
     { ...bounds, expiredAt: current.expiredAt },
   );
-  if (!published || !('_id' in published.value) || !published.value._id) return null;
+  if (!published.ok || !('_id' in published.value) || !published.value._id) return null;
   const target: CanonicalConversationTarget = {
     id: String(published.value._id),
     conversationId: current.conversationId,

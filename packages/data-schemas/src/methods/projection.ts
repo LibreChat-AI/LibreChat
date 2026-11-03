@@ -124,6 +124,7 @@ function receiptKey(intent: ResponseTargetIntent): string {
 function admission(intent: ResponseTargetIntent): FilterQuery<StoredResponseRecord> {
   const available = {
     retiredAt: { $exists: false },
+    persistenceFailure: { $exists: false },
     $and: [activeExpirationFilter<StoredResponseRecord>()],
   };
   if (intent.kind === 'message')
@@ -137,7 +138,11 @@ function admission(intent: ResponseTargetIntent): FilterQuery<StoredResponseReco
 }
 
 function eligible(parent: StoredResponseRecord, intent: ResponseTargetIntent): boolean {
-  if (parent.retiredAt != null || (parent.expiredAt && parent.expiredAt <= new Date()))
+  if (
+    parent.persistenceFailure ||
+    parent.retiredAt != null ||
+    (parent.expiredAt && parent.expiredAt <= new Date())
+  )
     return false;
   if (intent.kind === 'message')
     return (
@@ -230,9 +235,10 @@ export async function selectResponseTarget(
       retiredAt: 1,
       expiredAt: 1,
       cancellationRequestedAt: 1,
+      persistenceFailure: 1,
     })
     .lean();
-  if (!parent) return { ok: false, code: 'response_conflict' };
+  if (!parent || parent.persistenceFailure) return { ok: false, code: 'response_conflict' };
   const previous = selected(parent, intent);
   if (previous) {
     const current = result(intent, previous);
@@ -282,6 +288,7 @@ export async function selectResponseTarget(
       retiredAt: 1,
       expiredAt: 1,
       cancellationRequestedAt: 1,
+      persistenceFailure: 1,
     })
     .lean();
   if (updated)
@@ -315,6 +322,7 @@ export async function beginResponseTargetRegistration(
       retiredAt: 1,
       expiredAt: 1,
       cancellationRequestedAt: 1,
+      persistenceFailure: 1,
     })
     .lean();
   const current = parent && selected(parent, intent);
@@ -363,7 +371,7 @@ export async function retireResponseTarget(
   mongoose: typeof import('mongoose'),
   intent: ResponseTargetIntent,
   selection: ResponseCanonicalTarget,
-): Promise<ResponseTargetResult> {
+): Promise<Extract<ResponseTargetResult, { ok: false }>> {
   const filter = identity(mongoose, intent);
   const checked = result(intent, { ...selection, phase: 'selected' });
   if (!checked.ok) return checked;
@@ -457,6 +465,7 @@ export async function acknowledgeResponseTarget(
       retiredAt: 1,
       expiredAt: 1,
       cancellationRequestedAt: 1,
+      persistenceFailure: 1,
     })
     .lean();
   const current = parent && selected(parent, intent);
@@ -517,11 +526,14 @@ export async function publishResponseTarget<T>(
   intent: ResponseTargetIntent,
   write: (publication: ManagedPublication, expiredAt?: Date) => Promise<T | null | undefined>,
   options: { maxPendingTargetsPerScope?: number; expiredAt?: Date } = {},
-): Promise<{ value: T; publication: ManagedPublication } | null> {
+): Promise<
+  | { ok: true; value: T; publication: ManagedPublication }
+  | { ok: false; code: 'response_conflict' | 'target_retired' }
+> {
   const selected = await selectResponseTarget(mongoose, intent);
-  if (!selected.ok) return null;
+  if (!selected.ok) return selected;
   const started = await beginResponseTargetRegistration(mongoose, intent, selected.selection);
-  if (!started.ok) return null;
+  if (!started.ok) return started;
   const { publication } = started;
   const entry = {
     key: responseTargetRegistrationKey(publication),
@@ -535,7 +547,7 @@ export async function publishResponseTarget<T>(
     if (registered.status !== 'registered') {
       if (registered.status === 'closed')
         await retireResponseTarget(mongoose, intent, started.selection);
-      return null;
+      return { ok: false, code: 'response_conflict' };
     }
     if (registered.expiredAt && (!expiredAt || registered.expiredAt < expiredAt))
       expiredAt = registered.expiredAt;
@@ -548,7 +560,11 @@ export async function publishResponseTarget<T>(
         '_managed.phase': 'published',
       }),
     ).read('primary');
-    if (!published) return null;
+    if (!published) {
+      if (!(await targetExists(mongoose, started.selection)))
+        return retireResponseTarget(mongoose, intent, started.selection);
+      return { ok: false, code: 'response_conflict' };
+    }
   }
   const registered = await acknowledgeResponseTarget(
     mongoose,
@@ -556,23 +572,28 @@ export async function publishResponseTarget<T>(
     started.selection,
     'registered',
   );
-  if (!registered.ok) return null;
+  if (!registered.ok) return registered;
   if (expiredAt) {
-    if (expiredAt <= new Date()) return null;
+    if (expiredAt <= new Date()) return { ok: false, code: 'response_conflict' };
     // An idempotent canonical writer may return an already published row. Its
     // deadline still has to adopt a newly shortened discovery authority.
     await shortenExpiration(model, managedTargetFilter(mongoose, publication.target), expiredAt);
   }
   const value = await write(publication, expiredAt);
-  if (value == null) return null;
+  if (value == null) {
+    if (!(await targetExists(mongoose, registered.selection)))
+      return retireResponseTarget(mongoose, intent, registered.selection);
+    return { ok: false, code: 'response_conflict' };
+  }
   const published = await acknowledgeResponseTarget(
     mongoose,
     intent,
     registered.selection,
     'published',
   );
-  if (!published.ok) return null;
+  if (!published.ok) return published;
   for (const conversationId of [undefined, intent.conversationId])
-    if (!(await settleResponseTarget(mongoose, intent, conversationId, entry))) return null;
-  return { value, publication };
+    if (!(await settleResponseTarget(mongoose, intent, conversationId, entry)))
+      return { ok: false, code: 'response_conflict' };
+  return { ok: true, value, publication };
 }

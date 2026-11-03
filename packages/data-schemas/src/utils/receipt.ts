@@ -93,6 +93,7 @@ export function responseProviderFilter(
     'providerExecution.drained': { $ne: true },
     '_managed.phase': 'published',
     retiredAt: { $exists: false },
+    persistenceFailure: { $exists: false },
     cancellationRequestedAt: { $exists: false },
   };
 }

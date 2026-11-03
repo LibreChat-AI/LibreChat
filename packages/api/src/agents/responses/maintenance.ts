@@ -20,6 +20,7 @@ export function createResponseRecovery(deps: {
   const release = createResponseExecutionRelease(deps.jobs, deps.storage);
   return async (record: StoredResponseRecord): Promise<StoredResponseRecord | null> => {
     if (
+      record.persistenceFailure ||
       record.preparedTerminal ||
       record.pendingTerminal ||
       ['completed', 'failed', 'incomplete', 'cancelled'].includes(record.status)

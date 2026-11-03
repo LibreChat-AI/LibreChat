@@ -122,7 +122,14 @@ export interface ResponseDispatchOutbox {
   state: 'pending' | 'settled';
 }
 
+/** Permanent publication failure, owned by completion on the same provider attempt. */
+export interface ResponsePersistenceFailure extends ResponseExecutionBinding {
+  code: 'target_retired' | 'document_limit';
+  receiptKey?: string;
+}
+
 export interface StoredResponseRecord {
+  persistenceFailure?: ResponsePersistenceFailure;
   releaseAcknowledged?: boolean;
   storageTarget?: ManagedTarget<'response'>;
   conversationTarget?: CanonicalConversationTarget;
@@ -158,6 +165,10 @@ export interface StoredResponseRecord {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export type ResponseMutationResult =
+  | { ok: true; record: StoredResponseRecord }
+  | { ok: false; code: 'response_conflict' | 'target_retired' | 'document_limit' };
 
 export function createStoredResponseModel(
   mongoose: typeof import('mongoose'),
@@ -243,6 +254,19 @@ export function createStoredResponseModel(
         ),
         default: undefined,
         select: false,
+      },
+      persistenceFailure: {
+        type: new Schema<ResponsePersistenceFailure>(
+          {
+            generationCreatedAt: { type: Number, required: true, min: 1 },
+            providerExecutionId: { type: String, required: true, maxlength: 128 },
+            ownerId: { type: String, maxlength: 128 },
+            code: { type: String, required: true, enum: ['target_retired', 'document_limit'] },
+            receiptKey: { type: String, maxlength: 64 },
+          },
+          { _id: false },
+        ),
+        default: undefined,
       },
       retiredAt: Date,
       releaseAcknowledged: Boolean,

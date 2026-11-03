@@ -2,6 +2,8 @@ import { durableStorageConfigSchema } from 'librechat-data-provider';
 import type { DurableStorageConfig } from 'librechat-data-provider';
 import type {
   ResponseExecutionBinding,
+  ResponsePersistenceFailure,
+  ResponseMutationResult,
   ResponseOwner,
   ResponseReference,
   ResponseCheckpointExecution,
@@ -46,6 +48,7 @@ import { createResponseCheckpointStorage } from './responseCheckpoint';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { allocateManagedTarget, managedTargetFilter } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { createResponseFailureStorage } from './responseFailure';
 import { reconcileErasedResponseTargets } from './registration';
 import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
@@ -55,6 +58,7 @@ import { materializeResponseTurn } from './responseTurn';
 export { sameResponseTerminalReceipt } from '~/utils/receipt';
 
 export type {
+  ResponseMutationResult,
   ResponseOwner,
   ResponseReservation,
   StoredResponseRecord,
@@ -67,10 +71,6 @@ export type {
 export type ResponseReservationResult =
   | { ok: true; record: StoredResponseRecord; replayed: boolean }
   | { ok: false; code: 'idempotency_conflict' | 'response_unavailable' };
-
-export type ResponseMutationResult =
-  | { ok: true; record: StoredResponseRecord }
-  | { ok: false; code: 'response_conflict' };
 
 export type { ResponseExecutionBinding } from '~/models/response';
 
@@ -201,6 +201,14 @@ export type ResponseReleaseAuthority =
   | { kind: 'provider'; proof: ResponseExecutionProof };
 
 export interface ResponseStorage {
+  recordPersistenceFailure(
+    record: StoredResponseRecord,
+    failure: ResponsePersistenceFailure,
+  ): Promise<ResponseMutationResult>;
+  finishPersistenceFailure(
+    record: StoredResponseRecord,
+    responseJSON: string,
+  ): Promise<ResponseMutationResult>;
   readConversationTarget(
     owner: ResponseOwner,
     conversationId: string,
@@ -409,10 +417,11 @@ export function createResponseStorage(
     }
     return responseOwnerFilter(owner);
   }
-  const scope = (owner: ResponseOwner) => ({
+  const scope = (owner: ResponseOwner, mode: 'publication' | 'visible' = 'publication') => ({
     ...ownerScope(owner),
     '_managed.phase': 'published',
     retiredAt: { $exists: false },
+    ...(mode === 'publication' ? { persistenceFailure: { $exists: false } } : {}),
     $and: [activeExpirationFilter<StoredResponseRecord>()],
   });
   async function mutateInOpenScope<T>(
@@ -420,9 +429,10 @@ export function createResponseStorage(
     responseId: string,
     apply: (record: StoredResponseRecord) => Promise<T>,
     conflict: T,
+    mode: 'publication' | 'visible' = 'publication',
   ): Promise<T> {
     const current = await model
-      .findOne({ ...scope(owner), responseId })
+      .findOne({ ...scope(owner, mode), responseId })
       .select('+providerExecution +checkpoint')
       .lean();
     if (!current || (await isResponseScopeClosed(mongoose, current, current.conversationId)))
@@ -477,6 +487,7 @@ export function createResponseStorage(
     };
   }
   return {
+    ...createResponseFailureStorage(mongoose),
     async readConversationTarget(owner, conversationId) {
       ownerScope(owner);
       return readResponseConversationTarget(mongoose, owner, conversationId);
@@ -960,27 +971,25 @@ export function createResponseStorage(
               writes.messages.some((message) => message.conversationId !== current.conversationId)
             )
               throw new Error('Response canonical history identity changed');
-            if (
-              !(await materializeResponseTurn(
-                mongoose,
-                current,
-                receipt,
-                {
-                  ...writes,
-                  context: {
-                    ...writes.context,
-                    ...(current.isTemporary === true ? { isTemporary: true } : {}),
-                    ...(current.expiredAt &&
-                    (!writes.context.expiredAt || current.expiredAt < writes.context.expiredAt)
-                      ? { expiredAt: current.expiredAt }
-                      : {}),
-                  },
+            const materialized = await materializeResponseTurn(
+              mongoose,
+              current,
+              receipt,
+              {
+                ...writes,
+                context: {
+                  ...writes.context,
+                  ...(current.isTemporary === true ? { isTemporary: true } : {}),
+                  ...(current.expiredAt &&
+                  (!writes.context.expiredAt || current.expiredAt < writes.context.expiredAt)
+                    ? { expiredAt: current.expiredAt }
+                    : {}),
                 },
-                async () => budget,
-                bounds,
-              ))
-            )
-              return { ok: false, code: 'response_conflict' };
+              },
+              async () => budget,
+              bounds,
+            );
+            if (!materialized.ok) return materialized;
           }
           // Target selections advance revision. Reread the same physical Root and
           // immutable receipt after Conversation append, never rerun provider work.
@@ -1223,7 +1232,7 @@ export function createResponseStorage(
         if (input.expiredAt)
           await createResponseRetention(mongoose)(input, record.conversationId, input.expiredAt);
         const current = await model
-          .findOne({ ...scope(record), responseId: record.responseId })
+          .findOne({ ...scope(record, 'visible'), responseId: record.responseId })
           .lean();
         if (!current || (await isResponseScopeClosed(mongoose, input, current.conversationId)))
           return { ok: false, code: 'response_unavailable' };
@@ -1320,7 +1329,7 @@ export function createResponseStorage(
           if (marker.state === 'settled') return true;
           const updated = await model.updateOne(
             {
-              ...scope(record),
+              ...scope(record, 'visible'),
               responseId,
               'dispatchOutbox.kind': token.kind,
               'dispatchOutbox.id': token.id,
@@ -1334,10 +1343,12 @@ export function createResponseStorage(
           return updated.matchedCount === 1;
         },
         false,
+        // Settling an accepted outbox token cannot admit new execution or payload.
+        'visible',
       );
     },
     async read(owner, responseId) {
-      const record = await model.findOne({ ...scope(owner), responseId }).lean();
+      const record = await model.findOne({ ...scope(owner, 'visible'), responseId }).lean();
       if (record && (await isResponseScopeClosed(mongoose, owner, record.conversationId)))
         return null;
       return record;
@@ -1525,7 +1536,7 @@ export function createResponseStorage(
         },
         { $set: { cancellationRequestedAt: now } },
       );
-      return model.findOne({ ...scope(owner), responseId }).lean();
+      return model.findOne({ ...scope(owner, 'visible'), responseId }).lean();
     },
   };
 }

@@ -208,17 +208,19 @@ describe('Response-owned canonical target selection', () => {
         };
         await expect(publishResponseTarget(db, intent, write)).rejects.toThrow('reply lost');
         const recovered = await publishResponseTarget(db, intent, write);
-        expect(recovered).not.toBeNull();
+        expect(recovered.ok).toBe(true);
+        if (!recovered.ok) throw new Error('Expected recovered publication');
         const replay = await publishResponseTarget(db, intent, write);
-        expect(replay?.publication.target).toEqual(recovered?.publication.target);
+        if (!replay.ok) throw new Error('Expected publication replay');
+        expect(replay.publication.target).toEqual(recovered.publication.target);
         const model = db.model(kind === 'message' ? 'Message' : 'Conversation');
         expect(await model.countDocuments({ user: intent.userId })).toBe(1);
         expect((await readTargets(intent))?.canonicalTargets).toMatchObject([
-          { phase: 'published', target: recovered?.publication.target },
+          { phase: 'published', target: recovered.publication.target },
         ]);
         const anchors = await createResponseScopeModel(db)
           .find({
-            _id: { $in: [recovered!.publication.ownerKey, recovered!.publication.conversationKey] },
+            _id: { $in: [recovered.publication.ownerKey, recovered.publication.conversationKey] },
           })
           .lean();
         expect(anchors).toHaveLength(2);
@@ -239,7 +241,10 @@ describe('Response-owned canonical target selection', () => {
           { messageId: intent.logicalId, conversationId: intent.conversationId, text: 'confirmed' },
         );
       };
-      expect(await publishResponseTarget(db, intent, write)).toBeNull();
+      expect(await publishResponseTarget(db, intent, write)).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
       expect(
         (
           await createResponseScopeModel(db).findById(
@@ -248,7 +253,8 @@ describe('Response-owned canonical target selection', () => {
         )?.pendingCount,
       ).toBeGreaterThan(0);
       const recovered = await publishResponseTarget(db, intent, write);
-      expect(recovered).not.toBeNull();
+      expect(recovered.ok).toBe(true);
+      if (!recovered.ok) throw new Error('Expected recovered publication');
       expect(
         await createMessageModel(db).findOne({ messageId: intent.logicalId }).lean(),
       ).toMatchObject({
@@ -256,7 +262,7 @@ describe('Response-owned canonical target selection', () => {
       });
       const anchors = await createResponseScopeModel(db)
         .find({
-          _id: { $in: [recovered!.publication.ownerKey, recovered!.publication.conversationKey] },
+          _id: { $in: [recovered.publication.ownerKey, recovered.publication.conversationKey] },
         })
         .lean();
       expect(anchors.every((anchor) => anchor.pendingCount === 0)).toBe(true);
@@ -271,10 +277,16 @@ describe('Response-owned canonical target selection', () => {
           { messageId: intent.logicalId, conversationId: intent.conversationId, text: 'late' },
         );
       };
-      expect(await publishResponseTarget(db, intent, write)).toBeNull();
+      expect(await publishResponseTarget(db, intent, write)).toEqual({
+        ok: false,
+        code: 'target_retired',
+      });
       const selected = (await readTargets(intent))!.canonicalTargets![0].target;
       const allocate = jest.spyOn(db.connection.db!, 'command');
-      expect(await publishResponseTarget(db, intent, write)).toBeNull();
+      expect(await publishResponseTarget(db, intent, write)).toEqual({
+        ok: false,
+        code: 'target_retired',
+      });
       expect(allocate).not.toHaveBeenCalled();
       expect(await model.collection.countDocuments({ user: intent.userId })).toBe(0);
       expect((await readTargets(intent))!.canonicalTargets).toMatchObject([
@@ -291,7 +303,10 @@ describe('Response-owned canonical target selection', () => {
         },
       );
       const write = jest.fn();
-      expect(await publishResponseTarget(db, intent, write)).toBeNull();
+      expect(await publishResponseTarget(db, intent, write)).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
       expect(write).not.toHaveBeenCalled();
     });
     it('selects a single physical winner across competing publishers', async () => {

@@ -77,6 +77,7 @@ export function createResponseCheckpointStorage(
           'providerExecution.drained': { $ne: true },
           '_managed.phase': 'published',
           status: 'in_progress',
+          persistenceFailure: { $exists: false },
           retiredAt: { $exists: false },
           cancellationRequestedAt: { $exists: false },
           $and: [activeExpirationFilter()],
