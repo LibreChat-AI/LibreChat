@@ -4,7 +4,7 @@ import { Constants } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import { useMessagesConversation, useMessagesSubmission } from '~/Providers';
 import { reconcileMessageContentLayout } from './messageLayout';
-import useScrollToRef from '~/hooks/useScrollToRef';
+import useScrollToRef from './useScrollToRef';
 import { autoScrollAtom } from '~/store/autoScroll';
 
 const resizeFollowThreshold = 120;

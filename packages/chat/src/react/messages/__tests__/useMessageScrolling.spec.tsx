@@ -19,7 +19,7 @@ mockScrollToBottom.flush = jest.fn();
 const mockHandleSmoothToRef = jest.fn();
 let mockScrollCallback: (() => void) | undefined;
 
-jest.mock('~/hooks/useScrollToRef', () => ({
+jest.mock('../useScrollToRef', () => ({
   __esModule: true,
   default: ({ callback }: { callback: () => void }) => {
     mockScrollCallback = callback;
