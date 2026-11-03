@@ -8,8 +8,9 @@ import {
 import type * as t from '~/types';
 import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
 import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
+import { runAsSystem, tenantStorage } from '~/config/tenantContext';
 import { createStoredResponseModel } from '~/models/response';
-import { runAsSystem } from '~/config/tenantContext';
+import { createManagedMessageId } from '~/utils/managed';
 import { createResponseStorage } from './response';
 import balanceSchema from '~/schema/balance';
 import userSchema from '~/schema/user';
@@ -2367,37 +2368,47 @@ describe('personal grant cleanup before account deletion', () => {
 });
 
 describe('private response cleanup before account deletion', () => {
+  async function reserveResponse(userId: string, tenantId?: string) {
+    return tenantStorage.run({ userId, tenantId }, async () => {
+      const storage = createResponseStorage(mongoose);
+      const responseId = createManagedMessageId();
+      const reserved = await storage.reserve({
+        userId,
+        tenantId,
+        responseId,
+        requestKey: responseId,
+        fingerprint: 'request',
+        agentId: 'agent',
+        requestJSON: '{"input":"private request"}',
+        conversationId: 'conversation',
+        parentMessageId: 'root',
+      });
+      if (!reserved.ok) throw new Error('Fixture response reservation failed');
+      const projected = await storage.publishProgress(reserved.record, {
+        status: 'queued',
+        responseJSON: '{"output":"private reply"}',
+      });
+      if (!projected.ok) throw new Error('Fixture progress publication failed');
+      return projected.record;
+    });
+  }
+
   async function createResponses() {
     const user = await User.create({ email: 'delete-responses@example.com', provider: 'local' });
     const userId = user._id.toString();
     const model = createStoredResponseModel(mongoose);
-    await runAsSystem(() =>
-      model.create(
-        [{ userId }, { userId, tenantId: 'another-tenant' }, { userId: 'another-owner' }].map(
-          (scope, index) => ({
-            ...scope,
-            responseId: `response-${index}`,
-            requestKey: `request-${index}`,
-            fingerprint: 'request',
-            agentId: 'agent',
-            requestJSON: '{"input":"private request"}',
-            responseJSON: '{"output":"private reply"}',
-            conversationId: 'conversation',
-            parentMessageId: 'root',
-            status: 'completed',
-          }),
-        ),
-      ),
-    );
-    return { userId, model };
+    const record = await reserveResponse(userId);
+    await reserveResponse(userId, 'another-tenant');
+    await reserveResponse('another-owner');
+    return { userId, model, record };
   }
 
   it('removes private payloads before committing deletion and preserves other owners and tenants', async () => {
     const { userId, model } = await createResponses();
-    const cleanup = jest.spyOn(model, 'deleteMany');
+    const cleanup = jest.spyOn(model.collection, 'deleteOne');
     const deletion = jest.spyOn(User, 'deleteOne');
     await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
-    expect(cleanup).toHaveBeenCalledWith({ userId, tenantId: { $in: [null, ''] } });
+    expect(cleanup).toHaveBeenCalled();
     expect(cleanup.mock.invocationCallOrder[0]).toBeLessThan(deletion.mock.invocationCallOrder[0]);
     await runAsSystem(async () => {
       expect(await model.countDocuments({ userId, tenantId: null })).toBe(0);
@@ -2409,13 +2420,17 @@ describe('private response cleanup before account deletion', () => {
   it('erases every tenantless spelling when the legacy account stores an empty tenant', async () => {
     const { userId, model } = await createResponses();
     await User.updateOne({ _id: userId }, { $set: { tenantId: '' } });
-    const original = (await model.findOne({ userId, responseId: 'response-0' }).lean())!;
-    const { _id: _originalId, ...fields } = original;
+    const empty = await reserveResponse(userId);
+    const explicitNull = await reserveResponse(userId);
     await runAsSystem(async () => {
-      await model.create([
-        { ...fields, tenantId: '', responseId: 'empty-tenant', requestKey: 'empty-tenant' },
-        { ...fields, tenantId: null, responseId: 'null-tenant', requestKey: 'null-tenant' },
-      ]);
+      await model.collection.updateOne(
+        { responseId: empty.responseId },
+        { $set: { tenantId: '' } },
+      );
+      await model.collection.updateOne(
+        { responseId: explicitNull.responseId },
+        { $set: { tenantId: null } },
+      );
       await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
       expect(await model.countDocuments({ userId, tenantId: { $in: [null, ''] } })).toBe(0);
       expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(1);
@@ -2423,9 +2438,9 @@ describe('private response cleanup before account deletion', () => {
   });
 
   it('keeps deletion intent private across cleanup failure, account updates, and retry', async () => {
-    const { userId, model } = await createResponses();
+    const { userId, model, record } = await createResponses();
     jest
-      .spyOn(model.collection, 'deleteMany')
+      .spyOn(model.collection, 'deleteOne')
       .mockRejectedValueOnce(new Error('response-store down'));
     const deletion = jest.spyOn(User, 'deleteOne');
     await expect(methods.deleteUserById(userId)).rejects.toThrow('response-store down');
@@ -2433,13 +2448,13 @@ describe('private response cleanup before account deletion', () => {
     expect(await User.exists({ _id: userId })).not.toBeNull();
     const storage = createResponseStorage(mongoose);
     await runAsSystem(async () => {
-      expect(await model.findOne({ userId, responseId: 'response-0' }).lean()).toMatchObject({
-        requestJSON: '{"input":"private request"}',
-        responseJSON: '{"output":"private reply"}',
-      });
+      const retired = await model.collection.findOne({ userId, responseId: record.responseId });
+      expect(retired).toMatchObject({ _managed: { phase: 'retired' } });
+      expect(retired).not.toHaveProperty('requestJSON');
+      expect(retired).not.toHaveProperty('responseJSON');
     });
-    expect(await storage.read({ userId }, 'response-0')).toBeNull();
-    const identity = await storage.readCleanupIdentity({ userId }, 'response-0');
+    expect(await storage.read({ userId }, record.responseId)).toBeNull();
+    const identity = await storage.readCleanupIdentity({ userId }, record.responseId);
     expect(identity).toMatchObject({ retirement: 'owner_deleted' });
     for (const field of [
       'requestJSON',
@@ -2455,7 +2470,7 @@ describe('private response cleanup before account deletion', () => {
     expect(JSON.stringify(identity)).not.toContain('private');
     await methods.updateUser(userId, { name: 'Still usable' });
     expect((await User.findById(userId).lean())?.name).toBe('Still usable');
-    expect(await storage.read({ userId }, 'response-0')).toBeNull();
+    expect(await storage.read({ userId }, record.responseId)).toBeNull();
     await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
     expect(await User.exists({ _id: userId })).toBeNull();
     await runAsSystem(async () => {
@@ -2465,13 +2480,15 @@ describe('private response cleanup before account deletion', () => {
     });
   });
 
-  it('uses the account tenant when deletion runs under system authority', async () => {
+  it('erases the account and legacy partitions under system authority while preserving another tenant', async () => {
     const { userId, model } = await createResponses();
+    await reserveResponse(userId, 'unrelated-tenant');
     await User.updateOne({ _id: userId }, { $set: { tenantId: 'another-tenant' } });
     await runAsSystem(async () => {
       await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
       expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(0);
-      expect(await model.countDocuments({ userId, tenantId: null })).toBe(1);
+      expect(await model.countDocuments({ userId, tenantId: null })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: 'unrelated-tenant' })).toBe(1);
     });
   });
 });
