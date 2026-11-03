@@ -1,6 +1,7 @@
 import { memo, useRef, useMemo, useEffect, useCallback, useContext, Fragment } from 'react';
 import { useStore } from 'jotai';
 import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
+import { PendingSkillCall, Container } from '@librechat/chat/components';
 import { hasParallelLanes, parallelLaneGroups, hasPendingApprovalInPart } from '@librechat/chat';
 import {
   ReasoningDisclosureContext,
@@ -48,7 +49,6 @@ import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
 import { useMCPAppsPolicy } from '~/Providers/MCPAppsPolicyContext';
 import { selectToolCallUIResources } from '~/utils/mcpApps';
-import PendingSkillCall from './Parts/PendingSkillCall';
 import ActivityPhaseGroup from './ActivityPhaseGroup';
 import EditContentParts from './EditContentParts';
 import { EmptyText, AgentUpdate } from './Parts';
@@ -56,7 +56,6 @@ import ApprovalProvider from './ApprovalContext';
 import Sources from '~/components/Web/Sources';
 import ToolCallGroup from './ToolCallGroup';
 import { blocksLiveFold } from './live';
-import Container from './Container';
 import Part from './Part';
 
 /** An empty TEXT part — the placeholder some endpoints seed in

@@ -4,10 +4,23 @@ import { ContentTypes } from 'librechat-data-provider';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { getOutcomeStatus, isSpanFailed, summarizeSpan } from '@librechat/chat';
 import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
-import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '@librechat/chat/components';
+import {
+  FOLD_RAIL_CLASSES,
+  ROW_GLYPH_SLOT,
+  TOOL_ROW_CLASSES,
+  FoldRail,
+  RailGlyph,
+  useFoldPath,
+  useRailHover,
+  revealFoldHeader,
+  FoldHeaderContext,
+  FailedRevealContext,
+  FailedRevealPill,
+  useFailedRevealTrigger,
+} from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { RailHover } from '@librechat/chat/components';
 import type { CSSProperties, ReactNode } from 'react';
-import type { RailHover } from './rail';
 import {
   useLocalize,
   useExpandCollapse,
@@ -21,15 +34,6 @@ import {
   LIVE_ACTIVITY_THROTTLE_MS,
   LIVE_REASONING_HOLD_MS,
 } from './live';
-import {
-  FoldRail,
-  RailGlyph,
-  useFoldPath,
-  useRailHover,
-  revealFoldHeader,
-  FoldHeaderContext,
-} from './rail';
-import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useThrottledValue from '~/hooks/Messages/useThrottledValue';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';

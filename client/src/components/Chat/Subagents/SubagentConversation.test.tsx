@@ -50,6 +50,7 @@ jest.mock('~/Providers/MessagePartsHostContext', () => {
 
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
+  Container: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   MinimalHoverButtons: ({ message }: { message: TMessage }) => {
     mockCopyMessage(message);
     return <button type="button" aria-label="copy" />;
@@ -96,11 +97,6 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
       </div>
     );
   },
-}));
-
-jest.mock('~/components/Chat/Messages/Content/Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
 jest.mock('~/components/Chat/Messages/MessageIcon', () => ({

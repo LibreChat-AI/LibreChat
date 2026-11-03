@@ -177,14 +177,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/DialogImage.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/EditContentParts.tsx": {
     "design/disabled-recipe": {
       "count": 1
@@ -212,11 +204,6 @@
     },
     "shadcn/no-restyle": {
       "count": 6
-    }
-  },
-  "client/src/components/Chat/Messages/Content/MemoryInfo.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/Chat/Messages/Content/MessageContent.tsx": {
@@ -324,11 +311,6 @@
   "client/src/components/Chat/Messages/Content/ToolCallInfo.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/ToolCallLimitNotice.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/Chat/Messages/Content/ToolOutput/OutputRenderer.tsx": {

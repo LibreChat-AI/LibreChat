@@ -15,11 +15,10 @@ jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   __esModule: true,
   default: () => <span data-testid="message-icon" />,
 }));
-jest.mock('~/components/Chat/Messages/Content/Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Container: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
-
 const conversationId = 'convo-queued-turn';
 const conversation = {
   conversationId,

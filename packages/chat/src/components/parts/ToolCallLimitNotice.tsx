@@ -1,9 +1,8 @@
 import { useContext, useId, useState } from 'react';
-import { Button, TooltipAnchor } from '@librechat/client';
+import { Button, TooltipAnchor, useLocalize } from '@librechat/client';
 import { FastForward, Gauge, MessageSquareText, X } from 'lucide-react';
 import type { TMessage } from 'librechat-data-provider';
-import { ChatContext } from '~/Providers/ChatContext';
-import { useLocalize } from '~/hooks';
+import { ChatContext } from '../../react/chat/context';
 
 /**
  * Shown when a turn ended because the agent exhausted its per-turn step budget
@@ -22,7 +21,11 @@ import { useLocalize } from '~/hooks';
  * The instruction text is localized because it becomes a visible message in the
  * user's own conversation, in their own language.
  */
-export default function ToolCallLimitNotice({ message }: { message: TMessage }) {
+export default function ToolCallLimitNotice({
+  message,
+}: {
+  message: TMessage;
+}): React.ReactElement | null {
   const localize = useLocalize();
   const titleId = useId();
   const [dismissed, setDismissed] = useState(false);
@@ -85,7 +88,7 @@ export default function ToolCallLimitNotice({ message }: { message: TMessage }) 
             variant="quiet"
             size="icon-xs"
             aria-label={localize('com_ui_tool_call_limit_dismiss')}
-            className="absolute inset-e-1.5 top-1.5 focus-visible:ring-offset-0 focus-visible:ring-inset"
+            className="absolute inset-e-1.5 top-1.5"
             onClick={() => setDismissed(true)}
           >
             <X className="h-4 w-4" aria-hidden="true" />

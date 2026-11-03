@@ -1,8 +1,11 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
+import { ChatContext } from '../../../react/chat/context';
 import ToolCallLimitNotice from '../ToolCallLimitNotice';
-import { ChatContext } from '~/Providers/ChatContext';
 
 const TRANSLATIONS: Record<string, string> = {
   com_ui_tool_call_limit_title: 'Reached the tool call limit for this turn',
@@ -14,7 +17,8 @@ const TRANSLATIONS: Record<string, string> = {
   com_ui_tool_call_limit_dismiss: 'Dismiss',
 };
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => TRANSLATIONS[key] ?? key,
 }));
 

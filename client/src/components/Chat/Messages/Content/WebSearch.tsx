@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Tools } from 'librechat-data-provider';
 import { parseJsonField } from '@librechat/chat';
 import { Globe, ChevronDown, Info } from 'lucide-react';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
+import { ROW_GLYPH_SLOT, useToolPreparation } from '@librechat/chat/components';
 import {
   Button,
   HoverCard,
@@ -32,7 +32,6 @@ import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { isError } from './ToolOutput/OutputRenderer';
-import { useToolPreparation } from './preparation';
 import { HeaderActionSlotContext } from './slot';
 import { useSearchContext } from '~/Providers';
 import SearchVerticals from './verticals';

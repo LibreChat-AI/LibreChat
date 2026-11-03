@@ -1,12 +1,17 @@
 import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
-import { TOOL_ROW_CLASSES } from '@librechat/chat/components';
 import {
   hasToolParams,
   resolveToolCallPhase,
   getToolDisplayLabel,
   isToolCallPreparing,
 } from '@librechat/chat';
+import {
+  TOOL_ROW_CLASSES,
+  useToolPreparation,
+  ToolAuthWarning,
+  useFailedReveal,
+} from '@librechat/chat/components';
 import {
   Constants,
   dataService,
@@ -29,13 +34,10 @@ import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from
 import { ToolIcon, getToolIconType, isError, hasRenderableOutput } from './ToolOutput';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { useToolPreparation } from './preparation';
 import { cn, logger, openInNewTab } from '~/utils';
-import { useFailedReveal } from './reveal';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
-import { ToolAuthWarning } from './auth';
 import { firstErrorLine } from './live';
 
 export default function ToolCall({

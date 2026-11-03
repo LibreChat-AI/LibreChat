@@ -1,6 +1,6 @@
 import { memo } from 'react';
-import { AuthorHeader } from '@librechat/chat/components';
-import { useAuthorContext } from '~/Providers';
+import { useAuthorContext } from '../../react/messages/author';
+import AuthorHeader from './AuthorHeader';
 
 /**
  * Restates the message author where content resumes after a steer, reading the
@@ -11,7 +11,7 @@ import { useAuthorContext } from '~/Providers';
  * part of the message. Rendered through this component, the element a caller hands
  * down never changes, and an author update re-renders only the headers on screen.
  */
-const ResumeAuthorHeader = memo(function ResumeAuthorHeader() {
+const ResumeAuthorHeader: React.NamedExoticComponent = memo(function ResumeAuthorHeader() {
   const author = useAuthorContext();
   if (author == null) {
     return null;

@@ -2,8 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { PanelLeftOpen, PanelLeftClose } from 'lucide';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X, ArrowDownToLine, RotateCcw } from 'lucide-react';
-import { Button, MorphIcon, TooltipAnchor, useMediaQuery, useRemScale } from '@librechat/client';
-import { useLocalize } from '~/hooks';
+import {
+  Button,
+  MorphIcon,
+  TooltipAnchor,
+  useLocalize,
+  useMediaQuery,
+  useRemScale,
+} from '@librechat/client';
 
 /** The lightbox is z-250 and not an OGDialog, so its tooltips would keep the default 150 and sit behind it. */
 const TOOLTIP_Z_INDEX = 300;
@@ -45,7 +51,7 @@ export default function DialogImage({
   showDetails?: boolean;
   /** Names the dialog and the image for assistive tech, e.g. the file name. */
   title?: string;
-}) {
+}): React.ReactElement | null {
   const localize = useLocalize();
   const [isPromptOpen, setIsPromptOpen] = useState(false);
   const [imageSize, setImageSize] = useState<string | null>(null);
@@ -104,9 +110,9 @@ export default function DialogImage({
     setPanY(0);
   }, []);
 
-  const getCursor = () => {
-    if (zoom <= 1) return 'default';
-    return isDragging ? 'grabbing' : 'grab';
+  const getCursorClass = (): string => {
+    if (zoom <= 1) return 'cursor-default';
+    return isDragging ? 'cursor-grabbing' : 'cursor-grab';
   };
 
   const handleDoubleClick = useCallback(() => {
@@ -362,19 +368,18 @@ export default function DialogImage({
 
           {/* Image container - centered */}
           <div
-            className={`transition-[margin] duration-300 ${detailsBeside ? 'me-80' : ''}`}
+            className={`transition-all duration-300 ${detailsBeside ? 'me-80' : ''}`}
             onClick={(e) => e.stopPropagation()}
           >
             <div
               ref={containerRef}
-              className="relative"
+              className={`relative ${getCursorClass()}`}
               onWheel={handleWheel}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
               onDoubleClick={handleDoubleClick}
-              style={{ cursor: getCursor() }}
             >
               <div
                 className="transition-transform duration-100 ease-out"

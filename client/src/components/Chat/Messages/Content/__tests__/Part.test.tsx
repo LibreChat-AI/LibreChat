@@ -47,11 +47,10 @@ jest.mock('../CodeAnalyze', () => ({
   default: () => <div data-testid="code-analyze" />,
 }));
 
-jest.mock('../Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Container: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }));
-
 jest.mock('../WebSearch', () => ({
   __esModule: true,
   default: () => <div data-testid="web-search" />,

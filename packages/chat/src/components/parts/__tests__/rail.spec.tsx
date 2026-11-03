@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { act, render, renderHook, screen, fireEvent } from '@testing-library/react';
 import {
@@ -8,6 +11,15 @@ import {
   useRailHover,
   revealFoldHeader,
 } from '../rail';
+
+/** The package's jsdom has no ResizeObserver; the app's test setup supplies one. */
+if (typeof window.ResizeObserver === 'undefined') {
+  window.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  };
+}
 
 function box(top: number, height = 28) {
   const el = document.createElement('div');
@@ -294,6 +306,8 @@ describe('useFoldPath', () => {
 
   beforeEach(() => {
     frames = [];
+    observe.mockClear();
+    disconnect.mockClear();
     jest.spyOn(window, 'ResizeObserver').mockImplementation((callback) => {
       resize = callback;
       return { observe, unobserve: jest.fn(), disconnect };

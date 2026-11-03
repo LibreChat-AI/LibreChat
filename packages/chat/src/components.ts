@@ -135,6 +135,39 @@ export {
   buildEditPreviewDiff,
 } from './components/parts/DiffView';
 export type { DiffLine, ParsedDiff, TextEditPreview } from './components/parts/DiffView';
+
+/** Parts: content leaves moved from the app. */
+export { default as Container } from './components/parts/Container';
+export { default as MemoryInfo } from './components/parts/MemoryInfo';
+export { default as DialogImage } from './components/parts/DialogImage';
+export { default as PendingSkillCall } from './components/parts/PendingSkillCall';
+export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
+export { default as ResumeAuthorHeader } from './components/parts/ResumeAuthorHeader';
+export { ToolAuthWarning, ToolAuthWarningContext } from './components/parts/auth';
+export { ToolPreparation, useToolPreparation } from './components/parts/preparation';
+export {
+  FailedRevealPill,
+  useFailedReveal,
+  FailedRevealContext,
+  useFailedRevealTrigger,
+} from './components/parts/reveal';
+export type { FailedReveal } from './components/parts/reveal';
+export {
+  FoldRail,
+  RailGlyph,
+  litFoldPath,
+  useFoldPath,
+  useRailHover,
+  revealFoldHeader,
+  FoldHeaderContext,
+} from './components/parts/rail';
+export type { LitRail, RailHover } from './components/parts/rail';
+export {
+  backgroundTaskNoteKey,
+  backgroundTaskNoticeKey,
+  backgroundTaskMessageKey,
+  backgroundListGuidanceKeys,
+} from './components/parts/guidance';
 export { default as AttachmentImage } from './components/composer/files/Image';
 export { default as ImagePreview } from './components/composer/files/ImagePreview';
 export { default as SendButton } from './components/composer/SendButton';

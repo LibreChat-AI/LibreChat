@@ -1,15 +1,15 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import DialogImage from '../DialogImage';
-
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-}));
 
 jest.mock('@librechat/client', () => {
   const actual = jest.requireActual<typeof import('@librechat/client')>('@librechat/client');
   return {
     ...actual,
+    useLocalize: () => (key: string) => key,
     useRemScale: () => 1,
     useMediaQuery: () => false,
   };

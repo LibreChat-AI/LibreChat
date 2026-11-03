@@ -44,11 +44,10 @@ jest.mock('~/hooks/Conversations/useGetAddedConvo', () => ({
   default: () => () => null,
 }));
 
-jest.mock('../Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Container: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
-
 const message = {
   messageId: 'user-1',
   parentMessageId: 'root',

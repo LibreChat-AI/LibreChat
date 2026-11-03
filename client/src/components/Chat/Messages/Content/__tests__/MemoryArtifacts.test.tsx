@@ -25,9 +25,9 @@ jest.mock('~/hooks', () => ({
 }));
 
 // Mock the MemoryInfo component
-jest.mock('../MemoryInfo', () => ({
-  __esModule: true,
-  default: ({ memoryArtifacts }: { memoryArtifacts: MemoryArtifact[] }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  MemoryInfo: ({ memoryArtifacts }: { memoryArtifacts: MemoryArtifact[] }) => (
     <div data-testid="memory-info">
       {memoryArtifacts.map((artifact, index) => (
         <div key={index} data-testid={`memory-artifact-${artifact.type}`}>
@@ -37,7 +37,6 @@ jest.mock('../MemoryInfo', () => ({
     </div>
   ),
 }));
-
 describe('MemoryArtifacts', () => {
   const createMemoryAttachment = (type: 'update' | 'delete' | 'error', key: string): TAttachment =>
     ({
