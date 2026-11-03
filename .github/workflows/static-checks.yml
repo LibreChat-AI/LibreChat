@@ -18,6 +18,7 @@ on:
       - 'eslint-suppressions.json'
       - '**/eslint-suppressions.json'
       - '.github/workflows/static-checks.yml'
+      - '.husky/pre-push'
       - '!**.md'
 
 permissions:
@@ -132,7 +133,9 @@ jobs:
               - '!**.md'
             runner:
               - 'scripts/i18n*.mts'
+              - 'scripts/pre-push*.mts'
               - 'scripts/static-checks.mts'
+              - '.husky/pre-push'
               - '.github/workflows/static-checks.yml'
             unused_packages:
               - 'api/**'
@@ -308,6 +311,8 @@ jobs:
           # script-only PR activates no group — so neither would exercise the
           # execution path this step exists to protect.
           node scripts/static-checks.mts package.json --only json
+          # The pre-push hook, driven through real pushes to local bare remotes.
+          node --test scripts/pre-push.test.mts
 
       - name: Validate ESLint config on config changes
         id: eslint_config

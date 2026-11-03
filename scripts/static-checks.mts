@@ -1864,6 +1864,17 @@ const BUN_VERSION_FILE = '.bun-version';
 const BACKEND_REVIEW = '.github/workflows/backend-review.yml';
 const FRONTEND_REVIEW = '.github/workflows/frontend-review.yml';
 
+const CHAT_TYPECHECK_PATHS = [
+  'packages/data-provider/**',
+  'packages/client/**',
+  'packages/chat/**',
+  ...ROOT_MANIFESTS,
+  TYPECHECK_SCRIPT,
+  BUN_VERSION_FILE,
+  FRONTEND_REVIEW,
+  '!**.md',
+];
+
 const TYPECHECK_PROJECTS = [
   {
     project: 'packages/data-provider/tsconfig.json',
@@ -1919,16 +1930,14 @@ const TYPECHECK_PROJECTS = [
   },
   {
     project: 'packages/chat/tsconfig.json',
-    paths: [
-      'packages/data-provider/**',
-      'packages/client/**',
-      'packages/chat/**',
-      ...ROOT_MANIFESTS,
-      TYPECHECK_SCRIPT,
-      BUN_VERSION_FILE,
-      FRONTEND_REVIEW,
-      '!**.md',
-    ],
+    paths: CHAT_TYPECHECK_PATHS,
+    requires: ['build:data-provider', 'build:client-package'],
+  },
+  // The workspace's `npm run typecheck`, which CI runs, checks its consumer
+  // specs under a second config that maps @librechat/chat to the sources.
+  {
+    project: 'packages/chat/test/tsconfig.json',
+    paths: CHAT_TYPECHECK_PATHS,
     requires: ['build:data-provider', 'build:client-package'],
   },
   {
