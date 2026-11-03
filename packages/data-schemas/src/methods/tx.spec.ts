@@ -2859,13 +2859,13 @@ describe('Mistral Large Pricing', () => {
     });
   });
 
-  it('should price Mistral Large 4 at its sale $0.68 / $2.09 per MTok', () => {
+  it('should price Mistral Large 4 at its list $1.36 / $4.18 per MTok', () => {
     const modelVariations = ['mistral-large-4', 'mistral-large-4-0', 'mistralai/mistral-large-4'];
 
     modelVariations.forEach((model) => {
       expect(getValueKey(model)).toBe('mistral-large-4');
-      expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(0.68);
-      expect(getMultiplier({ model, tokenType: 'completion' })).toBe(2.09);
+      expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(1.36);
+      expect(getMultiplier({ model, tokenType: 'completion' })).toBe(4.18);
     });
   });
 
