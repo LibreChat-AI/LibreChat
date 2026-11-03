@@ -4,14 +4,18 @@ import type {
   ManagedRegistration,
   ManagedRegistrationIntent,
 } from '~/types/managed';
-import { managedTargetFilter } from './managed';
+import { managedTargetFilter, managedTargetPredicate, assertManagedCleanupTenant } from './managed';
 
 /** Budget the stamped entry, including its array element and worst-case epoch encoding. */
 export function assertManagedRegistration(
   mongoose: typeof import('mongoose'),
   entry: ManagedRegistrationIntent | ManagedRegistration,
+  access: 'publication' | 'cleanup' = 'publication',
 ): void {
-  managedTargetFilter(mongoose, entry.target);
+  if (access === 'cleanup') {
+    assertManagedCleanupTenant(entry.target.tenantId);
+    managedTargetPredicate(mongoose, entry.target);
+  } else managedTargetFilter(mongoose, entry.target);
   if (
     !/^[a-f\d]{64}$/.test(entry.key) ||
     mongoose.mongo.BSON.calculateObjectSize({ ...entry, retentionEpoch: Number.MAX_SAFE_INTEGER }) +

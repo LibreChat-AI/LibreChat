@@ -76,8 +76,9 @@ function registrationScope(
   owner: ResponseOwner,
   conversationId: string | undefined,
   entry: ManagedRegistrationIntent,
+  access: 'publication' | 'cleanup' = 'publication',
 ): string {
-  assertManagedRegistration(mongoose, entry);
+  assertManagedRegistration(mongoose, entry, access);
   if (
     !owner.userId ||
     (owner.tenantId || undefined) !== (entry.target.tenantId || undefined) ||
@@ -249,6 +250,19 @@ function settlementFilter(key: string, entry: ManagedRegistration, retentionEpoc
   };
 }
 
+/** Physical absence cannot be undone by a compliant writer, even after scope closure. */
+function absenceSettlementFilter(
+  key: string,
+  entry: ManagedRegistration,
+  anchor: { retentionEpoch?: number; closed: boolean; expiredAt?: Date },
+) {
+  return {
+    ...settlementFilter(key, entry, anchor.retentionEpoch ?? 0),
+    closed: anchor.closed,
+    $or: [{ expiredAt: anchor.expiredAt ?? null }],
+  };
+}
+
 async function settleTarget(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
@@ -256,10 +270,20 @@ async function settleTarget(
   entry: ManagedRegistrationIntent,
   proof: 'published' | 'absent',
 ): Promise<boolean> {
-  const key = registrationScope(mongoose, owner, conversationId, entry);
+  const key = registrationScope(
+    mongoose,
+    owner,
+    conversationId,
+    entry,
+    proof === 'absent' ? 'cleanup' : 'publication',
+  );
   const scopes = createResponseScopeModel(mongoose);
   const anchor = await scopes.findById(key).lean();
-  if (!anchor || anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date()))
+  if (
+    !anchor ||
+    (proof === 'published' &&
+      (anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date())))
+  )
     return false;
   const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
   if (!existing || !sameManagedRegistration(existing, entry)) return false;
@@ -268,7 +292,7 @@ async function settleTarget(
   if (proof === 'absent') {
     // Ordinary queries hide unpublished allocations. Hidden is not absent.
     const present = await includeManagedAllocations(
-      model.exists(managedTargetFilter(mongoose, entry.target)),
+      model.exists(managedTargetPredicate(mongoose, entry.target)),
     ).read('primary');
     if (present) return false;
   } else {
@@ -291,7 +315,11 @@ async function settleTarget(
     )
       return false;
   }
-  const result = await scopes.updateOne(settlementFilter(key, existing, observedRetentionEpoch), {
+  const filter =
+    proof === 'absent'
+      ? absenceSettlementFilter(key, existing, anchor)
+      : settlementFilter(key, existing, observedRetentionEpoch);
+  const result = await scopes.updateOne(filter, {
     $pull: { pending: { key: entry.key } },
     $inc: { pendingCount: -1, revision: 1 },
   });
@@ -317,7 +345,8 @@ export async function reconcileErasedResponseTargets(
   for await (const anchor of pendingScopes) {
     const key = anchor._id;
     const absent: ManagedRegistration[] = [];
-    for (const kind of ['message', 'conversation', 'response'] as const) {
+    // Absence proof is shared across domains; their erasers still own retirement/drain.
+    for (const kind of MANAGED_TARGET_KINDS) {
       const entries = anchor.pending!.filter((entry) => entry.target.kind === kind);
       if (!entries.length) continue;
       const model = mongoose.model(managedTargetModels[kind]);
@@ -345,11 +374,7 @@ export async function reconcileErasedResponseTargets(
     const result = await scopes.bulkWrite(
       absent.map((entry) => ({
         updateOne: {
-          filter: {
-            ...settlementFilter(key, entry, anchor.retentionEpoch ?? 0),
-            closed: anchor.closed,
-            $or: [{ expiredAt: anchor.expiredAt ?? null }],
-          },
+          filter: absenceSettlementFilter(key, entry, anchor),
           update: {
             $pull: { pending: { key: entry.key } },
             $inc: { pendingCount: -1, revision: 1 },

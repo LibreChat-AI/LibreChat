@@ -18,7 +18,13 @@ import {
   managedRegistryAdmissionFilter,
   managedRegistryEntryFilter,
 } from './registry';
-import { managedTargetFilter, managedTargetModels, assertManagedTenant } from './managed';
+import {
+  managedTargetFilter,
+  managedTargetModels,
+  assertManagedTenant,
+  assertManagedCleanupTenant,
+  managedTargetPredicate,
+} from './managed';
 import { includeManagedAllocations } from '~/utils/managed';
 import { MANAGED_TARGET_KINDS } from '~/types/managed';
 import { responseScopeKeys } from './responseScope';
@@ -46,6 +52,14 @@ export interface IdentityAuthority {
 }
 
 export type ChannelRegistryAuthority = ChannelAuthority | IdentityAuthority;
+
+export interface ChannelOwnership {
+  creator: ResponseOwner;
+  owner?: ResponseOwner;
+  channel?: ChannelAuthority;
+  identity?: IdentityAuthority;
+  conversationId?: string;
+}
 
 interface RegistryAnchor extends ManagedRegistryState {
   revision: string;
@@ -79,7 +93,10 @@ function authorityFilter(
 ): FilterQuery<RegistryAnchor> {
   if (!['channel', 'channelIdentity'].includes(authority.target.kind))
     throw new TypeError('Invalid channel registry kind');
-  const physical = managedTargetFilter(mongoose, authority.target);
+  if (!open) assertManagedCleanupTenant(authority.target.tenantId);
+  const physical = open
+    ? managedTargetFilter(mongoose, authority.target)
+    : managedTargetPredicate(mongoose, authority.target);
   const fields = isChannel(authority)
     ? [
         authority.revision,
@@ -132,16 +149,12 @@ function authorityFilter(
 /** Fixed ownership roles, installed atomically with the first private payload/association. */
 export function channelScopeKeys(
   mongoose: typeof import('mongoose'),
-  roles: {
-    creator: ResponseOwner;
-    owner?: ResponseOwner;
-    channel?: ChannelAuthority;
-    identity?: IdentityAuthority;
-    conversationId?: string;
-  },
+  roles: ChannelOwnership,
+  access: 'publication' | 'cleanup' = 'publication',
 ): string[] {
   const { creator, owner, channel, identity, conversationId } = roles;
-  assertManagedTenant(creator.tenantId);
+  if (access === 'cleanup') assertManagedCleanupTenant(creator.tenantId);
+  else assertManagedTenant(creator.tenantId);
   if (
     !creator.userId ||
     (owner &&
@@ -193,9 +206,10 @@ function registryEntry(
   authority: ChannelRegistryAuthority,
   entry: ManagedRegistrationIntent,
   retentionEpoch: number,
+  cleanup = false,
 ): ManagedRegistration {
   const stamped = { ...entry, retentionEpoch, authorityRevision: authority.revision };
-  assertManagedRegistration(mongoose, stamped);
+  assertManagedRegistration(mongoose, stamped, cleanup ? 'cleanup' : 'publication');
   if ((entry.target.tenantId || undefined) !== (authority.target.tenantId || undefined))
     throw new TypeError('Channel registration tenant changed');
   if (!entry.target.kind.startsWith('channel'))
@@ -273,6 +287,16 @@ export async function settleChannelTarget(
   return (await reconcileTargets(mongoose, authority, false, entry)) === 1;
 }
 
+/** Positive one-shot absence also permits cleanup after canonical revocation. */
+export async function settleAbsentChannelTarget(
+  mongoose: typeof import('mongoose'),
+  authority: ChannelRegistryAuthority,
+  entry: ManagedRegistrationIntent,
+): Promise<boolean> {
+  registryEntry(mongoose, authority, entry, 0, true);
+  return (await reconcileTargets(mongoose, authority, true, entry)) === 1;
+}
+
 async function reconcileTargets(
   mongoose: typeof import('mongoose'),
   authority: ChannelRegistryAuthority,
@@ -293,8 +317,8 @@ async function reconcileTargets(
     const rows = await includeManagedAllocations(
       mongoose.model(managedTargetModels[kind]).find({
         $or: entries.map((entry) => {
-          registryEntry(mongoose, authority, entry, entry.retentionEpoch);
-          return managedTargetFilter(mongoose, entry.target);
+          registryEntry(mongoose, authority, entry, entry.retentionEpoch, absenceOnly);
+          return managedTargetPredicate(mongoose, entry.target);
         }),
       }),
     )

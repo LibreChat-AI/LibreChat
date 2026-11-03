@@ -3,6 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer, MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelAuthority, IdentityAuthority } from './channelRegistry';
 import {
+  channelOwnershipFields,
+  registerChannelOwnership,
+  settleChannelOwnership,
+  reconcileAbsentChannelOwnership,
+} from './channelOwnership';
+import {
   registerChannelTarget,
   reconcileChannelTargets,
   settleChannelTarget,
@@ -16,11 +22,15 @@ import {
   managedRegistration,
   managedTargetModels,
 } from './managed';
-import { registerResponseTarget, settleResponseTarget } from './registration';
+import {
+  registerResponseTarget,
+  settleResponseTarget,
+  reconcileErasedResponseTargets,
+} from './registration';
 import { responseScopeKeys, createResponseRetention } from './responseScope';
+import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { _resetStrictCache } from '~/models/plugins/tenantIsolation';
 import { createResponseScopeModel } from '~/models/responseScope';
-import { tenantStorage } from '~/config/tenantContext';
 import { createModels } from '~/models';
 
 const engines = ['standalone', 'replica', ...(process.env.FERRETDB_URI ? ['FerretDB'] : [])];
@@ -447,5 +457,210 @@ describe.each(engines)('canonical channel registry on %s', (engine) => {
         _resetStrictCache();
       }
     });
+
+    it('composes every cleanup authority and installs all lineage in one private publication', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const roles = {
+          creator: f.creator,
+          owner: f.owner,
+          channel: f.channel,
+          identity: f.identity,
+          conversationId: f.conversationId,
+        };
+        const result = await registerChannelOwnership(mongoose, f.target, roles);
+        expect(result.status).toBe('registered');
+        const responseKeys = [
+          responseScopeKeys(f.creator, '')[0],
+          ...responseScopeKeys(f.owner, f.conversationId),
+        ];
+        const scopes = createResponseScopeModel(mongoose);
+        expect(await scopes.countDocuments({ _id: { $in: responseKeys }, pendingCount: 1 })).toBe(
+          3,
+        );
+        expect(await f.anchor()).toMatchObject({ pendingCount: 1 });
+        expect(await f.anchor(f.identity)).toMatchObject({ pendingCount: 1 });
+        await settleChannelOwnership(mongoose, f.target, roles);
+        expect(await scopes.countDocuments({ _id: { $in: responseKeys }, pendingCount: 1 })).toBe(
+          3,
+        );
+        await mongoose.model('ChannelRun').updateOne(managedTargetFilter(mongoose, f.target), {
+          $set: {
+            ...channelOwnershipFields(mongoose, f.target, roles),
+            '_managed.phase': 'published',
+          },
+        });
+        await settleChannelOwnership(mongoose, f.target, roles);
+        expect(await scopes.countDocuments({ _id: { $in: responseKeys }, pendingCount: 0 })).toBe(
+          3,
+        );
+        expect(await f.anchor()).toMatchObject({ pendingCount: 0 });
+        expect(await f.anchor(f.identity)).toMatchObject({ pendingCount: 0 });
+      }));
+
+    it('cleans partial admission without acquiring another owner or requiring its scope to reopen', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const roles = {
+          creator: f.creator,
+          owner: f.owner,
+          channel: f.channel,
+          identity: f.identity,
+          conversationId: f.conversationId,
+        };
+        // Revocation can win after some earlier authority has already admitted this root.
+        await registerResponseTarget(mongoose, f.creator, undefined, f.entry);
+        await mongoose
+          .model('ChannelIdentity')
+          .collection.updateOne(managedTargetFilter(mongoose, f.identity.target), {
+            $set: { state: 'revoked', revision: randomUUID() },
+          });
+        expect((await registerChannelOwnership(mongoose, f.target, roles)).status).toBe('closed');
+        expect(await f.anchor(f.identity)).not.toHaveProperty('pending');
+        expect(await discardManagedAllocation(mongoose, f.target)).toBe(true);
+        await reconcileAbsentChannelOwnership(mongoose, f.target, roles);
+        expect(
+          await createResponseScopeModel(mongoose).countDocuments({
+            _id: {
+              $in: [
+                responseScopeKeys(f.creator, '')[0],
+                ...responseScopeKeys(f.owner, f.conversationId),
+              ],
+            },
+            pendingCount: { $gt: 0 },
+          }),
+        ).toBe(0);
+        const anchor = await f.anchor();
+        expect(anchor!.pendingCount ?? 0).toBe(0);
+      }));
+
+    it('settles partial admission after every authority closes only with positive absence proof', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const roles = {
+          creator: f.creator,
+          owner: f.owner,
+          channel: f.channel,
+          identity: f.identity,
+          conversationId: f.conversationId,
+        };
+        await registerChannelOwnership(mongoose, f.target, roles);
+        const scopes = createResponseScopeModel(mongoose);
+        const keys = [
+          responseScopeKeys(f.creator, '')[0],
+          ...responseScopeKeys(f.owner, f.conversationId),
+        ];
+        await scopes.updateMany(
+          { _id: { $in: keys } },
+          { $set: { closed: true }, $inc: { revision: 1 } },
+        );
+        await mongoose
+          .model('AgentChannel')
+          .collection.updateOne(managedTargetFilter(mongoose, f.channel.target), {
+            $set: { status: 'disabled', revision: randomUUID() },
+          });
+        await mongoose
+          .model('ChannelIdentity')
+          .collection.updateOne(managedTargetFilter(mongoose, f.identity.target), {
+            $set: { state: 'revoked', revision: randomUUID() },
+          });
+        await reconcileAbsentChannelOwnership(mongoose, f.target, roles);
+        expect(
+          await scopes.countDocuments({ _id: { $in: keys }, closed: true, pendingCount: 1 }),
+        ).toBe(3);
+        expect(await f.anchor()).toMatchObject({ pendingCount: 1 });
+        expect(await f.anchor(f.identity)).toMatchObject({ pendingCount: 1 });
+        await discardManagedAllocation(mongoose, f.target);
+        await reconcileAbsentChannelOwnership(mongoose, f.target, roles);
+        await reconcileAbsentChannelOwnership(mongoose, f.target, roles);
+        expect(
+          await scopes.countDocuments({ _id: { $in: keys }, closed: true, pendingCount: 0 }),
+        ).toBe(3);
+        expect(await f.anchor()).toMatchObject({ pendingCount: 0 });
+        expect(await f.anchor(f.identity)).toMatchObject({ pendingCount: 0 });
+      }));
+
+    it('allows explicit strict-mode cleanup without granting system-context publication', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const roles = {
+          creator: f.creator,
+          owner: f.owner,
+          channel: f.channel,
+          identity: f.identity,
+          conversationId: f.conversationId,
+        };
+        await registerChannelOwnership(mongoose, f.target, roles);
+        const scopes = createResponseScopeModel(mongoose);
+        const keys = [
+          responseScopeKeys(f.creator, '')[0],
+          ...responseScopeKeys(f.owner, f.conversationId),
+        ];
+        await scopes.updateMany(
+          { _id: { $in: keys } },
+          { $set: { closed: true }, $inc: { revision: 1 } },
+        );
+        const previous = process.env.TENANT_ISOLATION_STRICT;
+        process.env.TENANT_ISOLATION_STRICT = 'true';
+        _resetStrictCache();
+        try {
+          await tenantStorage.run({ tenantId: tenantId || SYSTEM_TENANT_ID }, async () => {
+            if (!tenantId)
+              await expect(registerChannelOwnership(mongoose, f.target, roles)).rejects.toThrow(
+                'scope',
+              );
+            await reconcileAbsentChannelOwnership(mongoose, f.target, roles);
+            expect(await scopes.countDocuments({ _id: { $in: keys }, pendingCount: 1 })).toBe(3);
+            await discardManagedAllocation(mongoose, f.target);
+            await reconcileAbsentChannelOwnership(mongoose, f.target, roles);
+            expect(
+              await scopes.countDocuments({ _id: { $in: keys }, closed: true, pendingCount: 0 }),
+            ).toBe(3);
+          });
+        } finally {
+          if (previous === undefined) delete process.env.TENANT_ISOLATION_STRICT;
+          else process.env.TENANT_ISOLATION_STRICT = previous;
+          _resetStrictCache();
+        }
+      }));
+
+    it('retains closed-owner discovery until domain erasure proves exact physical absence', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const roles = {
+          creator: f.creator,
+          owner: f.owner,
+          channel: f.channel,
+          identity: f.identity,
+          conversationId: f.conversationId,
+        };
+        await registerChannelOwnership(mongoose, f.target, roles);
+        const scopes = createResponseScopeModel(mongoose);
+        const key = responseScopeKeys(f.owner, '')[0];
+        await scopes.updateOne({ _id: key }, { $set: { closed: true }, $inc: { revision: 1 } });
+        await settleChannelOwnership(mongoose, f.target, roles);
+        // Hidden ownerless metadata still physically exists, so it remains a cleanup obligation.
+        expect(await reconcileErasedResponseTargets(mongoose, f.owner, [])).toBe(0);
+        expect(await scopes.findById(key).lean()).toMatchObject({ pendingCount: 1 });
+        await discardManagedAllocation(mongoose, f.target);
+        expect(await reconcileErasedResponseTargets(mongoose, f.owner, [])).toBe(1);
+        expect(await reconcileErasedResponseTargets(mongoose, f.owner, [])).toBe(0);
+        expect(await scopes.findById(key).lean()).toMatchObject({ pendingCount: 0 });
+        // A delayed private CAS cannot recreate the erased physical root.
+        expect(
+          (
+            await mongoose.model('ChannelRun').updateOne(
+              managedTargetFilter(mongoose, f.target),
+              {
+                $set: {
+                  ...channelOwnershipFields(mongoose, f.target, roles),
+                  '_managed.phase': 'published',
+                },
+              },
+              { upsert: false },
+            )
+          ).matchedCount,
+        ).toBe(0);
+      }));
   });
 });
