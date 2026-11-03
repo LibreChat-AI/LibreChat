@@ -43,6 +43,20 @@ export function assertManagedTenant(tenantId: string | undefined): void {
     throw new TypeError('Managed target tenant does not match the active scope');
 }
 
+/** Tenantless cleanup requires deliberate system scope, never an unscoped strict-mode bypass. */
+export function assertManagedCleanupTenant(tenantId: string | undefined): void {
+  if (getTenantId() === SYSTEM_TENANT_ID && !tenantId) return;
+  assertManagedTenant(tenantId);
+}
+
+function managedCleanupTargetFilter(
+  mongoose: typeof import('mongoose'),
+  target: ManagedStorageTarget,
+) {
+  assertManagedCleanupTenant(target.tenantId);
+  return managedTargetPredicate(mongoose, target);
+}
+
 export function canonicalConversationFilter(
   mongoose: typeof import('mongoose'),
   target: CanonicalConversationTarget,
@@ -141,7 +155,7 @@ export async function discardManagedAllocation(
   mongoose: typeof import('mongoose'),
   target: ManagedStorageTarget,
 ): Promise<boolean> {
-  const filter = managedTargetFilter(mongoose, target);
+  const filter = managedCleanupTargetFilter(mongoose, target);
   const allocation = {
     ...filter,
     [identityFields[target.kind]]: `${ALLOCATION_PREFIX}${target.id.toLowerCase()}`,
@@ -234,7 +248,7 @@ export async function retireManagedAllocation(
   target: ManagedStorageTarget,
   parentId: string,
 ): Promise<boolean> {
-  const filter = managedTargetFilter(mongoose, target);
+  const filter = managedCleanupTargetFilter(mongoose, target);
   if (!/^[a-f\d]{24}$/i.test(parentId)) throw new TypeError('Invalid managed parent identity');
   const collection = mongoose.model(managedTargetModels[target.kind]).collection;
   const retired = await collection.updateOne(

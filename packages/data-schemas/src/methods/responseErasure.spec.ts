@@ -319,6 +319,73 @@ describe.each(engines)('Response deletion discovery on %s', (engine) => {
         });
       }),
   );
+  it.each(['all', 'specific'] as const)(
+    'cleans captured history payload partitions under strict isolation (%s)',
+    (mode) =>
+      scope(async () => {
+        const fixtures = [
+          { user: owner.userId, tenantId: owner.tenantId },
+          { user: owner.userId, tenantId: undefined },
+          { user: owner.userId, tenantId: 'other-tenant' },
+          { user: 'other-user', tenantId: undefined },
+        ].map((partition) => ({ ...partition, conversationId: randomUUID() }));
+        await runAsSystem(async () => {
+          for (const fixture of fixtures) {
+            await mongoose.models.Conversation.create({ ...fixture, endpoint: 'agents' });
+            await mongoose.models.Message.create({
+              ...fixture,
+              messageId: `${fixture.conversationId}:assistant`,
+              text: 'private history',
+              subagentContent: { version: 1, throughRevision: 1 },
+            });
+            await mongoose.models.SubagentContent.create({
+              ...fixture,
+              _id: randomUUID(),
+              parentConversationId: fixture.conversationId,
+              taskId: fixture.conversationId,
+              revision: 1,
+              fragment: 0,
+              fragments: 1,
+              fromSequence: 0,
+              throughSequence: 1,
+              digest: 'fixture',
+              payload: 'private tool result',
+            });
+            await mongoose.models.ToolApprovalGrant.create({
+              ...fixture,
+              agentId: 'agent',
+              toolName: 'private-tool',
+            });
+          }
+        });
+        await withStrictTenants(async () => {
+          const result = await methods.deleteConvos(
+            owner.userId,
+            mode === 'all' ? {} : { conversationId: fixtures[0].conversationId },
+          );
+          expect(result.messages.deletedCount).toBe(mode === 'all' ? 2 : 1);
+          await runAsSystem(async () => {
+            for (const [index, fixture] of fixtures.entries()) {
+              const expected = index === 0 || (mode === 'all' && index === 1) ? 0 : 1;
+              for (const model of [
+                'Conversation',
+                'Message',
+                'SubagentContent',
+                'ToolApprovalGrant',
+              ]) {
+                expect(
+                  await mongoose.models[model].countDocuments({
+                    user: fixture.user,
+                    conversationId: fixture.conversationId,
+                    tenantId: fixture.tenantId || { $in: [null, ''] },
+                  }),
+                ).toBe(expected);
+              }
+            }
+          });
+        });
+      }),
+  );
   it('keeps strict legacy cleanup pending until the exact enrolled writer settles', () =>
     scope(async () => {
       const legacyOwner = { userId: owner.userId };

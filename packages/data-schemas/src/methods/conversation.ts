@@ -4308,6 +4308,32 @@ export function createConversationMethods(
         }
         return groups;
       };
+      const inDeletionPartitions = async <T>(
+        wave: DeletionConversation[],
+        operation: (
+          scope: Pick<FilterQuery<IMessage>, 'user' | 'tenantId' | 'conversationId'>,
+        ) => PromiseLike<T>,
+      ): Promise<T[]> => {
+        if (!clearAll)
+          return [
+            await operation({
+              user,
+              conversationId: { $in: wave.map((row) => row.conversationId) },
+            }),
+          ];
+        return runAsSystem(async () => {
+          const results: T[] = [];
+          for (const [tenantId, ids] of responseGroups(wave))
+            results.push(
+              await operation({
+                user,
+                tenantId: tenantId || { $in: [null, ''] },
+                conversationId: { $in: ids },
+              }),
+            );
+          return results;
+        });
+      };
       const closeResponses = async (wave: DeletionConversation[]) => {
         for (const [tenantId, ids] of responseGroups(wave))
           await closeResponseScopes(mongoose, { userId: user, tenantId }, ids);
@@ -4434,10 +4460,7 @@ export function createConversationMethods(
         await options?.beforeDelete?.(waveIds);
         await deps?.prepareAgentTriggerConversationResultErasure?.(user, waveIds);
         await retryCascadeOperation(() =>
-          prepareSubagentContentDeletion(mongoose, {
-            user,
-            conversationId: { $in: waveIds },
-          }),
+          inDeletionPartitions(wave, (scope) => prepareSubagentContentDeletion(mongoose, scope)),
         );
         // Fence paused projection writers before normal deletion owns counts, tags and projects.
         for (const [tenantId, ids] of responseGroups(wave))
@@ -4476,13 +4499,16 @@ export function createConversationMethods(
         }
         // Physical Root cleanup follows ordinary accounting, including on a pending retry.
         await eraseResponses(wave);
-        pending = await retryCascadeOperation(() =>
-          Conversation.find({
+        const readDescendants = async () =>
+          await Conversation.find({
             user,
+            ...(clearAll && { tenantId: historyPartitions }),
             'subagentThread.parentConversationId': { $in: waveIds },
           })
             .select('conversationId tenantId chatProjectId tags')
-            .lean<DeletionConversation[]>(),
+            .lean<DeletionConversation[]>();
+        pending = await retryCascadeOperation(() =>
+          clearAll ? runAsSystem(readDescendants) : readDescendants(),
         );
       }
 
@@ -4520,21 +4546,28 @@ export function createConversationMethods(
        * `conversationIds` that downstream cleanup (e.g. agent-checkpoint pruning)
        * needs, with no way to recover them on retry (the query finds nothing).
        */
+      const cleanupWave = [
+        ...recoveryConversationIds.map((conversationId) => ({ conversationId })),
+        ...deletedConversations,
+      ];
       let deleteMessagesResult: DeleteResult = { acknowledged: false, deletedCount: 0 };
       try {
-        deleteMessagesResult = await deleteMessages({
-          conversationId: { $in: conversationIds },
-          user,
-        });
+        const results = await inDeletionPartitions(cleanupWave, (scope) => deleteMessages(scope));
+        deleteMessagesResult = clearAll
+          ? {
+              acknowledged: results.every((result) => result.acknowledged),
+              deletedCount: results.reduce((total, result) => total + result.deletedCount, 0),
+            }
+          : results[0];
       } catch (error) {
         logger.error('[deleteConvos] Conversations deleted but message cleanup failed', error);
       }
 
       try {
-        await mongoose.models.ToolApprovalGrant?.deleteMany({
-          user,
-          conversationId: { $in: conversationIds },
-        });
+        if (mongoose.models.ToolApprovalGrant)
+          await inDeletionPartitions(cleanupWave, (scope) =>
+            mongoose.models.ToolApprovalGrant.deleteMany(scope),
+          );
       } catch {
         logger.warn('[deleteConvos] Remembered approval cleanup failed.');
       }

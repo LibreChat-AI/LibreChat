@@ -161,6 +161,42 @@ describe.each(engines)('Response maintenance on %s', (engine) => {
     ).toBe(true);
   }
 
+  it('retires tenantless expired work through cleanup authority before reading any payload', async () => {
+    const reserved = await tenantStorage.run({ tenantId: undefined }, async () =>
+      storage.reserve({
+        userId: owner.userId,
+        responseId: createManagedMessageId(),
+        conversationId: createManagedConversationId(),
+        agentId: 'agent',
+        requestKey: randomUUID(),
+        fingerprint: randomUUID(),
+        parentMessageId: 'root',
+        requestJSON: '{"input":"private"}',
+      }),
+    );
+    if (!reserved.ok) throw new Error('Reservation failed');
+    await runAsSystem(async () => {
+      await mongoose.models.StoredResponse.updateOne(
+        {
+          _id: reserved.record.storageTarget!.id,
+          tenantId: { $in: [null, ''] },
+        },
+        { $set: { expiredAt: new Date(0) } },
+      );
+    });
+    const read = jest.spyOn(storage, 'read');
+    const recovered = maintenance();
+    await recovered.outbox.recoverPending(1, { found: false });
+    expect(read).not.toHaveBeenCalled();
+    expect(recovered.enqueue).not.toHaveBeenCalled();
+    expect(recovered.onError).not.toHaveBeenCalled();
+    await runAsSystem(async () => {
+      expect(
+        await mongoose.models.StoredResponse.exists({ _id: reserved.record.storageTarget!.id }),
+      ).toBeNull();
+    });
+  });
+
   it('finishes a prepared answer and provider release after dispatch settled, without polling or executing again', () =>
     scope(async () => {
       const f = await fixture();

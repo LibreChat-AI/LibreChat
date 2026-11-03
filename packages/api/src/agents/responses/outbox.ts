@@ -84,6 +84,17 @@ export function createResponseDispatchOutbox(deps: {
       for (const owner of page.responses) {
         await tenantStorage.run({ tenantId: owner.tenantId || undefined }, async () => {
           try {
+            // Historic tenantless cleanup must not depend on an ordinary payload read,
+            // which strict isolation intentionally refuses without a tenant principal.
+            if (!owner.tenantId) {
+              const retired = await runAsSystem(async () => {
+                const identity = await deps.storage.readCleanupIdentity(owner, owner.responseId);
+                if (!identity?.retirement) return false;
+                if ((await deps.retire(owner)) === 'stopped') progress++;
+                return true;
+              });
+              if (retired) return;
+            }
             let record = await deps.storage.read(owner, owner.responseId);
             if (!record) {
               const identity = await deps.storage.readCleanupIdentity(owner, owner.responseId);

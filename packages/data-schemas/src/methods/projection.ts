@@ -13,6 +13,7 @@ import {
   allocateManagedTarget,
   discardManagedAllocation,
   assertManagedTenant,
+  assertManagedCleanupTenant,
   managedTargetFilter,
   managedPublicationFilter,
   pinManagedTarget,
@@ -413,7 +414,9 @@ export async function discardResponseTargetOrphans(
   allocations: Array<{ target: ManagedTarget; state: ManagedState }>,
 ): Promise<number> {
   if (!allocations.length) return 0;
-  assertManagedTenant(tenantId);
+  assertManagedCleanupTenant(tenantId);
+  if (allocations.some(({ target }) => (target.tenantId || undefined) !== (tenantId || undefined)))
+    throw new TypeError('Managed cleanup target tenant mismatch');
   const parentIds = [
     ...new Set(
       allocations.map(({ state }) => {

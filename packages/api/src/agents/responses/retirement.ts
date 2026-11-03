@@ -300,6 +300,10 @@ export function createResponseRetirement(
     return terminal(completed) ? 'stopped' : 'pending';
   }
   return async (owner, responseId, retained) => {
+    // Closed or expired work already has cleanup authority; do not require a
+    // publication-capable cancellation write before using that narrower authority.
+    const alreadyRetired = await finishRetired(owner, responseId, false, retained);
+    if (alreadyRetired) return alreadyRetired;
     let record = await deps.storage.requestCancellation(
       owner,
       responseId,

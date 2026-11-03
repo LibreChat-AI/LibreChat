@@ -2,8 +2,8 @@ import type { DurableStorageConfig } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { ManagedState, ManagedTargetKind } from '~/types/managed';
 import { discardManagedAllocation, retireManagedAllocation, managedTargetModels } from './managed';
+import { runAsSystem, tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { ALLOCATION_PREFIX, includeManagedAllocations } from '~/utils/managed';
-import { runAsSystem, tenantStorage } from '~/config/tenantContext';
 import { discardResponseTargetOrphans } from './projection';
 
 interface AllocationMetadata {
@@ -30,29 +30,30 @@ export function createResponseAllocationReclaimer(
     const field = identities[kind];
     const { allocationGraceMs } = await getConfig();
     // Only allocator metadata crosses system scope, never a request, answer or credential.
-    const rows = await runAsSystem(() =>
-      includeManagedAllocations(
-        mongoose.model<AllocationMetadata>(managedTargetModels[kind]).find({
-          [field]: {
-            $gt: `${ALLOCATION_PREFIX}${cursors[kind] ?? ''}`,
-            $lt: `${ALLOCATION_PREFIX}\uffff`,
-          },
-          user: { $exists: false },
-          ...(kind === 'response' ? { userId: { $exists: false } } : {}),
-          createdAt: { $lte: new Date(Math.max(0, Date.now() - allocationGraceMs)) },
-          '_managed.phase': {
-            $in:
-              kind === 'response'
-                ? ['empty', 'registered', 'retired']
-                : ['empty', 'pinned', 'registering', 'registered', 'retired'],
-          },
-        }),
-      )
-        .select({ _id: 1, tenantId: 1, _managed: 1 })
-        .sort({ [field]: 1 })
-        .limit(limit + 1)
-        .read('primary')
-        .lean(),
+    const rows = await runAsSystem(
+      async () =>
+        await includeManagedAllocations(
+          mongoose.model<AllocationMetadata>(managedTargetModels[kind]).find({
+            [field]: {
+              $gt: `${ALLOCATION_PREFIX}${cursors[kind] ?? ''}`,
+              $lt: `${ALLOCATION_PREFIX}\uffff`,
+            },
+            user: { $exists: false },
+            ...(kind === 'response' ? { userId: { $exists: false } } : {}),
+            createdAt: { $lte: new Date(Math.max(0, Date.now() - allocationGraceMs)) },
+            '_managed.phase': {
+              $in:
+                kind === 'response'
+                  ? ['empty', 'registered', 'retired']
+                  : ['empty', 'pinned', 'registering', 'registered', 'retired'],
+            },
+          }),
+        )
+          .select({ _id: 1, tenantId: 1, _managed: 1 })
+          .sort({ [field]: 1 })
+          .limit(limit + 1)
+          .read('primary')
+          .lean(),
     );
     const page = rows.slice(0, limit);
     if (page.length) activity.found = true;
@@ -65,7 +66,7 @@ export function createResponseAllocationReclaimer(
       partitions.set(tenantId, partition);
     }
     for (const [tenantId, partition] of partitions) {
-      await tenantStorage.run({ tenantId }, async () => {
+      await tenantStorage.run({ tenantId: tenantId || SYSTEM_TENANT_ID }, async () => {
         const orphans: Parameters<typeof discardResponseTargetOrphans>[2] = [];
         for (const row of partition) {
           const target = {
