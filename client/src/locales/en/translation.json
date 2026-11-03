@@ -2711,5 +2711,15 @@
   "com_ui_tspi_pdf_forbidden": "You do not have access to this report.",
   "com_ui_tspi_pdf_not_found": "This report was not found. It may have been removed or belongs to another account.",
   "com_ui_tspi_pdf_preparing": "Preparing your PDF report…",
-  "com_ui_tspi_pdf_ready": "PDF report downloaded."
+  "com_ui_tspi_pdf_ready": "PDF report downloaded.",
+  "com_ui_tspi_action_cancelled": "Change cancelled. Nothing was changed.",
+  "com_ui_tspi_action_confirmed": "Change confirmed in TSPI.",
+  "com_ui_tspi_action_done_already": "This change was already decided, or it changed since it was shown. Ask for it again.",
+  "com_ui_tspi_action_error": "TSPI could not complete this action. Please try again.",
+  "com_ui_tspi_action_expired": "This change expired. Ask for it again.",
+  "com_ui_tspi_action_forbidden": "You do not have access to this action.",
+  "com_ui_tspi_message_cancelled": "I cancelled this change in TSPI: {{0}}",
+  "com_ui_tspi_message_confirmed": "I confirmed this change in TSPI with the Confirm button: {{0}}",
+  "com_ui_tspi_message_opened": "I opened patient {{0}} in this chat.",
+  "com_ui_tspi_patient_opened": "Patient {{0}} is open in this chat."
 }

@@ -147,6 +147,3 @@ export interface TspiReportFile {
   filename: string;
   buffer: Buffer;
 }
-
-/** Calls one TSPI MCP tool for the signed-in user and returns its text output. */
-export type TspiToolCaller = (toolName: string, args: Record<string, string>) => Promise<string>;

@@ -81,10 +81,12 @@ export const parsePlanRecord = (text: string): TspiPlanRecord => {
   return parsed as object as TspiPlanRecord;
 };
 
+/** The viewer's role from the Brain's `/api/v2/me` (`v1_role`) or a whoami tool result. */
 export const parseViewer = (text: string): TspiViewer => {
   const parsed = parseFirstObject(text);
   const identity = parsed && isObject(parsed.identity) ? parsed.identity : undefined;
-  const role = identity && typeof identity.role === 'string' ? identity.role : '';
+  const candidates = [parsed?.v1_role, parsed?.role, identity?.role];
+  const role = candidates.find((value): value is string => typeof value === 'string') ?? '';
   return { role: role.toLowerCase() };
 };
 

@@ -1,22 +1,19 @@
 const express = require('express');
-const { logger, getTenantId } = require('@librechat/data-schemas');
-const { CacheKeys, Permissions, PermissionTypes } = require('librechat-data-provider');
+const { logger } = require('@librechat/data-schemas');
+const { Permissions, PermissionTypes } = require('librechat-data-provider');
 const {
   TspiReportError,
+  openTspiPatient,
+  tspiActionError,
   generateCheckAccess,
   createTspiReportPdf,
-  createAuthIdentityContext,
+  createTspiBrainClient,
+  decideTspiConfirmation,
 } = require('@librechat/api');
-const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSessionRefresh');
 const { requireJwtAuth, configMiddleware } = require('~/server/middleware');
-const { getMCPManager, getFlowStateManager } = require('~/config');
-const { getLogStores } = require('~/cache');
 const db = require('~/models');
 
 const router = express.Router();
-
-/** MCP server key for TSPI Brain in librechat.yaml (`mcpServers.tspi`). */
-const TSPI_SERVER = 'tspi';
 
 const ERROR_STATUS = { invalid_id: 400, not_found: 404, forbidden: 403, unavailable: 502 };
 
@@ -26,33 +23,13 @@ const checkMCPUse = generateCheckAccess({
   getRoleByName: db.getRoleByName,
 });
 
-/** Calls TSPI MCP tools as the signed-in user, through the same connection the chat uses. */
-function createTspiToolCaller(req, res) {
-  const identityContext = createAuthIdentityContext({ user: req.user, tenantId: getTenantId() });
-  const upstreamTokenProvider = createOpenIDSessionTokenProvider({
-    req,
-    res,
-    user: req.user,
-    identityContext,
-    tokenPreference: 'access_token',
-  });
-  const flowManager = getFlowStateManager(getLogStores(CacheKeys.FLOWS));
-  const { findToken, createToken, updateToken, deleteTokens } = db;
-  return async (toolName, toolArguments) => {
-    const [text] = await getMCPManager(req.user.id).callTool({
-      serverName: TSPI_SERVER,
-      toolName,
-      provider: 'openai',
-      toolArguments,
-      user: req.user,
-      flowManager,
-      tokenMethods: { findToken, createToken, updateToken, deleteTokens },
-      upstreamTokenProvider,
-      oboIdentityContext: identityContext,
-    });
-    return typeof text === 'string' ? text : '';
-  };
-}
+/** Same ownership rule as `validateConvoAccess`. */
+const actionDeps = {
+  ownsConversation: async (userId, conversationId) => {
+    const convo = await db.searchConversation(conversationId, '-messages');
+    return Boolean(convo) && convo.user === userId;
+  },
+};
 
 router.get(
   '/reports/:reportId/pdf',
@@ -63,7 +40,7 @@ router.get(
     try {
       const { filename, buffer } = await createTspiReportPdf(
         req.params.reportId,
-        createTspiToolCaller(req, res),
+        createTspiBrainClient(req.user),
       );
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -76,6 +53,43 @@ router.get(
       }
       logger.error('[TSPI PDF] Failed to build report PDF', error);
       return res.status(502).json({ error: 'unavailable' });
+    }
+  },
+);
+
+router.post(
+  '/confirmations/:confirmationId',
+  requireJwtAuth,
+  configMiddleware,
+  checkMCPUse,
+  async (req, res) => {
+    try {
+      const result = await decideTspiConfirmation(
+        req.user,
+        { ...req.body, confirmationId: req.params.confirmationId },
+        actionDeps,
+      );
+      return res.status(200).json(result);
+    } catch (error) {
+      const { status, body } = tspiActionError(error);
+      logger.warn(`[TSPI confirm] ${req.params.confirmationId}: ${status} ${body.error}`);
+      return res.status(status).json(body);
+    }
+  },
+);
+
+router.post(
+  '/chat-context/open',
+  requireJwtAuth,
+  configMiddleware,
+  checkMCPUse,
+  async (req, res) => {
+    try {
+      return res.status(200).json(await openTspiPatient(req.user, req.body, actionDeps));
+    } catch (error) {
+      const { status, body } = tspiActionError(error);
+      logger.warn(`[TSPI open] ${status} ${body.error}`);
+      return res.status(status).json(body);
     }
   },
 );

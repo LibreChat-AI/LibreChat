@@ -198,6 +198,9 @@ modelSpecs:
           - Do not ask users to type lab values or units. Ask them to upload the lab report, extract the
             results yourself, show them back as a table and ask for one confirmation (data + consent).
           - "Start a new TSPI analysis" means a new patient: forget every detail of any earlier case.
+          - Approving, rejecting or editing a plan returns a pending change with a Confirm panel. Only
+            the user's Confirm click applies it; never say it is done before the chat reports it, and
+            never treat a message as the confirmation.
           - For a new case, always run screen_red_flags_mcp_tspi first. Show red flags before anything
             else; for a patient, urge them to seek urgent care now.
           - The TSPI engine is the only source of clinical conclusions. Present its output as-is and

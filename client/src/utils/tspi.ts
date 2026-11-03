@@ -29,6 +29,60 @@ export function getTspiPdfReportId(result: UIActionResult): string | undefined {
   return undefined;
 }
 
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const SHA256 = /^[0-9a-f]{64}$/i;
+
+export interface TspiConfirmationAction {
+  confirmationId: string;
+  decision: 'confirm' | 'cancel';
+  payloadSha256: string;
+}
+
+export interface TspiOpenPatientAction {
+  patientId: string;
+  patientNumber?: string;
+}
+
+const intentParams = (
+  result: UIActionResult,
+  intent: string,
+): Record<string, unknown> | undefined =>
+  result.type === 'intent' && result.payload.intent === intent ? result.payload.params : undefined;
+
+/**
+ * Recognizes the TSPI Confirm / Cancel buttons on a pending change (M04). The click goes to
+ * TspiChat's own route and on to the TSPI Brain, never to the model, so the model cannot confirm.
+ */
+export function getTspiConfirmation(result: UIActionResult): TspiConfirmationAction | undefined {
+  const params = intentParams(result, 'tspi.confirmation');
+  const id = params?.confirmation_id;
+  const sha = params?.payload_sha256;
+  const decision = params?.decision;
+  if (typeof id !== 'string' || !SAFE_ID.test(id) || typeof sha !== 'string' || !SHA256.test(sha)) {
+    return undefined;
+  }
+  if (decision !== 'confirm' && decision !== 'cancel') {
+    return undefined;
+  }
+  return { confirmationId: id, decision, payloadSha256: sha };
+}
+
+/** Recognizes the TSPI Open button on a patient (M04). */
+export function getTspiOpenPatient(result: UIActionResult): TspiOpenPatientAction | undefined {
+  const params = intentParams(result, 'tspi.open_patient');
+  const id = params?.patient_id;
+  if (typeof id !== 'string' || !SAFE_ID.test(id)) {
+    return undefined;
+  }
+  const number = params?.patient_number;
+  return { patientId: id, patientNumber: typeof number === 'string' ? number : undefined };
+}
+
+/** A TSPI intent this chat handles itself; never forwarded to the model, even when malformed. */
+export function isTspiIntent(result: UIActionResult): boolean {
+  return result.type === 'intent' && /^tspi\./.test(result.payload.intent ?? '');
+}
+
 export function getAttachmentFilename(disposition: string | undefined, fallback: string): string {
   const match = /filename="?([^";]+)"?/i.exec(disposition ?? '');
   return match?.[1] ?? fallback;

@@ -1,4 +1,5 @@
 import { inflateSync } from 'zlib';
+import type { TspiBrainMe } from './brainClient';
 import type { TspiPlanRecord } from './types';
 import {
   TspiReportError,
@@ -8,7 +9,8 @@ import {
   reportFileName,
 } from './report';
 import { hiddenPlanText, labStatus, renderReportPdf, toPdfText, unmappedLabRows } from './pdf';
-import { createTspiReportPdf, TSPI_TOOLS } from './service';
+import { TspiBrainError } from './brainClient';
+import { createTspiReportPdf } from './service';
 
 const basePlan = (overrides: Partial<TspiPlanRecord> = {}): TspiPlanRecord => ({
   id: '0f34c5c43a2a499598bef3a73e7aeb54',
@@ -71,6 +73,7 @@ describe('TSPI report parsing', () => {
 
   it('reads the caller role from whoami', () => {
     expect(parseViewer('{"identity":{"role":"Patient"}}').role).toBe('patient');
+    expect(parseViewer('{"v1_role":"clinician","role":"x"}').role).toBe('clinician');
     expect(parseViewer('not json').role).toBe('');
   });
 
@@ -190,40 +193,53 @@ describe('patient view of a plan (analysis only until approval)', () => {
 });
 
 describe('createTspiReportPdf', () => {
-  it('renders a PDF from the engine output for the given report', async () => {
-    const calls: string[] = [];
-    const file = await createTspiReportPdf(
-      '0f34c5c43a2a499598bef3a73e7aeb54',
-      async (tool, args) => {
-        calls.push(tool);
-        if (tool === TSPI_TOOLS.whoami) {
-          return '{"identity":{"role":"patient"}}';
-        }
-        expect(args).toEqual({ report_id: '0f34c5c43a2a499598bef3a73e7aeb54' });
-        return JSON.stringify(approvedPlan());
-      },
+  const brainWith = (report: () => Promise<TspiPlanRecord>, me: () => Promise<TspiBrainMe>) => ({
+    getReport: jest.fn(report),
+    getMe: jest.fn(me),
+  });
+
+  it('renders a PDF from the Brain REST API for the given report', async () => {
+    const brain = brainWith(
+      async () => approvedPlan(),
+      async () => ({ v1_role: 'patient' }),
     );
-    expect(calls.sort()).toEqual([TSPI_TOOLS.getTreatmentPlan, TSPI_TOOLS.whoami].sort());
+    const file = await createTspiReportPdf('0f34c5c43a2a499598bef3a73e7aeb54', brain);
+    expect(brain.getReport).toHaveBeenCalledWith('0f34c5c43a2a499598bef3a73e7aeb54');
+    expect(brain.getMe).toHaveBeenCalledTimes(1);
     expect(file.filename).toMatch(/_APPROVED\.pdf$/);
     expect(file.buffer.subarray(0, 5).toString()).toBe('%PDF-');
     expect(file.buffer.length).toBeGreaterThan(2000);
   });
 
-  it('still renders when whoami fails', async () => {
-    const file = await createTspiReportPdf('abc123', async (tool) => {
-      if (tool === TSPI_TOOLS.whoami) {
+  it('still renders when the viewer lookup fails', async () => {
+    const brain = brainWith(
+      async () => basePlan({ id: 'abc123' }),
+      async () => {
         throw new Error('down');
-      }
-      return JSON.stringify(basePlan({ id: 'abc123' }));
-    });
+      },
+    );
+    const file = await createTspiReportPdf('abc123', brain);
     expect(file.filename).toMatch(/_DRAFT\.pdf$/);
   });
 
-  it('rejects malformed report ids before calling the engine', async () => {
-    const callTool = jest.fn();
-    await expect(createTspiReportPdf('../etc', callTool)).rejects.toMatchObject({
+  it('maps Brain refusals to report errors', async () => {
+    const brain = brainWith(
+      async () => {
+        throw new TspiBrainError('forbidden', 403, 'no');
+      },
+      async () => ({}),
+    );
+    await expect(createTspiReportPdf('abc123', brain)).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  it('rejects malformed report ids before calling the Brain', async () => {
+    const brain = brainWith(
+      async () => basePlan(),
+      async () => ({}),
+    );
+    await expect(createTspiReportPdf('../etc', brain)).rejects.toMatchObject({
       code: 'invalid_id',
     });
-    expect(callTool).not.toHaveBeenCalled();
+    expect(brain.getReport).not.toHaveBeenCalled();
   });
 });

@@ -61,6 +61,11 @@ Deployment steps for the chat and the AI platform, with smoke tests:
   someone a Brain admin. `sync-brain` pushes every account (used once at the M02 cutover).
 - **Token claims (M02):** tokens carry `sub`, `scope`, `role` and `tspi_uid` only; clinic, email and
   name now come from the Brain. `TSPI_MCP_TOKEN_LEGACY_CLAIMS=true` adds them back for a rollback.
+- **M04 claims and audiences:** a tool call's token adds `cnv`, the conversation the call belongs to
+  (taken from the server-built MCP request body). The TSPI Brain binds the open patient to (user,
+  conversation). TspiChat's own routes (PDF, Confirm, Open) mint `aud=tspi-api`
+  (`TSPI_BRAIN_JWT_AUDIENCE`) and call the Brain at `TSPI_BRAIN_URL` directly; the Brain accepts that
+  audience without the MCP's service key, and no MCP tool call can carry it.
 - **Rollback:** restore the old env (OPENID_* on the chat, WorkOS-only on the MCP) and the previous
   images.
 

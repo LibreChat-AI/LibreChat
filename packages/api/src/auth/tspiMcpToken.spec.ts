@@ -140,6 +140,16 @@ describe('tspiMcpToken', () => {
       expect(decode(token).payload.sub).toBe(clinician.id);
     });
 
+    it('puts the tool call conversation in cnv (M04)', () => {
+      const out = processMCPEnv({
+        options: yamlServer,
+        user: clinician as never,
+        body: { conversationId: 'convo-123', messageId: 'm1' },
+      }) as typeof yamlServer;
+      const token = out.headers.Authorization.replace('Bearer ', '');
+      expect(decode(token).payload).toMatchObject({ cnv: 'convo-123', aud: 'tspi-mcp' });
+    });
+
     it('never mints for a user-created (DB) server', () => {
       const out = processMCPEnv({
         options: { ...yamlServer, dbId: 'abc' },

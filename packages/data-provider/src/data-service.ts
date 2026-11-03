@@ -879,6 +879,20 @@ export const getTspiReportPdf = async (reportId: string): Promise<AxiosResponse<
   });
 };
 
+/** The Confirm or Cancel click on a TSPI pending change (M04); never sent to the model. */
+export const decideTspiConfirmation = (
+  confirmationId: string,
+  body: { conversationId: string; decision: 'confirm' | 'cancel'; payloadSha256: string },
+): Promise<{ confirmation_id: string; status: string; summary: string }> =>
+  request.post(endpoints.tspiConfirmation(confirmationId), body);
+
+/** The Open click on a TSPI patient (M04): binds this conversation to the patient. */
+export const openTspiPatient = (body: {
+  conversationId: string;
+  patientId: string;
+}): Promise<{ patient: { id: string; patient_number: string } | null }> =>
+  request.post(endpoints.tspiOpenPatient(), body);
+
 export const getCodeOutputDownload = async (url: string): Promise<AxiosResponse> => {
   return request.getResponse(url, {
     responseType: 'blob',

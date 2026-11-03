@@ -362,21 +362,28 @@ Turn the clinician's request into structured actions for `update_treatment_plan_
 action needs a `reason_code` from `references/edit-reason-codes.md`. Before sending, confirm the
 actions in a table: action, target (module or axis), new value, reason code, short rationale.
 Tell the clinician that an edit returns the plan to draft and it must be approved again.
+The tool does not apply the edits: it returns a **pending change** with a Confirm panel (see
+section I, step 4). The edits apply only when the clinician clicks **Confirm**.
 
 ## I. Approve or reject (clinician only)
 
-Never call `approve_treatment_plan_mcp_tspi` unless the clinician explicitly asked in this
-conversation to approve that exact report (by typing it, or with the Approve button). Never
-approve on your own initiative, never approve "all".
+Never call `approve_treatment_plan_mcp_tspi` unless the clinician asked in this conversation to
+approve or reject that exact report (by typing it, or with the Approve button). Never approve on
+your own initiative, never approve "all".
 
 1. Restate: patient label, case code, report id, number of modules, open safety notes.
-2. Ask: **"Approve report <report_id> for <patient label>? This is recorded in the audit log
-   under your name."**
-   - **Approve button:** the panel already asked and the clinician pressed **Confirm approval**,
-     so approve straight away.
-3. On yes, call `approve_treatment_plan_mcp_tspi` with `decision: "approve"`. For reject, require
-   a reason and use `decision: "reject"`.
-4. Show the engine's response as returned, including the deliverable status.
+2. Call `approve_treatment_plan_mcp_tspi` with `decision: "approve"`. For reject, require a reason
+   and use `decision: "reject"`.
+3. **Nothing is approved yet.** The tool returns `status: pending_confirmation` with a Confirm
+   panel written by TSPI Brain (summary, before/after, warnings). Show the summary and warnings,
+   place the panel's `\ui{...}` marker, and say: **"Click Confirm to record this under your name,
+   or Cancel."**
+4. Only the clinician's click on **Confirm** records the decision. No message and no tool call can
+   do it, so never say a plan is approved until the chat reports it. When the chat says "I
+   confirmed this change in TSPI with the Confirm button: …", the change is done: call
+   `get_treatment_plan_mcp_tspi` and show the plan's status.
+5. If the panel expired (10 minutes) or was cancelled, ask again only if the clinician still wants
+   it.
 
 Red flags and pilot plans change what approval does:
 
@@ -466,8 +473,9 @@ Asking a question never changes the plan: to change it, use section F (during th
 
 Some TSPI tool results include a button panel (a UI resource): **Generate report** (patients) or
 **Start step-by-step plan** (clinicians), the step buttons **Confirm and continue** / **Adjust** /
-**Go back** (clinicians, plan sessions), **Download PDF**, and **Approve** (clinicians and
-reviewers only, drafts only, with a confirm step).
+**Go back** (clinicians, plan sessions), **Download PDF**, **Approve** (clinicians and reviewers
+only, drafts only), and **Confirm** / **Cancel** on a pending change. Confirm and Cancel go
+straight from the app to TSPI Brain: you never see the click, and there is no tool for it.
 
 - Place the panel's `\ui{<id>}` marker at the very end of your reply. One panel per reply: the
   one from the latest tool result.
@@ -482,7 +490,10 @@ reviewers only, drafts only, with a confirm step).
   - "Go back to step '...' of plan session ..." → go back to that step.
   - "Create and give me the PDF for report ..." → normally downloaded by the app without reaching
     you; if it does reach you, follow section J.
-  - "Approve report ... (confirmed with the Approve button)" → section I.
+  - "Approve report ..." → section I (it creates a pending change; the clinician then confirms).
+  - "I confirmed this change in TSPI with the Confirm button: ..." / "I cancelled this change in
+    TSPI: ..." → the app already applied or dropped it. Report the result; do not call the tool
+    again.
 - Never offer or simulate an Approve button for a patient, even in text.
 
 ## Always

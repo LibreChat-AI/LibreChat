@@ -440,6 +440,11 @@ export const runSchedule = (id: string) => `${schedule(id)}/run`;
 export const tspiReportPdf = (reportId: string) =>
   `${BASE_URL}/api/tspi/reports/${encodeURIComponent(reportId)}/pdf`;
 
+export const tspiConfirmation = (confirmationId: string) =>
+  `${BASE_URL}/api/tspi/confirmations/${encodeURIComponent(confirmationId)}`;
+
+export const tspiOpenPatient = () => `${BASE_URL}/api/tspi/chat-context/open`;
+
 export const skills = () => `${BASE_URL}/api/skills`;
 export const importSkill = () => `${skills()}/import`;
 

@@ -1,4 +1,5 @@
-import type { TspiReportFile, TspiToolCaller } from './types';
+import type { TspiReportFile } from './types';
+import type { TspiBrainClient, TspiBrainMe } from './brainClient';
 import {
   TspiReportError,
   isValidReportId,
@@ -6,32 +7,49 @@ import {
   parseViewer,
   reportFileName,
 } from './report';
+import { TspiBrainError } from './brainClient';
 import { renderReportPdf } from './pdf';
 
-/** Upstream tool names on the TSPI MCP server (the model sees them as `<name>_mcp_tspi`). */
-export const TSPI_TOOLS = {
-  getTreatmentPlan: 'tspi_get_treatment_plan',
-  whoami: 'tspi_whoami',
-} as const;
+export type TspiReportSource = Pick<TspiBrainClient, 'getReport' | 'getMe'>;
+
+const toReportError = (error: unknown): TspiReportError => {
+  if (error instanceof TspiReportError) {
+    return error;
+  }
+  if (error instanceof TspiBrainError) {
+    const code =
+      error.code === 'not_found' || error.code === 'forbidden'
+        ? error.code
+        : error.code === 'invalid'
+          ? 'invalid_id'
+          : 'unavailable';
+    return new TspiReportError(code, error.message);
+  }
+  return new TspiReportError('unavailable', 'TSPI Brain request failed');
+};
 
 /**
- * Builds the treatment-plan PDF for one report straight from TSPI Brain, without the model.
- * The engine authorizes the read with the caller's own token, so a report the user cannot
- * open surfaces here as `forbidden` or `not_found`.
+ * Builds the treatment-plan PDF for one report straight from the TSPI Brain REST API (M04), with
+ * the signed-in user's aud=tspi-api token: no model and no MCP tool. The Brain authorizes the read,
+ * so a report the user cannot open surfaces here as `forbidden` or `not_found`.
  */
 export const createTspiReportPdf = async (
   reportId: string,
-  callTool: TspiToolCaller,
+  brain: TspiReportSource,
 ): Promise<TspiReportFile> => {
   if (!isValidReportId(reportId)) {
     throw new TspiReportError('invalid_id', 'Invalid report id');
   }
-  const [planText, whoamiText] = await Promise.all([
-    callTool(TSPI_TOOLS.getTreatmentPlan, { report_id: reportId }),
-    callTool(TSPI_TOOLS.whoami, {}).catch(() => ''),
-  ]);
-  const plan = parsePlanRecord(planText);
-  const viewer = parseViewer(whoamiText);
-  const buffer = await renderReportPdf(plan, viewer);
-  return { filename: reportFileName(plan), buffer };
+  try {
+    const [report, me] = await Promise.all([
+      brain.getReport(reportId),
+      brain.getMe().catch((): TspiBrainMe => ({})),
+    ]);
+    const plan = parsePlanRecord(JSON.stringify(report));
+    const viewer = parseViewer(JSON.stringify(me));
+    const buffer = await renderReportPdf(plan, viewer);
+    return { filename: reportFileName(plan), buffer };
+  } catch (error) {
+    throw toReportError(error);
+  }
 };

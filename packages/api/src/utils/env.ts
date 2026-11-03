@@ -338,7 +338,10 @@ function processSingleValue({
    * live token. With no user (an app-level connection) it stays literal and is stripped later.
    */
   if (!dbSourced && isHeader && user && value.includes(TSPI_MCP_TOKEN_PLACEHOLDER)) {
-    const token = mintTspiMcpToken(user as Parameters<typeof mintTspiMcpToken>[0]);
+    // M04: the tool call's conversation (from the server-built MCP request body) becomes `cnv`.
+    const token = mintTspiMcpToken(user as Parameters<typeof mintTspiMcpToken>[0], Date.now(), {
+      conversationId: typeof body?.conversationId === 'string' ? body.conversationId : undefined,
+    });
     value = value.split(TSPI_MCP_TOKEN_PLACEHOLDER).join(token);
   }
 
