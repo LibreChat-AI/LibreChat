@@ -951,9 +951,13 @@ it(
     await post(route).send({ fence: claimed.body.fence }).expect(409);
     expect((await storage.read(tenantId, 'channel', run.runId))?.leaseOwner).toBeUndefined();
     expect(invoked).toHaveLength(0);
-    const lane = await models.ChannelLane.findOne({ tenantId, laneId: run.laneId }).lean();
-    if (lane?.kind !== 'principal') throw new Error('Expected a principal lane');
-    expect(lane.activeRunId).toBe(run.runId);
+    const lane = await models.ChannelLane.findOne({
+      tenantId,
+      channelId: run.channelId,
+      kind: 'control',
+    }).lean();
+    if (lane?.kind !== 'control') throw new Error('Expected an actor control');
+    expect(lane.assignment?.run.runId).toBe(run.runId);
   }),
 );
 async function link(actor: string, user: IUser) {
@@ -1784,7 +1788,7 @@ it.each([0, 1])('keeps Stop retries bound across relinking to account %i', (targ
     const linked = await link('U1', users[0]);
     fakeNow = Date.now() + 1000;
     const admission = event();
-    await post('runs').send(admission).expect(201);
+    const first = await post('runs').send(admission).expect(201);
     await post('runs/claim').send({ owner: 'first-worker' }).expect(200);
     const stop = {
       actor: admission.actor,
@@ -1803,6 +1807,19 @@ it.each([0, 1])('keeps Stop retries bound across relinking to account %i', (targ
     await link('U1', users[target]);
     fakeNow += 1000;
     const second = await post('runs').send(event('U1', 'after-relink')).expect(201);
+    await post('runs/claim').send({ owner: 'second-worker' }).expect(204);
+    const old = (await storage.read(tenantId, 'channel', first.body.runId))!;
+    const cleanup = await storage.claimAuthorityLost(old, 'retire-old-link', fakeNow, 60000);
+    if (!cleanup) throw new Error('Expected old actor assignment retirement');
+    await storage.finishAuthorityLost(
+      tenantId,
+      {
+        runId: cleanup.runId,
+        owner: cleanup.leaseOwner!,
+        epoch: cleanup.leaseEpoch,
+      },
+      fakeNow,
+    );
     const claimed = await post('runs/claim').send({ owner: 'second-worker' }).expect(200);
     expect(claimed.body.run.runId).toBe(second.body.runId);
     await post('runs/stop-thread').send(stop).expect(200, { cancellationRequested: false });

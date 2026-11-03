@@ -56,19 +56,9 @@ describe.each(engines)('versioned Run mutations on %s', (engine) => {
       };
       const storage = createChannelRunStorage(mongoose);
       const { run } = await storage.admit(input, 100);
-      // These fixtures supply a lease; they isolate mutations and do not test lease handoff.
-      await mongoose.models.ChannelRun.updateOne(
-        { runId: run.runId },
-        {
-          $set: { leaseOwner: 'worker', leaseEpoch: 1, leaseExpiresAt: 10000 },
-          $inc: { __v: 1 },
-        },
-      );
-      await mongoose.models.ChannelLane.updateOne(
-        { laneId: run.laneId },
-        { $set: { activeRunId: run.runId } },
-      );
-      const fence = { runId: run.runId, owner: 'worker', epoch: 1 };
+      const claimed = await storage.claim(input.tenantId, channelId, 'worker', 100, 10000);
+      if (!claimed) throw new Error('Fixture claim failed');
+      const fence = { runId: run.runId, owner: 'worker', epoch: claimed.leaseEpoch };
       return { input, storage, run, fence, owner };
     }
     async function prepared() {

@@ -18,8 +18,41 @@ export type PhysicalChannelRun = ChannelRunRecord & {
   __v: number;
 };
 
+/** Scheduling and authority recovery never need prompt, snapshot, plan or delivery payloads. */
+export type ChannelRunMetadata = Pick<
+  PhysicalChannelRun,
+  | '_id'
+  | '_managed'
+  | '__v'
+  | 'tenantId'
+  | 'channelId'
+  | 'agentId'
+  | 'runId'
+  | 'laneId'
+  | 'principal'
+  | 'publication'
+  | 'sequence'
+  | 'leaseOwner'
+  | 'leaseGrantId'
+  | 'leaseEpoch'
+  | 'leaseExpiresAt'
+  | 'state'
+  | 'errorCode'
+  | 'claimCheckedAt'
+  | 'receivedAt'
+> & {
+  admission: Pick<
+    ChannelRunRecord['admission'],
+    'actor' | 'externalChannelId' | 'externalThreadKey'
+  >;
+};
+export const CHANNEL_RUN_METADATA_FIELDS: string =
+  '_id tenantId channelId agentId runId laneId principal publication sequence leaseOwner leaseGrantId leaseEpoch leaseExpiresAt state errorCode claimCheckedAt receivedAt __v admission.actor admission.externalChannelId admission.externalThreadKey +_managed';
+
 /** A captured Run can never adopt another physical record with the same public identity. */
-export function channelRunTarget(run: PhysicalChannelRun): ManagedTarget<'channelRun'> {
+export function channelRunTarget(
+  run: Pick<PhysicalChannelRun, '_id' | '_managed' | 'tenantId' | 'publication'>,
+): ManagedTarget<'channelRun'> {
   if (!run._managed?.incarnation || run._managed.phase !== 'published' || !run.publication)
     throw new Error('Channel Run publication identity unavailable');
   return {
@@ -37,6 +70,7 @@ export async function writeChannelRunPatch(
   patch: Partial<ChannelRunRecord>,
   condition: FilterQuery<ChannelRunRecord>,
   getDurableConfig: () => Promise<Partial<DurableStorageConfig>>,
+  retireLease = false,
 ): Promise<PhysicalChannelRun | null> {
   if (
     !Number.isSafeInteger(current.__v) ||
@@ -44,6 +78,8 @@ export async function writeChannelRunPatch(
     current.__v >= Number.MAX_SAFE_INTEGER
   )
     throw new Error('Channel Run write version unavailable');
+  if (retireLease && !['delivered', 'failed', 'cancelled'].includes(patch.state ?? ''))
+    throw new Error('Lease retirement requires a terminal Run');
   const model = mongoose.model<ChannelRunRecord>('ChannelRun');
   const candidate = new model({ ...current, ...patch, __v: current.__v + 1 });
   await candidate.validate();
@@ -106,6 +142,7 @@ export async function writeChannelRunPatch(
       {
         $set: { ...patch, ...conversationFields },
         $inc: { __v: 1 },
+        ...(retireLease && { $unset: { leaseOwner: 1, 'execution.encryptedApiKey': 1 } }),
         ...(admission?.status === 'registered' &&
           admission.expiredAt && {
             $min: { '_managed.expiredAt': admission.expiredAt },

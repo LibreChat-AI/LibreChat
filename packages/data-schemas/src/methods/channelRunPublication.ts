@@ -3,6 +3,7 @@ import { durableStorageConfigSchema } from 'librechat-data-provider';
 import type { DurableStorageConfig } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { ChannelRunRecord, ChannelPrincipalLaneRecord } from '~/models/channelRun';
+import type { ChannelRunMetadata, PhysicalChannelRun } from './channelRunWrite';
 import type { ManagedState, ManagedTarget } from '~/types/managed';
 import type { ChannelRunEnrollment } from './channelProtocol';
 import type { ChannelRunOwnership } from './channelOwnership';
@@ -28,11 +29,12 @@ import {
 import { createChannelRunModel, createChannelLaneModel } from '~/models/channelRun';
 import { includeManagedAllocations, ALLOCATION_PREFIX } from '~/utils/managed';
 import { createChannelLaneRootStorage } from './channelLaneRoot';
+import { CHANNEL_RUN_METADATA_FIELDS } from './channelRunWrite';
 import { digest, ChannelRunConflict } from './channelProtocol';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseScopeKeys } from './responseScope';
 
-type PhysicalRun = ChannelRunRecord & { _id: Types.ObjectId; _managed: ManagedState };
+type PhysicalRun = PhysicalChannelRun;
 interface ChannelRunPublication {
   admit(
     input: ChannelRunEnrollment,
@@ -50,7 +52,9 @@ export function createChannelRunPublication(
   const lanes = createChannelLaneModel(mongoose);
   const roots = createChannelLaneRootStorage(mongoose, getDurableConfig);
   const ensureIndexes = createChannelIndexGate(() => [runs, lanes]);
-  const physicalRun = (run: PhysicalRun): ManagedTarget<'channelRun'> => ({
+  const physicalRun = (
+    run: Pick<PhysicalRun, '_id' | '_managed' | 'tenantId'>,
+  ): ManagedTarget<'channelRun'> => ({
     kind: 'channelRun',
     id: String(run._id),
     incarnation: run._managed.incarnation,
@@ -230,7 +234,7 @@ export function createChannelRunPublication(
       );
     }
   }
-  function capturedOwnership(run: PhysicalRun): ChannelRunOwnership {
+  function capturedOwnership(run: ChannelRunMetadata): ChannelRunOwnership {
     const saved = run.publication;
     if (!saved) throw new ChannelRunConflict('invalid_transition');
     const tenantId = run.tenantId === '_' ? undefined : run.tenantId;
@@ -275,11 +279,11 @@ export function createChannelRunPublication(
       const staged = await includeManagedAllocations(
         runs.find({ tenantId, channelId, '_managed.phase': 'registered' }),
       )
-        .select('+_managed')
+        .select(CHANNEL_RUN_METADATA_FIELDS)
         .sort({ _id: 1 })
         .limit(limit)
         .read('primary')
-        .lean<PhysicalRun[]>();
+        .lean<ChannelRunMetadata[]>();
       for (const run of staged) {
         const target = physicalRun(run);
         const roles = capturedOwnership(run);

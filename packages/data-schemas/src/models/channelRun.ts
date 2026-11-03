@@ -17,6 +17,9 @@ export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision'> {
   payloadHash: string;
   receivedAt: number;
   leaseOwner?: string;
+  leaseGrantId?: string;
+  cursorState?: 'pending' | 'complete' | 'retired';
+  terminalFence?: { owner: string; epoch: number; grantId: string };
   leaseEpoch: number;
   leaseExpiresAt: number;
   /** Durable fairness stamp; not execution authority or a retry policy. */
@@ -61,6 +64,7 @@ export interface ChannelRunIdentity {
 export interface ChannelControlAssignment {
   grantId: string;
   phase: 'granting' | 'active';
+  purpose: 'work' | 'cleanup';
   run: ChannelRunIdentity;
   lane: ManagedTarget<'channelLane'>;
   principalFingerprint: string;
@@ -97,27 +101,20 @@ export interface ChannelControlLaneRecord {
 export interface ChannelPrincipalLaneRecord {
   kind: 'principal';
   revision: number;
-  fingerprint?: string;
-  channelRef?: ChannelLaneAuthorityRef<'channel'>;
+  fingerprint: string;
+  channelRef: ChannelLaneAuthorityRef<'channel'>;
   identityRef?: ChannelLaneAuthorityRef<'channelIdentity'>;
-  controlTarget?: ManagedTarget<'channelLane'>;
-  publishedThrough?: number;
+  controlTarget: ManagedTarget<'channelLane'>;
+  publishedThrough: number;
   publisher?: { run: ChannelRunIdentity; sequence: number };
   tenantId: string;
   userId: string;
   channelId: string;
   laneId: string;
   nextSequence: number;
-  activeRunId?: string;
+  handoff?: { run: ChannelRunIdentity; sequence: number };
   conversationId?: string;
   responseId?: string;
-  stopObservation?: {
-    scopeId: string;
-    eventAt: number;
-    before: number;
-    runId?: string;
-    epoch?: number;
-  };
 }
 
 export type ChannelLaneRecord = ChannelPrincipalLaneRecord | ChannelControlLaneRecord;
@@ -207,6 +204,19 @@ export function createChannelRunModel(
       sequence: { type: Number, required: true },
       receivedAt: { type: Number, required: true },
       leaseOwner: String,
+      leaseGrantId: String,
+      cursorState: { type: String, enum: ['pending', 'complete', 'retired'] },
+      terminalFence: {
+        type: new Schema(
+          {
+            owner: { type: String, required: true },
+            epoch: { type: Number, required: true },
+            grantId: { type: String, required: true },
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
       leaseEpoch: { type: Number, required: true, default: 0 },
       leaseExpiresAt: { type: Number, required: true, default: 0 },
       claimCheckedAt: { type: Number, default: 0 },
@@ -306,10 +316,16 @@ export function createChannelLaneModel(
       tenantId: { type: String, required: true },
       kind: { type: String, enum: ['principal', 'control'], required: true },
       revision: { type: Number, required: true },
-      fingerprint: { type: String, match: /^[a-f\d]{64}$/ },
-      channelRef: { type: authority, default: undefined },
+      fingerprint: { type: String, match: /^[a-f\d]{64}$/, required: true },
+      channelRef: { type: authority, required: true, default: undefined },
       identityRef: { type: authority, default: undefined },
-      controlTarget: { type: physical, default: undefined },
+      controlTarget: {
+        type: physical,
+        default: undefined,
+        required: function (this: ChannelLaneRecord) {
+          return this.kind === 'principal';
+        },
+      },
       userId: {
         type: String,
         required: function (this: ChannelLaneRecord) {
@@ -324,7 +340,12 @@ export function createChannelLaneModel(
           return this.kind === 'principal';
         },
       },
-      publishedThrough: Number,
+      publishedThrough: {
+        type: Number,
+        required: function (this: ChannelLaneRecord) {
+          return this.kind === 'principal';
+        },
+      },
       publisher: {
         type: new Schema(
           {
@@ -340,6 +361,7 @@ export function createChannelLaneModel(
           {
             grantId: { type: String, required: true },
             phase: { type: String, enum: ['granting', 'active'], required: true },
+            purpose: { type: String, enum: ['work', 'cleanup'], required: true },
             run: { type: runIdentity, required: true },
             lane: { type: physical, required: true },
             principalFingerprint: { type: String, match: /^[a-f\d]{64}$/, required: true },
@@ -367,21 +389,18 @@ export function createChannelLaneModel(
         ),
         default: undefined,
       },
-      activeRunId: String,
-      conversationId: String,
-      responseId: String,
-      stopObservation: {
+      handoff: {
         type: new Schema(
           {
-            scopeId: { type: String, required: true },
-            eventAt: Number,
-            before: Number,
-            runId: String,
-            epoch: Number,
+            run: { type: runIdentity, required: true },
+            sequence: { type: Number, required: true },
           },
           { _id: false },
         ),
+        default: undefined,
       },
+      conversationId: String,
+      responseId: String,
     } as SchemaDefinition<ChannelLaneRecord>,
     { timestamps: true },
   );
@@ -392,6 +411,7 @@ export function createChannelLaneModel(
       ['identityRef.target.kind', 'channelIdentity'],
       ['controlTarget.kind', 'channelLane'],
       ['publisher.run.target.kind', 'channelRun'],
+      ['handoff.run.target.kind', 'channelRun'],
       ['assignment.run.target.kind', 'channelRun'],
       ['assignment.lane.kind', 'channelLane'],
       ['stop.selection.run.target.kind', 'channelRun'],
@@ -407,10 +427,9 @@ export function createChannelLaneModel(
           'nextSequence',
           'publishedThrough',
           'publisher',
-          'activeRunId',
+          'handoff',
           'conversationId',
           'responseId',
-          'stopObservation',
         ]
       : ['assignment', 'stop'];
     for (const field of forbidden)
@@ -421,10 +440,6 @@ export function createChannelLaneModel(
   });
   schema.index({ tenantId: 1, laneId: 1 }, { unique: true });
   schema.index({ tenantId: 1, channelId: 1, kind: 1, _id: 1 });
-  schema.index(
-    { tenantId: 1, channelId: 1, 'stopObservation.scopeId': 1 },
-    { partialFilterExpression: { 'stopObservation.scopeId': { $type: 'string' } } },
-  );
   schema.index({ tenantId: 1, userId: 1 });
   schema.index({ laneId: 1 });
   applyChannelStorage(schema);
