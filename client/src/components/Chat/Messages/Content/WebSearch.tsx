@@ -255,6 +255,63 @@ export default function WebSearch({
     const query = parseJsonField(args, 'query');
     const hasDetails = !!query || !!answerBox;
 
+    const details = (
+      <HoverCard openDelay={50} open={showDetails} onOpenChange={setShowDetails}>
+        {/* Composed through `asChild` so the shared Button owns the
+          rounding, hover fill, focus ring and motion (and gives a real
+          <button> instead of Radix's default anchor). Only the
+          hover-card reveal and the icon geometry stay local. */}
+        <HoverCardTrigger asChild>
+          <Button
+            variant="quiet"
+            size="icon"
+            className={cn(
+              'ms-auto size-auto cursor-help rounded-md p-1 opacity-0',
+              'group-focus-within/websearch:opacity-100 group-hover/websearch:opacity-100',
+              'focus-visible:opacity-100',
+            )}
+            onFocus={() => setShowDetails(true)}
+            onBlur={() => setShowDetails(false)}
+            aria-label={localize('com_ui_web_search_details')}
+          >
+            <Info className="size-3.5" aria-hidden="true" />
+          </Button>
+        </HoverCardTrigger>
+        <HoverCardPortal>
+          <HoverCardContent side="top" className="z-[999] w-80">
+            <div className="max-h-[60vh] space-y-2 overflow-y-auto">
+              {query && (
+                <div>
+                  <div className="text-text-secondary text-3xs font-medium tracking-wide uppercase">
+                    {localize('com_ui_search_query')}
+                  </div>
+                  <div className="text-text-primary mt-0.5 text-sm">{query}</div>
+                </div>
+              )}
+              <div className="text-text-secondary text-xs">
+                {localize(
+                  sourceCount === 1 ? 'com_ui_web_search_source' : 'com_ui_web_search_sources',
+                  { count: sourceCount },
+                )}
+              </div>
+              {answerBox && (answerBox.title || answerText) && (
+                <div className="border-border-inset border-t pt-2">
+                  {answerBox.title && (
+                    <div className="text-text-primary text-sm font-medium">{answerBox.title}</div>
+                  )}
+                  {answerText && (
+                    <div className="text-text-secondary mt-1 text-xs leading-relaxed">
+                      {answerText}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </HoverCardContent>
+        </HoverCardPortal>
+      </HoverCard>
+    );
+
     return (
       <div className="group/websearch my-1">
         <span className="sr-only" aria-live="polite" aria-atomic="true">
@@ -301,67 +358,7 @@ export default function WebSearch({
               )}
             </Button>
           )}
-          {hasDetails && (
-            <HoverCard openDelay={50} open={showDetails} onOpenChange={setShowDetails}>
-              {/* Composed through `asChild` so the shared Button owns the
-                  rounding, hover fill, focus ring and motion (and gives a real
-                  <button> instead of Radix's default anchor). Only the
-                  hover-card reveal and the icon geometry stay local. */}
-              <HoverCardTrigger asChild>
-                <Button
-                  variant="quiet"
-                  size="icon"
-                  className={cn(
-                    'ms-auto size-auto cursor-help rounded-md p-1 opacity-0',
-                    bare && 'absolute end-0 top-0 z-[1]',
-                    'group-focus-within/websearch:opacity-100 group-hover/websearch:opacity-100',
-                    'focus-visible:opacity-100',
-                  )}
-                  onFocus={() => setShowDetails(true)}
-                  onBlur={() => setShowDetails(false)}
-                  aria-label={localize('com_ui_web_search_details')}
-                >
-                  <Info className="size-3.5" aria-hidden="true" />
-                </Button>
-              </HoverCardTrigger>
-              <HoverCardPortal>
-                <HoverCardContent side="top" className="z-[999] w-80">
-                  <div className="max-h-[60vh] space-y-2 overflow-y-auto">
-                    {query && (
-                      <div>
-                        <div className="text-text-secondary text-3xs font-medium tracking-wide uppercase">
-                          {localize('com_ui_search_query')}
-                        </div>
-                        <div className="text-text-primary mt-0.5 text-sm">{query}</div>
-                      </div>
-                    )}
-                    <div className="text-text-secondary text-xs">
-                      {localize(
-                        sourceCount === 1
-                          ? 'com_ui_web_search_source'
-                          : 'com_ui_web_search_sources',
-                        { count: sourceCount },
-                      )}
-                    </div>
-                    {answerBox && (answerBox.title || answerText) && (
-                      <div className="border-border-inset border-t pt-2">
-                        {answerBox.title && (
-                          <div className="text-text-primary text-sm font-medium">
-                            {answerBox.title}
-                          </div>
-                        )}
-                        {answerText && (
-                          <div className="text-text-secondary mt-1 text-xs leading-relaxed">
-                            {answerText}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </HoverCardContent>
-              </HoverCardPortal>
-            </HoverCard>
-          )}
+          {hasDetails && !bare && details}
         </div>
         {hasSourceData && (
           <div style={sourceExpandStyle} onTransitionEnd={handleTransitionEnd}>
@@ -373,6 +370,19 @@ export default function WebSearch({
                     'border-border-light mt-1.5 max-h-[17.5rem] overflow-y-auto rounded-lg border',
                   )}
                 >
+                  {/* With the row replaced by a generated title, the query and its
+                      details ride the panel's own header strip instead of
+                      floating over its edge. */}
+                  {bare && hasDetails && (
+                    <div className="bg-surface-secondary border-border-inset sticky top-0 z-[1] flex items-center gap-2 border-b px-3 py-1.5">
+                      {query && (
+                        <span className="text-text-secondary min-w-0 truncate text-xs">
+                          {query}
+                        </span>
+                      )}
+                      {details}
+                    </div>
+                  )}
                   {allSources.map((source, i) => {
                     const domain = getCleanDomain(source.link);
                     const snippet = 'snippet' in source ? source.snippet : undefined;
