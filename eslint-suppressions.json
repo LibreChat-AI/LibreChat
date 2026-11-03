@@ -1314,11 +1314,6 @@
       "count": 1
     }
   },
-  "packages/chat/src/components/composer/usage/Breakdown.tsx": {
-    "shadcn/no-restyle": {
-      "count": 10
-    }
-  },
   "packages/chat/src/components/messages/Feedback.tsx": {
     "shadcn/no-restyle": {
       "count": 10

@@ -356,7 +356,8 @@ export default function Breakdown({
       <Collapsible open={expanded} onOpenChange={onExpandedChange}>
         <CollapsibleTrigger
           focusOutline="hidden"
-          className="group focus-visible:ring-text-primary flex w-full flex-wrap items-center justify-between gap-2 rounded-sm focus-visible:ring-2"
+          appearance="disclosure"
+          className="group flex w-full flex-wrap items-center justify-between"
           data-testid="context-breakdown-toggle"
         >
           <span className="text-text-primary min-w-0 text-start text-sm font-medium">
@@ -389,7 +390,7 @@ export default function Breakdown({
             so it collapses with the height. On the parent it would be a margin
             outside the animation, and unmounting the content would drop it in a
             single 12px jump after the height reached zero. */}
-        <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none">
+        <CollapsibleContent motion="height" className="overflow-hidden">
           <div
             className="mt-3 grid min-w-0 grid-cols-1 items-start gap-3 @min-[38rem]:grid-cols-2"
             data-testid="context-details"
@@ -439,7 +440,7 @@ export default function Breakdown({
                           role="region"
                           aria-label={localize('com_ui_context_insights')}
                           data-testid="context-hints"
-                          className="max-w-[calc(100vw-2rem)] motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none"
+                          className="max-w-[calc(100vw-2rem)]"
                           align="end"
                         >
                           {insights.map((insight, index) => (

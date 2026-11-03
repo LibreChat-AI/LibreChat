@@ -461,7 +461,7 @@ describe('TokenUsage Breakdown', () => {
         ?.parentElement as HTMLElement;
 
       /** Reconciliation already counted the cached prompt inside the segments
-       *  above, so these may only appear indented — as peer rows a fully cached
+       *  above, so these may only appear indented: as peer rows a fully cached
        *  prompt would show its tokens twice and the visible rows would sum past
        *  the meter. */
       expect(
