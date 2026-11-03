@@ -58,7 +58,7 @@ function run(command: string, args: string[], cwd: string, env: Record<string, s
   const result = spawnSync(command, args, {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, CI: '', HUSKY: '', ...env },
+    env: { ...process.env, CI: '', HUSKY: '', LIBRECHAT_PRE_PUSH_BASE: '', ...env },
   });
   return { status: result.status ?? 1, output: `${result.stdout}${result.stderr}` };
 }
@@ -378,7 +378,14 @@ function runHook(fixture: Fixture, path: string): Push {
     cwd: fixture.work,
     encoding: 'utf8',
     input: `refs/heads/feature ${sha} refs/heads/feature ${zero}\n`,
-    env: { ...process.env, CI: '', HUSKY: '', STUB_LOG: log, PATH: path },
+    env: {
+      ...process.env,
+      CI: '',
+      HUSKY: '',
+      LIBRECHAT_PRE_PUSH_BASE: '',
+      STUB_LOG: log,
+      PATH: path,
+    },
   });
   const calls = existsSync(log)
     ? readFileSync(log, 'utf8')
