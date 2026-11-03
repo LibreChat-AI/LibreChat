@@ -1,13 +1,17 @@
 {{- if .Values.channelGateway.enabled }}
 {{- $gateway := .Values.channelGateway }}
-{{- $tag := required "Set image.tag to a published LibreChat release containing Channels before enabling channelGateway" .Values.image.tag }}
+{{- $tag := include "librechat.channelGateway.imageTag" . }}
 {{- $secret := required "channelGateway.existingSecretName or global.librechat.existingSecretName is required" ($gateway.existingSecretName | default .Values.global.librechat.existingSecretName) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "librechat.channelGateway.fullname" . }}
   labels:
-    {{- include "librechat.channelGateway.labels" . | nindent 4 }}
+    {{- merge (include "librechat.channelGateway.labels" . | fromYaml) (default dict .Values.deploymentLabels) | toYaml | nindent 4 }}
+  {{- with .Values.deploymentAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   replicas: 1
   strategy:
@@ -19,32 +23,22 @@ spec:
     metadata:
       annotations:
         checksum/channel-gateway: {{ toYaml $gateway | sha256sum }}
-        {{- with $gateway.podAnnotations }}
+        {{- with mergeOverwrite (deepCopy (default dict .Values.podAnnotations)) (default dict $gateway.podAnnotations) }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
-        {{- include "librechat.channelGateway.labels" . | nindent 8 }}
+        {{- merge (include "librechat.channelGateway.labels" . | fromYaml) (default dict .Values.podLabels) | toYaml | nindent 8 }}
     spec:
       automountServiceAccountToken: false
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "librechat.podSettings" . | nindent 6 }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        seccompProfile:
-          type: RuntimeDefault
+        {{- mergeOverwrite (dict "runAsNonRoot" true "seccompProfile" (dict "type" "RuntimeDefault")) (deepCopy (default dict .Values.podSecurityContext)) | toYaml | nindent 8 }}
       containers:
         - name: channel-gateway
-          image: "{{ $gateway.image.repository }}:{{ $gateway.image.tag | default $tag }}"
+          image: "{{ $gateway.image.repository }}:{{ $tag }}"
           imagePullPolicy: {{ $gateway.image.pullPolicy }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
+            {{- mergeOverwrite (dict "allowPrivilegeEscalation" false "readOnlyRootFilesystem" true "runAsNonRoot" true "runAsUser" 1000 "capabilities" (dict "drop" (list "ALL"))) (deepCopy (default dict .Values.securityContext)) | toYaml | nindent 12 }}
           ports:
             - name: http
               containerPort: 8080
@@ -91,18 +85,6 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml $gateway.resources | nindent 12 }}
-      {{- with $gateway.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with $gateway.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with $gateway.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
 ---
 apiVersion: v1
 kind: Service

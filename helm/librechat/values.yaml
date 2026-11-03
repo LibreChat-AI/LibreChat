@@ -316,9 +316,9 @@ channelGateway:
   slackAppTokenKey: SLACK_APP_TOKEN
   resources: {}
   podAnnotations: {}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
+  # Pod identity, DNS, networking and scheduling use the chart's shared settings.
+  # Global security contexts are honored; gateway defaults also enable seccomp,
+  # a read-only root filesystem and disable privilege escalation/API token mounting.
 
 langfuseFanout:
   enabled: false
