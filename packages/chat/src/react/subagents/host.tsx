@@ -59,6 +59,7 @@ export type SubagentThreadRead = {
   isPreviousData: boolean;
   /** The child has not published its thread yet, inside the readiness window. */
   isReadinessPending: boolean;
+  /** Stable across renders, so effects can depend on it. */
   refetch: () => void;
 };
 
