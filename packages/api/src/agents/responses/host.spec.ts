@@ -1,6 +1,7 @@
 import express from 'express';
 import request from 'supertest';
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { PermissionBits, FileSources, RetentionMode } from 'librechat-data-provider';
@@ -8,6 +9,7 @@ import {
   createModels,
   createMethods,
   createResponseStorage,
+  responseReference,
   createManagedMessageId,
   createManagedConversationId,
   tenantStorage,
@@ -32,7 +34,6 @@ import {
 import { createAgentTriggerService, createAgentTriggerProducerBinding } from '../triggers/service';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
-import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createRequireApiKeyAuth } from '~/apiKeys/middleware';
 import { buildPendingBackgroundResponse } from './background';
 import { mintBackgroundResponseWorkerToken } from './worker';
@@ -143,6 +144,7 @@ async function fixture(
     },
   };
   const errors: unknown[] = [];
+  const executionErrors: unknown[] = [];
   const inputs: unknown[] = [];
   const ordinaryRetrievals: string[] = [];
   let browserUser: IUser | undefined = user;
@@ -272,7 +274,8 @@ async function fixture(
             },
           );
         },
-        handleExecutionError: () => {
+        handleExecutionError: (error) => {
+          executionErrors.push(error);
           if (!res.writableEnded) res.status(409).json({ error: { code: 'execution_failed' } });
         },
         onSettlementError: (error) => {
@@ -293,7 +296,7 @@ async function fixture(
       _isAgentTrigger: browserMode === 'trigger',
       apiKeyId: browserMode === 'key' ? 'execution-key' : undefined,
     });
-    next();
+    tenantStorage.run({ tenantId: browserUser?.tenantId || undefined }, next);
   };
   app.get('/api/agents/responses/:id/review', browserAuth, host.review);
   app.post('/api/agents/responses/:id/review', browserAuth, host.submitReview);
@@ -344,6 +347,7 @@ async function fixture(
           observed,
           executions: inputs.length,
           workerErrors: errors.map(getSafeErrorMetadata),
+          executionErrors: executionErrors.map(getSafeErrorMetadata),
         })}`,
       );
     for (let attempt = 0; attempt < 150; attempt++) {
@@ -374,6 +378,7 @@ async function fixture(
     inputs,
     config,
     errors,
+    executionErrors,
     ordinaryRetrievals,
     readUntil,
     setBrowserUser: (value?: IUser) => {
@@ -391,15 +396,7 @@ async function fixture(
 async function ownerPause(keyId: string) {
   return scoped(async () => {
     const owner = { userId: String(user._id), tenantId };
-    const id = 'resp_owner_review';
-    const execution = await enrollAgentExecution({
-      runId: id,
-      ...owner,
-      agentId: 'agent',
-      conversationId: 'review-conversation',
-      protocol: 'responses',
-      isPrincipalActive: async () => true,
-    });
+    const id = createManagedMessageId();
     const reserved = await storage.reserve({
       ...owner,
       responseId: id,
@@ -412,16 +409,32 @@ async function ownerPause(keyId: string) {
       requestJSON: '{"model":"agent","input":"Question","background":true,"store":true}',
     });
     if (!reserved.ok) throw new Error('Review reservation failed');
+    const execution = await enrollAgentExecution({
+      responseRoot: reserved.record.storageTarget,
+      retainTerminalPersistence: true,
+      captureTerminalOutcome: true,
+      runId: id,
+      ...owner,
+      agentId: 'agent',
+      conversationId: 'review-conversation',
+      protocol: 'responses',
+      isPrincipalActive: async () => true,
+    });
+
     const body = JSON.stringify({
       ...buildPendingBackgroundResponse(reserved.record),
       status: 'in_progress',
     });
-    await storage.publish(owner, id, 0, {
-      status: 'in_progress',
-      generationCreatedAt: execution.createdAt,
-      responseJSON: body,
-    });
+    const enrolled = await storage.enrollExecution(
+      reserved.record,
+      execution.getEnrollmentIdentity(),
+      body,
+    );
+    if (!enrolled.ok) throw new Error('Root enrollment failed');
     await execution.beginProviderExecution();
+    const binding = execution.getPersistenceIdentity();
+    if (!(await storage.bindExecution(enrolled.record, binding)))
+      throw new Error('Provider binding failed');
     const job = (await GenerationJobManager.getJob(id))!;
     const action = buildPendingAction(
       { type: 'ask_user_question', question: { question: 'Choose an environment' } },
@@ -453,6 +466,8 @@ async function ownerPause(keyId: string) {
       }),
     ).toBe(true);
     await execution.settle();
+    if (!(await storage.settleExecution(responseReference(enrolled.record), binding)))
+      throw new Error('Provider settlement failed');
     return { id, action, owner };
   });
 }
@@ -676,14 +691,41 @@ it('does not publish a completed response while its provider has durably paused 
         ttlMs: 60_000,
       },
     );
-    const checkpointNamespace = createCheckpointNamespace(String(user._id), tenantId);
-    await GenerationJobManager.getJobStore().updateJob(execution.runId, { checkpointNamespace });
+    const checkpointNamespace = job.metadata.checkpointNamespace!;
+    const record = (await storage.read({ userId: String(user._id), tenantId }, execution.runId))!;
+    const writer = storage.createCheckpointWriter(responseReference(record), {
+      ...execution.getPersistenceIdentity(),
+      writerId: randomUUID(),
+      namespace: checkpointNamespace,
+      configJSON: JSON.stringify({
+        type: 'mongo',
+        checkpointCollectionName: 'responses_pause_checkpoints',
+        checkpointWritesCollectionName: 'responses_pause_checkpoint_writes',
+      }),
+    });
+    if (!(await writer.open())) throw new Error('Checkpoint admission failed');
+    for (const name of ['responses_pause_checkpoints', 'responses_pause_checkpoint_writes']) {
+      await mongoose.connection.db!.collection(name).insertMany([
+        {
+          thread_id: record.conversationId,
+          checkpoint_ns: checkpointNamespace,
+          checkpoint_id: 'paused-root',
+        },
+        {
+          thread_id: record.conversationId,
+          checkpoint_ns: `${checkpointNamespace}|child`,
+          checkpoint_id: 'paused-child',
+        },
+        {
+          thread_id: record.conversationId,
+          checkpoint_ns: 'other-generation',
+          checkpoint_id: 'keep-me',
+        },
+      ]);
+    }
+    if (!(await writer.settle())) throw new Error('Checkpoint settlement failed');
     if (
       !(await execution.pauseForReview(action, async () => {
-        const record = (await storage.read(
-          { userId: String(user._id), tenantId },
-          execution.runId,
-        ))!;
         const published = await storage.publishReview(
           record,
           record.responseId,
@@ -713,25 +755,6 @@ it('does not publish a completed response while its provider has durably paused 
           }),
         );
         if (!published.ok) throw new Error('Pause journal publication failed');
-        for (const name of ['responses_pause_checkpoints', 'responses_pause_checkpoint_writes']) {
-          await mongoose.connection.db!.collection(name).insertMany([
-            {
-              thread_id: record.conversationId,
-              checkpoint_ns: checkpointNamespace,
-              checkpoint_id: 'paused-root',
-            },
-            {
-              thread_id: record.conversationId,
-              checkpoint_ns: `${checkpointNamespace}|child`,
-              checkpoint_id: 'paused-child',
-            },
-            {
-              thread_id: record.conversationId,
-              checkpoint_ns: 'other-generation',
-              checkpoint_id: 'keep-me',
-            },
-          ]);
-        }
       }))
     )
       throw new Error('Pause admission failed');
@@ -754,6 +777,7 @@ it('does not publish a completed response while its provider has durably paused 
     await new Promise((resolve) => setTimeout(resolve, 10));
     job = await GenerationJobManager.getJob(created.body.id);
   }
+  expect(f.executionErrors).toEqual([]);
   expect(job).toMatchObject({
     status: 'requires_action',
     metadata: { providerDrained: true, terminalPersistencePending: false },
@@ -958,6 +982,61 @@ it.each([RetentionMode.ALL, RetentionMode.EPHEMERAL])(
   },
 );
 
+it('continues a managed completed response through HTTP on the same physical conversation and ancestry', async () => {
+  const f = await fixture();
+  const first = await f.client
+    .post('/api/agents/v1/responses')
+    .auth(f.credential.key, { type: 'bearer' })
+    .send({ model: 'agent', input: 'First turn', background: true })
+    .expect(202);
+  await f.readUntil(first.body.id, 'completed');
+  const owner = { userId: String(user._id), tenantId };
+  const prior = (await scoped(() => storage.read(owner, first.body.id)))!;
+  const read = jest.spyOn(storage, 'readContinuation');
+  try {
+    const next = await f.client
+      .post('/api/agents/v1/responses')
+      .auth(f.credential.key, { type: 'bearer' })
+      .send({
+        model: 'agent',
+        input: 'Follow up',
+        background: true,
+        previous_response_id: first.body.id,
+      })
+      .expect(202);
+    await f.readUntil(next.body.id, 'completed');
+    const current = (await scoped(() => storage.read(owner, next.body.id)))!;
+    expect(current).toMatchObject({
+      conversationId: prior.conversationId,
+      conversationTarget: prior.conversationTarget,
+      parentMessageId: prior.responseId,
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    const messages = await scoped(() =>
+      mongoose.models.Message.find({
+        user: owner.userId,
+        conversationId: prior.conversationId,
+      }).lean(),
+    );
+    expect(messages).toHaveLength(4);
+    const input = messages.find((message) => message.text === 'Follow up');
+    expect(input).toMatchObject({ parentMessageId: prior.responseId, isCreatedByUser: true });
+    expect(messages.find((message) => message.messageId === next.body.id)).toMatchObject({
+      parentMessageId: input!.messageId,
+    });
+    const conversation = await scoped(() =>
+      mongoose.models.Conversation.findById(prior.conversationTarget!.id).lean<{
+        messages: unknown[];
+      }>(),
+    );
+    expect(conversation?.messages).toHaveLength(4);
+    expect(f.inputs).toHaveLength(2);
+    expect(f.errors).toEqual([]);
+  } finally {
+    read.mockRestore();
+  }
+});
+
 it('inherits the existing temporary parent deadline instead of renewing its retention window', async () => {
   const retention = jest.spyOn(storage, 'readConversationTarget');
   cleanup.push(async () => retention.mockRestore());
@@ -1043,7 +1122,7 @@ it('rejects an expired or missing continuation before writing its private reques
   expect(f.inputs).toHaveLength(0);
 });
 
-it('keeps expired output private and releases a drained provider even after TTL removes its row', async () => {
+it('keeps expired output private until the drained provider releases its retained Root', async () => {
   const f = await fixture();
   let started!: () => void;
   let finish!: () => void;
@@ -1081,7 +1160,6 @@ it('keeps expired output private and releases a drained provider even after TTL 
         .auth(f.credential.key, { type: 'bearer' })
     ).status,
   ).toBe(404);
-  await scoped(() => mongoose.models.StoredResponse.deleteOne({ responseId: record.responseId }));
   finish();
   for (let attempt = 0; attempt < 100; attempt++) {
     const job = await GenerationJobManager.getJob(record.responseId);
@@ -1104,18 +1182,17 @@ it('keeps expired output private and releases a drained provider even after TTL 
 
 it('does not start a provider when expiry wins enrollment publication and releases that job', async () => {
   const f = await fixture();
-  const publish = storage.publish.bind(storage);
-  const interrupted = jest.spyOn(storage, 'publish').mockImplementationOnce(async (...args) => {
-    const record = (await storage.read(args[0], args[1]))!;
-    await db.saveConvo(
-      { userId: record.userId, expiredAt: new Date(Date.now() - 1) },
-      {
-        conversationId: record.conversationId,
-        endpoint: 'agents',
-      },
-    );
-    return publish(...args);
-  });
+  const enroll = storage.enrollExecution.bind(storage);
+  const interrupted = jest
+    .spyOn(storage, 'enrollExecution')
+    .mockImplementationOnce(async (...args) => {
+      const record = args[0];
+      await mongoose.models.StoredResponse.updateOne(
+        { _id: record.storageTarget!.id },
+        { $set: { expiredAt: new Date(Date.now() - 1) } },
+      );
+      return enroll(...args);
+    });
   try {
     const created = await f.client
       .post('/api/agents/v1/responses')
@@ -1171,9 +1248,14 @@ it('publishes terminal output when a concurrent read updates the review projecti
 
 it('cancels the exact running response and waits for actual execution settlement', async () => {
   const f = await fixture();
+  let started!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    started = resolve;
+  });
   f.setGenerate(
     async (signal) =>
       new Promise((_resolve, reject) => {
+        started();
         signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
       }),
   );
@@ -1181,7 +1263,7 @@ it('cancels the exact running response and waits for actual execution settlement
     .post('/api/agents/v1/responses')
     .auth(f.credential.key, { type: 'bearer' })
     .send({ model: 'agent', input: 'Wait for Stop', background: true, store: true });
-  await f.readUntil(created.body.id, 'in_progress');
+  await entered;
   const cancelled = await f.client
     .post(`/api/agents/v1/responses/${created.body.id}/cancel`)
     .auth(f.credential.key, { type: 'bearer' })
@@ -1415,11 +1497,11 @@ it('does not turn a missing admitted job into a fabricated stop confirmation', a
   const f = await fixture();
   const record = await reserveUnstarted(f.credential.id);
   await scoped(() =>
-    storage.publish(record, record.responseId, record.revision, {
-      status: 'in_progress',
-      responseJSON: JSON.stringify({}),
-      generationCreatedAt: 1234,
-    }),
+    storage.enrollExecution(
+      record,
+      { generationCreatedAt: 1234, providerExecutionId: 'missing-provider' },
+      '{}',
+    ),
   );
   await expect(scoped(() => f.host.retireResponse(record, record.responseId))).resolves.toBe(
     'pending',
