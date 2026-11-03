@@ -2,7 +2,7 @@
 
 ## Start with Docker Compose
 
-The gateway is an optional, separate service. The Channels overlay builds both the application and gateway from this checkout and waits for application health before starting the gateway. It works with the default standalone MongoDB; a replica set is not required.
+The gateway is an optional, separate service. The Channels overlay builds both the application and gateway from this checkout and waits for application readiness (`/readyz`) before starting the gateway. This includes post-listen initialization of MCP, background Responses and channel workers. It works with the default standalone MongoDB; a replica set is not required.
 
 1. Prepare the normal LibreChat `.env` and `librechat.yaml` files, including your model configuration. The overlay requires an existing YAML file and mounts it read-only. Keep your existing database configuration and data directory.
 2. Set a private `CHANNEL_SERVICE_TOKEN` of at least 32 characters in `.env`. Enable Channels and background Responses in `librechat.yaml`:
