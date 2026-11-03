@@ -229,7 +229,7 @@ it('commits closure and credential redaction before retryable account identity e
     });
   }));
 
-it('serializes a revision update already in flight before admitting an older event', () =>
+it('rejects an obsolete event after the revision CAS even while its reply is paused', () =>
   scope(async () => {
     const entered = gate();
     const release = gate();
@@ -237,8 +237,10 @@ it('serializes a revision update already in flight before admitting an older eve
     const update = parents.findOneAndUpdate.bind(parents);
     const pause = jest.spyOn(parents, 'findOneAndUpdate').mockImplementation(async (...args) => {
       if (!Array.isArray(args[1]) && args[1].$set?.revision === 'two') {
+        const result = await update(...args);
         entered.release();
         await release.wait;
+        return result;
       }
       return update(...args);
     });
@@ -294,16 +296,30 @@ it.each(['revoked', 'expired', 'revision', 'user', 'external-user'] as const)(
     }),
 );
 
-it('requires persisted link authority for a per-user channel', () =>
+it('requires persisted link authority for the current per-user channel generation', () =>
   scope(async () => {
-    await channels().updateAgentChannel('channel', creatorId, { credentialMode: 'per_user' });
-    await expect(runs().admit(event(), Date.now())).rejects.toMatchObject({
+    const channel = await channels().updateAgentChannel('channel', creatorId, {
+      credentialMode: 'per_user',
+    });
+    const input = event();
+    input.principal.channelRevision = channel!.revision;
+    await expect(runs().admit(input, Date.now())).rejects.toMatchObject({
       code: 'invalid_transition',
     });
-    await identities().saveChannelIdentity(link(), null);
-    await expect(runs().admit(linkedEvent(), Date.now())).resolves.toMatchObject({
-      duplicate: false,
-    });
+    const linked = {
+      ...link(),
+      identity: { ...link().identity, channelRevision: channel!.revision },
+    };
+    expect(await identities().saveChannelIdentity(linked, null)).toBe(true);
+    await expect(
+      runs().admit(
+        {
+          ...input,
+          principal: { ...input.principal, linkId: linked.linkId, linkRevision: linked.revision },
+        },
+        Date.now(),
+      ),
+    ).resolves.toMatchObject({ duplicate: false });
   }));
 
 it('uses the indexed tenant/account path for owner deletion', () =>
@@ -364,21 +380,29 @@ it('lets an already admitted transaction finish before rotating authority', () =
     });
     const admission = runs().admit(event(), Date.now());
     await entered.wait;
-    const owners = mongoose.models.ResponseScope.collection;
-    const touch = owners.updateOne.bind(owners);
-    const observe = jest.spyOn(owners, 'updateOne').mockImplementation(async (...args) => {
-      if (!Array.isArray(args[1]) && args[1].$inc?.revision === 1) attempted.release();
+    const parents = mongoose.models.AgentChannel.collection;
+    const touch = parents.findOneAndUpdate.bind(parents);
+    const observe = jest.spyOn(parents, 'findOneAndUpdate').mockImplementation(async (...args) => {
+      if (!Array.isArray(args[1]) && args[1].$set?.revision === 'two') attempted.release();
       return touch(...args);
     });
     const updating = channels().updateAgentChannel('channel', creatorId, { revision: 'two' });
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      release.release();
+      attempted.release();
+    }, 5000);
     try {
       await attempted.wait;
+      expect(timedOut).toBe(false);
       release.release();
       await expect(admission).resolves.toMatchObject({
         run: { principal: { channelRevision: 'one' } },
       });
       await expect(updating).resolves.toMatchObject({ revision: 'two' });
     } finally {
+      clearTimeout(timeout);
       release.release();
       pause.mockRestore();
       observe.mockRestore();
@@ -421,6 +445,27 @@ it('serializes linked admission with bulk revocation without creating another ev
       observe.mockRestore();
     }
     expect(await mongoose.models.ChannelRun.countDocuments({})).toBe(0);
+  }));
+
+it('keeps configuration timestamps unchanged by admission serialization writes', () =>
+  scope(async () => {
+    await identities().saveChannelIdentity(link(), null);
+    const before = new Date(0);
+    await mongoose.models.AgentChannel.collection.updateOne(
+      { channelId: 'channel' },
+      { $set: { updatedAt: before } },
+    );
+    await mongoose.models.ChannelIdentity.collection.updateOne(
+      { linkId: 'link' },
+      { $set: { updatedAt: before } },
+    );
+    await expect(runs().admit(linkedEvent(), Date.now())).resolves.toMatchObject({
+      duplicate: false,
+    });
+    const parent = await mongoose.models.AgentChannel.collection.findOne({ channelId: 'channel' });
+    const identity = await mongoose.models.ChannelIdentity.collection.findOne({ linkId: 'link' });
+    expect(parent!.updatedAt).toEqual(before);
+    expect(identity!.updatedAt).toEqual(before);
   }));
 
 it.each(['opaque-revision'] as const)('preserves an explicit opaque revision %s', (revision) =>

@@ -96,21 +96,23 @@ export async function touchChannelAuthority(
   if (!(await touchChannelScope(mongoose, authority.tenantId, authority.channelId, session)))
     return false;
   const parent = await createAgentChannelModel(mongoose)
-    .findOne({
-      tenantId:
-        !authority.tenantId || authority.tenantId === '_'
-          ? { $in: [null, ''] }
-          : authority.tenantId,
-      channelId: authority.channelId,
-      agentId: authority.agentId,
-      revision:
-        authority.channelRevision === authority.channelId
-          ? { $in: [null, authority.channelRevision] }
-          : authority.channelRevision,
-      status: 'active',
-      ...(authority.teamId === undefined ? {} : { 'slack.teamId': authority.teamId }),
-      ...(authority.appId === undefined ? {} : { 'slack.appId': authority.appId }),
-    })
+    .findOneAndUpdate(
+      {
+        tenantId:
+          !authority.tenantId || authority.tenantId === '_'
+            ? { $in: [null, ''] }
+            : authority.tenantId,
+        channelId: authority.channelId,
+        agentId: authority.agentId,
+        revision: authority.channelRevision,
+        '_managed.phase': 'published',
+        status: 'active',
+        ...(authority.teamId === undefined ? {} : { 'slack.teamId': authority.teamId }),
+        ...(authority.appId === undefined ? {} : { 'slack.appId': authority.appId }),
+      },
+      { $inc: { __v: 1 } },
+      { new: true, upsert: false, timestamps: false },
+    )
     .select('createdBy tenantId credentialMode')
     .session(session)
     .lean();
@@ -149,7 +151,7 @@ export async function touchChannelAuthority(
       'identity.externalUserId': authority.externalUserId,
     },
     { $inc: { __v: 1 } },
-    { session, upsert: false },
+    { session, upsert: false, timestamps: false },
   );
   return admitted.matchedCount === 1;
 }

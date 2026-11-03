@@ -58,6 +58,20 @@ async function seedRunLink(input: ReturnType<typeof event>, linkId: string) {
   );
 }
 
+async function seedTenantlessChannel() {
+  await runAsSystem(() => mongoose.models.AgentChannel.deleteOne({ channelId: 'channel' }));
+  return createAgentChannelMethods(mongoose).createAgentChannel({
+    channelId: 'channel',
+    agentId: 'agent',
+    createdBy: 'channel-owner',
+    type: 'slack',
+    status: 'active',
+    credentialMode: 'shared',
+    revision: 'revision',
+    slack: { teamId: 'T1', appId: 'A1', botUserId: 'B1' },
+  });
+}
+
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongo.getUri(), { autoIndex: false });
@@ -1012,15 +1026,7 @@ it.each([undefined, null, ''])(
   'binds tenantless responses stored with tenantId %s',
   (storedTenant) =>
     tenantStorage.run({}, async () => {
-      await runAsSystem(async () =>
-        mongoose.models.AgentChannel.updateOne(
-          { channelId: 'channel' },
-          { $unset: { tenantId: '' } },
-        ),
-      );
-      await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'channel-owner', {
-        revision: 'revision',
-      });
+      await seedTenantlessChannel();
       const input = { ...event(), tenantId: '_' };
       await storage.admit(input, 100);
       const run = (await storage.claim('_', 'channel', 'worker', 101, 1000))!;
@@ -1434,15 +1440,7 @@ it('replays exact settled transport acknowledgements without opening another att
 it('refuses every named underscore context before it can read or mutate tenantless runs', async () => {
   const input = { ...event(), tenantId: '_' };
   const { run } = await tenantStorage.run({}, async () => {
-    await runAsSystem(async () =>
-      mongoose.models.AgentChannel.updateOne(
-        { channelId: 'channel' },
-        { $unset: { tenantId: '' } },
-      ),
-    );
-    await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'channel-owner', {
-      revision: 'revision',
-    });
+    await seedTenantlessChannel();
     return storage.admit(input, 100);
   });
   for (const action of [
