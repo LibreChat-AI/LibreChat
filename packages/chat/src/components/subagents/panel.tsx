@@ -1,61 +1,69 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { v4 } from 'uuid';
-import { isMacPlatform, resolveComposerKeyDown } from '@librechat/chat';
 import { ArrowUpRight, Clock, OctagonPause, X, Zap } from 'lucide-react';
 import {
+  cn,
   Alert,
   Button,
   Composer,
-  ControlCombobox,
+  useLocalize,
+  useFocusTrap,
   useMediaQuery,
+  ControlCombobox,
   useToastContext,
 } from '@librechat/client';
-import {
-  SubagentActivity,
-  SubagentConversation,
-  SubagentActivityScrollSurface,
-} from '@librechat/chat/components';
-import {
-  subagentControlStateKey,
-  subagentProgressKey,
-  adaptDurableThreadActivity,
-  adaptDurableThreadConversation,
-  adaptLivePersistedActivity,
-  mergeChildConversationTurns,
-  retainBoundedMovingWindowTurns,
-  eventSubagentSelection,
-  resolveSubagentAgentId,
-  isLiveSubagentStatus,
-  getSubagentPrompt,
-  useParentSubagents,
-  agentAuthor,
-  resolveSubagentAuthor,
-  isSelfSpawn as isSelfSpawnType,
-  resolveChildAgent,
-  readableSubagentType,
-  useParentAuthor,
-  useChatSurface,
-  useSubagentsHost,
-  useSubagentPanelState,
-  useSubagentPanelActions,
-  useMessagePartsHost,
-  TaskContentScopeContext,
-  ACTIVE_THREAD_REFRESH_MS,
-  subagentThreadHasTaskEvidence,
-} from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
   SubagentControlAction,
   SubagentControlReceipt,
   SubagentControlRequest,
 } from 'librechat-data-provider';
-import type { ComposerKeyVerdict, ComposerStopProps, SendAction } from '@librechat/client';
+import type {
+  SendAction,
+  OptionWithIcon,
+  ComposerStopProps,
+  ComposerKeyVerdict,
+} from '@librechat/client';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { ActiveSubagentPanel } from '@librechat/chat/react';
-import type { ComposerKeyAction } from '@librechat/chat';
-import type { OptionWithIcon } from '@librechat/client';
-import { useFocusTrap, useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import type { ActiveSubagentPanel } from '../../react/subagents/state';
+import type { ComposerKeyAction } from '../../core/shortcuts';
+import {
+  adaptDurableThreadActivity,
+  adaptLivePersistedActivity,
+  mergeChildConversationTurns,
+  adaptDurableThreadConversation,
+  retainBoundedMovingWindowTurns,
+} from '../../react/subagents/adapters';
+import {
+  agentAuthor,
+  useParentAuthor,
+  resolveChildAgent,
+  readableSubagentType,
+  resolveSubagentAuthor,
+  isSelfSpawn as isSelfSpawnType,
+} from '../../react/subagents/author';
+import {
+  subagentControlStateKey,
+  ACTIVE_THREAD_REFRESH_MS,
+  subagentThreadHasTaskEvidence,
+} from '../../react/subagents/thread';
+import {
+  useChatSurface,
+  useSubagentPanelState,
+  useSubagentPanelActions,
+} from '../../react/subagents/surface';
+import { SubagentActivity, SubagentActivityScrollSurface } from './transcript';
+import { eventSubagentSelection } from '../../react/subagents/eventSelection';
+import { isMacPlatform, resolveComposerKeyDown } from '../../core/shortcuts';
+import { resolveSubagentAgentId } from '../../react/subagents/identity';
+import { TaskContentScopeContext } from '../../react/subagents/scope';
+import { isLiveSubagentStatus } from '../../react/subagents/status';
+import { useParentSubagents } from '../../react/subagents/parents';
+import { getSubagentPrompt } from '../../react/subagents/prompt';
+import { useSubagentsHost } from '../../react/subagents/host';
+import { subagentProgressKey } from '../../core/stream/state';
+import { useMessagePartsHost } from '../../react/host';
+import SubagentConversation from './conversation';
 
 const EVENT_TASK_PAGE_SIZE = 3;
 const TERMINAL_CONTROL_REASONS = new Set([
@@ -108,7 +116,11 @@ const failedControlLocaleKey = (reason?: string) => {
   return 'com_ui_subagent_control_reason_invalid_command';
 };
 
-export default function SubagentThreadPanel({ selection }: { selection: ActiveSubagentPanel }) {
+export default function SubagentThreadPanel({
+  selection,
+}: {
+  selection: ActiveSubagentPanel;
+}): ReactNode {
   /** The shell carries the deployment's answer, so this surface lays out once,
    *  like the composer beside it. */
   const host = useSubagentsHost();
@@ -818,23 +830,27 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     }
   }, [focusRequest]);
 
-  /** Escape is handled on the element rather than through the trap's own
-   *  native listener: that listener sits on this `aside`, so it runs BEFORE any
-   *  React handler inside it and would close the whole panel out from under a
-   *  nested popover that meant to dismiss only itself. As a React handler it
-   *  bubbles in DOM order, so an inner control can stop it or mark it handled. */
+  /** Escape is not handed to the trap's own native listener: that listener sits
+   *  on this panel, so it runs BEFORE any React handler inside it and would close
+   *  the whole panel out from under a nested popover that meant to dismiss only
+   *  itself. Listening on the document instead runs after React has dispatched the
+   *  key through the panel, so an inner control can still stop it or mark it handled. */
   useFocusTrap(panelRef, isMobile);
   useEffect(() => {
     if (!isMobile) panelRef.current?.focus({ preventScroll: true });
   }, [focusRequest, isMobile]);
-  const handlePanelKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLElement>) => {
-      if (!isMobile || event.key !== 'Escape' || event.defaultPrevented) return;
+  useEffect(() => {
+    if (!isMobile) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const panel = panelRef.current;
+      if (panel == null || !(event.target instanceof Node) || !panel.contains(event.target)) return;
       event.preventDefault();
       close();
-    },
-    [close, isMobile],
-  );
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [close, isMobile]);
 
   useEffect(() => {
     const activeElement = document.activeElement;
@@ -1593,7 +1609,6 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       role={isMobile ? 'dialog' : 'region'}
       aria-modal={isMobile || undefined}
       aria-label={localize('com_ui_subagent_thread_panel')}
-      onKeyDown={handlePanelKeyDown}
       className="bg-surface-primary-alt text-text-primary relative flex h-full w-full flex-col overflow-hidden"
     >
       {/* The main chat header's own shape: a 3.25rem bar that floats over the
