@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ClientSession } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
+import { startRequiredTransactionSession } from '~/utils/transactions';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createChannelScopeModel } from '~/models/channelScope';
@@ -181,8 +182,19 @@ export async function retireAgentChannel(
   redactCredentials = false,
 ): Promise<AgentChannelRecord | null> {
   const { tenantId, channelId, createdBy } = connection;
+  assertChannelTenant(tenantId);
+  if (
+    !(await createAgentChannelModel(mongoose)
+      .exists({
+        channelId,
+        createdBy,
+        tenantId: tenantId || { $in: [null, ''] },
+      })
+      .read('primary'))
+  )
+    return null;
   await initializeChannelScope(mongoose, tenantId, channelId);
-  const session = await mongoose.startSession();
+  const session = await startRequiredTransactionSession(mongoose);
   try {
     const deleting = await session.withTransaction(async () => {
       const record = await createAgentChannelModel(mongoose)
