@@ -195,6 +195,8 @@ export default function BashCall({
       ? localize('com_ui_cancelled')
       : (backgroundFinishedText ?? intent ?? localize('com_ui_command_finished'));
 
+  const showPaneTime = bare && backgroundHandle == null && backgrounded !== true;
+
   return (
     <>
       <BareStatus phase={phase} active={bare} text={finishedText} />
@@ -244,19 +246,19 @@ export default function BashCall({
               'border-border-light overflow-hidden rounded-lg border',
             )}
           >
-            {bare && command && (
-              <div className="flex items-center justify-end px-3 pt-2">
-                {backgroundHandle == null && backgrounded !== true && (
-                  <CommandTime phase={phase} durationMs={runStepDurationMs} />
-                )}
-              </div>
-            )}
             {command && (
               // The command is a code surface, so it takes the role every other one takes
               // (`DiffView`, the user-turn code bars) instead of a palette shade a theme
               // cannot reach: the previous dark-only gray-950 fill was Tailwind's blue-black,
               // outside this palette entirely.
               <div className="bg-surface-code group/copy relative">
+                {/* With no row of its own, the time rides the command's line,
+                    just inside the copy control. */}
+                {showPaneTime && (
+                  <span className="absolute end-9 top-2 z-[1]">
+                    <CommandTime phase={phase} durationMs={runStepDurationMs} />
+                  </span>
+                )}
                 <CopyButton
                   iconOnly
                   compact
@@ -273,7 +275,10 @@ export default function BashCall({
                 >
                   <pre
                     dir="ltr"
-                    className="py-2.5 ps-3 pe-8 font-mono text-xs break-words whitespace-pre-wrap"
+                    className={cn(
+                      'py-2.5 ps-3 font-mono text-xs break-words whitespace-pre-wrap',
+                      showPaneTime ? 'pe-20' : 'pe-8',
+                    )}
                   >
                     <span className="text-text-tertiary select-none" aria-hidden="true">
                       {'$ '}
