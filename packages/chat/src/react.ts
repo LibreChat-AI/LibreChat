@@ -75,6 +75,7 @@ export {
   submissionStartFamily,
   showStopButtonByIndex,
   abortScrollFamily,
+  launchedConversationFamily,
 } from './react/generation';
 export { SteerHostProvider, useSteerHost } from './react/steer/host';
 export type {

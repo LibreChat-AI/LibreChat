@@ -103,8 +103,6 @@ export type TurnServices = {
   releaseFiles: (fileIds: (string | undefined)[]) => void;
   /** Forgets the files queued for deletion once the composer is cleared. */
   clearFilesToDelete: () => void;
-  /** Ties the composer launch to the conversation the submission starts. */
-  bindLaunch: (conversation: TSubmission['conversation'], index: number) => void;
 };
 
 /** The conversation a pane shows, and the setter that replaces or updates it. */

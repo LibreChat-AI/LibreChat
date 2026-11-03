@@ -15,6 +15,5 @@ export const createTurnServices = (overrides: Partial<TurnServices> = {}): TurnS
   openNewChat: jest.fn(),
   releaseFiles: jest.fn(),
   clearFilesToDelete: jest.fn(),
-  bindLaunch: jest.fn(),
   ...overrides,
 });

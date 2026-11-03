@@ -1,6 +1,9 @@
+import { useEffect } from 'react';
+import { useStore } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
+import { launchedConversationFamily } from '@librechat/chat/react';
 import type { ChatTurnsParams, TurnServices } from '@librechat/chat/react';
 import type { TEndpointsConfig } from 'librechat-data-provider';
 import {
@@ -41,6 +44,15 @@ export default function useTurnServices({
     addedConversation,
     codeWorkspaceState.mode,
   );
+
+  const store = useStore();
+  /** The composer draft follows the conversation a submission launches; the package writes the
+   *  launch just before it publishes the submission, and the subscription binds it inside that
+   *  write. */
+  useEffect(() => {
+    const launched = launchedConversationFamily(index);
+    return store.sub(launched, () => bindComposerLaunch(store.get(launched), index));
+  }, [store, index]);
 
   return {
     logger,
@@ -84,6 +96,5 @@ export default function useTurnServices({
     },
     releaseFiles: (fileIds) => markPasteSubmitted(...fileIds),
     clearFilesToDelete: () => setFilesToDelete({}),
-    bindLaunch: bindComposerLaunch,
   };
 }

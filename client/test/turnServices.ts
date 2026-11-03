@@ -13,5 +13,4 @@ export const createTestTurnServices = (): TurnServices => ({
   openNewChat: jest.fn(),
   releaseFiles: jest.fn(),
   clearFilesToDelete: jest.fn(),
-  bindLaunch: jest.fn(),
 });

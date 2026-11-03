@@ -18,7 +18,11 @@ import {
   isSubmittableMessage,
   hasPendingAssistantParent,
 } from '../../core';
-import { submissionStartFamily, showStopButtonByIndex } from '../generation';
+import {
+  submissionStartFamily,
+  showStopButtonByIndex,
+  launchedConversationFamily,
+} from '../generation';
 import { revealedQueuedTurnFamily } from '../steer/atoms';
 import { siblingIdxFamily, siblingKey } from '../thread';
 import { resolveSubmittedReasoning } from './reasoning';
@@ -337,7 +341,7 @@ export function useTurns(
      *  the whole window it has to cover. */
     askInFlightRef.current = true;
     setSubmissionStart(Date.now());
-    services.bindLaunch(submission.conversation, index);
+    store.set(launchedConversationFamily(index), submission.conversation);
     setSubmission(submission);
     logger.dir('message_stream', {
       conversationId,
