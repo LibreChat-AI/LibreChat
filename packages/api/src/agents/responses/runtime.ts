@@ -45,6 +45,7 @@ import { markNativeCodeToolApprovalRequests } from '../hitl/byom';
 import { assertCodeExecutionApprovalBinding } from '../execution';
 import { getBackgroundResponseWorkerAdmission } from './worker';
 import { matchesResponseRoot, responseTenantId } from './scope';
+import { normalizeResponseTurnIntent } from './turnProjection';
 import { getChatProjectContextKey } from '~/projects/context';
 import { buildPendingBackgroundResponse } from './background';
 import { resolveResponseContinuation } from './persistence';
@@ -565,7 +566,9 @@ export function createResponseExecutionRuntime(
                 ...enrolledExecution.getPersistenceIdentity(),
                 status: prepared.status,
                 responseJSON: JSON.stringify(prepared),
-                ...(turnJSON == null ? {} : { turnJSON }),
+                ...(turnJSON == null
+                  ? {}
+                  : { turnJSON: normalizeResponseTurnIntent(admission.record, turnJSON) }),
                 ...(checkpoint ??
                   (admission.resume && admission.record.review?.checkpointConfigJSON
                     ? {

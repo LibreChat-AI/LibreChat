@@ -18,11 +18,14 @@ import {
   beginManagedTargetRegistration,
   retireManagedAllocation,
   listManagedAllocations,
+  markManagedTargetRegistered,
 } from './managed';
 import { responseReceiptKey, terminalFilter, sameResponseTerminalReceipt } from '~/utils/receipt';
 import { includeManagedAllocations, isManagedConversationId } from '~/utils/managed';
+import { registerResponseTarget, settleResponseTarget } from './registration';
 import { responseOwnerFilter, responseScopeKeys } from './responseScope';
 import { createStoredResponseModel } from '~/models/response';
+import { shortenExpiration } from '~/utils/retention';
 
 interface ResponseTargetOwner extends ResponseOwner {
   parentId: string;
@@ -468,4 +471,70 @@ export function responseTargetRegistrationKey(publication: ManagedPublication): 
       ]),
     )
     .digest('hex');
+}
+
+/** One canonical publication protocol for managed Conversation seeds and confirmed Messages. */
+export async function publishResponseTarget<T>(
+  mongoose: typeof import('mongoose'),
+  intent: ResponseTargetIntent,
+  write: (publication: ManagedPublication, expiredAt?: Date) => Promise<T | null | undefined>,
+  options: { maxPendingTargetsPerScope?: number; expiredAt?: Date } = {},
+): Promise<{ value: T; publication: ManagedPublication } | null> {
+  const selected = await selectResponseTarget(mongoose, intent);
+  if (!selected.ok) return null;
+  const started = await beginResponseTargetRegistration(mongoose, intent, selected.selection);
+  if (!started.ok) return null;
+  const { publication } = started;
+  const entry = {
+    key: responseTargetRegistrationKey(publication),
+    target: publication.target,
+  };
+  let expiredAt = options.expiredAt;
+  for (const conversationId of [undefined, intent.conversationId]) {
+    const registered = await registerResponseTarget(mongoose, intent, conversationId, entry, {
+      maxPendingTargetsPerScope: options.maxPendingTargetsPerScope,
+    });
+    if (registered.status !== 'registered') {
+      if (registered.status === 'closed')
+        await retireResponseTarget(mongoose, intent, started.selection);
+      return null;
+    }
+    if (registered.expiredAt && (!expiredAt || registered.expiredAt < expiredAt))
+      expiredAt = registered.expiredAt;
+  }
+  const model = mongoose.model(intent.kind === 'message' ? 'Message' : 'Conversation');
+  if (!(await markManagedTargetRegistered(mongoose, publication))) {
+    const published = await includeManagedAllocations(
+      model.exists({
+        ...managedPublicationFilter(mongoose, publication),
+        '_managed.phase': 'published',
+      }),
+    ).read('primary');
+    if (!published) return null;
+  }
+  const registered = await acknowledgeResponseTarget(
+    mongoose,
+    intent,
+    started.selection,
+    'registered',
+  );
+  if (!registered.ok) return null;
+  if (expiredAt) {
+    if (expiredAt <= new Date()) return null;
+    // An idempotent canonical writer may return an already published row. Its
+    // deadline still has to adopt a newly shortened discovery authority.
+    await shortenExpiration(model, managedTargetFilter(mongoose, publication.target), expiredAt);
+  }
+  const value = await write(publication, expiredAt);
+  if (value == null) return null;
+  const published = await acknowledgeResponseTarget(
+    mongoose,
+    intent,
+    registered.selection,
+    'published',
+  );
+  if (!published.ok) return null;
+  for (const conversationId of [undefined, intent.conversationId])
+    if (!(await settleResponseTarget(mongoose, intent, conversationId, entry))) return null;
+  return { value, publication };
 }

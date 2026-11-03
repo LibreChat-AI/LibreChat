@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer, MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ResponseTargetIntent, ResponseTargetResult } from './projection';
 import type { ResponseTerminalReceipt } from '~/models/response';
+import type { ManagedPublication } from '~/types/managed';
 import {
+  publishResponseTarget,
   selectResponseTarget,
   beginResponseTargetRegistration,
   acknowledgeResponseTarget,
@@ -18,9 +20,11 @@ import {
 } from './managed';
 import { createManagedMessageId, createManagedConversationId } from '~/utils/managed';
 import { registerResponseTarget, settleResponseTarget } from './registration';
+import { createResponseRetention, responseScopeKeys } from './responseScope';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
+import { createConversationMethods } from './conversation';
 import { createConversationModel } from '~/models/convo';
 import { tenantStorage } from '~/config/tenantContext';
 import { createMessageModel } from '~/models/message';
@@ -139,6 +143,130 @@ describe('Response-owned canonical target selection', () => {
         .lean();
     }
 
+    it.each(['message', 'conversation'] as const)(
+      'publishes and recovers a %s through the shared protocol using the canonical writer',
+      async (kind) => {
+        const { intent } = await fixture(kind);
+        let first = true;
+        const write = async (publication: ManagedPublication, expiredAt?: Date) => {
+          const context = { userId: intent.userId, expiredAt };
+          const messages = createMessageMethods(db, { managedPublication: publication });
+          const saved =
+            kind === 'message'
+              ? await messages.saveMessage(context, {
+                  messageId: intent.logicalId,
+                  conversationId: intent.conversationId,
+                  text: 'confirmed canonical payload',
+                  isCreatedByUser: false,
+                })
+              : await createConversationMethods(db, {
+                  managedPublication: publication,
+                  getMessages: createMessageMethods(db).getMessages,
+                  deleteMessages: createMessageMethods(db).deleteMessages,
+                }).saveConvo(
+                  context,
+                  {
+                    conversationId: intent.conversationId,
+                    endpoint: 'agents',
+                    agent_id: 'agent',
+                    title: 'Canonical conversation',
+                  },
+                  { initialAgentId: 'agent', appendMessageIds: [] },
+                );
+          if (first) {
+            first = false;
+            throw new Error('Canonical publication reply lost');
+          }
+          return saved;
+        };
+        await expect(publishResponseTarget(db, intent, write)).rejects.toThrow('reply lost');
+        const recovered = await publishResponseTarget(db, intent, write);
+        expect(recovered).not.toBeNull();
+        const replay = await publishResponseTarget(db, intent, write);
+        expect(replay?.publication.target).toEqual(recovered?.publication.target);
+        const model = db.model(kind === 'message' ? 'Message' : 'Conversation');
+        expect(await model.countDocuments({ user: intent.userId })).toBe(1);
+        expect((await readTargets(intent))?.canonicalTargets).toMatchObject([
+          { phase: 'published', target: recovered?.publication.target },
+        ]);
+        const anchors = await createResponseScopeModel(db)
+          .find({
+            _id: { $in: [recovered!.publication.ownerKey, recovered!.publication.conversationKey] },
+          })
+          .lean();
+        expect(anchors).toHaveLength(2);
+        expect(anchors.every((anchor) => anchor.pendingCount === 0)).toBe(true);
+      },
+    );
+    it('keeps discovery until a replay adopts retention shortened during canonical publication', async () => {
+      const { intent } = await fixture();
+      const deadline = new Date(Date.now() + 60_000);
+      let first = true;
+      const write = async (publication: ManagedPublication, expiredAt?: Date) => {
+        if (first) {
+          first = false;
+          await createResponseRetention(db)(intent, intent.conversationId, deadline);
+        }
+        return createMessageMethods(db, { managedPublication: publication }).saveMessage(
+          { userId: intent.userId, expiredAt },
+          { messageId: intent.logicalId, conversationId: intent.conversationId, text: 'confirmed' },
+        );
+      };
+      expect(await publishResponseTarget(db, intent, write)).toBeNull();
+      expect(
+        (
+          await createResponseScopeModel(db).findById(
+            responseScopeKeys(intent, intent.conversationId)[1],
+          )
+        )?.pendingCount,
+      ).toBeGreaterThan(0);
+      const recovered = await publishResponseTarget(db, intent, write);
+      expect(recovered).not.toBeNull();
+      expect(
+        await createMessageModel(db).findOne({ messageId: intent.logicalId }).lean(),
+      ).toMatchObject({
+        expiredAt: deadline,
+      });
+      const anchors = await createResponseScopeModel(db)
+        .find({
+          _id: { $in: [recovered!.publication.ownerKey, recovered!.publication.conversationKey] },
+        })
+        .lean();
+      expect(anchors.every((anchor) => anchor.pendingCount === 0)).toBe(true);
+    });
+    it('cannot recreate a registered target deleted before the canonical payload lands', async () => {
+      const { intent } = await fixture();
+      const model = createMessageModel(db);
+      const write = async (publication: ManagedPublication) => {
+        await model.deleteOne(managedTargetFilter(db, publication.target));
+        return createMessageMethods(db, { managedPublication: publication }).saveMessage(
+          { userId: intent.userId },
+          { messageId: intent.logicalId, conversationId: intent.conversationId, text: 'late' },
+        );
+      };
+      expect(await publishResponseTarget(db, intent, write)).toBeNull();
+      const selected = (await readTargets(intent))!.canonicalTargets![0].target;
+      const allocate = jest.spyOn(db.connection.db!, 'command');
+      expect(await publishResponseTarget(db, intent, write)).toBeNull();
+      expect(allocate).not.toHaveBeenCalled();
+      expect(await model.collection.countDocuments({ user: intent.userId })).toBe(0);
+      expect((await readTargets(intent))!.canonicalTargets).toMatchObject([
+        { phase: 'retired', target: selected },
+      ]);
+    });
+    it('cannot call a canonical writer while its terminal turn is still unconfirmed', async () => {
+      const { intent, receipt } = await fixture();
+      await createStoredResponseModel(db).updateOne(
+        { _id: intent.parentId },
+        {
+          $set: { preparedTerminal: receipt },
+          $unset: { pendingTerminal: 1 },
+        },
+      );
+      const write = jest.fn();
+      expect(await publishResponseTarget(db, intent, write)).toBeNull();
+      expect(write).not.toHaveBeenCalled();
+    });
     it('selects a single physical winner across competing publishers', async () => {
       const { intent } = await fixture();
       const attempts = await Promise.all([

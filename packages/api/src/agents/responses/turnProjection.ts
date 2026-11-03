@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { responseReference } from '@librechat/data-schemas';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import type {
   ResponseTurnWrites,
@@ -10,13 +12,11 @@ import type { Response } from './types';
 import { projectStoredResponseMessage } from './foreground';
 import { convertInputToMessages } from './service';
 
-/** Rebuild canonical writes from immutable request/receipt bytes, without a live request closure. */
-export function projectCanonicalResponseTurn(
+function readResponseTurnIntent(
   record: StoredResponseRecord,
-  receipt: ResponseTerminalReceipt,
-): ResponseTurnWrites | undefined {
-  if (!receipt.turnJSON) return undefined; // Failures before turn preparation have no history to materialize.
-  const intent = JSON.parse(receipt.turnJSON) as ResponseTurnIntent;
+  turnJSON: string,
+): ResponseTurnIntent {
+  const intent = JSON.parse(turnJSON) as ResponseTurnIntent;
   if (
     intent.version !== 1 ||
     intent.context.userId !== record.userId ||
@@ -26,13 +26,60 @@ export function projectCanonicalResponseTurn(
     typeof intent.parentMessageId !== 'string'
   )
     throw new Error('Response turn projection identity changed');
+  return intent;
+}
+
+/** Normalize once before immutable preparation; retries derive the same IDs from the exact Root. */
+export function normalizeResponseTurnIntent(
+  record: StoredResponseRecord,
+  turnJSON: string,
+): string {
+  const intent = readResponseTurnIntent(record, turnJSON);
+  const { target } = responseReference(record);
+  const source = convertInputToMessages(JSON.parse(record.requestJSON).input);
+  const resumed = record.resume != null && intent.inputs.length === 0;
+  if (!resumed && source.length !== intent.inputs.length)
+    throw new Error('Response input projection changed');
+  let previous = record.parentMessageId;
+  const inputs = source.map((_message, index) => {
+    if (!resumed) {
+      const input = intent.inputs[index];
+      if (
+        input.index !== index ||
+        !input.messageId ||
+        input.parentMessageId !==
+          (index === 0 ? record.parentMessageId : intent.inputs[index - 1].messageId)
+      )
+        throw new Error('Response input ancestry changed');
+    }
+    const messageId = `resp_d_${createHash('sha256')
+      .update(JSON.stringify([target.id, target.incarnation, 'input', index]))
+      .digest('hex')
+      .slice(0, 32)}`;
+    const layout = { index, messageId, parentMessageId: previous };
+    previous = messageId;
+    return layout;
+  });
+  if (
+    intent.parentMessageId !==
+    (intent.inputs.length
+      ? intent.inputs[intent.inputs.length - 1].messageId
+      : record.parentMessageId)
+  )
+    throw new Error('Response output ancestry changed');
+  return JSON.stringify({ ...intent, inputs, parentMessageId: previous });
+}
+
+/** Rebuild canonical writes from immutable request/receipt bytes, without a live request closure. */
+export function projectCanonicalResponseTurn(
+  record: StoredResponseRecord,
+  receipt: ResponseTerminalReceipt,
+): ResponseTurnWrites | undefined {
+  if (!receipt.turnJSON) return undefined; // Failures before turn preparation have no history to materialize.
+  const intent = readResponseTurnIntent(record, receipt.turnJSON);
   const request = JSON.parse(record.requestJSON);
   const inputs = convertInputToMessages(request.input);
-  if (
-    (!record.resume && inputs.length !== intent.inputs.length) ||
-    (record.resume && intent.inputs.length !== 0)
-  )
-    throw new Error('Response input projection changed');
+  if (inputs.length !== intent.inputs.length) throw new Error('Response input projection changed');
   const response = JSON.parse(receipt.responseJSON) as Response;
   const projectedInputs = intent.inputs.map((layout, index) => {
     if (
