@@ -148,6 +148,8 @@ export type {
   MessagesHost,
   MarkdownVariant,
   MessageCopyInput,
+  MessageFeedbackWrite,
+  MessageFeedbackEvents,
   ForkPreferences,
   ForkConversation,
   ActivitySlotProps,
@@ -161,6 +163,20 @@ export type {
   MessageAudioButtonProps,
   MessageRowSlotProps,
 } from './react/messages/host';
+export { default as useStreamedAttachments } from './react/messages/useStreamedAttachments';
+export { default as useMessageProcess } from './react/messages/useMessageProcess';
+export type { MessageProcess } from './react/messages/useMessageProcess';
+export { default as useContentMetadata } from './react/messages/useContentMetadata';
+export type { ContentMetadataResult } from './react/messages/useContentMetadata';
+export { default as useMemoizedChatContext } from './react/messages/useMemoizedChatContext';
+export type { MemoizedChatContext } from './react/messages/useMemoizedChatContext';
+export type { TMessageChatContext, TMessageProps } from './react/messages/types';
+export {
+  areMessageFilesEqual,
+  areMessageFieldsEqual,
+  isSameTailRelation,
+  areMessageRowPropsEqual,
+} from './react/messages/equal';
 export { AuthorContext, useAuthorContext } from './react/messages/author';
 export type { TMessageAuthor } from './react/messages/author';
 export { ErrorSourceProvider, useErrorSource } from './react/messages/error';

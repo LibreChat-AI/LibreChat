@@ -22,6 +22,10 @@ export function createMessagesHost(overrides: Partial<MessagesHost> = {}): Messa
     useScreenshotTarget: () => undefined,
     useAutoScroll: () => false,
     useConversationMessages: () => undefined,
+    useAssistant: () => undefined,
+    useGetAddedConvo: () => () => null,
+    useStreamedAttachments: () => undefined,
+    useMessageFeedback: () => () => undefined,
     useSeenSource: () => ({
       readReply: () => undefined,
       hasReplyProof: () => false,

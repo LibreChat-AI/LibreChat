@@ -180,6 +180,12 @@ export type {
 } from './components/messages/MessagesView';
 
 export { EventSubagentActivityGroup } from './components/subagents/activity';
+export { default as useMessageActions } from './components/messages/useMessageActions';
+export type { TMessageActions, MessageActions } from './components/messages/useMessageActions';
+export { default as useMessageHelpers } from './components/messages/useMessageHelpers';
+export type { MessageHelpers } from './components/messages/useMessageHelpers';
+export { default as useAttachments } from './components/messages/useAttachments';
+export { useSearchResultsByTurn } from './components/messages/useSearchResultsByTurn';
 export { default as ScrollToBottom } from './components/messages/ScrollToBottom';
 export {
   SubagentStatus,

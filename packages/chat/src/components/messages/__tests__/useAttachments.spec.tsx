@@ -1,3 +1,4 @@
+/** @jest-environment jsdom */
 /**
  * Coverage for `useAttachments` — the merge layer that overlays live
  * (SSE / poll-driven) attachment lifecycle fields onto DB-loaded
@@ -11,7 +12,6 @@
  */
 
 import { useEffect } from 'react';
-import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
 import { renderHook } from '@testing-library/react';
 import { Provider as JotaiProvider, useSetAtom } from 'jotai';
@@ -20,12 +20,18 @@ import type { ReactNode } from 'react';
 
 type AttachmentFixture = TFile & TAttachmentMetadata;
 
-jest.mock('~/hooks/useLocalize', () => () => (key: string) => key);
+jest.mock('@librechat/client', () => ({
+  useLocalize: () => (key: string) => key,
+}));
 
+import useStreamedAttachments from '../../../react/messages/useStreamedAttachments';
+import { messageAttachmentsMapAtom } from '../../../react/stream/atoms';
+import { MessagesHostProvider } from '../../../react/messages/host';
+import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import useAttachments from '../useAttachments';
-import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
 
 const messageId = 'msg-1';
+const host = createMessagesHost({ useStreamedAttachments });
 
 function makeAttachment(overrides: Partial<AttachmentFixture> = {}): AttachmentFixture {
   return {
@@ -79,12 +85,12 @@ function setup({
 
   return renderHook(() => useAttachments({ messageId, attachments }), {
     wrapper: ({ children }: { children: ReactNode }) => (
-      <RecoilRoot>
-        <JotaiProvider>
+      <JotaiProvider>
+        <MessagesHostProvider host={host}>
           <Seed />
           {children}
-        </JotaiProvider>
-      </RecoilRoot>
+        </MessagesHostProvider>
+      </JotaiProvider>
     ),
   });
 }

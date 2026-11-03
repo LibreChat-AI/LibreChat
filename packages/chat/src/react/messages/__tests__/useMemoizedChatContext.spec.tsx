@@ -1,13 +1,11 @@
+/** @jest-environment jsdom */
 import { renderHook } from '@testing-library/react';
 import type { TConversation, TMessage } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
+import type { ChatContract } from '../../chat/contract';
+import { createChatContract } from '../../../__fixtures__/chat';
 import useMemoizedChatContext from '../useMemoizedChatContext';
-import { useChatContext } from '~/Providers';
-
-jest.mock('~/Providers', () => ({
-  useChatContext: jest.fn(),
-}));
-
-const mockUseChatContext = useChatContext as jest.MockedFunction<typeof useChatContext>;
+import { ChatContext } from '../../chat/context';
 
 const conversation = {
   conversationId: 'convo-id',
@@ -33,26 +31,33 @@ const stableHelpers = {
   handleContinue: jest.fn(),
 };
 
-function mockChatContext(latestMessageId: string | undefined, latestMessageDepth = -1) {
-  mockUseChatContext.mockReturnValue({
+let contract: ChatContract = createChatContract();
+
+function mockChatContext(latestMessageId: string | undefined, latestMessageDepth = -1): void {
+  contract = createChatContract({
     ...stableHelpers,
     index: 0,
     conversation,
     latestMessageId,
     latestMessageDepth,
     isSubmitting: true,
-  } as unknown as ReturnType<typeof useChatContext>);
+  });
+}
+
+function wrapper({ children }: { children: ReactNode }): ReactNode {
+  return <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>;
 }
 
 describe('useMemoizedChatContext', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    contract = createChatContract();
   });
 
   it('treats the latest message as submitting while streaming', () => {
     mockChatContext('assistant-response_');
 
-    const { result } = renderHook(() => useMemoizedChatContext(message(), true));
+    const { result } = renderHook(() => useMemoizedChatContext(message(), true), { wrapper });
 
     expect(result.current.effectiveIsSubmitting).toBe(true);
   });
@@ -60,7 +65,7 @@ describe('useMemoizedChatContext', () => {
   it('requires latestMessageId alignment before marking a row as submitting', () => {
     mockChatContext(undefined);
 
-    const { result } = renderHook(() => useMemoizedChatContext(message(), true));
+    const { result } = renderHook(() => useMemoizedChatContext(message(), true), { wrapper });
 
     expect(result.current.effectiveIsSubmitting).toBe(false);
     expect(result.current.chatContext.isSubmitting).toBe(true);
@@ -74,7 +79,7 @@ describe('useMemoizedChatContext', () => {
     const row = message({ messageId: 'assistant-1', depth: 1 });
     const { result, rerender } = renderHook(
       ({ submitting }: { submitting: boolean }) => useMemoizedChatContext(row, submitting),
-      { initialProps: { submitting: false } },
+      { initialProps: { submitting: false }, wrapper },
     );
     const initial = result.current.chatContext;
 
@@ -90,7 +95,7 @@ describe('useMemoizedChatContext', () => {
     mockChatContext('assistant-2', 3);
     const { result, rerender } = renderHook(
       ({ submitting }: { submitting: boolean }) => useMemoizedChatContext(message(), submitting),
-      { initialProps: { submitting: false } },
+      { initialProps: { submitting: false }, wrapper },
     );
     const { chatContext } = result.current;
 

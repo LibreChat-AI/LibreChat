@@ -2,9 +2,15 @@ import { useCallback, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import { EventSubagentActivityGroup } from '@librechat/chat/components';
-import { setDefaultMessagesHost, revealedQueuedTurnFamily } from '@librechat/chat/react';
+import { useUpdateFeedbackMutation } from 'librechat-data-provider/react-query';
+import {
+  setDefaultMessagesHost,
+  useStreamedAttachments,
+  revealedQueuedTurnFamily,
+} from '@librechat/chat/react';
 import type {
   ForkEvents,
+  MessageFeedbackWrite,
   MessageCopy,
   MessagesHost,
   MessageCopyInput,
@@ -12,7 +18,7 @@ import type {
   ForkConversation,
   MessageAudioProps,
 } from '@librechat/chat/react';
-import type { TMessage } from 'librechat-data-provider';
+import type { Assistant, TMessage } from 'librechat-data-provider';
 import {
   hasCopyableText,
   useNavigateToConvo,
@@ -21,9 +27,11 @@ import {
 } from '~/hooks';
 import { useForkConvoMutation, useGetMessagesByConvoId } from '~/data-provider';
 import useConversationSeenSource from '~/hooks/Conversations/seenSource';
+import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { useOptionalMessagesOperations } from './MessagesViewContext';
 import ThreadMessage from '~/components/Chat/Messages/Thread/Message';
 import MessageAudio from '~/components/Chat/Messages/MessageAudio';
+import { useAssistantsMapContext } from './AssistantsMapContext';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { useFileMapContext } from '~/Providers/FileMapContext';
 import Files from '~/components/Chat/Messages/Content/Files';
@@ -99,6 +107,19 @@ function useAppConversationMessages(
   ).data;
 }
 
+function useAppAssistant(
+  endpoint: string | null | undefined,
+  model: string | null | undefined,
+): Assistant | undefined {
+  const map = useAssistantsMapContext();
+  return map?.[endpoint ?? '']?.[model ?? ''];
+}
+
+function useAppMessageFeedback(conversationId: string, messageId: string): MessageFeedbackWrite {
+  const { mutate } = useUpdateFeedbackMutation(conversationId, messageId);
+  return mutate;
+}
+
 function useAppHasPendingTurn(conversationId: string): boolean {
   return useAtomValue(revealedQueuedTurnFamily(conversationId)) != null;
 }
@@ -126,6 +147,10 @@ export const appMessagesHost: MessagesHost = {
   useGetMessages: useAppGetMessages,
   useHasPendingTurn: useAppHasPendingTurn,
   useConversationMessages: useAppConversationMessages,
+  useAssistant: useAppAssistant,
+  useGetAddedConvo,
+  useStreamedAttachments,
+  useMessageFeedback: useAppMessageFeedback,
   renderMessageAudio: (props) => <AppMessageAudio {...props} />,
   useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
   useAutoScroll: () => useAtomValue(autoScrollAtom),
