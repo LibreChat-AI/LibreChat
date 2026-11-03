@@ -1,7 +1,7 @@
 import { Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import { getActivityLabelText, getBatchActivityLabelPart } from '@librechat/chat';
 import type { TMessageContentParts, Agents } from 'librechat-data-provider';
 import type { PartWithIndex } from '~/components/Chat/Messages/Content/ParallelContent';
-import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activityLabels';
 
 export type GroupedPart =
   | { type: 'single'; part: PartWithIndex }

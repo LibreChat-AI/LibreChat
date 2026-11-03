@@ -1,6 +1,11 @@
 import { memo } from 'react';
-import { isBashProgrammaticToolCall, getAskUserQuestionPart } from '@librechat/chat';
 import { Part as ChatPart, ToolPreparation, Container } from '@librechat/chat/components';
+import {
+  isBashProgrammaticToolCall,
+  getAskUserQuestionPart,
+  getActivityLabelPart,
+  getActivityLabelText,
+} from '@librechat/chat';
 import {
   Tools,
   Constants,
@@ -37,12 +42,7 @@ import {
   SubagentCall,
   SteerPart,
 } from './Parts';
-import {
-  getCachedPreview,
-  getActivityLabelPart,
-  getActivityLabelText,
-  getPartKeyIndex,
-} from '~/utils';
+import { getCachedPreview, getPartKeyIndex } from '~/utils';
 import BackgroundTaskCall from './Parts/BackgroundTaskCall';
 import AskUserQuestionCall from './AskUserQuestionCall';
 import { isError } from './ToolOutput/OutputRenderer';

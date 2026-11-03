@@ -1,7 +1,7 @@
 import React from 'react';
 import { Copy } from 'lucide';
-import ActionButton from '~/components/Messages/Content/ActionButton';
-import { useLocalize } from '~/hooks';
+import { useLocalize } from '@librechat/client';
+import ActionButton from './ActionButton';
 
 interface CopyButtonProps {
   isCopied: boolean;
@@ -16,7 +16,9 @@ interface CopyButtonProps {
   disabled?: boolean;
 }
 
-const CopyButton = React.forwardRef<HTMLButtonElement, CopyButtonProps>(
+const CopyButton: React.ForwardRefExoticComponent<
+  CopyButtonProps & React.RefAttributes<HTMLButtonElement>
+> = React.forwardRef<HTMLButtonElement, CopyButtonProps>(
   (
     {
       isCopied,
