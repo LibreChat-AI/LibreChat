@@ -35,12 +35,30 @@ describe('Popover', () => {
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('portals the content out of the trigger tree and adds no classes of its own', () => {
+  it('portals the content out of the trigger tree on the shared panel surface', () => {
     const { container } = render(<Example modal />);
     fireEvent.click(screen.getByRole('button', { name: 'Open' }));
 
     const panel = screen.getByRole('dialog', { name: 'Details' });
     expect(container).not.toContainElement(panel);
-    expect(panel).toHaveAttribute('class', 'custom-panel');
+    expect(panel).toHaveClass(
+      'bg-surface-secondary',
+      'border-border-light',
+      'rounded-theme-popover',
+      'motion-reduce:animate-none',
+      'custom-panel',
+    );
+  });
+
+  it('forwards its ref to the content element', () => {
+    const ref = React.createRef<HTMLDivElement>();
+    render(
+      <Popover open>
+        <PopoverTrigger>Open</PopoverTrigger>
+        <PopoverContent ref={ref}>Body</PopoverContent>
+      </Popover>,
+    );
+
+    expect(ref.current).toBe(screen.getByText('Body'));
   });
 });
