@@ -127,7 +127,7 @@ describe('Thinking', () => {
     } as SettingDefinition;
     renderInComposer({ index: 1 });
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Thinking/ }));
     const slider = screen.getByRole('slider');
     slider.focus();
     fireEvent.keyDown(slider, { key: 'ArrowRight' });

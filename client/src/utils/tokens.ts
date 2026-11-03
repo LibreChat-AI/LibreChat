@@ -1,5 +1,3 @@
-import { normalizeTokenCount } from '@librechat/chat';
-
 export type {
   AnchorReading,
   BranchTotals,
@@ -18,6 +16,7 @@ export {
   collectAnchorSeries,
   countTrailingOutputChars,
   estimateTokens,
+  formatTokens,
   findBranchSnapshotAnchor,
   getOutputChars,
   groupToolTokens,
@@ -44,16 +43,6 @@ export {
   upsertEntries,
   usageHistory,
 } from '@librechat/chat';
-
-const tokenFormatter = new Intl.NumberFormat(undefined, {
-  notation: 'compact',
-  maximumFractionDigits: 1,
-});
-
-export function formatTokens(count: number): string {
-  const formatted = tokenFormatter.format(normalizeTokenCount(count));
-  return formatted.replace(/\.0(?=[A-Za-z]|$)/, '');
-}
 
 /** Display currency for the context cost. `rate` is a static USD→local
  *  multiplier (no live FX); `code` is an ISO-4217 currency for Intl formatting. */
