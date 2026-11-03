@@ -40,10 +40,6 @@ export function applyManagedStorage(schema: Schema): void {
   schema.pre('countDocuments', filter);
   schema.pre('aggregate', function (this: Aggregate<unknown>): void {
     if (includesManagedAllocations(this)) return;
-    const pipeline = this.pipeline();
-    const first = pipeline[0];
-    const offset =
-      first && ('$geoNear' in first || '$search' in first || '$vectorSearch' in first) ? 1 : 0;
-    pipeline.splice(offset, 0, { $match: managedVisibilityFilter });
+    this.pipeline().unshift({ $match: managedVisibilityFilter });
   });
 }
