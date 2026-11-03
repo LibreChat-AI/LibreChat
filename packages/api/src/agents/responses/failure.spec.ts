@@ -17,6 +17,7 @@ import type {
   StoredResponseRecord,
   ResponseTerminalReceipt,
 } from '@librechat/data-schemas';
+import type { StoredResponseMessage } from './persistence';
 import {
   createResponseCompletion,
   createResponseExecutionConfirmation,
@@ -30,7 +31,9 @@ import { createChannelResponseProjection } from '~/channels/responses';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
 import { normalizeResponseTurnIntent } from './turnProjection';
 import { createBackgroundResponseHttpHandlers } from './http';
+import { resolveResponseContinuation } from './persistence';
 import { createResponseRecovery } from './maintenance';
+import { createAgentRunEnvelope } from '../envelope';
 import { responseRootBinding } from './scope';
 
 const owner = { userId: 'failure-owner', tenantId: 'failure-tenant' };
@@ -231,6 +234,97 @@ describe.each(engines)('permanent Response publication failure on %s', (engine) 
       return original(...args);
     });
   }
+  it.each([false, true])(
+    'continues confirmed history after terminal failure=%s without exposing its target map',
+    (failure) =>
+      scope(async () => {
+        const f = await fixture();
+        const enqueue = jest.fn(async () => {});
+        const resolveContinuation = jest.fn(async () => {
+          const continuation = await resolveResponseContinuation(
+            f.record.responseId,
+            owner.userId,
+            {
+              getMessage: async (filter) =>
+                mongoose.models.Message.findOne(filter).lean<StoredResponseMessage>(),
+            },
+          );
+          const conversation = await storage.readConversationTarget(
+            owner,
+            continuation.conversationId,
+          );
+          if (!conversation) throw new Error('Missing canonical conversation');
+          return { ...continuation, conversationTarget: conversation.target };
+        });
+        const service = createBackgroundResponseService({
+          storage,
+          authorize: async () => true,
+          enqueue,
+          resolveContinuation,
+          observe: async () => null,
+          recoverTerminal: completion().finish,
+          cancel: async () => {},
+        });
+        const envelope = createAgentRunEnvelope({
+          protocol: 'responses',
+          requestId: randomUUID(),
+          receivedAt: Date.now(),
+          principal: { id: owner.userId, tenantId: owner.tenantId },
+          payload: {
+            model: 'agent',
+            input: 'Follow up',
+            background: true,
+            previous_response_id: f.record.responseId,
+          },
+        });
+        expect(await service.create(envelope)).toMatchObject({
+          ok: false,
+          status: 409,
+          code: 'response_continuation_unavailable',
+        });
+        expect(resolveContinuation).not.toHaveBeenCalled();
+        if (failure) {
+          interceptOutput(
+            f.record,
+            async () => {
+              throw new Error('Injected lost publication reply');
+            },
+            true,
+          );
+          await expect(completion().finish(f.record)).rejects.toThrow('lost publication reply');
+          await completion().finish(await markFailure(f));
+        } else await completion().finish(f.record);
+        const prior = await storage.readContinuation(owner, f.record.responseId);
+        expect(prior?.status).toBe(failure ? 'failed' : 'completed');
+        expect(prior?.canonicalTargets).toBeUndefined();
+        expect(
+          await storage.readContinuation({ ...owner, userId: 'other' }, f.record.responseId),
+        ).toBeNull();
+        expect(await service.create(envelope)).toMatchObject({
+          ok: true,
+          response: { status: 'queued' },
+        });
+        expect(enqueue).toHaveBeenCalledTimes(1);
+        expect(enqueue).toHaveBeenCalledWith(
+          expect.objectContaining({
+            conversationId: f.record.conversationId,
+            parentMessageId: f.record.responseId,
+            conversationTarget: f.record.conversationTarget,
+          }),
+        );
+        resolveContinuation.mockResolvedValueOnce({
+          conversationId: f.record.conversationId,
+          parentMessageId: f.record.responseId,
+          conversationTarget: { ...f.record.conversationTarget!, id: '0'.repeat(24) },
+        });
+        expect(await service.create(envelope)).toMatchObject({
+          ok: false,
+          status: 409,
+          code: 'response_continuation_unavailable',
+        });
+        expect(enqueue).toHaveBeenCalledTimes(1);
+      }),
+  );
   it('rejects oversized background HTTP input before allocating a Root or queueing work', () =>
     scope(async () => {
       const enqueue = jest.fn(async () => {});

@@ -195,19 +195,10 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
       const requestJSON = canonicalResponseJSON(normalized);
       const previousId = request.previous_response_id;
       const managedPrevious = previousId && isManagedMessageId(previousId);
-      const previous = managedPrevious ? await deps.storage.read(owner, previousId) : null;
-      if (
-        managedPrevious &&
-        (!previous ||
-          !['completed', 'failed', 'incomplete', 'cancelled'].includes(previous.status) ||
-          !previous.conversationTarget ||
-          !previous.canonicalTargets?.some(
-            (entry) =>
-              entry.logicalId === previous.responseId &&
-              entry.target.kind === 'message' &&
-              entry.phase === 'published',
-          ))
-      )
+      const previous = managedPrevious
+        ? await deps.storage.readContinuation(owner, previousId)
+        : null;
+      if (managedPrevious && !previous)
         return { ok: false, status: 409, code: 'response_continuation_unavailable' };
       const continuation = await deps.resolveContinuation(owner, previousId);
       if (

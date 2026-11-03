@@ -329,6 +329,8 @@ export interface ResponseStorage {
     token: { kind: 'create' | 'resume'; id: string },
   ): Promise<boolean>;
   read(owner: ResponseOwner, responseId: string): Promise<StoredResponseRecord | null>;
+  /** A terminal journal with a confirmed canonical output; private target metadata stays hidden. */
+  readContinuation(owner: ResponseOwner, responseId: string): Promise<StoredResponseRecord | null>;
   readCleanupIdentity(
     owner: ResponseOwner,
     responseId: string,
@@ -431,6 +433,31 @@ export function createResponseStorage(
     ...(mode === 'publication' ? { persistenceFailure: { $exists: false } } : {}),
     $and: [activeExpirationFilter<StoredResponseRecord>()],
   });
+  async function readVisible(owner: ResponseOwner, responseId: string, continuation = false) {
+    const record = await model
+      .findOne({
+        ...scope(owner, 'visible'),
+        responseId,
+        ...(continuation
+          ? {
+              status: { $in: ['completed', 'failed', 'incomplete', 'cancelled'] },
+              conversationTarget: { $exists: true },
+              canonicalTargets: {
+                $elemMatch: {
+                  logicalId: responseId,
+                  'target.kind': 'message',
+                  phase: 'published',
+                },
+              },
+            }
+          : {}),
+      })
+      .read('primary')
+      .lean();
+    if (record && (await isResponseScopeClosed(mongoose, owner, record.conversationId)))
+      return null;
+    return record;
+  }
   async function mutateInOpenScope<T>(
     owner: ResponseOwner,
     responseId: string,
@@ -1377,12 +1404,8 @@ export function createResponseStorage(
         'visible',
       );
     },
-    async read(owner, responseId) {
-      const record = await model.findOne({ ...scope(owner, 'visible'), responseId }).lean();
-      if (record && (await isResponseScopeClosed(mongoose, owner, record.conversationId)))
-        return null;
-      return record;
-    },
+    read: (owner, responseId) => readVisible(owner, responseId),
+    readContinuation: (owner, responseId) => readVisible(owner, responseId, true),
     async readCleanupIdentity(owner, responseId, retained) {
       const record = await includeManagedAllocations(
         model
