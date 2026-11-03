@@ -1,4 +1,3 @@
-import type { ClientSession } from 'mongoose';
 import type {
   ResponseExecutionBinding,
   ResponseOwner,
@@ -45,7 +44,6 @@ import { allocateManagedTarget, managedTargetFilter } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { reconcileErasedResponseTargets } from './registration';
 import { createStoredResponseModel } from '~/models/response';
-import { getTransactionSupport } from '~/utils/transactions';
 import { includeManagedAllocations } from '~/utils/managed';
 import { activeExpirationFilter } from '~/utils/retention';
 import { materializeResponseTurn } from './responseTurn';
@@ -149,7 +147,7 @@ function responseExecutionFilter(
 ) {
   const { execution } = guard;
   if (
-    execution.storageTarget &&
+    !execution.storageTarget ||
     (execution.storageTarget.tenantId || undefined) !== (owner.tenantId || undefined)
   )
     return null;
@@ -338,7 +336,6 @@ export function createResponseStorage(
 ): ResponseStorage {
   const model = createStoredResponseModel(mongoose);
   let indexPromise: Promise<void> | undefined;
-  let transactionSupport: boolean | null = null;
   function ensureIndexes() {
     indexPromise ??= prepareResponseRootStorage(mongoose)
       .then(() => undefined)
@@ -376,44 +373,24 @@ export function createResponseStorage(
     retiredAt: { $exists: false },
     $and: [activeExpirationFilter<StoredResponseRecord>()],
   });
-  async function commitInOpenScope<T>(
+  async function mutateInOpenScope<T>(
     owner: ResponseOwner,
     responseId: string,
-    apply: (session: ClientSession, record: StoredResponseRecord) => Promise<T>,
+    apply: (record: StoredResponseRecord) => Promise<T>,
     conflict: T,
   ): Promise<T> {
-    transactionSupport = await getTransactionSupport(mongoose, transactionSupport);
-    if (!transactionSupport) throw new Error('Response publication requires transactions');
-    const current = await model.findOne({ ...scope(owner), responseId }).lean();
-    if (!current) return conflict;
-    const keys = responseScopeKeys(owner, current.conversationId);
-    await initializeResponseScopes(mongoose, keys);
-    const session = await mongoose.startSession({
-      defaultTransactionOptions: { readPreference: 'primary' },
-    });
-    try {
-      let result = conflict;
-      await session.withTransaction(async () => {
-        result = conflict;
-        const scopes = createResponseScopeModel(mongoose);
-        for (const key of keys) {
-          const touched = await scopes.updateOne(
-            { _id: key, closed: false, $and: [activeExpirationFilter()] },
-            { $inc: { revision: 1 } },
-            { session },
-          );
-          if (touched.matchedCount !== 1) return;
-        }
-        const record = await model
-          .findOne({ ...scope(owner), responseId })
-          .session(session)
-          .lean();
-        if (record) result = await apply(session, record);
-      });
-      return result;
-    } finally {
-      await session.endSession();
-    }
+    const current = await model
+      .findOne({ ...scope(owner), responseId })
+      .select('+providerExecution +checkpoint')
+      .lean();
+    if (!current || (await isResponseScopeClosed(mongoose, current, current.conversationId)))
+      return conflict;
+    const result = await apply(current);
+    // Closure retires/deletes exact targets before acknowledging erasure. An in-flight
+    // local CAS may land during closure, but cannot be returned as disclosed success.
+    return (await isResponseScopeClosed(mongoose, current, current.conversationId))
+      ? conflict
+      : result;
   }
   return {
     async readConversationTarget(owner, conversationId) {
@@ -663,10 +640,10 @@ export function createResponseStorage(
       const execution = responseExecutionFilter(mongoose, owner, guard);
       if (!execution) return { ok: false, code: 'response_conflict' };
       const preparedTerminal = terminalReceipt(receipt);
-      return commitInOpenScope<ResponseMutationResult>(
+      return mutateInOpenScope<ResponseMutationResult>(
         owner,
         responseId,
-        async (session) => {
+        async () => {
           const record = await model
             .findOneAndUpdate(
               {
@@ -685,13 +662,12 @@ export function createResponseStorage(
                 },
                 $inc: { revision: 1 },
               },
-              { new: true, runValidators: true, session },
+              { new: true, runValidators: true },
             )
             .lean();
           if (record) return { ok: true, record };
           const existing = await model
             .findOne({ ...scope(owner), responseId, ...execution })
-            .session(session)
             .lean();
           if (
             existing?.preparedTerminal &&
@@ -724,10 +700,10 @@ export function createResponseStorage(
       const execution = responseExecutionFilter(mongoose, owner, guard);
       if (!execution) return { ok: false, code: 'response_conflict' };
       const pendingTerminal = terminalReceipt(receipt);
-      return commitInOpenScope<ResponseMutationResult>(
+      return mutateInOpenScope<ResponseMutationResult>(
         owner,
         responseId,
-        async (session) => {
+        async () => {
           const record = await model
             .findOneAndUpdate(
               {
@@ -755,13 +731,12 @@ export function createResponseStorage(
                 $unset: { preparedTerminal: 1 },
                 $inc: { revision: 1 },
               },
-              { new: true, runValidators: true, session },
+              { new: true, runValidators: true },
             )
             .lean();
           if (record) return { ok: true, record };
           const existing = await model
             .findOne({ ...scope(owner), responseId, ...execution })
-            .session(session)
             .lean();
           if (
             existing?.generationCreatedAt === receipt.generationCreatedAt &&
@@ -784,20 +759,26 @@ export function createResponseStorage(
           (writes.intentJSON !== receipt.turnJSON || writes.context.userId !== owner.userId))
       )
         throw new Error('Response canonical projection identity changed');
-      // Resolve operator configuration before opening the database transaction.
       const budget = writes ? await options?.getMCPAppMessageBudget?.() : undefined;
-      return commitInOpenScope<ResponseMutationResult>(
+      return mutateInOpenScope<ResponseMutationResult>(
         owner,
         responseId,
-        async (session, current) => {
+        async (current) => {
           if (
             current.revision !== revision ||
             current.generationCreatedAt !== receipt.generationCreatedAt ||
-            (receipt.turnJSON != null
-              ? current.status !== 'materializing'
-              : !active.includes(current.status)) ||
+            (writes ? current.status !== 'materializing' : !active.includes(current.status)) ||
             !current.pendingTerminal ||
             !sameResponseTerminalReceipt(current.pendingTerminal, receipt)
+          )
+            return { ok: false, code: 'response_conflict' };
+          if (
+            current.providerExecution?.id !== receipt.providerExecutionId ||
+            current.providerExecution.ownerId !== receipt.ownerId ||
+            current.providerExecution.drained !== true ||
+            !current.providerExecution.outcome ||
+            (current.checkpoint &&
+              (current.checkpoint.state !== 'settled' || current.checkpoint.erased !== true))
           )
             return { ok: false, code: 'response_conflict' };
           if (writes) {
@@ -807,29 +788,49 @@ export function createResponseStorage(
               writes.messages.some((message) => message.conversationId !== current.conversationId)
             )
               throw new Error('Response canonical history identity changed');
-            await materializeResponseTurn(
-              mongoose,
-              session,
-              {
-                ...writes,
-                context: {
-                  ...writes.context,
-                  ...(current.isTemporary === true ? { isTemporary: true } : {}),
-                  ...(current.expiredAt &&
-                  (!writes.context.expiredAt || current.expiredAt < writes.context.expiredAt)
-                    ? { expiredAt: current.expiredAt }
-                    : {}),
+            if (
+              !(await materializeResponseTurn(
+                mongoose,
+                current,
+                receipt,
+                {
+                  ...writes,
+                  context: {
+                    ...writes.context,
+                    ...(current.isTemporary === true ? { isTemporary: true } : {}),
+                    ...(current.expiredAt &&
+                    (!writes.context.expiredAt || current.expiredAt < writes.context.expiredAt)
+                      ? { expiredAt: current.expiredAt }
+                      : {}),
+                  },
                 },
-              },
-              async () => budget,
-            );
+                async () => budget,
+              ))
+            )
+              return { ok: false, code: 'response_conflict' };
           }
+          // Target selections advance revision. Reread the same physical Root and
+          // immutable receipt after Conversation append, never rerun provider work.
+          const latest = await model
+            .findOne({ ...scope(current), ...terminalFilter('pendingTerminal', receipt) })
+            .lean();
+          if (!latest || (await isResponseScopeClosed(mongoose, latest, latest.conversationId)))
+            return { ok: false, code: 'response_conflict' };
           const record = await model
             .findOneAndUpdate(
               {
-                ...scope(owner),
-                responseId,
-                revision,
+                ...scope(current),
+                revision: latest.revision,
+                generationCreatedAt: receipt.generationCreatedAt,
+                'providerExecution.id': receipt.providerExecutionId,
+                'providerExecution.ownerId': receipt.ownerId ?? { $exists: false },
+                'providerExecution.drained': true,
+                'providerExecution.outcome': { $in: ['complete', 'error', 'aborted'] },
+                $or: [
+                  { checkpoint: { $exists: false } },
+                  { 'checkpoint.state': 'settled', 'checkpoint.erased': true },
+                ],
+                status: writes ? 'materializing' : { $in: active },
                 ...terminalFilter('pendingTerminal', receipt),
               },
               {
@@ -837,11 +838,10 @@ export function createResponseStorage(
                 $unset: { pendingTerminal: 1, preparedTerminal: 1 },
                 $inc: { revision: 1 },
               },
-              { new: true, session },
+              { new: true, upsert: false },
             )
             .lean();
-          if (!record) throw new Error('Response publication changed during materialization');
-          return { ok: true, record };
+          return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
         },
         { ok: false, code: 'response_conflict' },
       );
@@ -1119,10 +1119,10 @@ export function createResponseStorage(
     async settleDispatch(owner, responseId, token) {
       if (!token.id || !['create', 'resume'].includes(token.kind))
         throw new TypeError('Invalid response dispatch identity');
-      return commitInOpenScope(
+      return mutateInOpenScope(
         owner,
         responseId,
-        async (session, record) => {
+        async (record) => {
           const marker = record.dispatchOutbox;
           if (
             !marker ||
@@ -1137,11 +1137,17 @@ export function createResponseStorage(
           } else if (record.resume && record.resume.intentId !== token.id) return false;
           if (marker.state === 'settled') return true;
           const updated = await model.updateOne(
-            { ...scope(owner), responseId },
+            {
+              ...scope(record),
+              responseId,
+              'dispatchOutbox.kind': token.kind,
+              'dispatchOutbox.id': token.id,
+              'dispatchOutbox.state': 'pending',
+            },
             {
               $set: { dispatchOutbox: { ...token, state: 'settled' } },
             },
-            { session },
+            { upsert: false },
           );
           return updated.matchedCount === 1;
         },

@@ -469,6 +469,7 @@ export interface ResponsePersistenceDependencies {
 
 /** The shared turn's storage and transport inputs; terminal ownership is selected separately. */
 export interface ResponseStageInput {
+  conversationTarget?: ReplyAnnouncement['conversationTarget'];
   terminal: Pick<ForegroundResponseTerminal<StoredReply>, 'stage'>;
   request: CompletionRequest;
   response: Response;
@@ -557,6 +558,7 @@ export function createResponseConversationWrites(
 
 export function createResponsePersistence(
   {
+    conversationTarget,
     request,
     conversationId,
     agentId,
@@ -612,6 +614,7 @@ export function createResponsePersistence(
     },
     async announceCanonical(result: Response): Promise<void> {
       await deps.announceReply({
+        ...(conversationTarget ? { conversationTarget } : {}),
         userId: request.user?.id,
         conversationId,
         reply: {

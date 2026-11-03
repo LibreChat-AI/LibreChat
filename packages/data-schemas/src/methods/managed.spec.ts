@@ -14,6 +14,12 @@ import {
   sweepManagedAllocations,
 } from './managed';
 import {
+  responseScopeKeys,
+  closeResponseScopes,
+  createResponseRetention,
+  createResponseConversationReplacement,
+} from './responseScope';
+import {
   publishResponseRoot,
   responseReference,
   responseRootFilter,
@@ -24,7 +30,6 @@ import {
   settleResponseTarget,
   reconcileResponseTargets,
 } from './registration';
-import { responseScopeKeys, closeResponseScopes, createResponseRetention } from './responseScope';
 import { createManagedConversationId, createManagedMessageId } from '~/utils/managed';
 import { createResponseCheckpointStorage } from './responseCheckpoint';
 import { checkpointOwnerNamespacePrefix } from '~/utils/checkpoint';
@@ -558,6 +563,57 @@ describe('managed target allocation on real storage', () => {
         });
       },
     );
+    it('retains a captured existing Conversation before model work without reseeding metadata or activity', async () => {
+      const storage = createResponseStorage(db);
+      const input = {
+        ...rootInput(),
+        conversationId: randomUUID(),
+        requestJSON: JSON.stringify({ previous_response_id: 'prior' }),
+      };
+      const Conversation = createConversationModel(db);
+      const old = await Conversation.create({
+        user: input.userId,
+        conversationId: input.conversationId,
+        title: 'Owned title',
+        endpoint: 'agents',
+        codeEnvironmentMode: 'without_attached',
+        isTemporary: false,
+      });
+      const captured = await storage.readConversationTarget(input, input.conversationId);
+      const reserved = await storage.reserve({
+        ...input,
+        conversationTarget: captured!.target,
+        isTemporary: false,
+      });
+      if (!reserved.ok) throw new Error('Reservation failed');
+      const binding = {
+        generationCreatedAt: Date.now(),
+        providerExecutionId: randomUUID(),
+        ownerId: randomUUID(),
+      };
+      const enrolled = await storage.enrollExecution(reserved.record, binding, '{}');
+      if (!enrolled.ok || !(await storage.bindExecution(enrolled.record, binding)))
+        throw new Error('Enrollment failed');
+      const deadline = new Date(Date.now() + 60_000);
+      expect(
+        await storage.prepareConversation(enrolled.record, binding, {
+          context: { userId: input.userId, expiredAt: deadline, isTemporary: true },
+          conversation: {
+            conversationId: input.conversationId,
+            agent_id: input.agentId,
+            title: 'Must not reseed',
+          },
+          initialAgentId: input.agentId,
+        }),
+      ).toMatchObject({ ok: true, record: { expiredAt: deadline, isTemporary: true } });
+      expect(await Conversation.findById(old._id).lean()).toMatchObject({
+        title: 'Owned title',
+        codeEnvironmentMode: 'without_attached',
+        expiredAt: deadline,
+        isTemporary: true,
+        updatedAt: old.updatedAt,
+      });
+    });
     it('cannot seed an absent continuation even when its logical Conversation ID is managed', async () => {
       const f = await checkpointFixture();
       await f.model.updateOne(responseRootFilter(db, f.reference), {
@@ -571,6 +627,191 @@ describe('managed target allocation on real storage', () => {
         }),
       ).toEqual({ ok: false, code: 'response_conflict' });
       expect(await db.model('Conversation').countDocuments({ user: f.record.userId })).toBe(0);
+    });
+    async function turnFixture() {
+      const f = await checkpointFixture();
+      const conversation = {
+        conversationId: f.record.conversationId,
+        agent_id: f.record.agentId,
+        endpoint: 'agents',
+      };
+      const context = { userId: f.record.userId };
+      const seeded = await f.storage.prepareConversation(f.record, f.checkpoint, {
+        context,
+        conversation,
+        initialAgentId: f.record.agentId,
+      });
+      if (!seeded.ok) throw new Error('Conversation seed failed');
+      const inputId = createManagedMessageId();
+      const turnJSON = JSON.stringify({
+        version: 1,
+        inputs: [{ index: 0, messageId: inputId, parentMessageId: f.record.parentMessageId }],
+      });
+      const receipt = {
+        generationCreatedAt: f.checkpoint.generationCreatedAt,
+        providerExecutionId: f.checkpoint.providerExecutionId,
+        ownerId: f.checkpoint.ownerId,
+        status: 'completed' as const,
+        responseJSON: JSON.stringify({ id: f.record.responseId, status: 'completed', output: [] }),
+        turnJSON,
+      };
+      const staged = await f.storage.stageTerminal(
+        seeded.record,
+        f.record.responseId,
+        { execution: seeded.record },
+        receipt,
+      );
+      if (!staged.ok) throw new Error('Terminal stage failed');
+      const writes = {
+        intentJSON: turnJSON,
+        context,
+        conversation,
+        initialAgentId: f.record.agentId,
+        messages: [
+          {
+            messageId: inputId,
+            conversationId: f.record.conversationId,
+            parentMessageId: f.record.parentMessageId,
+            text: 'confirmed input',
+            isCreatedByUser: true,
+            isUserSubmitted: true,
+          },
+          {
+            messageId: f.record.responseId,
+            conversationId: f.record.conversationId,
+            parentMessageId: inputId,
+            text: 'confirmed output',
+            isCreatedByUser: false,
+          },
+        ],
+      };
+      return { ...f, staged: staged.record, receipt, writes };
+    }
+    it('publishes a whole confirmed turn portably only after durable provider drain', async () => {
+      const session = jest.spyOn(db, 'startSession');
+      const f = await turnFixture();
+      expect(
+        await f.storage.finishTerminal(
+          f.staged,
+          f.record.responseId,
+          f.staged.revision,
+          f.receipt,
+          f.writes,
+        ),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(await db.model('Message').countDocuments({ user: f.record.userId })).toBe(0);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      const finished = await f.storage.finishTerminal(
+        f.staged,
+        f.record.responseId,
+        f.staged.revision,
+        f.receipt,
+        f.writes,
+      );
+      expect(finished).toMatchObject({ ok: true, record: { status: 'completed' } });
+      expect(await db.model('Message').countDocuments({ user: f.record.userId })).toBe(2);
+      const conversation = await createConversationModel(db)
+        .findById(f.staged.conversationTarget!.id)
+        .lean();
+      const messageIds = conversation?.messages ?? [];
+      expect(messageIds).toHaveLength(2);
+      expect(new Set(messageIds.map(String)).size).toBe(2);
+      expect(
+        (await f.storage.read(f.staged, f.record.responseId))?.pendingTerminal,
+      ).toBeUndefined();
+      expect(session).not.toHaveBeenCalled();
+    });
+    it('repairs a failed Conversation append after restart without duplicating confirmed Messages', async () => {
+      const f = await turnFixture();
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      const append = jest
+        .spyOn(createConversationModel(db).collection, 'findOneAndUpdate')
+        .mockRejectedValueOnce(new Error('Append unavailable'));
+      await expect(
+        f.storage.finishTerminal(
+          f.staged,
+          f.record.responseId,
+          f.staged.revision,
+          f.receipt,
+          f.writes,
+        ),
+      ).rejects.toThrow('Append unavailable');
+      append.mockRestore();
+      const pending = (await f.storage.read(f.staged, f.record.responseId))!;
+      expect(pending).toMatchObject({ status: 'materializing', pendingTerminal: f.receipt });
+      expect(await db.model('Message').countDocuments({ user: f.record.userId })).toBe(2);
+      const restarted = createResponseStorage(db);
+      expect(
+        await restarted.finishTerminal(
+          pending,
+          f.record.responseId,
+          pending.revision,
+          f.receipt,
+          f.writes,
+        ),
+      ).toMatchObject({ ok: true, record: { status: 'completed' } });
+      expect(await db.model('Message').countDocuments({ user: f.record.userId })).toBe(2);
+      expect(
+        (await createConversationModel(db).findById(f.staged.conversationTarget!.id).lean())
+          ?.messages,
+      ).toHaveLength(2);
+    });
+    it('shortens settled canonical history with its Scope epoch without resurrecting deleted targets', async () => {
+      const f = await turnFixture();
+      await f.storage.settleExecution(f.reference, f.checkpoint, 'complete');
+      expect(
+        await f.storage.finishTerminal(
+          f.staged,
+          f.record.responseId,
+          f.staged.revision,
+          f.receipt,
+          f.writes,
+        ),
+      ).toMatchObject({ ok: true });
+      const deadline = new Date(Date.now() + 60_000);
+      const retain = createResponseRetention(db);
+      await retain(f.record, f.record.conversationId, deadline);
+      await retain(f.record, f.record.conversationId, new Date(deadline.getTime() + 60_000));
+      const messages = await createMessageModel(db).find({ user: f.record.userId }).lean();
+      expect(messages).toHaveLength(2);
+      expect(messages.every((message) => message.expiredAt?.getTime() === deadline.getTime())).toBe(
+        true,
+      );
+      expect(
+        (await createConversationModel(db).findById(f.staged.conversationTarget!.id).lean())
+          ?.expiredAt,
+      ).toEqual(deadline);
+      await createMessageModel(db).deleteMany({ user: f.record.userId });
+      await retain(f.record, f.record.conversationId, deadline);
+      expect(await createMessageModel(db).countDocuments({ user: f.record.userId })).toBe(0);
+    });
+    it('does not close an empty-looking Scope after a complete publication changes its version', async () => {
+      const input = rootInput();
+      const key = responseScopeKeys(input, input.conversationId)[1];
+      const scopes = createResponseScopeModel(db);
+      const original = scopes.collection.updateOne.bind(scopes.collection);
+      let raced = false;
+      const storage = createResponseStorage(db);
+      jest.spyOn(scopes.collection, 'updateOne').mockImplementation(async (...args) => {
+        const update = args[1];
+        if (
+          !raced &&
+          String(args[0]._id) === key &&
+          args[0].revision != null &&
+          !Array.isArray(update) &&
+          update.$set?.closed === true
+        ) {
+          raced = true;
+          expect(await storage.reserve(input)).toMatchObject({ ok: true });
+        }
+        return original(...args);
+      });
+      expect(await createResponseConversationReplacement(db)(input, input.conversationId)).toBe(
+        false,
+      );
+      expect(raced).toBe(true);
+      expect(await scopes.findById(key).lean()).toMatchObject({ closed: false, pendingCount: 0 });
+      expect(await storage.read(input, input.responseId)).not.toBeNull();
     });
     it('admits only one provider and rejects stale physical enrollment without transactions', async () => {
       const storage = createResponseStorage(db);
@@ -1241,6 +1482,10 @@ describe('managed target allocation on real storage', () => {
           .model('Conversation')
           .collection.findOne({ conversationId, user: userId });
         expect(beforeDelete?.messages.map(String)).toEqual([messageId]);
+        const target = { id: String(row._id), conversationId, userId };
+        expect(
+          await methods.stampConvoLastResponse(userId, conversationId, 'resp_captured', target),
+        ).toMatchObject({ lastResponseMessageId: 'resp_captured' });
         await db.model('Conversation').collection.deleteOne({ _id: row._id });
         const replacement = await Conversation.create({
           conversationId,
@@ -1259,10 +1504,12 @@ describe('managed target allocation on real storage', () => {
             },
           ),
         ).toBeNull();
-        expect(await db.model('Conversation').findById(replacement._id)).toMatchObject({
-          title: 'Replacement',
-          messages: [],
-        });
+        expect(
+          await methods.stampConvoLastResponse(userId, conversationId, 'resp_stale', target),
+        ).toBeNull();
+        const untouched = await db.model('Conversation').findById(replacement._id);
+        expect(untouched).toMatchObject({ title: 'Replacement', messages: [] });
+        expect(untouched?.lastResponseMessageId).toBeUndefined();
         await expect(methods.saveConvo({ userId: 'other' }, { conversationId })).rejects.toThrow(
           'target mismatch',
         );

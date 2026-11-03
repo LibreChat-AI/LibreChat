@@ -13,7 +13,7 @@ import { createResponseStorage } from './response';
 import { createMessageMethods } from './message';
 import { createModels } from '~/models';
 
-describe('Response transaction owners with secondaryPreferred defaults', () => {
+describe('Response primary routing with secondaryPreferred defaults', () => {
   const db = new mongoose.Mongoose();
   const owner = { userId: 'owner', tenantId: 'tenant' };
   const scoped = <T>(work: () => Promise<T>) =>
@@ -135,14 +135,14 @@ describe('Response transaction owners with secondaryPreferred defaults', () => {
       });
     }));
 
-  it('reserves, mutates and retains a response through its real owned transactions', async () =>
+  it('reserves, mutates and retains a response while the secondary is stale', async () =>
     scoped(() =>
       withReplicationPaused(async () => {
         const storage = createResponseStorage(db);
         const result = await storage.reserve({
           ...owner,
           dispatch: true,
-          responseId: 'resp_reader_default',
+          responseId: 'resp_d_' + '1'.repeat(32),
           requestKey: 'reader-default',
           fingerprint: 'same-request',
           agentId: 'agent',
@@ -155,21 +155,21 @@ describe('Response transaction owners with secondaryPreferred defaults', () => {
           await secondary
             .db(db.connection.name)
             .collection(db.model('StoredResponse').collection.name)
-            .findOne({ responseId: 'resp_reader_default' }),
+            .findOne({ responseId: 'resp_d_' + '1'.repeat(32) }),
         ).toBeNull();
         expect(
-          await storage.settleDispatch(owner, 'resp_reader_default', {
+          await storage.settleDispatch(owner, 'resp_d_' + '1'.repeat(32), {
             kind: 'create',
-            id: 'resp_reader_default',
+            id: 'resp_d_' + '1'.repeat(32),
           }),
         ).toBe(true);
         expect(
-          (await storage.requestCancellation(owner, 'resp_reader_default', 123))
+          (await storage.requestCancellation(owner, 'resp_d_' + '1'.repeat(32), 123))
             ?.cancellationRequestedAt,
         ).toBe(123);
         const expiry = new Date(Date.now() + 60000);
         await createResponseRetention(db)(owner, 'conversation', expiry);
-        expect((await storage.read(owner, 'resp_reader_default'))?.expiredAt).toEqual(expiry);
+        expect((await storage.read(owner, 'resp_d_' + '1'.repeat(32)))?.expiredAt).toEqual(expiry);
         expect(await createResponseConversationReplacement(db)(owner, 'conversation')).toBe(false);
         expect(await createResponseConversationReplacement(db)(owner, 'unused-conversation')).toBe(
           true,
@@ -182,7 +182,7 @@ describe('Response transaction owners with secondaryPreferred defaults', () => {
       const storage = createResponseStorage(db);
       await storage.reserve({
         ...owner,
-        responseId: 'resp_closure',
+        responseId: 'resp_d_' + '2'.repeat(32),
         requestKey: 'closure',
         fingerprint: 'closure',
         agentId: 'agent',
@@ -196,12 +196,12 @@ describe('Response transaction owners with secondaryPreferred defaults', () => {
           await secondary
             .db(db.connection.name)
             .collection(db.model('StoredResponse').collection.name)
-            .findOne({ responseId: 'resp_closure' }),
+            .findOne({ responseId: 'resp_d_' + '2'.repeat(32) }),
         ).not.toBeNull();
-        expect(await storage.read(owner, 'resp_closure')).toBeNull();
-        expect((await storage.readCleanupIdentity(owner, 'resp_closure'))?.retirement).toBe(
-          'conversation_deleted',
-        );
+        expect(await storage.read(owner, 'resp_d_' + '2'.repeat(32))).toBeNull();
+        expect(
+          (await storage.readCleanupIdentity(owner, 'resp_d_' + '2'.repeat(32)))?.retirement,
+        ).toBe('conversation_deleted');
       });
     }));
 });

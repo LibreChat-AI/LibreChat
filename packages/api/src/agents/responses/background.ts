@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createManagedMessageId } from '@librechat/data-schemas';
+import { createManagedMessageId, isManagedMessageId } from '@librechat/data-schemas';
 import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { ResponsesRunEnvelope, JsonValue } from '../envelope';
 import type { ResponseCompletionRecord } from './completion';
@@ -189,7 +189,30 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
         return { ok: false, status: 403, code: 'permission_denied' };
       const normalized = { ...request, store: true };
       const requestJSON = canonicalResponseJSON(normalized);
-      const continuation = await deps.resolveContinuation(owner, request.previous_response_id);
+      const previousId = request.previous_response_id;
+      const managedPrevious = previousId && isManagedMessageId(previousId);
+      const previous = managedPrevious ? await deps.storage.read(owner, previousId) : null;
+      if (
+        managedPrevious &&
+        (!previous ||
+          !['completed', 'failed', 'incomplete', 'cancelled'].includes(previous.status) ||
+          !previous.conversationTarget ||
+          !previous.canonicalTargets?.some(
+            (entry) =>
+              entry.logicalId === previous.responseId &&
+              entry.target.kind === 'message' &&
+              entry.phase === 'published',
+          ))
+      )
+        return { ok: false, status: 409, code: 'response_continuation_unavailable' };
+      const continuation = await deps.resolveContinuation(owner, previousId);
+      if (
+        previous &&
+        (continuation.conversationId !== previous.conversationId ||
+          continuation.parentMessageId !== previous.responseId ||
+          continuation.conversationTarget?.id !== previous.conversationTarget?.id)
+      )
+        return { ok: false, status: 409, code: 'response_continuation_unavailable' };
       const result = await deps.storage.reserve({
         ...owner,
         ...continuation,

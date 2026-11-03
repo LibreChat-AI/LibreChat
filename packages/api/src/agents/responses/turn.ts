@@ -69,7 +69,11 @@ export async function stageResponseTurn(
 ): Promise<void> {
   const visibleOutputTokens = input.visibleOutputTokens ?? input.response.usage?.output_tokens ?? 0;
   const persistence = createResponsePersistence(
-    { ...input, visibleOutputTokens: runtime.visibleOutputTokens(visibleOutputTokens) },
+    {
+      ...input,
+      conversationTarget: runtime.conversationTarget,
+      visibleOutputTokens: runtime.visibleOutputTokens(visibleOutputTokens),
+    },
     deps,
   );
   await runtime.completeTurn(

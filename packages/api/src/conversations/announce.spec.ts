@@ -57,6 +57,31 @@ describe('announceReply', () => {
     expect(stampConvoLastResponse).toHaveBeenCalledWith('user-1', 'convo-1', 'msg-1');
   });
 
+  it('carries captured physical identity through a durable reply stamp', async () => {
+    const stampConvoLastResponse = jest.fn().mockResolvedValue(null);
+    const conversationTarget = {
+      id: rowA,
+      userId: 'user-1',
+      conversationId: 'convo-1',
+    };
+    await announceReply(
+      { stampConvoLastResponse },
+      {
+        userId: 'user-1',
+        conversationId: 'convo-1',
+        conversationTarget,
+        reply: { messageId: 'msg-1', content: readable },
+        context: 'spec',
+      },
+    );
+    expect(stampConvoLastResponse).toHaveBeenCalledWith(
+      'user-1',
+      'convo-1',
+      'msg-1',
+      conversationTarget,
+    );
+  });
+
   it.each([
     ['an unreadable reply', { messageId: 'msg-1', content: [] }],
     ['a temporary chat', { messageId: 'msg-1', content: readable, isTemporary: true }],

@@ -657,6 +657,7 @@ export interface ConversationMethods {
     user: string,
     conversationId: string,
     responseMessageId: string,
+    target?: CanonicalConversationTarget,
   ): Promise<{ lastResponseAt: Date; lastResponseMessageId: string; updatedAt?: Date } | null>;
   deleteConvos(
     user: string,
@@ -4758,12 +4759,15 @@ export function createConversationMethods(
     user: string,
     conversationId: string,
     responseMessageId: string,
+    target?: CanonicalConversationTarget,
   ) {
     try {
+      if (target && (target.userId !== user || target.conversationId !== conversationId))
+        throw new TypeError('Canonical conversation target mismatch');
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
       const stamped = await stampReplyWithCas(
         Conversation,
-        { conversationId, user },
+        target ? canonicalConversationFilter(mongoose, target) : { conversationId, user },
         responseMessageId,
         {
           conversationId: 1,

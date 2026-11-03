@@ -76,6 +76,23 @@ export async function prepareResponseConversation(
   if (!current || (await isResponseScopeClosed(mongoose, current, current.conversationId)))
     return null;
   const conversations = createConversationModel(mongoose);
+  const expiredAt =
+    current.expiredAt && (!writes.context.expiredAt || current.expiredAt < writes.context.expiredAt)
+      ? current.expiredAt
+      : writes.context.expiredAt;
+  const context = {
+    ...writes.context,
+    ...(expiredAt ? { expiredAt } : {}),
+    ...(current.isTemporary === true || writes.context.isTemporary === true
+      ? { isTemporary: true }
+      : {}),
+  };
+  if (context.isTemporary === true && current.isTemporary !== true)
+    await roots.updateOne(
+      active,
+      { $set: { isTemporary: true }, $inc: { revision: 1 } },
+      { upsert: false },
+    );
   if (current.conversationTarget) {
     if (
       current.conversationTarget.userId !== current.userId ||
@@ -83,6 +100,31 @@ export async function prepareResponseConversation(
       (current.conversationTarget.tenantId || undefined) !== (current.tenantId || undefined)
     )
       throw new Error('Response captured conversation identity changed');
+    if (expiredAt || context.isTemporary === true) {
+      const messages = createMessageMethods(mongoose);
+      const retained = await createConversationMethods(mongoose, {
+        conversationTarget: current.conversationTarget,
+        getMessages: messages.getMessages,
+        deleteMessages: messages.deleteMessages,
+      }).saveConvo(
+        context,
+        { conversationId: current.conversationId },
+        {
+          appendMessageIds: [],
+          preserveUpdatedAt: true,
+          context: 'Responses API - retain captured conversation',
+        },
+      );
+      if (
+        !retained ||
+        !('_id' in retained) ||
+        String(retained._id) !== current.conversationTarget.id
+      )
+        return null;
+      return (await isResponseScopeClosed(mongoose, current, current.conversationId))
+        ? null
+        : roots.findOne(active).lean();
+    }
     const present = await conversations
       .exists({
         ...canonicalConversationFilter(mongoose, current.conversationTarget),
@@ -117,11 +159,10 @@ export async function prepareResponseConversation(
         deleteMessages: messages.deleteMessages,
       }).saveConvo(
         {
-          ...writes.context,
-          ...(expiredAt && (!writes.context.expiredAt || expiredAt < writes.context.expiredAt)
+          ...context,
+          ...(expiredAt && (!context.expiredAt || expiredAt < context.expiredAt)
             ? { expiredAt }
             : {}),
-          ...(current.isTemporary === true ? { isTemporary: true } : {}),
         },
         writes.conversation,
         {

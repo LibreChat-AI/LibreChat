@@ -15,6 +15,7 @@ import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { MarkToolApprovalAllowAlwaysOptions } from '../hitl/allow';
 import type { CheckpointWriteWitness } from '../checkpoints/witness';
 import type { AgentExecutionEnrollment } from '../remote/lifecycle';
+import type { TurnConversationRequest } from '~/conversations/save';
 import type { ResponsesRunEnvelope } from '../envelope';
 import type { ResponseAggregator } from './service';
 import type { ReachableAgent } from '../traversal';
@@ -98,6 +99,7 @@ function responseBody(value: unknown): value is TerminalResponse {
 }
 
 export interface ResponseExecutionRuntime {
+  readonly conversationTarget?: StoredResponseRecord['conversationTarget'];
   completion?: ResponseTerminalCompletion;
   responseId: string;
   prepareConversation: (
@@ -557,6 +559,9 @@ export function createResponseExecutionRuntime(
 
   const settle = hooks.afterSettle;
   return {
+    get conversationTarget() {
+      return admission?.record.conversationTarget;
+    },
     completion:
       admission && completion && settle
         ? {
@@ -614,6 +619,11 @@ export function createResponseExecutionRuntime(
       );
       if (!prepared.ok) throw new Error('Background response conversation is unavailable');
       admission.record = prepared.record;
+      if (prepared.record.expiredAt)
+        (req as TurnConversationRequest)._agentEventBindingRetention = {
+          expiredAt: prepared.record.expiredAt,
+          isTemporary: prepared.record.isTemporary,
+        };
     },
     inputChain(chain) {
       if (!admission?.resume) {

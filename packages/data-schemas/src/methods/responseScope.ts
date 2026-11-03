@@ -4,7 +4,8 @@ import type { ResponseOwner } from '~/models/response';
 import { retainChannelFeedbackForOwner } from './channelFeedbackErasure';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
-import { getTransactionSupport } from '~/utils/transactions';
+import { createConversationModel } from '~/models/convo';
+import { createMessageModel } from '~/models/message';
 import { shortenExpiration } from '~/utils/retention';
 import { runAsSystem } from '~/config/tenantContext';
 
@@ -13,39 +14,38 @@ import { runAsSystem } from '~/config/tenantContext';
 export function createResponseConversationReplacement(
   mongoose: typeof import('mongoose'),
 ): (owner: ResponseOwner, conversationId: string) => Promise<boolean> {
-  let supported: boolean | null = null;
   return async (owner, conversationId) => {
-    supported = await getTransactionSupport(mongoose, supported);
-    const records = createStoredResponseModel(mongoose);
-    const filter = { ...responseOwnerFilter(owner), conversationId };
-    if (!supported) {
-      // Reservation fails closed on standalone deployments, so no admission can race this check.
-      if (await records.exists(filter)) return false;
-      await closeResponseScopes(mongoose, owner, [conversationId]);
-      return true;
-    }
     const key = responseScopeKeys(owner, conversationId)[1];
     await initializeResponseScopes(mongoose, [key]);
-    const session = await mongoose.startSession({
-      defaultTransactionOptions: { readPreference: 'primary' },
-    });
-    try {
-      let allowed = false;
-      await session.withTransaction(async () => {
-        const scopes = createResponseScopeModel(mongoose);
-        // Serialize with the reservation's write to this same anchor before checking rows.
-        await scopes.updateOne({ _id: key }, { $inc: { revision: 1 } }, { session });
-        if (await records.exists(filter).session(session)) {
-          allowed = false;
-          return;
-        }
-        await scopes.updateOne({ _id: key }, { $set: { closed: true } }, { session });
-        allowed = true;
-      });
-      return allowed;
-    } finally {
-      await session.endSession();
-    }
+    const scopes = createResponseScopeModel(mongoose);
+    const anchor = await scopes.findById(key).read('primary').lean();
+    if (!anchor) return false;
+    const pendingCount = anchor.pendingCount ?? 0;
+    if (pendingCount !== (anchor.pending?.length ?? 0))
+      throw new Error('Response replacement discovery count changed');
+    if (pendingCount) return false;
+    if (
+      await createStoredResponseModel(mongoose)
+        .exists({ ...responseOwnerFilter(owner), conversationId })
+        .read('primary')
+    )
+      return false;
+    if (anchor.closed) return true;
+    const revision = anchor.revision ?? 0;
+    // Registration AND settlement advance this version, so an entire publication
+    // cannot disappear between the primary absence check and closing an empty scope.
+    const closed = await scopes.updateOne(
+      {
+        _id: key,
+        closed: false,
+        revision: revision === 0 ? { $in: [0, null] } : revision,
+        pendingCount: { $in: [0, null] },
+        'pending.0': { $exists: false },
+      },
+      { $set: { closed: true }, $inc: { revision: 1 } },
+      { upsert: false },
+    );
+    return closed.matchedCount === 1;
   };
 }
 
@@ -97,19 +97,46 @@ export function createResponseRetention(
       })
       .lean();
     if (!anchor?.expiredAt) throw new Error('Response retention scope unavailable');
-    await shortenExpiration(
-      records,
-      { ...responseOwnerFilter(owner), conversationId },
-      anchor.expiredAt,
-      parentSession,
-    );
-    await retainChannelFeedbackForOwner(
-      mongoose,
-      owner,
+    const canonical = {
+      user: owner.userId,
       conversationId,
-      anchor.expiredAt,
-      parentSession,
-    );
+      tenantId: owner.tenantId || { $in: [null, ''] },
+    };
+    const writes = [
+      () =>
+        shortenExpiration(
+          records,
+          { ...responseOwnerFilter(owner), conversationId },
+          anchor.expiredAt!,
+          parentSession,
+        ),
+      () =>
+        shortenExpiration(
+          createMessageModel(mongoose),
+          canonical,
+          anchor.expiredAt!,
+          parentSession,
+        ),
+      () =>
+        shortenExpiration(
+          createConversationModel(mongoose),
+          canonical,
+          anchor.expiredAt!,
+          parentSession,
+        ),
+      () =>
+        retainChannelFeedbackForOwner(
+          mongoose,
+          owner,
+          conversationId,
+          anchor.expiredAt!,
+          parentSession,
+        ),
+    ];
+    // Caller-owned Channel transactions remain serialized; portable retention can
+    // stamp independent indexed collections concurrently after its epoch is durable.
+    if (parentSession) for (const write of writes) await write();
+    else await Promise.all(writes.map((write) => write()));
   };
 }
 

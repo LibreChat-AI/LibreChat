@@ -133,7 +133,7 @@ async function registerResponseTargetOnce(
         },
         {
           $push: { pending: { key: entry.key, target: entry.target, retentionEpoch } },
-          $inc: { pendingCount: 1 },
+          $inc: { pendingCount: 1, revision: 1 },
         },
         { new: true },
       )
@@ -239,7 +239,7 @@ export async function reconcileResponseTargets(
     settled.map((entry) => ({
       updateOne: {
         filter: settlementFilter(key, entry, anchor.retentionEpoch ?? 0),
-        update: { $pull: { pending: { key: entry.key } }, $inc: { pendingCount: -1 } },
+        update: { $pull: { pending: { key: entry.key } }, $inc: { pendingCount: -1, revision: 1 } },
       },
     })),
     { ordered: false },
@@ -311,7 +311,7 @@ async function settleTarget(
   }
   const result = await scopes.updateOne(settlementFilter(key, existing, observedRetentionEpoch), {
     $pull: { pending: { key: entry.key } },
-    $inc: { pendingCount: -1 },
+    $inc: { pendingCount: -1, revision: 1 },
   });
   return result.matchedCount === 1;
 }
@@ -365,7 +365,10 @@ export async function reconcileErasedResponseTargets(
             closed: anchor.closed,
             $or: [{ expiredAt: anchor.expiredAt ?? null }],
           },
-          update: { $pull: { pending: { key: entry.key } }, $inc: { pendingCount: -1 } },
+          update: {
+            $pull: { pending: { key: entry.key } },
+            $inc: { pendingCount: -1, revision: 1 },
+          },
         },
       })),
       { ordered: false },

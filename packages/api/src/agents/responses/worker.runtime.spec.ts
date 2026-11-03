@@ -1106,6 +1106,15 @@ describe('background Responses execution handoff', () => {
               settlementErrors.push(error);
             },
             execute: async (execution) => {
+              await runtime.prepareConversation(
+                {
+                  request: req,
+                  conversationId: record.conversationId,
+                  agentId: record.agentId,
+                  agent: { id: record.agentId },
+                },
+                { resolveTitle: () => null },
+              );
               starts++;
               execution.track(trailingWrite);
               await turn.stage(
@@ -1240,9 +1249,53 @@ describe('background Responses execution handoff', () => {
         expect(pending.status).toBe('materializing');
         expect(pending.pendingTerminal?.status).toBe('completed');
         expect(pending.pendingTerminal?.responseJSON).toContain('# Exact final answer');
+        // Confirmed history may be a prefix while the required Conversation append retries.
+        const prefix = await scope(() =>
+          mongoose.models.Message.find({ user: owner.userId }).lean(),
+        );
+        expect(prefix).toHaveLength(2);
+        expect(prefix.find((message) => message.messageId === record.responseId)).toMatchObject({
+          text: '# Exact final answer',
+          isCreatedByUser: false,
+        });
         expect(
-          await scope(() => mongoose.models.Message.countDocuments({ user: owner.userId })),
-        ).toBe(0);
+          await scope(() =>
+            mongoose.models.Conversation.findOne({ conversationId: record.conversationId }).lean(),
+          ),
+        ).toMatchObject({ messages: [] });
+        const continuation = createBackgroundResponseService({
+          storage,
+          authorize: async () => true,
+          resolveContinuation: async () => {
+            throw new Error('Unfinished history cannot advance');
+          },
+          enqueue: async () => {
+            throw new Error('Unfinished history cannot dispatch');
+          },
+          observe: async () => null,
+          recoverTerminal: async (value) => value,
+          cancel: async () => {},
+        });
+        expect(
+          await scope(() =>
+            continuation.create(
+              createAgentRunEnvelope({
+                protocol: 'responses',
+                requestId: 'blocked-continuation',
+                receivedAt: Date.now(),
+                principal: { id: owner.userId, tenantId: owner.tenantId },
+                payload: {
+                  model: record.agentId,
+                  input: 'must wait',
+                  background: true,
+                  previous_response_id: record.responseId,
+                },
+              }),
+              undefined,
+              record.sourceKeyId,
+            ),
+          ),
+        ).toMatchObject({ ok: false, status: 409, code: 'response_continuation_unavailable' });
         expect(announce).not.toHaveBeenCalled();
         const recovery = createResponseCompletion({
           storage,
@@ -1276,6 +1329,10 @@ describe('background Responses execution handoff', () => {
       expect(prepareWithConcurrentProgress).toHaveBeenCalledTimes(1);
       prepareWithConcurrentProgress.mockRestore();
       expect(saved?.status).toBe('completed');
+      if (!materializationOutage)
+        expect(announce).toHaveBeenCalledWith(
+          expect.objectContaining({ conversationTarget: saved?.conversationTarget }),
+        );
       expect(saved?.preparedTerminal).toBeUndefined();
       expect(JSON.parse(saved!.responseJSON!).output[0].content[0].text).toBe(
         '# Exact final answer',
@@ -1559,6 +1616,15 @@ describe('background Responses execution handoff', () => {
             ...runtime.hooks,
             isPrincipalActive: async () => true,
             execute: async (execution) => {
+              await runtime.prepareConversation(
+                {
+                  request: req,
+                  conversationId: record.conversationId,
+                  agentId: record.agentId,
+                  agent: { id: record.agentId },
+                },
+                { resolveTitle: () => null },
+              );
               const response = {
                 ...buildPendingBackgroundResponse(record),
                 status: 'completed' as const,

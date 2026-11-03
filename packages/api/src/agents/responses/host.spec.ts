@@ -220,6 +220,15 @@ async function fixture(
         captureTerminalOutcome: true,
         isPrincipalActive: async () => true,
         execute: async (execution) => {
+          await runtime.prepareConversation(
+            {
+              request: req,
+              conversationId: continuation.conversationId,
+              agentId: envelope.payload.model,
+              agent: { id: envelope.payload.model, name: 'HTTP Test Agent' },
+            },
+            { resolveTitle: () => null },
+          );
           inputs.push(envelope.payload);
           const text = await generate(execution.signal, runtime.toolContext(execution), execution);
           if (typeof text !== 'string') return;
