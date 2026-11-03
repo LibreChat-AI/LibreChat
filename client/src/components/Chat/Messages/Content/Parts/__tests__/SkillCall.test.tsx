@@ -77,7 +77,7 @@ describe('SkillCall', () => {
   it('shows the loaded skill instructions and opens the skill', () => {
     renderSkill();
 
-    expect(screen.getByText('com_ui_skill_instructions')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_skill_current_version')).toBeInTheDocument();
     expect(screen.getByText(/Summarize merged PRs\./)).toBeInTheDocument();
     expect(screen.queryByText(/loaded\. Follow the instructions/)).not.toBeInTheDocument();
 

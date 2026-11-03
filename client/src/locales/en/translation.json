@@ -3012,6 +3012,7 @@
   "com_ui_skill_available": "Available to agent",
   "com_ui_skill_available_hint": "When on, the agent can use this skill in new messages",
   "com_ui_skill_content": "Skill Content",
+  "com_ui_skill_current_version": "Current skill version",
   "com_ui_skill_content_placeholder": "Enter your skill instructions in markdown...",
   "com_ui_skill_create_error": "Failed to create skill",
   "com_ui_skill_create_title": "Create skill",

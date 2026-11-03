@@ -135,7 +135,8 @@ export default function SkillCall({
               <div className="p-3 text-xs">
                 <div className="mb-1.5 flex min-h-5 items-center justify-between gap-2">
                   <span className="text-text-secondary text-3xs font-medium tracking-wide uppercase">
-                    {localize(instructions ? 'com_ui_skill_instructions' : 'com_ui_output')}
+                    {/* The library's current record, which may have changed since the call ran. */}
+                    {localize(instructions ? 'com_ui_skill_current_version' : 'com_ui_output')}
                   </span>
                   {skill && (
                     <TooltipAnchor
