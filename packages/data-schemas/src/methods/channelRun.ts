@@ -15,6 +15,7 @@ import type { ClientSession } from 'mongoose';
 import type { ChannelRunRecord, ChannelPrincipalLaneRecord } from '~/models/channelRun';
 import type { ChannelLaneScope, ChannelRunEnrollment } from './channelProtocol';
 import type { StoredResponseRecord } from '~/models/response';
+import type { PhysicalChannelRun } from './channelRunWrite';
 import {
   digest,
   laneKey,
@@ -30,6 +31,7 @@ import {
   ChannelRunConflict,
 } from './channelProtocol';
 import { initializeChannelScope, touchChannelScope } from './channelScope';
+import { channelRunTarget, writeChannelRunPatch } from './channelRunWrite';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { createChannelRunPublication } from './channelRunPublication';
 import { prepareChannelOwnerAdmission } from './channelOwner';
@@ -246,12 +248,14 @@ export function createChannelRunStorage(
     tenantId: string,
     fence: ChannelRunFence,
     now: number,
-    session: ClientSession,
-  ) {
+    session: ClientSession | null,
+  ): Promise<PhysicalChannelRun> {
     const run = await runs()
       .findOne(predicate(tenantId, fence, now))
+      .select('+_managed')
       .session(session)
-      .lean();
+      .read('primary')
+      .lean<PhysicalChannelRun | null>();
     if (!run) throw new ChannelRunConflict('stale_fence');
     return run;
   }
@@ -259,21 +263,37 @@ export function createChannelRunStorage(
     tenantId: string,
     fence: ChannelRunFence,
     now: number,
-    change: (run: ChannelRunRecord, session: ClientSession) => Promise<Partial<ChannelRunRecord>>,
+    change: (run: PhysicalChannelRun) => Promise<Partial<ChannelRunRecord>>,
   ): Promise<ChannelRunRecord> {
-    return transaction(async (session) => {
-      const run = await owned(tenantId, fence, now, session);
-      const patch = await change(run, session);
-      const result = await runs()
-        .findOneAndUpdate(predicate(tenantId, fence, now), { $set: patch }, { new: true, session })
-        .lean();
-      if (!result) throw new ChannelRunConflict('stale_fence');
-      return result;
-    });
+    await ensureIndexes();
+    let run = await owned(tenantId, fence, now, null);
+    const target = channelRunTarget(run);
+    for (;;) {
+      const patch = await change(run);
+      const result = await writeChannelRunPatch(
+        mongoose,
+        run,
+        patch,
+        predicate(tenantId, fence, now),
+        getDurableConfig,
+      );
+      if (result) return result;
+      const current = await runs()
+        .findOne({
+          ...predicate(tenantId, fence, now),
+          ...managedTargetFilter(mongoose, target),
+          '_managed.phase': 'published',
+        })
+        .select('+_managed')
+        .read('primary')
+        .lean<PhysicalChannelRun | null>();
+      if (!current) throw new ChannelRunConflict('stale_fence');
+      run = current;
+    }
   }
   async function responseBinding(
     run: ChannelRunRecord,
-    session: ClientSession,
+    session: ClientSession | null,
     responseId?: string,
   ): Promise<Partial<ChannelRunRecord> | null> {
     if (
@@ -382,7 +402,7 @@ export function createChannelRunStorage(
                 leaseOwner: owner,
                 leaseExpiresAt: leaseDeadline(now, leaseMs),
               },
-              $inc: { leaseEpoch: 1 },
+              $inc: { leaseEpoch: 1, __v: 1 },
             },
             { new: true, session },
           )
@@ -447,7 +467,7 @@ export function createChannelRunStorage(
                 leaseEpoch: run.leaseEpoch,
                 leaseExpiresAt: run.leaseExpiresAt,
               },
-              { $set: { claimCheckedAt: now } },
+              { $set: { claimCheckedAt: now }, $inc: { __v: 1 } },
               { session },
             );
             continue;
@@ -474,7 +494,7 @@ export function createChannelRunStorage(
                     ? { progress: { ...run.progress, outcome: 'unknown' } }
                     : {}),
                 },
-                $inc: { leaseEpoch: 1 },
+                $inc: { leaseEpoch: 1, __v: 1 },
               },
               { new: true, session },
             )
@@ -486,6 +506,7 @@ export function createChannelRunStorage(
     async renew(tenantId, fence, now, leaseMs) {
       const result = await runs().updateOne(predicate(tenantId, fence, now), {
         $max: { leaseExpiresAt: leaseDeadline(now, leaseMs) },
+        $inc: { __v: 1 },
       });
       return result.matchedCount === 1;
     },
@@ -507,6 +528,7 @@ export function createChannelRunStorage(
           // configured next eligibility, not continued execution ownership.
           $set: { leaseExpiresAt: now + limits.projectionYieldMs },
           $unset: { leaseOwner: 1 },
+          $inc: { __v: 1 },
         },
       );
       return result.modifiedCount === 1;
@@ -515,19 +537,26 @@ export function createChannelRunStorage(
       return runs().findOne({ tenantId, channelId, runId }).lean();
     },
     async prepareExecution(tenantId, fence, now) {
-      return mutate(tenantId, fence, now, async (run, session) => {
+      return mutate(tenantId, fence, now, async (run) => {
         if (run.execution) return {};
         if (run.state !== 'queued') throw new ChannelRunConflict('invalid_transition');
         const lane = await lanes()
-          .findOne({ tenantId, laneId: run.laneId, activeRunId: run.runId })
-          .session(session)
+          .findOne({
+            ...managedTargetFilter(mongoose, run.publication!.lane),
+            tenantId,
+            laneId: run.laneId,
+            activeRunId: run.runId,
+            kind: 'principal',
+          })
           .lean();
         if (!lane) throw new ChannelRunConflict('stale_fence');
         return {
           state: 'executing',
           execution: {
             requestId: run.runId,
-            conversationId: lane.conversationId ?? createManagedConversationId(),
+            conversationId:
+              lane.conversationId ??
+              createManagedConversationId(JSON.stringify(['channel-run', channelRunTarget(run)])),
             parentMessageId: lane.responseId ?? '00000000-0000-0000-0000-000000000000',
           },
         };
@@ -582,8 +611,8 @@ export function createChannelRunStorage(
       });
     },
     async bindResponse(tenantId, fence, responseId, now) {
-      return mutate(tenantId, fence, now, async (run, session) => {
-        const patch = await responseBinding(run, session, responseId);
+      return mutate(tenantId, fence, now, async (run) => {
+        const patch = await responseBinding(run, null, responseId);
         if (!patch) throw new ChannelRunConflict('invalid_transition');
         return patch;
       });
@@ -606,7 +635,7 @@ export function createChannelRunStorage(
         const recovered = await runs()
           .findOneAndUpdate(
             { ...predicate(tenantId, fence, now), cancellationRequested: true },
-            { $set: patch },
+            { $set: patch, $inc: { __v: 1 } },
             { new: true, session },
           )
           .lean();
@@ -867,7 +896,7 @@ export function createChannelRunStorage(
         if (existing) {
           await runs().updateOne(
             { tenantId, runId: existing.runId, state: existing.state },
-            { $unset: terminalUnset },
+            { $unset: terminalUnset, $inc: { __v: 1 } },
             { session },
           );
           if (existing.execution) delete existing.execution.encryptedApiKey;
@@ -906,6 +935,7 @@ export function createChannelRunStorage(
                 leaseExpiresAt: 0,
               },
               $unset: terminalUnset,
+              $inc: { __v: 1 },
             },
             { new: true, session },
           )
@@ -932,6 +962,7 @@ export function createChannelRunStorage(
           {
             $set: { state: 'cancelled', leaseExpiresAt: 0 },
             $unset: terminalUnset,
+            $inc: { __v: 1 },
           },
           { session },
         );
@@ -1079,7 +1110,7 @@ export function createChannelRunStorage(
               }
             : {}),
         },
-        { $set: { cancellationRequested: true } },
+        { $set: { cancellationRequested: true }, $inc: { __v: 1 } },
       );
       return result.matchedCount === 1;
     },
