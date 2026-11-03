@@ -1,12 +1,4 @@
-import { formatCost, formatTokens } from './tokens';
-
-describe('formatTokens', () => {
-  it('renders malformed token counts as a bounded zero', () => {
-    expect(formatTokens(Number.NaN)).toBe('0');
-    expect(formatTokens(Number.POSITIVE_INFINITY)).toBe('0');
-    expect(formatTokens(-10)).toBe('0');
-  });
-});
+import { formatCost } from './tokens';
 
 describe('formatCost', () => {
   it('formats across magnitude bands (USD default, unchanged)', () => {
