@@ -35,6 +35,7 @@ const {
 } = require('./Responses');
 
 const responseStorage = createResponseStorage(mongoose, {
+  getDurableStorageConfig: db.getDurableStorageConfig,
   getMCPAppMessageBudget: db.getMCPAppMessageBudget,
 });
 const getChannelConfig = policy.config;

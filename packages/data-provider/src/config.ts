@@ -59,6 +59,7 @@ export const durableStorageConfigSchema = z
       .default(DEFAULT_DURABLE_PENDING_TARGETS),
   })
   .strict();
+export type DurableStorageConfig = z.infer<typeof durableStorageConfigSchema>;
 import {
   DEFAULT_MCP_APP_CSP_LIMITS,
   resolveMCPAppCspLimits,
@@ -186,6 +187,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   permissions: 'operator',
   openapi: 'operator',
   skillDeletion: 'startup',
+  durableStorage: 'operator',
   includedTools: 'operator',
   filteredTools: 'operator',
   'registration.openidDiscovery': 'startup',

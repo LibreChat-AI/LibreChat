@@ -2,7 +2,7 @@ const mockSpendTokens = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
-  initializeChannelStorageConfig: jest.fn(),
+  initializeStorageConfig: jest.fn(),
   spendTokens: mockSpendTokens,
 }));
 

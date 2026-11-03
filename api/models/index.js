@@ -5,19 +5,19 @@ const {
   findMatchingPattern,
   isDeploymentSkillId,
   createMessageBudgetReader,
-  createChannelStorageConfigReader,
+  createStorageConfigReader,
 } = require('@librechat/api');
 const getLogStores = require('~/cache/getLogStores');
 
 const messageBudget = createMessageBudgetReader();
-const channelStorageConfig = createChannelStorageConfigReader();
+const storageConfig = createStorageConfigReader();
 
 const methods = createMethods(mongoose, {
   matchModelName,
   findMatchingPattern,
   isExternalSkillId: isDeploymentSkillId,
   getCache: getLogStores,
-  getChannelStorageConfig: channelStorageConfig.getConfig,
+  getChannelStorageConfig: storageConfig.getChannelConfig,
   getMCPAppMessageBudget: messageBudget.getBudget,
 });
 
@@ -31,6 +31,7 @@ const seedDatabase = async () => {
 module.exports = {
   ...methods,
   initializeMessageBudget: messageBudget.initialize,
-  initializeChannelStorageConfig: channelStorageConfig.initialize,
+  initializeStorageConfig: storageConfig.initialize,
+  getDurableStorageConfig: storageConfig.getDurableConfig,
   seedDatabase,
 };

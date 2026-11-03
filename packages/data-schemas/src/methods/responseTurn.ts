@@ -1,3 +1,4 @@
+import type { DurableStorageConfig } from 'librechat-data-provider';
 import type { StoredResponseRecord, ResponseTerminalReceipt } from '~/models/response';
 import type { AppConfig, IMessage } from '~/types';
 import { activeExpirationFilter } from '~/utils/retention';
@@ -53,6 +54,7 @@ export async function materializeResponseTurn(
   receipt: ResponseTerminalReceipt,
   writes: ResponseTurnWrites,
   getMCPAppMessageBudget?: () => Promise<number | undefined>,
+  bounds: Partial<DurableStorageConfig> = {},
 ): Promise<boolean> {
   if (!record.storageTarget || !record.conversationTarget) return false;
   const target = record.conversationTarget;
@@ -96,7 +98,7 @@ export async function materializeResponseTurn(
           { context: 'Responses API - commit canonical turn' },
         );
       },
-      { expiredAt: writes.context.expiredAt },
+      { ...bounds, expiredAt: writes.context.expiredAt },
     );
     if (!published || published.value.messageId !== message.messageId || !published.value._id)
       return false;

@@ -28,7 +28,7 @@ const { ImportBatchBuilder } = require('./importBatchBuilder');
 
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
-  initializeChannelStorageConfig: jest.fn(),
+  initializeStorageConfig: jest.fn(),
   bulkIncrementTagCounts: jest.fn(),
   bulkSaveConvos: jest.fn(),
   bulkSaveMessages: jest.fn(),

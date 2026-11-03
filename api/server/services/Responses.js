@@ -18,7 +18,10 @@ const db = require('~/models');
 
 const producer = createAgentTriggerProducerBinding();
 const dependencies = {
-  storage: createResponseStorage(mongoose, { getMCPAppMessageBudget: db.getMCPAppMessageBudget }),
+  storage: createResponseStorage(mongoose, {
+    getDurableStorageConfig: db.getDurableStorageConfig,
+    getMCPAppMessageBudget: db.getMCPAppMessageBudget,
+  }),
   jobs: GenerationJobManager,
   publicBaseURL: process.env.DOMAIN_CLIENT,
   findUser: (userId) => db.findUser({ _id: userId }),

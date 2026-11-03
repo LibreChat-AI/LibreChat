@@ -1,3 +1,5 @@
+import { durableStorageConfigSchema } from 'librechat-data-provider';
+import type { DurableStorageConfig } from 'librechat-data-provider';
 import type {
   ResponseExecutionBinding,
   ResponseOwner,
@@ -353,9 +355,14 @@ function terminalProviderFilter(receipt: ResponseTerminalReceipt) {
 /** Authorization precedes this storage boundary; every read/write remains owner- and tenant-scoped. */
 export function createResponseStorage(
   mongoose: typeof import('mongoose'),
-  options?: { getMCPAppMessageBudget?: () => Promise<number | undefined> },
+  options?: {
+    getMCPAppMessageBudget?: () => Promise<number | undefined>;
+    getDurableStorageConfig?: () => Promise<DurableStorageConfig>;
+  },
 ): ResponseStorage {
   const model = createStoredResponseModel(mongoose);
+  const storageConfig = async () =>
+    durableStorageConfigSchema.parse((await options?.getDurableStorageConfig?.()) ?? {});
   let indexPromise: Promise<void> | undefined;
   function ensureIndexes() {
     indexPromise ??= prepareResponseRootStorage(mongoose)
@@ -476,7 +483,13 @@ export function createResponseStorage(
     },
     async prepareConversation(record, binding, writes) {
       assertResponseExecutionBinding(binding);
-      const prepared = await prepareResponseConversation(mongoose, record, binding, writes);
+      const prepared = await prepareResponseConversation(
+        mongoose,
+        record,
+        binding,
+        writes,
+        await storageConfig(),
+      );
       return prepared ? { ok: true, record: prepared } : { ok: false, code: 'response_conflict' };
     },
     async retireExecution(identity) {
@@ -916,7 +929,9 @@ export function createResponseStorage(
           (writes.intentJSON !== receipt.turnJSON || writes.context.userId !== owner.userId))
       )
         throw new Error('Response canonical projection identity changed');
-      const budget = writes ? await options?.getMCPAppMessageBudget?.() : undefined;
+      const [budget, bounds] = writes
+        ? await Promise.all([options?.getMCPAppMessageBudget?.(), storageConfig()])
+        : [undefined, undefined];
       return mutateInOpenScope<ResponseMutationResult>(
         owner,
         responseId,
@@ -962,6 +977,7 @@ export function createResponseStorage(
                   },
                 },
                 async () => budget,
+                bounds,
               ))
             )
               return { ok: false, code: 'response_conflict' };
@@ -1220,9 +1236,10 @@ export function createResponseStorage(
         await createResponseRetention(mongoose)(input, conversationId, input.expiredAt);
       if (await isResponseScopeClosed(mongoose, input, conversationId))
         return { ok: false, code: 'response_unavailable' };
+      const bounds = await storageConfig();
       const target = await allocateManagedTarget(mongoose, 'response', input.tenantId);
       try {
-        const record = await publishResponseRoot(mongoose, target, input);
+        const record = await publishResponseRoot(mongoose, target, input, bounds);
         if (!record) {
           await discardResponseRoot(mongoose, target, input);
           return { ok: false, code: 'response_unavailable' };

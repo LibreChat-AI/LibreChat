@@ -1,3 +1,4 @@
+import type { DurableStorageConfig } from 'librechat-data-provider';
 import type {
   ResponseOwner,
   StoredResponseRecord,
@@ -57,6 +58,7 @@ export async function prepareResponseConversation(
   record: StoredResponseRecord,
   binding: ResponseExecutionBinding,
   writes: ResponseConversationWrites,
+  bounds: Partial<DurableStorageConfig> = {},
 ): Promise<StoredResponseRecord | null> {
   if (
     writes.context.userId !== record.userId ||
@@ -172,7 +174,7 @@ export async function prepareResponseConversation(
         },
       );
     },
-    { expiredAt: current.expiredAt },
+    { ...bounds, expiredAt: current.expiredAt },
   );
   if (!published || !('_id' in published.value) || !published.value._id) return null;
   const target: CanonicalConversationTarget = {
