@@ -34,6 +34,8 @@ export interface UploadFallbackTextRoute {
   mimeType: string;
   /** The upload endpoint's file config, which opts in through `textFallbackWithoutTools`. */
   endpointConfig?: Pick<EndpointFileConfig, 'textFallbackWithoutTools'>;
+  /** Whether Run Code will read this spreadsheet under automatic reading, which needs no opt-in. */
+  spreadsheetForRunCode?: boolean;
 }
 
 interface ExtractedText {
@@ -51,7 +53,8 @@ const builtInExtractors: UploadFallbackTextExtractors = { parseDocument, parseTe
 /**
  * Which built-in extractor stores text for an upload left to tools, or `null` when none runs.
  *
- * Where the endpoint enables `textFallbackWithoutTools`, a turn that runs no tool able to read a
+ * Where the endpoint enables `textFallbackWithoutTools` (or the upload is a spreadsheet filed
+ * for Run Code under automatic reading, #17370), a turn that runs no tool able to read a
  * `none`-routed file delivers this text instead (`resolveTurnLLMDeliveryPath`). Only an inferred
  * route on a message attachment qualifies: a turn never re-resolves a destination the user chose,
  * and files kept on an agent's tool resources never reach a prompt. A file filed
@@ -63,7 +66,8 @@ export function getUploadFallbackTextPlan(
   route: UploadFallbackTextRoute,
 ): UploadFallbackTextPlan | null {
   if (
-    route.endpointConfig?.textFallbackWithoutTools !== true ||
+    (route.endpointConfig?.textFallbackWithoutTools !== true &&
+      route.spreadsheetForRunCode !== true) ||
     route.deliveryPath !== 'none' ||
     route.destinationChosen ||
     !route.isMessageAttachment
