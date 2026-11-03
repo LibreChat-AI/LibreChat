@@ -223,6 +223,7 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
                 <CopyButton
                   isCopied={isCopied}
                   iconOnly
+                  compact
                   onClick={handleCopy}
                   disabled={contentPending}
                   label={localize('com_ui_copy_to_clipboard')}

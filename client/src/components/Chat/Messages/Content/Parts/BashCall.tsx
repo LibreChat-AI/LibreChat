@@ -259,13 +259,11 @@ export default function BashCall({
               <div className="bg-surface-code group/copy relative">
                 <CopyButton
                   iconOnly
+                  compact
                   isCopied={isCopied}
                   onClick={handleCopy}
                   disabled={contentPending}
-                  className={cn(
-                    'bg-surface-code absolute inset-e-1.5 top-1 z-[1]',
-                    PANE_COPY_REVEAL,
-                  )}
+                  className={cn('bg-surface-code absolute inset-e-2 top-2 z-[1]', PANE_COPY_REVEAL)}
                   label={localize('com_ui_copy_code')}
                 />
                 <div
@@ -275,7 +273,7 @@ export default function BashCall({
                 >
                   <pre
                     dir="ltr"
-                    className="py-2.5 ps-3 pe-10 font-mono text-xs break-words whitespace-pre-wrap"
+                    className="py-2.5 ps-3 pe-8 font-mono text-xs break-words whitespace-pre-wrap"
                   >
                     <span className="text-text-tertiary select-none" aria-hidden="true">
                       {'$ '}
@@ -296,7 +294,7 @@ export default function BashCall({
               className={cn(command && 'border-border-inset border-t')}
             />
             {hasOutput && backgroundHandle == null && (
-              <div className={cn('px-3 py-2.5', command && 'border-border-inset border-t')}>
+              <div className={cn('p-3', command && 'border-border-inset border-t')}>
                 {outputIsEmpty ? (
                   <p className="text-text-secondary text-xs italic">
                     {localize('com_ui_no_output')}
