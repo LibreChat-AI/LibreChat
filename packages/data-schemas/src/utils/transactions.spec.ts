@@ -1,6 +1,11 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer, MongoMemoryReplSet } from 'mongodb-memory-server';
-import { getTransactionSupport, supportsTransactions } from './transactions';
+import {
+  getTransactionSupport,
+  supportsTransactions,
+  startRequiredTransactionSession,
+  TransactionUnavailableError,
+} from './transactions';
 
 jest.mock('~/config/winston', () => ({ debug: jest.fn() }));
 
@@ -130,5 +135,65 @@ describe('transaction capability against real MongoDB', () => {
     const error = new mongoose.mongo.MongoServerError({ code: 13, errmsg: 'not authorized' });
     jest.spyOn(replica.connection.db!, 'createCollection').mockRejectedValueOnce(error);
     await expect(supportsTransactions(replica)).rejects.toBe(error);
+  });
+
+  it('reuses a required-session verdict instead of probing every subsequent transition', async () => {
+    const db = new mongoose.Mongoose();
+    await db.connect(repl.getUri(), { readPreference: 'secondaryPreferred' });
+    const starts = jest.spyOn(db, 'startSession');
+    try {
+      const first = await startRequiredTransactionSession(db);
+      await first.endSession();
+      const second = await startRequiredTransactionSession(db);
+      await second.endSession();
+      expect(starts).toHaveBeenCalledTimes(3); // One probe and two actual owned sessions.
+      expect(starts).toHaveBeenLastCalledWith({
+        defaultTransactionOptions: { readPreference: 'primary' },
+      });
+    } finally {
+      await db.disconnect();
+    }
+  });
+
+  it('retries a required-session probe after an operational failure', async () => {
+    const db = new mongoose.Mongoose();
+    await db.connect(repl.getUri());
+    const failure = new db.mongo.MongoNetworkError('test probe unavailable');
+    const starts = jest.spyOn(db, 'startSession').mockRejectedValueOnce(failure);
+    try {
+      await expect(startRequiredTransactionSession(db)).rejects.toBe(failure);
+      const session = await startRequiredTransactionSession(db);
+      await session.endSession();
+      expect(starts).toHaveBeenCalledTimes(3);
+    } finally {
+      await db.disconnect();
+    }
+  });
+
+  it('rechecks a required-session verdict when the connection gets a different client', async () => {
+    const db = new mongoose.Mongoose();
+    try {
+      await db.connect(mongo.getUri());
+      await expect(startRequiredTransactionSession(db)).rejects.toBeInstanceOf(
+        TransactionUnavailableError,
+      );
+      await db.disconnect();
+      await db.connect(repl.getUri(), { readPreference: 'secondaryPreferred' });
+      const session = await startRequiredTransactionSession(db);
+      await session.endSession();
+    } finally {
+      await db.disconnect();
+    }
+  });
+
+  it('does not open feature sessions after confirmed lack of transaction support', async () => {
+    const starts = jest.spyOn(standalone, 'startSession');
+    await expect(startRequiredTransactionSession(standalone)).rejects.toBeInstanceOf(
+      TransactionUnavailableError,
+    );
+    await expect(startRequiredTransactionSession(standalone)).rejects.toBeInstanceOf(
+      TransactionUnavailableError,
+    );
+    expect(starts).toHaveBeenCalledTimes(1);
   });
 });
