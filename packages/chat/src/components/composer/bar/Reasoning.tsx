@@ -5,7 +5,7 @@ import {
   Input,
   Button,
   Slider,
-  Popover,
+  Popover as PopoverRoot,
   PopoverClose,
   PopoverPortal,
   useLocalize,
@@ -104,7 +104,7 @@ function ReasoningControl({
   };
 
   return (
-    <Popover modal>
+    <PopoverRoot modal>
       <PopoverTrigger asChild>
         {/* `composer-trigger` keeps it lit while its popover is up, through the
             `aria-expanded` the trigger carries. */}
@@ -237,7 +237,7 @@ function ReasoningControl({
           </div>
         </PopoverContent>
       </PopoverPortal>
-    </Popover>
+    </PopoverRoot>
   );
 }
 
