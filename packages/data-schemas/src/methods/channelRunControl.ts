@@ -365,7 +365,7 @@ export function createChannelRunControl(
             },
             { upsert: false, runValidators: true },
           );
-          if (!result.matchedCount) continue;
+          // Another repair may win before this caller registers its discovery ticket.
           if (conversationId)
             await settleResponseTarget(
               mongoose,
@@ -373,6 +373,7 @@ export function createChannelRunControl(
               conversationId,
               managedRegistration(laneTarget),
             );
+          if (!result.matchedCount) continue;
         }
       }
       const updated = await writeChannelRunPatch(

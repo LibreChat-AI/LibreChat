@@ -16,6 +16,7 @@ import { createAgentChannelMethods } from './channel';
 import { channelRunFence } from './channelRunWrite';
 import { responseScopeKeys } from './responseScope';
 import { createResponseStorage } from './response';
+import * as registration from './registration';
 import { createModels } from '~/models';
 
 const engines = ['standalone', 'replica', ...(process.env.FERRETDB_URI ? ['FerretDB'] : [])];
@@ -1047,7 +1048,7 @@ describe.each(engines)('actor control handoff on %s', (engine) => {
         );
         await f.storage.admit(nextEvent(f), 108);
         const collection = mongoose.models.ChannelLane.collection;
-        const update = collection.updateOne.bind(collection);
+        const register = registration.registerResponseTarget;
         let entered!: () => void;
         let release!: () => void;
         const started = new Promise<void>((resolve) => {
@@ -1056,15 +1057,13 @@ describe.each(engines)('actor control handoff on %s', (engine) => {
         const gate = new Promise<void>((resolve) => {
           release = resolve;
         });
-        let paused = false;
-        const spy = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
-          if (!Array.isArray(args[1]) && args[1].$set?.handoff && !paused) {
-            paused = true;
+        const spy = jest
+          .spyOn(registration, 'registerResponseTarget')
+          .mockImplementationOnce(async (...args) => {
             entered();
             await gate;
-          }
-          return update(...args);
-        });
+            return register(...args);
+          });
         const committing = f.storage.commitDelivery(f.input.tenantId, fence(first), 109);
         const timeout = setTimeout(release, 5000);
         try {
@@ -1101,6 +1100,10 @@ describe.each(engines)('actor control handoff on %s', (engine) => {
           )[1];
           expect(lane!._managed.scopeKeys).toContain(key);
           expect(lane!.handoff.run.runId).toBe(first.runId);
+          expect(await createResponseScopeModel(mongoose).findById(key).lean()).toMatchObject({
+            pendingCount: 0,
+            pending: [],
+          });
         } finally {
           clearTimeout(timeout);
           release();

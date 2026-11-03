@@ -227,7 +227,8 @@ export async function writeChannelRunPatch(
     )
     .select('+_managed')
     .lean<PhysicalChannelRun | null>();
-  if (result && firstConversation)
+  // A CAS loser can register after the winner settled; the indexed target still proves ownership.
+  if (firstConversation)
     await settleResponseTarget(mongoose, owner, conversationId, managedRegistration(target));
   return result;
 }
