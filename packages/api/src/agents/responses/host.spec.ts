@@ -8,6 +8,8 @@ import {
   createModels,
   createMethods,
   createResponseStorage,
+  createManagedMessageId,
+  createManagedConversationId,
   tenantStorage,
   runAsSystem,
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
@@ -175,7 +177,6 @@ async function fixture(
     isPrincipalActive: async () => true,
     getAgentPermissions: async (agentId) => (agentId === 'agent' ? PermissionBits.VIEW : 0),
     getMessage: db.getMessage,
-    getConvoRetention: db.getConvoRetention,
     enqueue: producer.enqueue,
     isQueueReady: producer.isReady,
     signingSecret: () => 'isolated-background-host-secret',
@@ -949,7 +950,7 @@ it.each([RetentionMode.ALL, RetentionMode.EPHEMERAL])(
 );
 
 it('inherits the existing temporary parent deadline instead of renewing its retention window', async () => {
-  const retention = jest.spyOn(db, 'getConvoRetention');
+  const retention = jest.spyOn(storage, 'readConversationTarget');
   cleanup.push(async () => retention.mockRestore());
   const f = await fixture();
   f.config.interfaceConfig = {
@@ -959,7 +960,7 @@ it('inherits the existing temporary parent deadline instead of renewing its rete
   };
   const conversationId = '00000000-0000-4000-8000-000000000001';
   const expiredAt = new Date(Date.now() + 300_000);
-  await scoped(() =>
+  const parent = await scoped(() =>
     mongoose.models.Conversation.create({
       user: String(user._id),
       conversationId,
@@ -979,10 +980,20 @@ it('inherits the existing temporary parent deadline instead of renewing its rete
     });
   expect(created.status).toBe(202);
   expect(retention).toHaveBeenCalledTimes(1);
-  expect(retention).toHaveBeenCalledWith(String(user._id), conversationId);
+  expect(retention).toHaveBeenCalledWith({ userId: String(user._id), tenantId }, conversationId);
   expect(
     await scoped(() => storage.read({ userId: String(user._id), tenantId }, created.body.id)),
-  ).toMatchObject({ expiredAt, isTemporary: true, conversationId });
+  ).toMatchObject({
+    expiredAt,
+    isTemporary: true,
+    conversationId,
+    conversationTarget: {
+      id: String(parent._id),
+      userId: String(user._id),
+      conversationId,
+      tenantId,
+    },
+  });
   await f.readUntil(created.body.id, 'completed');
   expect(f.errors).toEqual([]);
 });
@@ -1298,14 +1309,18 @@ it('preserves ordinary synchronous Responses and defaults background execution o
   expect(f.inputs).toHaveLength(1);
 });
 
-async function reserveUnstarted(credentialId: string, conversationId = 'delayed-conversation') {
+async function reserveUnstarted(
+  credentialId: string,
+  conversationId = createManagedConversationId(),
+) {
+  const responseId = createManagedMessageId();
   const result = await scoped(() =>
     storage.reserve({
       userId: String(user._id),
       tenantId,
       sourceKeyId: credentialId,
-      responseId: 'resp_delayed_worker',
-      requestKey: 'delayed-worker',
+      responseId,
+      requestKey: responseId,
       fingerprint: 'request',
       agentId: 'agent',
       requestJSON: JSON.stringify({

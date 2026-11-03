@@ -1,5 +1,6 @@
 import type { ClientSession } from 'mongoose';
 import type {
+  ResponseExecutionBinding,
   ResponseOwner,
   ResponseReference,
   ResponseCheckpointExecution,
@@ -11,8 +12,8 @@ import type {
   ResponseResumeIntent,
   ResponseTerminalReceipt,
 } from '~/models/response';
-import type { ResponseTurnWrites } from './responseTurn';
-import type { ManagedTarget } from '~/types/managed';
+import type { ResponseTurnWrites, ResponseConversationWrites } from './responseTurn';
+import type { ManagedTarget, CanonicalConversationTarget } from '~/types/managed';
 import {
   prepareResponseRootStorage,
   publishResponseRoot,
@@ -27,7 +28,16 @@ import {
   initializeResponseScopes,
   createResponseRetention,
 } from './responseScope';
-import { sameResponseTerminalReceipt, terminalReceipt, terminalFilter } from '~/utils/receipt';
+import {
+  sameResponseTerminalReceipt,
+  terminalReceipt,
+  terminalFilter,
+  assertResponseExecutionBinding,
+} from '~/utils/receipt';
+import {
+  readResponseConversationTarget,
+  prepareResponseConversation,
+} from './responseConversation';
 import { retiredResponseUpdate, finishResponseErasure } from './responseErasure';
 import { createResponseCheckpointStorage } from './responseCheckpoint';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
@@ -60,23 +70,7 @@ export type ResponseMutationResult =
   | { ok: true; record: StoredResponseRecord }
   | { ok: false; code: 'response_conflict' };
 
-export type ResponseExecutionBinding = Pick<
-  ResponseTerminalReceipt,
-  'generationCreatedAt' | 'providerExecutionId' | 'ownerId'
->;
-
-function assertExecutionBinding(binding: ResponseExecutionBinding): void {
-  if (
-    !Number.isSafeInteger(binding.generationCreatedAt) ||
-    binding.generationCreatedAt < 1 ||
-    typeof binding.providerExecutionId !== 'string' ||
-    !binding.providerExecutionId ||
-    binding.providerExecutionId.length > 128 ||
-    (binding.ownerId != null &&
-      (typeof binding.ownerId !== 'string' || !binding.ownerId || binding.ownerId.length > 128))
-  )
-    throw new TypeError('Invalid Response provider identity');
-}
+export type { ResponseExecutionBinding } from '~/models/response';
 
 /** Internal drain identity only; expired requests, answers and decisions are never returned.
  * Stored rows include immutable request binding; older retained job identities may omit it. */
@@ -198,6 +192,19 @@ export interface ResponseExecutionProof extends ResponseExecutionBinding {
 }
 
 export interface ResponseStorage {
+  readConversationTarget(
+    owner: ResponseOwner,
+    conversationId: string,
+  ): Promise<{
+    target: CanonicalConversationTarget;
+    expiredAt?: Date;
+    isTemporary?: boolean;
+  } | null>;
+  prepareConversation(
+    record: StoredResponseRecord,
+    binding: ResponseExecutionBinding,
+    writes: ResponseConversationWrites,
+  ): Promise<ResponseMutationResult>;
   /** Positive proof on the exact retained root; missing jobs are never substituted. */
   readExecutionProof(identity: ResponseCleanupIdentity): Promise<ResponseExecutionProof | null>;
   /** Fence enrollment and scrub private data before using provider proof for physical cleanup. */
@@ -409,6 +416,15 @@ export function createResponseStorage(
     }
   }
   return {
+    async readConversationTarget(owner, conversationId) {
+      ownerScope(owner);
+      return readResponseConversationTarget(mongoose, owner, conversationId);
+    },
+    async prepareConversation(record, binding, writes) {
+      assertResponseExecutionBinding(binding);
+      const prepared = await prepareResponseConversation(mongoose, record, binding, writes);
+      return prepared ? { ok: true, record: prepared } : { ok: false, code: 'response_conflict' };
+    },
     async retireExecution(identity) {
       if (!identity.storageTarget) return false;
       const closed = await isResponseScopeClosed(mongoose, identity, identity.conversationId);
@@ -440,7 +456,7 @@ export function createResponseStorage(
       return finished;
     },
     async acknowledgeCheckpointErasure(identity, proof) {
-      assertExecutionBinding(proof);
+      assertResponseExecutionBinding(proof);
       if (
         !identity.storageTarget ||
         identity.generationCreatedAt !== proof.generationCreatedAt ||
@@ -504,7 +520,7 @@ export function createResponseStorage(
     createCheckpointWriter: (reference, checkpoint) =>
       createResponseCheckpointStorage(mongoose, reference, checkpoint),
     async enrollExecution(current, binding, responseJSON) {
-      assertExecutionBinding(binding);
+      assertResponseExecutionBinding(binding);
       if (!current.storageTarget) return { ok: false, code: 'response_conflict' };
       const execution = responseExecutionFilter(mongoose, current, { execution: current });
       if (!execution) return { ok: false, code: 'response_conflict' };
@@ -577,7 +593,7 @@ export function createResponseStorage(
       return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
     },
     async bindExecution(record, binding) {
-      assertExecutionBinding(binding);
+      assertResponseExecutionBinding(binding);
       if (!record.storageTarget) return false;
       const result = await model.updateOne(
         {
@@ -603,7 +619,7 @@ export function createResponseStorage(
       return result.matchedCount === 1;
     },
     async settleExecution(reference, binding, outcome) {
-      assertExecutionBinding(binding);
+      assertResponseExecutionBinding(binding);
       if (outcome != null && !['complete', 'error', 'aborted'].includes(outcome))
         throw new TypeError('Invalid Response provider outcome');
       const updated = await model.updateOne(

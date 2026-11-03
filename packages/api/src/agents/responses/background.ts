@@ -25,6 +25,7 @@ export interface BackgroundResponseDependencies {
     previousResponseId?: string,
   ) => Promise<{
     conversationId: string;
+    conversationTarget?: StoredResponseRecord['conversationTarget'];
     parentMessageId: string;
     expiredAt?: Date;
     isTemporary?: boolean;

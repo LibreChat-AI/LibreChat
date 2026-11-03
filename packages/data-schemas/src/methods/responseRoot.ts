@@ -78,6 +78,11 @@ export function assertResponseReservation(input: ResponseReservation): void {
     !input.requestKey ||
     !input.fingerprint ||
     !input.conversationId ||
+    (input.conversationTarget != null &&
+      (!/^[a-f\d]{24}$/i.test(input.conversationTarget.id) ||
+        input.conversationTarget.userId !== input.userId ||
+        input.conversationTarget.conversationId !== input.conversationId ||
+        (input.conversationTarget.tenantId || undefined) !== (input.tenantId || undefined))) ||
     (input.expiredAt != null &&
       (!(input.expiredAt instanceof Date) || !Number.isFinite(input.expiredAt.getTime())))
   )

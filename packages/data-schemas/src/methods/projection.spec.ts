@@ -28,6 +28,7 @@ import { createConversationMethods } from './conversation';
 import { createConversationModel } from '~/models/convo';
 import { tenantStorage } from '~/config/tenantContext';
 import { createMessageModel } from '~/models/message';
+import { createResponseStorage } from './response';
 import { createMessageMethods } from './message';
 
 function required(result: ResponseTargetResult) {
@@ -108,7 +109,8 @@ describe('Response-owned canonical target selection', () => {
         responseJSON: '{"output":"confirmed"}',
         turnJSON: JSON.stringify({ version: 1, inputs: [{ messageId: createManagedMessageId() }] }),
       };
-      const root = await createStoredResponseModel(db).create({
+      const storage = createResponseStorage(db);
+      const reserved = await storage.reserve({
         userId,
         tenantId,
         conversationId,
@@ -118,10 +120,26 @@ describe('Response-owned canonical target selection', () => {
         requestJSON: '{}',
         requestKey: randomUUID(),
         parentMessageId: 'parent',
-        revision: 0,
-        status: kind === 'message' ? 'materializing' : 'queued',
-        ...(kind === 'message' ? { pendingTerminal: receipt, generationCreatedAt: 17 } : {}),
       });
+      if (!reserved.ok) throw new Error('Fixture reservation failed');
+      const execution = {
+        generationCreatedAt: 17,
+        providerExecutionId: receipt.providerExecutionId,
+      };
+      const enrolled = await storage.enrollExecution(reserved.record, execution, '{}');
+      if (!enrolled.ok || !(await storage.bindExecution(enrolled.record, execution)))
+        throw new Error('Fixture provider binding failed');
+      if (kind === 'message')
+        await createStoredResponseModel(db).updateOne(
+          {
+            _id: reserved.record.storageTarget!.id,
+          },
+          { $set: { status: 'materializing', pendingTerminal: receipt } },
+        );
+      const root = await createStoredResponseModel(db)
+        .findById(reserved.record.storageTarget!.id)
+        .select('+providerExecution');
+      if (!root) throw new Error('Fixture root unavailable');
       const common = {
         userId,
         tenantId,
@@ -132,7 +150,16 @@ describe('Response-owned canonical target selection', () => {
         logicalId: kind === 'message' ? responseId : conversationId,
       };
       const intent: ResponseTargetIntent =
-        kind === 'message' ? { ...common, kind, receipt } : { ...common, kind };
+        kind === 'message'
+          ? { ...common, kind, receipt }
+          : {
+              ...common,
+              kind,
+              execution: {
+                generationCreatedAt: 17,
+                providerExecutionId: receipt.providerExecutionId,
+              },
+            };
       return { intent, root, receipt };
     }
 
@@ -269,6 +296,17 @@ describe('Response-owned canonical target selection', () => {
     });
     it('selects a single physical winner across competing publishers', async () => {
       const { intent } = await fixture();
+      const command = db.connection.db!.command.bind(db.connection.db!);
+      const gate = barrier();
+      let allocations = 0;
+      jest.spyOn(db.connection.db!, 'command').mockImplementation(async (...args) => {
+        if (args[0].insert === createMessageModel(db).collection.name) {
+          allocations++;
+          if (allocations === 2) gate.release();
+          await gate.resumed;
+        }
+        return command(...args);
+      });
       const attempts = await Promise.all([
         selectResponseTarget(db, intent),
         selectResponseTarget(db, intent),
@@ -546,7 +584,7 @@ describe('Response-owned canonical target selection', () => {
       expect((await readTargets(intent))?.canonicalTargets).toBeUndefined();
     });
 
-    it('seeds a conversation only before execution and cannot adopt a replacement parent', async () => {
+    it('binds Conversation selection to one active provider and cannot adopt a replacement parent', async () => {
       const { intent, root } = await fixture('conversation');
       const first = required(await selectResponseTarget(db, intent));
       expect(first.selection.target.kind).toBe('conversation');

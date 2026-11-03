@@ -1,6 +1,10 @@
 import { Schema } from 'mongoose';
 import type { Model } from 'mongoose';
-import type { ResponseCanonicalTarget, ManagedTarget } from '~/types/managed';
+import type {
+  ResponseCanonicalTarget,
+  ManagedTarget,
+  CanonicalConversationTarget,
+} from '~/types/managed';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 import { applyManagedStorage } from './plugins/managed';
 
@@ -12,6 +16,8 @@ export interface ResponseOwner {
 export interface ResponseReservation extends ResponseOwner {
   /** A successful reservation durably accepts publication work. */
   dispatch?: boolean;
+  /** Captured when accepting an existing conversation; never resolved again by logical ID. */
+  conversationTarget?: CanonicalConversationTarget;
   expiredAt?: Date;
   isTemporary?: boolean;
   responseId: string;
@@ -29,6 +35,11 @@ export interface ResponseReference extends ResponseOwner {
   responseId: string;
   target: ManagedTarget<'response'>;
 }
+
+export type ResponseExecutionBinding = Pick<
+  ResponseTerminalReceipt,
+  'generationCreatedAt' | 'providerExecutionId' | 'ownerId'
+>;
 
 export interface ResponseProviderExecution {
   id: string;
@@ -113,6 +124,7 @@ export interface ResponseDispatchOutbox {
 
 export interface StoredResponseRecord {
   storageTarget?: ManagedTarget<'response'>;
+  conversationTarget?: CanonicalConversationTarget;
   providerExecution?: ResponseProviderExecution;
   checkpoint?: ResponseCheckpointExecution;
   retiredAt?: Date;
@@ -183,6 +195,18 @@ export function createStoredResponseModel(
             kind: { type: String, enum: ['response'], required: true },
             id: { type: String, required: true },
             incarnation: { type: String, required: true },
+            tenantId: String,
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
+      conversationTarget: {
+        type: new Schema<CanonicalConversationTarget>(
+          {
+            id: { type: String, required: true },
+            conversationId: { type: String, required: true },
+            userId: { type: String, required: true },
             tenantId: String,
           },
           { _id: false },

@@ -1,5 +1,5 @@
 import { runAfterTransaction } from '~/utils/postCommit';
-export type { ResponseTurnWrites } from './responseTurn';
+export type { ResponseTurnWrites, ResponseConversationWrites } from './responseTurn';
 import type { ChannelStorageConfig } from 'librechat-data-provider';
 import { createSubagentContentMethods, type SubagentContentMethods } from './subagentContent';
 export type {

@@ -37,6 +37,11 @@ export interface ResponseTurnWrites {
   >[];
 }
 
+export type ResponseConversationWrites = Pick<
+  ResponseTurnWrites,
+  'context' | 'conversation' | 'initialAgentId'
+>;
+
 /** Reuse the canonical privacy, provenance, retention and budget writers in the caller's commit. */
 export async function materializeResponseTurn(
   mongoose: typeof import('mongoose'),

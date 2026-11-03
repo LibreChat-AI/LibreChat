@@ -8,7 +8,6 @@ import type {
   ResponseOwner,
   ResponseStorage,
   StoredResponseRecord,
-  ConversationMethods,
 } from '@librechat/data-schemas';
 import type { ResponseReviewView } from 'librechat-data-provider';
 import type { Request, RequestHandler } from 'express';
@@ -54,7 +53,6 @@ export interface BackgroundResponsesHostDependencies
   >;
   publicBaseURL?: string;
   getMessage: Parameters<typeof resolveResponseContinuation>[2]['getMessage'];
-  getConvoRetention: ConversationMethods['getConvoRetention'];
   signingSecret: () => string;
   onError: (error: unknown) => void;
   fetch?: BackgroundResponseTransportDependencies['fetch'];
@@ -199,7 +197,7 @@ export function createBackgroundResponsesHost(
           generateConversationId: createManagedConversationId,
         });
         const stored = previous
-          ? await deps.getConvoRetention(owner.userId, continuation.conversationId)
+          ? await deps.storage.readConversationTarget(owner, continuation.conversationId)
           : null;
         if (previous && !stored) throw new Error('Response continuation is unavailable');
         const principal = user ?? (await deps.findUser(owner.userId));
@@ -220,6 +218,7 @@ export function createBackgroundResponsesHost(
           expiredAt = createChatExpirationDate(config.interfaceConfig, true);
         return {
           ...continuation,
+          ...(stored ? { conversationTarget: stored.target } : {}),
           ...(expiredAt ? { expiredAt } : {}),
           isTemporary: policy.isTemporary ?? isTemporaryRecord(stored ?? {}),
         };

@@ -372,6 +372,206 @@ describe('managed target allocation on real storage', () => {
       expect(await storage.bindExecution(enrolled.record, checkpoint)).toBe(true);
       return { model, reference, checkpoint, input, record: enrolled.record, storage };
     }
+    it('seeds and captures a canonical Conversation once through the running provider binding', async () => {
+      const f = await checkpointFixture();
+      const writes = {
+        context: { userId: f.record.userId },
+        conversation: {
+          conversationId: f.record.conversationId,
+          agent_id: f.record.agentId,
+          endpoint: 'agents',
+          title: 'Created before model work',
+          codeEnvironmentMode: 'without_attached',
+        },
+        initialAgentId: f.record.agentId,
+      };
+      for (const mismatch of [
+        { ...f.checkpoint, providerExecutionId: randomUUID() },
+        { ...f.checkpoint, ownerId: randomUUID() },
+        { ...f.checkpoint, generationCreatedAt: f.checkpoint.generationCreatedAt + 1 },
+      ])
+        expect(await f.storage.prepareConversation(f.record, mismatch, writes)).toEqual({
+          ok: false,
+          code: 'response_conflict',
+        });
+      expect(await db.model('Conversation').countDocuments({ user: f.record.userId })).toBe(0);
+      const first = await f.storage.prepareConversation(f.record, f.checkpoint, writes);
+      if (!first.ok) throw new Error('Conversation preparation failed');
+      expect(first.record.conversationTarget).toMatchObject({
+        userId: f.record.userId,
+        conversationId: f.record.conversationId,
+      });
+      const row = await createConversationModel(db)
+        .findOne({ user: f.record.userId })
+        .select('+initial_agent_id')
+        .lean();
+      expect(row).toMatchObject({
+        title: 'Created before model work',
+        initial_agent_id: f.record.agentId,
+        codeEnvironmentMode: 'without_attached',
+        messages: [],
+      });
+      expect(String(row!._id)).toBe(first.record.conversationTarget!.id);
+      const replay = await f.storage.prepareConversation(f.record, f.checkpoint, {
+        ...writes,
+        conversation: {
+          ...writes.conversation,
+          title: 'Must not reseed',
+          codeEnvironmentMode: 'attached',
+        },
+      });
+      expect(replay).toMatchObject({
+        ok: true,
+        record: { conversationTarget: first.record.conversationTarget },
+      });
+      expect(await db.model('Conversation').countDocuments({ user: f.record.userId })).toBe(1);
+      expect(
+        await db.model('Conversation').findOne({ user: f.record.userId }).lean(),
+      ).toMatchObject({
+        title: 'Created before model work',
+        codeEnvironmentMode: 'without_attached',
+      });
+    });
+    it.each([false, true])(
+      'recovers a Conversation capture failure only with primary proof (applied: %s)',
+      async (applied) => {
+        const f = await checkpointFixture();
+        const original = f.model.collection.findOneAndUpdate.bind(f.model.collection);
+        let lost = false;
+        jest.spyOn(f.model.collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
+          const update = args[1];
+          if (!lost && !Array.isArray(update) && update.$set?.conversationTarget) {
+            lost = true;
+            if (applied) await original(...args);
+            throw new Error('Conversation capture acknowledgment lost');
+          }
+          return original(...args);
+        });
+        const writes = {
+          context: { userId: f.record.userId },
+          conversation: {
+            conversationId: f.record.conversationId,
+            agent_id: f.record.agentId,
+            endpoint: 'agents',
+          },
+          initialAgentId: f.record.agentId,
+        };
+        if (applied)
+          expect(await f.storage.prepareConversation(f.record, f.checkpoint, writes)).toMatchObject(
+            { ok: true },
+          );
+        else
+          await expect(
+            f.storage.prepareConversation(f.record, f.checkpoint, writes),
+          ).rejects.toThrow('capture acknowledgment lost');
+        const recovered = await f.storage.prepareConversation(f.record, f.checkpoint, writes);
+        expect(recovered).toMatchObject({ ok: true });
+        expect(await db.model('Conversation').countDocuments({ user: f.record.userId })).toBe(1);
+        expect(lost).toBe(true);
+      },
+    );
+    it('denies model admission when closure wins during Conversation capture', async () => {
+      const f = await checkpointFixture();
+      const original = f.model.collection.findOneAndUpdate.bind(f.model.collection);
+      let closed = false;
+      jest.spyOn(f.model.collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
+        const update = args[1];
+        if (!closed && !Array.isArray(update) && update.$set?.conversationTarget) {
+          closed = true;
+          await closeResponseScopes(db, f.record, [f.record.conversationId]);
+        }
+        return original(...args);
+      });
+      expect(
+        await f.storage.prepareConversation(f.record, f.checkpoint, {
+          context: { userId: f.record.userId },
+          conversation: {
+            conversationId: f.record.conversationId,
+            agent_id: f.record.agentId,
+            endpoint: 'agents',
+          },
+          initialAgentId: f.record.agentId,
+        }),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(closed).toBe(true);
+      expect(await f.storage.read(f.record, f.record.responseId)).toBeNull();
+      expect(await db.model('Message').collection.countDocuments({ user: f.record.userId })).toBe(
+        0,
+      );
+    });
+    it.each(['legacy', 'managed'] as const)(
+      'never adopts a recreated %s Conversation after acceptance',
+      async (kind) => {
+        const storage = createResponseStorage(db);
+        const input = {
+          ...rootInput(),
+          conversationId: kind === 'legacy' ? randomUUID() : createManagedConversationId(),
+          requestJSON: JSON.stringify({ previous_response_id: 'prior' }),
+        };
+        const Conversation = db.model('Conversation');
+        const first = await Conversation.create({
+          user: input.userId,
+          conversationId: input.conversationId,
+          title: 'Original',
+          endpoint: 'agents',
+        });
+        const captured = await storage.readConversationTarget(input, input.conversationId);
+        expect(captured?.target.id).toBe(String(first._id));
+        const reserved = await storage.reserve({ ...input, conversationTarget: captured!.target });
+        if (!reserved.ok) throw new Error('Reservation failed');
+        const binding = {
+          generationCreatedAt: Date.now(),
+          providerExecutionId: randomUUID(),
+          ownerId: randomUUID(),
+        };
+        const enrolled = await storage.enrollExecution(reserved.record, binding, '{}');
+        if (!enrolled.ok) throw new Error('Enrollment failed');
+        expect(await storage.bindExecution(enrolled.record, binding)).toBe(true);
+        const writes = {
+          context: { userId: input.userId },
+          conversation: {
+            conversationId: input.conversationId,
+            agent_id: input.agentId,
+            endpoint: 'agents',
+          },
+          initialAgentId: input.agentId,
+        };
+        expect(await storage.prepareConversation(enrolled.record, binding, writes)).toMatchObject({
+          ok: true,
+        });
+        await Conversation.deleteOne({ _id: first._id });
+        const replacement = await Conversation.create({
+          user: input.userId,
+          conversationId: input.conversationId,
+          title: 'Replacement',
+          endpoint: 'agents',
+        });
+        expect(await storage.prepareConversation(enrolled.record, binding, writes)).toEqual({
+          ok: false,
+          code: 'response_conflict',
+        });
+        expect((await storage.read(input, input.responseId))?.conversationTarget?.id).toBe(
+          String(first._id),
+        );
+        expect(await Conversation.findById(replacement._id).lean()).toMatchObject({
+          title: 'Replacement',
+        });
+      },
+    );
+    it('cannot seed an absent continuation even when its logical Conversation ID is managed', async () => {
+      const f = await checkpointFixture();
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
+        $set: { requestJSON: JSON.stringify({ previous_response_id: 'prior' }) },
+      });
+      expect(
+        await f.storage.prepareConversation(f.record, f.checkpoint, {
+          context: { userId: f.record.userId },
+          conversation: { conversationId: f.record.conversationId, agent_id: f.record.agentId },
+          initialAgentId: f.record.agentId,
+        }),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(await db.model('Conversation').countDocuments({ user: f.record.userId })).toBe(0);
+    });
     it('admits only one provider and rejects stale physical enrollment without transactions', async () => {
       const storage = createResponseStorage(db);
       const input = rootInput();

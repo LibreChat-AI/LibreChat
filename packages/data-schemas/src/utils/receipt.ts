@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import type { ResponseTerminalReceipt } from '~/models/response';
+import type { FilterQuery } from 'mongoose';
+import type {
+  ResponseExecutionBinding,
+  StoredResponseRecord,
+  ResponseTerminalReceipt,
+} from '~/models/response';
 
 export function sameResponseTerminalReceipt(
   a: ResponseTerminalReceipt,
@@ -61,4 +66,33 @@ export function responseReceiptKey(receipt: ResponseTerminalReceipt): string {
   return createHash('sha256')
     .update(JSON.stringify(terminalReceipt(receipt)))
     .digest('hex');
+}
+
+export function assertResponseExecutionBinding(binding: ResponseExecutionBinding): void {
+  if (
+    !Number.isSafeInteger(binding.generationCreatedAt) ||
+    binding.generationCreatedAt < 1 ||
+    typeof binding.providerExecutionId !== 'string' ||
+    !binding.providerExecutionId ||
+    binding.providerExecutionId.length > 128 ||
+    (binding.ownerId != null &&
+      (typeof binding.ownerId !== 'string' || !binding.ownerId || binding.ownerId.length > 128))
+  )
+    throw new TypeError('Invalid Response provider identity');
+}
+
+/** Match only the currently running provider segment on a published physical Root. */
+export function responseProviderFilter(
+  binding: ResponseExecutionBinding,
+): FilterQuery<StoredResponseRecord> {
+  assertResponseExecutionBinding(binding);
+  return {
+    generationCreatedAt: binding.generationCreatedAt,
+    'providerExecution.id': binding.providerExecutionId,
+    'providerExecution.ownerId': binding.ownerId ?? { $exists: false },
+    'providerExecution.drained': { $ne: true },
+    '_managed.phase': 'published',
+    retiredAt: { $exists: false },
+    cancellationRequestedAt: { $exists: false },
+  };
 }

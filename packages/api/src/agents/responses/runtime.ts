@@ -5,12 +5,16 @@ import type { ResponseTerminalReceipt, StoredResponseRecord } from '@librechat/d
 import type { Request, Response as HttpResponse } from 'express';
 import type { Agents, TMessage } from 'librechat-data-provider';
 import type { Run, IState } from '@librechat/agents';
+import type {
+  ResponseTerminalCompletion,
+  ResponseConversationInput,
+  ResponsePersistenceDependencies,
+} from './foreground';
 import type { ExecuteAgentRunParams, AgentExecutionConnection } from '../remote/host';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { MarkToolApprovalAllowAlwaysOptions } from '../hitl/allow';
 import type { CheckpointWriteWitness } from '../checkpoints/witness';
 import type { AgentExecutionEnrollment } from '../remote/lifecycle';
-import type { ResponseTerminalCompletion } from './foreground';
 import type { ResponsesRunEnvelope } from '../envelope';
 import type { ResponseAggregator } from './service';
 import type { ReachableAgent } from '../traversal';
@@ -45,6 +49,7 @@ import { markNativeCodeToolApprovalRequests } from '../hitl/byom';
 import { assertCodeExecutionApprovalBinding } from '../execution';
 import { getBackgroundResponseWorkerAdmission } from './worker';
 import { matchesResponseRoot, responseTenantId } from './scope';
+import { createResponseConversationWrites } from './foreground';
 import { normalizeResponseTurnIntent } from './turnProjection';
 import { getChatProjectContextKey } from '~/projects/context';
 import { buildPendingBackgroundResponse } from './background';
@@ -95,6 +100,10 @@ function responseBody(value: unknown): value is TerminalResponse {
 export interface ResponseExecutionRuntime {
   completion?: ResponseTerminalCompletion;
   responseId: string;
+  prepareConversation: (
+    input: ResponseConversationInput,
+    deps: Pick<ResponsePersistenceDependencies, 'resolveTitle'>,
+  ) => Promise<void>;
   inputChain: <T>(chain: { messages: T[]; parentMessageId: string }) => {
     messages: T[];
     parentMessageId: string;
@@ -595,6 +604,17 @@ export function createResponseExecutionRuntime(
           }
         : undefined,
     composeResponse,
+    async prepareConversation(input, deps) {
+      if (!admission) return;
+      if (!enrolledExecution) throw new Error('Background response enrollment is unavailable');
+      const prepared = await admission.storage.prepareConversation(
+        admission.record,
+        enrolledExecution.getPersistenceIdentity(),
+        createResponseConversationWrites(input, deps),
+      );
+      if (!prepared.ok) throw new Error('Background response conversation is unavailable');
+      admission.record = prepared.record;
+    },
     inputChain(chain) {
       if (!admission?.resume) {
         responseParentMessageId = chain.parentMessageId;

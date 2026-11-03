@@ -43,7 +43,6 @@ const dependencies = {
     }).then((result) => result.permissions),
   isPrincipalActive: db.isAgentTriggerPrincipalActive,
   getMessage: db.getMessage,
-  getConvoRetention: db.getConvoRetention,
   enqueue: producer.enqueue,
   isQueueReady: producer.isReady,
   signingSecret: () => process.env.JWT_SECRET,

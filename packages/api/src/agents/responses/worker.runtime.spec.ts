@@ -277,6 +277,78 @@ it('does not accept a stale token after the original key reference changes', asy
 });
 
 describe('background Responses execution handoff', () => {
+  it('prepares the canonical Conversation through the runtime before model work begins', async () => {
+    let done!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    const errors: unknown[] = [];
+    let starts = 0;
+    const { app } = fixture(async (req, res) => {
+      const runtime = createResponseExecutionRuntime(req, res, {
+        getMessage: async () => null,
+        jobs: GenerationJobManager,
+      });
+      try {
+        await executeAgentRun({
+          envelope: createAgentRunEnvelope({
+            protocol: 'responses',
+            requestId: record.responseId,
+            receivedAt: Date.now(),
+            principal: { id: owner.userId, tenantId: owner.tenantId },
+            payload: req.body,
+          }),
+          runId: record.responseId,
+          conversationId: record.conversationId,
+          ...runtime.hooks,
+          isPrincipalActive: async () => true,
+          execute: async () => {
+            await runtime.prepareConversation(
+              {
+                request: req,
+                conversationId: record.conversationId,
+                agentId: record.agentId,
+                agent: { id: record.agentId, model: 'provider-model' },
+              },
+              { resolveTitle: () => 'Seeded before model work' },
+            );
+            const current = await storage.read(record, record.responseId);
+            expect(current?.conversationTarget).toMatchObject({
+              userId: owner.userId,
+              conversationId: record.conversationId,
+            });
+            const conversation = await mongoose.models.Conversation.findOne({
+              conversationId: record.conversationId,
+            }).lean<{ _id: mongoose.Types.ObjectId }>();
+            expect(conversation).toMatchObject({
+              title: 'Seeded before model work',
+              agent_id: record.agentId,
+              messages: [],
+            });
+            expect(String(conversation!._id)).toBe(current!.conversationTarget!.id);
+            starts++;
+          },
+          onSettlementError: (error) => {
+            errors.push(error);
+          },
+        });
+      } catch (error) {
+        errors.push(error);
+      } finally {
+        done();
+      }
+    });
+    await request(app)
+      .post('/')
+      .set('x-lc-response-worker', '1')
+      .auth(mintBackgroundResponseWorkerToken(record, secret), { type: 'bearer' })
+      .send({})
+      .expect(202);
+    await finished;
+    expect(starts).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
   it('binds actual saver commands to the enrolled root and closes the writer before provider drain', async () => {
     __resetCheckpointerForTests();
     let finish!: () => void;
@@ -1595,7 +1667,6 @@ describe('background Responses execution handoff', () => {
         isPrincipalActive: async () => true,
         getAgentPermissions: async () => PermissionBits.VIEW,
         getMessage: methods.getMessage,
-        getConvoRetention: methods.getConvoRetention,
         enqueue: async () => {
           throw new Error('Retrieval must not enqueue another provider');
         },

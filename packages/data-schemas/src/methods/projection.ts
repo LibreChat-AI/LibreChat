@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { FilterQuery, Types } from 'mongoose';
 import type {
+  ResponseExecutionBinding,
   ResponseOwner,
   ResponseTerminalReceipt,
   StoredResponseRecord,
@@ -20,12 +21,17 @@ import {
   listManagedAllocations,
   markManagedTargetRegistered,
 } from './managed';
-import { responseReceiptKey, terminalFilter, sameResponseTerminalReceipt } from '~/utils/receipt';
+import {
+  responseReceiptKey,
+  terminalFilter,
+  sameResponseTerminalReceipt,
+  responseProviderFilter,
+} from '~/utils/receipt';
 import { includeManagedAllocations, isManagedConversationId } from '~/utils/managed';
 import { registerResponseTarget, settleResponseTarget } from './registration';
+import { shortenExpiration, activeExpirationFilter } from '~/utils/retention';
 import { responseOwnerFilter, responseScopeKeys } from './responseScope';
 import { createStoredResponseModel } from '~/models/response';
-import { shortenExpiration } from '~/utils/retention';
 
 interface ResponseTargetOwner extends ResponseOwner {
   parentId: string;
@@ -37,7 +43,7 @@ interface ResponseTargetOwner extends ResponseOwner {
 
 export type ResponseTargetIntent = ResponseTargetOwner &
   (
-    | { kind: 'conversation'; receipt?: never }
+    | { kind: 'conversation'; receipt?: never; execution: ResponseExecutionBinding }
     | { kind: 'message'; receipt: ResponseTerminalReceipt }
   );
 
@@ -116,22 +122,38 @@ function receiptKey(intent: ResponseTargetIntent): string {
 }
 
 function admission(intent: ResponseTargetIntent): FilterQuery<StoredResponseRecord> {
-  return intent.kind === 'conversation'
-    ? { status: 'queued', generationCreatedAt: { $exists: false } }
-    : {
-        status: 'materializing',
-        generationCreatedAt: intent.receipt.generationCreatedAt,
-        ...terminalFilter('pendingTerminal', intent.receipt),
-      };
+  const available = {
+    retiredAt: { $exists: false },
+    $and: [activeExpirationFilter<StoredResponseRecord>()],
+  };
+  if (intent.kind === 'message')
+    return {
+      ...available,
+      status: 'materializing',
+      generationCreatedAt: intent.receipt.generationCreatedAt,
+      ...terminalFilter('pendingTerminal', intent.receipt),
+    };
+  return { ...available, status: 'in_progress', ...responseProviderFilter(intent.execution) };
 }
 
 function eligible(parent: StoredResponseRecord, intent: ResponseTargetIntent): boolean {
-  return intent.kind === 'conversation'
-    ? parent.status === 'queued' && parent.generationCreatedAt == null
-    : parent.status === 'materializing' &&
-        parent.generationCreatedAt === intent.receipt.generationCreatedAt &&
-        parent.pendingTerminal != null &&
-        sameResponseTerminalReceipt(parent.pendingTerminal, intent.receipt);
+  if (parent.retiredAt != null || (parent.expiredAt && parent.expiredAt <= new Date()))
+    return false;
+  if (intent.kind === 'message')
+    return (
+      parent.status === 'materializing' &&
+      parent.generationCreatedAt === intent.receipt.generationCreatedAt &&
+      parent.pendingTerminal != null &&
+      sameResponseTerminalReceipt(parent.pendingTerminal, intent.receipt)
+    );
+  return (
+    parent.status === 'in_progress' &&
+    parent.generationCreatedAt === intent.execution.generationCreatedAt &&
+    parent.providerExecution?.id === intent.execution.providerExecutionId &&
+    parent.providerExecution.ownerId === intent.execution.ownerId &&
+    parent.providerExecution.drained !== true &&
+    parent.cancellationRequestedAt == null
+  );
 }
 
 function selected(
@@ -204,6 +226,10 @@ export async function selectResponseTarget(
       generationCreatedAt: 1,
       pendingTerminal: 1,
       canonicalTargets: 1,
+      providerExecution: 1,
+      retiredAt: 1,
+      expiredAt: 1,
+      cancellationRequestedAt: 1,
     })
     .lean();
   if (!parent) return { ok: false, code: 'response_conflict' };
@@ -252,6 +278,10 @@ export async function selectResponseTarget(
       generationCreatedAt: 1,
       pendingTerminal: 1,
       canonicalTargets: 1,
+      providerExecution: 1,
+      retiredAt: 1,
+      expiredAt: 1,
+      cancellationRequestedAt: 1,
     })
     .lean();
   if (updated)
@@ -281,6 +311,10 @@ export async function beginResponseTargetRegistration(
       generationCreatedAt: 1,
       pendingTerminal: 1,
       canonicalTargets: 1,
+      providerExecution: 1,
+      retiredAt: 1,
+      expiredAt: 1,
+      cancellationRequestedAt: 1,
     })
     .lean();
   const current = parent && selected(parent, intent);
@@ -419,6 +453,10 @@ export async function acknowledgeResponseTarget(
       generationCreatedAt: 1,
       pendingTerminal: 1,
       canonicalTargets: 1,
+      providerExecution: 1,
+      retiredAt: 1,
+      expiredAt: 1,
+      cancellationRequestedAt: 1,
     })
     .lean();
   const current = parent && selected(parent, intent);
