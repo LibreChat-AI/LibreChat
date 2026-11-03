@@ -15,8 +15,7 @@ import type {
   TReasoningCapabilitiesResponse,
 } from 'librechat-data-provider';
 import type { QueryClient } from '@tanstack/react-query';
-import { usesReasoningCapabilities } from '~/hooks/Endpoint/useModelReasoning';
-import { resolveAgentTarget } from '~/utils';
+import { usesReasoningCapabilities, resolveAgentTarget } from '../../core';
 
 type ReasoningOverride = NonNullable<TMessage['reasoningOverride']>;
 
