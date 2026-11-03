@@ -39,3 +39,11 @@ export interface CanonicalConversationTarget {
   userId: string;
   tenantId?: string;
 }
+
+/** Metadata selected by the existing Response journal; contains no additional payload copy. */
+export interface ResponseCanonicalTarget {
+  logicalId: string;
+  receipt: string;
+  phase: 'selected' | 'registering' | 'registered' | 'published' | 'retired';
+  target: ManagedTarget;
+}

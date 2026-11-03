@@ -63,6 +63,7 @@ describe('managed target allocation on real storage', () => {
       const Conversation = createConversationModel(db);
       await createChatProjectModel(db).init();
       await Promise.all([Message.init(), Conversation.init()]);
+      await Promise.all([Message.createIndexes(), Conversation.createIndexes()]);
     }
   }, 60000);
 
@@ -269,7 +270,7 @@ describe('managed target allocation on real storage', () => {
       },
     );
 
-    it.each(['fast', 'provenance', 'apps'] as const)(
+    it.each(['fast', 'provenance', 'apps', 'apps-erased-during-budget'] as const)(
       'publishes a registered target through the canonical %s Message writer',
       async (path) => {
         const userId = randomUUID();
@@ -306,7 +307,15 @@ describe('managed target allocation on real storage', () => {
             logicalId: createManagedMessageId(),
           }),
         ).toBe(false);
-        const methods = createMessageMethods(db, { managedPublication: publication });
+        const methods = createMessageMethods(db, {
+          managedPublication: publication,
+          ...(path === 'apps-erased-during-budget' && {
+            getMCPAppMessageBudget: async () => {
+              await db.model('Message').collection.deleteOne(managedTargetFilter(db, target));
+              return undefined;
+            },
+          }),
+        });
         const createdAt = new Date('2026-01-01T00:00:00Z');
         const params = {
           messageId: publication.logicalId,
@@ -315,7 +324,7 @@ describe('managed target allocation on real storage', () => {
           text: 'confirmed canonical output',
           isCreatedByUser: false,
           ...(path === 'provenance' && { userSubmittedPaths: ['/text'] }),
-          ...(path === 'apps' && {
+          ...(path.startsWith('apps') && {
             attachments: [
               {
                 type: Tools.ui_resources,
@@ -345,6 +354,15 @@ describe('managed target allocation on real storage', () => {
           },
         };
         const saved = await methods.saveMessage(context, params);
+        if (path === 'apps-erased-during-budget') {
+          expect(saved).toBeNull();
+          expect(
+            await includeManagedAllocations(
+              db.model('Message').exists(managedTargetFilter(db, target)),
+            ),
+          ).toBeNull();
+          return;
+        }
         expect(saved).toMatchObject({
           messageId: publication.logicalId,
           text: params.text,

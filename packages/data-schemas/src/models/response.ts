@@ -1,5 +1,6 @@
 import { Schema } from 'mongoose';
 import type { Model } from 'mongoose';
+import type { ResponseCanonicalTarget } from '~/types/managed';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 
 export interface ResponseOwner {
@@ -71,6 +72,7 @@ export interface ResponseDispatchOutbox {
 }
 
 export interface StoredResponseRecord {
+  canonicalTargets?: ResponseCanonicalTarget[];
   /** Atomic source outbox; settlement never authorizes execution. */
   dispatchOutbox?: ResponseDispatchOutbox;
   expiredAt?: Date;
@@ -131,6 +133,28 @@ export function createStoredResponseModel(
       fingerprint: { type: String, required: true },
       agentId: { type: String, required: true },
       sourceKeyId: String,
+      canonicalTargets: {
+        type: [
+          {
+            _id: false,
+            logicalId: { type: String, required: true },
+            receipt: { type: String, required: true },
+            phase: {
+              type: String,
+              required: true,
+              enum: ['selected', 'registering', 'registered', 'published', 'retired'],
+            },
+            target: {
+              kind: { type: String, enum: ['message', 'conversation'], required: true },
+              id: { type: String, required: true },
+              incarnation: { type: String, required: true },
+              tenantId: String,
+            },
+          },
+        ],
+        default: undefined,
+        select: false,
+      },
       requestJSON: { type: String, required: true },
       conversationId: { type: String, required: true },
       parentMessageId: { type: String, required: true },

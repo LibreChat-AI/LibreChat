@@ -2,7 +2,12 @@ import mongoose from 'mongoose';
 import { createHash, randomUUID } from 'node:crypto';
 import { MongoMemoryServer, MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ManagedRegistration } from '~/types/managed';
-import { registerResponseTarget, settleResponseTarget } from './registration';
+import {
+  registerResponseTarget,
+  settleResponseTarget,
+  settleAbsentResponseTarget,
+  reconcileAbsentResponseTargets,
+} from './registration';
 import { allocateManagedTarget, managedTargetFilter } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createMessageModel } from '~/models/message';
@@ -37,6 +42,7 @@ describe('bounded Response target discovery on real storage', () => {
     for (const [, db] of engines) {
       await createMessageModel(db).init();
       await createResponseScopeModel(db).init();
+      await createMessageModel(db).createIndexes();
     }
   }, 60000);
   afterEach(() => jest.restoreAllMocks());
@@ -194,6 +200,155 @@ describe('bounded Response target discovery on real storage', () => {
       expect(await scopes.findById(f.keys[0]).lean()).toMatchObject({
         pendingCount: 1,
         pending: [f.entry],
+      });
+    });
+
+    it('does not mistake hidden allocations for physically absent targets', async () => {
+      const f = await fixture();
+      await registerResponseTarget(db, f.owner, undefined, f.entry);
+      expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry, 0)).toBe(false);
+      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(0);
+      await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
+      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(1);
+      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(0);
+    });
+
+    it('reconciles a full registry with one anchor read and one batched target read', async () => {
+      const f = await fixture();
+      const entries = [];
+      for (let i = 0; i < 8; i++) {
+        const target = await allocateManagedTarget(db, 'message');
+        const entry = {
+          ...f.entry,
+          target,
+          key: createHash('sha256').update(randomUUID()).digest('hex'),
+        };
+        entries.push(entry);
+        await registerResponseTarget(db, f.owner, undefined, entry);
+        if (i < 4) await db.model('Message').collection.deleteOne(managedTargetFilter(db, target));
+      }
+      const scopes = createResponseScopeModel(db);
+      const scopeReads = jest.spyOn(scopes.collection, 'findOne');
+      const targetReads = jest.spyOn(db.model('Message').collection, 'find');
+      const settlements = jest.spyOn(scopes.collection, 'bulkWrite');
+      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(4);
+      expect(scopeReads).toHaveBeenCalledTimes(1);
+      expect(targetReads).toHaveBeenCalledTimes(1);
+      expect(settlements).toHaveBeenCalledTimes(1);
+      expect(await scopes.findById(f.keys[0]).lean()).toMatchObject({
+        pendingCount: 4,
+        pending: entries.slice(4),
+      });
+    });
+
+    it('keeps discovery for valid uppercase physical IDs returned by an adapter', async () => {
+      const f = await fixture();
+      const entry = { ...f.entry, target: { ...f.target, id: f.target.id.toUpperCase() } };
+      await registerResponseTarget(db, f.owner, undefined, entry);
+      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(0);
+      expect(await createResponseScopeModel(db).findById(f.keys[0]).lean()).toMatchObject({
+        pendingCount: 1,
+        pending: [entry],
+      });
+    });
+
+    it('settles both representations of the tenantless partition consistently', async () => {
+      const f = await fixture();
+      const entry = { ...f.entry, target: { ...f.target, tenantId: '' } };
+      await registerResponseTarget(db, f.owner, undefined, entry);
+      await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
+      expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry, 0)).toBe(true);
+      await registerResponseTarget(db, f.owner, undefined, entry);
+      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(1);
+      expect(await createResponseScopeModel(db).findById(f.keys[0]).lean()).toMatchObject({
+        pendingCount: 0,
+        pending: [],
+      });
+    });
+
+    it('reclaims a delayed registration again without needing a retained parent', async () => {
+      const f = await fixture();
+      await registerResponseTarget(db, f.owner, undefined, f.entry);
+      await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
+      expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry, 0)).toBe(true);
+      // A registrar paused before its command may resume after erasure and parent removal.
+      expect(await registerResponseTarget(db, f.owner, undefined, f.entry)).toMatchObject({
+        status: 'registered',
+      });
+      const next = await allocateManagedTarget(db, 'message');
+      const nextEntry = {
+        ...f.entry,
+        target: next,
+        key: createHash('sha256').update(randomUUID()).digest('hex'),
+      };
+      expect(
+        await registerResponseTarget(db, f.owner, undefined, nextEntry, {
+          maxPendingTargetsPerScope: 1,
+        }),
+      ).toMatchObject({ status: 'registered' });
+      expect(await createResponseScopeModel(db).findById(f.keys[0]).lean()).toMatchObject({
+        pendingCount: 1,
+        pending: [nextEntry],
+      });
+    });
+
+    it.each(['closure', 'retention'] as const)(
+      'retains discovery if %s changes after absence proof',
+      async (change) => {
+        const f = await fixture();
+        await registerResponseTarget(db, f.owner, undefined, f.entry);
+        await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
+        const scopes = createResponseScopeModel(db);
+        const update = scopes.collection.updateOne.bind(scopes.collection);
+        jest.spyOn(scopes.collection, 'updateOne').mockImplementationOnce(async (...args) => {
+          await scopes.updateOne(
+            { _id: f.keys[0] },
+            { $set: change === 'closure' ? { closed: true } : { retentionEpoch: 1 } },
+          );
+          return update(...args);
+        });
+        expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry, 0)).toBe(false);
+        expect(await scopes.findById(f.keys[0]).lean()).toMatchObject({
+          pendingCount: 1,
+          pending: [f.entry],
+        });
+      },
+    );
+
+    it.each(['closure', 'retention'] as const)(
+      'guards batched settlement against concurrent %s',
+      async (change) => {
+        const f = await fixture();
+        await registerResponseTarget(db, f.owner, undefined, f.entry);
+        await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
+        const scopes = createResponseScopeModel(db);
+        const bulkWrite = scopes.collection.bulkWrite.bind(scopes.collection);
+        jest.spyOn(scopes.collection, 'bulkWrite').mockImplementationOnce(async (...args) => {
+          await scopes.updateOne(
+            { _id: f.keys[0] },
+            { $set: change === 'closure' ? { closed: true } : { retentionEpoch: 1 } },
+          );
+          return bulkWrite(...args);
+        });
+        expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(0);
+        expect(await scopes.findById(f.keys[0]).lean()).toMatchObject({
+          pendingCount: 1,
+          pending: [f.entry],
+        });
+      },
+    );
+
+    it('propagates primary absence-read failures without losing discovery', async () => {
+      const f = await fixture();
+      await registerResponseTarget(db, f.owner, undefined, f.entry);
+      jest.spyOn(db.model('Message').collection, 'find').mockImplementationOnce(() => {
+        throw new Error('test storage outage');
+      });
+      await expect(reconcileAbsentResponseTargets(db, f.owner)).rejects.toThrow(
+        'test storage outage',
+      );
+      expect(await createResponseScopeModel(db).findById(f.keys[0]).lean()).toMatchObject({
+        pendingCount: 1,
       });
     });
 

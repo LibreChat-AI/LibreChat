@@ -26,7 +26,7 @@ export class ManagedAllocationUnavailableError extends Error {
   }
 }
 
-function assertTenant(tenantId: string | undefined): void {
+export function assertManagedTenant(tenantId: string | undefined): void {
   tenantPartitionFilter('managed allocation');
   const current = getTenantId();
   if (current === SYSTEM_TENANT_ID || (current || undefined) !== (tenantId || undefined))
@@ -37,7 +37,7 @@ export function canonicalConversationFilter(
   mongoose: typeof import('mongoose'),
   target: CanonicalConversationTarget,
 ): Record<string, unknown> {
-  assertTenant(target.tenantId);
+  assertManagedTenant(target.tenantId);
   if (!/^[a-f\d]{24}$/i.test(target.id) || !target.userId || !target.conversationId)
     throw new TypeError('Invalid canonical conversation target');
   return {
@@ -54,7 +54,7 @@ export async function allocateManagedTarget(
   kind: ManagedTarget['kind'],
   tenantId?: string,
 ): Promise<ManagedTarget> {
-  assertTenant(tenantId);
+  assertManagedTenant(tenantId);
   if (!Object.prototype.hasOwnProperty.call(models, kind))
     throw new TypeError('Invalid managed target kind');
   const db = mongoose.connection.db;
@@ -99,7 +99,7 @@ export function managedTargetFilter(
   '_managed.incarnation': string;
   tenantId: string | { $in: Array<null | string> };
 } {
-  assertTenant(target.tenantId);
+  assertManagedTenant(target.tenantId);
   if (
     !Object.prototype.hasOwnProperty.call(models, target.kind) ||
     !/^[a-f\d]{24}$/i.test(target.id) ||
@@ -121,7 +121,7 @@ export async function discardManagedAllocation(
   const filter = managedTargetFilter(mongoose, target);
   const allocation = {
     ...filter,
-    [identityFields[target.kind]]: `${ALLOCATION_PREFIX}${target.id}`,
+    [identityFields[target.kind]]: `${ALLOCATION_PREFIX}${target.id.toLowerCase()}`,
     user: { $exists: false },
   };
   const collection = mongoose.model(models[target.kind]).collection;
@@ -137,13 +137,20 @@ export async function discardManagedAllocation(
   return true;
 }
 
+export interface ManagedAllocationPage {
+  limit: number;
+  after?: string;
+  tenantId?: string;
+}
+
 /** Existing logical-ID indexes bound this scan to allocation rows, rather than all history. */
-export async function sweepManagedAllocations(
+export async function listManagedAllocations(
   mongoose: typeof import('mongoose'),
   kind: ManagedTarget['kind'],
-  page: { limit: number; after?: string; tenantId?: string },
-): Promise<{ deleted: number; next?: string }> {
-  assertTenant(page.tenantId);
+  page: ManagedAllocationPage,
+  phases: ReadonlyArray<Exclude<ManagedState['phase'], 'published'>>,
+): Promise<{ allocations: Array<{ target: ManagedTarget; state: ManagedState }>; next?: string }> {
+  assertManagedTenant(page.tenantId);
   if (
     !Object.prototype.hasOwnProperty.call(models, kind) ||
     !Number.isSafeInteger(page.limit) ||
@@ -156,12 +163,12 @@ export async function sweepManagedAllocations(
   const rows = await includeManagedAllocations(
     mongoose.model(models[kind]).find({
       [field]: {
-        $gt: `${ALLOCATION_PREFIX}${page.after ?? ''}`,
+        $gt: `${ALLOCATION_PREFIX}${page.after?.toLowerCase() ?? ''}`,
         $lt: `${ALLOCATION_PREFIX}\uffff`,
       },
       tenantId: page.tenantId || { $in: [null, ''] },
       user: { $exists: false },
-      '_managed.phase': { $in: ['empty', 'retired'] },
+      '_managed.phase': { $in: phases },
     }),
   )
     .read('primary')
@@ -169,22 +176,58 @@ export async function sweepManagedAllocations(
     .sort({ [field]: 1 })
     .limit(page.limit + 1)
     .lean<Array<{ _id: Types.ObjectId; _managed: ManagedState }>>();
-  let deleted = 0;
-  for (const row of rows.slice(0, page.limit)) {
-    if (
-      await discardManagedAllocation(mongoose, {
+  return {
+    allocations: rows.slice(0, page.limit).map((row) => ({
+      target: {
         kind,
         id: row._id.toHexString(),
         incarnation: row._managed.incarnation,
         ...(page.tenantId ? { tenantId: page.tenantId } : {}),
-      })
-    )
-      deleted++;
-  }
-  return {
-    deleted,
+      },
+      state: row._managed,
+    })),
     ...(rows.length > page.limit && { next: rows[page.limit - 1]._id.toHexString() }),
   };
+}
+
+export async function sweepManagedAllocations(
+  mongoose: typeof import('mongoose'),
+  kind: ManagedTarget['kind'],
+  page: ManagedAllocationPage,
+): Promise<{ deleted: number; next?: string }> {
+  const listed = await listManagedAllocations(mongoose, kind, page, ['empty', 'retired']);
+  let deleted = 0;
+  for (const { target } of listed.allocations)
+    if (await discardManagedAllocation(mongoose, target)) deleted++;
+  return { deleted, ...(listed.next && { next: listed.next }) };
+}
+
+/** Parent retirement or loss of its immutable selection must be proved before calling this. */
+export async function retireManagedAllocation(
+  mongoose: typeof import('mongoose'),
+  target: ManagedTarget,
+  parentId: string,
+): Promise<boolean> {
+  const filter = managedTargetFilter(mongoose, target);
+  if (!/^[a-f\d]{24}$/i.test(parentId)) throw new TypeError('Invalid managed parent identity');
+  const collection = mongoose.model(models[target.kind]).collection;
+  const retired = await collection.updateOne(
+    {
+      ...filter,
+      [identityFields[target.kind]]: `${ALLOCATION_PREFIX}${target.id.toLowerCase()}`,
+      user: { $exists: false },
+      $or: [
+        { '_managed.phase': 'empty' },
+        {
+          '_managed.parentId': parentId,
+          '_managed.phase': { $in: ['pinned', 'registering', 'registered', 'retired'] },
+        },
+      ],
+    },
+    { $set: { '_managed.phase': 'retired' } },
+  );
+  if (retired.matchedCount !== 1) return false;
+  return discardManagedAllocation(mongoose, target);
 }
 
 /** Pinning transfers orphan cleanup ownership to one immutable parent selection. */
