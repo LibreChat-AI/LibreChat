@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { Types } from 'mongoose';
 import type {
   ManagedTarget,
+  ManagedTargetKind,
+  ManagedStorageTarget,
   ManagedPublication,
   CanonicalConversationTarget,
   ManagedState,
@@ -15,8 +17,16 @@ import {
 import { tenantPartitionFilter } from '~/models/plugins/tenantIsolation';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 
-const models = { message: 'Message', conversation: 'Conversation' } as const;
-const identityFields = { message: 'messageId', conversation: 'conversationId' } as const;
+export const managedTargetModels = {
+  message: 'Message',
+  conversation: 'Conversation',
+  response: 'StoredResponse',
+} as const;
+const identityFields = {
+  message: 'messageId',
+  conversation: 'conversationId',
+  response: 'responseId',
+} as const;
 
 export class ManagedAllocationUnavailableError extends Error {
   readonly code = 'durable_storage_unavailable';
@@ -49,17 +59,17 @@ export function canonicalConversationFilter(
 }
 
 /** One-shot allocation: never put this call inside a retry of the same physical insert. */
-export async function allocateManagedTarget(
+export async function allocateManagedTarget<Kind extends ManagedTargetKind>(
   mongoose: typeof import('mongoose'),
-  kind: ManagedTarget['kind'],
+  kind: Kind,
   tenantId?: string,
-): Promise<ManagedTarget> {
+): Promise<ManagedTarget<Kind>> {
   assertManagedTenant(tenantId);
-  if (!Object.prototype.hasOwnProperty.call(models, kind))
+  if (!Object.prototype.hasOwnProperty.call(managedTargetModels, kind))
     throw new TypeError('Invalid managed target kind');
   const db = mongoose.connection.db;
   if (!db) throw new Error('Managed allocation requires a connected database');
-  const model = mongoose.model(models[kind]);
+  const model = mongoose.model(managedTargetModels[kind]);
   const id = new mongoose.Types.ObjectId();
   const incarnation = randomUUID();
   const command = {
@@ -69,6 +79,7 @@ export async function allocateManagedTarget(
       {
         _id: id,
         [identityFields[kind]]: `${ALLOCATION_PREFIX}${id.toHexString()}`,
+        ...(kind === 'response' ? { requestKey: `${ALLOCATION_PREFIX}${id.toHexString()}` } : {}),
         ...(tenantId ? { tenantId } : {}),
         _managed: { incarnation, phase: 'empty' },
         createdAt: new Date(),
@@ -93,7 +104,7 @@ export async function allocateManagedTarget(
 
 export function managedTargetFilter(
   mongoose: typeof import('mongoose'),
-  target: ManagedTarget,
+  target: ManagedStorageTarget,
 ): {
   _id: Types.ObjectId;
   '_managed.incarnation': string;
@@ -101,7 +112,7 @@ export function managedTargetFilter(
 } {
   assertManagedTenant(target.tenantId);
   if (
-    !Object.prototype.hasOwnProperty.call(models, target.kind) ||
+    !Object.prototype.hasOwnProperty.call(managedTargetModels, target.kind) ||
     !/^[a-f\d]{24}$/i.test(target.id) ||
     !/^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i.test(target.incarnation)
   )
@@ -116,7 +127,7 @@ export function managedTargetFilter(
 /** Only unclaimed allocations may be discarded without their parent's retirement proof. */
 export async function discardManagedAllocation(
   mongoose: typeof import('mongoose'),
-  target: ManagedTarget,
+  target: ManagedStorageTarget,
 ): Promise<boolean> {
   const filter = managedTargetFilter(mongoose, target);
   const allocation = {
@@ -124,7 +135,7 @@ export async function discardManagedAllocation(
     [identityFields[target.kind]]: `${ALLOCATION_PREFIX}${target.id.toLowerCase()}`,
     user: { $exists: false },
   };
-  const collection = mongoose.model(models[target.kind]).collection;
+  const collection = mongoose.model(managedTargetModels[target.kind]).collection;
   const sealed = await collection.updateOne(
     {
       ...allocation,
@@ -144,15 +155,18 @@ export interface ManagedAllocationPage {
 }
 
 /** Existing logical-ID indexes bound this scan to allocation rows, rather than all history. */
-export async function listManagedAllocations(
+export async function listManagedAllocations<Kind extends ManagedTargetKind>(
   mongoose: typeof import('mongoose'),
-  kind: ManagedTarget['kind'],
+  kind: Kind,
   page: ManagedAllocationPage,
   phases: ReadonlyArray<Exclude<ManagedState['phase'], 'published'>>,
-): Promise<{ allocations: Array<{ target: ManagedTarget; state: ManagedState }>; next?: string }> {
+): Promise<{
+  allocations: Array<{ target: ManagedTarget<Kind>; state: ManagedState }>;
+  next?: string;
+}> {
   assertManagedTenant(page.tenantId);
   if (
-    !Object.prototype.hasOwnProperty.call(models, kind) ||
+    !Object.prototype.hasOwnProperty.call(managedTargetModels, kind) ||
     !Number.isSafeInteger(page.limit) ||
     page.limit < 1 ||
     page.limit >= Number.MAX_SAFE_INTEGER ||
@@ -161,7 +175,7 @@ export async function listManagedAllocations(
     throw new TypeError('Invalid allocation metadata page');
   const field = identityFields[kind];
   const rows = await includeManagedAllocations(
-    mongoose.model(models[kind]).find({
+    mongoose.model(managedTargetModels[kind]).find({
       [field]: {
         $gt: `${ALLOCATION_PREFIX}${page.after?.toLowerCase() ?? ''}`,
         $lt: `${ALLOCATION_PREFIX}\uffff`,
@@ -192,7 +206,7 @@ export async function listManagedAllocations(
 
 export async function sweepManagedAllocations(
   mongoose: typeof import('mongoose'),
-  kind: ManagedTarget['kind'],
+  kind: ManagedTargetKind,
   page: ManagedAllocationPage,
 ): Promise<{ deleted: number; next?: string }> {
   const listed = await listManagedAllocations(mongoose, kind, page, ['empty', 'retired']);
@@ -205,12 +219,12 @@ export async function sweepManagedAllocations(
 /** Parent retirement or loss of its immutable selection must be proved before calling this. */
 export async function retireManagedAllocation(
   mongoose: typeof import('mongoose'),
-  target: ManagedTarget,
+  target: ManagedStorageTarget,
   parentId: string,
 ): Promise<boolean> {
   const filter = managedTargetFilter(mongoose, target);
   if (!/^[a-f\d]{24}$/i.test(parentId)) throw new TypeError('Invalid managed parent identity');
-  const collection = mongoose.model(models[target.kind]).collection;
+  const collection = mongoose.model(managedTargetModels[target.kind]).collection;
   const retired = await collection.updateOne(
     {
       ...filter,
@@ -233,13 +247,13 @@ export async function retireManagedAllocation(
 /** Pinning transfers orphan cleanup ownership to one immutable parent selection. */
 export async function pinManagedTarget(
   mongoose: typeof import('mongoose'),
-  target: ManagedTarget,
+  target: ManagedStorageTarget,
   parentId: string,
 ): Promise<boolean> {
   if (!/^[a-f\d]{24}$/i.test(parentId)) throw new TypeError('Invalid managed parent identity');
   const filter = managedTargetFilter(mongoose, target);
   // eslint-disable-next-line no-restricted-syntax -- payload-free phase CAS; tenant, physical ID and incarnation were validated above.
-  const result = await mongoose.model(models[target.kind]).collection.updateOne(
+  const result = await mongoose.model(managedTargetModels[target.kind]).collection.updateOne(
     {
       ...filter,
       $or: [
@@ -255,13 +269,13 @@ export async function pinManagedTarget(
 /** Caller must first freeze the parent's selected -> registering CAS. Never replace after this. */
 export async function beginManagedTargetRegistration(
   mongoose: typeof import('mongoose'),
-  target: ManagedTarget,
+  target: ManagedStorageTarget,
   parentId: string,
 ): Promise<boolean> {
   const filter = managedTargetFilter(mongoose, target);
   if (!/^[a-f\d]{24}$/i.test(parentId)) throw new TypeError('Invalid managed parent identity');
   // eslint-disable-next-line no-restricted-syntax -- payload-free phase CAS with explicit tenant, incarnation and parent identity.
-  const result = await mongoose.model(models[target.kind]).collection.updateOne(
+  const result = await mongoose.model(managedTargetModels[target.kind]).collection.updateOne(
     {
       ...filter,
       '_managed.parentId': parentId,
@@ -305,21 +319,23 @@ export async function markManagedTargetRegistered(
 ): Promise<boolean> {
   const exact = managedPublicationFilter(mongoose, publication);
   // eslint-disable-next-line no-restricted-syntax -- private payload stays in canonical writers; this exact-identity CAS only seals metadata.
-  const result = await mongoose.model(models[publication.target.kind]).collection.updateOne(
-    {
-      ...managedTargetFilter(mongoose, publication.target),
-      '_managed.parentId': publication.parentId,
-      $or: [{ '_managed.phase': 'registering' }, { ...exact, '_managed.phase': 'registered' }],
-    },
-    {
-      $set: {
-        '_managed.phase': 'registered',
-        '_managed.receipt': publication.receipt,
-        '_managed.logicalId': publication.logicalId,
-        '_managed.ownerKey': publication.ownerKey,
-        '_managed.conversationKey': publication.conversationKey,
+  const result = await mongoose
+    .model(managedTargetModels[publication.target.kind])
+    .collection.updateOne(
+      {
+        ...managedTargetFilter(mongoose, publication.target),
+        '_managed.parentId': publication.parentId,
+        $or: [{ '_managed.phase': 'registering' }, { ...exact, '_managed.phase': 'registered' }],
       },
-    },
-  );
+      {
+        $set: {
+          '_managed.phase': 'registered',
+          '_managed.receipt': publication.receipt,
+          '_managed.logicalId': publication.logicalId,
+          '_managed.ownerKey': publication.ownerKey,
+          '_managed.conversationKey': publication.conversationKey,
+        },
+      },
+    );
   return result.matchedCount === 1;
 }

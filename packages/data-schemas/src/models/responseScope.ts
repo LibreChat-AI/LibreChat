@@ -29,7 +29,7 @@ export function createResponseScopeModel(
             _id: false,
             key: { type: String, required: true },
             target: {
-              kind: { type: String, enum: ['message', 'conversation'], required: true },
+              kind: { type: String, enum: ['message', 'conversation', 'response'], required: true },
               id: { type: String, required: true },
               incarnation: { type: String, required: true },
               tenantId: String,

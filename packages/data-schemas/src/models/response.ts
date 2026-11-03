@@ -2,6 +2,7 @@ import { Schema } from 'mongoose';
 import type { Model } from 'mongoose';
 import type { ResponseCanonicalTarget } from '~/types/managed';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
+import { applyManagedStorage } from './plugins/managed';
 
 export interface ResponseOwner {
   userId: string;
@@ -248,6 +249,7 @@ export function createStoredResponseModel(
   schema.index({ tenantId: 1, userId: 1, requestKey: 1 }, { unique: true });
   schema.index({ tenantId: 1, userId: 1, conversationId: 1, createdAt: 1 });
   schema.index({ userId: 1, conversationId: 1, tenantId: 1 });
+  applyManagedStorage(schema);
   applyTenantIsolation(schema);
   return (
     mongoose.models.StoredResponse ?? mongoose.model<StoredResponseRecord>('StoredResponse', schema)

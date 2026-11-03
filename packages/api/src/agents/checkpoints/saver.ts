@@ -13,6 +13,7 @@ import type { Binary } from 'mongodb';
 import type { Filter } from 'mongodb';
 
 import type { CheckpointStorageRecord } from './storage';
+import type { CheckpointWriteWitness } from './witness';
 import {
   CHECKPOINT_STORAGE_COLLECTION,
   LIBRECHAT_CHECKPOINT_STORAGE_OWNER_KEY,
@@ -71,6 +72,22 @@ function identity(config: RunnableConfig): {
 
 /** Isolate physical storage by owner while preserving logical SDK references. */
 export class OwnedMongoSaver extends MongoDBSaver {
+  private readonly writeWitness?: CheckpointWriteWitness;
+
+  constructor(
+    options: ConstructorParameters<typeof MongoDBSaver>[0] & {
+      writeWitness?: CheckpointWriteWitness;
+    },
+  ) {
+    const { writeWitness, ...mongoOptions } = options;
+    super(mongoOptions);
+    this.writeWitness = writeWitness;
+  }
+
+  private writeCommand<T>(operation: () => Promise<T>): Promise<T> {
+    return this.writeWitness ? this.writeWitness.track(operation) : operation();
+  }
+
   private async recordStorage(config: RunnableConfig): Promise<void> {
     const namespace = config.configurable?.checkpoint_ns;
     const candidate =
@@ -83,13 +100,15 @@ export class OwnedMongoSaver extends MongoDBSaver {
       checkpointCollectionName: this.checkpointCollectionName,
       checkpointWritesCollectionName: this.checkpointWritesCollectionName,
     };
-    await this.db
-      .collection<CheckpointStorageRecord>(CHECKPOINT_STORAGE_COLLECTION)
-      .updateOne(
-        { _id: `${candidate}${checkpointStorageKey(storage)}` },
-        { $setOnInsert: { owner: candidate, storage } },
-        { upsert: true },
-      );
+    await this.writeCommand(() =>
+      this.db
+        .collection<CheckpointStorageRecord>(CHECKPOINT_STORAGE_COLLECTION)
+        .updateOne(
+          { _id: `${candidate}${checkpointStorageKey(storage)}` },
+          { $setOnInsert: { owner: candidate, storage } },
+          { upsert: true },
+        ),
+    );
   }
 
   private async tuple(doc: CheckpointRow, owner: string, legacy = false): Promise<CheckpointTuple> {
@@ -232,7 +251,7 @@ export class OwnedMongoSaver extends MongoDBSaver {
   ): Promise<RunnableConfig> {
     await this.recordStorage(config);
     const owner = ownerOf(config);
-    if (owner == null) return super.put(config, checkpoint, metadata);
+    if (owner == null) return this.writeCommand(() => super.put(config, checkpoint, metadata));
     const key = identity(config);
     const [[type, serializedCheckpoint], [metadataType, serializedMetadata]] = await Promise.all([
       this.serde.dumpsTyped(checkpoint),
@@ -244,24 +263,26 @@ export class OwnedMongoSaver extends MongoDBSaver {
       checkpoint_ns: key.checkpoint_ns,
       checkpoint_id: checkpoint.id,
     };
-    await this.db.collection(this.checkpointCollectionName).updateOne(
-      {
-        ...stored,
-        thread_id: `${owner}${key.thread_id}`,
-        checkpoint_ns: `${owner}${key.checkpoint_ns}`,
-        lc_owner: owner,
-      },
-      {
-        $set: {
-          parent_checkpoint_id: key.checkpoint_id,
-          type,
-          checkpoint: serializedCheckpoint,
-          metadata: serializedMetadata,
-          metadata_search: metadata,
+    await this.writeCommand(() =>
+      this.db.collection(this.checkpointCollectionName).updateOne(
+        {
+          ...stored,
+          thread_id: `${owner}${key.thread_id}`,
+          checkpoint_ns: `${owner}${key.checkpoint_ns}`,
+          lc_owner: owner,
         },
-        ...(this.enableTimestamps ? { $currentDate: { upserted_at: true as const } } : {}),
-      },
-      { upsert: true },
+        {
+          $set: {
+            parent_checkpoint_id: key.checkpoint_id,
+            type,
+            checkpoint: serializedCheckpoint,
+            metadata: serializedMetadata,
+            metadata_search: metadata,
+          },
+          ...(this.enableTimestamps ? { $currentDate: { upserted_at: true as const } } : {}),
+        },
+        { upsert: true },
+      ),
     );
     return { configurable: { ...stored, [LIBRECHAT_CHECKPOINT_OWNER_KEY]: owner } };
   }
@@ -273,7 +294,7 @@ export class OwnedMongoSaver extends MongoDBSaver {
   ): Promise<void> {
     await this.recordStorage(config);
     const owner = ownerOf(config);
-    if (owner == null) return super.putWrites(config, writes, taskId);
+    if (owner == null) return this.writeCommand(() => super.putWrites(config, writes, taskId));
     const key = identity(config);
     if (key.checkpoint_id == null) throw new Error('Owned writes require a checkpoint id');
     const allSpecial = writes.every(([channel]) => channel in WRITES_IDX_MAP);
@@ -324,6 +345,8 @@ export class OwnedMongoSaver extends MongoDBSaver {
     );
     const pending = operations.filter((operation) => operation != null);
     if (pending.length > 0)
-      await this.db.collection(this.checkpointWritesCollectionName).bulkWrite(pending);
+      await this.writeCommand(() =>
+        this.db.collection(this.checkpointWritesCollectionName).bulkWrite(pending),
+      );
   }
 }

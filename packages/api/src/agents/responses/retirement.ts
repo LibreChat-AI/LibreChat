@@ -126,24 +126,36 @@ export function createResponseRetirement(
   ): Promise<'stopped' | 'pending' | null> {
     const retired = await retiredAuthority(owner, responseId);
     if (!retired) return null;
-    const { identity, job, cleanup, providerExecutionId, providerExecutionOwnerId } = retired;
+    const { identity, job, providerExecutionId, providerExecutionOwnerId } = retired;
     if (!job) return identity.generationCreatedAt == null ? 'stopped' : 'pending';
     if (!providerExecutionId) throw new Error('Response retirement provider unavailable');
-    if (alreadyDrained) {
-      if (
-        !['complete', 'error', 'aborted'].includes(job.status) ||
-        job.metadata.providerDrained !== true
-      )
-        throw new Error('Response retirement drain proof unavailable');
-      await cleanup();
-    } else {
+    if (!alreadyDrained) {
       await deps.jobs.abortJob(responseId, {
         expectedCreatedAt: identity.generationCreatedAt,
         awaitProviderDrain: true,
         retainTerminalPersistence: true,
-        beforePublish: cleanup,
       });
     }
+    // abortJob's beforePublish runs before its final drain wait. Cleanup belongs after
+    // the returned drain barrier, with fresh proof for the same retained attempt.
+    const drained = await retiredAuthority(owner, responseId);
+    if (
+      !drained ||
+      drained.identity.generationCreatedAt !== identity.generationCreatedAt ||
+      drained.identity.agentId !== identity.agentId ||
+      drained.identity.conversationId !== identity.conversationId ||
+      (drained.job &&
+        (drained.providerExecutionId !== providerExecutionId ||
+          drained.providerExecutionOwnerId !== providerExecutionOwnerId))
+    )
+      throw new Error('Response retirement generation changed');
+    if (
+      !drained.job ||
+      !['complete', 'error', 'aborted'].includes(drained.job.status) ||
+      drained.job.metadata.providerDrained !== true
+    )
+      return 'pending';
+    await drained.cleanup();
     await createResponseExecutionRelease({
       getJob: deps.jobs.getJob.bind(deps.jobs),
       finishProviderTerminalPersistence: deps.jobs.finishProviderTerminalPersistence.bind(
@@ -212,7 +224,7 @@ export function createResponseRetirement(
     const conversationId = record.conversationId;
     const providerExecutionId = job.metadata.providerExecutionId;
     const providerExecutionOwnerId = job.metadata.providerExecutionOwnerId;
-    async function cleanupRetiredAttempt(): Promise<boolean> {
+    async function isRetiredAttempt(): Promise<boolean> {
       const retired = await retiredAuthority(owner, responseId);
       if (!retired) return false;
       if (
@@ -223,7 +235,6 @@ export function createResponseRetirement(
         retired.providerExecutionOwnerId !== providerExecutionOwnerId
       )
         throw new Error('Response retirement journal changed');
-      await retired.cleanup();
       return true;
     }
     async function stageCancellation(): Promise<void> {
@@ -248,7 +259,7 @@ export function createResponseRetirement(
       const current = await deps.storage.read(owner, responseId);
       if (!current) {
         // The outer abort owns drain and release. Never recursively abort from this callback.
-        if (await cleanupRetiredAttempt()) return;
+        if (await isRetiredAttempt()) return;
         throw new Error('Response retirement journal changed');
       }
       if (current.generationCreatedAt !== epoch)
@@ -290,7 +301,7 @@ export function createResponseRetirement(
         if (!staged.ok) throw new Error('Response retirement receipt conflicted');
       } catch (error) {
         const saved = await deps.storage.read(owner, responseId);
-        if (!saved && (await cleanupRetiredAttempt())) return;
+        if (!saved && (await isRetiredAttempt())) return;
         if (
           !saved ||
           saved.generationCreatedAt !== epoch ||

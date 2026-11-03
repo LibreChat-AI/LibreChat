@@ -316,7 +316,7 @@ export class CheckpointTooLargeError extends Error {
  * size-guard overrides. The overrides default to the module thresholds and exist so tests can
  * exercise the guard at small sizes; production always uses the defaults.
  */
-export type LazyMongoSaverOptions = ConstructorParameters<typeof MongoDBSaver>[0] & {
+export type LazyMongoSaverOptions = ConstructorParameters<typeof OwnedMongoSaver>[0] & {
   /** Soft warn threshold in bytes. Defaults to {@link CHECKPOINT_WARN_BYTES}. */
   warnBytes?: number;
   /** Hard reject limit in bytes. Defaults to {@link CHECKPOINT_HARD_LIMIT_BYTES}. */

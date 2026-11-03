@@ -13,15 +13,22 @@ import {
   markManagedTargetRegistered,
   sweepManagedAllocations,
 } from './managed';
+import {
+  registerResponseTarget,
+  settleResponseTarget,
+  reconcileResponseTargets,
+} from './registration';
 import { createManagedConversationId, createManagedMessageId } from '~/utils/managed';
-import { registerResponseTarget, settleResponseTarget } from './registration';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { createResponseScopeModel } from '~/models/responseScope';
 import { applyManagedStorage } from '~/models/plugins/managed';
 import { createChatProjectModel } from '~/models/chatProject';
+import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
 import { createConversationMethods } from './conversation';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
+import { publishResponseRoot } from './responseRoot';
 import { responseScopeKeys } from './responseScope';
 import { createMessageMethods } from './message';
 
@@ -61,9 +68,14 @@ describe('managed target allocation on real storage', () => {
     for (const [, db] of engines) {
       const Message = createMessageModel(db);
       const Conversation = createConversationModel(db);
+      const Response = createStoredResponseModel(db);
       await createChatProjectModel(db).init();
-      await Promise.all([Message.init(), Conversation.init()]);
-      await Promise.all([Message.createIndexes(), Conversation.createIndexes()]);
+      await Promise.all([Message.init(), Conversation.init(), Response.init()]);
+      await Promise.all([
+        Message.createIndexes(),
+        Conversation.createIndexes(),
+        Response.createIndexes(),
+      ]);
     }
   }, 60000);
 
@@ -75,6 +87,136 @@ describe('managed target allocation on real storage', () => {
 
   describe.each(engines)('%s', (_name, db) => {
     const mongoOnly = db === ferret ? describe.skip : describe;
+    function rootInput() {
+      return {
+        userId: randomUUID(),
+        responseId: createManagedMessageId(),
+        requestKey: randomUUID(),
+        fingerprint: createHash('sha256').update(randomUUID()).digest('hex'),
+        agentId: 'agent',
+        requestJSON: '{"input":"private"}',
+        conversationId: createManagedConversationId(),
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        dispatch: true,
+      };
+    }
+    it('publishes one admitted Response root with indexed ownership and its dispatch intent', async () => {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const record = await publishResponseRoot(db, target, input);
+      expect(record).toMatchObject({
+        userId: input.userId,
+        responseId: input.responseId,
+        requestKey: input.requestKey,
+        requestJSON: input.requestJSON,
+        status: 'queued',
+        revision: 0,
+        dispatchOutbox: { kind: 'create', id: input.responseId, state: 'pending' },
+      });
+      const keys = responseScopeKeys(input, input.conversationId);
+      expect(await createStoredResponseModel(db).findById(target.id).lean()).not.toBeNull();
+      const raw = await createStoredResponseModel(db).collection.findOne(
+        managedTargetFilter(db, target),
+      );
+      expect(raw?._managed).toMatchObject({
+        phase: 'published',
+        ownerKey: keys[0],
+        conversationKey: keys[1],
+      });
+      for (const key of keys)
+        expect(await createResponseScopeModel(db).findById(key).lean()).toMatchObject({
+          pendingCount: 0,
+          pending: [],
+        });
+      expect(
+        await publishResponseRoot(db, target, { ...input, requestJSON: 'changed' }),
+      ).toBeNull();
+      expect((await createStoredResponseModel(db).findById(target.id).lean())?.requestJSON).toBe(
+        input.requestJSON,
+      );
+    });
+    it('does not install private root payload when an authority is already closed', async () => {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const key = responseScopeKeys(input, input.conversationId)[1];
+      await createResponseScopeModel(db).create({ _id: key, closed: true });
+      expect(await publishResponseRoot(db, target, input)).toBeNull();
+      const raw = await createStoredResponseModel(db).collection.findOne(
+        managedTargetFilter(db, target),
+      );
+      expect(raw).not.toHaveProperty('userId');
+      expect(raw).not.toHaveProperty('requestJSON');
+    });
+    it('cannot resurrect a root deleted between admission and payload publication', async () => {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const collection = createStoredResponseModel(db).collection;
+      const original = collection.findOneAndUpdate.bind(collection);
+      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        await collection.deleteOne(managedTargetFilter(db, target));
+        return original(...args);
+      });
+      expect(await publishResponseRoot(db, target, input)).toBeNull();
+      expect(await collection.findOne({ responseId: input.responseId })).toBeNull();
+      expect(await collection.findOne(managedTargetFilter(db, target))).toBeNull();
+    });
+    it('recovers root discovery after publication applies but its acknowledgment is lost', async () => {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const collection = createStoredResponseModel(db).collection;
+      const original = collection.findOneAndUpdate.bind(collection);
+      const publication = jest
+        .spyOn(collection, 'findOneAndUpdate')
+        .mockImplementationOnce(async (...args) => {
+          await original(...args);
+          throw new Error('publication acknowledgment lost');
+        });
+      await expect(publishResponseRoot(db, target, input)).rejects.toThrow(
+        'publication acknowledgment lost',
+      );
+      expect(publication).toHaveBeenCalledTimes(1);
+      expect(
+        await createStoredResponseModel(db).findOne({ responseId: input.responseId }).lean(),
+      ).toMatchObject({
+        userId: input.userId,
+        requestJSON: input.requestJSON,
+      });
+      for (const conversationId of [undefined, input.conversationId])
+        expect(await reconcileResponseTargets(db, input, conversationId)).toBe(1);
+      expect(
+        await createStoredResponseModel(db).countDocuments({ responseId: input.responseId }),
+      ).toBe(1);
+    });
+    it('installs the shortest admitted scope deadline on a Response root', async () => {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const deadline = new Date(Date.now() + 600_000);
+      const key = responseScopeKeys(input, input.conversationId)[1];
+      await createResponseScopeModel(db).create({ _id: key, closed: false, expiredAt: deadline });
+      const record = await publishResponseRoot(db, target, {
+        ...input,
+        expiredAt: new Date(deadline.getTime() + 600_000),
+      });
+      expect(record?.expiredAt).toEqual(deadline);
+    });
+    it('allocates response roots with unique metadata-only keys and hides them from readers', async () => {
+      const first = await allocateManagedTarget(db, 'response');
+      const second = await allocateManagedTarget(db, 'response');
+      expect(first.id).not.toBe(second.id);
+      const model = createStoredResponseModel(db);
+      const row = await model.collection.findOne(managedTargetFilter(db, first));
+      expect(row).toMatchObject({
+        responseId: `__allocation_${first.id}`,
+        requestKey: `__allocation_${first.id}`,
+        _managed: { phase: 'empty', incarnation: first.incarnation },
+      });
+      for (const field of ['userId', 'requestJSON', 'responseJSON', 'expiredAt'])
+        expect(row).not.toHaveProperty(field);
+      expect(await model.findById(first.id).lean()).toBeNull();
+      expect(await model.countDocuments({ _id: { $in: [first.id, second.id] } })).toBe(0);
+      expect(await discardManagedAllocation(db, first)).toBe(true);
+      expect(await discardManagedAllocation(db, second)).toBe(true);
+    });
     it.each(['message', 'conversation'] as const)(
       'sweeps unclaimed %s allocations with keyset pages and preserves pinned rows',
       async (kind) => {

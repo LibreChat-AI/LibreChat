@@ -2,14 +2,15 @@ import { durableStorageConfigSchema } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { ManagedRegistration, ManagedRegistrationIntent } from '~/types/managed';
 import type { ResponseOwner } from '~/models/response';
+import { managedTargetFilter, assertManagedTenant, managedTargetModels } from './managed';
 import { initializeResponseScopes, responseScopeKeys } from './responseScope';
-import { managedTargetFilter, assertManagedTenant } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { includeManagedAllocations } from '~/utils/managed';
 
 interface SettlementTarget {
   _id: Types.ObjectId;
   user?: string;
+  userId?: string;
   conversationId?: string;
   expiredAt?: Date | null;
   _managed: {
@@ -21,10 +22,11 @@ interface SettlementTarget {
 }
 
 const settlementProjection =
-  '_id user conversationId expiredAt _managed.incarnation _managed.phase _managed.ownerKey _managed.conversationKey';
+  '_id user userId conversationId expiredAt _managed.incarnation _managed.phase _managed.ownerKey _managed.conversationKey';
 
 function hasPublishedOwnership(
   target: SettlementTarget,
+  kind: ManagedRegistration['target']['kind'],
   owner: ResponseOwner,
   conversationId: string | undefined,
   key: string,
@@ -32,7 +34,7 @@ function hasPublishedOwnership(
 ): boolean {
   return (
     target._managed.phase === 'published' &&
-    target.user === owner.userId &&
+    (kind === 'response' ? target.userId : target.user) === owner.userId &&
     (conversationId === undefined
       ? target._managed.ownerKey === key
       : target._managed.conversationKey === key && target.conversationId === conversationId) &&
@@ -207,10 +209,10 @@ export async function reconcileResponseTargets(
   const entries = anchor.pending ?? [];
   for (const entry of entries) registrationScope(mongoose, owner, conversationId, entry);
   const settled: ManagedRegistration[] = [];
-  for (const kind of ['message', 'conversation'] as const) {
+  for (const kind of ['message', 'conversation', 'response'] as const) {
     const candidates = entries.filter((entry) => entry.target.kind === kind);
     if (!candidates.length) continue;
-    const model = mongoose.model(kind === 'message' ? 'Message' : 'Conversation');
+    const model = mongoose.model(managedTargetModels[kind]);
     const present = await includeManagedAllocations(
       model.find({
         $or: candidates.map((entry) => managedTargetFilter(mongoose, entry.target)),
@@ -224,7 +226,8 @@ export async function reconcileResponseTargets(
       ...candidates.filter((entry) => {
         const target = targets.get(`${entry.target.id.toLowerCase()}:${entry.target.incarnation}`);
         return (
-          !target || hasPublishedOwnership(target, owner, conversationId, key, anchor.expiredAt)
+          !target ||
+          hasPublishedOwnership(target, kind, owner, conversationId, key, anchor.expiredAt)
         );
       }),
     );
@@ -279,7 +282,7 @@ async function settleTarget(
   const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
   if (!existing || !sameRegistration(existing, entry)) return false;
   const observedRetentionEpoch = anchor.retentionEpoch ?? 0;
-  const model = mongoose.model(entry.target.kind === 'message' ? 'Message' : 'Conversation');
+  const model = mongoose.model(managedTargetModels[entry.target.kind]);
   if (proof === 'absent') {
     // Ordinary queries hide unpublished allocations. Hidden is not absent.
     const present = await includeManagedAllocations(
@@ -293,7 +296,17 @@ async function settleTarget(
       .select(settlementProjection)
       .read('primary')
       .lean<SettlementTarget | null>();
-    if (!target || !hasPublishedOwnership(target, owner, conversationId, key, anchor.expiredAt))
+    if (
+      !target ||
+      !hasPublishedOwnership(
+        target,
+        entry.target.kind,
+        owner,
+        conversationId,
+        key,
+        anchor.expiredAt,
+      )
+    )
       return false;
   }
   const result = await scopes.updateOne(settlementFilter(key, existing, observedRetentionEpoch), {

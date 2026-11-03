@@ -100,6 +100,14 @@ async function fixture(principal: ResponseOwner = owner, retainTerminalPersisten
     }),
   });
   if (!running.ok) throw new Error('Publication failed');
+  // Mirror runtime.processRun's capture before the SDK may use a durable saver.
+  await jobs.updateMetadata(
+    responseId,
+    {
+      responseCheckpointConfigJSON: JSON.stringify({ type: 'mongo' }),
+    },
+    execution.createdAt,
+  );
   await execution.beginProviderExecution();
   const completion = createResponseCompletion({
     storage,
@@ -110,6 +118,7 @@ async function fixture(principal: ResponseOwner = owner, retainTerminalPersisten
   const retire = createResponseRetirement({
     storage,
     jobs,
+    cleanupCheckpoint: async () => {},
     recoverTerminal: completion.finish,
   });
   /** Force the live failure ordering: provider settles before abort's chat publication. */
@@ -208,6 +217,64 @@ it('drains expired work through metadata identity without publishing private can
     expect(f.execution.signal.aborted).toBe(true);
     expect(await jobs.getJob(f.responseId)).toBeUndefined();
     expect(await storage.read(owner, f.responseId)).toBeNull();
+  }));
+
+it('cleans retired checkpoints only after abort returns its provider drain barrier', () =>
+  scoped(async () => {
+    const f = await fixture();
+    await mongoose.models.StoredResponse.updateOne(
+      { responseId: f.responseId },
+      { $set: { expiredAt: new Date(Date.now() - 1) } },
+    );
+    await jobs.updateMetadata(
+      f.responseId,
+      { checkpointNamespace: 'retired-attempt', responseCheckpointConfigJSON: '{"type":"mongo"}' },
+      f.execution.createdAt,
+    );
+    let abortReturned = false;
+    const cleanup = jest.fn(async () => {
+      expect(abortReturned).toBe(true);
+      expect((await jobs.getJob(f.responseId))?.metadata.providerDrained).toBe(true);
+    });
+    jest
+      .mocked(jobs.abortJob)
+      .mockReset()
+      .mockImplementationOnce(async (id, options) => {
+        const result = await GenerationJobManagerClass.prototype.abortJob.call(jobs, id, {
+          ...options,
+          beforePublish: async (result) => {
+            expect((await jobs.getJob(id))?.metadata.providerDrained).not.toBe(true);
+            await options?.beforePublish?.(result);
+            expect(cleanup).not.toHaveBeenCalled();
+            await f.execution.settle();
+          },
+        });
+        abortReturned = true;
+        return result;
+      });
+    const retire = createResponseRetirement({ storage, jobs, cleanupCheckpoint: cleanup });
+    expect(await retire(owner, f.responseId)).toBe('stopped');
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(await jobs.getJob(f.responseId)).toBeUndefined();
+  }));
+
+it('retains drained retired proof when post-drain checkpoint cleanup fails', () =>
+  scoped(async () => {
+    const f = await fixture();
+    await mongoose.models.StoredResponse.updateOne(
+      { responseId: f.responseId },
+      { $set: { expiredAt: new Date(Date.now() - 1) } },
+    );
+    const cleanup = jest.fn(async () => {});
+    cleanup.mockRejectedValueOnce(new Error('checkpoint deletion failed'));
+    const retire = createResponseRetirement({ storage, jobs, cleanupCheckpoint: cleanup });
+    await expect(retire(owner, f.responseId)).rejects.toThrow('checkpoint deletion failed');
+    expect(await jobs.getJob(f.responseId)).toMatchObject({
+      metadata: { providerDrained: true, terminalPersistencePending: true },
+    });
+    expect(await retire(owner, f.responseId)).toBe('stopped');
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(await jobs.getJob(f.responseId)).toBeUndefined();
   }));
 
 it('keeps drained Stop proof through canonical receipt failure and retry without executing again', () =>

@@ -1,10 +1,14 @@
+export type ManagedTargetKind = 'message' | 'conversation' | 'response';
+
 /** Internal physical identity. A missing target is retired, never re-created. */
-export interface ManagedTarget {
-  kind: 'message' | 'conversation';
+export interface ManagedTarget<Kind extends ManagedTargetKind = 'message' | 'conversation'> {
+  kind: Kind;
   id: string;
   incarnation: string;
   tenantId?: string;
 }
+
+export type ManagedStorageTarget = ManagedTarget<ManagedTargetKind>;
 
 export interface ManagedState {
   incarnation: string;
@@ -18,7 +22,7 @@ export interface ManagedState {
 
 export interface ManagedRegistrationIntent {
   key: string;
-  target: ManagedTarget;
+  target: ManagedStorageTarget;
 }
 
 /** The authority stamps its own version; callers do not choose retention epochs. */
