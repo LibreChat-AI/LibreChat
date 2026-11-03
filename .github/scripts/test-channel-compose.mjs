@@ -18,6 +18,7 @@ function configuration(tag, source = false) {
         '--profile',
         'channels',
         'config',
+        '--no-env-resolution',
         '--format',
         'json',
       ],
