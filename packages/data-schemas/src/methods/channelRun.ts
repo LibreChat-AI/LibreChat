@@ -12,8 +12,8 @@ import type {
   ChannelRunProgress,
 } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
+import type { ChannelRunRecord, ChannelPrincipalLaneRecord } from '~/models/channelRun';
 import type { ChannelLaneScope, ChannelRunEnrollment } from './channelProtocol';
-import type { ChannelRunRecord, ChannelLaneRecord } from '~/models/channelRun';
 import type { StoredResponseRecord } from '~/models/response';
 import {
   digest,
@@ -213,7 +213,7 @@ export function createChannelRunStorage(
 ): ChannelRunStorage {
   const limits = channelStorageConfigSchema.parse(options);
   const runs = () => mongoose.model<ChannelRunRecord>('ChannelRun');
-  const lanes = () => mongoose.model<ChannelLaneRecord>('ChannelLane');
+  const lanes = () => mongoose.model<ChannelPrincipalLaneRecord>('ChannelLane');
   const ensureIndexes = createChannelIndexGate(() => [runs(), lanes()]);
   async function transaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
     await ensureIndexes();
@@ -440,6 +440,8 @@ export function createChannelRunStorage(
               {
                 $inc: { nextSequence: 1 },
                 $setOnInsert: {
+                  kind: 'principal',
+                  revision: 0,
                   channelId: input.channelId,
                   userId: input.principal.userId,
                 },
@@ -506,7 +508,7 @@ export function createChannelRunStorage(
           .limit(limits.claimBatchSize)
           .session(session)
           .lean();
-        const laneCache = new Map<string, ChannelLaneRecord | null>();
+        const laneCache = new Map<string, ChannelPrincipalLaneRecord | null>();
         for (const run of candidates) {
           if (!laneCache.has(run.laneId))
             laneCache.set(
@@ -1116,6 +1118,8 @@ export function createChannelRunStorage(
             {
               $set: { stopObservation: observation, userId: scope.principal.userId },
               $setOnInsert: {
+                kind: 'principal',
+                revision: 0,
                 channelId,
                 nextSequence: 0,
               },

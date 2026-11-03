@@ -952,7 +952,8 @@ it(
     expect((await storage.read(tenantId, 'channel', run.runId))?.leaseOwner).toBeUndefined();
     expect(invoked).toHaveLength(0);
     const lane = await models.ChannelLane.findOne({ tenantId, laneId: run.laneId }).lean();
-    expect(lane?.activeRunId).toBe(run.runId);
+    if (lane?.kind !== 'principal') throw new Error('Expected a principal lane');
+    expect(lane.activeRunId).toBe(run.runId);
   }),
 );
 async function link(actor: string, user: IUser) {

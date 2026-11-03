@@ -44,6 +44,11 @@ export const digest = (value: object): string =>
       ),
     )
     .digest('hex');
+/** Only canonical actor identity participates in lane ownership, never incidental ingress fields. */
+function scopeActor(scope: ChannelLaneScope) {
+  const { teamId, appId, externalUserId } = scope.admission.actor;
+  return { teamId, appId, externalUserId };
+}
 export function laneKey(scope: ChannelLaneScope): string {
   return digest({
     tenantId: scope.tenantId,
@@ -51,7 +56,7 @@ export function laneKey(scope: ChannelLaneScope): string {
     agentId: scope.agentId,
     thread: scope.admission.externalThreadKey,
     externalChannelId: scope.admission.externalChannelId,
-    actor: scope.admission.actor,
+    actor: scopeActor(scope),
     userId: scope.principal.userId,
     revision: scope.principal.channelRevision,
     linkRevision: scope.principal.linkRevision ?? null,
@@ -63,7 +68,7 @@ export function stopScopeKey(scope: ChannelLaneScope): string {
   return digest({
     tenantId: scope.tenantId,
     channelId: scope.channelId,
-    actor: scope.admission.actor,
+    actor: scopeActor(scope),
     thread: scope.admission.externalThreadKey,
     externalChannelId: scope.admission.externalChannelId,
   });

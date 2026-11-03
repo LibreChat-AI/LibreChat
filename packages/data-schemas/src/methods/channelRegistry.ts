@@ -102,7 +102,7 @@ export function channelRegistryKey(
 export async function readChannelAuthority(
   mongoose: typeof import('mongoose'),
   identity: ChannelExternalIdentity,
-): Promise<ChannelAuthority | null> {
+): Promise<(ChannelAuthority & Pick<AgentChannelRecord, 'credentialMode'>) | null> {
   const tenantId = identity.tenantId === '_' ? undefined : identity.tenantId;
   assertManagedTenant(tenantId);
   const parent = await createAgentChannelModel(mongoose)
@@ -115,7 +115,9 @@ export async function readChannelAuthority(
       'slack.teamId': identity.teamId,
       '_managed.phase': 'published',
     })
-    .select('channelId agentId revision createdBy slack.teamId slack.appId +_managed')
+    .select(
+      'channelId agentId revision createdBy credentialMode slack.teamId slack.appId +_managed',
+    )
     .read('primary')
     .lean<AgentChannelRecord & { _id: Types.ObjectId; _managed: ManagedState }>();
   if (!parent || !parent.slack?.appId) return null;
@@ -130,6 +132,7 @@ export async function readChannelAuthority(
     agentId: parent.agentId,
     revision: parent.revision,
     createdBy: parent.createdBy,
+    credentialMode: parent.credentialMode,
     teamId: identity.teamId,
     appId: parent.slack.appId,
   };

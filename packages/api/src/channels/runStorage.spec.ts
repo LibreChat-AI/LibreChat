@@ -80,17 +80,19 @@ beforeEach(async () => {
     await mongoose.models.ChannelScope.deleteMany({});
     await mongoose.models.ResponseScope.deleteMany({});
     await mongoose.models.StoredResponse.deleteMany({});
-    await createMethods(mongoose).createAgentChannel({
-      tenantId,
-      channelId: 'channel',
-      agentId: 'agent',
-      createdBy: 'channel-owner',
-      type: 'slack',
-      status: 'active',
-      credentialMode: 'shared',
-      revision: 'v1',
-      slack: { teamId: 'T1', appId: 'A1', botUserId: 'B1' },
-    });
+    await scope(() =>
+      createMethods(mongoose).createAgentChannel({
+        tenantId,
+        channelId: 'channel',
+        agentId: 'agent',
+        createdBy: 'channel-owner',
+        type: 'slack',
+        status: 'active',
+        credentialMode: 'shared',
+        revision: 'v1',
+        slack: { teamId: 'T1', appId: 'A1', botUserId: 'B1' },
+      }),
+    );
   });
 });
 
@@ -163,6 +165,8 @@ async function savedResponse(
   } = {},
 ) {
   const responseStorage = createResponseStorage(mongoose);
+  const execution = run.execution;
+  if (!execution) throw new Error('Fixture requires a prepared Response execution');
   const result = await responseStorage.reserve({
     tenantId: overrides.tenantId ?? tenantId,
     userId: overrides.userId ?? run.principal.userId,
@@ -176,10 +180,14 @@ async function savedResponse(
       input: overrides.input ?? run.admission.input,
       background: true,
       store: true,
-      previous_response_id: overrides.previous_response_id,
+      previous_response_id:
+        overrides.previous_response_id ??
+        (execution.parentMessageId === '00000000-0000-0000-0000-000000000000'
+          ? undefined
+          : execution.parentMessageId),
     }),
-    conversationId: 'response-owned-conversation',
-    parentMessageId: '00000000-0000-0000-0000-000000000000',
+    conversationId: execution.conversationId,
+    parentMessageId: execution.parentMessageId,
   });
   if (!result.ok) throw new Error('Response reservation failed');
   return result.record;

@@ -1,7 +1,12 @@
+import type { Types } from 'mongoose';
 import type { ChannelOwnership, ChannelRegistryAuthority } from './channelRegistry';
+import type { ChannelIdentityRecord } from '~/models/channelIdentity';
 import type { ManagedRegistrationResult } from './registration';
 import type { ManagedStorageTarget } from '~/types/managed';
+import type { ChannelLaneScope } from './channelProtocol';
+import type { ChannelAuthority } from './channelRegistry';
 import type { ResponseOwner } from '~/models/response';
+import type { ManagedState } from '~/types/managed';
 import {
   channelScopeKeys,
   channelRegistryKey,
@@ -20,7 +25,84 @@ import {
   settleResponseTarget,
   settleAbsentResponseTarget,
 } from './registration';
+import { createChannelIdentityModel } from '~/models/channelIdentity';
+import { readChannelAuthority } from './channelRegistry';
 import { responseScopeKeys } from './responseScope';
+
+export type ChannelRunOwnership = ChannelOwnership & {
+  channel: ChannelAuthority;
+  owner: ResponseOwner;
+};
+
+/** Capture exact current roles; application eligibility and registered publication remain mandatory. */
+export async function readChannelRunOwnership(
+  mongoose: typeof import('mongoose'),
+  scope: ChannelLaneScope,
+  now: number,
+): Promise<ChannelRunOwnership | null> {
+  const channel = await readChannelAuthority(mongoose, {
+    tenantId: scope.tenantId,
+    channelId: scope.channelId,
+    agentId: scope.agentId,
+    channelRevision: scope.principal.channelRevision,
+    teamId: scope.admission.actor.teamId,
+    externalUserId: scope.admission.actor.externalUserId,
+  });
+  if (
+    !channel ||
+    channel.appId !== scope.admission.actor.appId ||
+    !scope.principal.userId ||
+    (channel.credentialMode === 'shared' && scope.principal.userId !== channel.createdBy)
+  )
+    return null;
+  const tenantId = channel.target.tenantId;
+  const roles: ChannelRunOwnership = {
+    creator: { userId: channel.createdBy, ...(tenantId && { tenantId }) },
+    owner: { userId: scope.principal.userId, ...(tenantId && { tenantId }) },
+    channel,
+  };
+  const { linkId, linkRevision } = scope.principal;
+  if (linkId === undefined && linkRevision === undefined)
+    return channel.credentialMode === 'shared' ? roles : null;
+  if (!linkId || !linkRevision) return null;
+  const link = await createChannelIdentityModel(mongoose)
+    .findOne({
+      tenantId: scope.tenantId,
+      linkId,
+      revision: linkRevision,
+      userId: scope.principal.userId,
+      state: 'active',
+      expiresAtMs: { $gt: now },
+      '_managed.phase': 'published',
+      'identity.tenantId': scope.tenantId,
+      'identity.channelId': scope.channelId,
+      'identity.channelRevision': scope.principal.channelRevision,
+      'identity.agentId': scope.agentId,
+      'identity.teamId': scope.admission.actor.teamId,
+      'identity.externalUserId': scope.admission.actor.externalUserId,
+    })
+    .select('linkId revision userId identity +_managed')
+    .read('primary')
+    .lean<ChannelIdentityRecord & { _id: Types.ObjectId; _managed: ManagedState }>();
+  if (!link?.userId) return null;
+  roles.identity = {
+    target: {
+      kind: 'channelIdentity',
+      id: String(link._id),
+      incarnation: link._managed.incarnation,
+      ...(tenantId && { tenantId }),
+    },
+    revision: link.revision,
+    linkId: link.linkId,
+    userId: link.userId,
+    channelId: link.identity.channelId,
+    channelRevision: link.identity.channelRevision,
+    agentId: link.identity.agentId,
+    teamId: link.identity.teamId,
+    externalUserId: link.identity.externalUserId,
+  };
+  return roles;
+}
 
 type OwnershipAuthority =
   | { key: string; kind: 'response'; owner: ResponseOwner; conversationId?: string }

@@ -4,7 +4,8 @@ import type {
   ChannelRunPrincipal,
   ChannelDeliveryReceipt,
 } from 'librechat-data-provider';
-import type { Model } from 'mongoose';
+import type { Model, SchemaDefinition } from 'mongoose';
+import type { ManagedTarget } from '~/types/managed';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 import { applyChannelStorage } from './plugins/managed';
 
@@ -37,7 +38,63 @@ export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision'> {
   deliveredAt?: number;
 }
 
-export interface ChannelLaneRecord {
+export interface ChannelLaneAuthorityRef<
+  Kind extends 'channel' | 'channelIdentity' = 'channel' | 'channelIdentity',
+> {
+  target: ManagedTarget<Kind>;
+  revision: string;
+}
+
+export interface ChannelRunIdentity {
+  target: ManagedTarget<'channelRun'>;
+  runId: string;
+}
+
+export interface ChannelControlAssignment {
+  grantId: string;
+  phase: 'granting' | 'active';
+  run: ChannelRunIdentity;
+  lane: ManagedTarget<'channelLane'>;
+  principalFingerprint: string;
+  owner: string;
+  previousEpoch: number;
+  epoch: number;
+  leaseExpiresAt: number;
+  checkedAt: number;
+}
+
+export type ChannelStopSelection =
+  | { result: 'none' }
+  | { result: 'run'; run: ChannelRunIdentity; epoch: number };
+
+export interface ChannelControlLaneRecord {
+  kind: 'control';
+  tenantId: string;
+  channelId: string;
+  laneId: string;
+  revision: number;
+  fingerprint: string;
+  channelRef: ChannelLaneAuthorityRef<'channel'>;
+  assignment?: ChannelControlAssignment;
+  stop?: {
+    occurrenceId: string;
+    eventAt: number;
+    before: number;
+    principalFingerprint: string;
+    phase: 'selecting' | 'selected';
+    selection?: ChannelStopSelection;
+  };
+}
+
+export interface ChannelPrincipalLaneRecord {
+  kind: 'principal';
+  revision: number;
+  fingerprint?: string;
+  channelRef?: ChannelLaneAuthorityRef<'channel'>;
+  identityRef?: ChannelLaneAuthorityRef<'channelIdentity'>;
+  controlTarget?: ManagedTarget<'channelLane'>;
+  publishedThrough?: number;
+  publisher?: { run: ChannelRunIdentity; sequence: number };
   tenantId: string;
   userId: string;
   channelId: string;
@@ -54,6 +111,8 @@ export interface ChannelLaneRecord {
     epoch?: number;
   };
 }
+
+export type ChannelLaneRecord = ChannelPrincipalLaneRecord | ChannelControlLaneRecord;
 
 export function createChannelRunModel(
   mongoose: typeof import('mongoose'),
@@ -169,13 +228,102 @@ export function createChannelRunModel(
 export function createChannelLaneModel(
   mongoose: typeof import('mongoose'),
 ): Model<ChannelLaneRecord> {
+  const physical = new Schema(
+    {
+      kind: {
+        type: String,
+        enum: ['channel', 'channelIdentity', 'channelRun', 'channelLane'],
+        required: true,
+      },
+      id: { type: String, match: /^[a-f\d]{24}$/, required: true },
+      incarnation: { type: String, required: true },
+      tenantId: String,
+    },
+    { _id: false },
+  );
+  const authority = new Schema(
+    { target: { type: physical, required: true }, revision: { type: String, required: true } },
+    { _id: false },
+  );
+  const runIdentity = new Schema(
+    { target: { type: physical, required: true }, runId: { type: String, required: true } },
+    { _id: false },
+  );
+  const selection = new Schema(
+    {
+      result: { type: String, enum: ['none', 'run'], required: true },
+      run: { type: runIdentity, default: undefined },
+      epoch: Number,
+    },
+    { _id: false },
+  );
+  // Mongoose maps the union definition to one member; the validation below enforces both kinds.
   const schema = new Schema<ChannelLaneRecord>(
     {
       tenantId: { type: String, required: true },
-      userId: { type: String, required: true },
+      kind: { type: String, enum: ['principal', 'control'], required: true },
+      revision: { type: Number, required: true },
+      fingerprint: { type: String, match: /^[a-f\d]{64}$/ },
+      channelRef: { type: authority, default: undefined },
+      identityRef: { type: authority, default: undefined },
+      controlTarget: { type: physical, default: undefined },
+      userId: {
+        type: String,
+        required: function (this: ChannelLaneRecord) {
+          return this.kind === 'principal';
+        },
+      },
       channelId: { type: String, required: true },
       laneId: { type: String, required: true },
-      nextSequence: { type: Number, required: true, default: 0 },
+      nextSequence: {
+        type: Number,
+        required: function (this: ChannelLaneRecord) {
+          return this.kind === 'principal';
+        },
+      },
+      publishedThrough: Number,
+      publisher: {
+        type: new Schema(
+          {
+            run: { type: runIdentity, required: true },
+            sequence: { type: Number, required: true },
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
+      assignment: {
+        type: new Schema(
+          {
+            grantId: { type: String, required: true },
+            phase: { type: String, enum: ['granting', 'active'], required: true },
+            run: { type: runIdentity, required: true },
+            lane: { type: physical, required: true },
+            principalFingerprint: { type: String, match: /^[a-f\d]{64}$/, required: true },
+            owner: { type: String, required: true },
+            previousEpoch: { type: Number, required: true },
+            epoch: { type: Number, required: true },
+            leaseExpiresAt: { type: Number, required: true },
+            checkedAt: { type: Number, required: true },
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
+      stop: {
+        type: new Schema(
+          {
+            occurrenceId: { type: String, required: true },
+            eventAt: { type: Number, required: true },
+            before: { type: Number, required: true },
+            principalFingerprint: { type: String, match: /^[a-f\d]{64}$/, required: true },
+            phase: { type: String, enum: ['selecting', 'selected'], required: true },
+            selection: { type: selection, default: undefined },
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
       activeRunId: String,
       conversationId: String,
       responseId: String,
@@ -191,9 +339,43 @@ export function createChannelLaneModel(
           { _id: false },
         ),
       },
-    },
+    } as SchemaDefinition<ChannelLaneRecord>,
     { timestamps: true },
   );
+  schema.pre('validate', function () {
+    const control = this.get('kind') === 'control';
+    for (const [path, kind] of [
+      ['channelRef.target.kind', 'channel'],
+      ['identityRef.target.kind', 'channelIdentity'],
+      ['controlTarget.kind', 'channelLane'],
+      ['publisher.run.target.kind', 'channelRun'],
+      ['assignment.run.target.kind', 'channelRun'],
+      ['assignment.lane.kind', 'channelLane'],
+      ['stop.selection.run.target.kind', 'channelRun'],
+    ])
+      if (this.get(path) !== undefined && this.get(path) !== kind)
+        this.invalidate(path, 'Invalid lane target kind');
+
+    const forbidden = control
+      ? [
+          'userId',
+          'identityRef',
+          'controlTarget',
+          'nextSequence',
+          'publishedThrough',
+          'publisher',
+          'activeRunId',
+          'conversationId',
+          'responseId',
+          'stopObservation',
+        ]
+      : ['assignment', 'stop'];
+    for (const field of forbidden)
+      if (this.get(field) !== undefined) this.invalidate(field, 'Invalid lane kind field');
+    if (control)
+      for (const field of ['fingerprint', 'channelRef'])
+        if (!this.get(field)) this.invalidate(field, 'Control lane coordination field required');
+  });
   schema.index({ tenantId: 1, laneId: 1 }, { unique: true });
   schema.index(
     { tenantId: 1, channelId: 1, 'stopObservation.scopeId': 1 },
