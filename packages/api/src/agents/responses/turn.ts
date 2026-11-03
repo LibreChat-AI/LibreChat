@@ -83,13 +83,6 @@ export async function stageResponseTurn(
       agents,
       buildPartial: () => input.response,
       visibleOutputTokens,
-      persistence: {
-        saveConversation: persistence.saveConversation,
-        saveInput: persistence.saveInput,
-        saveOutput: async (partial) => {
-          await persistence.saveOutput(partial);
-        },
-      },
     },
     async () => {
       stageResponseResult(

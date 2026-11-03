@@ -16,8 +16,6 @@ export interface ResponsePauseDependencies {
   jobs: Pick<GenerationJobManagerClass, 'getJob'>;
   /** Capture the host's existing graph/project/code/MCP approval bindings; never caller body data. */
   buildAction: (interrupt: RunInterruptResult, job: GenerationJob) => Promise<Agents.PendingAction>;
-  /** Save the ordinary unfinished assistant turn, with existing content/privacy filtering. */
-  persistUnfinished: (response: Response, action: Agents.PendingAction) => Promise<void>;
 }
 
 /** Capture the SDK's real, durable interrupt before exposing any resumable action. */
@@ -92,7 +90,6 @@ export async function pauseResponseForReview(
   )
     throw new Error('Response review action identity changed');
   return execution.pauseForReview(action, async () => {
-    await deps.persistUnfinished(input.partial, action);
     const current = await deps.storage.read(record, record.responseId);
     if (!current || current.generationCreatedAt !== execution.createdAt)
       throw new Error('Response pause journal identity changed');

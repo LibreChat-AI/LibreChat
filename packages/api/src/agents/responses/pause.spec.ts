@@ -2,6 +2,7 @@ import { z } from 'zod';
 import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
+import { randomUUID } from 'node:crypto';
 import { tool } from '@langchain/core/tools';
 import { FileSources } from 'librechat-data-provider';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
@@ -14,15 +15,26 @@ import {
   runAsSystem,
   createModels,
   createMethods,
+  createManagedMessageId,
+  createManagedConversationId,
+  responseReference,
 } from '@librechat/data-schemas';
-import type { AppConfig, ResponseStorage } from '@librechat/data-schemas';
+import type { AppConfig, ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { RunInterruptResult, RunConfig } from '@librechat/agents';
 import type { BaseMessage } from '@langchain/core/messages';
 import type { Agent } from 'librechat-data-provider';
+import type { CheckpointWriteWitness } from '../checkpoints/witness';
 import type { AgentExecutionEnrollment } from '../remote/lifecycle';
+import type { ResponsePersistenceDependencies } from './foreground';
 import type { ResponseExecutionRuntime } from './runtime';
 import type { ServerRequest } from '~/types/http';
 import type { createRun } from '../run';
+import {
+  getAgentCheckpointer,
+  LIBRECHAT_CHECKPOINT_NAMESPACE_KEY,
+  __resetCheckpointerForTests,
+  resolveCheckpointerConfig,
+} from '../checkpointer';
 import {
   buildAggregatedResponse,
   createAggregatorEventHandlers,
@@ -44,18 +56,15 @@ import {
   computeAgentRequestFingerprint,
   computeLegacyAgentRequestFingerprint,
 } from '../hitl/policy';
-import {
-  getAgentCheckpointer,
-  LIBRECHAT_CHECKPOINT_NAMESPACE_KEY,
-  __resetCheckpointerForTests,
-} from '../checkpointer';
 import { buildEffectiveToolApprovalPolicy, markToolApprovalAllowAlways } from '../hitl/allow';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { createResponseResumeAdmission, createResponseResumeValidation } from './resume';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createAskUserQuestionTool } from '../hitl/askUserQuestionTool';
+import { createCheckpointWriteWitness } from '../checkpoints/witness';
 import { createResponseAccountingCollector } from './accounting';
 import { NO_CHAT_PROJECT_CONTEXT_KEY } from '~/projects/context';
+import { normalizeResponseTurnIntent } from './turnProjection';
 import { buildPendingBackgroundResponse } from './background';
 import { createResponseDecisionSubmission } from './decision';
 import { resolveToolApprovalResume } from '../hitl/resume';
@@ -63,6 +72,7 @@ import { enrollAgentExecution } from '../remote/lifecycle';
 import { createResponseExecutionRuntime } from './runtime';
 import { captureRunPendingAction } from '../hitl/capture';
 import { cleanupResponseCheckpoint } from './checkpoint';
+import { createResponsePersistence } from './foreground';
 import { createResponseRetirement } from './retirement';
 import { buildHITLRunWiring } from '../hitl/runtime';
 import { GenerationJobManagerClass } from '~/stream';
@@ -75,8 +85,8 @@ let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
 let manager: GenerationJobManagerClass;
 const owner = { userId: '000000000000000000000012', tenantId: 'sdk-pause-tenant' };
-const responseId = 'resp_sdk_pause';
-const conversationId = 'd2a56ba6-7a13-4f8d-bf2c-8e4f46b40ec3';
+const responseId = createManagedMessageId();
+const conversationId = createManagedConversationId();
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
 const checkpointer = { type: 'mongo' as const, ttl: 3600 };
 
@@ -113,6 +123,20 @@ function sdkTurn(
   });
 }
 
+function sdkPersistenceDependencies(): ResponsePersistenceDependencies {
+  const methods = createMethods(mongoose);
+  return {
+    saveConvo: methods.saveConvo,
+    saveMessage: async (...args) => {
+      const saved = await methods.saveMessage(...args);
+      return saved ? { conversationId: saved.conversationId, messageId: saved.messageId } : null;
+    },
+    announceReply: async () => {},
+    resolveTitle: () => null,
+    traceFields: async () => ({ langfuseSampled: false }),
+  };
+}
+
 function stageSDKTurn(
   turn: ReturnType<typeof createResponseTurn>,
   input: Omit<
@@ -120,7 +144,6 @@ function stageSDKTurn(
     'agents' | 'conversationId' | 'agentId' | 'agent' | 'messages' | 'parentMessageId' | 'request'
   > & { request: ServerRequest },
 ) {
-  const methods = createMethods(mongoose);
   return turn.stage(
     {
       ...input,
@@ -130,18 +153,9 @@ function stageSDKTurn(
       agentId: input.response.model,
       agent: { id: input.response.model, name: 'SDK Test Agent' },
       messages: [],
-      parentMessageId: 'original-user-message',
+      parentMessageId: 'root',
     },
-    {
-      saveConvo: methods.saveConvo,
-      saveMessage: async (...args) => {
-        const saved = await methods.saveMessage(...args);
-        return saved ? { conversationId: saved.conversationId, messageId: saved.messageId } : null;
-      },
-      announceReply: async () => {},
-      resolveTitle: () => null,
-      traceFields: async () => ({ langfuseSampled: false }),
-    },
+    sdkPersistenceDependencies(),
   );
 }
 
@@ -161,6 +175,7 @@ beforeEach(async () => {
     await mongoose.models.ResponseScope?.deleteMany({});
     await mongoose.models.Conversation.deleteMany({ user: owner.userId, conversationId });
     await mongoose.models.Message.deleteMany({ user: owner.userId, conversationId });
+    await mongoose.models.User.deleteMany({ _id: owner.userId });
   });
   manager = new GenerationJobManagerClass();
   manager.configure({
@@ -179,8 +194,16 @@ afterAll(async () => {
 });
 
 async function reserveOriginal() {
+  const existing = await storage.readConversationTarget(owner, conversationId);
   return storage.reserve({
     ...owner,
+    ...(existing
+      ? {
+          conversationTarget: existing.target,
+          expiredAt: existing.expiredAt,
+          isTemporary: existing.isTemporary,
+        }
+      : {}),
     responseId,
     requestKey: 'request',
     fingerprint: 'request',
@@ -197,14 +220,46 @@ async function reserveOriginal() {
   });
 }
 
+function executionHooks(record: StoredResponseRecord) {
+  const reference = responseReference(record);
+  return {
+    responseRoot: reference.target,
+    async onEnrolled(execution: AgentExecutionEnrollment) {
+      const current = await storage.read(record, record.responseId);
+      if (
+        !current ||
+        !(await storage.enrollExecution(current, execution.getEnrollmentIdentity(), '{}')).ok
+      )
+        throw new Error('Fixture enrollment failed');
+    },
+    async onProviderStarted(execution: AgentExecutionEnrollment) {
+      if (!(await storage.bindExecution(record, execution.getPersistenceIdentity())))
+        throw new Error('Fixture provider binding failed');
+    },
+    async afterPause(execution: AgentExecutionEnrollment) {
+      if (!(await storage.settleExecution(reference, execution.getEnrollmentIdentity())))
+        throw new Error('Fixture provider pause settlement failed');
+    },
+    async afterSettle(execution: AgentExecutionEnrollment) {
+      const identity = await execution.confirmTerminalIdentity();
+      if (!(await storage.settleExecution(reference, identity, identity.outcome)))
+        throw new Error('Fixture provider terminal settlement failed');
+    },
+  };
+}
+
 async function setup(
   onEnrolled?: (execution: AgentExecutionEnrollment) => Promise<void>,
   processRun?: ResponseExecutionRuntime['processRun'],
   toolReviews = false,
   reviewedToolName = 'review_lookup',
+  runtime?: ResponseExecutionRuntime,
 ) {
+  const reserved = await reserveOriginal();
+  if (!reserved.ok) throw new Error('Reservation failed');
   const execution = await enrollAgentExecution(
     {
+      responseRoot: responseReference(reserved.record).target,
       runId: responseId,
       userId: owner.userId,
       conversationId,
@@ -215,18 +270,58 @@ async function setup(
     },
     { manager },
   );
-  await reserveOriginal();
   if (onEnrolled) await onEnrolled(execution);
-  else
-    await storage.publish(owner, responseId, 0, {
-      status: 'in_progress',
-      responseJSON: '{}',
-      generationCreatedAt: execution.createdAt,
-    });
+  else {
+    const enrolled = await storage.enrollExecution(
+      reserved.record,
+      execution.getEnrollmentIdentity(),
+      '{}',
+    );
+    if (!enrolled.ok) throw new Error('Enrollment failed');
+  }
   await execution.beginProviderExecution();
+  const current = (await storage.read(owner, responseId))!;
+  if (!(await storage.bindExecution(current, execution.getPersistenceIdentity())))
+    throw new Error('Provider binding failed');
+  const prepared = await storage.prepareConversation(current, execution.getPersistenceIdentity(), {
+    context: { userId: owner.userId },
+    conversation: {
+      conversationId,
+      agent_id: 'agent',
+      endpoint: 'agents',
+      title: 'SDK Test Agent',
+    },
+    initialAgentId: 'agent',
+  });
+  if (!prepared.ok) throw new Error('Conversation preparation failed');
   const job = (await manager.getJob(responseId))!;
-  const saver = await getAgentCheckpointer(checkpointer);
-  if (!saver || !job.metadata.checkpointNamespace) throw new Error('Missing real durable saver');
+  if (!job.metadata.checkpointNamespace) throw new Error('Missing checkpoint namespace');
+  const settings = resolveCheckpointerConfig(checkpointer);
+  const namespace = job.metadata.checkpointNamespace;
+  const checkpointWitness = (segment: AgentExecutionEnrollment) => {
+    const writer = storage.createCheckpointWriter(responseReference(prepared.record), {
+      ...segment.getPersistenceIdentity(),
+      writerId: randomUUID(),
+      namespace,
+      configJSON: JSON.stringify({
+        type: settings.type,
+        ttl: settings.ttlSeconds,
+        checkpointCollectionName: settings.checkpointCollectionName,
+        checkpointWritesCollectionName: settings.checkpointWritesCollectionName,
+      }),
+    });
+    return createCheckpointWriteWitness({
+      async open() {
+        if (!(await writer.open())) throw new Error('Checkpoint admission failed');
+      },
+      async settle() {
+        if (!(await writer.settle())) throw new Error('Checkpoint settlement failed');
+      },
+    });
+  };
+  const witness = runtime
+    ? (await runtime.graphOptions()).checkpointWriteWitness!
+    : checkpointWitness(execution);
   const config = {
     configurable: {
       thread_id: conversationId,
@@ -239,7 +334,10 @@ async function setup(
   const buildRun = async (
     customHandlers?: RunConfig['customHandlers'],
     remembered?: readonly string[],
+    writeWitness?: CheckpointWriteWitness,
   ) => {
+    const saver = await getAgentCheckpointer(checkpointer, { writeWitness });
+    if (!saver) throw new Error('Missing real durable saver');
     const wiring = toolReviews
       ? buildHITLRunWiring(
           buildEffectiveToolApprovalPolicy({ enabled: true, allowAlways: true }, [], remembered),
@@ -329,13 +427,14 @@ async function setup(
     return run;
   };
   const initialAggregator = createResponseAggregator();
-  const run = await buildRun(createAggregatorEventHandlers(initialAggregator));
+  const run = await buildRun(createAggregatorEventHandlers(initialAggregator), undefined, witness);
   const input = { messages: [new HumanMessage('Ask which environment.')] };
   if (processRun) await processRun(run, input, config);
   else await run.processStream(input, config);
+  if (!runtime && (await witness.close()) !== 'settled')
+    throw new Error('Checkpoint fixture settlement failed');
   const record = (await storage.read(owner, responseId))!;
   const partial = buildPendingBackgroundResponse(record);
-  let unfinishedWrites = 0;
   const deps = {
     storage,
     jobs: manager,
@@ -354,20 +453,24 @@ async function setup(
         requestFingerprintV2: computeAgentRequestFingerprint(JSON.parse(record.requestJSON)),
         resumeContext: {
           discoveredToolNames: ['retained_lookup'],
-          responseParentMessageId: 'original-user-message',
         },
       }),
-    persistUnfinished: async () => {
-      await mongoose.connection
-        .db!.collection('sdk_unfinished_turns')
-        .insertOne({ responseId, generationCreatedAt: execution.createdAt });
-      unfinishedWrites++;
-    },
   };
   return {
     run,
     buildRun,
+    checkpointWitness,
     execution,
+    async settle(error?: unknown) {
+      await execution.settle(error);
+      if (
+        !(await storage.settleExecution(
+          responseReference(record),
+          execution.getEnrollmentIdentity(),
+        ))
+      )
+        throw new Error('Paused execution settlement failed');
+    },
     record,
     partial,
     visibleOutputTokens: initialAggregator.usage.outputTokens,
@@ -375,7 +478,8 @@ async function setup(
     deps,
     modelCalls: () => modelCalls,
     toolExecutions: () => toolExecutions,
-    unfinishedWrites: () => unfinishedWrites,
+    canonicalMessages: () =>
+      mongoose.models.Message.countDocuments({ user: owner.userId, conversationId }),
   };
 }
 
@@ -389,6 +493,11 @@ it.each([
 ] as const)('settles a real SDK pause under %s', (outcome) =>
   scoped(async () => {
     const failPersistence = outcome === 'write_failure';
+    const publication = failPersistence
+      ? jest
+          .spyOn(storage, 'publishReview')
+          .mockRejectedValue(new Error('Injected private review failure'))
+      : undefined;
     let pausedNamespace: string | undefined;
     const reserved = await reserveOriginal();
     if (!reserved.ok) throw new Error('Reservation failed');
@@ -400,7 +509,6 @@ it.each([
     });
     const errors: unknown[] = [];
     const complete = jest.fn(async () => 'must not complete');
-    const order: string[] = [];
     let done!: () => void;
     const finished = new Promise<void>((resolve) => {
       done = resolve;
@@ -455,6 +563,9 @@ it.each([
                 [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: 'wrong-owner-namespace',
               },
             }),
+          false,
+          'review_lookup',
+          runtime,
         );
         await runtime
           .completeTurn(
@@ -464,33 +575,17 @@ it.each([
               agents: [],
               visibleOutputTokens: 0,
               buildPartial: () => f.partial,
-              persistence: {
-                saveConversation: async () => {
-                  order.push('conversation');
-                },
-                saveInput: async () => {
-                  order.push('input');
-                },
-                saveOutput: async (partial) => {
-                  order.push('output');
-                  if (failPersistence) throw new Error('Injected unfinished output failure');
-                  await mongoose.connection.db!.collection('runtime_unfinished_turns').insertOne({
-                    responseId,
-                    epoch: f.execution.createdAt,
-                    responseJSON: JSON.stringify(partial),
-                  });
-                },
-              },
             },
             complete,
           )
           .catch(async (error) => {
             if (!failPersistence) throw error;
-            await f.execution.settle(error);
+            await f.settle(error);
             await runtime.hooks.afterSettle!(f.execution, error);
           });
-        await f.execution.settle();
+        await f.settle();
         pausedNamespace = (await manager.getJob(responseId))?.metadata.checkpointNamespace;
+        let finishErasure: (() => Promise<unknown>) | undefined;
         if (f.execution.isPaused && outcome !== 'live') {
           const methods = createMethods(mongoose);
           if (outcome.startsWith('owner_deleted')) {
@@ -499,9 +594,16 @@ it.each([
               { $set: { tenantId: owner.tenantId, email: 'pause-owner@example.test' } },
               { upsert: true },
             );
-            await methods.deleteUserById(owner.userId);
+            finishErasure = () => methods.deleteUserById(owner.userId);
+            await expect(finishErasure()).rejects.toMatchObject({
+              code: 'response_erasure_pending',
+            });
           } else if (outcome === 'conversation_deleted') {
-            await methods.deleteConvos(owner.userId, { conversationId });
+            finishErasure = () =>
+              methods.deleteConvos(owner.userId, { conversationId }, { allowEmpty: true });
+            await expect(finishErasure()).rejects.toMatchObject({
+              code: 'response_erasure_pending',
+            });
           } else {
             await methods.saveConvo(
               { userId: owner.userId, expiredAt: new Date(Date.now() - 1000) },
@@ -513,6 +615,7 @@ it.each([
         }
         if (f.execution.isPaused) await runtime.hooks.afterPause!(f.execution);
         else await runtime.hooks.afterSettle!(f.execution, undefined);
+        await finishErasure?.();
         expect(f.execution.isPaused).toBe(!failPersistence);
         expect(f.modelCalls()).toBe(1);
       } catch (error) {
@@ -531,7 +634,10 @@ it.each([
     await finished;
     expect(errors).toEqual([]);
     expect(complete).not.toHaveBeenCalled();
-    expect(order).toEqual(['conversation', 'input', 'output']);
+    publication?.mockRestore();
+    expect(
+      await mongoose.models.Message.countDocuments({ user: owner.userId, conversationId }),
+    ).toBe(0);
     const record = (await storage.read(owner, responseId))!;
     if (outcome !== 'live' && !failPersistence) {
       expect(record).toBeNull();
@@ -576,10 +682,7 @@ it.each([
       payload: { type: 'ask_user_question' },
       requestFingerprintV2: expect.any(String),
     });
-    const saved = await mongoose.connection
-      .db!.collection('runtime_unfinished_turns')
-      .findOne({ responseId, epoch: record.generationCreatedAt });
-    expect(JSON.parse(saved!.responseJSON)).toMatchObject({
+    expect(JSON.parse(record.review!.partialResponseJSON)).toMatchObject({
       id: responseId,
       status: 'in_progress',
     });
@@ -618,9 +721,9 @@ it('captures a real SDK question interrupt and cancels its actual durable checkp
       thread: conversationId,
     });
     expect(await pauseResponseForReview({ ...f, checkpointer }, f.deps)).toBe(true);
-    await f.execution.settle();
+    await f.settle();
     expect(f.execution.isPaused).toBe(true);
-    expect(f.unfinishedWrites()).toBe(1);
+    expect(await f.canonicalMessages()).toBe(0);
     const saved = (await storage.read(owner, responseId))!;
     expect(saved).toMatchObject({
       status: 'requires_action',
@@ -655,7 +758,7 @@ it.each(['cleanup', 'stage'] as const)(
       expect(
         await pauseResponseForReview({ ...f, visibleOutputTokens: 0, checkpointer }, f.deps),
       ).toBe(true);
-      await f.execution.settle();
+      await f.settle();
       let failing = true;
       const originalStage = storage.stageTerminal.bind(storage);
       if (failure === 'stage')
@@ -771,7 +874,7 @@ it.each(['unchanged', 'environment', 'definition', 'workspace'] as const)(
       expect(
         await pauseResponseForReview({ ...f, visibleOutputTokens: 0, checkpointer }, f.deps),
       ).toBe(true);
-      await f.execution.settle();
+      await f.settle();
       const paused = (await storage.read(owner, responseId))!;
       const action = JSON.parse(paused.review!.pendingActionJSON!);
       expect(action.codeExecutionBinding?.targets).toHaveLength(1);
@@ -875,7 +978,11 @@ it.each(['unchanged', 'environment', 'definition', 'workspace'] as const)(
                 expect(
                   (await runtime.graphOptions([rebuiltAgent])).reviewedToolApprovals?.decisions,
                 ).toEqual(decisions);
-                const rebuilt = await f.buildRun();
+                const rebuilt = await f.buildRun(
+                  undefined,
+                  undefined,
+                  (await runtime.graphOptions([rebuiltAgent])).checkpointWriteWitness,
+                );
                 await runtime.processRun(rebuilt, { messages: [] }, f.config);
                 await runtime.completeTurn(
                   {
@@ -884,11 +991,6 @@ it.each(['unchanged', 'environment', 'definition', 'workspace'] as const)(
                     agents: [rebuiltAgent],
                     buildPartial: () => f.partial,
                     visibleOutputTokens: 0,
-                    persistence: {
-                      saveConversation: async () => {},
-                      saveInput: async () => {},
-                      saveOutput: async () => {},
-                    },
                   },
                   async () => {
                     throw new Error('Expected the second native-code review');
@@ -940,7 +1042,7 @@ it('executes reviewed SDK tool calls once across two same-epoch pauses', () =>
             f.deps,
           ),
         ).toBe(true);
-        await execution.settle();
+        await f.settle();
       }
       record = (await storage.read(owner, responseId))!;
       const action = JSON.parse(record.review!.pendingActionJSON!);
@@ -972,8 +1074,6 @@ it('executes reviewed SDK tool calls once across two same-epoch pauses', () =>
       const admitted = await admit(owner, responseId, `repeat-intent-${round}`);
       if (!admitted.ok) throw new Error('Missing repeated SDK admission');
       record = admitted.record;
-      run = await f.buildRun();
-      const nextRun = run;
       await executeAgentRun(
         {
           envelope: createAgentRunEnvelope({
@@ -983,6 +1083,7 @@ it('executes reviewed SDK tool calls once across two same-epoch pauses', () =>
             principal: { id: owner.userId, tenantId: owner.tenantId },
             payload: JSON.parse(record.requestJSON),
           }),
+          ...executionHooks(record),
           runId: responseId,
           conversationId,
           isPrincipalActive: async () => true,
@@ -993,6 +1094,9 @@ it('executes reviewed SDK tool calls once across two same-epoch pauses', () =>
           },
           execute: async (currentExecution) => {
             execution = currentExecution;
+            const witness = f.checkpointWitness(execution);
+            run = await f.buildRun(undefined, undefined, witness);
+            const nextRun = run;
             await nextRun.resume(mapped.resumeValue, {
               ...f.config,
               configurable: {
@@ -1001,6 +1105,8 @@ it('executes reviewed SDK tool calls once across two same-epoch pauses', () =>
                 checkpoint_ns: record.review!.checkpointNs,
               },
             });
+            expect(await witness.close()).toBe('settled');
+            record = (await storage.read(owner, responseId))!;
             if (nextRun.getInterrupt()) {
               expect(
                 await pauseResponseForReview(
@@ -1038,7 +1144,7 @@ it('rebuilds the pinned SDK graph from the captured Mongo checkpoint and consume
   scoped(async () => {
     const f = await setup();
     expect(await pauseResponseForReview({ ...f, checkpointer }, f.deps)).toBe(true);
-    await f.execution.settle();
+    await f.settle();
     expect(f.modelCalls()).toBe(1);
     const paused = (await storage.read(owner, responseId))!;
     const reserved = await storage.reserveResume(
@@ -1076,6 +1182,7 @@ it('rebuilds the pinned SDK graph from the captured Mongo checkpoint and consume
     const response = await executeAgentRun(
       {
         envelope,
+        ...executionHooks(admitted.record),
         runId: responseId,
         conversationId,
         isPrincipalActive: async () => true,
@@ -1084,10 +1191,16 @@ it('rebuilds the pinned SDK graph from the captured Mongo checkpoint and consume
           generationCreatedAt: f.execution.createdAt,
           providerExecutionId: 'sdk-resumed-provider',
         },
-        execute: async () => {
+        execute: async (execution) => {
           const aggregator = createResponseAggregator();
-          const rebuilt = await f.buildRun(createAggregatorEventHandlers(aggregator));
+          const witness = f.checkpointWitness(execution);
+          const rebuilt = await f.buildRun(
+            createAggregatorEventHandlers(aggregator),
+            undefined,
+            witness,
+          );
           await rebuilt.resume(JSON.parse(admitted.record.resume!.resolutionJSON), f.config);
+          expect(await witness.close()).toBe('settled');
           expect(rebuilt.getInterrupt()).toBeUndefined();
           final = {
             ...buildAggregatedResponse(
@@ -1099,22 +1212,37 @@ it('rebuilds the pinned SDK graph from the captured Mongo checkpoint and consume
           };
           return final;
         },
-        afterSettle: async () => {
+        afterSettle: async (execution) => {
+          await executionHooks(admitted.record).afterSettle(execution);
           if (!final) throw new Error('Missing resumed output');
           const current = (await storage.read(owner, responseId))!;
-          await cleanupResponseCheckpoint(
-            current,
-            (await manager.getJob(responseId))!.metadata.checkpointNamespace!,
-          );
+          const intent = await createResponsePersistence(
+            {
+              request: { user: { id: owner.userId }, body: { isTemporary: false } },
+              conversationId,
+              agentId: 'agent',
+              agent: { id: 'agent', name: 'SDK Test Agent' },
+              messages: [],
+              parentMessageId: current.parentMessageId,
+            },
+            sdkPersistenceDependencies(),
+          ).prepare(final);
+          const completion = createResponseCompletion({
+            storage,
+            cleanupCheckpoint: cleanupResponseCheckpoint,
+            confirmExecution: createResponseExecutionConfirmation(storage, manager),
+            releaseExecution: createResponseExecutionRelease(manager, storage),
+          });
           expect(
-            (
-              await storage.publish(owner, responseId, current.revision, {
-                status: final.status,
-                responseJSON: JSON.stringify(final),
-                generationCreatedAt: f.execution.createdAt,
-              })
-            ).ok,
-          ).toBe(true);
+            await completion.stageAndFinish(current, {
+              ...execution.getEnrollmentIdentity(),
+              status: 'completed',
+              responseJSON: JSON.stringify(final),
+              turnJSON: normalizeResponseTurnIntent(current, intent),
+              checkpointNamespace: (await manager.getJob(responseId))!.metadata.checkpointNamespace,
+              checkpointConfigJSON: current.review!.checkpointConfigJSON,
+            }),
+          ).toMatchObject({ status: 'completed' });
         },
       },
       { manager },
@@ -1155,8 +1283,8 @@ it('refuses a missing durable checkpoint before publishing a review action', () 
       ),
     ).rejects.toThrow('Response interrupt checkpoint is unavailable');
     expect((await storage.read(owner, responseId))?.status).toBe('in_progress');
-    expect(f.unfinishedWrites()).toBe(0);
-    await f.execution.settle(new Error('Checkpoint unavailable'));
+    expect(await f.canonicalMessages()).toBe(0);
+    await f.settle(new Error('Checkpoint unavailable'));
   }));
 
 it.each([
@@ -1204,7 +1332,7 @@ it.each([
           f.deps,
         ),
       ).toBe(true);
-      await f.execution.settle();
+      await f.settle();
       const paused = (await storage.read(owner, responseId))!;
       const reserved = await storage.reserveResume(
         owner,
@@ -1274,7 +1402,7 @@ it.each([
           }),
         ).toEqual({
           messages: [],
-          parentMessageId: 'original-user-message',
+          parentMessageId: 'root',
         });
         expect(await runtime.graphOptions([])).toMatchObject({
           sessionStartSource: 'resume',
@@ -1336,7 +1464,11 @@ it.each([
                 }
                 const aggregator = createResponseAggregator();
                 runtime.seedAggregator(aggregator);
-                const rebuilt = await f.buildRun(createAggregatorEventHandlers(aggregator));
+                const rebuilt = await f.buildRun(
+                  createAggregatorEventHandlers(aggregator),
+                  undefined,
+                  (await runtime.graphOptions([])).checkpointWriteWitness,
+                );
                 await runtime.processRun(rebuilt, { messages: [] }, f.config);
                 const accounting = createResponseAccountingCollector({
                   quote: () => ({ amount: '0.2', basis: 'application_billing' }),
@@ -1419,6 +1551,21 @@ it.each([
         });
         expect(response.accounting).toMatchObject({ status: 'available', amount: '0.3' });
         expect(f.modelCalls()).toBe(2);
+        const messages = await mongoose.models.Message.find({
+          user: owner.userId,
+          conversationId,
+        }).lean();
+        expect(messages).toHaveLength(2);
+        const input = messages.find((message) => message.isCreatedByUser);
+        const output = messages.find((message) => message.messageId === responseId);
+        expect(input).toMatchObject({ text: 'Ask which environment.', parentMessageId: 'root' });
+        expect(input?.messageId).toMatch(/^resp_d_[a-f\d]{32}$/);
+        expect(output?.parentMessageId).toBe(input?.messageId);
+        expect(
+          await mongoose.models.Conversation.findById(complete.conversationTarget!.id).lean(),
+        ).toMatchObject({
+          messages: expect.arrayContaining(messages.map((message) => message._id)),
+        });
       } else {
         expect(response.output).toEqual(partial.output);
         expect(response.usage).toEqual(partial.usage);
@@ -1444,7 +1591,7 @@ it('uses production validation for a real retained question and rejects changed 
       requestFingerprintV2: computeAgentRequestFingerprint(requestBody),
     });
     expect(await pauseResponseForReview({ ...f, checkpointer }, f.deps)).toBe(true);
-    await f.execution.settle();
+    await f.settle();
     await mongoose.models.User.create({
       _id: owner.userId,
       tenantId: owner.tenantId,
@@ -1565,7 +1712,6 @@ it('uses production validation for a real retained question and rejects changed 
     const admitted = await admit(owner, responseId, enqueued[0]);
     expect(admitted.ok).toBe(true);
     const current = (await storage.read(owner, responseId))!;
-    const rebuilt = await f.buildRun();
     await executeAgentRun(
       {
         envelope: createAgentRunEnvelope({
@@ -1575,6 +1721,7 @@ it('uses production validation for a real retained question and rejects changed 
           principal: { id: owner.userId, tenantId: owner.tenantId },
           payload: requestBody,
         }),
+        ...executionHooks(current),
         runId: responseId,
         conversationId,
         isPrincipalActive: async () => true,
@@ -1583,15 +1730,19 @@ it('uses production validation for a real retained question and rejects changed 
           generationCreatedAt: job.createdAt,
           providerExecutionId: current.resume!.providerExecutionId,
         },
-        execute: async () =>
-          rebuilt.resume(JSON.parse(current.resume!.resolutionJSON), {
+        execute: async (execution) => {
+          const witness = f.checkpointWitness(execution);
+          const rebuilt = await f.buildRun(undefined, undefined, witness);
+          await rebuilt.resume(JSON.parse(current.resume!.resolutionJSON), {
             ...f.config,
             configurable: {
               ...f.config.configurable,
               checkpoint_id: current.review!.checkpointId,
               checkpoint_ns: current.review!.checkpointNs,
             },
-          }),
+          });
+          expect(await witness.close()).toBe('settled');
+        },
       },
       { manager },
     );
@@ -1603,22 +1754,22 @@ it('uses production validation for a real retained question and rejects changed 
     expect(f.modelCalls()).toBe(2);
   }));
 
-it('does not expose a resumable action when unfinished-turn persistence fails', () =>
+it('does not expose a resumable action when private review publication fails', () =>
   scoped(async () => {
     const f = await setup();
-    const failure = new Error('private unfinished-turn storage failure');
+    const failure = new Error('private review storage failure');
+    const publish = jest.spyOn(storage, 'publishReview').mockRejectedValue(failure);
     await expect(
       pauseResponseForReview(
         { ...f, checkpointer },
         {
           ...f.deps,
-          persistUnfinished: async () => {
-            throw failure;
-          },
         },
       ),
     ).rejects.toBe(failure);
-    await f.execution.settle(failure);
+    publish.mockRestore();
+    await f.settle(failure);
+    expect(await f.canonicalMessages()).toBe(0);
     expect(f.execution.isPaused).toBe(false);
     const record = (await storage.read(owner, responseId))!;
     expect(record.review).toBeUndefined();
@@ -1646,7 +1797,7 @@ it('persists a session approval before compiling the resumed SDK graph and avoid
       return { ...action, payload: markToolApprovalAllowAlways(action.payload, { policy }) };
     };
     await pauseResponseForReview({ ...f, checkpointer }, f.deps);
-    await f.execution.settle();
+    await f.settle();
     const paused = (await storage.read(owner, responseId))!;
     const action = JSON.parse(paused.review!.pendingActionJSON!);
     const decisions = [
@@ -1751,6 +1902,7 @@ it('persists a session approval before compiling the resumed SDK graph and avoid
               const rebuilt = await f.buildRun(
                 createAggregatorEventHandlers(aggregator),
                 options.toolApprovalAllows,
+                options.checkpointWriteWitness,
               );
               await runtime.processRun(rebuilt, { messages: [] }, f.config);
               expect(rebuilt.getInterrupt()).toBeUndefined();
@@ -1805,9 +1957,9 @@ it.each([
     await expect(pauseResponseForReview({ ...f, checkpointer }, f.deps)).rejects.toThrow(
       'Response review action identity changed',
     );
-    expect(f.unfinishedWrites()).toBe(0);
+    expect(await f.canonicalMessages()).toBe(0);
     expect((await storage.read(owner, responseId))?.status).toBe('in_progress');
-    await f.execution.settle(new Error('Invalid private witness'));
+    await f.settle(new Error('Invalid private witness'));
   }),
 );
 
@@ -1823,10 +1975,10 @@ it.each(['before_commit', 'after_commit'] as const)(
         throw new Error('Injected lost database acknowledgement');
       });
       expect(await pauseResponseForReview({ ...f, checkpointer }, f.deps)).toBe(true);
-      await f.execution.settle();
+      await f.settle();
       expect(publish).toHaveBeenCalledTimes(2);
       expect(publish.mock.calls[1]).toEqual(publish.mock.calls[0]);
-      expect(f.unfinishedWrites()).toBe(1);
+      expect(await f.canonicalMessages()).toBe(0);
       expect(f.modelCalls()).toBe(1);
       expect(f.execution.isPaused).toBe(true);
       const saved = (await storage.read(owner, responseId))!;
@@ -1862,7 +2014,7 @@ it.each(['cancelled', 'erased', 'replaced', 'outage'] as const)(
       await expect(pauseResponseForReview({ ...f, checkpointer }, f.deps)).rejects.toThrow();
       expect(publish).toHaveBeenCalledTimes(2);
       expect(publish.mock.calls[1]).toEqual(publish.mock.calls[0]);
-      expect(f.unfinishedWrites()).toBe(1);
+      expect(await f.canonicalMessages()).toBe(0);
       expect(f.modelCalls()).toBe(1);
       const saved = await storage.read(owner, responseId);
       if (failure === 'erased') expect(saved).toBeNull();

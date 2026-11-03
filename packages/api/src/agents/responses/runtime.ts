@@ -3,7 +3,7 @@ import { responseReference } from '@librechat/data-schemas';
 import { checkpointerSchema, responseReviewDecisionSchema } from 'librechat-data-provider';
 import type { ResponseTerminalReceipt, StoredResponseRecord } from '@librechat/data-schemas';
 import type { Request, Response as HttpResponse } from 'express';
-import type { Agents, TMessage } from 'librechat-data-provider';
+import type { Agents } from 'librechat-data-provider';
 import type { Run, IState } from '@librechat/agents';
 import type {
   ResponseTerminalCompletion,
@@ -134,11 +134,6 @@ export interface ResponseExecutionRuntime {
       agents: Parameters<typeof createRun>[0]['agents'];
       buildPartial: () => Response;
       visibleOutputTokens: number;
-      persistence: {
-        saveConversation: () => Promise<void>;
-        saveInput: () => Promise<void>;
-        saveOutput: (partial: Response) => Promise<Partial<TMessage> | void>;
-      };
     },
     complete: () => Promise<T>,
   ) => Promise<T | undefined>;
@@ -246,7 +241,6 @@ export function createResponseExecutionRuntime(
   }
 
   let rememberedTools: string[] = [];
-  let responseParentMessageId: string | undefined;
   let prefix: Response | undefined;
   const seeded = new WeakSet<ResponseAggregator>();
   function previous(): Response | undefined {
@@ -626,18 +620,8 @@ export function createResponseExecutionRuntime(
         };
     },
     inputChain(chain) {
-      if (!admission?.resume) {
-        responseParentMessageId = chain.parentMessageId;
-        return chain;
-      }
-      const action: Agents.PendingAction = JSON.parse(
-        admission.record.review?.pendingActionJSON ?? 'null',
-      );
-      const parent = action?.resumeContext?.responseParentMessageId;
-      if (typeof parent !== 'string' || parent.length === 0)
-        throw new Error('Response resumed input identity unavailable');
-      responseParentMessageId = parent;
-      return { messages: [], parentMessageId: parent };
+      if (!admission?.resume) return chain;
+      return { messages: [], parentMessageId: admission.record.parentMessageId };
     },
     visibleOutputTokens,
     seedAggregator(aggregator) {
@@ -803,11 +787,6 @@ export function createResponseExecutionRuntime(
         {
           storage: admission.storage,
           jobs: continuation.jobs,
-          persistUnfinished: async (response) => {
-            await input.persistence.saveConversation();
-            await input.persistence.saveInput();
-            await input.persistence.saveOutput(response);
-          },
           buildAction: async (interrupt) => {
             const payload =
               interrupt.payload.type === 'tool_approval'
@@ -852,7 +831,6 @@ export function createResponseExecutionRuntime(
                 resumeContext: {
                   ...pickResumeContext(request.body, request.reasoningOverrideBase),
                   discoveredToolNames: getRunDiscoveredTools(input.run),
-                  responseParentMessageId,
                 },
               },
             });
