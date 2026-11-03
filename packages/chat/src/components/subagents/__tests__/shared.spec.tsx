@@ -10,6 +10,7 @@ import type { ActiveSubagentPanel } from '../../../react/subagents/state';
 import type { ChatSurface } from '../../../react/subagents/surface';
 import type { SubagentsHost } from '../../../react/subagents/host';
 import type { MessagePartsHost } from '../../../react/host';
+import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { useOpenSubagentPanel } from '../../../react/subagents/surface';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
@@ -121,13 +122,13 @@ const messagesHost = createMessagesHost({
   ),
 });
 
-const subagentsHost: SubagentsHost = {
+const subagentsHost: SubagentsHost = createSubagentsHost({
   renderSteer: () => null,
   useRetainedControl: () => ({ isFetching: false, isError: false, refetch: () => undefined }),
   useTaskContent: () => ({ isError: false, isUnavailable: false, refetch: () => undefined }),
   useAgentsMap: () => ({}),
   useChildPartsHost: (host) => host,
-};
+});
 
 const surface: ChatSurface = {
   enterToSend: true,
