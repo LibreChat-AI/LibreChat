@@ -14,11 +14,21 @@ try {
   const metadata = yaml.load(readFileSync(resolve(chart, 'Chart.yaml'), 'utf8'));
   delete metadata.dependencies;
   writeFileSync(join(fixture, 'Chart.yaml'), yaml.dump(metadata));
-  copyFileSync(resolve(chart, 'values.yaml'), join(fixture, 'values.yaml'));
-  for (const file of ['_helpers.tpl', 'service.yaml', 'channel-gateway.yaml']) {
+  const defaults = yaml.load(readFileSync(resolve(chart, 'values.yaml'), 'utf8'));
+  for (const name of ['mongodb', 'meilisearch', 'redis']) defaults[name].enabled = false;
+  writeFileSync(join(fixture, 'values.yaml'), yaml.dump(defaults));
+  for (const file of [
+    '_helpers.tpl',
+    'service.yaml',
+    'deployment.yaml',
+    'configmap-env.yaml',
+    'serviceaccount.yaml',
+    'channel-gateway.yaml',
+  ]) {
     copyFileSync(resolve(chart, 'templates', file), join(fixture, 'templates', file));
   }
-  function render(values = {}) {
+  function render(values = {}, platform = {}) {
+    writeFileSync(join(fixture, 'platform.yaml'), yaml.dump(platform));
     return yaml
       .loadAll(
         execFileSync(
@@ -27,6 +37,8 @@ try {
             'template',
             'fixture',
             fixture,
+            '-f',
+            join(fixture, 'platform.yaml'),
             ...Object.entries(values).flatMap(([key, value]) => [
               typeof value === 'boolean' ? '--set' : '--set-string',
               `${key}=${value}`,
@@ -37,7 +49,11 @@ try {
       )
       .filter(Boolean);
   }
-  assert.equal(render().length, 1, 'disabled gateway must not create resources');
+  assert.equal(
+    render().filter((doc) => doc.kind === 'Deployment').length,
+    1,
+    'disabled gateway must leave only the application Deployment',
+  );
   const enabled = {
     'channelGateway.enabled': true,
     'channelGateway.channelId': 'connection',
@@ -65,6 +81,8 @@ try {
       'channelGateway.appTitle': 'Custom Agents',
     },
     { fullnameOverride: 'a'.repeat(47) + '-channel-gateway' },
+    { 'channelGateway.image.tag': 'a'.repeat(128) },
+    { 'channelGateway.image.tag': '_custom_' },
     { 'image.tag': 'v1.2.3-rc1', 'service.port': '9090' },
     {
       'channelGateway.image.tag': 'v1.2.4',
@@ -74,7 +92,11 @@ try {
     },
   ]) {
     const docs = render({ ...enabled, ...overrides });
-    const deployment = docs.find((doc) => doc.kind === 'Deployment');
+    const deployment = docs.find(
+      (doc) =>
+        doc.kind === 'Deployment' &&
+        doc.spec.template.spec.containers.some((container) => container.name === 'channel-gateway'),
+    );
     const service = docs.find(
       (doc) => doc.metadata.name === deployment.metadata.name && doc.kind === 'Service',
     );
@@ -88,6 +110,12 @@ try {
     assert(matches(service.spec.selector));
     assert(matches(deployment.spec.selector.matchLabels));
     assert(deployment.metadata.name.length <= 63);
+    const version =
+      overrides['channelGateway.image.tag'] || overrides['image.tag'] || enabled['image.tag'];
+    const labelVersion = version.slice(0, 63).replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '');
+    assert.equal(deployment.metadata.labels['app.kubernetes.io/version'], labelVersion);
+    assert.equal(pod.metadata.labels['app.kubernetes.io/version'], labelVersion);
+    assert.equal(service.metadata.labels['app.kubernetes.io/version'], labelVersion);
     assert.equal(service.spec.type, 'ClusterIP');
     assert.equal(
       container.image,
@@ -120,6 +148,73 @@ try {
     assert.equal(container.securityContext.readOnlyRootFilesystem, true);
     assert.equal(deployment.spec.strategy.type, 'Recreate');
   }
+  const platform = {
+    serviceAccount: { create: false, name: 'workload-account' },
+    enableServiceLinks: false,
+    hostAliases: [{ ip: '127.0.0.2', hostnames: ['fixture.invalid'] }],
+    dnsPolicy: 'ClusterFirst',
+    dnsConfig: { options: [{ name: 'ndots', value: '2' }] },
+    imagePullSecrets: [{ name: 'registry-credentials' }],
+    nodeSelector: { 'kubernetes.io/os': 'linux' },
+    tolerations: [{ key: 'dedicated', operator: 'Exists', effect: 'NoSchedule' }],
+    affinity: { podAntiAffinity: { preferredDuringSchedulingIgnoredDuringExecution: [] } },
+    podAnnotations: { platform: 'fixture' },
+    podLabels: { platform: 'fixture' },
+    deploymentAnnotations: { platform: 'fixture' },
+    deploymentLabels: { platform: 'fixture' },
+    securityContext: { runAsUser: 10001 },
+  };
+  const deployments = render(enabled, platform).filter((doc) => doc.kind === 'Deployment');
+  const gateway = deployments.find(
+    (doc) => doc.spec.template.spec.containers[0].name === 'channel-gateway',
+  );
+  const app = deployments.find((doc) => doc !== gateway);
+  const spec = gateway.spec.template.spec;
+  for (const key of [
+    'serviceAccountName',
+    'enableServiceLinks',
+    'hostAliases',
+    'dnsPolicy',
+    'dnsConfig',
+    'imagePullSecrets',
+    'nodeSelector',
+    'tolerations',
+    'affinity',
+  ]) {
+    assert.deepEqual(spec[key], app.spec.template.spec[key], `gateway must honor shared ${key}`);
+    if (key !== 'serviceAccountName')
+      assert.deepEqual(spec[key], platform[key], `configured ${key} must survive rendering`);
+  }
+  assert.equal(spec.serviceAccountName, 'workload-account');
+  assert.equal(spec.enableServiceLinks, false);
+  assert.equal(spec.containers[0].securityContext.runAsUser, 10001);
+  assert.equal(spec.containers[0].securityContext.readOnlyRootFilesystem, true);
+  assert.equal(spec.automountServiceAccountToken, false);
+  assert.equal(gateway.spec.template.metadata.annotations.platform, 'fixture');
+  assert.equal(gateway.spec.template.metadata.labels.platform, 'fixture');
+  assert.equal(gateway.metadata.annotations.platform, 'fixture');
+  assert.equal(gateway.metadata.labels.platform, 'fixture');
+  assert.equal(spec.containers[0].envFrom, undefined);
+  const defaultGateway = render(enabled).find(
+    (doc) =>
+      doc.kind === 'Deployment' && doc.spec.template.spec.containers[0].name === 'channel-gateway',
+  );
+  assert.equal(defaultGateway.spec.template.spec.serviceAccountName, 'fixture-librechat');
+  assert.equal(defaultGateway.spec.template.spec.enableServiceLinks, true);
+  const clearedSecurity = render(enabled, { securityContext: null, podSecurityContext: null }).find(
+    (doc) =>
+      doc.kind === 'Deployment' && doc.spec.template.spec.containers[0].name === 'channel-gateway',
+  );
+  assert.equal(clearedSecurity.spec.template.spec.containers[0].securityContext.runAsUser, 1000);
+  assert.deepEqual(
+    clearedSecurity.spec.template.spec.containers[0].securityContext.capabilities.drop,
+    ['ALL'],
+  );
+  assert.equal(
+    app.metadata.labels['app.kubernetes.io/version'],
+    metadata.appVersion,
+    'existing application labels must remain unchanged',
+  );
   console.log(
     'PASS: optional gateway rendering, image matching, secret isolation, selectors and probes',
   );

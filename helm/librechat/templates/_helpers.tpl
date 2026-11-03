@@ -38,8 +38,10 @@ Standard labels for chart-managed workloads.
 {{- $root := .root -}}
 helm.sh/chart: {{ include "librechat.chart" $root }}
 {{ .selectorLabels }}
-{{- if $root.Chart.AppVersion }}
-app.kubernetes.io/version: {{ $root.Chart.AppVersion | quote }}
+{{- $version := $root.Chart.AppVersion -}}
+{{- if hasKey . "version" -}}{{- $version = .version -}}{{- end -}}
+{{- if $version }}
+app.kubernetes.io/version: {{ $version | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ $root.Release.Service }}
 {{- end -}}
@@ -264,5 +266,24 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{- define "librechat.channelGateway.labels" -}}
-{{- include "librechat.standardLabels" (dict "root" . "selectorLabels" (include "librechat.channelGateway.selectorLabels" .)) }}
+{{- $version := include "librechat.channelGateway.imageTag" . | trunc 63 -}}
+{{- $version = regexReplaceAll "^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$" $version "" -}}
+{{- include "librechat.standardLabels" (dict "root" . "selectorLabels" (include "librechat.channelGateway.selectorLabels" .) "version" $version) }}
+{{- end }}
+
+{{/* Shared platform controls; application secrets, storage and probes stay workload-owned. */}}
+{{- define "librechat.podSettings" -}}
+{{- $settings := dict "serviceAccountName" (include "librechat.serviceAccountName" .) -}}
+{{- range $key := list "hostAliases" "dnsPolicy" "dnsConfig" "imagePullSecrets" "nodeSelector" "affinity" "tolerations" -}}
+{{- with index $.Values $key -}}{{- $_ := set $settings $key . -}}{{- end -}}
+{{- end -}}
+{{- if kindIs "bool" .Values.enableServiceLinks -}}
+{{- $_ := set $settings "enableServiceLinks" .Values.enableServiceLinks -}}
+{{- end -}}
+{{- toYaml $settings -}}
+{{- end }}
+
+{{- define "librechat.channelGateway.imageTag" -}}
+{{- $tag := required "Set image.tag to a published LibreChat release containing Channels before enabling channelGateway" .Values.image.tag -}}
+{{- .Values.channelGateway.image.tag | default $tag -}}
 {{- end }}
