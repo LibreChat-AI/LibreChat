@@ -1,36 +1,40 @@
 import { useMemo } from 'react';
-import { findSubagentDispatch } from '@librechat/chat';
-import { MessageRow } from '@librechat/chat/components';
+import { useLocalize } from '@librechat/client';
+import type { ComponentProps, ReactElement } from 'react';
+import type { Agent } from 'librechat-data-provider';
+import type { WakeupTask } from '../../core/parts/wakeup';
 import {
-  useParentSubagents,
   messageAuthor,
+  useParentAuthor,
   resolveSubagentAuthor,
   findAgentAuthorMessage,
-  useParentAuthor,
-} from '@librechat/chat/react';
-import type { WakeupTask } from '@librechat/chat';
-import type { ComponentProps } from 'react';
-import { useOptionalMessagesOperations } from '~/Providers/MessagesViewContext';
-import { useShareContext } from '~/Providers/ShareContext';
-import { useAgentsMapContext } from '~/Providers';
-import { useLocalize } from '~/hooks';
+} from '../../react/subagents/author';
+import { findSubagentDispatch } from '../../core/subagents/dispatch';
+import { useParentSubagents } from '../../react/subagents/parents';
+import { useMessagesHost } from '../../react/messages/host';
+import { useMessagePartsHost } from '../../react/host';
+import MessageRow from './MessageRow';
 
 /** Only wake-up rows observe the child index; ordinary rows keep their subscriptions. */
 export default function WakeupRow({
   task,
   conversationId,
+  agentsMap,
   ...props
-}: ComponentProps<typeof MessageRow> & { task?: WakeupTask; conversationId: string }) {
+}: ComponentProps<typeof MessageRow> & {
+  task?: WakeupTask;
+  conversationId: string;
+  /** The viewer's agents by id, for naming and drawing a turn's author; undefined until loaded. */
+  agentsMap: Record<string, Agent | undefined> | undefined;
+}): ReactElement {
   const localize = useLocalize();
-  const agentsMap = useAgentsMapContext();
-  const { isSharedConvo } = useShareContext();
-  const { getMessages } = useOptionalMessagesOperations();
+  const { isSharedConvo } = useMessagePartsHost().useShare();
+  const getMessages = useMessagesHost().useGetMessages();
   const { byThreadId } = useParentSubagents();
   const child = task?.threadId == null ? undefined : byThreadId.get(task.threadId);
   const dispatch = useMemo(
-    () =>
-      child == null ? findSubagentDispatch(getMessages(conversationId), task?.threadId) : undefined,
-    [child, conversationId, getMessages, task?.threadId],
+    () => (child == null ? findSubagentDispatch(getMessages(), task?.threadId) : undefined),
+    [child, getMessages, task?.threadId],
   );
   const parentMessageId = child?.parentMessageId ?? dispatch?.message.messageId ?? props.id ?? '';
   const fallbackName = localize('com_ui_subagent_actor');
