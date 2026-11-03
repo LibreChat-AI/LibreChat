@@ -33,6 +33,41 @@ export type ActivitySlotProps = {
 /** Reports, from the end marker's visibility, that the reader has seen the conversation. */
 export type ReportNearBottom = (isNearBottom: boolean) => void;
 
+/** A conversation's newest reply, as the app's conversation store holds it. */
+export type SeenReply = {
+  /** When the newest reply landed; absent when the conversation has none. */
+  lastResponseAt?: string;
+  /** The reply that stamp belongs to; absent for a manual marker or a legacy stamp. */
+  lastResponseMessageId?: string;
+  /** Whether the stamp is a manual "mark as unread" marker rather than a real reply. */
+  lastResponseIsManual?: boolean;
+  /** Whether the reply landed after the viewer last caught up with the conversation. */
+  unseen: boolean;
+};
+
+/** Where a message reply's proof of being on screen came from: a terminal stream event that
+ *  committed it locally, or a messages fetch from the server. */
+export type ReplyProofSource = 'local' | 'server';
+
+/** The app's read-state storage and transport, which the list's seen reporting reads and
+ *  writes. Its members keep their identity across renders. */
+export type ConversationSeenSource = {
+  /** Reads the conversation's newest reply from the app's conversation store. */
+  readReply: (conversationId: string) => SeenReply | undefined;
+  /** Whether the cached messages of the conversation are still the ones that proved the reply
+   *  with this stamp, from the given source. */
+  hasReplyProof: (
+    conversationId: string,
+    lastResponseAt: string,
+    from: ReplyProofSource,
+  ) => boolean;
+  /** Acknowledges the reply with this stamp, and no newer one, on the server. */
+  markSeen: (input: { conversationId: string; lastResponseAt: string }) => void;
+  /** Takes the flag a notification click raises before it focuses the window, so that focus
+   *  is not read as the viewer returning to the open conversation. */
+  consumeFocusSuppression: () => boolean;
+};
+
 /** The viewer's fork defaults, kept across sessions. */
 export type ForkPreferences = {
   /** The fork option used without asking, when `rememberOption` is set. */
@@ -138,14 +173,8 @@ export interface MessagesHost {
   useScreenshotTarget: () => RefObject<HTMLDivElement> | undefined;
   /** Whether the viewer asked the thread to follow new content to the bottom. */
   useAutoScroll: () => boolean;
-  /** Marks the conversation seen once its latest reply is on screen; returns the reporter the
-   *  end marker's visibility feeds. */
-  useConversationSeen: (
-    conversationId: string | undefined,
-    isSubmitting: boolean,
-    measureNearBottom: () => boolean | null,
-    isResponseRendered: (messageId: string) => boolean,
-  ) => ReportNearBottom;
+  /** The read-state storage the list marks a conversation seen through. */
+  useSeenSource: () => ConversationSeenSource;
 
   /** Renders a message author's icon with the app's endpoint and avatar icons. */
   renderMessageIcon: (props: MessageIconProps) => ReactNode;
@@ -170,12 +199,18 @@ const fallbackForkPreferences: ForkPreferences = {
   setRememberOption: noop,
 };
 
-const ignoreNearBottom: ReportNearBottom = () => undefined;
+/** Read state with nothing behind it: no conversation is ever unseen, so nothing is written. */
+const inertSeenSource: ConversationSeenSource = {
+  readReply: () => undefined,
+  hasReplyProof: () => false,
+  markSeen: noop,
+  consumeFocusSuppression: () => false,
+};
 
 const noMessages = (): TMessage[] | undefined => undefined;
 
 /** The host rows read outside any provider before an app registers one: locale clock, no slots,
- *  no forking, no copying, no thread, no queued turn, no read-aloud. */
+ *  no forking, no copying, no thread, no queued turn, no read-aloud, no read state. */
 const fallbackHost: MessagesHost = {
   useHour12: () => undefined,
   renderFiles: () => null,
@@ -187,7 +222,7 @@ const fallbackHost: MessagesHost = {
   renderMessageAudio: () => null,
   useScreenshotTarget: () => useRef<HTMLDivElement>(null),
   useAutoScroll: () => false,
-  useConversationSeen: () => ignoreNearBottom,
+  useSeenSource: () => inertSeenSource,
   renderMessageIcon: () => null,
   renderMessageRow: () => null,
   renderActivity: () => null,

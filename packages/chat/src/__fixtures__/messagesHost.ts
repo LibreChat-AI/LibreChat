@@ -21,7 +21,12 @@ export function createMessagesHost(overrides: Partial<MessagesHost> = {}): Messa
     renderMessageAudio: () => null,
     useScreenshotTarget: () => undefined,
     useAutoScroll: () => false,
-    useConversationSeen: () => () => undefined,
+    useSeenSource: () => ({
+      readReply: () => undefined,
+      hasReplyProof: () => false,
+      markSeen: () => undefined,
+      consumeFocusSuppression: () => false,
+    }),
     renderMessageIcon: () => null,
     renderMessageRow: () => null,
     renderActivity: () => null,

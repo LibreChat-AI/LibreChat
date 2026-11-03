@@ -130,6 +130,7 @@ export { useComposerOverlay, composerOverlayCountFamily } from './react/overlay'
 export { default as useTimeTick } from './react/tick';
 export { default as useGenerationsByLatest } from './react/messages/generations';
 export type { Generations, TUseGenerations } from './react/messages/generations';
+export { default as useConversationSeen } from './react/messages/useConversationSeen';
 export {
   reconcileMessageContentLayout,
   getRenderedContentMaxScrollTop,
@@ -151,6 +152,9 @@ export type {
   ForkConversation,
   ActivitySlotProps,
   ReportNearBottom,
+  SeenReply,
+  ReplyProofSource,
+  ConversationSeenSource,
   MessageIconData,
   MessageIconProps,
   MessageAudioProps,
