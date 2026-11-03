@@ -19,6 +19,7 @@ import type { TurnAuthor } from '../../../react/subagents/author';
 import type { ChatContract } from '../../../react/chat/contract';
 import { MessagePartsHostProvider, useMessagePartsHost } from '../../../react/host';
 import { mergeChildConversationTurns } from '../../../react/subagents/adapters';
+import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { SubagentsHostProvider } from '../../../react/subagents/host';
 import { ChatContext } from '../../../react/chat/context';
@@ -120,13 +121,13 @@ const parentHost: AskPartsHost = {
 /** The app's child host: the parent's, with the send member standing down. */
 const childHost: AskPartsHost = { ...parentHost, useMessagesAsk: () => () => undefined };
 
-const subagentsHost: SubagentsHost = {
+const subagentsHost: SubagentsHost = createSubagentsHost({
   renderSteer: () => null,
   useRetainedControl: () => ({ isFetching: false, isError: false, refetch: () => undefined }),
   useTaskContent: (scope, options) => mockRecoveredQuery(scope, options),
   useAgentsMap: () => undefined,
   useChildPartsHost: () => childHost,
-};
+});
 
 const surface: ChatSurface = {
   enterToSend: true,

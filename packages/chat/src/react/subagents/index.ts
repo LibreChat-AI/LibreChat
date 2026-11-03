@@ -16,3 +16,4 @@ export * from './provider';
 export * from './task';
 export * from './scope';
 export * from './host';
+export * from './thread';

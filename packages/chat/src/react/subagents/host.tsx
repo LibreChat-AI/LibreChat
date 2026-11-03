@@ -1,5 +1,14 @@
 import { createContext, useContext } from 'react';
-import type { Agent, SubagentTaskContentSnapshot } from 'librechat-data-provider';
+import type {
+  Agent,
+  TConversation,
+  SubagentThreadView,
+  SubagentControlRequest,
+  SubagentControlResponse,
+  ToolCallPartParams,
+  ToolCallPartResponse,
+  SubagentTaskContentSnapshot,
+} from 'librechat-data-provider';
 import type { MouseEventHandler, ReactNode } from 'react';
 import type { SteerReceiptState } from '../../components/composer/steering/Receipt';
 import type { ToolContentQuery } from '../parts/disclosure';
@@ -41,6 +50,65 @@ export type SubagentTaskContent = {
   refetch: () => void;
 };
 
+/** A child thread's durable view, read through the parent conversation. */
+export type SubagentThreadRead = {
+  data?: SubagentThreadView;
+  isLoading: boolean;
+  isError: boolean;
+  /** `data` still describes the previous key while the new one loads. */
+  isPreviousData: boolean;
+  /** The child has not published its thread yet, inside the readiness window. */
+  isReadinessPending: boolean;
+  refetch: () => void;
+};
+
+export type SubagentThreadReadOptions = {
+  /** Keep the previous key's view mounted while a new key loads. */
+  keepPreviousData?: boolean;
+  /** Poll at this interval instead of the thread's own readiness schedule. */
+  refetchInterval?: number;
+};
+
+/** One steering command sent to a running child. */
+export type SubagentControlVariables = {
+  parentConversationId: string;
+  threadId: string;
+  command: SubagentControlRequest;
+  /** Client-only timestamp retained across retries; never sent to the API. */
+  submittedAt: string;
+};
+
+/** A child thread carried into a conversation of the reader's own. */
+export type SubagentContinueVariables = {
+  conversationId: string;
+  messageId: string;
+};
+
+export type SubagentMutationHandlers<TData, TVariables> = {
+  onSuccess?: (data: TData, variables: TVariables) => void;
+  onError?: (error: unknown, variables: TVariables) => void;
+};
+
+export type SubagentMutation<TVariables> = {
+  mutate: (variables: TVariables) => void;
+  isLoading: boolean;
+};
+
+/** A parent tool call's stored part. */
+export type SubagentToolCallPart = {
+  data?: ToolCallPartResponse;
+  isError: boolean;
+  refetch: () => void;
+};
+
+/** Where the thread panel sends the reader. */
+export type SubagentNavigation = {
+  /** Opens a conversation the app already holds, as the chat list does. */
+  openConversation: (conversation: TConversation) => void;
+  /** Opens a conversation by id. */
+  openConversationId: (conversationId: string) => void;
+};
+
 /**
  * What a subagent transcript reads from the app: render slots for the parts it shares with the
  * main chat and has not received yet, and the one read it makes. Members are hooks or slots,
@@ -74,6 +142,43 @@ export interface SubagentsHost {
    * that act on the parent's messages view stood down. Returns the same object while `host` is.
    */
   useChildPartsHost: (host: MessagePartsHost) => MessagePartsHost;
+  /** A child thread's durable view, fetched while both ids are set. */
+  useThread: (
+    parentConversationId: string,
+    threadId: string,
+    taskId: string,
+    options: SubagentThreadReadOptions,
+  ) => SubagentThreadRead;
+  /** Fetches one page of a child thread outside the cached read: a task's exact view, or the
+   *  history before `cursor`. */
+  loadThread: (
+    parentConversationId: string,
+    threadId: string,
+    taskId?: string,
+    cursor?: string,
+  ) => Promise<SubagentThreadView>;
+  /** Sends a steering command to a running child and reconciles the thread's receipts. */
+  useControl: (
+    handlers: SubagentMutationHandlers<SubagentControlResponse, SubagentControlVariables>,
+  ) => SubagentMutation<SubagentControlVariables>;
+  /** Forks a child thread into a conversation of the reader's own. */
+  useContinueChat: (
+    handlers: SubagentMutationHandlers<{ conversation?: TConversation }, SubagentContinueVariables>,
+  ) => SubagentMutation<SubagentContinueVariables>;
+  /** Reads a parent tool call's stored part through the parent message, while `enabled`. */
+  useToolCallPart: (
+    params: ToolCallPartParams,
+    options: { enabled: boolean },
+    revision?: string,
+  ) => SubagentToolCallPart;
+  /** Where the panel sends the reader. */
+  useNavigation: () => SubagentNavigation;
+  /** Whether the panel is a modal sheet over the chat rather than a region beside it. */
+  useSheetLayout: () => boolean;
+  /** Whether the deployment draws a footer bar the panel's composer has to clear. */
+  useClearsFooter: () => boolean;
+  /** Wraps a foreground child's activity in the parent's tool approval scope. */
+  renderApprovalScope: (props: { scopeKey: string; children: ReactNode }) => ReactNode;
 }
 
 const idleControl: SubagentRetainedControl = {
@@ -88,6 +193,21 @@ const idleContent: SubagentTaskContent = {
   refetch: () => undefined,
 };
 
+const idleThread: SubagentThreadRead = {
+  isLoading: false,
+  isError: false,
+  isPreviousData: false,
+  isReadinessPending: false,
+  refetch: () => undefined,
+};
+
+const idlePart: SubagentToolCallPart = { isError: false, refetch: () => undefined };
+
+const idleNavigation: SubagentNavigation = {
+  openConversation: () => undefined,
+  openConversationId: () => undefined,
+};
+
 /** The host a transcript reads before an app registers one: no slots and no reads. */
 const fallbackHost: SubagentsHost = {
   renderSteer: () => null,
@@ -95,6 +215,15 @@ const fallbackHost: SubagentsHost = {
   useTaskContent: () => idleContent,
   useAgentsMap: () => undefined,
   useChildPartsHost: (host) => host,
+  useThread: () => idleThread,
+  loadThread: () => Promise.reject(new Error('subagents_host_required')),
+  useControl: () => ({ mutate: () => undefined, isLoading: false }),
+  useContinueChat: () => ({ mutate: () => undefined, isLoading: false }),
+  useToolCallPart: () => idlePart,
+  useNavigation: () => idleNavigation,
+  useSheetLayout: () => false,
+  useClearsFooter: () => false,
+  renderApprovalScope: ({ children }) => children,
 };
 
 const SubagentsHostContext = createContext<SubagentsHost | null>(null);
