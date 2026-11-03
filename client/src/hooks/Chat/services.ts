@@ -1,4 +1,3 @@
-import { useStore } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
@@ -15,8 +14,6 @@ import {
   withSubmittedCodeDecision,
   resolveSubmittedCodeApprovalMode,
 } from '~/hooks/Agents/codeDecision';
-import { activeUsageResponseIdFamily } from '~/components/Chat/Input/TokenUsage/store';
-import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
@@ -25,7 +22,6 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
 import { resolveSubmittedReasoning } from './ask/reasoning';
-import { isHistoryRevalidating } from './ask/guards';
 import useUserKey from '~/hooks/Input/useUserKey';
 
 /** The app's side of a pane's turns: its catalogs, router, composer files, code workspace and
@@ -34,7 +30,6 @@ export default function useTurnServices({
   index,
   conversation,
 }: Pick<ChatTurnsParams, 'index' | 'conversation'>): TurnServices {
-  const store = useStore();
   const navigate = useNavigate();
   const getSender = useGetSender();
   const queryClient = useQueryClient();
@@ -42,7 +37,6 @@ export default function useTurnServices({
   const agentsMap = useAgentsMapContext();
   const { isTemporary, config, auth, getEphemeralAgent, addedConversation } = useChatSettings();
   const { getExpiry } = useUserKey(conversation?.endpoint ?? '');
-  const focusResponse = useFocusRegeneratedResponse();
   const getConversation = useGetConversation(index);
   const codeWorkspaceState = useCodeWorkspace(conversation, addedConversation);
   const { modes: codeApprovalModes, selected: fallbackCodeApprovalMode } = useCodeApprovalMode(
@@ -61,7 +55,6 @@ export default function useTurnServices({
     getSender,
     getUserKey: getExpiry,
     getRouteProjectId: getRouteChatProjectId,
-    isHistoryRevalidating: (conversationId) => isHistoryRevalidating(queryClient, conversationId),
     resolveCode: (submitted) => {
       const latest = getConversation();
       const latestApprovalMode = latest?.codeApprovalMode;
@@ -107,9 +100,6 @@ export default function useTurnServices({
     },
     releaseFiles: (fileIds) => markPasteSubmitted(...fileIds),
     clearFilesToDelete: () => setFilesToDelete({}),
-    bindResponse: (conversationKey, responseMessageId) =>
-      store.set(activeUsageResponseIdFamily(conversationKey), responseMessageId),
-    focusResponse,
     bindLaunch: bindComposerLaunch,
   };
 }

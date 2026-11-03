@@ -9,7 +9,6 @@ export const createTurnServices = (overrides: Partial<TurnServices> = {}): TurnS
   getSender: () => 'Assistant',
   getUserKey: () => undefined,
   getRouteProjectId: () => null,
-  isHistoryRevalidating: () => false,
   resolveCode: () => ({
     code: { approvalMode: undefined, environmentMode: undefined, workspaces: undefined },
     apply: (conversation) => conversation,
@@ -18,8 +17,6 @@ export const createTurnServices = (overrides: Partial<TurnServices> = {}): TurnS
   openNewChat: jest.fn(),
   releaseFiles: jest.fn(),
   clearFilesToDelete: jest.fn(),
-  bindResponse: jest.fn(),
-  focusResponse: jest.fn(),
   bindLaunch: jest.fn(),
   ...overrides,
 });

@@ -90,8 +90,6 @@ export type TurnServices = {
   getUserKey: () => string | undefined;
   /** The project the route scopes a new chat to. */
   getRouteProjectId: () => string | null;
-  /** Whether cached history is mid-refetch and old enough that a send could fork from it. */
-  isHistoryRevalidating: (conversationId: string | null) => boolean;
   /** The send's code decision; `null` refuses the send. */
   resolveCode: (conversation: TConversation | null) => TurnCodeDecision | null;
   /**
@@ -111,10 +109,6 @@ export type TurnServices = {
   releaseFiles: (fileIds: (string | undefined)[]) => void;
   /** Forgets the files queued for deletion once the composer is cleared. */
   clearFilesToDelete: () => void;
-  /** Binds the conversation's usage display to the response it is waiting on. */
-  bindResponse: (conversationKey: string, responseMessageId: string) => void;
-  /** Brings a regenerated response into view. */
-  focusResponse: (parentMessageId?: string | null) => void;
   /** Ties the composer launch to the conversation the submission starts. */
   bindLaunch: (conversation: TSubmission['conversation'], index: number) => void;
 };
