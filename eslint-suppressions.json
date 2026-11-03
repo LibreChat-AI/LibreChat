@@ -1317,9 +1317,6 @@
   "packages/chat/src/components/composer/usage/Breakdown.tsx": {
     "shadcn/no-restyle": {
       "count": 10
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 2
     }
   },
   "packages/chat/src/components/messages/Feedback.tsx": {
