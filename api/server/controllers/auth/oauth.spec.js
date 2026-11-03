@@ -8,6 +8,8 @@ const mockSendOpenIDAuthResponse = jest.fn();
 const mockGetLogStores = jest.fn();
 const mockCheckBan = jest.fn();
 const mockGenerateToken = jest.fn();
+const mockGetAppConfig = jest.fn();
+const mockGetAppConfigOptionsFromUser = jest.fn();
 const mockLogger = { info: jest.fn(), error: jest.fn() };
 
 jest.mock('librechat-data-provider', () => ({
@@ -24,6 +26,11 @@ jest.mock('@librechat/api', () => ({
   getAdminPanelUrl: (...args) => mockGetAdminPanelUrl(...args),
   isAdminPanelRedirect: (...args) => mockIsAdminPanelRedirect(...args),
   generateAdminExchangeCode: (...args) => mockGenerateAdminExchangeCode(...args),
+  getAppConfigOptionsFromUser: (...args) => mockGetAppConfigOptionsFromUser(...args),
+}));
+
+jest.mock('~/server/services/Config', () => ({
+  getAppConfig: (...args) => mockGetAppConfig(...args),
 }));
 
 jest.mock('~/server/services/PermissionService', () => ({
@@ -96,6 +103,8 @@ describe('createOAuthHandler', () => {
     mockGenerateToken.mockResolvedValue('jwt-token');
     mockGenerateAdminExchangeCode.mockResolvedValue('exchange-code');
     mockSendOpenIDAuthResponse.mockResolvedValue('app-token');
+    mockGetAppConfigOptionsFromUser.mockReturnValue({ tenantId: 'tenant-a' });
+    mockGetAppConfig.mockResolvedValue({ config: {} });
   });
 
   afterAll(() => {
@@ -163,6 +172,14 @@ describe('createOAuthHandler', () => {
 
     await handler(req, res, next);
 
+    expect(mockGetAppConfigOptionsFromUser).toHaveBeenCalledWith(req.user);
+    expect(mockGetAppConfig).toHaveBeenCalledWith({ tenantId: 'tenant-a', baseOnly: true });
+    expect(mockSyncUserEntraGroupMemberships).toHaveBeenCalledWith(
+      req.user,
+      'openid-access-token',
+      null,
+      { config: {} },
+    );
     expect(mockSendOpenIDAuthResponse).toHaveBeenCalledWith({
       tokenset: req.user.tokenset,
       user: req.user,

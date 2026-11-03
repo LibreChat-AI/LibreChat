@@ -642,12 +642,12 @@ describe('GraphApiService', () => {
       expect(result).toEqual(['user-1', 'user-2']);
     });
 
-    it('should return empty array on error', async () => {
+    it('should return null on error', async () => {
       mockGraphClient.get.mockRejectedValue(new Error('API error'));
 
       const result = await GraphApiService.getGroupMembers('token', 'user', 'group-id');
 
-      expect(result).toEqual([]);
+      expect(result).toBeNull();
     });
   });
 });
