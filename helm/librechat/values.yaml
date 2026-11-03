@@ -299,9 +299,12 @@ channelGateway:
   enabled: false
   image:
     repository: ghcr.io/librechat-ai/librechat-channel-gateway
-    # Defaults to image.tag, then Chart.appVersion, to match LibreChat.
+    # Defaults to image.tag, which must explicitly select a release containing Channels.
     tag: ""
     pullPolicy: IfNotPresent
+  # Defaults to librechat.configEnv.APP_TITLE or LibreChat. Set explicitly when
+  # the application title comes from a Secret or global.librechat.env.
+  appTitle: ""
   channelId: ""
   tenantId: "_"
   # Empty derives the in-cluster LibreChat Service URL.

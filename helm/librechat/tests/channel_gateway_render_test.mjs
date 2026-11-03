@@ -38,14 +38,33 @@ try {
       .filter(Boolean);
   }
   assert.equal(render().length, 1, 'disabled gateway must not create resources');
-  const enabled = { 'channelGateway.enabled': true, 'channelGateway.channelId': 'connection' };
-  assert.throws(() => render({ 'channelGateway.enabled': true }), /channelGateway.channelId/);
+  const enabled = {
+    'channelGateway.enabled': true,
+    'channelGateway.channelId': 'connection',
+    'image.tag': 'v1.2.3',
+  };
+  assert.throws(() => render({ 'channelGateway.enabled': true }), /Set image.tag/);
+  assert.throws(() => render({ ...enabled, 'image.tag': '' }), /Set image.tag/);
+  assert.throws(
+    () => render({ ...enabled, 'image.tag': '', 'channelGateway.image.tag': 'v1.2.3' }),
+    /Set image.tag/,
+  );
+  assert.throws(
+    () => render({ ...enabled, 'channelGateway.channelId': '' }),
+    /channelGateway.channelId/,
+  );
   assert.throws(
     () => render({ ...enabled, 'global.librechat.existingSecretName': '' }),
     /existingSecretName/,
   );
   for (const overrides of [
     {},
+    { 'librechat.configEnv.APP_TITLE': 'Example Agents' },
+    {
+      'librechat.configEnv.APP_TITLE': 'Example Agents',
+      'channelGateway.appTitle': 'Custom Agents',
+    },
+    { fullnameOverride: 'a'.repeat(47) + '-channel-gateway' },
     { 'image.tag': 'v1.2.3-rc1', 'service.port': '9090' },
     {
       'channelGateway.image.tag': 'v1.2.4',
@@ -72,7 +91,7 @@ try {
     assert.equal(service.spec.type, 'ClusterIP');
     assert.equal(
       container.image,
-      `ghcr.io/librechat-ai/librechat-channel-gateway:${overrides['channelGateway.image.tag'] || overrides['image.tag'] || metadata.appVersion}`,
+      `ghcr.io/librechat-ai/librechat-channel-gateway:${overrides['channelGateway.image.tag'] || overrides['image.tag'] || enabled['image.tag']}`,
     );
     assert.equal(
       env.LIBRECHAT_INTERNAL_URL.value,
@@ -87,6 +106,13 @@ try {
       undefined,
       'gateway must not import unrelated application secrets',
     );
+    assert.equal(
+      env.APP_TITLE.value,
+      overrides['channelGateway.appTitle'] ||
+        overrides['librechat.configEnv.APP_TITLE'] ||
+        'LibreChat',
+    );
+    assert.notEqual(deployment.metadata.name, mainService.metadata.name);
     assert.equal(Boolean(env.SLACK_APP_TOKEN), overrides['channelGateway.slackAppTokenKey'] !== '');
     assert.equal(container.livenessProbe.httpGet.path, '/livez');
     assert.equal(container.readinessProbe.httpGet.path, '/readyz');

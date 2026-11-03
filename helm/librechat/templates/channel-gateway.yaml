@@ -1,5 +1,6 @@
 {{- if .Values.channelGateway.enabled }}
 {{- $gateway := .Values.channelGateway }}
+{{- $tag := required "Set image.tag to a published LibreChat release containing Channels before enabling channelGateway" .Values.image.tag }}
 {{- $secret := required "channelGateway.existingSecretName or global.librechat.existingSecretName is required" ($gateway.existingSecretName | default .Values.global.librechat.existingSecretName) }}
 apiVersion: apps/v1
 kind: Deployment
@@ -37,7 +38,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: channel-gateway
-          image: "{{ $gateway.image.repository }}:{{ $gateway.image.tag | default .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ $gateway.image.repository }}:{{ $gateway.image.tag | default $tag }}"
           imagePullPolicy: {{ $gateway.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -48,6 +49,8 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            - name: APP_TITLE
+              value: {{ $gateway.appTitle | default (get (default dict .Values.librechat.configEnv) "APP_TITLE") | default "LibreChat" | quote }}
             - name: PORT
               value: "8080"
             - name: LISTEN_HOST
