@@ -1,6 +1,12 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
-import { MOCK_ENDPOINTS, NEW_CHAT_PATH, selectMockEndpoint, sendMessage } from '../helpers';
+import {
+  MOCK_ENDPOINTS,
+  NEW_CHAT_PATH,
+  messagesView,
+  sendMessage,
+  selectMockEndpoint,
+} from '../helpers';
 import {
   REPLY_TEXT,
   createProject,
@@ -66,7 +72,9 @@ test("an open fork menu holds an earlier reply's actions visible after the point
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
   for (const turn of ['first', 'second']) {
     expect((await sendMessage(page, `E2E_REPLY:${label}-${turn}`)).ok()).toBeTruthy();
-    await expect(page.getByText(`E2E reply ${label}-${turn}`)).toBeVisible({ timeout: 30000 });
+    await expect(messagesView(page).getByText(`E2E reply ${label}-${turn}`)).toBeVisible({
+      timeout: 30000,
+    });
   }
   const row = page
     .locator('.message-render')
