@@ -422,6 +422,7 @@ export const ReasoningCompact = memo(
             <CopyButton
               isCopied={isCopied}
               iconOnly
+              compact
               onClick={handleCopy}
               label={localize('com_ui_copy_thoughts_to_clipboard')}
               copiedLabel={localize('com_ui_copied_to_clipboard')}
