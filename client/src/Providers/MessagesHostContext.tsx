@@ -19,6 +19,7 @@ import {
   getMessageClipboardSource,
   useCopyMessageToClipboard,
 } from '~/hooks';
+import { useForkConvoMutation, useGetMessagesByConvoId } from '~/data-provider';
 import useConversationSeenSource from '~/hooks/Conversations/seenSource';
 import { useOptionalMessagesOperations } from './MessagesViewContext';
 import ThreadMessage from '~/components/Chat/Messages/Thread/Message';
@@ -27,7 +28,6 @@ import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { useFileMapContext } from '~/Providers/FileMapContext';
 import Files from '~/components/Chat/Messages/Content/Files';
 import { useScreenshot } from '~/hooks/ScreenshotContext';
-import { useForkConvoMutation } from '~/data-provider';
 import useClockFormat from '~/hooks/useClockFormat';
 import { autoScrollAtom } from '~/store/autoScroll';
 import store from '~/store';
@@ -88,6 +88,17 @@ function useAppGetMessages(): () => TMessage[] | undefined {
   return useOptionalMessagesOperations().getMessages;
 }
 
+function useAppConversationMessages(
+  conversationId: string | null | undefined,
+  isStreaming: boolean,
+): TMessage[] | undefined {
+  return useGetMessagesByConvoId(
+    conversationId ?? '',
+    { enabled: !!conversationId },
+    { isStreaming },
+  ).data;
+}
+
 function useAppHasPendingTurn(conversationId: string): boolean {
   return useAtomValue(revealedQueuedTurnFamily(conversationId)) != null;
 }
@@ -114,6 +125,7 @@ export const appMessagesHost: MessagesHost = {
   useMessageCopy: useAppMessageCopy,
   useGetMessages: useAppGetMessages,
   useHasPendingTurn: useAppHasPendingTurn,
+  useConversationMessages: useAppConversationMessages,
   renderMessageAudio: (props) => <AppMessageAudio {...props} />,
   useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
   useAutoScroll: () => useAtomValue(autoScrollAtom),

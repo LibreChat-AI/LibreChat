@@ -175,6 +175,11 @@ export interface MessagesHost {
   useAutoScroll: () => boolean;
   /** The read-state storage the list marks a conversation seen through. */
   useSeenSource: () => ConversationSeenSource;
+  /** The conversation's cached messages, refreshed as they stream when isStreaming is set; undefined until loaded or without a conversation. */
+  useConversationMessages: (
+    conversationId: string | null | undefined,
+    isStreaming: boolean,
+  ) => TMessage[] | undefined;
 
   /** Renders a message author's icon with the app's endpoint and avatar icons. */
   renderMessageIcon: (props: MessageIconProps) => ReactNode;
@@ -223,6 +228,7 @@ const fallbackHost: MessagesHost = {
   useScreenshotTarget: () => useRef<HTMLDivElement>(null),
   useAutoScroll: () => false,
   useSeenSource: () => inertSeenSource,
+  useConversationMessages: () => undefined,
   renderMessageIcon: () => null,
   renderMessageRow: () => null,
   renderActivity: () => null,

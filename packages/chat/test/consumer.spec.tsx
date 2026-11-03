@@ -230,6 +230,7 @@ const messagesHost: MessagesHost = {
   renderMessageAudio: () => null,
   useScreenshotTarget: () => undefined,
   useAutoScroll: () => false,
+  useConversationMessages: () => undefined,
   useSeenSource: () => ({
     readReply: () => undefined,
     hasReplyProof: () => false,
