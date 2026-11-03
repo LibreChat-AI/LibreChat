@@ -1,4 +1,4 @@
-name: Docker Compose Build Latest Main Image Tag (Manual Dispatch)
+name: Publish Latest Stable Release Images (Manual Dispatch)
 
 on:
   workflow_dispatch:
@@ -36,11 +36,9 @@ jobs:
             exit 1
           fi
           printf 'latest_tag=%s\n' "$LATEST_TAG" >> "$GITHUB_OUTPUT"
-          # Pin the publish to the commit this job resolved the tag from. `main`
-          # is a moving ref: were each build leg to resolve it independently, the
-          # amd64 and arm64 halves of one release could come from different
-          # commits and still be published under the same tags.
-          printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # A versioned artifact must build the selected release, even when main
+          # has advanced. Both architectures receive that immutable commit.
+          printf 'sha=%s\n' "$(git rev-parse "${LATEST_TAG}^{commit}")" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: resolve-tag
@@ -54,7 +52,7 @@ jobs:
         ${{ needs.resolve-tag.outputs.latest_tag }}
         latest
       checkout_ref: ${{ needs.resolve-tag.outputs.sha }}
-      build_branch: main
+      build_branch: ${{ needs.resolve-tag.outputs.latest_tag }}
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
