@@ -68,6 +68,14 @@ test.describe('the pre-push gate', () => {
     hookCase('reuses a pass for the same tree and base, including a commit no longer checked out');
   });
 
+  test('a git status that fails refuses the push and records no pass @scenario:pre-push-status-failure-refuses', () => {
+    hookCase('a git status that fails refuses the push instead of reading as a clean worktree');
+  });
+
+  test('a ref git cannot resolve refuses the push instead of passing as a deletion @scenario:pre-push-unresolved-ref-refuses', () => {
+    hookCase('a ref git cannot resolve refuses the push instead of being skipped as a deletion');
+  });
+
   test('a chat change typechecks the chat consumer specs, as the chat workspace does in CI @scenario:static-checks-typecheck-chat-consumer-specs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'lc-pre-push-bun-'));
     try {

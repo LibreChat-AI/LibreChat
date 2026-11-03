@@ -324,3 +324,102 @@ test(
     assert.equal(pushed.calls.length, 0);
   }),
 );
+
+/**
+ * A `git` first on PATH that delegates to the real one, except that the
+ * `subcommand` fails with a diagnostic once it has answered `passes` times. The
+ * count lives in a file because every call is a new process.
+ */
+function failingGit(dir: string, passes: number, subcommand = 'status'): string {
+  const real = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+  const bin = join(dir, 'shim');
+  const count = join(dir, 'calls');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(count, '');
+  writeFileSync(
+    join(bin, 'git'),
+    [
+      '#!/bin/sh',
+      'for arg in "$@"; do',
+      `  if [ "$arg" = ${subcommand} ]; then`,
+      `    printf x >> '${count}'`,
+      `    if [ "$(wc -c < '${count}')" -gt ${passes} ]; then`,
+      "      echo 'fatal: shim: index file corrupt' >&2",
+      '      exit 128',
+      '    fi',
+      '  fi',
+      'done',
+      `exec '${real}' "$@"`,
+      '',
+    ].join('\n'),
+  );
+  chmodSync(join(bin, 'git'), 0o755);
+  return `${bin}:${process.env.PATH ?? ''}`;
+}
+
+/**
+ * Runs the committed hook the way git does for a push of `feature` to origin,
+ * with `path` as PATH. Called directly rather than through `git push`, because
+ * git puts its own exec-path first on a hook's PATH and that would shadow a shim.
+ */
+function runHook(fixture: Fixture, path: string): Push {
+  const log = join(fixture.dir, 'checks.log');
+  rmSync(log, { force: true });
+  const sha = fixture.git('rev-parse', 'HEAD');
+  const zero = '0'.repeat(40);
+  const result = spawnSync('sh', ['.husky/pre-push', 'origin', join(fixture.dir, 'origin.git')], {
+    cwd: fixture.work,
+    encoding: 'utf8',
+    input: `refs/heads/feature ${sha} refs/heads/feature ${zero}\n`,
+    env: { ...process.env, CI: '', HUSKY: '', STUB_LOG: log, PATH: path },
+  });
+  const calls = existsSync(log)
+    ? readFileSync(log, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+    : [];
+  return { status: result.status ?? 1, output: `${result.stdout}${result.stderr}`, calls };
+}
+
+test(
+  'a git status that fails refuses the push instead of reading as a clean worktree',
+  withFixture((fixture) => {
+    const cache = join(fixture.work, '.git', 'librechat-pre-push.cache');
+    fixture.commit('error');
+    writeFileSync(join(fixture.work, 'app.txt'), 'fixed\n');
+
+    const before = runHook(fixture, failingGit(join(fixture.dir, 'before'), 0));
+    assert.notEqual(before.status, 0, before.output);
+    assert.equal(before.calls.length, 0);
+    assert.match(before.output, /could not read the worktree status/);
+    assert.match(before.output, /shim: index file corrupt/);
+    assert.equal(existsSync(cache), false);
+
+    // The status read after a passing run fails too: no pass is recorded.
+    fixture.git('checkout', '--', 'app.txt');
+    fixture.commit('ok');
+    const after = runHook(fixture, failingGit(join(fixture.dir, 'after'), 1));
+    assert.notEqual(after.status, 0, after.output);
+    assert.equal(after.calls.length, 1);
+    assert.match(after.output, /could not read the worktree status/);
+    assert.equal(existsSync(cache), false);
+
+    // The same push with a working git passes, so the refusals were the status reads.
+    const healthy = runHook(fixture, process.env.PATH ?? '');
+    assert.equal(healthy.status, 0, healthy.output);
+    assert.equal(existsSync(cache), true);
+  }),
+);
+
+test(
+  'a ref git cannot resolve refuses the push instead of being skipped as a deletion',
+  withFixture((fixture) => {
+    fixture.commit('error');
+    const pushed = runHook(fixture, failingGit(join(fixture.dir, 'shim-cat-file'), 0, 'cat-file'));
+    assert.notEqual(pushed.status, 0, pushed.output);
+    assert.equal(pushed.calls.length, 0);
+    assert.doesNotMatch(pushed.output, /deletions only/);
+    assert.match(pushed.output, /could not read refs\/heads\/feature: fatal: shim/);
+  }),
+);

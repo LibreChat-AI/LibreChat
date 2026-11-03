@@ -41,9 +41,27 @@ interface RefUpdate {
   localSha: string;
 }
 
-function git(args: string[], cwd: string): { ok: boolean; out: string } {
+interface GitResult {
+  ok: boolean;
+  out: string;
+  /** stderr, or the spawn error, for a refusal to quote. */
+  err: string;
+}
+
+function git(args: string[], cwd: string): GitResult {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
-  return { ok: result.status === 0, out: (result.stdout ?? '').trim() };
+  return {
+    ok: result.status === 0,
+    out: (result.stdout ?? '').trim(),
+    err: (result.stderr || result.error?.message || `exited with ${result.status}`).trim(),
+  };
+}
+
+/** A git read the gate cannot continue without: its output, or null after refusing. */
+function required(result: GitResult, what: string): string | null {
+  if (result.ok && result.out) return result.out;
+  refuse(`could not read ${what}: ${result.err}`);
+  return null;
 }
 
 function refuse(message: string): number {
@@ -72,11 +90,17 @@ function resolveBase(remote: string, cwd: string): string | null {
   return null;
 }
 
-/** Tracked and untracked (not ignored) changes, as porcelain lines. */
-function worktreeChanges(cwd: string): string[] {
-  return git(['status', '--porcelain', '--untracked-files=normal'], cwd)
-    .out.split('\n')
-    .filter(Boolean);
+/**
+ * Tracked and untracked (not ignored) changes, as porcelain lines, or null when
+ * git could not say. Empty output from a failed status is not a clean worktree.
+ */
+function worktreeChanges(cwd: string): string[] | null {
+  const status = git(['status', '--porcelain', '--untracked-files=normal'], cwd);
+  if (!status.ok) {
+    refuse(`could not read the worktree status: ${status.err}`);
+    return null;
+  }
+  return status.out.split('\n').filter(Boolean);
 }
 
 function readCache(path: string): Set<string> {
@@ -96,13 +120,20 @@ export function prePush(remote: string, input: string, cwd = process.cwd()): num
   const root = top.out;
 
   // Deletions carry an all-zero local sha; a ref naming a tree or blob has no
-  // commit to check. Neither sends code CI would build.
+  // commit to check. Neither sends code CI would build. Anything else has to
+  // peel to a commit: a git error here must not drop the ref from the check.
   const refsByCommit = new Map<string, string[]>();
   for (const update of parseUpdates(input)) {
     if (ZERO_SHA.test(update.localSha)) continue;
-    const commit = git(['rev-parse', '--verify', '--quiet', `${update.localSha}^{commit}`], root);
-    if (!commit.ok) continue;
-    refsByCommit.set(commit.out, [...(refsByCommit.get(commit.out) ?? []), update.localRef]);
+    const type = required(git(['cat-file', '-t', update.localSha], root), update.localRef);
+    if (type === null) return 1;
+    if (type === 'tree' || type === 'blob') continue;
+    const commit = required(
+      git(['rev-parse', '--verify', `${update.localSha}^{commit}`], root),
+      `the commit ${update.localRef} points at`,
+    );
+    if (commit === null) return 1;
+    refsByCommit.set(commit, [...(refsByCommit.get(commit) ?? []), update.localRef]);
   }
   if (refsByCommit.size === 0) {
     console.log('pre-push: no commits to check (deletions only)');
@@ -117,7 +148,9 @@ export function prePush(remote: string, input: string, cwd = process.cwd()): num
     );
   }
 
-  const cachePath = resolve(root, git(['rev-parse', '--git-path', CACHE_FILE], root).out);
+  const cacheFile = required(git(['rev-parse', '--git-path', CACHE_FILE], root), 'the git dir');
+  if (cacheFile === null) return 1;
+  const cachePath = resolve(root, cacheFile);
   const cache = readCache(cachePath);
   const pending: { commit: string; key: string; mergeBase: string; refs: string[] }[] = [];
   for (const [commit, refs] of refsByCommit) {
@@ -125,7 +158,8 @@ export function prePush(remote: string, input: string, cwd = process.cwd()): num
     if (!mergeBase.ok) {
       return refuse(`${refs.join(', ')} shares no history with the base ${base.slice(0, 10)}`);
     }
-    const tree = git(['rev-parse', `${commit}^{tree}`], root).out;
+    const tree = required(git(['rev-parse', `${commit}^{tree}`], root), `the tree of ${commit}`);
+    if (tree === null) return 1;
     const key = [tree, mergeBase.out, ...CHECK_ARGS].join(' ');
     if (cache.has(key)) {
       console.log(`pre-push: ${refs.join(', ')} (${commit.slice(0, 10)}) already passed`);
@@ -135,7 +169,8 @@ export function prePush(remote: string, input: string, cwd = process.cwd()): num
   }
   if (pending.length === 0) return 0;
 
-  const head = git(['rev-parse', '--verify', 'HEAD^{commit}'], root).out;
+  const head = required(git(['rev-parse', '--verify', 'HEAD^{commit}'], root), 'HEAD');
+  if (head === null) return 1;
   const elsewhere = pending.filter((entry) => entry.commit !== head);
   if (elsewhere.length > 0) {
     const named = elsewhere.map(
@@ -149,6 +184,7 @@ export function prePush(remote: string, input: string, cwd = process.cwd()): num
   }
 
   const changes = worktreeChanges(root);
+  if (changes === null) return 1;
   if (changes.length > 0) {
     const shown = changes.slice(0, 10).map((line) => `  ${line}`);
     if (changes.length > shown.length)
@@ -173,8 +209,11 @@ export function prePush(remote: string, input: string, cwd = process.cwd()): num
     return refuse(`static checks failed for ${head.slice(0, 10)} after ${elapsed}`);
   }
 
-  const after = git(['rev-parse', '--verify', 'HEAD^{commit}'], root).out;
-  if (after !== head || worktreeChanges(root).length > 0) {
+  const after = required(git(['rev-parse', '--verify', 'HEAD^{commit}'], root), 'HEAD');
+  if (after === null) return 1;
+  const changed = worktreeChanges(root);
+  if (changed === null) return 1;
+  if (after !== head || changed.length > 0) {
     return refuse('the worktree changed while the checks ran; push again to recheck');
   }
   remember(cachePath, key);
