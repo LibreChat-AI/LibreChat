@@ -1,12 +1,75 @@
 import { createHash } from 'node:crypto';
-import type { StoredResponseRecord } from '~/models/response';
-import type { ResponseReservation } from './response';
+import type {
+  StoredResponseRecord,
+  ResponseReference,
+  ResponseReservation,
+} from '~/models/response';
 import type { ManagedTarget } from '~/types/managed';
 import { registerResponseTarget, settleResponseTarget } from './registration';
+import { responseOwnerFilter, responseScopeKeys } from './responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
-import { responseScopeKeys } from './responseScope';
+import { createIndexesWithRetry } from '~/utils/retry';
 import { managedTargetFilter } from './managed';
+
+/** Autonomous root deletion would lose the only checkpoint/child cleanup authority. */
+export async function prepareResponseRootStorage(
+  mongoose: typeof import('mongoose'),
+): Promise<void> {
+  const model = createStoredResponseModel(mongoose);
+  await model.createCollection();
+  for (const index of await model.listIndexes()) {
+    if (
+      index.name !== 'expiredAt_1' ||
+      index.expireAfterSeconds == null ||
+      index.key.expiredAt !== 1 ||
+      Object.keys(index.key).length !== 1
+    )
+      continue;
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- model-owned DDL; only the verified obsolete TTL index is removed, never tenant payload.
+      await model.collection.dropIndex(index.name);
+    } catch (error) {
+      // Another instance may have removed the same obsolete index during startup.
+      if (!(error instanceof mongoose.mongo.MongoServerError) || error.code !== 27) throw error;
+    }
+  }
+  await createIndexesWithRetry(model);
+  if ((await model.listIndexes()).some((index) => index.expireAfterSeconds != null))
+    throw new Error('Response storage cannot retain cleanup authority while a TTL index exists');
+}
+
+export type ManagedResponseRecord = StoredResponseRecord & {
+  storageTarget: ManagedTarget<'response'>;
+};
+
+export function responseReference(record: ManagedResponseRecord): ResponseReference {
+  return {
+    userId: record.userId,
+    ...(record.tenantId ? { tenantId: record.tenantId } : {}),
+    responseId: record.responseId,
+    target: { ...record.storageTarget },
+  };
+}
+
+/** Payload writers and cleanup callbacks must never resolve a replacement logical root. */
+export function responseRootFilter(
+  mongoose: typeof import('mongoose'),
+  reference: ResponseReference,
+): Record<string, unknown> {
+  if (
+    !reference.userId ||
+    !/^resp_d_[a-f\d]{32}$/.test(reference.responseId) ||
+    reference.target.kind !== 'response' ||
+    (reference.tenantId || undefined) !== (reference.target.tenantId || undefined)
+  )
+    throw new TypeError('Invalid Response root reference');
+  return {
+    ...managedTargetFilter(mongoose, reference.target),
+    ...responseOwnerFilter(reference),
+    responseId: reference.responseId,
+  };
+}
 
 /** Install a root only into its acknowledged allocation, after both discovery authorities admit it.
  * The caller owns idempotency lookup and allocation; neither a retry nor a lost reply can upsert it. */
@@ -15,7 +78,7 @@ export async function publishResponseRoot(
   target: ManagedTarget<'response'>,
   input: ResponseReservation,
   options?: { maxPendingTargetsPerScope?: number },
-): Promise<StoredResponseRecord | null> {
+): Promise<ManagedResponseRecord | null> {
   if (
     target.kind !== 'response' ||
     (input.tenantId || undefined) !== (target.tenantId || undefined) ||
@@ -83,6 +146,7 @@ export async function publishResponseRoot(
       {
         $set: {
           ...reservation,
+          storageTarget: target,
           ...(expiredAt ? { expiredAt } : {}),
           ...(dispatch
             ? { dispatchOutbox: { kind: 'create', id: input.responseId, state: 'pending' } }
@@ -92,11 +156,11 @@ export async function publishResponseRoot(
           '_managed.phase': 'published',
         },
       },
-      { new: true },
+      { new: true, upsert: false },
     ),
   ).lean();
   if (!record) return null;
   for (const conversationId of [undefined, input.conversationId])
     await settleResponseTarget(mongoose, input, conversationId, entry);
-  return record;
+  return { ...record, storageTarget: target };
 }

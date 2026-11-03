@@ -60,6 +60,7 @@ import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { ModelErrorTrackerCallback } from '~/agents/failures/tracker';
 import type { ToolInputValidationError } from '~/agents/toolValidation';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
+import type { CheckpointWriteWitness } from './checkpoints/witness';
 import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
@@ -2154,6 +2155,7 @@ export async function createRun({
   activityLabel,
   activityPhase,
   eventActorCheckpointing = false,
+  checkpointWriteWitness,
   hitlCapable = false,
   resolvedToolApprovalHooks,
   toolApprovalStorage,
@@ -2296,6 +2298,8 @@ export async function createRun({
   activityPhase?: { hook: HookCallback<'PostToolBatch'> };
   /** Persist clean terminal checkpoints for an isolated bound-event invocation. */
   eventActorCheckpointing?: boolean;
+  /** Provider-scoped persistence ownership; never serialized into graph configuration. */
+  checkpointWriteWitness?: CheckpointWriteWitness;
   /**
    * Whether the caller implements the HITL pause/resume lifecycle (inspects
    * `run.getInterrupt()`, persists a pending action, exposes a resume route). Gates the
@@ -2924,7 +2928,9 @@ export async function createRun({
   const asksUserQuestions =
     hitlCapable && !askToolAdminDisabled && agents.some(agentRequestsAskUserQuestion);
   if (hitl || asksUserQuestions || eventActorCheckpointing) {
-    const checkpointer = await getAgentCheckpointer(agentsEndpointConfig?.checkpointer);
+    const checkpointer = await getAgentCheckpointer(agentsEndpointConfig?.checkpointer, {
+      writeWitness: checkpointWriteWitness,
+    });
     graphConfig.compileOptions = { ...graphConfig.compileOptions, checkpointer };
   }
 

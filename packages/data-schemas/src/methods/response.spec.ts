@@ -81,7 +81,14 @@ it('expires private reads and mutations immediately while retaining only cleanup
   scoped(async () => {
     const expiredAt = new Date(Date.now() + 60_000);
     await storage.reserve(reservation({ expiredAt }));
-    expect(await mongoose.models.StoredResponse.collection.indexExists('expiredAt_1')).toBe(true);
+    expect(await mongoose.models.StoredResponse.collection.indexExists('expiredAt_1__id_1')).toBe(
+      true,
+    );
+    expect(
+      (await mongoose.models.StoredResponse.listIndexes()).some(
+        (index) => index.expireAfterSeconds != null,
+      ),
+    ).toBe(false);
     await createResponseRetention(mongoose)(owner, 'conversation-one', new Date(Date.now() - 1));
     expect(await storage.read(owner, 'resp_one')).toBeNull();
     expect(await storage.requestCancellation(owner, 'resp_one', Date.now())).toBeNull();

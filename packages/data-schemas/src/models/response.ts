@@ -1,12 +1,48 @@
 import { Schema } from 'mongoose';
 import type { Model } from 'mongoose';
-import type { ResponseCanonicalTarget } from '~/types/managed';
+import type { ResponseCanonicalTarget, ManagedTarget } from '~/types/managed';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 import { applyManagedStorage } from './plugins/managed';
 
 export interface ResponseOwner {
   userId: string;
   tenantId?: string;
+}
+
+export interface ResponseReservation extends ResponseOwner {
+  /** A successful reservation durably accepts publication work. */
+  dispatch?: boolean;
+  expiredAt?: Date;
+  isTemporary?: boolean;
+  responseId: string;
+  requestKey: string;
+  fingerprint: string;
+  agentId: string;
+  sourceKeyId?: string;
+  requestJSON: string;
+  conversationId: string;
+  parentMessageId: string;
+}
+
+/** Internal authority resolved once, then carried across asynchronous work. */
+export interface ResponseReference extends ResponseOwner {
+  responseId: string;
+  target: ManagedTarget<'response'>;
+}
+
+export interface ResponseProviderExecution {
+  id: string;
+  ownerId?: string;
+}
+
+export interface ResponseCheckpointExecution {
+  generationCreatedAt: number;
+  providerExecutionId: string;
+  ownerId?: string;
+  writerId: string;
+  namespace: string;
+  configJSON: string;
+  state: 'pending' | 'settled';
 }
 
 export type StoredResponseStatus =
@@ -73,6 +109,10 @@ export interface ResponseDispatchOutbox {
 }
 
 export interface StoredResponseRecord {
+  storageTarget?: ManagedTarget<'response'>;
+  providerExecution?: ResponseProviderExecution;
+  checkpoint?: ResponseCheckpointExecution;
+  retiredAt?: Date;
   canonicalTargets?: ResponseCanonicalTarget[];
   /** Atomic source outbox; settlement never authorizes execution. */
   dispatchOutbox?: ResponseDispatchOutbox;
@@ -134,6 +174,46 @@ export function createStoredResponseModel(
       fingerprint: { type: String, required: true },
       agentId: { type: String, required: true },
       sourceKeyId: String,
+      storageTarget: {
+        type: new Schema<ManagedTarget<'response'>>(
+          {
+            kind: { type: String, enum: ['response'], required: true },
+            id: { type: String, required: true },
+            incarnation: { type: String, required: true },
+            tenantId: String,
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
+      providerExecution: {
+        type: new Schema<ResponseProviderExecution>(
+          {
+            id: { type: String, required: true, maxlength: 128 },
+            ownerId: { type: String, maxlength: 128 },
+          },
+          { _id: false },
+        ),
+        default: undefined,
+        select: false,
+      },
+      checkpoint: {
+        type: new Schema<ResponseCheckpointExecution>(
+          {
+            generationCreatedAt: { type: Number, required: true, min: 1 },
+            providerExecutionId: { type: String, required: true, maxlength: 128 },
+            ownerId: { type: String, maxlength: 128 },
+            writerId: { type: String, required: true },
+            namespace: { type: String, required: true },
+            configJSON: { type: String, required: true },
+            state: { type: String, enum: ['pending', 'settled'], required: true },
+          },
+          { _id: false },
+        ),
+        default: undefined,
+        select: false,
+      },
+      retiredAt: Date,
       canonicalTargets: {
         type: [
           {
@@ -242,7 +322,8 @@ export function createStoredResponseModel(
     { timestamps: true, minimize: false, read: 'primary' },
   );
   schema.index({ tenantId: 1, userId: 1, responseId: 1 }, { unique: true });
-  schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+  // Expiry hides payload immediately; the recovery owner retains this root until drain.
+  schema.index({ expiredAt: 1, _id: 1 });
   schema.index({ 'dispatchOutbox.state': 1, _id: 1 });
   schema.index({ status: 1, _id: 1 });
   schema.index({ 'resume.state': 1, status: 1, _id: 1 });

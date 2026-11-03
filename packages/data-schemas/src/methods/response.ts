@@ -1,6 +1,7 @@
 import type { ClientSession } from 'mongoose';
 import type {
   ResponseOwner,
+  ResponseReservation,
   StoredResponseRecord,
   StoredResponseStatus,
   ResponseReviewCheckpoint,
@@ -20,35 +21,21 @@ import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { getTransactionSupport } from '~/utils/transactions';
+import { prepareResponseRootStorage } from './responseRoot';
 import { activeExpirationFilter } from '~/utils/retention';
 import { materializeResponseTurn } from './responseTurn';
-import { createIndexesWithRetry } from '~/utils/retry';
 
 export { sameResponseTerminalReceipt } from '~/utils/receipt';
 
 export type {
   ResponseOwner,
+  ResponseReservation,
   StoredResponseRecord,
   StoredResponseStatus,
   ResponseReviewCheckpoint,
   ResponseResumeIntent,
   ResponseTerminalReceipt,
 } from '~/models/response';
-
-export interface ResponseReservation extends ResponseOwner {
-  /** A successful reservation durably accepts publication work. */
-  dispatch?: boolean;
-  expiredAt?: Date;
-  isTemporary?: boolean;
-  responseId: string;
-  requestKey: string;
-  fingerprint: string;
-  agentId: string;
-  sourceKeyId?: string;
-  requestJSON: string;
-  conversationId: string;
-  parentMessageId: string;
-}
 
 export type ResponseReservationResult =
   | { ok: true; record: StoredResponseRecord; replayed: boolean }
@@ -261,7 +248,7 @@ export function createResponseStorage(
   let indexPromise: Promise<void> | undefined;
   let transactionSupport: boolean | null = null;
   function ensureIndexes() {
-    indexPromise ??= createIndexesWithRetry(model)
+    indexPromise ??= prepareResponseRootStorage(mongoose)
       .then(() => undefined)
       .catch((error: unknown) => {
         indexPromise = undefined;

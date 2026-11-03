@@ -95,6 +95,23 @@ afterEach(async () => {
 });
 
 describe('checkpointer (mongodb-memory-server integration)', () => {
+  it('isolates a witnessed saver without replacing the shared cached instance', async () => {
+    const shared = await getAgentCheckpointer(MONGO_CFG);
+    const storage = { open: jest.fn(async () => {}), settle: jest.fn(async () => {}) };
+    const witness = createCheckpointWriteWitness(storage);
+    const scoped = await getAgentCheckpointer(MONGO_CFG, { writeWitness: witness });
+    expect(scoped).toBeDefined();
+    expect(scoped).not.toBe(shared);
+    expect(await getAgentCheckpointer(MONGO_CFG)).toBe(shared);
+    await seedInterruptCheckpoint(scoped!, 'witnessed-thread');
+    expect(await witness.close()).toBe('settled');
+    expect(storage.settle).toHaveBeenCalledTimes(1);
+    await expect(seedInterruptCheckpoint(scoped!, 'late-thread')).rejects.toThrow(
+      'Checkpoint writer is closed',
+    );
+    await expect(seedInterruptCheckpoint(shared!, 'ordinary-thread')).resolves.toBeDefined();
+    expect(await getAgentCheckpointer(MONGO_CFG)).toBe(shared);
+  });
   it('builds a real MongoDBSaver when Mongo is connected', async () => {
     const saver = await getAgentCheckpointer(MONGO_CFG);
     expect(saver).toBeDefined();

@@ -14,11 +14,19 @@ import {
   sweepManagedAllocations,
 } from './managed';
 import {
+  publishResponseRoot,
+  responseReference,
+  responseRootFilter,
+  prepareResponseRootStorage,
+} from './responseRoot';
+import {
   registerResponseTarget,
   settleResponseTarget,
   reconcileResponseTargets,
 } from './registration';
 import { createManagedConversationId, createManagedMessageId } from '~/utils/managed';
+import { createResponseCheckpointStorage } from './responseCheckpoint';
+import { checkpointOwnerNamespacePrefix } from '~/utils/checkpoint';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { applyManagedStorage } from '~/models/plugins/managed';
@@ -28,7 +36,6 @@ import { includeManagedAllocations } from '~/utils/managed';
 import { createConversationMethods } from './conversation';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
-import { publishResponseRoot } from './responseRoot';
 import { responseScopeKeys } from './responseScope';
 import { createMessageMethods } from './message';
 
@@ -87,6 +94,29 @@ describe('managed target allocation on real storage', () => {
 
   describe.each(engines)('%s', (_name, db) => {
     const mongoOnly = db === ferret ? describe.skip : describe;
+    it('removes the obsolete root TTL index and preserves expiry as a recovery index', async () => {
+      const model = createStoredResponseModel(db);
+      await model.collection.createIndex({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+      await Promise.all([prepareResponseRootStorage(db), prepareResponseRootStorage(db)]);
+      const indexes = await model.listIndexes();
+      expect(indexes.some((index) => index.expireAfterSeconds != null)).toBe(false);
+      expect(indexes).toEqual(
+        expect.arrayContaining([expect.objectContaining({ key: { expiredAt: 1, _id: 1 } })]),
+      );
+    });
+    it('refuses activation with an unexpected autonomous root TTL without dropping it', async () => {
+      const model = createStoredResponseModel(db);
+      const name = await model.collection.createIndex(
+        { createdAt: 1 },
+        { expireAfterSeconds: 86400, name: 'unexpected_root_ttl' },
+      );
+      try {
+        await expect(prepareResponseRootStorage(db)).rejects.toThrow('TTL index exists');
+        expect((await model.listIndexes()).some((index) => index.name === name)).toBe(true);
+      } finally {
+        await model.collection.dropIndex(name);
+      }
+    });
     function rootInput() {
       return {
         userId: randomUUID(),
@@ -100,6 +130,116 @@ describe('managed target allocation on real storage', () => {
         dispatch: true,
       };
     }
+    async function checkpointFixture() {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const record = await publishResponseRoot(db, target, input);
+      if (!record) throw new Error('Root publication failed');
+      const reference = responseReference(record);
+      const checkpoint = {
+        generationCreatedAt: Date.now(),
+        providerExecutionId: randomUUID(),
+        ownerId: randomUUID(),
+        writerId: randomUUID(),
+        namespace: `${checkpointOwnerNamespacePrefix(input.userId)}${randomUUID()}`,
+        configJSON: JSON.stringify({
+          type: 'mongo',
+          checkpointCollectionName: 'agent_checkpoints',
+          checkpointWritesCollectionName: 'agent_checkpoint_writes',
+        }),
+      };
+      const model = createStoredResponseModel(db);
+      await model.updateOne(responseRootFilter(db, reference), {
+        $set: {
+          generationCreatedAt: checkpoint.generationCreatedAt,
+          status: 'in_progress',
+          providerExecution: { id: checkpoint.providerExecutionId, ownerId: checkpoint.ownerId },
+        },
+      });
+      return { model, reference, checkpoint, input, record };
+    }
+    it('retains a private checkpoint marker and lets only its exact writer settle after retirement', async () => {
+      const f = await checkpointFixture();
+      const storage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      expect(await storage.open()).toBe(true);
+      expect(await storage.open()).toBe(true);
+      expect(await f.model.findOne(responseRootFilter(db, f.reference)).lean()).not.toHaveProperty(
+        'checkpoint',
+      );
+      expect(
+        await f.model.findOne(responseRootFilter(db, f.reference)).select('+checkpoint').lean(),
+      ).toMatchObject({
+        checkpoint: { ...f.checkpoint, state: 'pending' },
+      });
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
+        $set: { retiredAt: new Date(), expiredAt: new Date(Date.now() - 1), status: 'cancelled' },
+      });
+      expect(await storage.open()).toBe(false);
+      expect(await storage.settle()).toBe(true);
+      expect(await storage.settle()).toBe(true);
+      expect(
+        await f.model.findOne(responseRootFilter(db, f.reference)).select('+checkpoint').lean(),
+      ).toMatchObject({
+        checkpoint: { state: 'settled' },
+      });
+    });
+    it('does not let a fresh saver adopt unknown writes or reopen a settled provider segment', async () => {
+      const f = await checkpointFixture();
+      const original = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      const fresh = createResponseCheckpointStorage(db, f.reference, {
+        ...f.checkpoint,
+        writerId: randomUUID(),
+      });
+      expect(await original.open()).toBe(true);
+      expect(await fresh.open()).toBe(false);
+      expect(await fresh.settle()).toBe(false);
+      expect(await original.settle()).toBe(true);
+      expect(await original.open()).toBe(false);
+      expect(await fresh.open()).toBe(false);
+      const next = { ...f.checkpoint, providerExecutionId: randomUUID(), writerId: randomUUID() };
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
+        $set: { 'providerExecution.id': next.providerExecutionId },
+      });
+      const resumed = createResponseCheckpointStorage(db, f.reference, next);
+      expect(await resumed.open()).toBe(true);
+      expect(await original.settle()).toBe(false);
+      expect(await resumed.settle()).toBe(true);
+    });
+    it('rejects a stale checkpoint callback after the logical response has a replacement root', async () => {
+      const f = await checkpointFixture();
+      const stale = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      expect(await stale.open()).toBe(true);
+      await f.model.deleteOne(responseRootFilter(db, f.reference));
+      const replacement = await allocateManagedTarget(db, 'response');
+      const record = await publishResponseRoot(db, replacement, f.input);
+      expect(record?.storageTarget.id).toBe(replacement.id);
+      expect(await stale.open()).toBe(false);
+      expect(await stale.settle()).toBe(false);
+      expect(
+        await f.model.findOne({ responseId: f.input.responseId }).select('+checkpoint').lean(),
+      ).not.toHaveProperty('checkpoint');
+    });
+    it('cannot mutate checkpoint authority with the wrong owner or captured provider', async () => {
+      const f = await checkpointFixture();
+      expect(() =>
+        createResponseCheckpointStorage(db, { ...f.reference, userId: randomUUID() }, f.checkpoint),
+      ).toThrow('Invalid Response checkpoint writer');
+      const wrongProvider = createResponseCheckpointStorage(db, f.reference, {
+        ...f.checkpoint,
+        ownerId: randomUUID(),
+      });
+      expect(await wrongProvider.open()).toBe(false);
+      const storage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      const originalConfig = f.checkpoint.configJSON;
+      f.checkpoint.configJSON = 'mutated after capture';
+      expect(await storage.open()).toBe(true);
+      expect(await storage.settle()).toBe(true);
+      expect(
+        await f.model.findOne(responseRootFilter(db, f.reference)).select('+checkpoint').lean(),
+      ).toMatchObject({
+        checkpoint: { configJSON: originalConfig },
+      });
+    });
     it('publishes one admitted Response root with indexed ownership and its dispatch intent', async () => {
       const target = await allocateManagedTarget(db, 'response');
       const input = rootInput();
