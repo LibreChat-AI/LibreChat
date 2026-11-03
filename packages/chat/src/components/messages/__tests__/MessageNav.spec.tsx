@@ -838,6 +838,8 @@ describe('MessageNav', () => {
         'button[aria-label="com_ui_message_nav_previous"]',
       ) as HTMLButtonElement;
       expect(prev.disabled).toBe(true);
+      /** A theme that paints disabled controls draws it in the disabled ink at full opacity. */
+      expect(prev).toHaveClass('theme-disabled:opacity-100', 'theme-disabled:text-text-disabled');
       /** And the origin rib reads as reached, not as somewhere still to go. */
       const origin = container.querySelector('[data-msg-id="messages-start"] span');
       expect(origin?.className).not.toContain('bg-text-tertiary');
