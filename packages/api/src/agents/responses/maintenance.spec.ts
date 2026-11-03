@@ -81,6 +81,7 @@ describe.each(engines)('Response maintenance on %s', (engine) => {
     const execution = await enrollAgentExecution(
       {
         responseRoot: responseReference(record).target,
+        clientRequestId: record.responseId,
         runId: record.responseId,
         userId: record.userId,
         conversationId: record.conversationId,
@@ -236,6 +237,70 @@ describe.each(engines)('Response maintenance on %s', (engine) => {
       ).toEqual([]);
       expect(recovered.onError).not.toHaveBeenCalled();
       expect(recovered.enqueue).not.toHaveBeenCalled();
+    }));
+
+  it('keeps a retained unused attempt through claim expiry while recovery holds its terminal proof', () =>
+    scope(async () => {
+      const f = await fixture(false);
+      await f.execution.settle(new Error('Enrollment unavailable'));
+      const getJob = jobs.getJob.bind(jobs);
+      let observed!: () => void;
+      let resume!: () => void;
+      const read = new Promise<void>((resolve) => {
+        observed = resolve;
+      });
+      const paused = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      jest.spyOn(jobs, 'getJob').mockImplementationOnce(async (id) => {
+        const job = await getJob(id);
+        observed();
+        await paused;
+        return job;
+      });
+      const completion = createResponseCompletion({
+        storage,
+        cleanupCheckpoint: cleanupResponseCheckpoint,
+        confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+        releaseExecution: createResponseExecutionRelease(jobs, storage),
+      });
+      const recovering = createResponseRecovery({ storage, jobs, completion })(f.record);
+      await read;
+      const now = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 27 * 60 * 60 * 1000);
+      try {
+        await expect(
+          enrollAgentExecution(
+            {
+              responseRoot: responseReference(f.record).target,
+              clientRequestId: f.record.responseId,
+              runId: f.record.responseId,
+              userId: f.record.userId,
+              conversationId: f.record.conversationId,
+              agentId: f.record.agentId,
+              protocol: 'responses',
+              retainTerminalPersistence: true,
+              isPrincipalActive: async () => true,
+            },
+            { manager: jobs },
+          ),
+        ).rejects.toThrow();
+      } finally {
+        clock.mockRestore();
+        resume();
+        await recovering;
+      }
+      expect(await storage.read(f.record, f.record.responseId)).toMatchObject({
+        status: 'failed',
+        releaseAcknowledged: true,
+      });
+      expect(await getJob(f.record.responseId)).toMatchObject({
+        createdAt: f.execution.createdAt,
+        metadata: {
+          providerExecutionId: f.execution.getEnrollmentIdentity().providerExecutionId,
+          terminalPersistencePending: false,
+        },
+      });
     }));
 
   it('reclaims expired Roots after exact drain and release without disclosing their payload', () =>

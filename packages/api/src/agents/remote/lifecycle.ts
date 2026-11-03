@@ -567,6 +567,8 @@ export async function enrollAgentExecution(
     /** The principal predicate replaces the default guard, so admission is one post-commit read
      * and a refused run takes the manager's retire-and-purge path. */
     job = await deps.manager.createJob(runId, userId, conversationId, {
+      // Claim expiry must not discard a predecessor's durable cleanup authority.
+      ...(params.retainTerminalPersistence ? { rejectActivePredecessor: true } : {}),
       ...(claim
         ? {
             idempotencyClientRequestId: params.clientRequestId,
