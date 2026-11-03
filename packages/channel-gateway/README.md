@@ -1,5 +1,53 @@
 # Slack Channel gateway
 
+## Start with Docker Compose
+
+The gateway is an optional, separate service. The Channels overlay builds both the application and gateway from this checkout and waits for application readiness (`/readyz`) before starting the gateway. This includes post-listen initialization of MCP, background Responses and channel workers. It works with the default standalone MongoDB; a replica set is not required.
+
+1. Prepare the normal LibreChat `.env` and `librechat.yaml` files, including your model configuration. The overlay requires an existing YAML file and mounts it read-only. Keep your existing database configuration and data directory.
+2. Set a private `CHANNEL_SERVICE_TOKEN` of at least 32 characters in `.env`. Enable Channels and background Responses in `librechat.yaml`:
+
+   ```yaml
+   endpoints:
+     agents:
+       remoteApi:
+         background:
+           enabled: true
+       channels:
+         enabled: true
+         transport: socket_mode
+   ```
+
+3. Start the application first. The gateway profile stays off while you create its connection:
+
+   ```sh
+   docker compose -f docker-compose.yml -f docker-compose.channels.yml up --build -d
+   ```
+
+4. In LibreChat, save an Agent and open its Channels panel. Create the Slack connection, apply the generated manifest to a Slack app, install it in your workspace and activate the connection with its app ID and bot token. For Socket Mode, enable Socket Mode in Slack and generate an app-level token with `connections:write`.
+5. Set `CHANNEL_ID` to the created connection ID and `SLACK_APP_TOKEN` to that app-level token in `.env`. The default `CHANNEL_TENANT_ID=_` is for a normal installation without named tenants; a named tenant must use its actual ID. Then start the gateway:
+
+   ```sh
+   docker compose -f docker-compose.yml -f docker-compose.channels.yml --profile channels up --build -d
+   docker compose -f docker-compose.yml -f docker-compose.channels.yml --profile channels ps
+   ```
+
+A healthy gateway has loaded its active connection and established the matching Socket Mode app binding. Invite the bot to your test channel and mention it. Use the same Compose files and profile for subsequent updates, logs and shutdown. Include your existing override file explicitly if you use one; selecting Compose files with `-f` disables automatic override-file discovery. Existing external database settings belong in that override as usual.
+
+## Start as local processes
+
+After the normal dependency installation and application build, `npm run backend:dev` starts the application. Run the gateway separately from the same checkout after configuring and activating its connection:
+
+```sh
+npm run build:data-provider
+npm run build --workspace @librechat/channel-gateway
+PORT=8080 LIBRECHAT_INTERNAL_URL=http://localhost:3080 node --env-file=.env packages/channel-gateway/dist/main.cjs
+```
+
+Adjust `LIBRECHAT_INTERNAL_URL` to the application's local URL. The gateway reads process settings from `.env` in this command; the explicit `PORT=8080` keeps it from reusing the application's port. Docker sets the gateway's internal URL and port separately. Socket Mode needs no public inbound port. Webhook deployments must expose the gateway listener at the configured HTTPS URL.
+
+Completed Responses and delivery receipts persist across restarts. Pending tool approval also depends on the configured job store: restarting an application with a process-local store can leave that request held for reconciliation. A shared stream store is needed when approvals must survive application restarts or work across replicas.
+
 ## Configure one server-owned policy
 
 Configure the application in `librechat.yaml`:
