@@ -14,6 +14,7 @@ import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
 import { useMessagesHost } from '../../react/messages/host';
 import { useChatContext } from '../../react/chat/context';
 import { useMessagePartsHost } from '../../react/host';
+import MessageNav from './MessageNav';
 import Thread from './thread/Thread';
 
 export type { MessagesThreadProps };
@@ -54,7 +55,7 @@ export type MessagesViewProps = {
   }) => ReactNode;
   /** Renders the scroll-to-bottom control. */
   renderScrollButton?: (props: MessagesScrollButtonProps) => ReactNode;
-  /** Renders the in-thread navigation rail. */
+  /** Renders the in-thread navigation rail; the package rail by default. */
   renderNav?: (props: {
     conversationId?: string | null;
     scrollableRef: RefObject<HTMLDivElement>;
@@ -62,6 +63,19 @@ export type MessagesViewProps = {
 };
 
 const renderDefaultThread = (props: MessagesThreadProps): ReactNode => <Thread {...props} />;
+/** Keyed so a warm switch releases the outgoing conversation's rail. The rail tracks rows with an
+ *  observer, so without one (a server render, a test DOM) there is no rail to show. */
+const renderDefaultNav: NonNullable<MessagesViewProps['renderNav']> = ({
+  conversationId,
+  scrollableRef,
+}) =>
+  typeof IntersectionObserver === 'undefined' ? null : (
+    <MessageNav
+      key={conversationId}
+      conversationId={conversationId}
+      scrollableRef={scrollableRef}
+    />
+  );
 
 /**
  * The message list: the scroll container, the rendered thread with its progressive mount
@@ -78,7 +92,7 @@ export default function MessagesView({
   renderPendingTurn,
   renderPendingSteers,
   renderScrollButton,
-  renderNav,
+  renderNav = renderDefaultNav,
 }: MessagesViewProps): ReactElement {
   const localize = useLocalize();
   const host = useMessagesHost();

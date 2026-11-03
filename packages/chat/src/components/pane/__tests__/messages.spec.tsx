@@ -1,10 +1,26 @@
-import React from 'react';
+/**
+ * @jest-environment jsdom
+ */
+import { useEffect } from 'react';
+import { Provider, createStore } from 'jotai';
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { ChatContext, setDefaultMessagesHost } from '@librechat/chat/react';
-import type { ChatContract, MessagesHost } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
+import type { MessagesHost } from '../../../react/messages/host';
+import type { ChatContract } from '../../../react/chat/contract';
+import type { ChatScreenMessagesSlots } from '../messages';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { ChatSurfaceProvider } from '../../../react/subagents/provider';
+import { MessagesHostProvider } from '../../../react/messages/host';
+import { MessagePartsHostProvider } from '../../../react/host';
+import { ChatContext } from '../../../react/chat/context';
+import { initEnglish } from '../../../__fixtures__/i18n';
+import ScreenMessages from '../messages';
+
+beforeAll(initEnglish);
+/** The client config cleared mocks between tests; this suite came from there. */
+beforeEach(() => jest.clearAllMocks());
 
 let mockMessagesKey = 'convo-1';
 let mockMaximizeChatSpace = false;
@@ -12,70 +28,59 @@ let mockFlatThread = false;
 const mockNavMount = jest.fn();
 const mockNavUnmount = jest.fn();
 
-jest.mock('jotai', () => ({
-  ...jest.requireActual('jotai'),
-  useAtomValue: () => false,
-}));
+/** The rail as the app mounts it: keyed to its conversation, reporting its lifetime. */
+function MessageNav({ conversationId }: { conversationId?: string | null }) {
+  useEffect(() => {
+    mockNavMount();
+    return () => mockNavUnmount();
+  }, []);
+  return <div data-testid="message-nav" data-conversation-id={conversationId} />;
+}
 
-jest.mock('recoil', () => ({
-  useRecoilValue: () => false,
-}));
-
-jest.mock('~/Providers', () => ({
-  MessagesViewProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  useFileMapContext: () => ({}),
-}));
-
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useChatSurface: () => ({ showScrollButton: false, maximizeChatSpace: mockMaximizeChatSpace }),
-}));
-
-jest.mock('~/store', () => ({
-  __esModule: true,
-  default: {},
-}));
-
-jest.mock('../Thread', () => ({
-  get FLAT_THREAD() {
-    return mockFlatThread;
-  },
-}));
-
-jest.mock('../Content/Parts/PendingSteers', () => ({
-  __esModule: true,
-  default: ({ conversationId, fullWidth }: { conversationId: string; fullWidth: boolean }) => (
+/** The app's slots, the way ChatView fills them, with each piece reduced to what it was handed. */
+const slots = (): ChatScreenMessagesSlots => ({
+  flatThread: mockFlatThread,
+  renderPendingTurn: () => null,
+  renderPendingSteers: ({ conversationId, fullWidth }) => (
     <div
       data-testid="pending-steers"
       data-conversation-id={conversationId}
       data-full-width={String(fullWidth)}
     />
   ),
-}));
-
-jest.mock('../PendingTurn', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-jest.mock('../ScrollButton', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-jest.mock('@librechat/chat/components', () => {
-  const { useEffect } = jest.requireActual('react');
-  return {
-    ...jest.requireActual('@librechat/chat/components'),
-    MessageNav: function MessageNav({ conversationId }: { conversationId?: string | null }) {
-      useEffect(() => {
-        mockNavMount();
-        return () => mockNavUnmount();
-      }, []);
-      return <div data-testid="message-nav" data-conversation-id={conversationId} />;
-    },
-  };
+  renderScrollButton: () => null,
+  renderNav: ({ conversationId }) => (
+    <MessageNav key={conversationId} conversationId={conversationId} />
+  ),
 });
 
-import MessagesView from '../MessagesView';
+/** ChatScreen's default list, under the viewer's surface preferences. */
+function MessagesView({
+  messagesTree,
+  messages,
+}: {
+  messagesTree: TMessage[] | null;
+  messages: TMessage[] | null;
+}) {
+  return (
+    <ChatSurfaceProvider
+      value={{
+        enterToSend: true,
+        maximizeChatSpace: mockMaximizeChatSpace,
+        showScrollButton: false,
+        composerBindings: {
+          shortcutsEnabled: true,
+          submitOverride: undefined,
+          yieldedChords: new Set<string>(),
+        },
+        claimForeground: () => undefined,
+        handOffComposerText: () => undefined,
+      }}
+    >
+      <ScreenMessages messagesTree={messagesTree} messages={messages} slots={slots()} />
+    </ChatSurfaceProvider>
+  );
+}
 
 /** Rows render as their message id, so a spec can tell which messages the thread rendered. */
 const host: MessagesHost = {
@@ -113,9 +118,8 @@ const host: MessagesHost = {
   useFileMap: () => undefined,
 };
 
-beforeAll(() => {
-  setDefaultMessagesHost(host);
-});
+const partsHost = createMessagePartsHost();
+const store = createStore();
 
 const renderedRows = () => screen.queryAllByTestId('row').map((row) => row.textContent);
 
@@ -124,18 +128,24 @@ const queryClient = new QueryClient();
 
 const withChat = (ui: ReactElement) => (
   <QueryClientProvider client={queryClient}>
-    <ChatContext.Provider
-      value={
-        {
-          index: 0,
-          isSubmitting: false,
-          latestMessageDepth: 0,
-          messagesKey: mockMessagesKey,
-        } as unknown as ChatContract
-      }
-    >
-      {ui}
-    </ChatContext.Provider>
+    <Provider store={store}>
+      <MessagesHostProvider host={host}>
+        <MessagePartsHostProvider host={partsHost}>
+          <ChatContext.Provider
+            value={
+              {
+                index: 0,
+                isSubmitting: false,
+                latestMessageDepth: 0,
+                messagesKey: mockMessagesKey,
+              } as unknown as ChatContract
+            }
+          >
+            {ui}
+          </ChatContext.Provider>
+        </MessagePartsHostProvider>
+      </MessagesHostProvider>
+    </Provider>
   </QueryClientProvider>
 );
 
