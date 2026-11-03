@@ -2,8 +2,12 @@ import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { ResponseReservation, StoredResponseRecord } from '~/models/response';
+import {
+  responseUpdateFits,
+  responseReservationFits,
+  RESPONSE_BUDGET_FIELDS,
+} from './responseBudget';
 import { createManagedMessageId, createManagedConversationId } from '~/utils/managed';
-import { responseUpdateFits, RESPONSE_BUDGET_FIELDS } from './responseBudget';
 import { checkpointOwnerNamespacePrefix } from '~/utils/checkpoint';
 import { tenantStorage } from '~/config/tenantContext';
 import { createResponseStorage } from './response';
@@ -67,6 +71,98 @@ describe.each(engines)('whole Response BSON budget on %s', (engine) => {
           )
         ).ok,
       ).toBe(true);
+    }));
+  it('cancels an admitted maximum-sized unused request without duplicating its private payload', () =>
+    scope(async () => {
+      const conversationId = randomUUID();
+      const conversation = await mongoose.models.Conversation.create({
+        user: owner.userId,
+        tenantId: owner.tenantId,
+        conversationId,
+        endpoint: 'agents',
+      });
+      const reservation = input({
+        conversationId,
+        conversationTarget: {
+          id: String(conversation._id),
+          userId: owner.userId,
+          tenantId: owner.tenantId,
+          conversationId,
+        },
+      });
+      const body = (bytes: number) =>
+        JSON.stringify({
+          model: 'agent',
+          input: 'Unused',
+          metadata: { padding: 'x'.repeat(bytes) },
+        });
+      let low = 0;
+      let high = 16 * MiB;
+      while (low + 1 < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (responseReservationFits(mongoose, { ...reservation, requestJSON: body(middle) }))
+          low = middle;
+        else high = middle;
+      }
+      const accepted = await storage.reserve({ ...reservation, requestJSON: body(low) });
+      if (!accepted.ok) throw new Error('Boundary reservation failed');
+      const record = accepted.record;
+      const stopped = (await storage.requestCancellation(record, record.responseId, Date.now()))!;
+      const responseJSON = JSON.stringify({
+        id: record.responseId,
+        model: record.agentId,
+        object: 'response',
+        status: 'cancelled',
+        background: true,
+        store: true,
+        output: [],
+        created_at: Math.floor(record.createdAt.getTime() / 1000),
+        completed_at: Math.floor(Date.now() / 1000),
+        metadata: { padding: 'x'.repeat(low) },
+        usage: null,
+        error: null,
+        incomplete_details: null,
+        previous_response_id: null,
+        instructions: null,
+        tools: [],
+        tool_choice: 'auto',
+        parallel_tool_calls: true,
+        temperature: 1,
+        top_p: 1,
+        truncation: 'disabled',
+        max_output_tokens: null,
+      });
+      const before = await mongoose.models.StoredResponse.findById(record.storageTarget!.id)
+        .select(RESPONSE_BUDGET_FIELDS)
+        .lean<StoredResponseRecord>();
+      expect(
+        responseUpdateFits(mongoose, before!, {
+          $set: { status: 'cancelled', responseJSON, requestJSON: '{}' },
+        }),
+      ).toBe(false);
+      const cancelled = await storage.cancelUnstarted(stopped, responseJSON);
+      expect(cancelled).toMatchObject({
+        ok: true,
+        record: { status: 'cancelled', requestJSON: '{}', fingerprint: reservation.fingerprint },
+      });
+      if (!cancelled.ok) throw new Error('Cancellation failed');
+      expect(JSON.parse(cancelled.record.responseJSON!).metadata.padding).toHaveLength(low);
+      expect(
+        await storage.enrollExecution(
+          record,
+          { generationCreatedAt: 1, providerExecutionId: randomUUID() },
+          '{}',
+        ),
+      ).toMatchObject({ ok: false, code: 'response_conflict' });
+      expect(await storage.readReleaseAuthority(cancelled.record)).toMatchObject({
+        kind: 'unused',
+      });
+      expect(await storage.acknowledgeExecutionRelease(cancelled.record)).toBe(true);
+      const physical = await mongoose.models.StoredResponse.findById(record.storageTarget!.id)
+        .select(RESPONSE_BUDGET_FIELDS)
+        .lean<StoredResponseRecord>();
+      expect(mongoose.mongo.BSON.calculateObjectSize(physical!)).toBeLessThan(16 * MiB);
+      expect(await mongoose.models.Message.countDocuments({ user: owner.userId })).toBe(0);
     }));
   it('measures request plus proposed provider view together instead of independent JSON limits', () =>
     scope(async () => {
@@ -138,7 +234,7 @@ describe.each(engines)('whole Response BSON budget on %s', (engine) => {
         }
         return original(...args);
       });
-      const first = storage.publish(record, record.responseId, record.revision, {
+      const first = storage.publishProgress(record, {
         status: 'queued',
         responseJSON: view,
       });
@@ -153,10 +249,13 @@ describe.each(engines)('whole Response BSON budget on %s', (engine) => {
       expect(await first).toEqual({ ok: false, code: 'response_conflict' });
       const latest = (await storage.read(record, record.responseId))!;
       expect(
-        await storage.publish(latest, latest.responseId, latest.revision, {
-          status: 'queued',
-          responseJSON: view,
-        }),
+        await storage.publishProgress(
+          { ...latest, revision: latest.revision },
+          {
+            status: 'queued',
+            responseJSON: view,
+          },
+        ),
       ).toEqual({ ok: false, code: 'document_limit' });
       const actual = await mongoose.models.StoredResponse.findById(record.storageTarget!.id)
         .select(RESPONSE_BUDGET_FIELDS)
@@ -206,10 +305,13 @@ describe.each(engines)('whole Response BSON budget on %s', (engine) => {
             low = middle;
           else high = middle;
         }
-        const published = await storage.publish(snapshot!, record.responseId, snapshot!.revision, {
-          status: 'in_progress',
-          responseJSON: body(low),
-        });
+        const published = await storage.publishProgress(
+          { ...snapshot!, revision: snapshot!.revision },
+          {
+            status: 'in_progress',
+            responseJSON: body(low),
+          },
+        );
         if (!published.ok) throw new Error('Boundary progress failed');
         const failed = await storage.recordPersistenceFailure(published.record, {
           ...binding,

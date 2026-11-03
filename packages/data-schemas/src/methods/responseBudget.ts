@@ -15,10 +15,11 @@ import { createStoredResponseModel } from '~/models/response';
 // provider/receipt identities, cancellation and release. Variable saver settings
 // and even the fallback's model/id strings are measured, never assumed to fit.
 export const RESPONSE_DOCUMENT_BYTES: number = MAX_BSON_DOCUMENT_BYTES - BSON_WRITE_HEADROOM_BYTES;
-type ResponseBudgetPhase = 'payload' | 'settlement' | 'failure';
+type ResponseBudgetPhase = 'payload' | 'settlement' | 'unused' | 'failure';
 const MAXIMUM_BYTES: Record<ResponseBudgetPhase, number> = {
   payload: RESPONSE_DOCUMENT_BYTES,
   settlement: MAX_BSON_DOCUMENT_BYTES - 8 * 1024,
+  unused: MAX_BSON_DOCUMENT_BYTES - 8 * 1024,
   failure: MAX_BSON_DOCUMENT_BYTES,
 };
 export const RESPONSE_BUDGET_FIELDS: string =
@@ -58,6 +59,27 @@ export function responseUpdateFits<Current extends Partial<StoredResponseRecord>
   const candidate = { ...current, ...next };
   for (const field of Object.keys(update.$unset ?? {})) Reflect.deleteProperty(candidate, field);
   const maximum = MAXIMUM_BYTES[phase];
+  // A closed unused request cannot acquire a provider or saver later. It may
+  // consume control headroom after scrubbing the request, retaining room for release.
+  if (
+    phase === 'unused' &&
+    (candidate.status !== 'cancelled' ||
+      candidate.requestJSON !== '{}' ||
+      candidate.generationCreatedAt != null ||
+      candidate.providerExecution ||
+      candidate.checkpoint ||
+      candidate.preparedTerminal ||
+      candidate.pendingTerminal ||
+      candidate.review ||
+      candidate.resume ||
+      candidate.canonicalTargets?.length ||
+      candidate.persistenceFailure ||
+      candidate.retiredAt ||
+      Object.keys(update.$set ?? {}).some(
+        (key) => !['status', 'responseJSON', 'requestJSON'].includes(key),
+      ))
+  )
+    throw new TypeError('Response unused budget requires a closed, unenrolled request');
   if (phase === 'failure') {
     if (
       !candidate.persistenceFailure ||
@@ -164,7 +186,7 @@ export async function updateResponseDocument(
   update: UpdateQuery<StoredResponseRecord>,
   options: QueryOptions<StoredResponseRecord> = {},
   snapshot?: StoredResponseRecord,
-  phase: 'payload' | 'settlement' = 'payload',
+  phase: 'payload' | 'settlement' | 'unused' = 'payload',
 ): Promise<ResponseMutationResult> {
   const model = createStoredResponseModel(mongoose);
   // Retry only a known CAS miss, once, with a new full size check. A caller-owned

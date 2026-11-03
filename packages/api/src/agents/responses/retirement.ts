@@ -234,10 +234,7 @@ export function createResponseRetirement(
         status: 'cancelled' as const,
         completed_at: Math.floor((deps.now ?? Date.now)() / 1000),
       };
-      const cancelled = await deps.storage.publish(owner, responseId, record.revision, {
-        status: 'cancelled',
-        responseJSON: JSON.stringify(response),
-      });
+      const cancelled = await deps.storage.cancelUnstarted(record, JSON.stringify(response));
       // This CAS beats enrollment publication, which must succeed before provider startup.
       if (cancelled.ok) return recoverState(cancelled.record);
       record = await deps.storage.read(owner, responseId);

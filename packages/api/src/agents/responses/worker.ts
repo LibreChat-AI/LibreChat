@@ -206,7 +206,10 @@ export function createBackgroundResponseWorkerAuth(
           return deny();
         // Initial delivery replay only attaches. Never let an expired generation claim
         // turn an already-enrolled (possibly paused/resumed) response into a replacement job.
-        if (claims.purpose === purpose && record.generationCreatedAt != null) {
+        if (
+          claims.purpose === purpose &&
+          (record.generationCreatedAt != null || record.status !== 'queued')
+        ) {
           res.status(409).json({ code: 'RUN_ALREADY_ADMITTED' });
           return;
         }

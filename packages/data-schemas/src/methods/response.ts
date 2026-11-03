@@ -10,7 +10,6 @@ import type {
   ResponseProviderExecution,
   ResponseReservation,
   StoredResponseRecord,
-  StoredResponseStatus,
   ResponseReviewCheckpoint,
   ResponseResumeIntent,
   ResponseTerminalReceipt,
@@ -341,11 +340,14 @@ export interface ResponseStorage {
     responseId: string,
     deliveryKey: string,
   ): Promise<ResponseMutationResult>;
-  publish(
-    owner: ResponseOwner,
-    responseId: string,
-    revision: number,
-    update: { status: StoredResponseStatus; responseJSON: string; generationCreatedAt?: number },
+  publishProgress(
+    record: StoredResponseRecord,
+    update: { status: 'queued' | 'in_progress' | 'requires_action'; responseJSON: string },
+  ): Promise<ResponseMutationResult>;
+  /** Close a never-enrolled Root; its private request is no longer needed for execution. */
+  cancelUnstarted(
+    record: StoredResponseRecord,
+    responseJSON: string,
   ): Promise<ResponseMutationResult>;
   requestCancellation(
     owner: ResponseOwner,
@@ -357,7 +359,11 @@ export interface ResponseStorage {
 const active = ['queued', 'in_progress', 'requires_action'];
 
 function terminalProviderFilter(receipt: ResponseTerminalReceipt) {
+  assertResponseExecutionBinding(receipt);
   return {
+    generationCreatedAt: receipt.generationCreatedAt,
+    'providerExecution.id': receipt.providerExecutionId,
+    'providerExecution.ownerId': receipt.ownerId ?? { $exists: false },
     $or: [
       { 'resume.state': 'admitted', 'resume.providerExecutionId': receipt.providerExecutionId },
       {
@@ -433,6 +439,14 @@ export function createResponseStorage(
     ...(mode === 'publication' ? { persistenceFailure: { $exists: false } } : {}),
     $and: [activeExpirationFilter<StoredResponseRecord>()],
   });
+  async function isVisible(record: StoredResponseRecord): Promise<boolean> {
+    const expired = () => record.expiredAt != null && record.expiredAt.getTime() <= Date.now();
+    return (
+      !expired() &&
+      !(await isResponseScopeClosed(mongoose, record, record.conversationId)) &&
+      !expired()
+    );
+  }
   async function readVisible(owner: ResponseOwner, responseId: string, continuation = false) {
     const record = await model
       .findOne({
@@ -454,8 +468,7 @@ export function createResponseStorage(
       })
       .read('primary')
       .lean();
-    if (record && (await isResponseScopeClosed(mongoose, owner, record.conversationId)))
-      return null;
+    if (record && !(await isVisible(record))) return null;
     return record;
   }
   async function mutateInOpenScope<T>(
@@ -469,14 +482,31 @@ export function createResponseStorage(
       .findOne({ ...scope(owner, mode), responseId })
       .select(RESPONSE_BUDGET_FIELDS)
       .lean();
-    if (!current || (await isResponseScopeClosed(mongoose, current, current.conversationId)))
-      return conflict;
+    if (!current || !(await isVisible(current))) return conflict;
     const result = await apply(current);
     // Closure retires/deletes exact targets before acknowledging erasure. An in-flight
     // local CAS may land during closure, but cannot be returned as disclosed success.
-    return (await isResponseScopeClosed(mongoose, current, current.conversationId))
-      ? conflict
-      : result;
+    return (await isVisible(current)) ? result : conflict;
+  }
+  async function mutateCapturedRecord(
+    record: StoredResponseRecord,
+    mutate: (current: StoredResponseRecord) => Promise<ResponseMutationResult>,
+  ): Promise<ResponseMutationResult> {
+    const conflict: ResponseMutationResult = { ok: false, code: 'response_conflict' };
+    if (!record.storageTarget) return conflict;
+    return mutateInOpenScope(
+      record,
+      record.responseId,
+      async (current) => {
+        if (
+          current.revision !== record.revision ||
+          current.generationCreatedAt !== record.generationCreatedAt
+        )
+          return conflict;
+        return mutate(current);
+      },
+      conflict,
+    );
   }
   async function readExecutionProof(
     identity: ResponseCleanupIdentity,
@@ -933,7 +963,6 @@ export function createResponseStorage(
               ...scope(owner),
               responseId,
               ...execution,
-              generationCreatedAt: receipt.generationCreatedAt,
               status: promotion && receipt.turnJSON != null ? 'materializing' : { $in: active },
               pendingTerminal: { $exists: false },
               ...(promotion
@@ -1112,6 +1141,7 @@ export function createResponseStorage(
           responseId,
           ...execution,
           generationCreatedAt,
+          'providerExecution.id': review.providerExecutionId,
           status: { $in: ['in_progress', 'requires_action'] },
           pendingTerminal: { $exists: false },
           preparedTerminal: { $exists: false },
@@ -1528,58 +1558,74 @@ export function createResponseStorage(
       const record = admitted.ok ? admitted.record : null;
       return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
     },
-    async publish(owner, responseId, revision, update) {
-      // This private phase can only be entered atomically with its terminal receipt.
-      if (update.status === 'materializing') return { ok: false, code: 'response_conflict' };
+    async publishProgress(record, update) {
       if (
-        update.generationCreatedAt != null &&
-        (!Number.isSafeInteger(update.generationCreatedAt) || update.generationCreatedAt <= 0)
+        !record.storageTarget ||
+        (update.status !== 'queued' &&
+          (record.generationCreatedAt == null ||
+            !Number.isSafeInteger(record.generationCreatedAt) ||
+            record.generationCreatedAt <= 0)) ||
+        !['queued', 'in_progress', 'requires_action'].includes(update.status) ||
+        typeof update.responseJSON !== 'string' ||
+        Object.keys(update).some((key) => key !== 'status' && key !== 'responseJSON')
       )
-        throw new TypeError('Invalid response generation identity');
-      let predecessors = active;
-      if (update.status === 'queued') predecessors = ['queued'];
-      if (update.status === 'in_progress') predecessors = ['queued', 'in_progress'];
-      const admitted = await updateResponseDocument(
-        mongoose,
-        {
-          ...scope(owner),
-          responseId,
-          revision,
-          status: { $in: predecessors },
-          pendingTerminal: { $exists: false },
-          preparedTerminal: { $exists: false },
-          ...(update.status === 'in_progress'
-            ? {
-                $and: [
-                  activeExpirationFilter<StoredResponseRecord>(),
-                  {
-                    $or: [
-                      { status: 'in_progress' },
-                      { cancellationRequestedAt: { $exists: false } },
-                    ],
-                  },
-                  ...(update.generationCreatedAt == null
-                    ? [{ generationCreatedAt: { $gt: 0 } }]
-                    : []),
-                ],
-              }
-            : {}),
-          ...(update.generationCreatedAt == null
-            ? {}
-            : {
-                $or: [
-                  { generationCreatedAt: { $exists: false } },
-                  { generationCreatedAt: update.generationCreatedAt },
-                ],
-              }),
-        },
-        { $set: update, $inc: { revision: 1 } },
-        { new: true },
+        return { ok: false, code: 'response_conflict' };
+      return mutateCapturedRecord(record, (current) =>
+        updateResponseDocument(
+          mongoose,
+          {
+            ...scope(record),
+            responseId: record.responseId,
+            revision: record.revision,
+            generationCreatedAt: record.generationCreatedAt ?? { $exists: false },
+            pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
+            ...(update.status === 'queued'
+              ? { status: 'queued' }
+              : {
+                  ...(update.status === 'in_progress'
+                    ? {
+                        $or: [
+                          { status: 'in_progress' },
+                          { status: 'requires_action', review: { $exists: false } },
+                        ],
+                      }
+                    : { status: { $in: ['in_progress', 'requires_action'] } }),
+                }),
+          },
+          { $set: { status: update.status, responseJSON: update.responseJSON } },
+          {},
+          current,
+        ),
       );
-      if (!admitted.ok && admitted.code === 'document_limit')
-        return { ok: false, code: 'document_limit' };
-      const record = admitted.ok ? admitted.record : null;
-      return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
+    },
+    async cancelUnstarted(record, responseJSON) {
+      if (!record.storageTarget || typeof responseJSON !== 'string')
+        return { ok: false, code: 'response_conflict' };
+      return mutateCapturedRecord(record, (current) =>
+        updateResponseDocument(
+          mongoose,
+          {
+            ...scope(record),
+            responseId: record.responseId,
+            revision: record.revision,
+            status: 'queued',
+            cancellationRequestedAt: { $exists: true },
+            generationCreatedAt: { $exists: false },
+            providerExecution: { $exists: false },
+            checkpoint: { $exists: false },
+            review: { $exists: false },
+            resume: { $exists: false },
+            pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
+            'canonicalTargets.0': { $exists: false },
+          },
+          { $set: { status: 'cancelled', responseJSON, requestJSON: '{}' } },
+          {},
+          current,
+          'unused',
+        ),
+      );
     },
     async requestCancellation(owner, responseId, now) {
       if (!Number.isFinite(now) || now <= 0) throw new TypeError('Invalid cancellation time');

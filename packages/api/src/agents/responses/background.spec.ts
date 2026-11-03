@@ -416,8 +416,8 @@ it('recovers a journal that wins a progress CAS race and waits for cleanup befor
       enteredCleanup();
       await gate;
     });
-    const publish = storage.publish.bind(storage);
-    const spy = jest.spyOn(storage, 'publish').mockImplementationOnce(async (...args) => {
+    const publish = storage.publishProgress.bind(storage);
+    const spy = jest.spyOn(storage, 'publishProgress').mockImplementationOnce(async (...args) => {
       const staged = await storage.stageTerminal(
         owner,
         record.responseId,

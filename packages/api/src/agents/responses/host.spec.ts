@@ -1489,6 +1489,8 @@ it('cancels an unstarted response durably and prevents a delayed worker from sta
     })
     .send({});
   expect(delayed.status).toBe(409);
+  expect(delayed.body.code).toBe('RUN_ALREADY_ADMITTED');
+  expect(f.executionErrors).toEqual([]);
   expect(f.inputs).toHaveLength(0);
   expect((await scoped(() => storage.read(record, record.responseId)))?.status).toBe('cancelled');
 });

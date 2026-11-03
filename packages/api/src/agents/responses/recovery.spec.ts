@@ -379,13 +379,16 @@ it.each([false, true])(
   (lateStop) =>
     scoped(async () => {
       const { record, receipt } = await setup();
-      const projected = await storage.publish(owner, record.responseId, record.revision, {
-        status: 'in_progress',
-        responseJSON: JSON.stringify({
-          ...JSON.parse(record.responseJSON!),
-          recovery: 'execution_state_unavailable',
-        }),
-      });
+      const projected = await storage.publishProgress(
+        { ...(await storage.read(owner, record.responseId))!, revision: record.revision },
+        {
+          status: 'in_progress',
+          responseJSON: JSON.stringify({
+            ...JSON.parse(record.responseJSON!),
+            recovery: 'execution_state_unavailable',
+          }),
+        },
+      );
       expect(projected.ok).toBe(true);
       if (lateStop) await storage.requestCancellation(owner, record.responseId, Date.now());
       const stage = jest.spyOn(storage, 'stageTerminal');
@@ -457,15 +460,66 @@ it('does not retry a receipt from a different generation', () =>
     expect((await storage.read(owner, record.responseId))?.pendingTerminal).toBeUndefined();
   }));
 
-it.each(['provider', 'another-provider'])(
+it.each(['same', 'next'] as const)(
   'does not retry across a new review checkpoint owned by %s',
-  (providerExecutionId) =>
+  (segment) =>
     scoped(async () => {
       const { record, receipt } = await setup();
+      let current = record;
+      const providerExecutionId =
+        segment === 'same' ? receipt.providerExecutionId : 'next-provider';
+      if (segment === 'next') {
+        const paused = await storage.publishReview(
+          owner,
+          record.responseId,
+          { execution: current },
+          receipt.generationCreatedAt,
+          {
+            actionId: 'prior-action',
+            providerExecutionId: receipt.providerExecutionId,
+            expiresAt: Date.now() + 60_000,
+            partialResponseJSON: record.responseJSON!,
+          },
+          record.responseJSON!,
+        );
+        if (!paused.ok) throw new Error('Review preparation failed');
+        const decision = await storage.reserveResume(
+          owner,
+          record.responseId,
+          {
+            generationCreatedAt: receipt.generationCreatedAt,
+            intentId: 'next-intent',
+            actionId: 'prior-action',
+            previousProviderExecutionId: receipt.providerExecutionId,
+            providerExecutionId,
+            fingerprint: 'next-decision',
+            resolutionJSON: '{}',
+          },
+          Date.now(),
+        );
+        if (!decision.ok) throw new Error('Resume reservation failed');
+        const admitted = await storage.admitResume(
+          owner,
+          record.responseId,
+          'next-intent',
+          receipt.generationCreatedAt,
+          providerExecutionId,
+          record.responseJSON!,
+          Date.now(),
+        );
+        if (!admitted.ok) throw new Error('Resume admission failed');
+        const enrolled = await storage.enrollExecution(
+          admitted.record,
+          { generationCreatedAt: receipt.generationCreatedAt, providerExecutionId },
+          record.responseJSON!,
+        );
+        if (!enrolled.ok) throw new Error('Resume enrollment failed');
+        current = enrolled.record;
+      }
       const reviewed = await storage.publishReview(
         owner,
         record.responseId,
-        { execution: (await storage.read(owner, record.responseId))! },
+        { execution: current },
         receipt.generationCreatedAt,
         {
           actionId: 'new-action',

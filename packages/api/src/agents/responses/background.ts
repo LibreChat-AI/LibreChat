@@ -59,7 +59,9 @@ export function canonicalResponseJSON(request: object): string {
   });
 }
 
-function terminal(status: StoredResponseRecord['status']) {
+function terminal(
+  status: StoredResponseRecord['status'],
+): status is 'completed' | 'failed' | 'incomplete' | 'cancelled' {
   return ['completed', 'failed', 'incomplete', 'cancelled'].includes(status);
 }
 
@@ -145,7 +147,7 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
         observed.generationCreatedAt !== record.generationCreatedAt)
     )
       return freshView(record);
-    const result = await deps.storage.publish(record, record.responseId, record.revision, {
+    const result = await deps.storage.publishProgress(record, {
       status:
         response.required_action || (record.status === 'requires_action' && record.review != null)
           ? 'requires_action'

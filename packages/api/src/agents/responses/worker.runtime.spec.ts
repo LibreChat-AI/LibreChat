@@ -1052,14 +1052,17 @@ describe('background Responses execution handoff', () => {
         .mockImplementationOnce(async (...args) => {
           for (let step = 0; step < 30; step++) {
             const current = (await storage.read(owner, record.responseId))!;
-            const projected = await storage.publish(owner, current.responseId, current.revision, {
-              status: 'in_progress',
-              responseJSON: JSON.stringify({
-                ...buildPendingBackgroundResponse(current),
+            const projected = await storage.publishProgress(
+              { ...(await storage.read(owner, current.responseId))!, revision: current.revision },
+              {
                 status: 'in_progress',
-                metadata: { progress: step },
-              }),
-            });
+                responseJSON: JSON.stringify({
+                  ...buildPendingBackgroundResponse(current),
+                  status: 'in_progress',
+                  metadata: { progress: step },
+                }),
+              },
+            );
             expect(projected.ok).toBe(true);
           }
           const result = await prepare(...args);

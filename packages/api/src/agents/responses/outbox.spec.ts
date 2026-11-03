@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createResponseStorage,
+  responseReference,
   tenantStorage,
   runAsSystem,
   getTenantId,
@@ -254,11 +255,11 @@ it('fails closed on unknown future dispatch formats', async () => {
 it('settles a consumed resume after another pause without enqueueing it again', async () => {
   await scoped(owner, async () => {
     const record = await reserve('pause-before-ack');
-    const started = await storage.publish(owner, record.responseId, record.revision, {
-      status: 'in_progress',
-      generationCreatedAt: 10,
-      responseJSON: '{}',
-    });
+    const started = await storage.enrollExecution(
+      record,
+      { generationCreatedAt: 10, providerExecutionId: 'provider-one' },
+      '{}',
+    );
     if (!started.ok) throw new Error('Fixture start failed');
     const review = {
       actionId: 'first',
@@ -303,6 +304,23 @@ it('settles a consumed resume after another pause without enqueueing it again', 
       101,
     );
     if (!admitted.ok) throw new Error('Fixture resume admission failed');
+    if (
+      !(await storage.settleExecution(responseReference(started.record), {
+        generationCreatedAt: 10,
+        providerExecutionId: 'provider-one',
+      }))
+    )
+      throw new Error('Fixture provider settlement failed');
+    if (
+      !(
+        await storage.enrollExecution(
+          admitted.record,
+          { generationCreatedAt: 10, providerExecutionId: 'provider-two' },
+          '{}',
+        )
+      ).ok
+    )
+      throw new Error('Fixture resume enrollment failed');
     const nextReview = { ...review, actionId: 'second', providerExecutionId: 'provider-two' };
     const pausedAgain = await storage.publishReview(
       owner,

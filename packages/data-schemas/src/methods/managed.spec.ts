@@ -318,11 +318,11 @@ describe('managed target allocation on real storage', () => {
       if (!replacement.ok) throw new Error('Replacement fixture failed');
       expect(await storage.read(first.record, input.responseId)).toBeNull();
       expect(
-        await storage.publish(first.record, input.responseId, 0, {
-          status: 'in_progress',
-          generationCreatedAt: 1,
-          responseJSON: '{}',
-        }),
+        await storage.enrollExecution(
+          first.record,
+          { generationCreatedAt: 1, providerExecutionId: 'provider' },
+          '{}',
+        ),
       ).toEqual({ ok: false, code: 'response_conflict' });
       expect(await storage.read(input, input.responseId)).toMatchObject({
         storageTarget: replacement.record.storageTarget,

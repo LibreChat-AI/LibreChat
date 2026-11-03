@@ -4,6 +4,7 @@ import {
   createModels,
   createMethods,
   createResponseStorage,
+  responseReference,
   createManagedMessageId,
   tenantStorage,
   runAsSystem,
@@ -207,11 +208,12 @@ it('rejects a tampered source envelope and revoked original authority before exe
 
 async function reserveDecision(): Promise<StoredResponseRecord> {
   await reserve();
-  await storage.publish(owner, responseId, 0, {
-    status: 'in_progress',
-    generationCreatedAt: 100,
-    responseJSON: '{}',
-  });
+  const running = await storage.enrollExecution(
+    (await storage.read(owner, responseId))!,
+    { generationCreatedAt: 100, providerExecutionId: 'provider-one' },
+    '{}',
+  );
+  if (!running.ok) throw new Error('Fixture enrollment failed');
   const paused = await storage.publishReview(
     owner,
     responseId,
@@ -388,7 +390,20 @@ it('rejects an old delivery after a newer provider segment has paused for a diff
       Date.now(),
     );
     if (!admitted.ok) throw new Error('Admission failed');
-    await storage.publishReview(
+    if (
+      !(await storage.settleExecution(responseReference(record), {
+        generationCreatedAt: 100,
+        providerExecutionId: 'provider-one',
+      }))
+    )
+      throw new Error('Provider settlement failed');
+    const enrolled = await storage.enrollExecution(
+      admitted.record,
+      { generationCreatedAt: 100, providerExecutionId: 'provider-two' },
+      '{}',
+    );
+    if (!enrolled.ok) throw new Error('Resume enrollment failed');
+    const reviewed = await storage.publishReview(
       owner,
       record.responseId,
       { execution: (await storage.read(owner, record.responseId))! },
@@ -401,6 +416,7 @@ it('rejects an old delivery after a newer provider segment has paused for a diff
       },
       '{}',
     );
+    if (!reviewed.ok) throw new Error('Next pause publication failed');
     const dispatch = queue.sourceDispatchers.get(BACKGROUND_RESPONSE_RESUME_SOURCE)!.dispatch;
     await expect(dispatch(createResponseResumeEnvelope(record))).rejects.toMatchObject({
       code: 'response_resume_authority_changed',
