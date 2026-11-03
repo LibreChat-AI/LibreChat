@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { v4 } from 'uuid';
-import { useNavigate } from 'react-router-dom';
-import { dataService, ForkOptions } from 'librechat-data-provider';
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
 import { isMacPlatform, resolveComposerKeyDown } from '@librechat/chat';
 import { ArrowUpRight, Clock, OctagonPause, X, Zap } from 'lucide-react';
@@ -43,6 +41,11 @@ import {
   readableSubagentType,
   useParentAuthor,
   useChatSurface,
+  useSubagentsHost,
+  useMessagePartsHost,
+  TaskContentScopeContext,
+  ACTIVE_THREAD_REFRESH_MS,
+  subagentThreadHasTaskEvidence,
 } from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
@@ -54,23 +57,9 @@ import type { ComposerKeyVerdict, ComposerStopProps, SendAction } from '@librech
 import type { ActiveSubagentPanel, SubagentControlUiState } from '@librechat/chat/react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import type { ComposerKeyAction } from '@librechat/chat';
-import type { OptionWithIcon } from '~/common';
-import {
-  ACTIVE_THREAD_REFRESH_MS,
-  subagentThreadHasTaskEvidence,
-  useForkConvoMutation,
-  useToolCallPartQuery,
-  useSubagentControlMutation,
-  useSubagentThreadQuery,
-} from '~/data-provider';
-import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
-import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
-import { useFocusTrap, useLocalize, useNavigateToConvo } from '~/hooks';
-import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
-import { useConfiguredFooter } from '~/components/Chat/Footer';
-import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
-import { useAgentsMapContext } from '~/Providers';
-import { cn, renderAgentAvatar } from '~/utils';
+import type { OptionWithIcon } from '@librechat/client';
+import { useFocusTrap, useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 const EVENT_TASK_PAGE_SIZE = 3;
 const TERMINAL_CONTROL_REASONS = new Set([
@@ -126,16 +115,18 @@ const failedControlLocaleKey = (reason?: string) => {
 export default function SubagentThreadPanel({ selection }: { selection: ActiveSubagentPanel }) {
   /** The shell carries the deployment's answer, so this surface lays out once,
    *  like the composer beside it. */
-  const clearsFooter = useConfiguredFooter();
+  const host = useSubagentsHost();
+  const { loadThread } = host;
+  const { renderAgentAvatar } = useMessagePartsHost();
+  const clearsFooter = host.useClearsFooter();
   const localize = useLocalize();
   const panelStore = useStore();
   const focusRequest = useAtomValue(subagentPanelFocusRequest);
   const { showToast } = useToastContext();
-  const { navigateToConvo } = useNavigateToConvo();
-  const navigate = useNavigate();
+  const navigation = host.useNavigation();
   const panelRef = useRef<HTMLDivElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
-  const isMobile = useScaledMaxWidth(ARTIFACTS_SHEET_MAX_WIDTH);
+  const isMobile = host.useSheetLayout();
   /** Two reasons the send control's action list cannot be used where it hangs.
    *  Without hover, a tap on its anchor submits instead of opening it. And
    *  while the panel is a focus-trapped modal, the list is portaled outside the
@@ -157,7 +148,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   const selectionHeldForDraft = continuationPending || controlMessage.trim() !== '';
   const setSelection = useSetAtom(activeSubagentPanel);
   const resetSelection = useCallback(() => setSelection(null), [setSelection]);
-  const agentsMap = useAgentsMapContext();
+  const agentsMap = host.useAgentsMap();
   const { byMessageId, byThreadId, refresh } = useParentSubagents();
   const progress = useSubagentProgress(
     subagentProgressKey(
@@ -235,14 +226,18 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       });
   }, [byMessageId, selection.event, selection.parentMessageId]);
   const selectedEventActor = eventSiblings.find((child) => child.threadId === threadId);
-  const { data, isLoading, isError, isPreviousData, isReadinessPending, refetch } =
-    useSubagentThreadQuery(selection.parentConversationId, threadId, taskId, {
+  const { data, isLoading, isError, isPreviousData, isReadinessPending, refetch } = host.useThread(
+    selection.parentConversationId,
+    threadId,
+    taskId,
+    {
       /** A new delivery re-keys this query to its task. Keeping the previous
        *  thread view mounted while the fresh one loads stops the whole panel
        *  from flashing back to a loading dot on every incoming event. */
       keepPreviousData: true,
       ...(eventTaskRunning ? { refetchInterval: ACTIVE_THREAD_REFRESH_MS } : {}),
-    });
+    },
+  );
   /** Retention crosses every key change, including actor switches. A retained
    *  view is only meaningful while it describes the SAME child thread; within
    *  that thread its turn/history rows stay valid across task re-keys, while
@@ -348,7 +343,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
    *  that made the request. Switch actors mid-flight and the words in the field
    *  are the new actor's, so this falls back to what was there at submission. */
   const continuationRef = useRef<{ identity: string; text: string } | null>(null);
-  const continueChat = useForkConvoMutation({
+  const continueChat = host.useContinueChat({
     onSuccess: (result) => {
       const continuedConversationId = result.conversation?.conversationId;
       /** The server keeps child threads view-only (`CHILD_THREAD_READ_ONLY_ERROR`),
@@ -373,7 +368,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       }
       if (stillItsOwnComposer) setControlMessage('');
       resetSelection();
-      navigateToConvo(result.conversation);
+      if (result.conversation != null) navigation.openConversation(result.conversation);
     },
     onError: () => {
       /** The panel stays open on a failed continuation, and the composer still
@@ -482,7 +477,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       turnDetailRequestsRef.current.add(requestKey);
       setTurnDetailStates((current) => new Map(current).set(detailTaskId, 'loading'));
       try {
-        const exact = await dataService.getSubagentThread(
+        const exact = await loadThread(
           selection.parentConversationId,
           requestedThreadId,
           detailTaskId,
@@ -517,7 +512,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         turnDetailRequestsRef.current.delete(requestKey);
       }
     },
-    [selection.parentConversationId, threadId, turnDetailStates],
+    [loadThread, selection.parentConversationId, threadId, turnDetailStates],
   );
   const loadEarlierHistory = useCallback(async () => {
     const requestedThreadId = threadId;
@@ -539,7 +534,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     historyRequestRef.current = requestKey;
     setHistoryState('loading');
     try {
-      const page = await dataService.getSubagentThread(
+      const page = await loadThread(
         selection.parentConversationId,
         requestedThreadId,
         undefined,
@@ -622,6 +617,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       if (historyRequestRef.current === requestKey) historyRequestRef.current = null;
     }
   }, [
+    loadThread,
     threadView?.nextCursor,
     historyCursor,
     historyCursorGeneration,
@@ -635,7 +631,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     threadId,
   ]);
 
-  const controlTask = useSubagentControlMutation({
+  const controlTask = host.useControl({
     onSuccess: ({ receipt }, variables) => {
       const submittedSelection = subagentControlStateKey(
         variables.parentConversationId,
@@ -852,7 +848,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   /** A previewed call renders nothing until its stored part arrives: the preview's output is a
    *  shortened copy and its transcript is absent, so neither may stand in for the activity. */
   const awaitsStoredPart = selection.contentPreview != null;
-  const storedPart = useToolCallPartQuery(
+  const storedPart = host.useToolCallPart(
     {
       conversationId: selection.parentConversationId,
       messageId: selection.parentMessageId,
@@ -993,18 +989,15 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
             value: child.threadId,
             label:
               agent?.name != null && child.actorId != null ? `${name} · ${child.actorId}` : name,
-            icon: renderAgentAvatar(agent, { size: 'icon', showBorder: false }),
+            icon: renderAgentAvatar(agent),
           };
         })
     );
-  }, [agentsMap, eventSiblings, localize, selection.event, threadId]);
+  }, [agentsMap, eventSiblings, localize, renderAgentAvatar, selection.event, threadId]);
   const selectedActorLabel =
     actorOptions.find((option) => option.value === threadId)?.label ?? panelTitle;
   /** The picker's own glyph, matching the rows it lists. */
-  const selectedActorIcon = renderAgentAvatar(selectedActorAgent, {
-    size: 'icon',
-    showBorder: false,
-  });
+  const selectedActorIcon = renderAgentAvatar(selectedActorAgent);
   const latestConversationTurns = useMemo(
     () => (threadView == null ? [] : adaptDurableThreadConversation(threadView)),
     [threadView],
@@ -1186,7 +1179,6 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     continueChat.mutate({
       conversationId: selection.durable.threadId,
       messageId: `${selection.durable.taskId}:assistant`,
-      option: ForkOptions.DIRECT_PATH,
     });
   }, [canContinueAsChat, continueChat, controlIdentity, controlMessage, selection.durable]);
   /** `control` steers the live run, `continue` carries the thread into a chat
@@ -1662,7 +1654,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
           type="button"
           variant="ghost"
           size="icon"
-          onClick={() => navigate(`/c/${encodeURIComponent(selection.parentConversationId)}`)}
+          onClick={() => navigation.openConversationId(selection.parentConversationId)}
           aria-label={localize('com_ui_subagent_go_to_parent')}
           title={localize('com_ui_subagent_go_to_parent')}
           className="h-8 w-8 shrink-0"
@@ -1684,13 +1676,14 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       {/* Keep the foreground panel's existing nested-tool approval controls
           coordinated within this invocation. Detached activity projections
           never include approval payloads. */}
-      <ApprovalProvider
-        key={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`}
-      >
-        <TaskContentScopeContext.Provider value={receiptScope}>
-          {activityPanel}
-        </TaskContentScopeContext.Provider>
-      </ApprovalProvider>
+      {host.renderApprovalScope({
+        scopeKey: `${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`,
+        children: (
+          <TaskContentScopeContext.Provider value={receiptScope}>
+            {activityPanel}
+          </TaskContentScopeContext.Provider>
+        ),
+      })}
       {(showControlFooter || composerMode != null) && (
         /* The main chat form's own bottom rhythm, read from the same answer it
            reads (`useConfiguredFooter`): a conversation clears the footer bar
@@ -1786,10 +1779,11 @@ function HistoricalEventTaskActivity({
         : null,
     [selection.host, selection.parentConversationId, threadId, task.taskId],
   );
-  const { data, isLoading, isError, isReadinessPending } = useSubagentThreadQuery(
+  const { data, isLoading, isError, isReadinessPending } = useSubagentsHost().useThread(
     selection.parentConversationId,
     threadId,
     task.taskId,
+    {},
   );
   const activity = useMemo(
     () =>

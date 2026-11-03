@@ -23,6 +23,7 @@ import SubagentThreadPanel from './SubagentThreadPanel';
 import { getDraft } from '~/utils';
 import '~/Providers/MessagePartsHostContext';
 import '~/Providers/MessagesHostContext';
+import '~/Providers/SubagentsHostContext';
 
 const mockUseSubagentThreadQuery = jest.fn();
 const mockUseToolCallPartQuery = jest.fn(
@@ -147,10 +148,15 @@ jest.mock('~/hooks', () => ({
   useFocusTrap: jest.requireActual('~/hooks/useFocusTrap').default,
   useLocalize: () => (key: string, values?: { 0: string }) =>
     values == null ? key : `${key}: ${values[0]}`,
-  useNavigateToConvo: () => ({ navigateToConvo: mockNavigateToConvo }),
 }));
 
-jest.mock('~/Providers', () => ({
+jest.mock('~/hooks/Conversations/useNavigateToConvo', () => ({
+  __esModule: true,
+  default: () => ({ navigateToConvo: mockNavigateToConvo }),
+}));
+
+/** The agents map the app's subagents host reads. */
+jest.mock('~/Providers/AgentsMapContext', () => ({
   useAgentsMapContext: () => ({
     'agent-1': { id: 'agent-1', name: 'Analyst One', avatar: { filepath: '/analyst.png' } },
     'agent-2': { id: 'agent-2', name: 'Analyst Two' },
