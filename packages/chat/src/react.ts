@@ -168,6 +168,7 @@ export type { ErrorSource } from './react/messages/error';
 export { MessageSurfaceContext } from './react/messages/surface';
 export type { MessageSurface } from './react/messages/surface';
 export {
+  GeneratedToolLabelContext,
   SoleToolContext,
   LoneGroupContext,
   useToolExpansion,

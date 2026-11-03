@@ -1451,7 +1451,7 @@ describe('ContentParts: synthesized activity folds', () => {
 
     const group = screen.getByRole('button', { name: /Running 2 actions.*1\/2 failed/ });
     expect(group).toHaveAttribute('aria-expanded', 'true');
-    expect(group).toHaveTextContent('1/2 failed');
+    expect(group).not.toHaveTextContent('1/2 failed');
     expect(screen.getAllByTestId('failed-reveal-pill')).toHaveLength(1);
 
     rerender(
@@ -2580,5 +2580,41 @@ describe('fold paths in parallel columns', () => {
     const cache = new WeakMap<Element, Element[]>();
     expect(litFoldPath(root, screen.getByTestId('lane-output-0'), 350, cache)).toEqual([]);
     expect(litFoldPath(root, screen.getByTestId('lane-output-1'), 350, cache)).toEqual([]);
+  });
+});
+
+describe('generated single-call hierarchy', () => {
+  const baseProps = {
+    messageId: 'single-tool',
+    isCreatedByUser: false,
+    isLast: true,
+    isSubmitting: false,
+    showThinking: false,
+    isLatestMessage: true,
+  };
+  it('opens a single MCP result directly without a second group header', () => {
+    const title = 'Opened the model page';
+    const child = {
+      type: ContentTypes.ACTIVITY_LABEL,
+      activity_label: title,
+      pending: false,
+    } as TMessageContentParts;
+    renderContentParts({
+      ...baseProps,
+      content: [makeMcpToolCall('only'), child, makePhasePart(0, 2, title)],
+    });
+    fireEvent.click(screen.getByRole('button', { name: title }));
+    expect(
+      within(screen.getByTestId('activity-phase-panel')).queryByRole('button', { name: title }),
+    ).not.toBeInTheDocument();
+  });
+  it('keeps multiple MCP calls under their generated phase', () => {
+    const title = 'Opened both model pages';
+    renderContentParts({
+      ...baseProps,
+      content: [makeMcpToolCall('first'), makeMcpToolCall('second'), makePhasePart(0, 2, title)],
+    });
+    fireEvent.click(screen.getByRole('button', { name: title }));
+    expect(screen.getByRole('button', { name: /Ran 2 actions/ })).toBeInTheDocument();
   });
 });

@@ -165,7 +165,7 @@ export default function OutputRenderer({
     <div>
       <div className="group/copy relative">
         {isJson ? (
-          <pre dir="ltr" className="max-h-[18.75rem] overflow-auto rounded text-xs">
+          <pre dir="ltr" className="max-h-[18.75rem] overflow-auto rounded pe-6 text-xs">
             <code className="hljs language-json !break-words !whitespace-pre-wrap">
               {displayText}
             </code>
@@ -176,7 +176,7 @@ export default function OutputRenderer({
             ref={outputRef}
             onScroll={terminal ? handleOutputScroll : undefined}
             className={cn(
-              'max-h-[18.75rem] overflow-auto text-xs break-words whitespace-pre-wrap',
+              'max-h-[18.75rem] overflow-auto pe-6 text-xs break-words whitespace-pre-wrap',
               error && 'text-status-error font-mono',
               !error && structured && 'font-mono',
               !error && structured && (terminal ? 'text-text-primary' : 'text-text-secondary'),
@@ -199,8 +199,11 @@ export default function OutputRenderer({
           onClick={handleCopy}
           disabled={contentPending}
           iconOnly
+          compact
           label={localize('com_ui_copy')}
-          className={cn('bg-presentation absolute inset-e-0 bottom-0 z-[1]', PANE_COPY_REVEAL)}
+          /** Pinned to the top corner, 4px out from the text box, so it sits an
+           *  even distance from the panel's top and end edges at any length. */
+          className={cn('bg-presentation absolute -inset-e-1 -top-1 z-[1]', PANE_COPY_REVEAL)}
         />
       </div>
       {error && rawError && rawError !== displayText && (

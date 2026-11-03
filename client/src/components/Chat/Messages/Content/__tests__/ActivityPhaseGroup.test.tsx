@@ -1,4 +1,6 @@
+import { useContext } from 'react';
 import { ContentTypes, Tools } from 'librechat-data-provider';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '@librechat/chat/components';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
@@ -537,59 +539,42 @@ describe('ActivityPhaseGroup failure fast path', () => {
     expect(screen.getByRole('button', { name: 'com_ui_show_failed_one_of_n' })).toBeInTheDocument();
   });
 
-  test('peeks the first failed call under a collapsed card and reaches it in one click', () => {
-    const onReveal = jest.fn();
+  test('marks a generated phase with one call as the tool title', () => {
+    function Probe() {
+      return (
+        <div data-testid="generated-phase">{String(useContext(GeneratedToolLabelContext))}</div>
+      );
+    }
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[okCall]}>
+        <Probe />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: LABEL }));
+    expect(screen.getByTestId('generated-phase')).toHaveTextContent('true');
+  });
+
+  test('does not show a separate failed-call preview beneath a collapsed phase', () => {
     render(
       <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[okCall, failedCall]}>
-        <RevealProbe onReveal={onReveal} />
+        <div />
       </ActivityPhaseGroup>,
     );
-    const peek = screen.getByTestId('activity-phase-failed-peek');
-    expect(peek).toHaveTextContent('HTTP 429');
-    expect(peek).toHaveTextContent('com_ui_show_error');
-    expect(screen.queryByTestId('activity-phase-failed-time')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('phase-content')).not.toBeInTheDocument();
-
-    fireEvent.click(peek);
-
-    expect(screen.getByRole('button', { name: LABEL })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.queryByTestId('activity-phase-failed-peek')).not.toBeInTheDocument();
-    expect(onReveal).toHaveBeenCalledTimes(1);
   });
 
-  test('shows when the first failure happened, even after the conversation is restored', () => {
-    const failedAt = Date.now() - 2 * 60_000;
-    const timed = toPart(
-      { name: 'fetch_page', runStepStatus: 'failed', runStepClosedAt: failedAt },
-      'timed',
-    );
+  test('puts the failure action before the disclosure chevron', () => {
     render(
-      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[timed, okCall]}>
+      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[failedCall]}>
         <div />
       </ActivityPhaseGroup>,
     );
-
-    const time = screen.getByTestId('activity-phase-failed-time');
-    expect(time).toHaveAttribute('dateTime', new Date(failedAt).toISOString());
-    expect(time).toHaveTextContent(/2 minutes ago/);
-  });
-
-  test('keeps the error action and remaining count outside the shrinking peek label', () => {
-    render(
-      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[failedCall, failedCall]}>
-        <div />
-      </ActivityPhaseGroup>,
+    const pill = screen.getByTestId('failed-reveal-pill');
+    expect(pill.parentElement).toHaveClass('relative', 'pe-6');
+    expect(pill.previousElementSibling?.querySelector('.lucide-chevron-down')).toHaveClass(
+      'absolute',
+      'end-0',
     );
-
-    const peek = screen.getByTestId('activity-phase-failed-peek');
-    const label = screen.getByText('com_ui_failed_subject');
-    const box = label.parentElement;
-    expect(box).toHaveClass('min-w-0', 'flex');
-    expect(label).toHaveClass('max-w-full', 'shrink-0', 'truncate');
-    expect(box).toContainElement(screen.getByText('HTTP 429'));
-    expect(screen.getByText('com_ui_plus_n_more')).toHaveClass('shrink-0');
-    expect(screen.getByText('com_ui_show_error')).toHaveClass('shrink-0');
-    expect(peek.firstElementChild).toHaveClass('shrink-0');
   });
 
   test('the pill beside the header does the same on an open card', () => {

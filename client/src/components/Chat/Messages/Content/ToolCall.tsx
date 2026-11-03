@@ -18,6 +18,7 @@ import {
   toolPanelSpacingClassName,
   useToolContentRequest,
   useToolExpansion,
+  GeneratedToolLabelContext,
   LoneGroupContext,
   SoleToolContext,
   useToolCallIntent,
@@ -30,6 +31,7 @@ import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { useToolPreparation } from './preparation';
 import { cn, logger, openInNewTab } from '~/utils';
+import { useFailedReveal } from './reveal';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
@@ -235,21 +237,17 @@ export default function ToolCall({
   const [expandedInfo, setShowInfo] = useToolExpansion(
     soleTool ? hasInfo : (output?.length ?? 0) > 0,
   );
-  /** The only call of its group, settled successfully: the group header is the
-   *  row, so the panel stands alone and stays open. An MCP or action call keeps
-   *  its row, the only place its function name and domain appear, as does a call
-   *  with a model-authored intent. */
+  /** A generated title can replace even a named MCP or action row. */
+  const generatedLabel = useContext(GeneratedToolLabelContext);
   const intent = useToolCallIntent(_args);
   const isActionCall = domain != null && domain !== '';
   const loneGroup = useContext(LoneGroupContext);
   /** The cheap, identity and phase checks run first: a streaming call re-renders
    *  on every argument delta, and the panel check parses its payload. */
   const bare =
-    phase === 'completed' &&
-    (soleTool || loneGroup) &&
-    !isMCPToolCall &&
-    !isActionCall &&
-    intent == null &&
+    (phase === 'completed' || (generatedLabel && phase === 'failed')) &&
+    (generatedLabel ||
+      ((soleTool || loneGroup) && !isMCPToolCall && !isActionCall && intent == null)) &&
     hasInfo &&
     (hasToolParams(args) || hasRenderableOutput(output));
   const showInfo = bare || expandedInfo;
@@ -257,6 +255,18 @@ export default function ToolCall({
   useToolContentRequest(bare);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
   const rowRef = useRowHandoff(bare);
+  const revealBareFailure = useCallback(
+    (claimFocus: () => boolean) => {
+      if (!claimFocus()) return;
+      const panel = expandRef.current;
+      if (panel == null) return;
+      panel.setAttribute('tabindex', '-1');
+      panel.focus({ preventScroll: true });
+    },
+    [expandRef],
+  );
+  useFailedReveal(bare && phase === 'failed', revealBareFailure);
+
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
   /**
@@ -478,7 +488,7 @@ export default function ToolCall({
         onTransitionEnd={handleTransitionEnd}
         data-tool-call-output-id={toolCallId}
       >
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasInfo && shouldRenderBody && (
             <div
               className={cn(
