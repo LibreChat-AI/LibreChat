@@ -5,6 +5,7 @@ import {
   createMethods,
   createChannelRunStorage,
   createResponseStorage,
+  createManagedMessageId,
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -27,6 +28,7 @@ import { createResponseRetirement } from '~/agents/responses/retirement';
 import { createAgentTriggerService } from '~/agents/triggers/service';
 import { createChannelResponseRetirement } from './responses';
 
+const responseOneId = createManagedMessageId();
 let mongo: MongoMemoryReplSet;
 let storage: ChannelRunStorage;
 const tenantId = 'channel-run-test';
@@ -92,10 +94,10 @@ beforeEach(async () => {
   });
 });
 
-async function bindTestResponse(run: ChannelRunRecord, responseId = 'response-1', at = 102) {
+async function bindTestResponse(run: ChannelRunRecord, responseId = responseOneId, at = 102) {
   const current = (await storage.read(run.tenantId, run.channelId, run.runId))!;
   const execution = current.execution!;
-  await mongoose.models.StoredResponse.create({
+  const response = await createResponseStorage(mongoose).reserve({
     tenantId: run.tenantId === '_' ? undefined : run.tenantId,
     sourceKeyId: execution.apiKeyId,
     userId: run.principal.userId,
@@ -114,9 +116,8 @@ async function bindTestResponse(run: ChannelRunRecord, responseId = 'response-1'
     }),
     conversationId: execution.conversationId,
     parentMessageId: execution.parentMessageId,
-    status: 'queued',
-    revision: 0,
   });
+  if (!response.ok) throw new Error('Response reservation failed');
   return storage.bindResponse(run.tenantId, fence(run), responseId, at);
 }
 
@@ -129,7 +130,7 @@ async function ready() {
   await storage.saveSnapshot(
     tenantId,
     fence(run),
-    { responseId: 'response-1', status: 'completed', text: 'first second', elapsedMs: 10 },
+    { responseId: responseOneId, status: 'completed', text: 'first second', elapsedMs: 10 },
     102,
   );
   return storage.savePlan(tenantId, fence(run), plan, 103);
@@ -166,7 +167,7 @@ async function savedResponse(
     tenantId: overrides.tenantId ?? tenantId,
     userId: overrides.userId ?? run.principal.userId,
     agentId: overrides.agentId ?? run.agentId,
-    responseId: overrides.responseId ?? 'resp_bound',
+    responseId: overrides.responseId ?? createManagedMessageId(),
     requestKey: overrides.requestKey ?? `channel:${run.runId}`,
     sourceKeyId: overrides.sourceKeyId,
     fingerprint: `fingerprint-${overrides.responseId ?? 'bound'}`,
@@ -382,7 +383,7 @@ describe('Responses execution binding', () => {
           now: () => 1102,
         });
         const publication = jest
-          .spyOn(responses, 'publish')
+          .spyOn(responses, 'cancelUnstarted')
           .mockRejectedValueOnce(new Error('Publication unavailable'));
         await expect(retire(cleanup!)).rejects.toThrow('Publication unavailable');
         expect(await responses.read(reserved, reserved.responseId)).toMatchObject({
@@ -410,18 +411,13 @@ describe('Responses execution binding', () => {
       const run = await issued();
       const responses = createResponseStorage(mongoose);
       const response = await savedResponse(run, { sourceKeyId: 'issued' });
-      const publication = await responses.publish(
+      const publication = await responses.enrollExecution(
         response,
-        response.responseId,
-        response.revision,
-        {
-          generationCreatedAt: 103,
+        { generationCreatedAt: 103, providerExecutionId: 'retained-provider' },
+        JSON.stringify({
+          ...buildPendingBackgroundResponse(response),
           status: 'in_progress',
-          responseJSON: JSON.stringify({
-            ...buildPendingBackgroundResponse(response),
-            status: 'in_progress',
-          }),
-        },
+        }),
       );
       expect(publication.ok).toBe(true);
       const cleanup = await storage.claimAuthorityLost(run, 'cleanup', 1101, 1000);
@@ -657,7 +653,7 @@ async function waitingResponse() {
     { tenantId, runId: prepared.runId },
     {
       $set: {
-        execution: { ...prepared.execution, protocol: 'responses', responseId: 'response-1' },
+        execution: { ...prepared.execution, protocol: 'responses', responseId: responseOneId },
       },
     },
   );
@@ -815,7 +811,7 @@ it('commits all confirmed reply mappings and cursor atomically, then releases FI
     expect((await storage.findDeliveredReply(run, 'C1:reply-1'))?.runId).toBe(run.runId);
     const next = (await storage.claim(tenantId, 'channel', 'next', 112, 1000))!;
     const execution = await storage.prepareExecution(tenantId, fence(next), 113);
-    expect(execution.execution?.parentMessageId).toBe('response-1');
+    expect(execution.execution?.parentMessageId).toBe(responseOneId);
     expect(execution.execution?.conversationId).toBe(run.execution?.conversationId);
   }));
 
@@ -935,7 +931,7 @@ it('allows known-handle terminal cleanup before final plan and never creates a n
     await storage.admit(enrollment(), 100);
     const run = (await storage.claim(tenantId, 'channel', 'one', 100, 100))!;
     await storage.prepareExecution(tenantId, fence(run), 101);
-    await bindTestResponse(run, 'response');
+    await bindTestResponse(run, responseOneId);
     await storage.planProgress(
       tenantId,
       fence(run),
@@ -952,7 +948,7 @@ it('allows known-handle terminal cleanup before final plan and never creates a n
     await storage.saveSnapshot(
       tenantId,
       fence(run),
-      { status: 'completed', text: 'Answer', responseId: 'response', elapsedMs: 10 },
+      { status: 'completed', text: 'Answer', responseId: responseOneId, elapsedMs: 10 },
       105,
     );
     await storage.planProgress(
@@ -1006,7 +1002,7 @@ it('freezes a planned terminal summary inside the fence transaction even for sta
     await storage.admit(enrollment(), 100);
     const run = (await storage.claim(tenantId, 'channel', 'worker', 100, 100))!;
     await storage.prepareExecution(tenantId, fence(run), 101);
-    await bindTestResponse(run, 'response');
+    await bindTestResponse(run, responseOneId);
     const summary: ChannelRunSummary = {
       version: 1,
       scope: 'actor_lane',
@@ -1020,7 +1016,7 @@ it('freezes a planned terminal summary inside the fence transaction even for sta
       elapsedMs: { coverage: 'complete', coveredRuns: 1, value: 12 },
     };
     const snapshot = {
-      responseId: 'response',
+      responseId: responseOneId,
       status: 'completed' as const,
       text: 'Answer',
       elapsedMs: 12,
@@ -1067,13 +1063,13 @@ it('retains exact upload allocation and stage across a crash without reopening r
     await storage.admit(enrollment(), 100);
     const run = (await storage.claim(tenantId, 'channel', 'one', 100, 100))!;
     await storage.prepareExecution(tenantId, fence(run), 101);
-    await bindTestResponse(run, 'response');
+    await bindTestResponse(run, responseOneId);
     await storage.saveSnapshot(
       tenantId,
       fence(run),
       {
         status: 'completed',
-        responseId: 'response',
+        responseId: responseOneId,
         text: 'File',
         elapsedMs: 1,
         artifacts: [

@@ -44,14 +44,20 @@ jest.mock('../../../../packages/api/src/mcp/oauth/cleanup', () => ({
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   logger: { error: jest.fn(), info: jest.fn() },
   webSearchKeys: [],
 }));
 
 jest.mock('librechat-data-provider', () => ({
+  ...jest.requireActual('librechat-data-provider'),
   Tools: {},
-  CacheKeys: {},
-  Constants: { mcp_delimiter: '::', mcp_prefix: 'mcp_' },
+  CacheKeys: jest.requireActual('librechat-data-provider').CacheKeys,
+  Constants: {
+    ...jest.requireActual('librechat-data-provider').Constants,
+    mcp_delimiter: '::',
+    mcp_prefix: 'mcp_',
+  },
   FileSources: {},
 }));
 
@@ -70,6 +76,8 @@ jest.mock('@librechat/api', () => ({
   getNewS3URL: jest.fn(),
   deleteAllSharedLinksWithCleanup: (...args) => mockDeleteAllSharedLinksWithCleanup(...args),
   eraseUserData: jest.requireActual('../../../../packages/api/src/user/erasure.ts').eraseUserData,
+  sendErasureError: jest.requireActual('../../../../packages/api/src/user/errors.ts')
+    .sendErasureError,
   revokeUserCodeEnvironmentWorkers: (...args) => mockRevokeUserCodeEnvironmentWorkers(...args),
   GenerationJobManager: {
     getAccountCleanupJobIdsForUser: (...args) => mockGetCleanupBlockingJobIdsForUser(...args),
@@ -80,13 +88,15 @@ jest.mock('@librechat/api', () => ({
   deleteOwnedAgentCheckpoints: jest.fn(),
   stopUserGenerations: jest.requireActual('../../../../packages/api/src/user/generations.ts')
     .stopUserGenerations,
-  openCheckpointDeletion: jest.fn(async (userId, tenantId, _root, cfg) => ({
-    remember: jest.fn(),
-    cleanup: () =>
-      jest
-        .requireMock('@librechat/api')
-        .deleteOwnedAgentCheckpoints(userId, tenantId, undefined, cfg),
-    acknowledge: jest.fn(),
+  createCheckpointDeletionService: jest.fn(() => ({
+    openCheckpointDeletion: jest.fn(async (userId, tenantId, _root, cfg) => ({
+      remember: jest.fn(),
+      cleanup: () =>
+        jest
+          .requireMock('@librechat/api')
+          .deleteOwnedAgentCheckpoints(userId, tenantId, undefined, cfg),
+      acknowledge: jest.fn(),
+    })),
   })),
 }));
 
@@ -103,6 +113,8 @@ jest.mock('~/models', () => ({
   deletePresets: (...args) => mockDeletePresets(...args),
   deleteUserKey: (...args) => mockDeleteUserKey(...args),
   getUserById: (...args) => mockGetUserById(...args),
+  prepareUserResponseErasure: jest.fn(async () => undefined),
+  eraseUserResponses: jest.fn(async () => undefined),
   deleteConvos: (...args) => mockDeleteConvos(...args),
   deleteFiles: (...args) => mockDeleteFiles(...args),
   updateUser: (...args) => mockUpdateUser(...args),

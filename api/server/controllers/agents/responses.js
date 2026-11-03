@@ -591,6 +591,10 @@ const executeResponse = async (envelope, { req, res }) => {
           readDecision: (id) => db.readAdmittedConvoCodeEnvironmentDecision(principal.userId, id),
         });
       req.resolvedConversation = admittedConversation;
+      await responseRuntime.prepareConversation(
+        { request: req, conversationId, agentId, agent, codeEnvironmentDecision },
+        { resolveTitle: resolveConversationTitle },
+      );
       const agentRuntime = createAgentExecutionContext({
         user: req.user,
         appConfig,

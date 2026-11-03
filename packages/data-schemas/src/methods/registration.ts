@@ -2,14 +2,24 @@ import { durableStorageConfigSchema } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { ManagedRegistration, ManagedRegistrationIntent } from '~/types/managed';
 import type { ResponseOwner } from '~/models/response';
-import { initializeResponseScopes, responseScopeKeys } from './responseScope';
-import { managedTargetFilter, assertManagedTenant } from './managed';
+import {
+  managedTargetFilter,
+  managedTargetPredicate,
+  assertManagedTenant,
+  managedTargetModels,
+} from './managed';
+import {
+  initializeResponseScopes,
+  responseScopeKeys,
+  assertResponseErasureOwner,
+} from './responseScope';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { includeManagedAllocations } from '~/utils/managed';
 
 interface SettlementTarget {
   _id: Types.ObjectId;
   user?: string;
+  userId?: string;
   conversationId?: string;
   expiredAt?: Date | null;
   _managed: {
@@ -21,10 +31,11 @@ interface SettlementTarget {
 }
 
 const settlementProjection =
-  '_id user conversationId expiredAt _managed.incarnation _managed.phase _managed.ownerKey _managed.conversationKey';
+  '_id user userId conversationId expiredAt _managed.incarnation _managed.phase _managed.ownerKey _managed.conversationKey';
 
 function hasPublishedOwnership(
   target: SettlementTarget,
+  kind: ManagedRegistration['target']['kind'],
   owner: ResponseOwner,
   conversationId: string | undefined,
   key: string,
@@ -32,7 +43,7 @@ function hasPublishedOwnership(
 ): boolean {
   return (
     target._managed.phase === 'published' &&
-    target.user === owner.userId &&
+    (kind === 'response' ? target.userId : target.user) === owner.userId &&
     (conversationId === undefined
       ? target._managed.ownerKey === key
       : target._managed.conversationKey === key && target.conversationId === conversationId) &&
@@ -131,7 +142,7 @@ async function registerResponseTargetOnce(
         },
         {
           $push: { pending: { key: entry.key, target: entry.target, retentionEpoch } },
-          $inc: { pendingCount: 1 },
+          $inc: { pendingCount: 1, revision: 1 },
         },
         { new: true },
       )
@@ -207,10 +218,10 @@ export async function reconcileResponseTargets(
   const entries = anchor.pending ?? [];
   for (const entry of entries) registrationScope(mongoose, owner, conversationId, entry);
   const settled: ManagedRegistration[] = [];
-  for (const kind of ['message', 'conversation'] as const) {
+  for (const kind of ['message', 'conversation', 'response'] as const) {
     const candidates = entries.filter((entry) => entry.target.kind === kind);
     if (!candidates.length) continue;
-    const model = mongoose.model(kind === 'message' ? 'Message' : 'Conversation');
+    const model = mongoose.model(managedTargetModels[kind]);
     const present = await includeManagedAllocations(
       model.find({
         $or: candidates.map((entry) => managedTargetFilter(mongoose, entry.target)),
@@ -224,7 +235,8 @@ export async function reconcileResponseTargets(
       ...candidates.filter((entry) => {
         const target = targets.get(`${entry.target.id.toLowerCase()}:${entry.target.incarnation}`);
         return (
-          !target || hasPublishedOwnership(target, owner, conversationId, key, anchor.expiredAt)
+          !target ||
+          hasPublishedOwnership(target, kind, owner, conversationId, key, anchor.expiredAt)
         );
       }),
     );
@@ -236,7 +248,7 @@ export async function reconcileResponseTargets(
     settled.map((entry) => ({
       updateOne: {
         filter: settlementFilter(key, entry, anchor.retentionEpoch ?? 0),
-        update: { $pull: { pending: { key: entry.key } }, $inc: { pendingCount: -1 } },
+        update: { $pull: { pending: { key: entry.key } }, $inc: { pendingCount: -1, revision: 1 } },
       },
     })),
     { ordered: false },
@@ -279,7 +291,7 @@ async function settleTarget(
   const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
   if (!existing || !sameRegistration(existing, entry)) return false;
   const observedRetentionEpoch = anchor.retentionEpoch ?? 0;
-  const model = mongoose.model(entry.target.kind === 'message' ? 'Message' : 'Conversation');
+  const model = mongoose.model(managedTargetModels[entry.target.kind]);
   if (proof === 'absent') {
     // Ordinary queries hide unpublished allocations. Hidden is not absent.
     const present = await includeManagedAllocations(
@@ -293,12 +305,87 @@ async function settleTarget(
       .select(settlementProjection)
       .read('primary')
       .lean<SettlementTarget | null>();
-    if (!target || !hasPublishedOwnership(target, owner, conversationId, key, anchor.expiredAt))
+    if (
+      !target ||
+      !hasPublishedOwnership(
+        target,
+        entry.target.kind,
+        owner,
+        conversationId,
+        key,
+        anchor.expiredAt,
+      )
+    )
       return false;
   }
   const result = await scopes.updateOne(settlementFilter(key, existing, observedRetentionEpoch), {
     $pull: { pending: { key: entry.key } },
-    $inc: { pendingCount: -1 },
+    $inc: { pendingCount: -1, revision: 1 },
   });
   return result.matchedCount === 1;
+}
+
+/** Scope keys come from an owned root or its closed admission anchor, never request input. */
+export async function reconcileErasedResponseTargets(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  conversationKeys: readonly string[],
+): Promise<number> {
+  assertResponseErasureOwner(owner);
+  const keys = [...new Set([responseScopeKeys(owner, '')[0], ...conversationKeys])];
+  if (keys.some((key) => !/^[a-f\d]{64}$/.test(key)))
+    throw new TypeError('Invalid Response cleanup scope');
+  const scopes = createResponseScopeModel(mongoose);
+  let count = 0;
+  const pendingScopes = scopes
+    .find({ _id: { $in: keys }, 'pending.0': { $exists: true } })
+    .lean()
+    .cursor({ batchSize: 1 });
+  for await (const anchor of pendingScopes) {
+    const key = anchor._id;
+    const absent: ManagedRegistration[] = [];
+    for (const kind of ['message', 'conversation', 'response'] as const) {
+      const entries = anchor.pending!.filter((entry) => entry.target.kind === kind);
+      if (!entries.length) continue;
+      const model = mongoose.model(managedTargetModels[kind]);
+      const rows = await includeManagedAllocations(
+        model.find({
+          $or: entries.map((entry) => {
+            if ((entry.target.tenantId || undefined) !== (owner.tenantId || undefined))
+              throw new Error('Response cleanup target tenant changed');
+            return managedTargetPredicate(mongoose, entry.target);
+          }),
+        }),
+      )
+        .select({ _id: 1, _managed: 1 })
+        .read('primary')
+        .lean<SettlementTarget[]>();
+      const present = new Set(rows.map((row) => `${row._id}:${row._managed.incarnation}`));
+      absent.push(
+        ...entries.filter(
+          (entry) => !present.has(`${entry.target.id.toLowerCase()}:${entry.target.incarnation}`),
+        ),
+      );
+    }
+    if (!absent.length) continue;
+    // eslint-disable-next-line no-restricted-syntax -- metadata-only exact-entry CAS on validated owned scope hashes, with positive physical absence proof.
+    const result = await scopes.bulkWrite(
+      absent.map((entry) => ({
+        updateOne: {
+          filter: {
+            ...settlementFilter(key, entry, anchor.retentionEpoch ?? 0),
+            closed: anchor.closed,
+            $or: [{ expiredAt: anchor.expiredAt ?? null }],
+          },
+          update: {
+            $pull: { pending: { key: entry.key } },
+            $inc: { pendingCount: -1, revision: 1 },
+          },
+        },
+      })),
+      { ordered: false },
+    );
+    count += result.matchedCount;
+  }
+  return count;
 }

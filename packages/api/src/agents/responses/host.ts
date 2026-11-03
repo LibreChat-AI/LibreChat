@@ -1,10 +1,13 @@
-import { createChatExpirationDate, createFallbackRetentionDate } from '@librechat/data-schemas';
+import {
+  createChatExpirationDate,
+  createFallbackRetentionDate,
+  createManagedConversationId,
+} from '@librechat/data-schemas';
 import type {
   IUser,
   ResponseOwner,
   ResponseStorage,
   StoredResponseRecord,
-  ConversationMethods,
 } from '@librechat/data-schemas';
 import type { ResponseReviewView } from 'librechat-data-provider';
 import type { Request, RequestHandler } from 'express';
@@ -35,6 +38,7 @@ import { resolveResponseContinuation } from './persistence';
 import { cleanupResponseCheckpoint } from './checkpoint';
 import { createResponseRetirement } from './retirement';
 import { createResponseDispatchOutbox } from './outbox';
+import { createResponseRecovery } from './maintenance';
 import { createResponseReview } from './review';
 import { responseTenantId } from './scope';
 
@@ -50,7 +54,6 @@ export interface BackgroundResponsesHostDependencies
   >;
   publicBaseURL?: string;
   getMessage: Parameters<typeof resolveResponseContinuation>[2]['getMessage'];
-  getConvoRetention: ConversationMethods['getConvoRetention'];
   signingSecret: () => string;
   onError: (error: unknown) => void;
   fetch?: BackgroundResponseTransportDependencies['fetch'];
@@ -108,8 +111,14 @@ export function createBackgroundResponsesHost(
   const completion = createResponseCompletion({
     storage: deps.storage,
     cleanupCheckpoint: cleanupResponseCheckpoint,
-    releaseExecution: createResponseExecutionRelease(deps.jobs),
-    confirmExecution: createResponseExecutionConfirmation(deps.jobs),
+    releaseExecution: createResponseExecutionRelease(deps.jobs, deps.storage),
+    confirmExecution: createResponseExecutionConfirmation(deps.storage, deps.jobs),
+  });
+  const recover = createResponseRecovery({
+    storage: deps.storage,
+    jobs: deps.jobs,
+    completion,
+    now: deps.now,
   });
   const retire = createResponseRetirement({
     storage: deps.storage,
@@ -164,6 +173,7 @@ export function createBackgroundResponsesHost(
     resume: resumeQueue ?? (decisions ? { enqueue: decisions.enqueue } : undefined),
     authorize: (record) => authorize(record, record.agentId, record.sourceKeyId),
     retire: (record) => retire(record, record.responseId),
+    recover,
     onError: deps.onError,
   });
 
@@ -192,9 +202,10 @@ export function createBackgroundResponsesHost(
       resolveContinuation: async (owner, previous) => {
         const continuation = await resolveResponseContinuation(previous, owner.userId, {
           getMessage: deps.getMessage,
+          generateConversationId: createManagedConversationId,
         });
         const stored = previous
-          ? await deps.getConvoRetention(owner.userId, continuation.conversationId)
+          ? await deps.storage.readConversationTarget(owner, continuation.conversationId)
           : null;
         if (previous && !stored) throw new Error('Response continuation is unavailable');
         const principal = user ?? (await deps.findUser(owner.userId));
@@ -215,6 +226,7 @@ export function createBackgroundResponsesHost(
           expiredAt = createChatExpirationDate(config.interfaceConfig, true);
         return {
           ...continuation,
+          ...(stored ? { conversationTarget: stored.target } : {}),
           ...(expiredAt ? { expiredAt } : {}),
           isTemporary: policy.isTemporary ?? isTemporaryRecord(stored ?? {}),
         };

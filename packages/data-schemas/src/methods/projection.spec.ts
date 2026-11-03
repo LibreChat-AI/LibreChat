@@ -3,7 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer, MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ResponseTargetIntent, ResponseTargetResult } from './projection';
 import type { ResponseTerminalReceipt } from '~/models/response';
+import type { ManagedPublication } from '~/types/managed';
 import {
+  publishResponseTarget,
+  createResponseTurnPublisher,
   selectResponseTarget,
   beginResponseTargetRegistration,
   acknowledgeResponseTarget,
@@ -18,12 +21,16 @@ import {
 } from './managed';
 import { createManagedMessageId, createManagedConversationId } from '~/utils/managed';
 import { registerResponseTarget, settleResponseTarget } from './registration';
+import { createResponseRetention, responseScopeKeys } from './responseScope';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
+import { createConversationMethods } from './conversation';
 import { createConversationModel } from '~/models/convo';
 import { tenantStorage } from '~/config/tenantContext';
 import { createMessageModel } from '~/models/message';
+import { responseReceiptKey } from '~/utils/receipt';
+import { createResponseStorage } from './response';
 import { createMessageMethods } from './message';
 
 function required(result: ResponseTargetResult) {
@@ -104,7 +111,8 @@ describe('Response-owned canonical target selection', () => {
         responseJSON: '{"output":"confirmed"}',
         turnJSON: JSON.stringify({ version: 1, inputs: [{ messageId: createManagedMessageId() }] }),
       };
-      const root = await createStoredResponseModel(db).create({
+      const storage = createResponseStorage(db);
+      const reserved = await storage.reserve({
         userId,
         tenantId,
         conversationId,
@@ -114,10 +122,32 @@ describe('Response-owned canonical target selection', () => {
         requestJSON: '{}',
         requestKey: randomUUID(),
         parentMessageId: 'parent',
-        revision: 0,
-        status: kind === 'message' ? 'materializing' : 'queued',
-        ...(kind === 'message' ? { pendingTerminal: receipt, generationCreatedAt: 17 } : {}),
       });
+      if (!reserved.ok) throw new Error('Fixture reservation failed');
+      const execution = {
+        generationCreatedAt: 17,
+        providerExecutionId: receipt.providerExecutionId,
+      };
+      const enrolled = await storage.enrollExecution(reserved.record, execution, '{}');
+      if (!enrolled.ok || !(await storage.bindExecution(enrolled.record, execution)))
+        throw new Error('Fixture provider binding failed');
+      if (kind === 'message')
+        await createStoredResponseModel(db).updateOne(
+          {
+            _id: reserved.record.storageTarget!.id,
+          },
+          {
+            $set: {
+              status: 'materializing',
+              pendingTerminal: receipt,
+              terminalReceiptKey: responseReceiptKey(receipt),
+            },
+          },
+        );
+      const root = await createStoredResponseModel(db)
+        .findById(reserved.record.storageTarget!.id)
+        .select('+providerExecution');
+      if (!root) throw new Error('Fixture root unavailable');
       const common = {
         userId,
         tenantId,
@@ -128,7 +158,16 @@ describe('Response-owned canonical target selection', () => {
         logicalId: kind === 'message' ? responseId : conversationId,
       };
       const intent: ResponseTargetIntent =
-        kind === 'message' ? { ...common, kind, receipt } : { ...common, kind };
+        kind === 'message'
+          ? { ...common, kind, receipt }
+          : {
+              ...common,
+              kind,
+              execution: {
+                generationCreatedAt: 17,
+                providerExecutionId: receipt.providerExecutionId,
+              },
+            };
       return { intent, root, receipt };
     }
 
@@ -139,8 +178,203 @@ describe('Response-owned canonical target selection', () => {
         .lean();
     }
 
+    it.each(['message', 'conversation'] as const)(
+      'publishes and recovers a %s through the shared protocol using the canonical writer',
+      async (kind) => {
+        const { intent } = await fixture(kind);
+        let first = true;
+        const write = async (publication: ManagedPublication, expiredAt?: Date) => {
+          const context = { userId: intent.userId, expiredAt };
+          const messages = createMessageMethods(db, { managedPublication: publication });
+          const saved =
+            kind === 'message'
+              ? await messages.saveMessage(context, {
+                  messageId: intent.logicalId,
+                  conversationId: intent.conversationId,
+                  text: 'confirmed canonical payload',
+                  isCreatedByUser: false,
+                })
+              : await createConversationMethods(db, {
+                  managedPublication: publication,
+                  getMessages: createMessageMethods(db).getMessages,
+                  deleteMessages: createMessageMethods(db).deleteMessages,
+                }).saveConvo(
+                  context,
+                  {
+                    conversationId: intent.conversationId,
+                    endpoint: 'agents',
+                    agent_id: 'agent',
+                    title: 'Canonical conversation',
+                  },
+                  { initialAgentId: 'agent', appendMessageIds: [] },
+                );
+          if (first) {
+            first = false;
+            throw new Error('Canonical publication reply lost');
+          }
+          return saved;
+        };
+        await expect(publishResponseTarget(db, intent, write)).rejects.toThrow('reply lost');
+        const recovered = await publishResponseTarget(db, intent, write);
+        expect(recovered.ok).toBe(true);
+        if (!recovered.ok) throw new Error('Expected recovered publication');
+        const replay = await publishResponseTarget(db, intent, write);
+        if (!replay.ok) throw new Error('Expected publication replay');
+        expect(replay.publication.target).toEqual(recovered.publication.target);
+        const model = db.model(kind === 'message' ? 'Message' : 'Conversation');
+        expect(await model.countDocuments({ user: intent.userId })).toBe(1);
+        expect((await readTargets(intent))?.canonicalTargets).toMatchObject([
+          { phase: 'published', target: recovered.publication.target },
+        ]);
+        const anchors = await createResponseScopeModel(db)
+          .find({
+            _id: { $in: [recovered.publication.ownerKey, recovered.publication.conversationKey] },
+          })
+          .lean();
+        expect(anchors).toHaveLength(2);
+        expect(anchors.every((anchor) => anchor.pendingCount === 0)).toBe(true);
+      },
+    );
+    it('keeps every per-Message Root query metadata-only and binds a publisher to its immutable receipt', async () => {
+      const { intent, receipt, root } = await fixture();
+      const publisher = createResponseTurnPublisher(db, root.toObject(), receipt);
+      const originalResponseJSON = receipt.responseJSON;
+      const originalTurnJSON = receipt.turnJSON!;
+      // Mutation of a caller's object cannot change the private capability's authority.
+      receipt.responseJSON = 'changed after publisher creation';
+      const commands: string[] = [];
+      const client = db.connection.getClient();
+      const monitor = (event: { command: Record<string, unknown> }) => {
+        if (
+          event.command.aggregate === 'storedresponses' ||
+          event.command.find === 'storedresponses' ||
+          event.command.findAndModify === 'storedresponses' ||
+          event.command.update === 'storedresponses'
+        )
+          commands.push(JSON.stringify(event.command));
+      };
+      client.on('commandStarted', monitor);
+      try {
+        const result = await publisher(intent.logicalId, (publication) =>
+          createMessageMethods(db, { managedPublication: publication }).saveMessage(
+            { userId: intent.userId },
+            {
+              messageId: intent.logicalId,
+              conversationId: intent.conversationId,
+              text: 'confirmed',
+            },
+          ),
+        );
+        expect(result.ok).toBe(true);
+        expect(commands.length).toBeGreaterThan(0);
+        expect(
+          commands.every(
+            (command) =>
+              !command.includes(JSON.stringify(originalResponseJSON)) &&
+              !command.includes(JSON.stringify(originalTurnJSON)),
+          ),
+        ).toBe(true);
+        expect(commands.every((command) => !command.includes('"pendingTerminal":1'))).toBe(true);
+        expect(commands.some((command) => command.includes('terminalReceiptKey'))).toBe(true);
+      } finally {
+        client.off('commandStarted', monitor);
+      }
+    });
+    it('keeps discovery until a replay adopts retention shortened during canonical publication', async () => {
+      const { intent } = await fixture();
+      const deadline = new Date(Date.now() + 60_000);
+      let first = true;
+      const write = async (publication: ManagedPublication, expiredAt?: Date) => {
+        if (first) {
+          first = false;
+          await createResponseRetention(db)(intent, intent.conversationId, deadline);
+        }
+        return createMessageMethods(db, { managedPublication: publication }).saveMessage(
+          { userId: intent.userId, expiredAt },
+          { messageId: intent.logicalId, conversationId: intent.conversationId, text: 'confirmed' },
+        );
+      };
+      expect(await publishResponseTarget(db, intent, write)).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+      expect(
+        (
+          await createResponseScopeModel(db).findById(
+            responseScopeKeys(intent, intent.conversationId)[1],
+          )
+        )?.pendingCount,
+      ).toBeGreaterThan(0);
+      const recovered = await publishResponseTarget(db, intent, write);
+      expect(recovered.ok).toBe(true);
+      if (!recovered.ok) throw new Error('Expected recovered publication');
+      expect(
+        await createMessageModel(db).findOne({ messageId: intent.logicalId }).lean(),
+      ).toMatchObject({
+        expiredAt: deadline,
+      });
+      const anchors = await createResponseScopeModel(db)
+        .find({
+          _id: { $in: [recovered.publication.ownerKey, recovered.publication.conversationKey] },
+        })
+        .lean();
+      expect(anchors.every((anchor) => anchor.pendingCount === 0)).toBe(true);
+    });
+    it('cannot recreate a registered target deleted before the canonical payload lands', async () => {
+      const { intent } = await fixture();
+      const model = createMessageModel(db);
+      const write = async (publication: ManagedPublication) => {
+        await model.deleteOne(managedTargetFilter(db, publication.target));
+        return createMessageMethods(db, { managedPublication: publication }).saveMessage(
+          { userId: intent.userId },
+          { messageId: intent.logicalId, conversationId: intent.conversationId, text: 'late' },
+        );
+      };
+      expect(await publishResponseTarget(db, intent, write)).toEqual({
+        ok: false,
+        code: 'target_retired',
+      });
+      const selected = (await readTargets(intent))!.canonicalTargets![0].target;
+      const allocate = jest.spyOn(db.connection.db!, 'command');
+      expect(await publishResponseTarget(db, intent, write)).toEqual({
+        ok: false,
+        code: 'target_retired',
+      });
+      expect(allocate).not.toHaveBeenCalled();
+      expect(await model.collection.countDocuments({ user: intent.userId })).toBe(0);
+      expect((await readTargets(intent))!.canonicalTargets).toMatchObject([
+        { phase: 'retired', target: selected },
+      ]);
+    });
+    it('cannot call a canonical writer while its terminal turn is still unconfirmed', async () => {
+      const { intent, receipt } = await fixture();
+      await createStoredResponseModel(db).updateOne(
+        { _id: intent.parentId },
+        {
+          $set: { preparedTerminal: receipt },
+          $unset: { pendingTerminal: 1 },
+        },
+      );
+      const write = jest.fn();
+      expect(await publishResponseTarget(db, intent, write)).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+      expect(write).not.toHaveBeenCalled();
+    });
     it('selects a single physical winner across competing publishers', async () => {
       const { intent } = await fixture();
+      const command = db.connection.db!.command.bind(db.connection.db!);
+      const gate = barrier();
+      let allocations = 0;
+      jest.spyOn(db.connection.db!, 'command').mockImplementation(async (...args) => {
+        if (args[0].insert === createMessageModel(db).collection.name) {
+          allocations++;
+          if (allocations === 2) gate.release();
+          await gate.resumed;
+        }
+        return command(...args);
+      });
       const attempts = await Promise.all([
         selectResponseTarget(db, intent),
         selectResponseTarget(db, intent),
@@ -167,8 +401,8 @@ describe('Response-owned canonical target selection', () => {
     it('returns conflict if cleanup wins before pinning, then recovers with a fresh selection', async () => {
       const { intent } = await fixture();
       const collection = createStoredResponseModel(db).collection;
-      const update = collection.findOneAndUpdate.bind(collection);
-      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+      const update = collection.updateOne.bind(collection);
+      jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
         const result = await update(...args);
         await sweepManagedAllocations(db, 'message', { limit: 100 });
         return result;
@@ -282,7 +516,7 @@ describe('Response-owned canonical target selection', () => {
       const replacement = barrier();
       const collection = createStoredResponseModel(db).collection;
       const update = collection.updateOne.bind(collection);
-      const findUpdate = collection.findOneAndUpdate.bind(collection);
+      const findUpdate = collection.updateOne.bind(collection);
       jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
         freeze.enter();
         await freeze.resumed;
@@ -295,7 +529,7 @@ describe('Response-owned canonical target selection', () => {
         await db
           .model('Message')
           .collection.deleteOne(managedTargetFilter(db, first.selection.target));
-        jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
           replacement.enter();
           await replacement.resumed;
           return findUpdate(...args);
@@ -321,8 +555,8 @@ describe('Response-owned canonical target selection', () => {
     it('recovers an acknowledged selection whose parent CAS reply was lost', async () => {
       const { intent } = await fixture();
       const collection = createStoredResponseModel(db).collection;
-      const update = collection.findOneAndUpdate.bind(collection);
-      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+      const update = collection.updateOne.bind(collection);
+      jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
         await update(...args);
         throw new db.mongo.MongoNetworkError('test selection reply lost');
       });
@@ -418,7 +652,7 @@ describe('Response-owned canonical target selection', () => {
       expect((await readTargets(intent))?.canonicalTargets).toBeUndefined();
     });
 
-    it('seeds a conversation only before execution and cannot adopt a replacement parent', async () => {
+    it('binds Conversation selection to one active provider and cannot adopt a replacement parent', async () => {
       const { intent, root } = await fixture('conversation');
       const first = required(await selectResponseTarget(db, intent));
       expect(first.selection.target.kind).toBe('conversation');
@@ -496,7 +730,7 @@ describe('Response-owned canonical target selection', () => {
         };
         await createStoredResponseModel(db).updateOne(
           { _id: intent.parentId },
-          { $set: { pendingTerminal: terminal } },
+          { $set: { pendingTerminal: terminal, terminalReceiptKey: responseReceiptKey(terminal) } },
         );
         const input: ResponseTargetIntent = {
           ...intent,

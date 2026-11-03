@@ -21,7 +21,7 @@ import {
   eraseChannelPersistenceForUser,
   resolveChannelErasureConfig,
 } from '~/methods/channelErasure';
-import { closeResponseScopes, eraseResponseRecords } from './responseScope';
+import { createResponseOwnerErasureMethods, ResponseErasurePendingError } from './responseErasure';
 import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocsForUsers } from '~/utils/eviction';
 import { signPayload } from '~/crypto';
@@ -641,8 +641,9 @@ export function createUserMethods(
         const channelConfig = resolveChannelErasureConfig(
           (await deps.getChannelStorageConfig?.()) ?? {},
         );
-        await closeResponseScopes(mongoose, { userId, tenantId: owner.tenantId });
-        await eraseResponseRecords(mongoose, { userId, tenantId: owner.tenantId });
+        const responses = createResponseOwnerErasureMethods(mongoose);
+        await responses.prepareUserResponseErasure({ userId, tenantId: owner.tenantId });
+        await responses.eraseUserResponses({ userId, tenantId: owner.tenantId });
         // Admission writes the same owner anchor in its insertion transaction.
         // Closing it therefore precedes both this sweep and every delayed retry.
         await eraseChannelPersistenceForUser(
@@ -659,6 +660,7 @@ export function createUserMethods(
       await invalidateAuthUserDocCache(userId);
       return { deletedCount: result.deletedCount, message: 'User was deleted successfully.' };
     } catch (error: unknown) {
+      if (error instanceof ResponseErasurePendingError) throw error;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       throw new Error('Error deleting user: ' + errorMessage);
     }

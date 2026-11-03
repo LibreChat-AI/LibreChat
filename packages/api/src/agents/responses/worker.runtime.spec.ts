@@ -4,10 +4,14 @@ import request from 'supertest';
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { FileSources, PermissionBits } from 'librechat-data-provider';
+import { emptyCheckpoint, INTERRUPT } from '@langchain/langgraph-checkpoint';
 import {
   createModels,
   createMethods,
   createResponseStorage,
+  createManagedMessageId,
+  createManagedConversationId,
+  responseReference,
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -27,8 +31,14 @@ import {
   createResponseExecutionRelease,
   createResponseExecutionConfirmation,
 } from './completion';
+import {
+  buildPendingAction,
+  computeAgentRequestFingerprint,
+  computeLegacyAgentRequestFingerprint,
+} from '../hitl/policy';
 import { buildPendingBackgroundResponse, createBackgroundResponseService } from './background';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
+import { getAgentCheckpointer, __resetCheckpointerForTests } from '../checkpointer';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createResponseContext, convertInputToMessages } from './service';
 import { createResponseExecutionRuntime } from './runtime';
@@ -36,8 +46,8 @@ import { enrollAgentExecution } from '../remote/lifecycle';
 import { createResponsePersistence } from './foreground';
 import { createResponseResumeAdmission } from './resume';
 import { buildResponseInputChain } from './persistence';
+import { createResponseRetirement } from './retirement';
 import { createAgentRunEnvelope } from '../envelope';
-import { buildPendingAction } from '../hitl/policy';
 import { executeAgentRun } from '../remote/host';
 import { GenerationJobManager } from '~/stream';
 import { createResponseTurn } from './turn';
@@ -84,7 +94,7 @@ beforeEach(async () => {
   await scope(async () => {
     const result = await storage.reserve({
       ...owner,
-      responseId: 'resp_worker',
+      responseId: createManagedMessageId(),
       requestKey: 'request',
       fingerprint: 'fingerprint',
       agentId: 'agent',
@@ -96,7 +106,7 @@ beforeEach(async () => {
         store: true,
         background: true,
       }),
-      conversationId: '1cb257b0-56a6-40a6-b096-cd6e05f26963',
+      conversationId: createManagedConversationId(),
       parentMessageId: 'root',
     });
     if (!result.ok) throw new Error('Reservation failed');
@@ -162,6 +172,37 @@ it('accepts only a response-bound server token and restores the exact persisted 
     userId: owner.userId,
     body: { model: 'agent', input: 'Saved input', instructions: 'Saved instructions' },
   });
+});
+
+it('rejects a worker credential issued for a replaced physical response root', async () => {
+  const token = mintBackgroundResponseWorkerToken(record, secret);
+  const handler = jest.fn((_req: Request, res: Response) => {
+    res.status(200).end();
+  });
+  const { app } = fixture(handler);
+  await scope(async () => {
+    await mongoose.models.StoredResponse.deleteOne({ responseId: record.responseId });
+    const replacement = await storage.reserve({
+      ...owner,
+      responseId: record.responseId,
+      requestKey: record.requestKey,
+      fingerprint: record.fingerprint,
+      agentId: record.agentId,
+      sourceKeyId: record.sourceKeyId,
+      requestJSON: record.requestJSON,
+      conversationId: record.conversationId,
+      parentMessageId: record.parentMessageId,
+    });
+    if (!replacement.ok) throw new Error('Replacement failed');
+    expect(replacement.record.storageTarget?.id).not.toBe(record.storageTarget?.id);
+  });
+  await request(app)
+    .post('/')
+    .set('x-lc-response-worker', '1')
+    .auth(token, { type: 'bearer' })
+    .send({})
+    .expect(401);
+  expect(handler).not.toHaveBeenCalled();
 });
 
 it('preserves ordinary remote authentication when there is no worker marker', async () => {
@@ -237,6 +278,192 @@ it('does not accept a stale token after the original key reference changes', asy
 });
 
 describe('background Responses execution handoff', () => {
+  it('prepares the canonical Conversation through the runtime before model work begins', async () => {
+    let done!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    const errors: unknown[] = [];
+    let starts = 0;
+    const { app } = fixture(async (req, res) => {
+      const runtime = createResponseExecutionRuntime(req, res, {
+        getMessage: async () => null,
+        jobs: GenerationJobManager,
+      });
+      try {
+        await executeAgentRun({
+          envelope: createAgentRunEnvelope({
+            protocol: 'responses',
+            requestId: record.responseId,
+            receivedAt: Date.now(),
+            principal: { id: owner.userId, tenantId: owner.tenantId },
+            payload: req.body,
+          }),
+          runId: record.responseId,
+          conversationId: record.conversationId,
+          ...runtime.hooks,
+          isPrincipalActive: async () => true,
+          execute: async () => {
+            await runtime.prepareConversation(
+              {
+                request: req,
+                conversationId: record.conversationId,
+                agentId: record.agentId,
+                agent: { id: record.agentId, model: 'provider-model' },
+              },
+              { resolveTitle: () => 'Seeded before model work' },
+            );
+            const current = await storage.read(record, record.responseId);
+            expect(current?.conversationTarget).toMatchObject({
+              userId: owner.userId,
+              conversationId: record.conversationId,
+            });
+            const conversation = await mongoose.models.Conversation.findOne({
+              conversationId: record.conversationId,
+            }).lean<{ _id: mongoose.Types.ObjectId }>();
+            expect(conversation).toMatchObject({
+              title: 'Seeded before model work',
+              agent_id: record.agentId,
+              messages: [],
+            });
+            expect(String(conversation!._id)).toBe(current!.conversationTarget!.id);
+            starts++;
+          },
+          onSettlementError: (error) => {
+            errors.push(error);
+          },
+        });
+      } catch (error) {
+        errors.push(error);
+      } finally {
+        done();
+      }
+    });
+    await request(app)
+      .post('/')
+      .set('x-lc-response-worker', '1')
+      .auth(mintBackgroundResponseWorkerToken(record, secret), { type: 'bearer' })
+      .send({})
+      .expect(202);
+    await finished;
+    expect(starts).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  it('binds actual saver commands to the enrolled root and closes the writer before provider drain', async () => {
+    __resetCheckpointerForTests();
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const errors: unknown[] = [];
+    const settings = {
+      type: 'mongo' as const,
+      checkpointCollectionName: 'bound_root_checkpoints',
+      checkpointWritesCollectionName: 'bound_root_writes',
+    };
+    const privateRoot = () =>
+      mongoose.models.StoredResponse.findOne({ responseId: record.responseId })
+        .select('+providerExecution +checkpoint')
+        .lean();
+    const { app } = fixture(
+      async (req, res) => {
+        (req as ServerRequest).config = {
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          endpoints: { agents: { checkpointer: settings } },
+        };
+        const runtime = createResponseExecutionRuntime(req, res, {
+          getMessage: async () => null,
+          jobs: GenerationJobManager,
+        });
+        try {
+          await executeAgentRun({
+            envelope: createAgentRunEnvelope({
+              protocol: 'responses',
+              requestId: record.responseId,
+              receivedAt: Date.now(),
+              principal: { id: owner.userId, tenantId: owner.tenantId },
+              payload: req.body,
+            }),
+            runId: record.responseId,
+            conversationId: record.conversationId,
+            ...runtime.hooks,
+            isPrincipalActive: async () => true,
+            execute: async () => {
+              const options = await runtime.graphOptions();
+              expect(options.checkpointWriteWitness).toBeDefined();
+              const saver = await getAgentCheckpointer(settings, {
+                writeWitness: options.checkpointWriteWitness,
+              });
+              if (!saver) throw new Error('Saver missing');
+              const checkpoint = emptyCheckpoint();
+              let writeConfig: Parameters<typeof saver.putWrites>[0] | undefined;
+              await runtime.processRun(
+                {
+                  processStream: async (_input, config) => {
+                    writeConfig = {
+                      configurable: { ...config?.configurable, checkpoint_id: checkpoint.id },
+                    };
+                    await saver.putWrites(writeConfig, [[INTERRUPT, 'approval']], 'task');
+                    await saver.put(config ?? {}, checkpoint, {
+                      source: 'input',
+                      step: -1,
+                      parents: {},
+                    });
+                    expect(await privateRoot()).toMatchObject({
+                      providerExecution: { drained: false },
+                      checkpoint: { state: 'pending' },
+                    });
+                    return undefined;
+                  },
+                  resume: async () => undefined,
+                },
+                { messages: [] },
+                { version: 'v2' },
+              );
+              expect(await privateRoot()).toMatchObject({
+                providerExecution: { drained: false },
+                checkpoint: { state: 'settled' },
+              });
+              if (!writeConfig) throw new Error('Write config missing');
+              await expect(
+                saver.putWrites(writeConfig, [[INTERRUPT, 'late']], 'late'),
+              ).rejects.toThrow('Checkpoint writer is closed');
+              await runtime.completion!.prepare({
+                ...buildPendingBackgroundResponse(record),
+                status: 'completed',
+                output: [],
+              });
+            },
+            onSettlementError: (error) => {
+              errors.push(error);
+            },
+          });
+        } catch (error) {
+          errors.push(error);
+        } finally {
+          finish();
+        }
+      },
+      async () => ({ ok: false, code: 'response_resume_unavailable' }),
+    );
+    await request(app)
+      .post('/')
+      .set('x-lc-response-worker', '1')
+      .auth(mintBackgroundResponseWorkerToken(record, secret), { type: 'bearer' })
+      .send({})
+      .expect(202);
+    await finished;
+    expect(errors).toEqual([]);
+    expect(await scope(privateRoot)).toMatchObject({
+      providerExecution: { drained: true, outcome: 'complete' },
+      checkpoint: { state: 'settled' },
+      status: 'completed',
+    });
+    __resetCheckpointerForTests();
+  });
   it.each(['completed', 'cancelled', 'publication_failure', 'lost_finalizer'] as const)(
     'retains exact terminal proof until Responses publication with default cleanup (%s)',
     async (outcome) => {
@@ -327,8 +554,8 @@ describe('background Responses execution handoff', () => {
           createResponseCompletion({
             storage,
             cleanupCheckpoint: async () => {},
-            confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
-            releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+            confirmExecution: createResponseExecutionConfirmation(storage, GenerationJobManager),
+            releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
           }).finish(saved),
         );
       } else expect(errors).toEqual([]);
@@ -500,13 +727,15 @@ describe('background Responses execution handoff', () => {
         conversationId: record.conversationId,
         protocol: 'responses',
         retainTerminalPersistence: true,
+        responseRoot: record.storageTarget,
         isPrincipalActive: async () => true,
       });
-      await storage.publish(owner, record.responseId, 0, {
-        status: 'in_progress',
-        generationCreatedAt: execution.createdAt,
-        responseJSON: JSON.stringify(buildPendingBackgroundResponse(record)),
-      });
+      const enrolled = await storage.enrollExecution(
+        record,
+        execution.getEnrollmentIdentity(),
+        JSON.stringify(buildPendingBackgroundResponse(record)),
+      );
+      if (!enrolled.ok) throw new Error('Enrollment failed');
       await execution.beginProviderExecution();
       const job = (await GenerationJobManager.getJob(record.responseId))!;
       const action = buildPendingAction(
@@ -518,6 +747,9 @@ describe('background Responses execution handoff', () => {
           threadId: record.conversationId,
           ttlMs: 60_000,
           interruptId: 'interrupt-one',
+          resumeAgentIds: [record.agentId],
+          requestFingerprint: computeLegacyAgentRequestFingerprint(JSON.parse(record.requestJSON)),
+          requestFingerprintV2: computeAgentRequestFingerprint(JSON.parse(record.requestJSON)),
         },
       );
       await execution.pauseForReview(action, async () => {
@@ -545,6 +777,9 @@ describe('background Responses execution handoff', () => {
         if (!result.ok) throw new Error('Pause failed');
       });
       await execution.settle();
+      expect(
+        await storage.settleExecution(responseReference(record), execution.getEnrollmentIdentity()),
+      ).toBe(true);
       const result = await storage.reserveResume(
         owner,
         record.responseId,
@@ -653,108 +888,143 @@ describe('background Responses execution handoff', () => {
     expect(admit).not.toHaveBeenCalled();
   });
 
-  it('resumes through HTTP using only the saved decision and publishes after the owning segment settles', async () => {
-    GenerationJobManager.configure({
-      jobStore: new InMemoryJobStore({ ttlAfterComplete: 60_000 }),
-      eventTransport: new InMemoryEventTransport(),
-    });
-    await prepareResume();
-    const originalEpoch = record.generationCreatedAt;
-    const admit = createResponseResumeAdmission({
-      storage,
-      jobs: GenerationJobManager,
-      authorize: async () => true,
-      validate: async () => ({ ok: true, provenance: {} }),
-    });
-    const processStream = jest.fn(async () => undefined);
-    const resume = jest.fn(async (value: unknown, config: RunStreamConfig) => {
-      expect(value).toEqual({ answer: 'staging' });
-      expect(config.configurable).toMatchObject({
-        thread_id: record.conversationId,
-        checkpoint_id: 'checkpoint-exact',
-        checkpoint_ns: '',
-        private_option: 'preserved',
+  it.each([false, true])(
+    'resumes through HTTP exactly once despite an enrollment replay (first stalled: %s)',
+    async (stalled) => {
+      GenerationJobManager.configure({
+        jobStore: new InMemoryJobStore({ ttlAfterComplete: 60_000 }),
+        eventTransport: new InMemoryEventTransport(),
       });
-      return undefined;
-    });
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let done!: () => void;
-    const finished = new Promise<void>((resolve) => {
-      done = resolve;
-    });
-    const { app } = fixture(
-      async (req, res) => {
-        const runtime = createResponseExecutionRuntime(req, res, {
-          getMessage: async () => null,
-          jobs: GenerationJobManager,
+      await prepareResume();
+      const originalEpoch = record.generationCreatedAt;
+      const admit = createResponseResumeAdmission({
+        storage,
+        jobs: GenerationJobManager,
+        authorize: async () => true,
+        validate: async () => ({ ok: true, provenance: {} }),
+      });
+      let unblockStart!: () => void;
+      const startGate = new Promise<void>((resolve) => {
+        unblockStart = resolve;
+      });
+      let invoked!: () => void;
+      const invocation = new Promise<void>((resolve) => {
+        invoked = resolve;
+      });
+      let enrollments = 0;
+      const processStream = jest.fn(async () => undefined);
+      const resume = jest.fn(async (value: unknown, config: RunStreamConfig) => {
+        expect(value).toEqual({ answer: 'staging' });
+        expect(config.configurable).toMatchObject({
+          thread_id: record.conversationId,
+          checkpoint_id: 'checkpoint-exact',
+          checkpoint_ns: '',
+          private_option: 'preserved',
         });
-        const envelope = createAgentRunEnvelope({
-          protocol: 'responses',
-          requestId: record.responseId,
-          receivedAt: Date.now(),
-          principal: { id: owner.userId, tenantId: owner.tenantId },
-          payload: req.body,
-        });
-        try {
-          await executeAgentRun({
-            envelope,
-            runId: runtime.responseId,
-            conversationId: record.conversationId,
-            ...runtime.hooks,
-            isPrincipalActive: async () => true,
-            execute: async () => {
-              await runtime.processRun(
-                { processStream, resume },
-                { messages: [] },
-                {
-                  configurable: {
-                    thread_id: 'tampered',
-                    checkpoint_id: 'wrong',
-                    private_option: 'preserved',
-                  },
-                  version: 'v2',
+        invoked();
+        return undefined;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let done!: () => void;
+      const finished = new Promise<void>((resolve) => {
+        done = resolve;
+      });
+      const { app } = fixture(
+        async (req, res) => {
+          (req as ServerRequest).config = {
+            config: {},
+            fileStrategy: FileSources.local,
+            imageOutputType: 'png',
+            endpoints: {
+              agents: {
+                checkpointer: {
+                  type: 'mongo',
+                  checkpointCollectionName: 'worker_checkpoints',
+                  checkpointWritesCollectionName: 'worker_checkpoint_writes',
                 },
-              );
-              await gate;
-              await runtime.completion!.prepare({
-                ...buildPendingBackgroundResponse(record),
-                status: 'completed',
-                output: [],
-              });
+              },
             },
-            afterSettle: async (execution, error) => {
-              await runtime.hooks.afterSettle?.(execution, error);
-              done();
-            },
+          };
+          const runtime = createResponseExecutionRuntime(req, res, {
+            getMessage: async () => null,
+            jobs: GenerationJobManager,
           });
-        } catch {
-          if (!res.writableEnded) res.status(409).json({ error: 'resume_conflict' });
-        }
-      },
-      (saved, _user, intentId) => admit(saved, saved.responseId, intentId),
-    );
-    const token = mintResponseResumeWorkerToken(record, secret);
-    const send = () =>
-      request(app)
-        .post('/')
-        .set('x-lc-response-worker', '1')
-        .auth(token, { type: 'bearer' })
-        .send({ resume: { answer: 'attacker answer' }, model: 'wrong' });
-    await send().expect(202);
-    await send().expect(202);
-    expect(resume).toHaveBeenCalledTimes(1);
-    expect(processStream).not.toHaveBeenCalled();
-    release();
-    await finished;
-    expect(await scope(() => storage.read(owner, record.responseId))).toMatchObject({
-      status: 'completed',
-      generationCreatedAt: originalEpoch,
-    });
-    expect(await GenerationJobManager.getJob(record.responseId)).toBeUndefined();
-  });
+          const envelope = createAgentRunEnvelope({
+            protocol: 'responses',
+            requestId: record.responseId,
+            receivedAt: Date.now(),
+            principal: { id: owner.userId, tenantId: owner.tenantId },
+            payload: req.body,
+          });
+          try {
+            await executeAgentRun({
+              envelope,
+              runId: runtime.responseId,
+              conversationId: record.conversationId,
+              ...runtime.hooks,
+              onEnrolled: async (execution) => {
+                const ordinal = ++enrollments;
+                await runtime.hooks.onEnrolled!(execution);
+                if (stalled && ordinal === 1) await startGate;
+              },
+              isPrincipalActive: async () => true,
+              execute: async () => {
+                await runtime.graphOptions([]);
+                await runtime.processRun(
+                  { processStream, resume },
+                  { messages: [] },
+                  {
+                    configurable: {
+                      thread_id: 'tampered',
+                      checkpoint_id: 'wrong',
+                      private_option: 'preserved',
+                    },
+                    version: 'v2',
+                  },
+                );
+                await gate;
+                await runtime.completion!.prepare({
+                  ...buildPendingBackgroundResponse(record),
+                  status: 'completed',
+                  output: [],
+                });
+              },
+              afterSettle: async (execution, error) => {
+                await runtime.hooks.afterSettle?.(execution, error);
+                done();
+              },
+            });
+          } catch {
+            if (!res.writableEnded) res.status(409).json({ error: 'resume_conflict' });
+          }
+        },
+        (saved, _user, intentId) => admit(saved, saved.responseId, intentId),
+      );
+      const token = mintResponseResumeWorkerToken(record, secret);
+      const send = () =>
+        request(app)
+          .post('/')
+          .set('x-lc-response-worker', '1')
+          .auth(token, { type: 'bearer' })
+          .send({ resume: { answer: 'attacker answer' }, model: 'wrong' });
+      await send().expect(202);
+      await send().expect(202);
+      await invocation;
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect(processStream).not.toHaveBeenCalled();
+      unblockStart();
+      release();
+      await finished;
+      expect(await scope(() => storage.read(owner, record.responseId))).toMatchObject({
+        status: 'completed',
+        generationCreatedAt: originalEpoch,
+      });
+      expect(await GenerationJobManager.getJob(record.responseId)).toBeUndefined();
+    },
+  );
 
   it.each([false, true])(
     'keeps final output private until drain and recovers canonical materialization (outage=%s)',
@@ -782,14 +1052,17 @@ describe('background Responses execution handoff', () => {
         .mockImplementationOnce(async (...args) => {
           for (let step = 0; step < 30; step++) {
             const current = (await storage.read(owner, record.responseId))!;
-            const projected = await storage.publish(owner, current.responseId, current.revision, {
-              status: 'in_progress',
-              responseJSON: JSON.stringify({
-                ...buildPendingBackgroundResponse(current),
+            const projected = await storage.publishProgress(
+              { ...(await storage.read(owner, current.responseId))!, revision: current.revision },
+              {
                 status: 'in_progress',
-                metadata: { progress: step },
-              }),
-            });
+                responseJSON: JSON.stringify({
+                  ...buildPendingBackgroundResponse(current),
+                  status: 'in_progress',
+                  metadata: { progress: step },
+                }),
+              },
+            );
             expect(projected.ok).toBe(true);
           }
           const result = await prepare(...args);
@@ -837,6 +1110,15 @@ describe('background Responses execution handoff', () => {
               settlementErrors.push(error);
             },
             execute: async (execution) => {
+              await runtime.prepareConversation(
+                {
+                  request: req,
+                  conversationId: record.conversationId,
+                  agentId: record.agentId,
+                  agent: { id: record.agentId },
+                },
+                { resolveTitle: () => null },
+              );
               starts++;
               execution.track(trailingWrite);
               await turn.stage(
@@ -918,8 +1200,8 @@ describe('background Responses execution handoff', () => {
         const recovery = createResponseCompletion({
           storage,
           cleanupCheckpoint: async () => {},
-          confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
-          releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+          confirmExecution: createResponseExecutionConfirmation(storage, GenerationJobManager),
+          releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
         });
         const service = createBackgroundResponseService({
           storage,
@@ -971,15 +1253,59 @@ describe('background Responses execution handoff', () => {
         expect(pending.status).toBe('materializing');
         expect(pending.pendingTerminal?.status).toBe('completed');
         expect(pending.pendingTerminal?.responseJSON).toContain('# Exact final answer');
+        // Confirmed history may be a prefix while the required Conversation append retries.
+        const prefix = await scope(() =>
+          mongoose.models.Message.find({ user: owner.userId }).lean(),
+        );
+        expect(prefix).toHaveLength(2);
+        expect(prefix.find((message) => message.messageId === record.responseId)).toMatchObject({
+          text: '# Exact final answer',
+          isCreatedByUser: false,
+        });
         expect(
-          await scope(() => mongoose.models.Message.countDocuments({ user: owner.userId })),
-        ).toBe(0);
+          await scope(() =>
+            mongoose.models.Conversation.findOne({ conversationId: record.conversationId }).lean(),
+          ),
+        ).toMatchObject({ messages: [] });
+        const continuation = createBackgroundResponseService({
+          storage,
+          authorize: async () => true,
+          resolveContinuation: async () => {
+            throw new Error('Unfinished history cannot advance');
+          },
+          enqueue: async () => {
+            throw new Error('Unfinished history cannot dispatch');
+          },
+          observe: async () => null,
+          recoverTerminal: async (value) => value,
+          cancel: async () => {},
+        });
+        expect(
+          await scope(() =>
+            continuation.create(
+              createAgentRunEnvelope({
+                protocol: 'responses',
+                requestId: 'blocked-continuation',
+                receivedAt: Date.now(),
+                principal: { id: owner.userId, tenantId: owner.tenantId },
+                payload: {
+                  model: record.agentId,
+                  input: 'must wait',
+                  background: true,
+                  previous_response_id: record.responseId,
+                },
+              }),
+              undefined,
+              record.sourceKeyId,
+            ),
+          ),
+        ).toMatchObject({ ok: false, status: 409, code: 'response_continuation_unavailable' });
         expect(announce).not.toHaveBeenCalled();
         const recovery = createResponseCompletion({
           storage,
           cleanupCheckpoint: async () => {},
-          confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
-          releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+          confirmExecution: createResponseExecutionConfirmation(storage, GenerationJobManager),
+          releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
         });
         await scope(() => recovery.finish(pending));
       }
@@ -1007,6 +1333,10 @@ describe('background Responses execution handoff', () => {
       expect(prepareWithConcurrentProgress).toHaveBeenCalledTimes(1);
       prepareWithConcurrentProgress.mockRestore();
       expect(saved?.status).toBe('completed');
+      if (!materializationOutage)
+        expect(announce).toHaveBeenCalledWith(
+          expect.objectContaining({ conversationTarget: saved?.conversationTarget }),
+        );
       expect(saved?.preparedTerminal).toBeUndefined();
       expect(JSON.parse(saved!.responseJSON!).output[0].content[0].text).toBe(
         '# Exact final answer',
@@ -1078,8 +1408,8 @@ describe('background Responses execution handoff', () => {
       createResponseCompletion({
         storage,
         cleanupCheckpoint: async () => {},
-        confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
-        releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+        confirmExecution: createResponseExecutionConfirmation(storage, GenerationJobManager),
+        releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
       }).finish(pending),
     );
     expect(recovered.status).toBe('completed');
@@ -1105,7 +1435,7 @@ describe('background Responses execution handoff', () => {
       const finished = new Promise<void>((resolve) => {
         done = resolve;
       });
-      const retire = async () => {
+      const retire = async (retry = false) => {
         const methods = createMethods(mongoose);
         if (kind === 'owner') {
           await mongoose.models.User.updateOne(
@@ -1115,7 +1445,11 @@ describe('background Responses execution handoff', () => {
           );
           await methods.deleteUserById(owner.userId);
         } else if (kind === 'conversation')
-          await methods.deleteConvos(owner.userId, { conversationId: record.conversationId });
+          await methods.deleteConvos(
+            owner.userId,
+            { conversationId: record.conversationId },
+            { allowEmpty: retry },
+          );
         else
           await methods.saveConvo(
             { userId: owner.userId, expiredAt: new Date(Date.now() - 1000) },
@@ -1146,7 +1480,17 @@ describe('background Responses execution handoff', () => {
             isPrincipalActive: async () => true,
             execute: async () => {
               starts++;
-              await retire();
+              if (kind === 'expiry') await retire();
+              else {
+                // A concurrent deletion request cannot finish while this provider is active.
+                await expect(retire()).rejects.toMatchObject({ code: 'response_erasure_pending' });
+                const retained = await mongoose.models.StoredResponse.collection.findOne({
+                  responseId: record.responseId,
+                });
+                expect(retained).toMatchObject({ _managed: { phase: 'retired' } });
+                expect(retained).not.toHaveProperty('requestJSON');
+                expect(retained).not.toHaveProperty('responseJSON');
+              }
               await runtime.completion!.prepare({
                 ...buildPendingBackgroundResponse(record),
                 status: 'completed',
@@ -1171,6 +1515,14 @@ describe('background Responses execution handoff', () => {
         .send({})
         .expect(phase === 'enrollment' ? 409 : 202);
       await finished;
+      if (phase === 'settlement' && kind !== 'expiry') {
+        await scope(() => retire(true));
+        expect(
+          await mongoose.models.StoredResponse.collection.countDocuments({
+            responseId: record.responseId,
+          }),
+        ).toBe(0);
+      }
       expect(starts).toBe(phase === 'enrollment' ? 0 : 1);
       expect(errors).toHaveLength(phase === 'enrollment' ? 1 : 0);
       expect(await scope(() => storage.read(owner, record.responseId))).toBeNull();
@@ -1181,15 +1533,24 @@ describe('background Responses execution handoff', () => {
     },
   );
 
-  it.each(['before enrollment', 'during publication'])(
+  it.each(['before enrollment', 'during publication', 'terminal Stop during enrollment'])(
     'honors queued cancellation %s without provider work',
     async (phase) => {
       if (phase === 'before enrollment') {
         await scope(async () => storage.requestCancellation(owner, record.responseId, Date.now()));
       } else {
-        const publish = storage.publish.bind(storage);
-        jest.spyOn(storage, 'publish').mockImplementationOnce(async (...args) => {
-          await storage.requestCancellation(owner, record.responseId, Date.now());
+        const publish = storage.enrollExecution.bind(storage);
+        jest.spyOn(storage, 'enrollExecution').mockImplementationOnce(async (...args) => {
+          if (phase === 'terminal Stop during enrollment') {
+            expect(
+              await createResponseRetirement({ storage, jobs: GenerationJobManager })(
+                owner,
+                record.responseId,
+              ),
+            ).toBe('stopped');
+          } else {
+            await storage.requestCancellation(owner, record.responseId, Date.now());
+          }
           return publish(...args);
         });
       }
@@ -1198,6 +1559,7 @@ describe('background Responses execution handoff', () => {
         settled = resolve;
       });
       let starts = 0;
+      const settlementErrors: unknown[] = [];
       const { app } = fixture(async (req, res) => {
         const runtime = createResponseExecutionRuntime(req, res, {
           getMessage: async () => null,
@@ -1210,33 +1572,44 @@ describe('background Responses execution handoff', () => {
           principal: { id: owner.userId, tenantId: owner.tenantId },
           payload: req.body,
         });
-        await executeAgentRun({
-          envelope,
-          runId: runtime.responseId,
-          conversationId: record.conversationId,
-          connection: runtime.connection,
-          ...runtime.hooks,
-          isPrincipalActive: async () => true,
-          execute: async () => {
-            starts++;
-          },
-          handleExecutionError: () => {
-            if (!res.writableEnded) res.status(409).json({ code: 'cancelled' });
-          },
-        });
-        settled();
+        try {
+          await executeAgentRun({
+            envelope,
+            runId: runtime.responseId,
+            conversationId: record.conversationId,
+            connection: runtime.connection,
+            ...runtime.hooks,
+            isPrincipalActive: async () => true,
+            execute: async () => {
+              starts++;
+            },
+            onSettlementError: (error) => {
+              settlementErrors.push(error);
+            },
+            handleExecutionError: () => {
+              if (!res.writableEnded) res.status(409).json({ code: 'cancelled' });
+            },
+          });
+        } finally {
+          settled();
+        }
       });
       const response = await request(app)
         .post('/')
         .set('x-lc-response-worker', '1')
         .auth(mintBackgroundResponseWorkerToken(record, secret), { type: 'bearer' })
         .send({});
-      expect(response.status).toBe(202);
+      expect(response.status).toBe(phase === 'terminal Stop during enrollment' ? 409 : 202);
       await finished;
       expect(starts).toBe(0);
-      expect((await scope(async () => storage.read(owner, record.responseId)))?.status).toBe(
-        'cancelled',
-      );
+      expect(settlementErrors).toEqual([]);
+      const saved = await scope(async () => storage.read(owner, record.responseId));
+      expect(saved).toMatchObject({ status: 'cancelled', releaseAcknowledged: true });
+      const job = await GenerationJobManager.getJob(record.responseId);
+      expect(job?.metadata.terminalPersistencePending).toBe(false);
+      expect(job?.metadata.providerExecutionStartedId).toBeUndefined();
+      if (phase === 'terminal Stop during enrollment')
+        expect(saved?.generationCreatedAt).toBeUndefined();
     },
   );
 
@@ -1268,6 +1641,15 @@ describe('background Responses execution handoff', () => {
             ...runtime.hooks,
             isPrincipalActive: async () => true,
             execute: async (execution) => {
+              await runtime.prepareConversation(
+                {
+                  request: req,
+                  conversationId: record.conversationId,
+                  agentId: record.agentId,
+                  agent: { id: record.agentId },
+                },
+                { resolveTitle: () => null },
+              );
               const response = {
                 ...buildPendingBackgroundResponse(record),
                 status: 'completed' as const,
@@ -1376,7 +1758,6 @@ describe('background Responses execution handoff', () => {
         isPrincipalActive: async () => true,
         getAgentPermissions: async () => PermissionBits.VIEW,
         getMessage: methods.getMessage,
-        getConvoRetention: methods.getConvoRetention,
         enqueue: async () => {
           throw new Error('Retrieval must not enqueue another provider');
         },

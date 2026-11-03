@@ -1,54 +1,52 @@
 import { createHash } from 'node:crypto';
 import type { ClientSession } from 'mongoose';
 import type { ResponseOwner } from '~/models/response';
-import {
-  eraseChannelFeedbackForOwner,
-  retainChannelFeedbackForOwner,
-} from './channelFeedbackErasure';
+import { retainChannelFeedbackForOwner } from './channelFeedbackErasure';
+import { runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
-import { getTransactionSupport } from '~/utils/transactions';
-import { createIndexesWithRetry } from '~/utils/retry';
-import { runAsSystem } from '~/config/tenantContext';
+import { createConversationModel } from '~/models/convo';
+import { createMessageModel } from '~/models/message';
+import { shortenExpiration } from '~/utils/retention';
+import { resolveTenantScope } from '~/tenant/policy';
 
 /** Response-bound conversation IDs are immutable: jobs and checkpoints retain that identity.
  * An empty source scope is closed before replacement so delayed admission cannot orphan data. */
 export function createResponseConversationReplacement(
   mongoose: typeof import('mongoose'),
 ): (owner: ResponseOwner, conversationId: string) => Promise<boolean> {
-  let supported: boolean | null = null;
   return async (owner, conversationId) => {
-    supported = await getTransactionSupport(mongoose, supported);
-    const records = createStoredResponseModel(mongoose);
-    const filter = { ...responseOwnerFilter(owner), conversationId };
-    if (!supported) {
-      // Reservation fails closed on standalone deployments, so no admission can race this check.
-      if (await records.exists(filter)) return false;
-      await closeResponseScopes(mongoose, owner, [conversationId]);
-      return true;
-    }
     const key = responseScopeKeys(owner, conversationId)[1];
     await initializeResponseScopes(mongoose, [key]);
-    const session = await mongoose.startSession({
-      defaultTransactionOptions: { readPreference: 'primary' },
-    });
-    try {
-      let allowed = false;
-      await session.withTransaction(async () => {
-        const scopes = createResponseScopeModel(mongoose);
-        // Serialize with the reservation's write to this same anchor before checking rows.
-        await scopes.updateOne({ _id: key }, { $inc: { revision: 1 } }, { session });
-        if (await records.exists(filter).session(session)) {
-          allowed = false;
-          return;
-        }
-        await scopes.updateOne({ _id: key }, { $set: { closed: true } }, { session });
-        allowed = true;
-      });
-      return allowed;
-    } finally {
-      await session.endSession();
-    }
+    const scopes = createResponseScopeModel(mongoose);
+    const anchor = await scopes.findById(key).read('primary').lean();
+    if (!anchor) return false;
+    const pendingCount = anchor.pendingCount ?? 0;
+    if (pendingCount !== (anchor.pending?.length ?? 0))
+      throw new Error('Response replacement discovery count changed');
+    if (pendingCount) return false;
+    if (
+      await createStoredResponseModel(mongoose)
+        .exists({ ...responseOwnerFilter(owner), conversationId })
+        .read('primary')
+    )
+      return false;
+    if (anchor.closed) return true;
+    const revision = anchor.revision ?? 0;
+    // Registration AND settlement advance this version, so an entire publication
+    // cannot disappear between the primary absence check and closing an empty scope.
+    const closed = await scopes.updateOne(
+      {
+        _id: key,
+        closed: false,
+        revision: revision === 0 ? { $in: [0, null] } : revision,
+        pendingCount: { $in: [0, null] },
+        'pending.0': { $exists: false },
+      },
+      { $set: { closed: true }, $inc: { revision: 1 } },
+      { upsert: false },
+    );
+    return closed.matchedCount === 1;
   };
 }
 
@@ -86,8 +84,6 @@ export function createResponseRetention(
   mongoose: typeof import('mongoose'),
   parentSession?: ClientSession,
 ): (owner: ResponseOwner, conversationId: string, expiredAt: Date) => Promise<void> {
-  let supported: boolean | null = null;
-  let indexes: Promise<void> | undefined;
   return async (owner, conversationId, expiredAt) => {
     if (!(expiredAt instanceof Date) || !Number.isFinite(expiredAt.getTime()))
       throw new TypeError('Invalid response expiration');
@@ -95,52 +91,66 @@ export function createResponseRetention(
     await initializeResponseScopes(mongoose, [key], parentSession);
     const scopes = createResponseScopeModel(mongoose);
     const records = createStoredResponseModel(mongoose);
-    supported = parentSession ? true : await getTransactionSupport(mongoose, supported);
-    if (supported && !parentSession) {
-      indexes ??= createIndexesWithRetry(records)
-        .then(() => undefined)
-        .catch((error: unknown) => {
-          indexes = undefined;
-          throw error;
-        });
-      await indexes;
-    }
-    const apply = async (session?: import('mongoose').ClientSession) => {
-      const anchor = await scopes
-        .findOneAndUpdate({ _id: key }, responseScopeRetentionUpdate(expiredAt), {
-          new: true,
-          ...(session ? { session } : {}),
-        })
-        .lean();
-      if (!anchor?.expiredAt) throw new Error('Response retention scope unavailable');
-      await records.updateMany(
-        {
-          ...responseOwnerFilter(owner),
-          conversationId,
-          $or: [{ expiredAt: null }, { expiredAt: { $gt: anchor.expiredAt } }],
-        },
-        { $set: { expiredAt: anchor.expiredAt } },
-        session ? { session } : {},
-      );
-      await retainChannelFeedbackForOwner(
-        mongoose,
-        owner,
-        conversationId,
-        anchor.expiredAt,
-        session,
-      );
+    const anchor = await scopes
+      .findOneAndUpdate({ _id: key }, responseScopeRetentionUpdate(expiredAt), {
+        new: true,
+        ...(parentSession ? { session: parentSession } : {}),
+      })
+      .lean();
+    if (!anchor?.expiredAt) throw new Error('Response retention scope unavailable');
+    const canonical = {
+      user: owner.userId,
+      conversationId,
+      tenantId: owner.tenantId || { $in: [null, ''] },
     };
-    if (parentSession) return apply(parentSession);
-    if (!supported) return apply();
-    const session = await mongoose.startSession({
-      defaultTransactionOptions: { readPreference: 'primary' },
-    });
-    try {
-      await session.withTransaction(() => apply(session));
-    } finally {
-      await session.endSession();
-    }
+    const writes = [
+      () =>
+        shortenExpiration(
+          records,
+          { ...responseOwnerFilter(owner), conversationId },
+          anchor.expiredAt!,
+          parentSession,
+        ),
+      () =>
+        shortenExpiration(
+          createMessageModel(mongoose),
+          canonical,
+          anchor.expiredAt!,
+          parentSession,
+        ),
+      () =>
+        shortenExpiration(
+          createConversationModel(mongoose),
+          canonical,
+          anchor.expiredAt!,
+          parentSession,
+        ),
+      () =>
+        retainChannelFeedbackForOwner(
+          mongoose,
+          owner,
+          conversationId,
+          anchor.expiredAt!,
+          parentSession,
+        ),
+    ];
+    // Caller-owned Channel transactions remain serialized; portable retention can
+    // stamp independent indexed collections concurrently after its epoch is durable.
+    if (parentSession) for (const write of writes) await write();
+    else await Promise.all(writes.map((write) => write()));
   };
+}
+
+/** Cleanup may use an explicit system partition; canonical writers retain their stricter guard. */
+export function assertResponseErasureOwner(owner: ResponseOwner): void {
+  const scope = resolveTenantScope('Response erasure');
+  const tenantId = scope.kind === 'scoped' ? scope.tenantId : undefined;
+  if (
+    !owner.userId ||
+    owner.tenantId === SYSTEM_TENANT_ID ||
+    (scope.kind !== 'system' && tenantId !== (owner.tenantId || undefined))
+  )
+    throw new TypeError('Response cleanup tenant does not match the active scope');
 }
 
 /** The tenant policy treats missing, null and empty tenant IDs as one partition. */
@@ -149,18 +159,6 @@ export function responseOwnerFilter(owner: ResponseOwner): {
   tenantId: string | { $in: Array<null | string> };
 } {
   return { userId: owner.userId, tenantId: owner.tenantId || { $in: [null, ''] } };
-}
-
-export async function eraseResponseRecords(
-  mongoose: typeof import('mongoose'),
-  owner: ResponseOwner,
-  conversationIds?: readonly string[],
-): Promise<void> {
-  await eraseChannelFeedbackForOwner(mongoose, owner, conversationIds);
-  await createStoredResponseModel(mongoose).deleteMany({
-    ...responseOwnerFilter(owner),
-    ...(conversationIds ? { conversationId: { $in: conversationIds } } : {}),
-  });
 }
 
 function scopeKey(owner: ResponseOwner, conversationId?: string): string {
@@ -217,8 +215,28 @@ export async function closeResponseScopes(
   owner: ResponseOwner,
   conversationIds?: string[],
 ): Promise<void> {
-  const model = createResponseScopeModel(mongoose);
   const keys = conversationIds?.map((id) => scopeKey(owner, id)) ?? [scopeKey(owner)];
+  await closeResponseScopeKeys(mongoose, keys);
+  await createStoredResponseModel(mongoose).updateMany(
+    {
+      ...responseOwnerFilter(owner),
+      ...(conversationIds ? { conversationId: { $in: conversationIds } } : {}),
+      status: { $in: ['queued', 'in_progress', 'requires_action', 'materializing'] },
+      cancellationRequestedAt: { $exists: false },
+      pendingTerminal: { $exists: false },
+    },
+    { $set: { cancellationRequestedAt: Date.now() } },
+  );
+}
+
+/** Internal cleanup may recover hashed conversation descriptors before payload publication. */
+export async function closeResponseScopeKeys(
+  mongoose: typeof import('mongoose'),
+  keys: readonly string[],
+): Promise<void> {
+  if (keys.some((key) => !/^[a-f\d]{64}$/.test(key)))
+    throw new TypeError('Invalid Response scope key');
+  const model = createResponseScopeModel(mongoose);
   // Bound each command independently of the number of conversations being removed.
   for (let offset = 0; offset < keys.length; offset += 250) {
     const operations = keys.slice(offset, offset + 250).map((key) => ({
@@ -238,14 +256,4 @@ export async function closeResponseScopes(
       await close();
     }
   }
-  await createStoredResponseModel(mongoose).updateMany(
-    {
-      ...responseOwnerFilter(owner),
-      ...(conversationIds ? { conversationId: { $in: conversationIds } } : {}),
-      status: { $in: ['queued', 'in_progress', 'requires_action', 'materializing'] },
-      cancellationRequestedAt: { $exists: false },
-      pendingTerminal: { $exists: false },
-    },
-    { $set: { cancellationRequestedAt: Date.now() } },
-  );
 }

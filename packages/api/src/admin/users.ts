@@ -17,6 +17,7 @@ import type { UserErasureDeps } from '~/user/erasure';
 import type { ServerRequest } from '~/types/http';
 import { stopUserGenerations } from '~/user/generations';
 import { invalidatingConfigStore } from './cascade';
+import { sendErasureError } from '~/user/errors';
 import { parsePagination } from './pagination';
 import { eraseUserData } from '~/user/erasure';
 
@@ -359,7 +360,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
         }
       }
       logger.error('[adminUsers] deleteUser error:', error);
-      return res.status(500).json({ error: 'Failed to delete user' });
+      return sendErasureError(res, error, { error: 'Failed to delete user' });
     }
   }
 

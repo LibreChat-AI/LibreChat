@@ -13,16 +13,37 @@ import {
   markManagedTargetRegistered,
   sweepManagedAllocations,
 } from './managed';
+import {
+  responseScopeKeys,
+  closeResponseScopes,
+  createResponseRetention,
+  createResponseConversationReplacement,
+} from './responseScope';
+import {
+  publishResponseRoot,
+  responseReference,
+  responseRootFilter,
+  prepareResponseRootStorage,
+} from './responseRoot';
+import {
+  registerResponseTarget,
+  settleResponseTarget,
+  reconcileResponseTargets,
+} from './registration';
 import { createManagedConversationId, createManagedMessageId } from '~/utils/managed';
-import { registerResponseTarget, settleResponseTarget } from './registration';
+import { createResponseCheckpointStorage } from './responseCheckpoint';
+import { checkpointOwnerNamespacePrefix } from '~/utils/checkpoint';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { createResponseScopeModel } from '~/models/responseScope';
 import { applyManagedStorage } from '~/models/plugins/managed';
 import { createChatProjectModel } from '~/models/chatProject';
+import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
 import { createConversationMethods } from './conversation';
+import { eraseResponseRecords } from './responseErasure';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
-import { responseScopeKeys } from './responseScope';
+import { createResponseStorage } from './response';
 import { createMessageMethods } from './message';
 
 describe('managed target allocation on real storage', () => {
@@ -61,9 +82,14 @@ describe('managed target allocation on real storage', () => {
     for (const [, db] of engines) {
       const Message = createMessageModel(db);
       const Conversation = createConversationModel(db);
+      const Response = createStoredResponseModel(db);
       await createChatProjectModel(db).init();
-      await Promise.all([Message.init(), Conversation.init()]);
-      await Promise.all([Message.createIndexes(), Conversation.createIndexes()]);
+      await Promise.all([Message.init(), Conversation.init(), Response.init()]);
+      await Promise.all([
+        Message.createIndexes(),
+        Conversation.createIndexes(),
+        Response.createIndexes(),
+      ]);
     }
   }, 60000);
 
@@ -75,6 +101,1333 @@ describe('managed target allocation on real storage', () => {
 
   describe.each(engines)('%s', (_name, db) => {
     const mongoOnly = db === ferret ? describe.skip : describe;
+    it('removes the obsolete root TTL index and preserves expiry as a recovery index', async () => {
+      const model = createStoredResponseModel(db);
+      await model.collection.createIndex({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+      await Promise.all([prepareResponseRootStorage(db), prepareResponseRootStorage(db)]);
+      const indexes = await model.listIndexes();
+      expect(indexes.some((index) => index.expireAfterSeconds != null)).toBe(false);
+      expect(indexes).toEqual(
+        expect.arrayContaining([expect.objectContaining({ key: { expiredAt: 1, _id: 1 } })]),
+      );
+    });
+    it('refuses activation with an unexpected autonomous root TTL without dropping it', async () => {
+      const model = createStoredResponseModel(db);
+      const name = await model.collection.createIndex(
+        { createdAt: 1 },
+        { expireAfterSeconds: 86400, name: 'unexpected_root_ttl' },
+      );
+      try {
+        await expect(prepareResponseRootStorage(db)).rejects.toThrow('TTL index exists');
+        expect((await model.listIndexes()).some((index) => index.name === name)).toBe(true);
+      } finally {
+        await model.collection.dropIndex(name);
+      }
+    });
+    function rootInput() {
+      return {
+        userId: randomUUID(),
+        responseId: createManagedMessageId(),
+        requestKey: randomUUID(),
+        fingerprint: createHash('sha256').update(randomUUID()).digest('hex'),
+        agentId: 'agent',
+        requestJSON: '{"input":"private"}',
+        conversationId: createManagedConversationId(),
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        dispatch: true,
+      };
+    }
+    it('reserves one canonical response across concurrent retries without sessions or transactions', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const session = jest.spyOn(db, 'startSession');
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          storage.reserve({
+            ...input,
+            responseId: createManagedMessageId(),
+            conversationId: createManagedConversationId(),
+          }),
+        ),
+      );
+      expect(results.every((result) => result.ok)).toBe(true);
+      expect(results.filter((result) => result.ok && !result.replayed)).toHaveLength(1);
+      const records = results.flatMap((result) => (result.ok ? [result.record] : []));
+      expect(new Set(records.map((record) => record.storageTarget?.id)).size).toBe(1);
+      expect(new Set(records.map((record) => record.conversationId)).size).toBe(1);
+      expect(session).not.toHaveBeenCalled();
+      const model = createStoredResponseModel(db);
+      expect(await model.countDocuments({ userId: input.userId })).toBe(1);
+      const ownerKey = responseScopeKeys(input, input.conversationId)[0];
+      expect(
+        await model.collection.countDocuments({
+          userId: { $exists: false },
+          '_managed.ownerKey': ownerKey,
+        }),
+      ).toBe(0);
+      expect(await createResponseScopeModel(db).findById(ownerKey).lean()).toMatchObject({
+        pendingCount: 0,
+      });
+    });
+    it('keeps the original request unchanged when an idempotency conflict supplies a shorter deadline', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const first = await storage.reserve(input);
+      expect(first.ok).toBe(true);
+      expect(
+        await storage.reserve({
+          ...input,
+          fingerprint: 'different',
+          expiredAt: new Date(Date.now() + 1_000),
+        }),
+      ).toEqual({
+        ok: false,
+        code: 'idempotency_conflict',
+      });
+      expect((await storage.read(input, input.responseId))?.expiredAt).toBeUndefined();
+    });
+    it('denies reservation after owner closure before allocating private response data', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      await closeResponseScopes(db, input);
+      expect(await storage.reserve(input)).toEqual({ ok: false, code: 'response_unavailable' });
+      expect(await createStoredResponseModel(db).countDocuments({ userId: input.userId })).toBe(0);
+    });
+    it.each(['owner', 'conversation', 'retention'] as const)(
+      'erases a registered allocation before a delayed %s publication can land',
+      async (kind) => {
+        const storage = createResponseStorage(db);
+        const input = rootInput();
+        let enter!: () => void;
+        let release!: () => void;
+        const entered = new Promise<void>((resolve) => {
+          enter = resolve;
+        });
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const collection = createStoredResponseModel(db).collection;
+        const publish = collection.findOneAndUpdate.bind(collection);
+        jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+          enter();
+          await gate;
+          return publish(...args);
+        });
+        const pending = storage.reserve(input);
+        await entered;
+        try {
+          if (kind === 'retention')
+            await createResponseRetention(db)(
+              input,
+              input.conversationId,
+              new Date(Date.now() - 1),
+            );
+          else
+            await closeResponseScopes(
+              db,
+              input,
+              kind === 'owner' ? undefined : [input.conversationId],
+            );
+          await eraseResponseRecords(
+            db,
+            input,
+            kind === 'owner' ? undefined : [input.conversationId],
+          );
+        } finally {
+          release();
+        }
+        expect(await pending).toEqual({ ok: false, code: 'response_unavailable' });
+        expect(await collection.countDocuments({ userId: input.userId })).toBe(0);
+        expect(await storage.read(input, input.responseId)).toBeNull();
+      },
+    );
+    it('keeps conversation-subset erasure bounded even after owner closure', async () => {
+      const storage = createResponseStorage(db);
+      const firstInput = rootInput();
+      const secondInput = {
+        ...rootInput(),
+        userId: firstInput.userId,
+      };
+      const first = await storage.reserve(firstInput);
+      const second = await storage.reserve(secondInput);
+      if (!first.ok || !second.ok) throw new Error('Reservation failed');
+      await closeResponseScopes(db, firstInput);
+      const model = createStoredResponseModel(db);
+      await eraseResponseRecords(db, firstInput, []);
+      expect(await model.collection.countDocuments({ userId: firstInput.userId })).toBe(2);
+      await eraseResponseRecords(db, firstInput, [firstInput.conversationId]);
+      expect(await model.collection.findOne({ responseId: firstInput.responseId })).toBeNull();
+      expect(await model.collection.findOne({ responseId: secondInput.responseId })).toMatchObject({
+        requestJSON: secondInput.requestJSON,
+        _managed: { phase: 'published' },
+      });
+      await eraseResponseRecords(db, firstInput);
+      expect(await model.collection.countDocuments({ userId: firstInput.userId })).toBe(0);
+    });
+    it('refuses erasure before closure and cannot acknowledge a drifted pending count', async () => {
+      const input = rootInput();
+      const storage = createResponseStorage(db);
+      expect((await storage.reserve(input)).ok).toBe(true);
+      await expect(eraseResponseRecords(db, input)).rejects.toThrow('closed admission');
+      expect((await storage.read(input, input.responseId))?.requestJSON).toBe(input.requestJSON);
+      await closeResponseScopes(db, input);
+      await eraseResponseRecords(db, input);
+      const ownerKey = responseScopeKeys(input, input.conversationId)[0];
+      await createResponseScopeModel(db).updateOne(
+        { _id: ownerKey },
+        { $set: { pendingCount: 1 } },
+      );
+      await expect(eraseResponseRecords(db, input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      expect((await createResponseScopeModel(db).findById(ownerKey).lean())?.pendingCount).toBe(1);
+    });
+    it('recovers an applied reservation after a lost publication reply without replaying allocation', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const collection = createStoredResponseModel(db).collection;
+      const original = collection.findOneAndUpdate.bind(collection);
+      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        await original(...args);
+        throw new Error('reservation publication acknowledgment lost');
+      });
+      expect(await storage.reserve(input)).toMatchObject({ ok: true, replayed: true });
+      const first = await storage.read(input, input.responseId);
+      expect(first?.storageTarget).toBeDefined();
+      const replay = await storage.reserve({
+        ...input,
+        responseId: createManagedMessageId(),
+        conversationId: createManagedConversationId(),
+      });
+      expect(replay).toMatchObject({
+        ok: true,
+        replayed: true,
+        record: { storageTarget: first?.storageTarget },
+      });
+      expect(await createStoredResponseModel(db).countDocuments({ userId: input.userId })).toBe(1);
+    });
+    it('keeps a stale internal response handle bound to its deleted physical root', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const first = await storage.reserve(input);
+      if (!first.ok || !first.record.storageTarget) throw new Error('Reservation failed');
+      await createStoredResponseModel(db).deleteOne(
+        managedTargetFilter(db, first.record.storageTarget),
+      );
+      const replacement = await storage.reserve(input);
+      if (!replacement.ok) throw new Error('Replacement fixture failed');
+      expect(await storage.read(first.record, input.responseId)).toBeNull();
+      expect(
+        await storage.enrollExecution(
+          first.record,
+          { generationCreatedAt: 1, providerExecutionId: 'provider' },
+          '{}',
+        ),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(await storage.read(input, input.responseId)).toMatchObject({
+        storageTarget: replacement.record.storageTarget,
+        revision: 0,
+      });
+    });
+    it('does not restore a stale response deadline after a concurrent shortening', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const first = await storage.reserve(input);
+      expect(first.ok).toBe(true);
+      const earlier = new Date(Date.now() + 60_000);
+      const later = new Date(Date.now() + 120_000);
+      const retain = createResponseRetention(db);
+      const collection = createStoredResponseModel(db).collection;
+      const original = collection.updateMany.bind(collection);
+      let delayed = false;
+      jest.spyOn(collection, 'updateMany').mockImplementation(async (...args) => {
+        const expiration = Array.isArray(args[1]) ? undefined : args[1].$min?.expiredAt;
+        if (!delayed && expiration instanceof Date && expiration.getTime() === later.getTime()) {
+          delayed = true;
+          await retain(input, input.conversationId, earlier);
+        }
+        return original(...args);
+      });
+      await retain(input, input.conversationId, later);
+      expect(delayed).toBe(true);
+      expect((await storage.read(input, input.responseId))?.expiredAt).toEqual(earlier);
+    });
+    async function checkpointFixture() {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const record = await publishResponseRoot(db, target, input);
+      if (!record) throw new Error('Root publication failed');
+      const reference = responseReference(record);
+      const checkpoint = {
+        generationCreatedAt: Date.now(),
+        providerExecutionId: randomUUID(),
+        ownerId: randomUUID(),
+        writerId: randomUUID(),
+        namespace: `${checkpointOwnerNamespacePrefix(input.userId)}${randomUUID()}`,
+        configJSON: JSON.stringify({
+          type: 'mongo',
+          checkpointCollectionName: 'agent_checkpoints',
+          checkpointWritesCollectionName: 'agent_checkpoint_writes',
+        }),
+      };
+      const model = createStoredResponseModel(db);
+      const storage = createResponseStorage(db);
+      const enrolled = await storage.enrollExecution(record, checkpoint, '{}');
+      if (!enrolled.ok) throw new Error('Provider enrollment failed');
+      expect(await storage.bindExecution(enrolled.record, checkpoint)).toBe(true);
+      return { model, reference, checkpoint, input, record: enrolled.record, storage };
+    }
+    it('seeds and captures a canonical Conversation once through the running provider binding', async () => {
+      const f = await checkpointFixture();
+      const writes = {
+        context: { userId: f.record.userId },
+        conversation: {
+          conversationId: f.record.conversationId,
+          agent_id: f.record.agentId,
+          endpoint: 'agents',
+          title: 'Created before model work',
+          codeEnvironmentMode: 'without_attached',
+        },
+        initialAgentId: f.record.agentId,
+      };
+      for (const mismatch of [
+        { ...f.checkpoint, providerExecutionId: randomUUID() },
+        { ...f.checkpoint, ownerId: randomUUID() },
+        { ...f.checkpoint, generationCreatedAt: f.checkpoint.generationCreatedAt + 1 },
+      ])
+        expect(await f.storage.prepareConversation(f.record, mismatch, writes)).toEqual({
+          ok: false,
+          code: 'response_conflict',
+        });
+      expect(await db.model('Conversation').countDocuments({ user: f.record.userId })).toBe(0);
+      const first = await f.storage.prepareConversation(f.record, f.checkpoint, writes);
+      if (!first.ok) throw new Error('Conversation preparation failed');
+      expect(first.record.conversationTarget).toMatchObject({
+        userId: f.record.userId,
+        conversationId: f.record.conversationId,
+      });
+      const row = await createConversationModel(db)
+        .findOne({ user: f.record.userId })
+        .select('+initial_agent_id')
+        .lean();
+      expect(row).toMatchObject({
+        title: 'Created before model work',
+        initial_agent_id: f.record.agentId,
+        codeEnvironmentMode: 'without_attached',
+        messages: [],
+      });
+      expect(String(row!._id)).toBe(first.record.conversationTarget!.id);
+      const replay = await f.storage.prepareConversation(f.record, f.checkpoint, {
+        ...writes,
+        conversation: {
+          ...writes.conversation,
+          title: 'Must not reseed',
+          codeEnvironmentMode: 'attached',
+        },
+      });
+      expect(replay).toMatchObject({
+        ok: true,
+        record: { conversationTarget: first.record.conversationTarget },
+      });
+      expect(await db.model('Conversation').countDocuments({ user: f.record.userId })).toBe(1);
+      expect(
+        await db.model('Conversation').findOne({ user: f.record.userId }).lean(),
+      ).toMatchObject({
+        title: 'Created before model work',
+        codeEnvironmentMode: 'without_attached',
+      });
+    });
+    it.each([false, true])(
+      'recovers a Conversation capture failure only with primary proof (applied: %s)',
+      async (applied) => {
+        const f = await checkpointFixture();
+        const original = f.model.collection.findOneAndUpdate.bind(f.model.collection);
+        let lost = false;
+        jest.spyOn(f.model.collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
+          const update = args[1];
+          if (!lost && !Array.isArray(update) && update.$set?.conversationTarget) {
+            lost = true;
+            if (applied) await original(...args);
+            throw new Error('Conversation capture acknowledgment lost');
+          }
+          return original(...args);
+        });
+        const writes = {
+          context: { userId: f.record.userId },
+          conversation: {
+            conversationId: f.record.conversationId,
+            agent_id: f.record.agentId,
+            endpoint: 'agents',
+          },
+          initialAgentId: f.record.agentId,
+        };
+        if (applied)
+          expect(await f.storage.prepareConversation(f.record, f.checkpoint, writes)).toMatchObject(
+            { ok: true },
+          );
+        else
+          await expect(
+            f.storage.prepareConversation(f.record, f.checkpoint, writes),
+          ).rejects.toThrow('capture acknowledgment lost');
+        const recovered = await f.storage.prepareConversation(f.record, f.checkpoint, writes);
+        expect(recovered).toMatchObject({ ok: true });
+        expect(await db.model('Conversation').countDocuments({ user: f.record.userId })).toBe(1);
+        expect(lost).toBe(true);
+      },
+    );
+    it('denies model admission when closure wins during Conversation capture', async () => {
+      const f = await checkpointFixture();
+      const original = f.model.collection.findOneAndUpdate.bind(f.model.collection);
+      let closed = false;
+      jest.spyOn(f.model.collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
+        const update = args[1];
+        if (!closed && !Array.isArray(update) && update.$set?.conversationTarget) {
+          closed = true;
+          await closeResponseScopes(db, f.record, [f.record.conversationId]);
+        }
+        return original(...args);
+      });
+      expect(
+        await f.storage.prepareConversation(f.record, f.checkpoint, {
+          context: { userId: f.record.userId },
+          conversation: {
+            conversationId: f.record.conversationId,
+            agent_id: f.record.agentId,
+            endpoint: 'agents',
+          },
+          initialAgentId: f.record.agentId,
+        }),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(closed).toBe(true);
+      expect(await f.storage.read(f.record, f.record.responseId)).toBeNull();
+      expect(await db.model('Message').collection.countDocuments({ user: f.record.userId })).toBe(
+        0,
+      );
+    });
+    it.each(['legacy', 'managed'] as const)(
+      'never adopts a recreated %s Conversation after acceptance',
+      async (kind) => {
+        const storage = createResponseStorage(db);
+        const input = {
+          ...rootInput(),
+          conversationId: kind === 'legacy' ? randomUUID() : createManagedConversationId(),
+          requestJSON: JSON.stringify({ previous_response_id: 'prior' }),
+        };
+        const Conversation = db.model('Conversation');
+        const first = await Conversation.create({
+          user: input.userId,
+          conversationId: input.conversationId,
+          title: 'Original',
+          endpoint: 'agents',
+        });
+        const captured = await storage.readConversationTarget(input, input.conversationId);
+        expect(captured?.target.id).toBe(String(first._id));
+        const reserved = await storage.reserve({ ...input, conversationTarget: captured!.target });
+        if (!reserved.ok) throw new Error('Reservation failed');
+        const binding = {
+          generationCreatedAt: Date.now(),
+          providerExecutionId: randomUUID(),
+          ownerId: randomUUID(),
+        };
+        const enrolled = await storage.enrollExecution(reserved.record, binding, '{}');
+        if (!enrolled.ok) throw new Error('Enrollment failed');
+        expect(await storage.bindExecution(enrolled.record, binding)).toBe(true);
+        const writes = {
+          context: { userId: input.userId },
+          conversation: {
+            conversationId: input.conversationId,
+            agent_id: input.agentId,
+            endpoint: 'agents',
+          },
+          initialAgentId: input.agentId,
+        };
+        expect(await storage.prepareConversation(enrolled.record, binding, writes)).toMatchObject({
+          ok: true,
+        });
+        await Conversation.deleteOne({ _id: first._id });
+        const replacement = await Conversation.create({
+          user: input.userId,
+          conversationId: input.conversationId,
+          title: 'Replacement',
+          endpoint: 'agents',
+        });
+        expect(await storage.prepareConversation(enrolled.record, binding, writes)).toEqual({
+          ok: false,
+          code: 'response_conflict',
+        });
+        expect((await storage.read(input, input.responseId))?.conversationTarget?.id).toBe(
+          String(first._id),
+        );
+        expect(await Conversation.findById(replacement._id).lean()).toMatchObject({
+          title: 'Replacement',
+        });
+      },
+    );
+    it('retains a captured existing Conversation before model work without reseeding metadata or activity', async () => {
+      const storage = createResponseStorage(db);
+      const input = {
+        ...rootInput(),
+        conversationId: randomUUID(),
+        requestJSON: JSON.stringify({ previous_response_id: 'prior' }),
+      };
+      const Conversation = createConversationModel(db);
+      const old = await Conversation.create({
+        user: input.userId,
+        conversationId: input.conversationId,
+        title: 'Owned title',
+        endpoint: 'agents',
+        codeEnvironmentMode: 'without_attached',
+        isTemporary: false,
+      });
+      const captured = await storage.readConversationTarget(input, input.conversationId);
+      const reserved = await storage.reserve({
+        ...input,
+        conversationTarget: captured!.target,
+        isTemporary: false,
+      });
+      if (!reserved.ok) throw new Error('Reservation failed');
+      const binding = {
+        generationCreatedAt: Date.now(),
+        providerExecutionId: randomUUID(),
+        ownerId: randomUUID(),
+      };
+      const enrolled = await storage.enrollExecution(reserved.record, binding, '{}');
+      if (!enrolled.ok || !(await storage.bindExecution(enrolled.record, binding)))
+        throw new Error('Enrollment failed');
+      const deadline = new Date(Date.now() + 60_000);
+      expect(
+        await storage.prepareConversation(enrolled.record, binding, {
+          context: { userId: input.userId, expiredAt: deadline, isTemporary: true },
+          conversation: {
+            conversationId: input.conversationId,
+            agent_id: input.agentId,
+            title: 'Must not reseed',
+          },
+          initialAgentId: input.agentId,
+        }),
+      ).toMatchObject({ ok: true, record: { expiredAt: deadline, isTemporary: true } });
+      expect(await Conversation.findById(old._id).lean()).toMatchObject({
+        title: 'Owned title',
+        codeEnvironmentMode: 'without_attached',
+        expiredAt: deadline,
+        isTemporary: true,
+        updatedAt: old.updatedAt,
+      });
+    });
+    it('cannot seed an absent continuation even when its logical Conversation ID is managed', async () => {
+      const f = await checkpointFixture();
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
+        $set: { requestJSON: JSON.stringify({ previous_response_id: 'prior' }) },
+      });
+      expect(
+        await f.storage.prepareConversation(f.record, f.checkpoint, {
+          context: { userId: f.record.userId },
+          conversation: { conversationId: f.record.conversationId, agent_id: f.record.agentId },
+          initialAgentId: f.record.agentId,
+        }),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(await db.model('Conversation').countDocuments({ user: f.record.userId })).toBe(0);
+    });
+    async function turnFixture() {
+      const f = await checkpointFixture();
+      const conversation = {
+        conversationId: f.record.conversationId,
+        agent_id: f.record.agentId,
+        endpoint: 'agents',
+      };
+      const context = { userId: f.record.userId };
+      const seeded = await f.storage.prepareConversation(f.record, f.checkpoint, {
+        context,
+        conversation,
+        initialAgentId: f.record.agentId,
+      });
+      if (!seeded.ok) throw new Error('Conversation seed failed');
+      const inputId = createManagedMessageId();
+      const turnJSON = JSON.stringify({
+        version: 1,
+        inputs: [{ index: 0, messageId: inputId, parentMessageId: f.record.parentMessageId }],
+      });
+      const receipt = {
+        generationCreatedAt: f.checkpoint.generationCreatedAt,
+        providerExecutionId: f.checkpoint.providerExecutionId,
+        ownerId: f.checkpoint.ownerId,
+        status: 'completed' as const,
+        responseJSON: JSON.stringify({ id: f.record.responseId, status: 'completed', output: [] }),
+        turnJSON,
+      };
+      const staged = await f.storage.stageTerminal(
+        seeded.record,
+        f.record.responseId,
+        { execution: seeded.record },
+        receipt,
+      );
+      if (!staged.ok) throw new Error('Terminal stage failed');
+      const writes = {
+        intentJSON: turnJSON,
+        context,
+        conversation,
+        initialAgentId: f.record.agentId,
+        messages: [
+          {
+            messageId: inputId,
+            conversationId: f.record.conversationId,
+            parentMessageId: f.record.parentMessageId,
+            text: 'confirmed input',
+            isCreatedByUser: true,
+            isUserSubmitted: true,
+          },
+          {
+            messageId: f.record.responseId,
+            conversationId: f.record.conversationId,
+            parentMessageId: inputId,
+            text: 'confirmed output',
+            isCreatedByUser: false,
+          },
+        ],
+      };
+      return { ...f, staged: staged.record, receipt, writes };
+    }
+    it('publishes a whole confirmed turn portably only after durable provider drain', async () => {
+      const session = jest.spyOn(db, 'startSession');
+      const f = await turnFixture();
+      expect(
+        await f.storage.finishTerminal(
+          f.staged,
+          f.record.responseId,
+          f.staged.revision,
+          f.receipt,
+          f.writes,
+        ),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(await db.model('Message').countDocuments({ user: f.record.userId })).toBe(0);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      const finished = await f.storage.finishTerminal(
+        f.staged,
+        f.record.responseId,
+        f.staged.revision,
+        f.receipt,
+        f.writes,
+      );
+      expect(finished).toMatchObject({ ok: true, record: { status: 'completed' } });
+      expect(await db.model('Message').countDocuments({ user: f.record.userId })).toBe(2);
+      const conversation = await createConversationModel(db)
+        .findById(f.staged.conversationTarget!.id)
+        .lean();
+      const messageIds = conversation?.messages ?? [];
+      expect(messageIds).toHaveLength(2);
+      expect(new Set(messageIds.map(String)).size).toBe(2);
+      expect(
+        (await f.storage.read(f.staged, f.record.responseId))?.pendingTerminal,
+      ).toBeUndefined();
+      expect(session).not.toHaveBeenCalled();
+    });
+    it('repairs a failed Conversation append after restart without duplicating confirmed Messages', async () => {
+      const f = await turnFixture();
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      const append = jest
+        .spyOn(createConversationModel(db).collection, 'findOneAndUpdate')
+        .mockRejectedValueOnce(new Error('Append unavailable'));
+      await expect(
+        f.storage.finishTerminal(
+          f.staged,
+          f.record.responseId,
+          f.staged.revision,
+          f.receipt,
+          f.writes,
+        ),
+      ).rejects.toThrow('Append unavailable');
+      append.mockRestore();
+      const pending = (await f.storage.read(f.staged, f.record.responseId))!;
+      expect(pending).toMatchObject({ status: 'materializing', pendingTerminal: f.receipt });
+      expect(await db.model('Message').countDocuments({ user: f.record.userId })).toBe(2);
+      const restarted = createResponseStorage(db);
+      expect(
+        await restarted.finishTerminal(
+          pending,
+          f.record.responseId,
+          pending.revision,
+          f.receipt,
+          f.writes,
+        ),
+      ).toMatchObject({ ok: true, record: { status: 'completed' } });
+      expect(await db.model('Message').countDocuments({ user: f.record.userId })).toBe(2);
+      expect(
+        (await createConversationModel(db).findById(f.staged.conversationTarget!.id).lean())
+          ?.messages,
+      ).toHaveLength(2);
+    });
+    it('shortens settled canonical history with its Scope epoch without resurrecting deleted targets', async () => {
+      const f = await turnFixture();
+      await f.storage.settleExecution(f.reference, f.checkpoint, 'complete');
+      expect(
+        await f.storage.finishTerminal(
+          f.staged,
+          f.record.responseId,
+          f.staged.revision,
+          f.receipt,
+          f.writes,
+        ),
+      ).toMatchObject({ ok: true });
+      const deadline = new Date(Date.now() + 60_000);
+      const retain = createResponseRetention(db);
+      await retain(f.record, f.record.conversationId, deadline);
+      await retain(f.record, f.record.conversationId, new Date(deadline.getTime() + 60_000));
+      const messages = await createMessageModel(db).find({ user: f.record.userId }).lean();
+      expect(messages).toHaveLength(2);
+      expect(messages.every((message) => message.expiredAt?.getTime() === deadline.getTime())).toBe(
+        true,
+      );
+      expect(
+        (await createConversationModel(db).findById(f.staged.conversationTarget!.id).lean())
+          ?.expiredAt,
+      ).toEqual(deadline);
+      await createMessageModel(db).deleteMany({ user: f.record.userId });
+      await retain(f.record, f.record.conversationId, deadline);
+      expect(await createMessageModel(db).countDocuments({ user: f.record.userId })).toBe(0);
+    });
+    it('does not close an empty-looking Scope after a complete publication changes its version', async () => {
+      const input = rootInput();
+      const key = responseScopeKeys(input, input.conversationId)[1];
+      const scopes = createResponseScopeModel(db);
+      const original = scopes.collection.updateOne.bind(scopes.collection);
+      let raced = false;
+      const storage = createResponseStorage(db);
+      jest.spyOn(scopes.collection, 'updateOne').mockImplementation(async (...args) => {
+        const update = args[1];
+        if (
+          !raced &&
+          String(args[0]._id) === key &&
+          args[0].revision != null &&
+          !Array.isArray(update) &&
+          update.$set?.closed === true
+        ) {
+          raced = true;
+          expect(await storage.reserve(input)).toMatchObject({ ok: true });
+        }
+        return original(...args);
+      });
+      expect(await createResponseConversationReplacement(db)(input, input.conversationId)).toBe(
+        false,
+      );
+      expect(raced).toBe(true);
+      expect(await scopes.findById(key).lean()).toMatchObject({ closed: false, pendingCount: 0 });
+      expect(await storage.read(input, input.responseId)).not.toBeNull();
+    });
+    it('admits only one provider and rejects stale physical enrollment without transactions', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const reserved = await storage.reserve(input);
+      if (!reserved.ok) throw new Error('Reservation failed');
+      const session = jest.spyOn(db, 'startSession');
+      const binding = { generationCreatedAt: Date.now(), providerExecutionId: randomUUID() };
+      const attempts = await Promise.all([
+        storage.enrollExecution(reserved.record, binding, '{}'),
+        storage.enrollExecution(
+          reserved.record,
+          { ...binding, providerExecutionId: randomUUID() },
+          '{}',
+        ),
+      ]);
+      expect(attempts.filter((result) => result.ok)).toHaveLength(1);
+      expect(session).not.toHaveBeenCalled();
+      const model = createStoredResponseModel(db);
+      await model.deleteOne(responseRootFilter(db, responseReference(reserved.record)));
+      const replacement = await storage.reserve(input);
+      if (!replacement.ok) throw new Error('Replacement failed');
+      expect(await storage.enrollExecution(reserved.record, binding, '{}')).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+      expect(await storage.read(input, input.responseId)).toMatchObject({ revision: 0 });
+    });
+    it.each(['owner', 'conversation', 'retired'] as const)(
+      'denies provider enrollment after %s retirement',
+      async (kind) => {
+        const storage = createResponseStorage(db);
+        const input = rootInput();
+        const reserved = await storage.reserve(input);
+        if (!reserved.ok) throw new Error('Reservation failed');
+        if (kind === 'retired')
+          await createStoredResponseModel(db).updateOne(
+            responseRootFilter(db, responseReference(reserved.record)),
+            { $set: { retiredAt: new Date() } },
+          );
+        else
+          await closeResponseScopes(
+            db,
+            input,
+            kind === 'owner' ? undefined : [input.conversationId],
+          );
+        expect(
+          await storage.enrollExecution(
+            reserved.record,
+            {
+              generationCreatedAt: Date.now(),
+              providerExecutionId: randomUUID(),
+            },
+            '{}',
+          ),
+        ).toEqual({ ok: false, code: 'response_conflict' });
+      },
+    );
+    it('fences an enrollment that already passed scope admission and scrubs the retained root', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const reserved = await storage.reserve(input);
+      if (!reserved.ok) throw new Error('Reservation failed');
+      expect(await storage.retireExecution(reserved.record)).toBe(false);
+      const model = createStoredResponseModel(db);
+      const collection = model.collection;
+      const original = collection.findOneAndUpdate.bind(collection);
+      let fenced = false;
+      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        await closeResponseScopes(db, input, [input.conversationId]);
+        fenced = await storage.retireExecution(reserved.record);
+        return original(...args);
+      });
+      expect(
+        await storage.enrollExecution(
+          reserved.record,
+          {
+            generationCreatedAt: Date.now(),
+            providerExecutionId: randomUUID(),
+          },
+          '{}',
+        ),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(fenced).toBe(true);
+      expect(await storage.read(input, input.responseId)).toBeNull();
+      expect(await model.findOne({ responseId: input.responseId })).toBeNull();
+      const retained = await includeManagedAllocations(
+        model
+          .findOne(responseRootFilter(db, responseReference(reserved.record)))
+          .select('+_managed')
+          .lean(),
+      );
+      expect(retained).toMatchObject({
+        _managed: { phase: 'retired' },
+        storageTarget: reserved.record.storageTarget,
+      });
+      expect(retained).not.toHaveProperty('requestJSON');
+      expect(await storage.readCleanupIdentity(reserved.record, input.responseId)).toMatchObject({
+        retirement: 'conversation_deleted',
+        storageTarget: reserved.record.storageTarget,
+      });
+    });
+    it('retains exact provider drain proof after expiry without settling checkpoint writes', async () => {
+      const f = await checkpointFixture();
+      const checkpointStorage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      expect(await checkpointStorage.open()).toBe(true);
+      expect(
+        await f.storage.settleExecution(
+          f.reference,
+          { ...f.checkpoint, ownerId: randomUUID() },
+          'complete',
+        ),
+      ).toBe(false);
+      expect(
+        await f.storage.settleExecution(
+          f.reference,
+          { ...f.checkpoint, generationCreatedAt: f.checkpoint.generationCreatedAt + 1 },
+          'complete',
+        ),
+      ).toBe(false);
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
+        $set: { retiredAt: new Date(), expiredAt: new Date(Date.now() - 1) },
+      });
+      expect(await f.storage.retireExecution(f.record)).toBe(true);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'error')).toBe(false);
+      expect(
+        await includeManagedAllocations(
+          f.model
+            .findOne(responseRootFilter(db, f.reference))
+            .select('+providerExecution +checkpoint')
+            .lean(),
+        ),
+      ).toMatchObject({
+        providerExecution: { drained: true, outcome: 'complete' },
+        checkpoint: { state: 'pending' },
+      });
+      expect(await f.storage.readExecutionProof(f.record)).toBeNull();
+      expect(await checkpointStorage.settle()).toBe(true);
+      expect(await f.storage.readExecutionProof(f.record)).toMatchObject({
+        generationCreatedAt: f.checkpoint.generationCreatedAt,
+        providerExecutionId: f.checkpoint.providerExecutionId,
+        ownerId: f.checkpoint.ownerId,
+        outcome: 'complete',
+        checkpointNamespace: f.checkpoint.namespace,
+        checkpointConfigJSON: f.checkpoint.configJSON,
+      });
+      for (const change of [
+        { agentId: 'wrong-agent' },
+        { conversationId: createManagedConversationId() },
+        { generationCreatedAt: f.checkpoint.generationCreatedAt + 1 },
+      ])
+        expect(await f.storage.readExecutionProof({ ...f.record, ...change })).toBeNull();
+      const cleanup = await f.storage.readCleanupIdentity(f.record, f.record.responseId);
+      expect(cleanup).toMatchObject({
+        storageTarget: f.record.storageTarget,
+        checkpointNamespace: f.checkpoint.namespace,
+      });
+      expect(cleanup).not.toHaveProperty('requestJSON');
+      expect(cleanup).not.toHaveProperty('responseJSON');
+    });
+    it('retains scrubbed cleanup authority until provider, checkpoint and physical deletion are proved', async () => {
+      const f = await checkpointFixture();
+      const checkpoint = f.storage.createCheckpointWriter(f.reference, f.checkpoint);
+      expect(await checkpoint.open()).toBe(true);
+      const entry = {
+        key: createHash('sha256').update('interrupted-root-settlement').digest('hex'),
+        target: f.reference.target,
+      };
+      for (const conversationId of [undefined, f.input.conversationId])
+        expect(await registerResponseTarget(db, f.input, conversationId, entry)).toMatchObject({
+          status: 'registered',
+        });
+      await closeResponseScopes(db, f.input);
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      const retained = await includeManagedAllocations(
+        f.model
+          .findOne(responseRootFilter(db, f.reference))
+          .select('+providerExecution +checkpoint')
+          .lean(),
+      );
+      expect(retained).not.toHaveProperty('requestJSON');
+      expect(retained).not.toHaveProperty('responseJSON');
+      expect(retained).toHaveProperty('providerExecution.id', f.checkpoint.providerExecutionId);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      expect(await checkpoint.settle()).toBe(true);
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      const proof = await f.storage.readExecutionProof(f.record);
+      if (!proof) throw new Error('Drain proof missing');
+      expect(
+        await f.storage.acknowledgeCheckpointErasure(f.record, {
+          ...proof,
+          checkpointWriterId: randomUUID(),
+        }),
+      ).toBe(false);
+      expect(
+        await f.storage.acknowledgeCheckpointErasure(
+          { ...f.record, conversationId: createManagedConversationId() },
+          proof,
+        ),
+      ).toBe(false);
+      expect(
+        await f.storage.acknowledgeCheckpointErasure(
+          { ...f.record, agentId: 'wrong-agent' },
+          proof,
+        ),
+      ).toBe(false);
+      expect(await f.storage.acknowledgeCheckpointErasure(f.record, proof)).toBe(true);
+      // An idempotent late closer preserves the physical erasure acknowledgment.
+      expect(await checkpoint.settle()).toBe(true);
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      expect(
+        await f.storage.acknowledgeExecutionRelease(f.record, { ...proof, ownerId: randomUUID() }),
+      ).toBe(false);
+      expect(await f.storage.acknowledgeExecutionRelease(f.record, proof)).toBe(true);
+      await eraseResponseRecords(db, f.input);
+      expect(
+        await includeManagedAllocations(f.model.exists(responseRootFilter(db, f.reference))),
+      ).toBeNull();
+      const anchors = await createResponseScopeModel(db)
+        .find({ _id: { $in: responseScopeKeys(f.input, f.input.conversationId) } })
+        .lean();
+      expect(anchors.every((anchor) => anchor.closed && anchor.pendingCount === 0)).toBe(true);
+    });
+    it('erases published and not-yet-pinned selected targets while retaining an active provider root', async () => {
+      const f = await checkpointFixture();
+      const target = await allocateManagedTarget(db, 'message');
+      const late = await allocateManagedTarget(db, 'message');
+      const [ownerKey, conversationKey] = responseScopeKeys(f.input, f.input.conversationId);
+      const publication = {
+        target,
+        parentId: f.reference.target.id,
+        ownerKey,
+        conversationKey,
+        logicalId: createManagedMessageId(),
+        receipt: createHash('sha256').update('selected').digest('hex'),
+      };
+      expect(await pinManagedTarget(db, target, publication.parentId)).toBe(true);
+      expect(await beginManagedTargetRegistration(db, target, publication.parentId)).toBe(true);
+      expect(await markManagedTargetRegistered(db, publication)).toBe(true);
+      const saved = await createMessageMethods(db, { managedPublication: publication }).saveMessage(
+        { userId: f.input.userId },
+        {
+          messageId: publication.logicalId,
+          conversationId: f.input.conversationId,
+          text: 'confirmed private history',
+          isCreatedByUser: false,
+        },
+      );
+      expect(saved).toHaveProperty('messageId', publication.logicalId);
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
+        $set: {
+          canonicalTargets: [
+            {
+              logicalId: publication.logicalId,
+              receipt: publication.receipt,
+              phase: 'published',
+              target,
+            },
+            {
+              logicalId: createManagedMessageId(),
+              receipt: publication.receipt,
+              phase: 'selected',
+              target: late,
+            },
+          ],
+        },
+      });
+      await closeResponseScopes(db, f.input);
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      expect(
+        await includeManagedAllocations(
+          db
+            .model('Message')
+            .exists({ $or: [managedTargetFilter(db, target), managedTargetFilter(db, late)] }),
+        ),
+      ).toBeNull();
+      expect(await pinManagedTarget(db, late, publication.parentId)).toBe(false);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      const proof = await f.storage.readExecutionProof(f.record);
+      if (!proof) throw new Error('Provider drain proof missing');
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      expect(await f.storage.acknowledgeExecutionRelease(f.record, proof)).toBe(true);
+      await eraseResponseRecords(db, f.input);
+      expect(
+        await includeManagedAllocations(f.model.exists(responseRootFilter(db, f.reference))),
+      ).toBeNull();
+    });
+    it('does not adopt a replacement physical root as durable drain proof', async () => {
+      const f = await checkpointFixture();
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      expect(await f.storage.readExecutionProof(f.record)).toMatchObject({ outcome: 'complete' });
+      await f.model.deleteOne(responseRootFilter(db, f.reference));
+      const replacement = await f.storage.reserve(f.input);
+      if (!replacement.ok) throw new Error('Replacement failed');
+      const enrolled = await f.storage.enrollExecution(replacement.record, f.checkpoint, '{}');
+      if (!enrolled.ok) throw new Error('Replacement enrollment failed');
+      expect(
+        await f.storage.settleExecution(
+          responseReference(enrolled.record),
+          f.checkpoint,
+          'complete',
+        ),
+      ).toBe(true);
+      expect(await f.storage.readExecutionProof(enrolled.record)).toMatchObject({
+        outcome: 'complete',
+      });
+      expect(await f.storage.readExecutionProof(f.record)).toBeNull();
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(false);
+    });
+    it('resumes only after provider drain and checkpoint settlement and rejects the previous closer', async () => {
+      const f = await checkpointFixture();
+      const checkpointStorage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      expect(await checkpointStorage.open()).toBe(true);
+      const next = {
+        ...f.checkpoint,
+        providerExecutionId: randomUUID(),
+        ownerId: randomUUID(),
+        writerId: randomUUID(),
+      };
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
+        $set: {
+          resume: {
+            intentId: randomUUID(),
+            actionId: randomUUID(),
+            previousProviderExecutionId: f.checkpoint.providerExecutionId,
+            providerExecutionId: next.providerExecutionId,
+            fingerprint: 'resume',
+            resolutionJSON: '{}',
+            state: 'admitted',
+            reservedAt: Date.now(),
+          },
+        },
+      });
+      const current = await f.storage.read(f.input, f.input.responseId);
+      if (!current) throw new Error('Response missing');
+      expect(await f.storage.enrollExecution(current, next, '{}')).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint)).toBe(true);
+      expect(await checkpointStorage.open()).toBe(false);
+      expect(await f.storage.enrollExecution(current, next, '{}')).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+      expect(await checkpointStorage.settle()).toBe(true);
+      const settled = await f.storage.read(f.input, f.input.responseId);
+      if (!settled) throw new Error('Response missing after checkpoint settlement');
+      const resumed = await f.storage.enrollExecution(settled, next, '{}');
+      if (!resumed.ok) throw new Error('Resume enrollment failed');
+      const retry = { ...next, ownerId: randomUUID() };
+      expect(await f.storage.enrollExecution(resumed.record, retry, '{}')).toMatchObject({
+        ok: true,
+      });
+      // Only the attempt selected by the external start CAS binds ownership.
+      expect(await f.storage.bindExecution(resumed.record, next)).toBe(true);
+      expect(await f.storage.bindExecution(resumed.record, retry)).toBe(false);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(false);
+      expect(await checkpointStorage.settle()).toBe(false);
+      const nextCheckpoint = createResponseCheckpointStorage(db, f.reference, next);
+      expect(await nextCheckpoint.open()).toBe(true);
+      expect(await nextCheckpoint.settle()).toBe(true);
+      expect(await f.storage.settleExecution(f.reference, next, 'complete')).toBe(true);
+    });
+    it('fences a late checkpoint marker after its opening acknowledgment fails', async () => {
+      const f = await checkpointFixture();
+      const storage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      const collection = f.model.collection;
+      const original = collection.findOneAndUpdate.bind(collection);
+      let late!: () => ReturnType<typeof original>;
+      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        late = () => original(...args);
+        throw new Error('marker command outcome unknown');
+      });
+      await expect(storage.open()).rejects.toThrow('marker command outcome unknown');
+      expect(await storage.settle()).toBe(true);
+      expect(await late()).toBeNull();
+      expect(await storage.open()).toBe(false);
+      expect(
+        await f.model.findOne(responseRootFilter(db, f.reference)).select('+checkpoint').lean(),
+      ).toMatchObject({
+        checkpoint: { ...f.checkpoint, state: 'settled' },
+      });
+    });
+    it('settles a lost marker acknowledgment but cannot adopt another writer', async () => {
+      const f = await checkpointFixture();
+      const storage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      const collection = f.model.collection;
+      const original = collection.findOneAndUpdate.bind(collection);
+      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        await original(...args);
+        throw new Error('marker acknowledgment lost');
+      });
+      await expect(storage.open()).rejects.toThrow('marker acknowledgment lost');
+      const other = createResponseCheckpointStorage(db, f.reference, {
+        ...f.checkpoint,
+        writerId: randomUUID(),
+      });
+      expect(await other.settle()).toBe(false);
+      expect(await storage.settle()).toBe(true);
+      expect(await storage.open()).toBe(false);
+    });
+    it('retains a private checkpoint marker and lets only its exact writer settle after retirement', async () => {
+      const f = await checkpointFixture();
+      const storage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      expect(await storage.open()).toBe(true);
+      expect(await storage.open()).toBe(true);
+      expect(await f.model.findOne(responseRootFilter(db, f.reference)).lean()).not.toHaveProperty(
+        'checkpoint',
+      );
+      expect(
+        await f.model.findOne(responseRootFilter(db, f.reference)).select('+checkpoint').lean(),
+      ).toMatchObject({
+        checkpoint: { ...f.checkpoint, state: 'pending' },
+      });
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
+        $set: { retiredAt: new Date(), expiredAt: new Date(Date.now() - 1), status: 'cancelled' },
+      });
+      expect(await storage.open()).toBe(false);
+      expect(await storage.settle()).toBe(true);
+      expect(await storage.settle()).toBe(true);
+      expect(
+        await f.model.findOne(responseRootFilter(db, f.reference)).select('+checkpoint').lean(),
+      ).toMatchObject({
+        checkpoint: { state: 'settled' },
+      });
+    });
+    it('does not let a fresh saver adopt unknown writes or reopen a settled provider segment', async () => {
+      const f = await checkpointFixture();
+      const original = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      const fresh = createResponseCheckpointStorage(db, f.reference, {
+        ...f.checkpoint,
+        writerId: randomUUID(),
+      });
+      expect(await original.open()).toBe(true);
+      expect(await fresh.open()).toBe(false);
+      expect(await fresh.settle()).toBe(false);
+      expect(await original.settle()).toBe(true);
+      expect(await original.open()).toBe(false);
+      expect(await fresh.open()).toBe(false);
+      const next = { ...f.checkpoint, providerExecutionId: randomUUID(), writerId: randomUUID() };
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
+        $set: { 'providerExecution.id': next.providerExecutionId },
+      });
+      const resumed = createResponseCheckpointStorage(db, f.reference, next);
+      expect(await resumed.open()).toBe(true);
+      expect(await original.settle()).toBe(false);
+      expect(await resumed.settle()).toBe(true);
+    });
+    it('rejects a stale checkpoint callback after the logical response has a replacement root', async () => {
+      const f = await checkpointFixture();
+      const stale = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      expect(await stale.open()).toBe(true);
+      await f.model.deleteOne(responseRootFilter(db, f.reference));
+      const replacement = await allocateManagedTarget(db, 'response');
+      const record = await publishResponseRoot(db, replacement, f.input);
+      expect(record?.storageTarget.id).toBe(replacement.id);
+      expect(await stale.open()).toBe(false);
+      expect(await stale.settle()).toBe(false);
+      expect(
+        await f.model.findOne({ responseId: f.input.responseId }).select('+checkpoint').lean(),
+      ).not.toHaveProperty('checkpoint');
+    });
+    it('cannot mutate checkpoint authority with the wrong owner or captured provider', async () => {
+      const f = await checkpointFixture();
+      expect(() =>
+        createResponseCheckpointStorage(db, { ...f.reference, userId: randomUUID() }, f.checkpoint),
+      ).toThrow('Invalid Response checkpoint writer');
+      const wrongProvider = createResponseCheckpointStorage(db, f.reference, {
+        ...f.checkpoint,
+        ownerId: randomUUID(),
+      });
+      expect(await wrongProvider.open()).toBe(false);
+      const storage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      const originalConfig = f.checkpoint.configJSON;
+      f.checkpoint.configJSON = 'mutated after capture';
+      expect(await storage.open()).toBe(true);
+      expect(await storage.settle()).toBe(true);
+      expect(
+        await f.model.findOne(responseRootFilter(db, f.reference)).select('+checkpoint').lean(),
+      ).toMatchObject({
+        checkpoint: { configJSON: originalConfig },
+      });
+    });
+    it('publishes one admitted Response root with indexed ownership and its dispatch intent', async () => {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const record = await publishResponseRoot(db, target, input);
+      expect(record).toMatchObject({
+        userId: input.userId,
+        responseId: input.responseId,
+        requestKey: input.requestKey,
+        requestJSON: input.requestJSON,
+        status: 'queued',
+        revision: 0,
+        dispatchOutbox: { kind: 'create', id: input.responseId, state: 'pending' },
+      });
+      const keys = responseScopeKeys(input, input.conversationId);
+      expect(await createStoredResponseModel(db).findById(target.id).lean()).not.toBeNull();
+      const raw = await createStoredResponseModel(db).collection.findOne(
+        managedTargetFilter(db, target),
+      );
+      expect(raw?._managed).toMatchObject({
+        phase: 'published',
+        ownerKey: keys[0],
+        conversationKey: keys[1],
+      });
+      for (const key of keys)
+        expect(await createResponseScopeModel(db).findById(key).lean()).toMatchObject({
+          pendingCount: 0,
+          pending: [],
+        });
+      expect(
+        await publishResponseRoot(db, target, { ...input, requestJSON: 'changed' }),
+      ).toBeNull();
+      expect((await createStoredResponseModel(db).findById(target.id).lean())?.requestJSON).toBe(
+        input.requestJSON,
+      );
+    });
+    it('does not install private root payload when an authority is already closed', async () => {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const key = responseScopeKeys(input, input.conversationId)[1];
+      await createResponseScopeModel(db).create({ _id: key, closed: true });
+      expect(await publishResponseRoot(db, target, input)).toBeNull();
+      const raw = await createStoredResponseModel(db).collection.findOne(
+        managedTargetFilter(db, target),
+      );
+      expect(raw).not.toHaveProperty('userId');
+      expect(raw).not.toHaveProperty('requestJSON');
+    });
+    it('cannot resurrect a root deleted between admission and payload publication', async () => {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const collection = createStoredResponseModel(db).collection;
+      const original = collection.findOneAndUpdate.bind(collection);
+      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        await collection.deleteOne(managedTargetFilter(db, target));
+        return original(...args);
+      });
+      expect(await publishResponseRoot(db, target, input)).toBeNull();
+      expect(await collection.findOne({ responseId: input.responseId })).toBeNull();
+      expect(await collection.findOne(managedTargetFilter(db, target))).toBeNull();
+    });
+    it('recovers root discovery after publication applies but its acknowledgment is lost', async () => {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const collection = createStoredResponseModel(db).collection;
+      const original = collection.findOneAndUpdate.bind(collection);
+      const publication = jest
+        .spyOn(collection, 'findOneAndUpdate')
+        .mockImplementationOnce(async (...args) => {
+          await original(...args);
+          throw new Error('publication acknowledgment lost');
+        });
+      await expect(publishResponseRoot(db, target, input)).rejects.toThrow(
+        'publication acknowledgment lost',
+      );
+      expect(publication).toHaveBeenCalledTimes(1);
+      expect(
+        await createStoredResponseModel(db).findOne({ responseId: input.responseId }).lean(),
+      ).toMatchObject({
+        userId: input.userId,
+        requestJSON: input.requestJSON,
+      });
+      for (const conversationId of [undefined, input.conversationId])
+        expect(await reconcileResponseTargets(db, input, conversationId)).toBe(1);
+      expect(
+        await createStoredResponseModel(db).countDocuments({ responseId: input.responseId }),
+      ).toBe(1);
+    });
+    it('installs the shortest admitted scope deadline on a Response root', async () => {
+      const target = await allocateManagedTarget(db, 'response');
+      const input = rootInput();
+      const deadline = new Date(Date.now() + 600_000);
+      const key = responseScopeKeys(input, input.conversationId)[1];
+      await createResponseScopeModel(db).create({ _id: key, closed: false, expiredAt: deadline });
+      const record = await publishResponseRoot(db, target, {
+        ...input,
+        expiredAt: new Date(deadline.getTime() + 600_000),
+      });
+      expect(record?.expiredAt).toEqual(deadline);
+    });
+    it('allocates response roots with unique metadata-only keys and hides them from readers', async () => {
+      const first = await allocateManagedTarget(db, 'response');
+      const second = await allocateManagedTarget(db, 'response');
+      expect(first.id).not.toBe(second.id);
+      const model = createStoredResponseModel(db);
+      const row = await model.collection.findOne(managedTargetFilter(db, first));
+      expect(row).toMatchObject({
+        responseId: `__allocation_${first.id}`,
+        requestKey: `__allocation_${first.id}`,
+        _managed: { phase: 'empty', incarnation: first.incarnation },
+      });
+      for (const field of ['userId', 'requestJSON', 'responseJSON', 'expiredAt'])
+        expect(row).not.toHaveProperty(field);
+      expect(await model.findById(first.id).lean()).toBeNull();
+      expect(await model.countDocuments({ _id: { $in: [first.id, second.id] } })).toBe(0);
+      expect(await discardManagedAllocation(db, first)).toBe(true);
+      expect(await discardManagedAllocation(db, second)).toBe(true);
+    });
     it.each(['message', 'conversation'] as const)(
       'sweeps unclaimed %s allocations with keyset pages and preserves pinned rows',
       async (kind) => {
@@ -144,6 +1497,10 @@ describe('managed target allocation on real storage', () => {
           .model('Conversation')
           .collection.findOne({ conversationId, user: userId });
         expect(beforeDelete?.messages.map(String)).toEqual([messageId]);
+        const target = { id: String(row._id), conversationId, userId };
+        expect(
+          await methods.stampConvoLastResponse(userId, conversationId, 'resp_captured', target),
+        ).toMatchObject({ lastResponseMessageId: 'resp_captured' });
         await db.model('Conversation').collection.deleteOne({ _id: row._id });
         const replacement = await Conversation.create({
           conversationId,
@@ -162,10 +1519,12 @@ describe('managed target allocation on real storage', () => {
             },
           ),
         ).toBeNull();
-        expect(await db.model('Conversation').findById(replacement._id)).toMatchObject({
-          title: 'Replacement',
-          messages: [],
-        });
+        expect(
+          await methods.stampConvoLastResponse(userId, conversationId, 'resp_stale', target),
+        ).toBeNull();
+        const untouched = await db.model('Conversation').findById(replacement._id);
+        expect(untouched).toMatchObject({ title: 'Replacement', messages: [] });
+        expect(untouched?.lastResponseMessageId).toBeUndefined();
         await expect(methods.saveConvo({ userId: 'other' }, { conversationId })).rejects.toThrow(
           'target mismatch',
         );

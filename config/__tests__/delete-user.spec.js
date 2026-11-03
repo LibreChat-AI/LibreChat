@@ -63,7 +63,9 @@ jest.mock('@librechat/api', () => ({
   revokeUserCodeEnvironmentWorkers: (...args) => mockRevokeUserCodeEnvironmentWorkers(...args),
   eraseUserData: (...args) => mockEraseUserData(...args),
   initializeFileStorage: (...args) => mockInitializeFileStorage(...args),
-  openCheckpointDeletion: mockOpenCheckpointDeletion,
+  createCheckpointDeletionService: jest.fn(() => ({
+    openCheckpointDeletion: mockOpenCheckpointDeletion,
+  })),
   deleteAllSharedLinksWithCleanup: mockDeleteAllSharedLinksWithCleanup,
 }));
 jest.mock('~/cache/getLogStores', () => jest.fn());

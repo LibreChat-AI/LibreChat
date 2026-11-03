@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { createResponseStorage, tenantStorage, runAsSystem } from '@librechat/data-schemas';
+import {
+  createResponseStorage,
+  createManagedMessageId,
+  responseReference,
+  tenantStorage,
+  runAsSystem,
+} from '@librechat/data-schemas';
 import type { ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { Agents } from 'librechat-data-provider';
 import type { ResponseDecisionDependencies } from './decision';
@@ -24,7 +30,7 @@ let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
 let jobs: GenerationJobManagerClass;
 const owner = { userId: 'decision-owner', tenantId: 'decision-tenant' };
-const responseId = 'response-decision';
+const responseId = createManagedMessageId();
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
 
 beforeAll(async () => {
@@ -63,17 +69,6 @@ async function setup(
     question: { question: 'Which environment?' },
   },
 ) {
-  const execution = await enrollAgentExecution(
-    {
-      runId: responseId,
-      userId: owner.userId,
-      conversationId: 'conversation',
-      agentId: 'agent',
-      protocol: 'responses',
-      isPrincipalActive: async () => true,
-    },
-    { manager: jobs },
-  );
   const reserved = await storage.reserve({
     ...owner,
     responseId,
@@ -86,16 +81,34 @@ async function setup(
     parentMessageId: 'root',
   });
   if (!reserved.ok) throw new Error('Reservation failed');
+  const execution = await enrollAgentExecution(
+    {
+      runId: responseId,
+      userId: owner.userId,
+      conversationId: 'conversation',
+      agentId: 'agent',
+      protocol: 'responses',
+      responseRoot: reserved.record.storageTarget,
+      retainTerminalPersistence: true,
+      captureTerminalOutcome: true,
+      isPrincipalActive: async () => true,
+    },
+    { manager: jobs },
+  );
   const responseJSON = JSON.stringify({
     ...buildPendingBackgroundResponse(reserved.record),
     status: 'in_progress',
   });
-  await storage.publish(owner, responseId, 0, {
-    status: 'in_progress',
+  const enrolled = await storage.enrollExecution(
+    reserved.record,
+    execution.getEnrollmentIdentity(),
     responseJSON,
-    generationCreatedAt: execution.createdAt,
-  });
+  );
+  if (!enrolled.ok) throw new Error('Fixture Root enrollment failed');
   await execution.beginProviderExecution();
+  const binding = execution.getPersistenceIdentity();
+  if (!(await storage.bindExecution(enrolled.record, binding)))
+    throw new Error('Fixture provider binding failed');
   const job = (await jobs.getJob(responseId))!;
   const action = buildPendingAction(payload, {
     streamId: responseId,
@@ -126,6 +139,8 @@ async function setup(
     }),
   ).toBe(true);
   await execution.settle();
+  if (!(await storage.settleExecution(responseReference(enrolled.record), binding)))
+    throw new Error('Fixture positive provider settlement failed');
   return { action, record: (await storage.read(owner, responseId))! };
 }
 
@@ -378,8 +393,8 @@ it('keeps a submitted decision recoverable through owner review and preserves pa
     const completion = createResponseCompletion({
       storage,
       cleanupCheckpoint: cleanupResponseCheckpoint,
-      confirmExecution: createResponseExecutionConfirmation(jobs),
-      releaseExecution: createResponseExecutionRelease(jobs),
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
     });
     const service = createBackgroundResponseService({
       recoverTerminal: completion.finish,
@@ -472,4 +487,36 @@ it('requeues an equivalent intent after approval commits but Mongo admission fai
       status: 404,
     });
     expect(revoked.enqueue).not.toHaveBeenCalled();
+  }));
+
+it('rejects oversized edited arguments without consuming the valid pause, then accepts a smaller edit', () =>
+  scoped(async () => {
+    const { action } = await setup({
+      type: 'tool_approval',
+      action_requests: [{ name: 'lookup', tool_call_id: 'a', arguments: {} }],
+      review_configs: [{ action_name: 'lookup', tool_call_id: 'a', allowed_decisions: ['edit'] }],
+    });
+    const f = fixture();
+    expect(
+      await f.submit(owner, responseId, {
+        actionId: action.actionId,
+        decisions: [
+          {
+            tool_call_id: 'a',
+            decision: 'edit',
+            editedArguments: { value: 'é'.repeat(4 * 1024 * 1024) },
+          },
+        ],
+      }),
+    ).toEqual({ ok: false, status: 413, code: 'document_limit' });
+    expect(f.enqueue).not.toHaveBeenCalled();
+    expect((await storage.read(owner, responseId))?.resume).toBeUndefined();
+    expect((await jobs.getJob(responseId))?.status).toBe('requires_action');
+    expect(
+      await f.submit(owner, responseId, {
+        actionId: action.actionId,
+        decisions: [{ tool_call_id: 'a', decision: 'edit', editedArguments: { value: 'small' } }],
+      }),
+    ).toMatchObject({ ok: true });
+    expect(f.enqueue).toHaveBeenCalledTimes(1);
   }));

@@ -44,6 +44,35 @@ describe('executeAgentRun', () => {
     manager.markProviderExecutionDrained.mockResolvedValue(true);
   });
 
+  it.each(['enrollment', 'start', 'retention'] as const)(
+    'refuses durable execution without its %s owner before allocating a job',
+    async (missing) => {
+      const execute = jest.fn(async () => undefined);
+      await expect(
+        executeAgentRun({
+          envelope: {
+            ...createEnvelope(),
+            protocol: 'responses',
+            payload: { model: 'agent-1', input: 'hello' },
+          },
+          runId: 'run-1',
+          conversationId: 'conversation-1',
+          responseRoot: {
+            id: '0123456789abcdef01234567',
+            incarnation: '01234567-89ab-4cde-8fab-0123456789ab',
+          },
+          ...(missing === 'retention' ? {} : { retainTerminalPersistence: true as const }),
+          ...(missing === 'enrollment' ? {} : { onEnrolled: async () => {} }),
+          ...(missing === 'start' ? {} : { onProviderStarted: async () => {} }),
+          isPrincipalActive: async () => true,
+          execute,
+        }),
+      ).rejects.toThrow('ownership hooks are unavailable');
+      expect(manager.createJob).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
   it('executes and settles from an envelope without HTTP request or response objects', async () => {
     const execute = jest.fn(async () => 'done');
 

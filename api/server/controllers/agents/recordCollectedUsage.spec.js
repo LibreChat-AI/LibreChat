@@ -20,7 +20,7 @@ const mockRecordCollectedUsage = jest
 
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
-  initializeChannelStorageConfig: jest.fn(),
+  initializeStorageConfig: jest.fn(),
   spendTokens: (...args) => mockSpendTokens(...args),
   spendStructuredTokens: (...args) => mockSpendStructuredTokens(...args),
   getMultiplier: mockGetMultiplier,

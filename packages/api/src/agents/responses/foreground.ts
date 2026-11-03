@@ -5,7 +5,11 @@ import {
   isAllDataRetention,
   isForcedTemporaryRetention,
 } from 'librechat-data-provider';
-import type { AppConfig, ResponseTurnWrites } from '@librechat/data-schemas';
+import type {
+  AppConfig,
+  ResponseTurnWrites,
+  ResponseConversationWrites,
+} from '@librechat/data-schemas';
 import type { Response as HttpResponse } from 'express';
 import type { RequestHandler } from 'express';
 import type { TurnConversationRequest, ConversationWriteContext } from '~/conversations/save';
@@ -465,6 +469,7 @@ export interface ResponsePersistenceDependencies {
 
 /** The shared turn's storage and transport inputs; terminal ownership is selected separately. */
 export interface ResponseStageInput {
+  conversationTarget?: ReplyAnnouncement['conversationTarget'];
   terminal: Pick<ForegroundResponseTerminal<StoredReply>, 'stage'>;
   request: CompletionRequest;
   response: Response;
@@ -502,23 +507,33 @@ export interface ResponseTurnIntent {
   visibleOutputTokens?: number;
 }
 
-export function createResponsePersistence(
-  {
-    request,
-    conversationId,
-    agentId,
-    agent,
-    codeEnvironmentDecision,
-    messages,
-    parentMessageId,
-    visibleOutputTokens,
-  }: Omit<ResponseStageInput, 'terminal' | 'response' | 'transport'>,
-  deps: ResponsePersistenceDependencies,
-) {
+export type ResponseConversationInput = Pick<
+  ResponseStageInput,
+  'request' | 'conversationId' | 'agentId' | 'agent' | 'codeEnvironmentDecision'
+>;
+
+export function createResponseConversationWrites(
+  { request, conversationId, agentId, agent, codeEnvironmentDecision }: ResponseConversationInput,
+  deps: Pick<ResponsePersistenceDependencies, 'resolveTitle'>,
+): ResponseConversationWrites & {
+  conversation: Parameters<ResponsePersistenceDependencies['saveConvo']>[1];
+} {
   const context = getConversationWriteContext(request);
-  const conversationFields = () => {
-    const title = deps.resolveTitle(request, agent.name || 'Open Responses Conversation');
-    return {
+  const interfaceConfig = context.interfaceConfig;
+  const isTemporary =
+    isForcedTemporaryRetention(interfaceConfig?.retentionMode) || context.isTemporary;
+  let expiredAt = context.expiredAt;
+  if (!expiredAt && (isTemporary === true || isAllDataRetention(interfaceConfig?.retentionMode))) {
+    try {
+      expiredAt = createChatExpirationDate(interfaceConfig, isTemporary);
+    } catch {
+      expiredAt = createFallbackRetentionDate();
+    }
+  }
+  const title = deps.resolveTitle(request, agent.name || 'Open Responses Conversation');
+  return {
+    context: { ...context, isTemporary, ...(expiredAt ? { expiredAt } : {}) },
+    conversation: {
       conversationId,
       endpoint: EModelEndpoint.agents,
       agent_id: agentId,
@@ -536,24 +551,36 @@ export function createResponsePersistence(
       }),
       ...(title != null && { title }),
       model: agent.model,
-    };
+    },
+    initialAgentId: agent.id === agentId ? agentId : null,
   };
+}
+
+export function createResponsePersistence(
+  {
+    conversationTarget,
+    request,
+    conversationId,
+    agentId,
+    agent,
+    codeEnvironmentDecision,
+    messages,
+    parentMessageId,
+    visibleOutputTokens,
+  }: Omit<ResponseStageInput, 'terminal' | 'response' | 'transport'>,
+  deps: ResponsePersistenceDependencies,
+) {
+  const context = getConversationWriteContext(request);
+  const conversationWrite = () =>
+    createResponseConversationWrites(
+      { request, conversationId, agentId, agent, codeEnvironmentDecision },
+      deps,
+    );
+  const conversationFields = () => conversationWrite().conversation;
   return {
     async prepare(result: Response): Promise<string> {
-      const interfaceConfig = context.interfaceConfig;
-      const isTemporary =
-        isForcedTemporaryRetention(interfaceConfig?.retentionMode) || context.isTemporary;
-      let expiredAt = context.expiredAt;
-      if (
-        !expiredAt &&
-        (isTemporary === true || isAllDataRetention(interfaceConfig?.retentionMode))
-      ) {
-        try {
-          expiredAt = createChatExpirationDate(interfaceConfig, isTemporary);
-        } catch {
-          expiredAt = createFallbackRetentionDate();
-        }
-      }
+      const prepared = conversationWrite();
+      const { interfaceConfig, isTemporary, expiredAt } = prepared.context;
       const intent: ResponseTurnIntent = {
         version: 1,
         inputs: messages.map((message, index) => ({
@@ -576,8 +603,8 @@ export function createResponsePersistence(
               }
             : {}),
         },
-        conversation: conversationFields(),
-        initialAgentId: agent.id === agentId ? agentId : null,
+        conversation: prepared.conversation,
+        initialAgentId: prepared.initialAgentId,
         trace: await deps.traceFields(request.config, result.id, {
           isTemporary: isTemporaryTurn(request),
         }),
@@ -587,6 +614,7 @@ export function createResponsePersistence(
     },
     async announceCanonical(result: Response): Promise<void> {
       await deps.announceReply({
+        ...(conversationTarget ? { conversationTarget } : {}),
         userId: request.user?.id,
         conversationId,
         reply: {

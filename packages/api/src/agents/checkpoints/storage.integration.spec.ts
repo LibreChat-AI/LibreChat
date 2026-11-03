@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { emptyCheckpoint, INTERRUPT } from '@langchain/langgraph-checkpoint';
+import { createResponseCheckpointCleanupGuard } from '@librechat/data-schemas';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import type { Collection } from 'mongodb';
 import {
@@ -13,8 +14,11 @@ import {
   createCheckpointNamespace,
   checkpointOwnerNamespacePrefix,
 } from '../../stream/checkpoints';
-import { openCheckpointDeletion, createCheckpointDeletionReclaimer } from './deletion';
 import { checkpointStorageConfigs, CHECKPOINT_STORAGE_COLLECTION } from './storage';
+import { createCheckpointDeletionService } from './deletion';
+
+const { openCheckpointDeletion, createCheckpointDeletionReclaimer } =
+  createCheckpointDeletionService(createResponseCheckpointCleanupGuard(mongoose));
 
 let server: MongoMemoryServer;
 const cfg = {

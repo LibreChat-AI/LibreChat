@@ -1,5 +1,10 @@
 import { checkpointerSchema } from 'librechat-data-provider';
-import type { StoredResponseRecord } from '@librechat/data-schemas';
+import type {
+  StoredResponseRecord,
+  ResponseStorage,
+  ResponseCleanupIdentity,
+  ResponseExecutionProof,
+} from '@librechat/data-schemas';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
 import { deleteAgentCheckpoint } from '../checkpointer';
 
@@ -46,4 +51,34 @@ export async function cleanupResponseCheckpoint(
     throwOnError: true,
     checkpointNamespace,
   });
+}
+
+/** Physical checkpoint deletion is acknowledged on the same retained Root before it may disappear. */
+export async function eraseResponseExecutionCheckpoint(
+  storage: Pick<ResponseStorage, 'acknowledgeCheckpointErasure'>,
+  identity: ResponseCleanupIdentity,
+  proof: ResponseExecutionProof,
+  cleanup: (record: ResponseCheckpointIdentity, namespace: string) => Promise<void>,
+): Promise<void> {
+  if (!proof.checkpointWriterId) {
+    if (proof.checkpointNamespace || proof.checkpointConfigJSON)
+      throw new Error('Response checkpoint writer identity unavailable');
+    return;
+  }
+  if (!proof.checkpointNamespace || !proof.checkpointConfigJSON)
+    throw new Error('Response checkpoint cleanup identity unavailable');
+  await cleanup(
+    {
+      userId: identity.userId,
+      ...(identity.tenantId ? { tenantId: identity.tenantId } : {}),
+      conversationId: identity.conversationId,
+      pendingTerminal: {
+        checkpointNamespace: proof.checkpointNamespace,
+        checkpointConfigJSON: proof.checkpointConfigJSON,
+      },
+    },
+    proof.checkpointNamespace,
+  );
+  if (!(await storage.acknowledgeCheckpointErasure(identity, proof)))
+    throw new Error('Response checkpoint erasure acknowledgment conflicted');
 }

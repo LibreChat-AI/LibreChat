@@ -13,10 +13,11 @@ const {
   normalizeHttpError,
   getWebSearchInstallEntries,
   getWebSearchUninstallFields,
-  openCheckpointDeletion,
+  createCheckpointDeletionService,
   stopUserGenerations,
   deleteAllSharedLinksWithCleanup,
   eraseUserData,
+  sendErasureError,
   deleteUserMCPServers,
   revokeUserCodeEnvironmentWorkers,
   finalizeMCPAuthorizationMutation,
@@ -50,6 +51,9 @@ const {
 } = require('~/server/services/Schedules');
 const { sendEmail } = require('~/server/utils');
 const db = require('~/models');
+const { openCheckpointDeletion } = createCheckpointDeletionService(
+  db.hasPendingResponseCheckpointCleanup,
+);
 
 const emailChangeService = createEmailChangeService(
   createEmailChangeDeps({
@@ -512,7 +516,7 @@ const deleteUserController = async (req, res) => {
       }
     }
     logger.error('[deleteUserController]', err);
-    return res.status(500).json({ message: 'Something went wrong.' });
+    return sendErasureError(res, err, { message: 'Something went wrong.' });
   }
 };
 

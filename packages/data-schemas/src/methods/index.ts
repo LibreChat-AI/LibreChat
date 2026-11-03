@@ -1,5 +1,9 @@
+import {
+  createResponseCheckpointCleanupGuard,
+  createResponseOwnerErasureMethods,
+} from './responseErasure';
 import { runAfterTransaction } from '~/utils/postCommit';
-export type { ResponseTurnWrites } from './responseTurn';
+export type { ResponseTurnWrites, ResponseConversationWrites } from './responseTurn';
 import type { ChannelStorageConfig } from 'librechat-data-provider';
 import { createSubagentContentMethods, type SubagentContentMethods } from './subagentContent';
 export type {
@@ -302,7 +306,10 @@ export {
   AgentQueuedTurnLaneRetiredError,
 };
 
-export type AllMethods = SubagentContentMethods &
+export type AllMethods = {
+  hasPendingResponseCheckpointCleanup: ReturnType<typeof createResponseCheckpointCleanupGuard>;
+} & ReturnType<typeof createResponseOwnerErasureMethods> &
+  SubagentContentMethods &
   ToolApprovalGrantStorage &
   UserMethods &
   SessionMethods &
@@ -549,6 +556,8 @@ export function createMethods(
   };
   const agentMethods = createAgentMethods(mongoose, agentDeps);
   return {
+    hasPendingResponseCheckpointCleanup: createResponseCheckpointCleanupGuard(mongoose),
+    ...createResponseOwnerErasureMethods(mongoose),
     ...createUserMethods(mongoose, {
       getCache: deps.getCache,
       getChannelStorageConfig: deps.getChannelStorageConfig,

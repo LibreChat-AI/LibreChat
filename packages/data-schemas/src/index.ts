@@ -5,11 +5,28 @@ export * from './crypto';
 export * from './schema';
 export * from './utils';
 export { createModels } from './models';
+export { responseReceiptKey } from './utils/receipt';
 export { createResponseStorage, sameResponseTerminalReceipt } from './methods/response';
+export {
+  ResponseErasurePendingError,
+  createResponseCheckpointCleanupGuard,
+} from './methods/responseErasure';
+export { responseReference } from './methods/responseRoot';
+export { createResponseCheckpointStorage } from './methods/responseCheckpoint';
+export type {
+  ResponseReference,
+  ResponsePersistenceFailure,
+  ResponseProviderExecution,
+  ResponseCheckpointExecution,
+  ResponseResumeSelection,
+} from './models/response';
 export type {
   ResponseOwner,
   ResponseStorage,
   ResponseExecutionGuard,
+  ResponseExecutionBinding,
+  ResponseExecutionProof,
+  ResponsePausedCancellation,
   ResponseCleanupIdentity,
   ResponseReservation,
   ResponseReservationResult,

@@ -1,11 +1,63 @@
 import { Schema } from 'mongoose';
 import type { Model } from 'mongoose';
-import type { ResponseCanonicalTarget } from '~/types/managed';
+import type {
+  ResponseCanonicalTarget,
+  ManagedTarget,
+  CanonicalConversationTarget,
+} from '~/types/managed';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
+import { applyManagedStorage } from './plugins/managed';
 
 export interface ResponseOwner {
   userId: string;
   tenantId?: string;
+}
+
+export interface ResponseReservation extends ResponseOwner {
+  /** A successful reservation durably accepts publication work. */
+  dispatch?: boolean;
+  /** Captured when accepting an existing conversation; never resolved again by logical ID. */
+  conversationTarget?: CanonicalConversationTarget;
+  expiredAt?: Date;
+  isTemporary?: boolean;
+  responseId: string;
+  requestKey: string;
+  fingerprint: string;
+  agentId: string;
+  sourceKeyId?: string;
+  requestJSON: string;
+  conversationId: string;
+  parentMessageId: string;
+}
+
+/** Internal authority resolved once, then carried across asynchronous work. */
+export interface ResponseReference extends ResponseOwner {
+  responseId: string;
+  target: ManagedTarget<'response'>;
+}
+
+export type ResponseExecutionBinding = Pick<
+  ResponseTerminalReceipt,
+  'generationCreatedAt' | 'providerExecutionId' | 'ownerId'
+>;
+
+export interface ResponseProviderExecution {
+  id: string;
+  ownerId?: string;
+  drained?: boolean;
+  outcome?: 'complete' | 'error' | 'aborted';
+}
+
+export interface ResponseCheckpointExecution {
+  generationCreatedAt: number;
+  providerExecutionId: string;
+  ownerId?: string;
+  writerId: string;
+  namespace: string;
+  configJSON: string;
+  configKey: string;
+  state: 'pending' | 'settled';
+  erased?: boolean;
 }
 
 export type StoredResponseStatus =
@@ -50,6 +102,11 @@ export interface ResponseResumeIntent {
   admittedAt?: number;
 }
 
+export type ResponseResumeSelection = Pick<
+  ResponseResumeIntent,
+  'intentId' | 'actionId' | 'previousProviderExecutionId' | 'providerExecutionId' | 'state'
+>;
+
 /** Server-written proposed or confirmed terminal result, bound to one provider attempt. */
 export interface ResponseTerminalReceipt {
   generationCreatedAt: number;
@@ -71,7 +128,20 @@ export interface ResponseDispatchOutbox {
   state: 'pending' | 'settled';
 }
 
+/** Permanent publication failure, owned by completion on the same provider attempt. */
+export interface ResponsePersistenceFailure extends ResponseExecutionBinding {
+  code: 'target_retired' | 'document_limit';
+  receiptKey?: string;
+}
+
 export interface StoredResponseRecord {
+  persistenceFailure?: ResponsePersistenceFailure;
+  releaseAcknowledged?: boolean;
+  storageTarget?: ManagedTarget<'response'>;
+  conversationTarget?: CanonicalConversationTarget;
+  providerExecution?: ResponseProviderExecution;
+  checkpoint?: ResponseCheckpointExecution;
+  retiredAt?: Date;
   canonicalTargets?: ResponseCanonicalTarget[];
   /** Atomic source outbox; settlement never authorizes execution. */
   dispatchOutbox?: ResponseDispatchOutbox;
@@ -95,12 +165,17 @@ export interface StoredResponseRecord {
   cancellationRequestedAt?: number;
   review?: ResponseReviewCheckpoint;
   resume?: ResponseResumeIntent;
+  terminalReceiptKey?: string;
   pendingTerminal?: ResponseTerminalReceipt;
   /** Durable candidate only; independent provider drain proof is required before promotion. */
   preparedTerminal?: ResponseTerminalReceipt;
   createdAt: Date;
   updatedAt: Date;
 }
+
+export type ResponseMutationResult =
+  | { ok: true; record: StoredResponseRecord }
+  | { ok: false; code: 'response_conflict' | 'target_retired' | 'document_limit' };
 
 export function createStoredResponseModel(
   mongoose: typeof import('mongoose'),
@@ -133,6 +208,76 @@ export function createStoredResponseModel(
       fingerprint: { type: String, required: true },
       agentId: { type: String, required: true },
       sourceKeyId: String,
+      storageTarget: {
+        type: new Schema<ManagedTarget<'response'>>(
+          {
+            kind: { type: String, enum: ['response'], required: true },
+            id: { type: String, required: true },
+            incarnation: { type: String, required: true },
+            tenantId: String,
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
+      conversationTarget: {
+        type: new Schema<CanonicalConversationTarget>(
+          {
+            id: { type: String, required: true },
+            conversationId: { type: String, required: true },
+            userId: { type: String, required: true },
+            tenantId: String,
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
+      providerExecution: {
+        type: new Schema<ResponseProviderExecution>(
+          {
+            id: { type: String, required: true, maxlength: 128 },
+            ownerId: { type: String, maxlength: 128 },
+            drained: Boolean,
+            outcome: { type: String, enum: ['complete', 'error', 'aborted'] },
+          },
+          { _id: false },
+        ),
+        default: undefined,
+        select: false,
+      },
+      checkpoint: {
+        type: new Schema<ResponseCheckpointExecution>(
+          {
+            generationCreatedAt: { type: Number, required: true, min: 1 },
+            providerExecutionId: { type: String, required: true, maxlength: 128 },
+            ownerId: { type: String, maxlength: 128 },
+            writerId: { type: String, required: true },
+            namespace: { type: String, required: true },
+            configJSON: { type: String, required: true },
+            configKey: { type: String, required: true, maxlength: 64 },
+            state: { type: String, enum: ['pending', 'settled'], required: true },
+            erased: Boolean,
+          },
+          { _id: false },
+        ),
+        default: undefined,
+        select: false,
+      },
+      persistenceFailure: {
+        type: new Schema<ResponsePersistenceFailure>(
+          {
+            generationCreatedAt: { type: Number, required: true, min: 1 },
+            providerExecutionId: { type: String, required: true, maxlength: 128 },
+            ownerId: { type: String, maxlength: 128 },
+            code: { type: String, required: true, enum: ['target_retired', 'document_limit'] },
+            receiptKey: { type: String, maxlength: 64 },
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
+      retiredAt: Date,
+      releaseAcknowledged: Boolean,
       canonicalTargets: {
         type: [
           {
@@ -188,6 +333,7 @@ export function createStoredResponseModel(
       generationCreatedAt: Number,
       responseJSON: String,
       cancellationRequestedAt: Number,
+      terminalReceiptKey: { type: String, maxlength: 64 },
       pendingTerminal: {
         type: terminalSchema,
         required: false,
@@ -241,13 +387,20 @@ export function createStoredResponseModel(
     { timestamps: true, minimize: false, read: 'primary' },
   );
   schema.index({ tenantId: 1, userId: 1, responseId: 1 }, { unique: true });
-  schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+  // Global maintenance scans only the allocation namespace, across owner partitions.
+  schema.index({ responseId: 1 });
+  // Expiry hides payload immediately; the recovery owner retains this root until drain.
+  schema.index({ expiredAt: 1, _id: 1 });
   schema.index({ 'dispatchOutbox.state': 1, _id: 1 });
+  schema.index({ retiredAt: 1, _id: 1 });
+  schema.index({ releaseAcknowledged: 1, _id: 1 });
   schema.index({ status: 1, _id: 1 });
   schema.index({ 'resume.state': 1, status: 1, _id: 1 });
   schema.index({ tenantId: 1, userId: 1, requestKey: 1 }, { unique: true });
   schema.index({ tenantId: 1, userId: 1, conversationId: 1, createdAt: 1 });
   schema.index({ userId: 1, conversationId: 1, tenantId: 1 });
+  schema.index({ '_managed.ownerKey': 1, '_managed.conversationKey': 1, _id: 1 });
+  applyManagedStorage(schema);
   applyTenantIsolation(schema);
   return (
     mongoose.models.StoredResponse ?? mongoose.model<StoredResponseRecord>('StoredResponse', schema)

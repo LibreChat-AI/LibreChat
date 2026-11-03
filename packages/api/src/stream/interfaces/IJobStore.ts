@@ -126,6 +126,9 @@ export interface SerializableJobData {
    * Legacy paused jobs omit it and use the historical unscoped storage. */
   checkpointNamespace?: string;
   responseCheckpointConfigJSON?: string;
+  /** Physical durable Response owner; assigned only when this generation is created. */
+  responseRootId?: string;
+  responseRootIncarnation?: string;
   completedAt?: number;
   conversationId?: string;
   error?: string;
@@ -546,6 +549,10 @@ export type JobMetadataPatch = Partial<
     | 'resolvedAskUserQuestions'
   >
 >;
+
+/** Physical ownership may be set on creation, never through metadata updates. */
+export type JobCreationMetadata = JobMetadataPatch &
+  Pick<SerializableJobData, 'responseRootId' | 'responseRootIncarnation'>;
 
 /**
  * Whether a job's pending review has passed its `expiresAt`. Shared by the
@@ -992,7 +999,7 @@ export interface IJobStore {
     userId: string,
     conversationId?: string,
     tenantId?: string,
-    initialMetadata?: JobMetadataPatch,
+    initialMetadata?: JobCreationMetadata,
   ): Promise<SerializableJobData>;
 
   getJob(streamId: string): Promise<SerializableJobData | null>;
@@ -1136,7 +1143,7 @@ export interface IJobStoreV2 extends IJobStore {
     userId: string,
     conversationId?: string,
     tenantId?: string,
-    initialMetadata?: JobMetadataPatch,
+    initialMetadata?: JobCreationMetadata,
     recoveredSteerId?: string,
     idempotencyClaimKey?: string,
     idempotencyClaimToken?: string,

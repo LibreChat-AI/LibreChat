@@ -5,6 +5,7 @@ import {
   createChannelFeedbackEventModel,
   createChannelFeedbackModel,
 } from '~/models/channelFeedback';
+import { shortenExpiration } from '~/utils/retention';
 
 /** Call only after the corresponding owner/conversation/channel admission fence is closed. */
 export async function eraseChannelFeedbackForOwner(
@@ -51,26 +52,17 @@ export async function retainChannelFeedbackForOwner(
   session?: ClientSession,
 ): Promise<void> {
   const tenantId = owner.tenantId || '_';
-  const deadline = { $or: [{ expiredAt: null }, { expiredAt: { $gt: expiredAt } }] };
-  await createChannelReplyModel(mongoose).updateMany(
-    { tenantId, principalId: owner.userId, conversationId, ...deadline },
-    { $set: { expiredAt } },
-    { session },
+  await shortenExpiration(
+    createChannelReplyModel(mongoose),
+    { tenantId, principalId: owner.userId, conversationId },
+    expiredAt,
+    session,
   );
   const filter = {
     tenantId,
     'mapping.principalId': owner.userId,
     'mapping.conversationId': conversationId,
-    ...deadline,
   };
-  await createChannelFeedbackModel(mongoose).updateMany(
-    filter,
-    { $set: { expiredAt } },
-    { session },
-  );
-  await createChannelFeedbackEventModel(mongoose).updateMany(
-    filter,
-    { $set: { expiredAt } },
-    { session },
-  );
+  await shortenExpiration(createChannelFeedbackModel(mongoose), filter, expiredAt, session);
+  await shortenExpiration(createChannelFeedbackEventModel(mongoose), filter, expiredAt, session);
 }

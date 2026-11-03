@@ -10,9 +10,9 @@ import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@libr
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { GenerationJob } from '~/types/stream';
 import { resolveAskUserQuestionResume, resolveToolApprovalResume } from '../hitl/resume';
+import { matchesResponseRoot, responseTenantId } from './scope';
 import { canonicalResponseJSON } from './background';
 import { publishResponseDispatch } from './outbox';
-import { responseTenantId } from './scope';
 
 export type ResponseDecisionResolution =
   | {
@@ -70,7 +70,7 @@ export interface ResponseDecisionDependencies {
 
 export type ResponseDecisionResult =
   | { ok: true; receipt: ResponseReviewDecisionReceipt }
-  | { ok: false; status: 400 | 403 | 404 | 409 | 503; code: string };
+  | { ok: false; status: 400 | 403 | 404 | 409 | 413 | 503; code: string };
 
 export type ResponseDecisionSubmission = (
   owner: ResponseOwner,
@@ -192,6 +192,7 @@ export function createResponseDecisionSubmission(
     if (
       !job ||
       job.createdAt !== record.generationCreatedAt ||
+      !matchesResponseRoot(record, job.metadata) ||
       job.metadata.userId !== record.userId ||
       responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
       job.metadata.agent_id !== record.agentId ||
@@ -237,7 +238,10 @@ export function createResponseDecisionSubmission(
           },
           now,
         );
-        if (!saved.ok) return unavailable;
+        if (!saved.ok)
+          return saved.code === 'document_limit'
+            ? { ok: false, status: 413, code: 'document_limit' }
+            : unavailable;
         record = saved.record;
       } catch (error) {
         const current = await deps.storage.read(owner, responseId);

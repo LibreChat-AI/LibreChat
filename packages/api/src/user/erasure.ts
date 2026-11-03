@@ -16,6 +16,8 @@ import {
 
 type ErasureMethods = Pick<
   AllMethods,
+  | 'prepareUserResponseErasure'
+  | 'eraseUserResponses'
   | 'deleteConvos'
   | 'deleteMessages'
   | 'deleteAllUserSessions'
@@ -265,6 +267,7 @@ export async function eraseUserData(
     undefined,
     checkpointer,
   );
+  await deps.prepareUserResponseErasure({ userId, tenantId });
   await deps.deleteConvos(
     userId,
     {},
@@ -273,6 +276,7 @@ export async function eraseUserData(
       beforeDelete: (ids) => checkpointDeletion.remember(ids),
     },
   );
+  await deps.eraseUserResponses({ userId, tenantId });
   await checkpointDeletion.cleanup();
   await checkpointDeletion.acknowledge();
 

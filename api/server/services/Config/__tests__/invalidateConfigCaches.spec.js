@@ -22,7 +22,7 @@ jest.mock('@librechat/data-schemas', () => {
 
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
-  initializeChannelStorageConfig: jest.fn(),
+  initializeStorageConfig: jest.fn(),
   getApplicableConfigs: jest.fn().mockResolvedValue([]),
   getUserPrincipals: jest.fn().mockResolvedValue([]),
 }));
@@ -62,16 +62,16 @@ jest.mock('@librechat/api', () => ({
 // ── Tests ──────────────────────────────────────────────────────────────
 
 const { getAppConfig, invalidateConfigCaches } = require('../app');
-const { initializeMessageBudget, initializeChannelStorageConfig } = require('~/models');
+const { initializeMessageBudget, initializeStorageConfig } = require('~/models');
 // Capture module-composition calls before clearMocks resets the spy history.
 const budgetInitializations = [...initializeMessageBudget.mock.calls];
-const channelInitializations = [...initializeChannelStorageConfig.mock.calls];
+const storageInitializations = [...initializeStorageConfig.mock.calls];
 const invalidationOptions = mockCreateConfigCacheInvalidation.mock.calls[0][0];
 const pubSubOptions = mockCreateRedisPubSub.mock.calls[0][0];
 
 test('Config supplies its actual reader exactly once during composition', () => {
   expect(budgetInitializations).toEqual([[getAppConfig]]);
-  expect(channelInitializations).toEqual([[getAppConfig]]);
+  expect(storageInitializations).toEqual([[getAppConfig]]);
 });
 
 describe('invalidateConfigCaches', () => {

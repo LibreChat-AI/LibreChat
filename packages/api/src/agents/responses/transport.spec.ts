@@ -3,6 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
   createResponseStorage,
+  createManagedMessageId,
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -11,6 +12,7 @@ import type { BackgroundResponseTransportDependencies } from './transport';
 import type { BoundAddress } from '~/app/origin';
 import { createBackgroundResponseTransport } from './transport';
 
+const responseId = createManagedMessageId();
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
 let record: StoredResponseRecord;
@@ -38,7 +40,7 @@ beforeEach(async () => {
   const saved = await scoped(() =>
     storage.reserve({
       ...owner,
-      responseId: 'resp_test',
+      responseId: responseId,
       agentId: 'agent',
       sourceKeyId: 'original-key',
       requestKey: 'request',
@@ -58,11 +60,11 @@ beforeEach(async () => {
 });
 async function enroll() {
   const result = await scoped(() =>
-    storage.publish(owner, record.responseId, record.revision, {
-      status: 'in_progress',
-      responseJSON: JSON.stringify(ack),
-      generationCreatedAt: 1234,
-    }),
+    storage.enrollExecution(
+      record,
+      { generationCreatedAt: 1234, providerExecutionId: 'provider' },
+      JSON.stringify(ack),
+    ),
   );
   if (!result.ok) throw new Error('Enrollment failed');
 }
@@ -76,7 +78,7 @@ function transport(fetch: Fetch, origin: string | BoundAddress = 'http://127.0.0
   });
 }
 const ack = {
-  id: 'resp_test',
+  id: responseId,
   object: 'response',
   model: 'agent',
   status: 'in_progress',

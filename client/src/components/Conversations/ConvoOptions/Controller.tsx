@@ -12,6 +12,7 @@ import {
   useMarkConversationUnreadMutation,
 } from '~/data-provider';
 import { useChatContext, useLiveAnnouncer } from '~/Providers';
+import { getErasureErrorKey } from '~/utils/errors';
 import { useLocalize, useNewConvo } from '~/hooks';
 import { NotificationSeverity } from '~/common';
 
@@ -85,9 +86,9 @@ function ConvoMenuController({
         showIcon: true,
       });
     },
-    onError: () => {
+    onError: (error) => {
       showToast({
-        message: localize('com_ui_convo_delete_error'),
+        message: localize(getErasureErrorKey(error, 'com_ui_convo_delete_error')),
         severity: NotificationSeverity.ERROR,
         showIcon: true,
       });

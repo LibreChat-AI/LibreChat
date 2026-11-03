@@ -79,6 +79,22 @@ describe('Convos Routes', () => {
   } = require('@librechat/api');
   const subagentThreadStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 
+  it.each(['/api/convos', '/api/convos/all'])(
+    'reports pending cleanup through %s without continuing the cascade',
+    async (path) => {
+      const { ResponseErasurePendingError } = require('@librechat/data-schemas');
+      deleteConvos.mockRejectedValueOnce(new ResponseErasurePendingError());
+      const response = await request(app)
+        .delete(path)
+        .send({ arg: { conversationId: 'conversation-1' } });
+      expect(response.status).toBe(503);
+      expect(response.body.code).toBe('response_erasure_pending');
+      expect(deleteToolCalls).not.toHaveBeenCalled();
+      expect(deleteOwnedAgentCheckpoints).not.toHaveBeenCalled();
+      expect(deleteAllSharedLinksWithCleanup).not.toHaveBeenCalled();
+    },
+  );
+
   beforeAll(() => {
     convosRouter = require('../convos');
 

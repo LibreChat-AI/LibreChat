@@ -3,6 +3,7 @@ import { LockIcon, Trash } from 'lucide-react';
 import { REGEXP_ONLY_DIGITS } from 'input-otp';
 import {
   InputOTPSeparator,
+  useToastContext,
   OGDialogContent,
   OGDialogTrigger,
   OGDialogHeader,
@@ -20,15 +21,22 @@ import type { TDeleteUserRequest } from 'librechat-data-provider';
 import BackupCodeInput, { isBackupCode } from '~/components/Auth/BackupCodeInput';
 import { useDeleteUserMutation } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
+import { cn, getErasureErrorKey } from '~/utils';
 import { LocalizeFunction } from '~/common';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 
 const DeleteAccount = ({ disabled = false }: { title?: string; disabled?: boolean }) => {
   const localize = useLocalize();
+  const { showToast } = useToastContext();
   const { user, logout } = useAuthContext();
   const { mutate: deleteUser, isLoading: isDeleting } = useDeleteUserMutation({
     onSuccess: () => logout(),
+    onError: (error) => {
+      showToast({
+        message: localize(getErasureErrorKey(error, 'com_nav_delete_account_error')),
+        status: 'error',
+      });
+    },
   });
 
   const [isDialogOpen, setDialogOpen] = useState<boolean>(false);

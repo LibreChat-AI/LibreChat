@@ -100,6 +100,50 @@ describe('RedisJobStore Integration Tests', () => {
     process.env = originalEnv;
   });
 
+  test('reconstructs creation-only Response root binding on another replica', async () => {
+    expect(ioredisClient).not.toBeNull();
+    const { RedisJobStore } = await import('../implementations/RedisJobStore');
+    const { InMemoryEventTransport } = await import('../implementations/InMemoryEventTransport');
+    const { GenerationJobManagerClass } = await import('../GenerationJobManager');
+    const manager = new GenerationJobManagerClass();
+    const peer = new GenerationJobManagerClass();
+    const root = {
+      responseRootId: '0123456789abcdef01234567',
+      responseRootIncarnation: '01234567-89ab-4cde-8fab-0123456789ab',
+    };
+    for (const replica of [manager, peer]) {
+      replica.configure({
+        jobStore: new RedisJobStore(ioredisClient!),
+        eventTransport: new InMemoryEventTransport(),
+        cleanupOnComplete: false,
+      });
+      replica.initialize();
+    }
+    try {
+      const id = `response-root-${Date.now()}`;
+      const job = await manager.createJob(id, 'owner', 'conversation', {
+        initialMetadata: { endpoint: 'responses', ...root },
+      });
+      expect((await peer.getJob(id))?.metadata).toMatchObject(root);
+      await expect(
+        peer.updateMetadata(
+          id,
+          { ...root, responseRootId: 'fedcba987654321001234567' },
+          job.createdAt,
+        ),
+      ).rejects.toThrow('creation-only');
+      expect((await manager.getJob(id))?.metadata).toMatchObject(root);
+      await expect(
+        manager.createJob(`${id}-partial`, 'owner', 'conversation', {
+          initialMetadata: { responseRootId: root.responseRootId },
+        }),
+      ).rejects.toThrow('Invalid Response root identity');
+      expect(await peer.getJob(`${id}-partial`)).toBeUndefined();
+    } finally {
+      await Promise.all([manager.destroy(), peer.destroy()]);
+    }
+  });
+
   test('provider guard atomically rejects stale pause and terminal writers after resume', async () => {
     expect(ioredisClient).not.toBeNull();
     const { RedisJobStore } = await import('../implementations/RedisJobStore');

@@ -24,6 +24,8 @@ export function buildGenerationStartedResponse(input: {
 }
 
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
+  if (metadata.responseRootId !== undefined || metadata.responseRootIncarnation !== undefined)
+    throw new Error('Response root identity is creation-only');
   const patch: JobMetadataPatch = {};
   if (metadata.terminalPersistenceOwner !== undefined)
     patch.terminalPersistenceOwner = parseTerminalPersistenceOwner(
@@ -159,4 +161,22 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
     patch.contextMeta = metadata.contextMeta;
   }
   return patch;
+}
+
+/** Validate the pair before any generation is allocated; partial bindings are never persisted. */
+export function parseResponseRootIdentity(
+  input: Pick<GenerationJobMetadata, 'responseRootId' | 'responseRootIncarnation'>,
+): Pick<GenerationJobMetadata, 'responseRootId' | 'responseRootIncarnation'> {
+  const { responseRootId, responseRootIncarnation } = input;
+  if (responseRootId === undefined && responseRootIncarnation === undefined) return {};
+  if (
+    typeof responseRootId !== 'string' ||
+    !/^[a-f\d]{24}$/.test(responseRootId) ||
+    typeof responseRootIncarnation !== 'string' ||
+    !/^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/.test(
+      responseRootIncarnation,
+    )
+  )
+    throw new Error('Invalid Response root identity');
+  return { responseRootId, responseRootIncarnation };
 }

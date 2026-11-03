@@ -15,6 +15,7 @@ import {
 } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import { useDeleteConversationMutation } from '~/data-provider';
+import { getErasureErrorKey } from '~/utils/errors';
 import { useLocalize, useNewConvo } from '~/hooks';
 import { NotificationSeverity } from '~/common';
 
@@ -72,9 +73,9 @@ export function DeleteConversationDialog({
         showIcon: true,
       });
     },
-    onError: () => {
+    onError: (error) => {
       showToast({
-        message: localize('com_ui_convo_delete_error'),
+        message: localize(getErasureErrorKey(error, 'com_ui_convo_delete_error')),
         severity: NotificationSeverity.ERROR,
         showIcon: true,
       });

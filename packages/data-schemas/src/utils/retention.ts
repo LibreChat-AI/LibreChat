@@ -1,4 +1,4 @@
-import type { FilterQuery } from 'mongoose';
+import type { FilterQuery, Model, ClientSession } from 'mongoose';
 import { DEFAULT_RETENTION_HOURS } from './tempChatRetention';
 
 export type RetentionFilterDocument = {
@@ -22,6 +22,26 @@ export function initializeExpiration(
     upsert: false,
     timestamps: false,
   };
+}
+
+/** Initialize absent deadlines, then shorten without overwriting a concurrent earlier one. */
+export async function shortenExpiration<T extends RetentionFilterDocument>(
+  model: Model<T>,
+  filter: FilterQuery<T>,
+  expiredAt: Date,
+  session?: ClientSession,
+): Promise<void> {
+  const initial = initializeExpiration(filter, expiredAt);
+  await model.updateMany(initial.filter, initial.update, {
+    upsert: false,
+    timestamps: false,
+    ...(session ? { session } : {}),
+  });
+  await model.updateMany(
+    { ...filter, expiredAt: { $gt: expiredAt } },
+    { $min: { expiredAt } },
+    { upsert: false, timestamps: false, ...(session ? { session } : {}) },
+  );
 }
 
 export const activeExpirationFilter = <

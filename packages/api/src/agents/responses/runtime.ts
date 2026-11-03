@@ -1,13 +1,21 @@
+import { randomUUID } from 'node:crypto';
+import { responseReference } from '@librechat/data-schemas';
 import { checkpointerSchema, responseReviewDecisionSchema } from 'librechat-data-provider';
 import type { ResponseTerminalReceipt, StoredResponseRecord } from '@librechat/data-schemas';
 import type { Request, Response as HttpResponse } from 'express';
-import type { Agents, TMessage } from 'librechat-data-provider';
+import type { Agents } from 'librechat-data-provider';
 import type { Run, IState } from '@librechat/agents';
+import type {
+  ResponseTerminalCompletion,
+  ResponseConversationInput,
+  ResponsePersistenceDependencies,
+} from './foreground';
 import type { ExecuteAgentRunParams, AgentExecutionConnection } from '../remote/host';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { MarkToolApprovalAllowAlwaysOptions } from '../hitl/allow';
+import type { CheckpointWriteWitness } from '../checkpoints/witness';
 import type { AgentExecutionEnrollment } from '../remote/lifecycle';
-import type { ResponseTerminalCompletion } from './foreground';
+import type { TurnConversationRequest } from '~/conversations/save';
 import type { ResponsesRunEnvelope } from '../envelope';
 import type { ResponseAggregator } from './service';
 import type { ReachableAgent } from '../traversal';
@@ -36,20 +44,24 @@ import {
 } from '../checkpointer';
 import { combineResponseSegments, seedResponseAggregator } from './segments';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
+import { createCheckpointWriteWitness } from '../checkpoints/witness';
 import { getRunDiscoveredTools, getRunMCPToolAliases } from '../run';
 import { markNativeCodeToolApprovalRequests } from '../hitl/byom';
 import { assertCodeExecutionApprovalBinding } from '../execution';
 import { getBackgroundResponseWorkerAdmission } from './worker';
+import { matchesResponseRoot, responseTenantId } from './scope';
+import { createResponseConversationWrites } from './foreground';
+import { normalizeResponseTurnIntent } from './turnProjection';
 import { getChatProjectContextKey } from '~/projects/context';
 import { buildPendingBackgroundResponse } from './background';
 import { resolveResponseContinuation } from './persistence';
+import { ResponseDocumentLimitError } from './persistence';
 import { captureRunPendingAction } from '../hitl/capture';
 import { cleanupResponseCheckpoint } from './checkpoint';
 import { createResponseRetirement } from './retirement';
 import { collectReachableAgents } from '../traversal';
 import { pauseResponseForReview } from './pause';
 import { generateResponseId } from './service';
-import { responseTenantId } from './scope';
 
 type TerminalResponse = Response & { status: ResponseTerminalReceipt['status'] };
 type ReviewAgent = NonNullable<Parameters<typeof captureRunPendingAction>[0]['agents'][number]> &
@@ -88,8 +100,13 @@ function responseBody(value: unknown): value is TerminalResponse {
 }
 
 export interface ResponseExecutionRuntime {
+  readonly conversationTarget?: StoredResponseRecord['conversationTarget'];
   completion?: ResponseTerminalCompletion;
   responseId: string;
+  prepareConversation: (
+    input: ResponseConversationInput,
+    deps: Pick<ResponsePersistenceDependencies, 'resolveTitle'>,
+  ) => Promise<void>;
   inputChain: <T>(chain: { messages: T[]; parentMessageId: string }) => {
     messages: T[];
     parentMessageId: string;
@@ -100,6 +117,7 @@ export interface ResponseExecutionRuntime {
     Pick<
       Parameters<typeof createRun>[0],
       | 'hitlCapable'
+      | 'checkpointWriteWitness'
       | 'discoveredToolNames'
       | 'reviewedToolApprovals'
       | 'sessionStartSource'
@@ -117,11 +135,6 @@ export interface ResponseExecutionRuntime {
       agents: Parameters<typeof createRun>[0]['agents'];
       buildPartial: () => Response;
       visibleOutputTokens: number;
-      persistence: {
-        saveConversation: () => Promise<void>;
-        saveInput: () => Promise<void>;
-        saveOutput: (partial: Response) => Promise<Partial<TMessage> | void>;
-      };
     },
     complete: () => Promise<T>,
   ) => Promise<T | undefined>;
@@ -135,11 +148,13 @@ export interface ResponseExecutionRuntime {
   hooks: Pick<
     ExecuteAgentRunParams<unknown>,
     | 'onEnrolled'
+    | 'onProviderStarted'
     | 'afterPause'
     | 'afterSettle'
     | 'clientRequestId'
     | 'resume'
     | 'retainTerminalPersistence'
+    | 'responseRoot'
   >;
   processRun: (
     run: Pick<Run<IState>, 'processStream' | 'resume'>,
@@ -182,8 +197,51 @@ export function createResponseExecutionRuntime(
       .type === 'mongo';
   let checkpoint: { checkpointNamespace: string; checkpointConfigJSON: string } | undefined;
   let enrolledExecution: AgentExecutionEnrollment | undefined;
+  let checkpointWriteWitness: CheckpointWriteWitness | undefined;
+  let checkpointWriter:
+    | ReturnType<NonNullable<typeof admission>['storage']['createCheckpointWriter']>
+    | undefined;
+  function checkpointOptions() {
+    if (!interactive) return {};
+    checkpointWriteWitness ??= createCheckpointWriteWitness({
+      async open() {
+        if (!checkpointWriter || !(await checkpointWriter.open()))
+          throw new Error('Response checkpoint writer admission conflicted');
+      },
+      async settle() {
+        if (!checkpointWriter || !(await checkpointWriter.settle()))
+          throw new Error('Response checkpoint writer settlement conflicted');
+      },
+    });
+    return { checkpointWriteWitness };
+  }
+  function bindCheckpointWriter(descriptor: NonNullable<typeof checkpoint>) {
+    if (!admission || !enrolledExecution || !checkpointWriteWitness || checkpointWriter)
+      throw new Error('Response checkpoint writer binding is unavailable');
+    checkpointWriter = admission.storage.createCheckpointWriter(
+      responseReference(admission.record),
+      {
+        ...enrolledExecution.getPersistenceIdentity(),
+        writerId: randomUUID(),
+        namespace: descriptor.checkpointNamespace,
+        configJSON: descriptor.checkpointConfigJSON,
+      },
+    );
+  }
+  async function processCheckpointRun<T>(operation: () => Promise<T>): Promise<T> {
+    const result = await Promise.resolve()
+      .then(operation)
+      .then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    if (!checkpointWriteWitness || (await checkpointWriteWitness.close()) !== 'settled')
+      throw new Error('Response checkpoint settlement is pending');
+    if (!result.ok) throw result.error;
+    return result.value;
+  }
+
   let rememberedTools: string[] = [];
-  let responseParentMessageId: string | undefined;
   let prefix: Response | undefined;
   const seeded = new WeakSet<ResponseAggregator>();
   function previous(): Response | undefined {
@@ -228,25 +286,32 @@ export function createResponseExecutionRuntime(
       : response;
   }
   let candidate: TerminalResponse | undefined;
+  let executionEnrolled = false;
   const completion = admission
     ? createResponseCompletion({
         storage: admission.storage,
         cleanupCheckpoint: cleanupResponseCheckpoint,
-        confirmExecution: createResponseExecutionConfirmation(continuation.jobs!),
-        releaseExecution: createResponseExecutionRelease(continuation.jobs!),
+        confirmExecution: createResponseExecutionConfirmation(
+          admission.storage,
+          continuation.jobs!,
+        ),
+        releaseExecution: createResponseExecutionRelease(continuation.jobs!, admission.storage),
       })
     : undefined;
   const hooks: Pick<
     ExecuteAgentRunParams<unknown>,
     | 'onEnrolled'
+    | 'onProviderStarted'
     | 'afterPause'
     | 'afterSettle'
     | 'clientRequestId'
     | 'resume'
     | 'retainTerminalPersistence'
+    | 'responseRoot'
   > = admission
     ? {
         retainTerminalPersistence: true,
+        responseRoot: responseReference(admission.record).target,
         clientRequestId: admission.record.responseId,
         ...(admission.resume
           ? {
@@ -262,6 +327,15 @@ export function createResponseExecutionRuntime(
             admission.record,
             admission.record.responseId,
           );
+          if (!current) throw new Error('Background response journal is unavailable');
+          if (
+            !matchesResponseRoot(current, {
+              responseRootId: execution.responseRoot?.id,
+              responseRootIncarnation: execution.responseRoot?.incarnation,
+            })
+          )
+            throw new Error('Background response job root identity changed');
+          const binding = execution.getEnrollmentIdentity();
           if (admission.resume) {
             if (
               !current ||
@@ -272,8 +346,15 @@ export function createResponseExecutionRuntime(
               current.status !== 'in_progress'
             )
               throw new Error('Background response resume enrollment changed');
-            admission.record = current;
             if (current.cancellationRequestedAt != null) execution.abort();
+            const resumed = await admission.storage.enrollExecution(
+              current,
+              binding,
+              current.responseJSON ?? '{}',
+            );
+            if (!resumed.ok) throw new Error('Background response resume enrollment changed');
+            admission.record = resumed.record;
+            executionEnrolled = true;
             res.status(202).json({
               id: current.responseId,
               object: 'response',
@@ -290,11 +371,11 @@ export function createResponseExecutionRuntime(
             record: StoredResponseRecord,
             status: 'queued' | 'in_progress',
           ) =>
-            admission.storage.publish(record, record.responseId, record.revision, {
-              status,
-              responseJSON: JSON.stringify({ ...buildPendingBackgroundResponse(record), status }),
-              generationCreatedAt: execution.createdAt,
-            });
+            admission.storage.enrollExecution(
+              record,
+              binding,
+              JSON.stringify({ ...buildPendingBackgroundResponse(record), status }),
+            );
           const cancelled = current.cancellationRequestedAt != null;
           if (cancelled) execution.abort();
           let result = await publishEnrollment(current, cancelled ? 'queued' : 'in_progress');
@@ -311,6 +392,7 @@ export function createResponseExecutionRuntime(
           }
           if (!result.ok) throw new Error('Background response enrollment publication failed');
           admission.record = result.record;
+          executionEnrolled = true;
           res.status(202).json({
             id: result.record.responseId,
             object: 'response',
@@ -320,9 +402,26 @@ export function createResponseExecutionRuntime(
             store: true,
           });
         },
+        onProviderStarted: async (execution) => {
+          if (
+            !(await admission.storage.bindExecution(
+              admission.record,
+              execution.getPersistenceIdentity(),
+            ))
+          )
+            throw new Error('Background response provider ownership changed');
+        },
         afterPause: async (execution) => {
           if (!execution.isPaused || !execution.ownsSettlement)
             throw new Error('Background response pause ownership changed');
+          if (
+            executionEnrolled &&
+            !(await admission.storage.settleExecution(
+              responseReference(admission.record),
+              execution.getEnrollmentIdentity(),
+            ))
+          )
+            throw new Error('Background response pause drain proof conflicted');
           const current = await admission.storage.read(
             admission.record,
             admission.record.responseId,
@@ -335,28 +434,6 @@ export function createResponseExecutionRuntime(
             !['completed', 'failed', 'cancelled', 'incomplete'].includes(current.status)
           )
             return;
-          if (!current) {
-            const identity = await admission.storage.readCleanupIdentity(
-              admission.record,
-              admission.record.responseId,
-              { ...admission.record, generationCreatedAt: execution.createdAt, ...checkpoint },
-            );
-            if (!identity?.retirement || identity.generationCreatedAt !== execution.createdAt)
-              throw new Error('Background response pause retirement identity unavailable');
-            const job = await continuation.jobs!.getJob(admission.record.responseId);
-            if (!job) {
-              // The owned settled pause proves local drain; this permits only checkpoint cleanup.
-              if (identity.requiresCheckpointCleanup) {
-                if (!identity.checkpointNamespace || !identity.checkpointConfigJSON)
-                  throw new Error('Background response pause checkpoint identity unavailable');
-                await cleanupResponseCheckpoint(
-                  { ...identity, pendingTerminal: identity },
-                  identity.checkpointNamespace,
-                );
-              }
-              return;
-            }
-          }
           const stopped = await createResponseRetirement({
             storage: admission.storage,
             jobs: continuation.jobs!,
@@ -366,24 +443,50 @@ export function createResponseExecutionRuntime(
             throw new Error('Background response pause retirement is pending');
         },
         afterSettle: async (execution, error) => {
+          const identity = await execution.confirmTerminalIdentity();
+          if (
+            executionEnrolled &&
+            !(await admission.storage.settleExecution(
+              responseReference(admission.record),
+              identity,
+              identity.outcome,
+            ))
+          )
+            throw new Error('Background response terminal drain proof conflicted');
           let current = await admission.storage.read(admission.record, admission.record.responseId);
           if (!current || current.generationCreatedAt == null) {
             const retired = await admission.storage.readCleanupIdentity(
               admission.record,
               admission.record.responseId,
-              { ...admission.record, generationCreatedAt: execution.createdAt, ...checkpoint },
+              {
+                ...admission.record,
+                generationCreatedAt: executionEnrolled
+                  ? execution.createdAt
+                  : admission.record.generationCreatedAt,
+                ...checkpoint,
+              },
             );
-            if (retired?.retirement && retired.generationCreatedAt === execution.createdAt)
-              current = { ...admission.record, ...retired };
-            else if (
-              current?.status === 'cancelled' &&
-              current.cancellationRequestedAt != null &&
-              current.generationCreatedAt == null
-            ) {
-              // Stop won the enrollment CAS. This exact local attempt must still release its drain proof.
-              await completion!.finish({ ...current, generationCreatedAt: execution.createdAt });
+            if (retired?.retirement && retired.generationCreatedAt == null) {
+              const stopped = await createResponseRetirement({
+                storage: admission.storage,
+                jobs: continuation.jobs!,
+                cleanupCheckpoint: cleanupResponseCheckpoint,
+              })(admission.record, admission.record.responseId, retired);
+              if (stopped !== 'stopped')
+                throw new Error('Background response unused execution retirement is pending');
               return;
             }
+            if (retired?.retirement && retired.generationCreatedAt === execution.createdAt)
+              current = { ...admission.record, ...retired };
+          }
+          if (
+            current &&
+            !executionEnrolled &&
+            current.generationCreatedAt == null &&
+            ['completed', 'failed', 'cancelled', 'incomplete'].includes(current.status)
+          ) {
+            await completion!.finish(current);
+            return;
           }
           if (!current || current.generationCreatedAt !== execution.createdAt)
             throw new Error('Background response settlement identity changed');
@@ -391,13 +494,10 @@ export function createResponseExecutionRuntime(
             await completion!.finish(current);
             return;
           }
-          if (current.pendingTerminal || current.preparedTerminal) {
+          if (current.persistenceFailure || current.pendingTerminal || current.preparedTerminal) {
             admission.record = await completion!.finish(current);
-            if (admission.record.preparedTerminal || admission.record.pendingTerminal)
-              throw new Error('Background response terminal publication is pending');
             return;
           }
-          const identity = await execution.confirmTerminalIdentity();
           // Normal manager teardown aborts the local signal too; only durable outcome/intent classifies Stop.
           const cancelled =
             identity.outcome === 'aborted' || current.cancellationRequestedAt != null;
@@ -452,6 +552,9 @@ export function createResponseExecutionRuntime(
 
   const settle = hooks.afterSettle;
   return {
+    get conversationTarget() {
+      return admission?.record.conversationTarget;
+    },
     completion:
       admission && completion && settle
         ? {
@@ -470,7 +573,9 @@ export function createResponseExecutionRuntime(
                 ...enrolledExecution.getPersistenceIdentity(),
                 status: prepared.status,
                 responseJSON: JSON.stringify(prepared),
-                ...(turnJSON == null ? {} : { turnJSON }),
+                ...(turnJSON == null
+                  ? {}
+                  : { turnJSON: normalizeResponseTurnIntent(admission.record, turnJSON) }),
                 ...(checkpoint ??
                   (admission.resume && admission.record.review?.checkpointConfigJSON
                     ? {
@@ -497,19 +602,25 @@ export function createResponseExecutionRuntime(
           }
         : undefined,
     composeResponse,
-    inputChain(chain) {
-      if (!admission?.resume) {
-        responseParentMessageId = chain.parentMessageId;
-        return chain;
-      }
-      const action: Agents.PendingAction = JSON.parse(
-        admission.record.review?.pendingActionJSON ?? 'null',
+    async prepareConversation(input, deps) {
+      if (!admission) return;
+      if (!enrolledExecution) throw new Error('Background response enrollment is unavailable');
+      const prepared = await admission.storage.prepareConversation(
+        admission.record,
+        enrolledExecution.getPersistenceIdentity(),
+        createResponseConversationWrites(input, deps),
       );
-      const parent = action?.resumeContext?.responseParentMessageId;
-      if (typeof parent !== 'string' || parent.length === 0)
-        throw new Error('Response resumed input identity unavailable');
-      responseParentMessageId = parent;
-      return { messages: [], parentMessageId: parent };
+      if (!prepared.ok) throw new Error('Background response conversation is unavailable');
+      admission.record = prepared.record;
+      if (prepared.record.expiredAt)
+        (req as TurnConversationRequest)._agentEventBindingRetention = {
+          expiredAt: prepared.record.expiredAt,
+          isTemporary: prepared.record.isTemporary,
+        };
+    },
+    inputChain(chain) {
+      if (!admission?.resume) return chain;
+      return { messages: [], parentMessageId: admission.record.parentMessageId };
     },
     visibleOutputTokens,
     seedAggregator(aggregator) {
@@ -544,7 +655,7 @@ export function createResponseExecutionRuntime(
               ),
             }
           : {};
-      if (!admission?.resume) return { hitlCapable, ...policy() };
+      if (!admission?.resume) return { hitlCapable, ...policy(), ...checkpointOptions() };
       const action: Agents.PendingAction = JSON.parse(
         admission.record.review?.pendingActionJSON ?? 'null',
       );
@@ -606,6 +717,7 @@ export function createResponseExecutionRuntime(
           !job ||
           job.status !== 'running' ||
           job.createdAt !== record.generationCreatedAt ||
+          !matchesResponseRoot(record, job.metadata) ||
           job.metadata.userId !== record.userId ||
           responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
           job.metadata.agent_id !== record.agentId ||
@@ -641,6 +753,7 @@ export function createResponseExecutionRuntime(
         hitlCapable,
         ...policy(),
         sessionStartSource: 'resume',
+        ...checkpointOptions(),
         ...(Array.isArray(discovered) ? { discoveredToolNames: discovered } : {}),
         reviewedToolApprovals: {
           bindings: action.toolApprovalBindings,
@@ -661,74 +774,80 @@ export function createResponseExecutionRuntime(
         background: true,
         store: true,
       };
-      const paused = await pauseResponseForReview(
-        {
-          run: input.run,
-          execution: input.execution,
-          record: admission.record,
-          partial,
-          visibleOutputTokens: visibleOutputTokens(input.visibleOutputTokens),
-          checkpointer: config?.checkpointer,
-        },
-        {
-          storage: admission.storage,
-          jobs: continuation.jobs,
-          persistUnfinished: async (response) => {
-            await input.persistence.saveConversation();
-            await input.persistence.saveInput();
-            await input.persistence.saveOutput(response);
+      let paused: boolean;
+      try {
+        paused = await pauseResponseForReview(
+          {
+            run: input.run,
+            execution: input.execution,
+            record: admission.record,
+            partial,
+            visibleOutputTokens: visibleOutputTokens(input.visibleOutputTokens),
+            checkpointer: config?.checkpointer,
           },
-          buildAction: async (interrupt) => {
-            const payload =
-              interrupt.payload.type === 'tool_approval'
-                ? markToolApprovalAllowAlways(
-                    markNativeCodeToolApprovalRequests(interrupt.payload, agents),
-                    {
-                      policy: config?.toolApproval,
-                      agents,
-                      aliases,
-                      storedTools: resolveRunToolApprovalAllows(
-                        config?.toolApproval,
-                        request.resolvedConversation,
-                        admission.record.conversationId,
-                      ),
-                      hookContext: {
-                        userId: admission.record.userId,
-                        tenantId: responseTenantId(admission.record.tenantId),
-                        conversationId: admission.record.conversationId,
-                        appConfig: request.config,
+          {
+            storage: admission.storage,
+            jobs: continuation.jobs,
+            buildAction: async (interrupt) => {
+              const payload =
+                interrupt.payload.type === 'tool_approval'
+                  ? markToolApprovalAllowAlways(
+                      markNativeCodeToolApprovalRequests(interrupt.payload, agents),
+                      {
+                        policy: config?.toolApproval,
+                        agents,
+                        aliases,
+                        storedTools: resolveRunToolApprovalAllows(
+                          config?.toolApproval,
+                          request.resolvedConversation,
+                          admission.record.conversationId,
+                        ),
+                        hookContext: {
+                          userId: admission.record.userId,
+                          tenantId: responseTenantId(admission.record.tenantId),
+                          conversationId: admission.record.conversationId,
+                          appConfig: request.config,
+                        },
+                        pluginHookSource: continuation.pluginHookSource,
                       },
-                      pluginHookSource: continuation.pluginHookSource,
-                    },
-                  )
-                : interrupt.payload;
-            return captureRunPendingAction({
-              run: input.run,
-              payload,
-              agents,
-              resumeAgentIds: responseParticipantIds(admission.record.agentId, agents),
-              aliases,
-              context: {
-                streamId: admission.record.responseId,
-                responseMessageId: admission.record.responseId,
-                conversationId: admission.record.conversationId,
-                threadId: admission.record.conversationId,
-                runId: interrupt.checkpointNs ?? admission.record.responseId,
-                interruptId: interrupt.interruptId,
-                ttlMs: getApprovalTtlMs(config?.checkpointer),
-                projectContextKey: getChatProjectContextKey(request.chatProjectContext),
-                requestFingerprint: computeLegacyAgentRequestFingerprint(request.body),
-                requestFingerprintV2: computeAgentRequestFingerprint(request.body),
-                resumeContext: {
-                  ...pickResumeContext(request.body, request.reasoningOverrideBase),
-                  discoveredToolNames: getRunDiscoveredTools(input.run),
-                  responseParentMessageId,
+                    )
+                  : interrupt.payload;
+              return captureRunPendingAction({
+                run: input.run,
+                payload,
+                agents,
+                resumeAgentIds: responseParticipantIds(admission.record.agentId, agents),
+                aliases,
+                context: {
+                  streamId: admission.record.responseId,
+                  responseMessageId: admission.record.responseId,
+                  conversationId: admission.record.conversationId,
+                  threadId: admission.record.conversationId,
+                  runId: interrupt.checkpointNs ?? admission.record.responseId,
+                  interruptId: interrupt.interruptId,
+                  ttlMs: getApprovalTtlMs(config?.checkpointer),
+                  projectContextKey: getChatProjectContextKey(request.chatProjectContext),
+                  requestFingerprint: computeLegacyAgentRequestFingerprint(request.body),
+                  requestFingerprintV2: computeAgentRequestFingerprint(request.body),
+                  resumeContext: {
+                    ...pickResumeContext(request.body, request.reasoningOverrideBase),
+                    discoveredToolNames: getRunDiscoveredTools(input.run),
+                  },
                 },
-              },
-            });
+              });
+            },
           },
-        },
-      );
+        );
+      } catch (error) {
+        if (error instanceof ResponseDocumentLimitError && completion) {
+          admission.record = await completion.fail(
+            admission.record,
+            input.execution.getPersistenceIdentity(),
+            'document_limit',
+          );
+        }
+        throw error;
+      }
       if (!paused && !input.execution.signal.aborted)
         throw new Error('Response interrupt could not be retained');
       return undefined;
@@ -745,6 +864,7 @@ export function createResponseExecutionRuntime(
           !job ||
           job.status !== 'running' ||
           job.createdAt !== record.generationCreatedAt ||
+          !matchesResponseRoot(record, job.metadata) ||
           job.metadata.userId !== record.userId ||
           responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
           job.metadata.agent_id !== record.agentId ||
@@ -777,17 +897,20 @@ export function createResponseExecutionRuntime(
           },
           job.createdAt,
         );
-        return run.processStream(
-          input,
-          {
-            ...config,
-            configurable: {
-              ...config.configurable,
-              thread_id: record.conversationId,
-              [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: namespace,
+        bindCheckpointWriter(checkpoint);
+        return processCheckpointRun(() =>
+          run.processStream(
+            input,
+            {
+              ...config,
+              configurable: {
+                ...config.configurable,
+                thread_id: record.conversationId,
+                [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: namespace,
+              },
             },
-          },
-          options,
+            options,
+          ),
         );
       }
       const { record, resume } = admission;
@@ -797,20 +920,29 @@ export function createResponseExecutionRuntime(
         record.review.checkpointNs == null
       )
         throw new Error('Response resume checkpoint identity unavailable');
+      if (!record.review.checkpointConfigJSON)
+        throw new Error('Response resume checkpoint settings unavailable');
+      bindCheckpointWriter({
+        checkpointNamespace: resume.checkpointNamespace,
+        checkpointConfigJSON: record.review.checkpointConfigJSON,
+      });
       const resolution: unknown = JSON.parse(record.resume.resolutionJSON);
-      return run.resume(
-        resolution,
-        {
-          ...config,
-          configurable: {
-            ...config.configurable,
-            thread_id: record.conversationId,
-            checkpoint_id: record.review.checkpointId,
-            checkpoint_ns: record.review.checkpointNs,
-            [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: resume.checkpointNamespace,
+      const { checkpointId, checkpointNs } = record.review;
+      return processCheckpointRun(() =>
+        run.resume(
+          resolution,
+          {
+            ...config,
+            configurable: {
+              ...config.configurable,
+              thread_id: record.conversationId,
+              checkpoint_id: checkpointId,
+              checkpoint_ns: checkpointNs,
+              [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: resume.checkpointNamespace,
+            },
           },
-        },
-        options,
+          options,
+        ),
       );
     },
     toolContext: (execution) =>

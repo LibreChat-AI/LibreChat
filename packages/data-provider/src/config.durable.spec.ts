@@ -5,6 +5,7 @@ describe('durable storage admission bounds', () => {
     expect(configSchema.parse({ version: '1.0' }).durableStorage).toBeUndefined();
     expect(configSchema.parse({ version: '1.0', durableStorage: {} }).durableStorage).toEqual({
       maxPendingTargetsPerScope: 256,
+      allocationGraceMs: 300_000,
     });
   });
 
@@ -25,4 +26,19 @@ describe('durable storage admission bounds', () => {
       }).durableStorage?.maxPendingTargetsPerScope,
     ).toBe(4096);
   });
+});
+
+it.each([-1, 0.5, Infinity, '300000'])(
+  'rejects invalid allocation grace %p',
+  (allocationGraceMs) => {
+    expect(
+      configSchema.safeParse({ version: '1.0', durableStorage: { allocationGraceMs } }).success,
+    ).toBe(false);
+  },
+);
+it('allows operators to override the allocation grace', () => {
+  expect(
+    configSchema.parse({ version: '1.0', durableStorage: { allocationGraceMs: 0 } }).durableStorage
+      ?.allocationGraceMs,
+  ).toBe(0);
 });

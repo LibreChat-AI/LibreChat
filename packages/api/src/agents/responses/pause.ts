@@ -9,6 +9,7 @@ import type { Response } from './types';
 import { hasDurableAgentInterruptCheckpoint, resolveCheckpointerConfig } from '../checkpointer';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
 import { buildPendingBackgroundResponse } from './background';
+import { ResponseDocumentLimitError } from './persistence';
 import { responseTenantId } from './scope';
 
 export interface ResponsePauseDependencies {
@@ -16,8 +17,6 @@ export interface ResponsePauseDependencies {
   jobs: Pick<GenerationJobManagerClass, 'getJob'>;
   /** Capture the host's existing graph/project/code/MCP approval bindings; never caller body data. */
   buildAction: (interrupt: RunInterruptResult, job: GenerationJob) => Promise<Agents.PendingAction>;
-  /** Save the ordinary unfinished assistant turn, with existing content/privacy filtering. */
-  persistUnfinished: (response: Response, action: Agents.PendingAction) => Promise<void>;
 }
 
 /** Capture the SDK's real, durable interrupt before exposing any resumable action. */
@@ -92,7 +91,6 @@ export async function pauseResponseForReview(
   )
     throw new Error('Response review action identity changed');
   return execution.pauseForReview(action, async () => {
-    await deps.persistUnfinished(input.partial, action);
     const current = await deps.storage.read(record, record.responseId);
     if (!current || current.generationCreatedAt !== execution.createdAt)
       throw new Error('Response pause journal identity changed');
@@ -134,6 +132,9 @@ export async function pauseResponseForReview(
       // overriding cancellation, retirement, a newer review, or admitted resume.
       published = await deps.storage.publishReview(...publication);
     }
-    if (!published.ok) throw new Error('Response pause journal publication failed');
+    if (!published.ok) {
+      if (published.code === 'document_limit') throw new ResponseDocumentLimitError();
+      throw new Error('Response pause journal publication failed');
+    }
   });
 }

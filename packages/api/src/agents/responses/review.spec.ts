@@ -1,4 +1,5 @@
-import { tenantStorage } from '@librechat/data-schemas';
+import { randomUUID } from 'node:crypto';
+import { tenantStorage, createManagedMessageId } from '@librechat/data-schemas';
 import type { StoredResponseRecord } from '@librechat/data-schemas';
 import type { Agents } from 'librechat-data-provider';
 import type { AgentExecutionEnrollment } from '../remote/lifecycle';
@@ -22,10 +23,18 @@ beforeEach(async () => {
     isRedis: false,
   });
   jobs.initialize();
+  const responseId = createManagedMessageId();
+  const storageTarget = {
+    kind: 'response' as const,
+    id: '1'.repeat(24),
+    incarnation: randomUUID(),
+    tenantId: 'tenant-a',
+  };
   execution = await scope(() =>
     enrollAgentExecution(
       {
-        runId: 'resp_test',
+        runId: responseId,
+        responseRoot: storageTarget,
         userId: 'user-a',
         conversationId: 'conversation-a',
         agentId: 'agent-a',
@@ -38,7 +47,8 @@ beforeEach(async () => {
   record = {
     tenantId: 'tenant-a',
     userId: 'user-a',
-    responseId: 'resp_test',
+    responseId,
+    storageTarget,
     requestKey: 'request-a',
     fingerprint: 'hash',
     agentId: 'agent-a',
@@ -139,7 +149,7 @@ it('projects a settled question pause only to its owner view and exposes only an
     required_action: {
       kind: 'question',
       action_id: action.actionId,
-      review_url: 'https://agents.example/responses/resp_test/review',
+      review_url: `https://agents.example/responses/${record.responseId}/review`,
     },
   });
   expect(JSON.stringify(observed)).not.toContain('private owner question');
@@ -210,7 +220,7 @@ it('projects real durable OAuth events into an opaque review link and clears it 
     type: 'librechat_review',
     kind: 'oauth',
     action_id: expect.stringMatching(/^oauth-[a-f0-9]{64}$/),
-    review_url: 'https://agents.example/base/responses/resp_test/review',
+    review_url: `https://agents.example/base/responses/${record.responseId}/review`,
   });
   expect(JSON.stringify(observed)).not.toMatch(/private-|oauth.example|oauth_mcp_example/);
   expect((await review.privateView(record)).oauth).toEqual([

@@ -3,8 +3,9 @@ jest.mock('@librechat/api', () => ({
   matchModelName: jest.fn(),
   findMatchingPattern: jest.fn(),
   isDeploymentSkillId: jest.fn(),
-  createChannelStorageConfigReader: jest.fn(() => ({
-    getConfig: jest.fn(),
+  createStorageConfigReader: jest.fn(() => ({
+    getChannelConfig: jest.fn(),
+    getDurableConfig: jest.fn(),
     initialize: jest.fn(),
   })),
   createMessageBudgetReader: jest.fn(() => ({ getBudget: jest.fn(), initialize: jest.fn() })),
@@ -12,10 +13,10 @@ jest.mock('@librechat/api', () => ({
 jest.mock('~/cache/getLogStores', () => jest.fn());
 
 const { createMethods } = require('@librechat/data-schemas');
-const { createMessageBudgetReader, createChannelStorageConfigReader } = require('@librechat/api');
-const { initializeMessageBudget, initializeChannelStorageConfig } = require('./index');
+const { createMessageBudgetReader, createStorageConfigReader } = require('@librechat/api');
+const { initializeMessageBudget, initializeStorageConfig } = require('./index');
 const reader = createMessageBudgetReader.mock.results[0].value;
-const channelStorageConfigReader = createChannelStorageConfigReader.mock.results[0].value;
+const storageConfigReader = createStorageConfigReader.mock.results[0].value;
 const { getMCPAppMessageBudget, getChannelStorageConfig: channelStorageConfigDependency } =
   createMethods.mock.calls[0][1];
 
@@ -27,10 +28,12 @@ describe('message App budget dependency wiring', () => {
   });
 });
 
-describe('channel storage configuration dependency wiring', () => {
+describe('deployment storage configuration dependency wiring', () => {
   it('injects the deployment reader without reading config during module initialization', () => {
-    expect(channelStorageConfigDependency).toBe(channelStorageConfigReader.getConfig);
-    expect(initializeChannelStorageConfig).toBe(channelStorageConfigReader.initialize);
-    expect(channelStorageConfigReader.getConfig).not.toHaveBeenCalled();
+    expect(channelStorageConfigDependency).toBe(storageConfigReader.getChannelConfig);
+    expect(initializeStorageConfig).toBe(storageConfigReader.initialize);
+    expect(require('./index').getDurableStorageConfig).toBe(storageConfigReader.getDurableConfig);
+    expect(storageConfigReader.getChannelConfig).not.toHaveBeenCalled();
+    expect(storageConfigReader.getDurableConfig).not.toHaveBeenCalled();
   });
 });

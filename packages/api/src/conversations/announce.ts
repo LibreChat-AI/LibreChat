@@ -3,12 +3,18 @@ import type { ConversationMethods } from '@librechat/data-schemas';
 import { hasPersistableAbortContent } from '../stream/abortContent';
 
 type SaveConvo = ConversationMethods['saveConvo'];
+type ReplyConversationTarget = Parameters<ConversationMethods['stampConvoLastResponse']>[3];
 /** Derived here rather than imported from `./save`, which depends on this module. */
 type ConversationWriteContext = Parameters<SaveConvo>[0];
 
 /** Declared structurally so a caller hands over its store rather than this module reaching for one. */
 export interface ReplyStampStore {
-  stampConvoLastResponse(user: string, conversationId: string, messageId: string): Promise<unknown>;
+  stampConvoLastResponse(
+    user: string,
+    conversationId: string,
+    messageId: string,
+    target?: ReplyConversationTarget,
+  ): Promise<unknown>;
 }
 
 export interface ReplyConversationStore {
@@ -55,6 +61,7 @@ export function isAnnounceableReply(reply: PersistedReply): boolean {
 }
 
 export interface ReplyAnnouncement {
+  conversationTarget?: ReplyConversationTarget;
   userId?: string | null;
   conversationId?: string | null;
   reply: PersistedReply;
@@ -70,7 +77,7 @@ export interface ReplyAnnouncement {
  */
 export async function announceReply(
   deps: ReplyStampStore,
-  { userId, conversationId, reply, context }: ReplyAnnouncement,
+  { userId, conversationId, conversationTarget, reply, context }: ReplyAnnouncement,
 ): Promise<boolean> {
   if (userId == null || userId === '' || conversationId == null || conversationId === '') {
     return false;
@@ -79,7 +86,14 @@ export async function announceReply(
     return false;
   }
   try {
-    await deps.stampConvoLastResponse(userId, conversationId, reply.messageId as string);
+    if (conversationTarget)
+      await deps.stampConvoLastResponse(
+        userId,
+        conversationId,
+        reply.messageId as string,
+        conversationTarget,
+      );
+    else await deps.stampConvoLastResponse(userId, conversationId, reply.messageId as string);
     return true;
   } catch (error) {
     logger.warn(`[announceReply] ${context}`, error);

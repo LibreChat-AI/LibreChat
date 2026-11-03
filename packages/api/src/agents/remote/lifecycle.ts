@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ResponseReference } from '@librechat/data-schemas';
 import type { Agents } from 'librechat-data-provider';
 import type { ApprovalPauseOptions } from '~/stream/ApprovalLifecycle';
 import type { GenerationJobManagerClass } from '~/stream';
@@ -28,6 +29,7 @@ export interface AgentExecutionEnrollmentParams {
   isPrincipalActive: (userId: string) => Promise<boolean>;
   clientRequestId?: string;
   retainTerminalPersistence?: true;
+  responseRoot?: Pick<ResponseReference['target'], 'id' | 'incarnation'>;
   /** Request a rendering outcome captured before transient generation cleanup. */
   captureTerminalOutcome?: true;
 }
@@ -53,6 +55,7 @@ export class AgentExecutionEnrollment {
   readonly runId: string;
   readonly createdAt: number;
   readonly signal: AbortSignal;
+  readonly responseRoot?: Readonly<NonNullable<AgentExecutionEnrollmentParams['responseRoot']>>;
 
   private readonly manager: GenerationJobManagerClass;
   private readonly providerExecutionId: string;
@@ -105,6 +108,11 @@ export class AgentExecutionEnrollment {
     this.runId = job.streamId;
     this.createdAt = job.createdAt;
     this.providerExecutionId = providerExecutionId;
+    if (job.metadata.responseRootId && job.metadata.responseRootIncarnation)
+      this.responseRoot = Object.freeze({
+        id: job.metadata.responseRootId,
+        incarnation: job.metadata.responseRootIncarnation,
+      });
     this.abortController = job.abortController;
     this.attemptController = ownerId == null ? undefined : new AbortController();
     this.signal =
@@ -261,7 +269,20 @@ export class AgentExecutionEnrollment {
     return this.settlement;
   }
 
-  /** Bind tracked persistence to this attempt; this witness is not terminal or drain authority. */
+  /** Stable attempt identity only; this does not authorize startup, persistence or drain. */
+  getEnrollmentIdentity(): {
+    generationCreatedAt: number;
+    providerExecutionId: string;
+    ownerId?: string;
+  } {
+    return {
+      generationCreatedAt: this.createdAt,
+      providerExecutionId: this.providerExecutionId,
+      ...(this.ownerId == null ? {} : { ownerId: this.ownerId }),
+    };
+  }
+
+  /** Provider startup and pause state additionally fence ordinary persistence. */
   getPersistenceIdentity(): {
     generationCreatedAt: number;
     providerExecutionId: string;
@@ -269,11 +290,7 @@ export class AgentExecutionEnrollment {
   } {
     if (!this.ownsSettlement || !this.providerStarted || this.pendingPause || this.isPaused)
       throw new Error('Agent persistence ownership is unavailable');
-    return {
-      generationCreatedAt: this.createdAt,
-      providerExecutionId: this.providerExecutionId,
-      ...(this.ownerId == null ? {} : { ownerId: this.ownerId }),
-    };
+    return this.getEnrollmentIdentity();
   }
 
   /** The journal may retain this proof after the generation's transient job expires. */
@@ -550,6 +567,8 @@ export async function enrollAgentExecution(
     /** The principal predicate replaces the default guard, so admission is one post-commit read
      * and a refused run takes the manager's retire-and-purge path. */
     job = await deps.manager.createJob(runId, userId, conversationId, {
+      // Claim expiry must not discard a predecessor's durable cleanup authority.
+      ...(params.retainTerminalPersistence ? { rejectActivePredecessor: true } : {}),
       ...(claim
         ? {
             idempotencyClientRequestId: params.clientRequestId,
@@ -562,6 +581,12 @@ export async function enrollAgentExecution(
         endpoint: protocol,
         model: agentId,
         responseMessageId: runId,
+        ...(params.responseRoot
+          ? {
+              responseRootId: params.responseRoot.id,
+              responseRootIncarnation: params.responseRoot.incarnation,
+            }
+          : {}),
         ...(params.retainTerminalPersistence && { terminalPersistenceOwner: 'external' as const }),
       },
     });
@@ -612,6 +637,8 @@ export async function enrollResumedAgentExecution(
     job.metadata.endpoint !== params.protocol ||
     job.metadata.responseMessageId !== params.runId ||
     job.metadata.providerExecutionId !== params.providerExecutionId ||
+    job.metadata.responseRootId !== params.responseRoot?.id ||
+    job.metadata.responseRootIncarnation !== params.responseRoot?.incarnation ||
     Boolean(params.retainTerminalPersistence) !==
       (job.metadata.terminalPersistenceOwner === 'external')
   )

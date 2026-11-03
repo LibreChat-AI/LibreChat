@@ -1,9 +1,12 @@
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
   createMethods,
   createResponseStorage,
+  createManagedMessageId,
+  responseReference,
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -66,19 +69,7 @@ afterAll(async () => {
 });
 
 async function fixture(principal: ResponseOwner = owner, retainTerminalPersistence = true) {
-  const responseId = 'resp_running_stop';
-  const execution = await enrollAgentExecution(
-    {
-      runId: responseId,
-      userId: principal.userId,
-      conversationId: 'conversation',
-      agentId: 'agent',
-      protocol: 'responses',
-      ...(retainTerminalPersistence ? { retainTerminalPersistence: true as const } : {}),
-      isPrincipalActive: async () => true,
-    },
-    { manager: jobs },
-  );
+  const responseId = createManagedMessageId();
   const reserved = await storage.reserve({
     ...principal,
     responseId,
@@ -91,25 +82,69 @@ async function fixture(principal: ResponseOwner = owner, retainTerminalPersisten
     requestJSON: JSON.stringify({ model: 'agent', input: 'Test', background: true, store: true }),
   });
   if (!reserved.ok) throw new Error('Reservation failed');
-  const running = await storage.publish(principal, responseId, 0, {
-    status: 'in_progress',
-    generationCreatedAt: execution.createdAt,
-    responseJSON: JSON.stringify({
+  const execution = await enrollAgentExecution(
+    {
+      responseRoot: reserved.record.storageTarget,
+      captureTerminalOutcome: true,
+      runId: responseId,
+      userId: principal.userId,
+      conversationId: 'conversation',
+      agentId: 'agent',
+      protocol: 'responses',
+      ...(retainTerminalPersistence ? { retainTerminalPersistence: true as const } : {}),
+      isPrincipalActive: async () => true,
+    },
+    { manager: jobs },
+  );
+
+  const running = await storage.enrollExecution(
+    reserved.record,
+    execution.getEnrollmentIdentity(),
+    JSON.stringify({
       ...buildPendingBackgroundResponse(reserved.record),
       status: 'in_progress',
     }),
-  });
+  );
   if (!running.ok) throw new Error('Publication failed');
+  // Mirror runtime.processRun's capture before the SDK may use a durable saver.
+  await jobs.updateMetadata(
+    responseId,
+    {
+      responseCheckpointConfigJSON: JSON.stringify({
+        type: 'mongo',
+        checkpointCollectionName: 'retirement_cp',
+        checkpointWritesCollectionName: 'retirement_writes',
+      }),
+    },
+    execution.createdAt,
+  );
   await execution.beginProviderExecution();
+  const binding = execution.getPersistenceIdentity();
+  if (!(await storage.bindExecution(running.record, binding)))
+    throw new Error('Provider binding failed');
+  const checkpointNamespace = (await jobs.getJob(responseId))!.metadata.checkpointNamespace!;
+  const writer = storage.createCheckpointWriter(responseReference(running.record), {
+    ...binding,
+    writerId: randomUUID(),
+    namespace: checkpointNamespace,
+    configJSON: JSON.stringify({
+      type: 'mongo',
+      checkpointCollectionName: 'retirement_cp',
+      checkpointWritesCollectionName: 'retirement_writes',
+    }),
+  });
+  if (!(await writer.open()) || !(await writer.settle()))
+    throw new Error('Checkpoint proof fixture failed');
   const completion = createResponseCompletion({
     storage,
     cleanupCheckpoint: async () => {},
-    confirmExecution: createResponseExecutionConfirmation(jobs),
-    releaseExecution: createResponseExecutionRelease(jobs),
+    confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+    releaseExecution: createResponseExecutionRelease(jobs, storage),
   });
   const retire = createResponseRetirement({
     storage,
     jobs,
+    cleanupCheckpoint: async () => {},
     recoverTerminal: completion.finish,
   });
   /** Force the live failure ordering: provider settles before abort's chat publication. */
@@ -125,7 +160,7 @@ async function fixture(principal: ResponseOwner = owner, retainTerminalPersisten
       },
     }),
   );
-  return { execution, responseId, retire, completion };
+  return { execution, responseId, retire, completion, checkpointNamespace };
 }
 
 it('signals and drains a prepared result through public Stop before publishing cancellation', () =>
@@ -208,6 +243,64 @@ it('drains expired work through metadata identity without publishing private can
     expect(f.execution.signal.aborted).toBe(true);
     expect(await jobs.getJob(f.responseId)).toBeUndefined();
     expect(await storage.read(owner, f.responseId)).toBeNull();
+  }));
+
+it('cleans retired checkpoints only after abort returns its provider drain barrier', () =>
+  scoped(async () => {
+    const f = await fixture();
+    await mongoose.models.StoredResponse.updateOne(
+      { responseId: f.responseId },
+      { $set: { expiredAt: new Date(Date.now() - 1) } },
+    );
+    await jobs.updateMetadata(
+      f.responseId,
+      { checkpointNamespace: 'retired-attempt', responseCheckpointConfigJSON: '{"type":"mongo"}' },
+      f.execution.createdAt,
+    );
+    let abortReturned = false;
+    const cleanup = jest.fn(async () => {
+      expect(abortReturned).toBe(true);
+      expect((await jobs.getJob(f.responseId))?.metadata.providerDrained).toBe(true);
+    });
+    jest
+      .mocked(jobs.abortJob)
+      .mockReset()
+      .mockImplementationOnce(async (id, options) => {
+        const result = await GenerationJobManagerClass.prototype.abortJob.call(jobs, id, {
+          ...options,
+          beforePublish: async (result) => {
+            expect((await jobs.getJob(id))?.metadata.providerDrained).not.toBe(true);
+            await options?.beforePublish?.(result);
+            expect(cleanup).not.toHaveBeenCalled();
+            await f.execution.settle();
+          },
+        });
+        abortReturned = true;
+        return result;
+      });
+    const retire = createResponseRetirement({ storage, jobs, cleanupCheckpoint: cleanup });
+    expect(await retire(owner, f.responseId)).toBe('stopped');
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(await jobs.getJob(f.responseId)).toBeUndefined();
+  }));
+
+it('retains drained retired proof when post-drain checkpoint cleanup fails', () =>
+  scoped(async () => {
+    const f = await fixture();
+    await mongoose.models.StoredResponse.updateOne(
+      { responseId: f.responseId },
+      { $set: { expiredAt: new Date(Date.now() - 1) } },
+    );
+    const cleanup = jest.fn(async () => {});
+    cleanup.mockRejectedValueOnce(new Error('checkpoint deletion failed'));
+    const retire = createResponseRetirement({ storage, jobs, cleanupCheckpoint: cleanup });
+    await expect(retire(owner, f.responseId)).rejects.toThrow('checkpoint deletion failed');
+    expect(await jobs.getJob(f.responseId)).toMatchObject({
+      metadata: { providerDrained: true, terminalPersistencePending: true },
+    });
+    expect(await retire(owner, f.responseId)).toBe('stopped');
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(await jobs.getJob(f.responseId)).toBeUndefined();
   }));
 
 it('keeps drained Stop proof through canonical receipt failure and retry without executing again', () =>
@@ -314,12 +407,12 @@ it('cleans a scope closed inside the outer drain callback without recursively ab
     expect(cleanup).toHaveBeenCalled();
     expect(await jobs.getJob(f.responseId)).toBeUndefined();
     expect(await storage.read(owner, f.responseId)).toBeNull();
-    const stored = await mongoose.models.StoredResponse.findOne({
-      userId: owner.userId,
-      responseId: f.responseId,
-    }).lean<StoredResponseRecord>();
-    expect(stored?.status).toBe('in_progress');
-    expect(stored?.pendingTerminal).toBeUndefined();
+    expect(
+      await mongoose.models.StoredResponse.collection.findOne({
+        userId: owner.userId,
+        responseId: f.responseId,
+      }),
+    ).toBeNull();
   }));
 
 it('does not relabel an already-completed provider as cancelled before its canonical publication', () =>
@@ -441,8 +534,12 @@ it.each(['owner', 'conversation'] as const)(
     scoped(async () => {
       const f = await fixture();
       const db = createMethods(mongoose);
-      if (kind === 'owner') await db.deleteUserById(owner.userId);
-      else await db.deleteConvos(owner.userId, { conversationId: 'conversation' });
+      const erase = () =>
+        kind === 'owner'
+          ? db.deleteUserById(owner.userId)
+          : db.deleteConvos(owner.userId, { conversationId: 'conversation' }, { allowEmpty: true });
+      await expect(erase()).rejects.toMatchObject({ code: 'response_erasure_pending' });
+      expect(await mongoose.models.User.findById(owner.userId).lean()).not.toBeNull();
       expect(await storage.read(owner, f.responseId)).toBeNull();
       const job = (await jobs.getJob(f.responseId))!;
       expect(
@@ -455,6 +552,10 @@ it.each(['owner', 'conversation'] as const)(
         }),
       ).toMatchObject({ retirement: kind === 'owner' ? 'owner_deleted' : 'conversation_deleted' });
       expect(await f.retire(owner, f.responseId)).toBe('stopped');
+      await erase();
+      await erase();
+      if (kind === 'owner')
+        expect(await mongoose.models.User.findById(owner.userId).lean()).toBeNull();
       expect(await jobs.getJob(f.responseId)).toBeUndefined();
       expect(await storage.read(owner, f.responseId)).toBeNull();
     }),

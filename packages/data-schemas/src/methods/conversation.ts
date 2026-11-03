@@ -44,12 +44,18 @@ import {
 } from '~/types/convo';
 import {
   closeResponseScopes,
-  eraseResponseRecords,
   createResponseRetention,
   discoverResponseOwners,
   createResponseConversationReplacement,
   responseScopeKeys,
 } from './responseScope';
+import {
+  activeExpirationFilter,
+  buildRetentionVisibilityFilter,
+  createFallbackRetentionDate,
+  initializeExpiration,
+  shortenExpiration,
+} from '~/utils/retention';
 import {
   isManagedConversationId,
   isAllocationId,
@@ -58,11 +64,10 @@ import {
   stripManagedIdentityFields,
 } from '~/utils/managed';
 import {
-  activeExpirationFilter,
-  buildRetentionVisibilityFilter,
-  createFallbackRetentionDate,
-  initializeExpiration,
-} from '~/utils/retention';
+  discoverResponseErasureConversations,
+  retireResponseRecords,
+  eraseResponseRecords,
+} from './responseErasure';
 import {
   refreshChatProjectStatsForUser,
   updateChatProjectLastConversationForUser,
@@ -657,6 +662,7 @@ export interface ConversationMethods {
     user: string,
     conversationId: string,
     responseMessageId: string,
+    target?: CanonicalConversationTarget,
   ): Promise<{ lastResponseAt: Date; lastResponseMessageId: string; updatedAt?: Date } | null>;
   deleteConvos(
     user: string,
@@ -2399,11 +2405,7 @@ export function createConversationMethods(
     }
 
     await retainResponses({ userId, tenantId: stored.tenantId }, conversationId, expiredAt);
-    const initialization = initializeExpiration({ _id: stored._id }, expiredAt);
-    await Conversation.updateOne(initialization.filter, initialization.update, {
-      upsert: initialization.upsert,
-      timestamps: initialization.timestamps,
-    });
+    await shortenExpiration(Conversation, { _id: stored._id }, expiredAt);
     if (stored.isTemporary !== true) {
       /**
        * Conditional on the transition, so concurrent stamps release the bookmark counts once;
@@ -4258,9 +4260,42 @@ export function createConversationMethods(
         }
         throw lastError;
       };
-      let conversations = await Conversation.find(userFilter)
-        .select('conversationId tenantId chatProjectId tags')
-        .lean<DeletionConversation[]>();
+      const clearAll = Object.keys(filter).length === 0;
+      const activeTenant = getTenantId();
+      const userOwner =
+        clearAll && activeTenant === SYSTEM_TENANT_ID && isValidObjectIdString(user)
+          ? await (mongoose.models.User as Model<IUser>)
+              .findById(user)
+              .select('tenantId')
+              .read('primary')
+              .lean()
+          : null;
+      const historyOwner = {
+        userId: user,
+        tenantId: activeTenant === SYSTEM_TENANT_ID ? userOwner?.tenantId : activeTenant,
+      };
+      const historyPartitions = historyOwner.tenantId
+        ? { $in: [historyOwner.tenantId, null, ''] }
+        : { $in: [null, ''] };
+      const readConversations = async () =>
+        await Conversation.find({ ...userFilter, ...(clearAll && { tenantId: historyPartitions }) })
+          .select('conversationId tenantId chatProjectId tags')
+          .read('primary')
+          .lean<DeletionConversation[]>();
+      let conversations = await (clearAll ? runAsSystem(readConversations) : readConversations());
+      if (clearAll) {
+        const captured = new Set(
+          conversations.map((row) => JSON.stringify([row.tenantId || null, row.conversationId])),
+        );
+        for await (const batch of discoverResponseErasureConversations(mongoose, historyOwner)) {
+          for (const row of batch) {
+            const key = JSON.stringify([row.tenantId || null, row.conversationId]);
+            if (captured.has(key)) continue;
+            conversations.push(row);
+            captured.add(key);
+          }
+        }
+      }
       const recoveryConversationIds: string[] = [];
       const recoveryResponseScopes: DeletionConversation[] = [];
       const responseGroups = (wave: DeletionConversation[]) => {
@@ -4273,13 +4308,39 @@ export function createConversationMethods(
         }
         return groups;
       };
+      const inDeletionPartitions = async <T>(
+        wave: DeletionConversation[],
+        operation: (
+          scope: Pick<FilterQuery<IMessage>, 'user' | 'tenantId' | 'conversationId'>,
+        ) => PromiseLike<T>,
+      ): Promise<T[]> => {
+        if (!clearAll)
+          return [
+            await operation({
+              user,
+              conversationId: { $in: wave.map((row) => row.conversationId) },
+            }),
+          ];
+        return runAsSystem(async () => {
+          const results: T[] = [];
+          for (const [tenantId, ids] of responseGroups(wave))
+            results.push(
+              await operation({
+                user,
+                tenantId: tenantId || { $in: [null, ''] },
+                conversationId: { $in: ids },
+              }),
+            );
+          return results;
+        });
+      };
       const closeResponses = async (wave: DeletionConversation[]) => {
         for (const [tenantId, ids] of responseGroups(wave))
           await closeResponseScopes(mongoose, { userId: user, tenantId }, ids);
       };
       const eraseResponses = async (wave: DeletionConversation[]) => {
         for (const [tenantId, ids] of responseGroups(wave))
-          await eraseResponseRecords(mongoose, { userId: user, tenantId }, ids);
+          await runAsSystem(() => eraseResponseRecords(mongoose, { userId: user, tenantId }, ids));
       };
       if (!conversations.length && typeof filter.conversationId === 'string') {
         // Authorized delayed reservations retain the globally unique user's actual tenant.
@@ -4399,14 +4460,26 @@ export function createConversationMethods(
         await options?.beforeDelete?.(waveIds);
         await deps?.prepareAgentTriggerConversationResultErasure?.(user, waveIds);
         await retryCascadeOperation(() =>
-          prepareSubagentContentDeletion(mongoose, {
-            user,
-            conversationId: { $in: waveIds },
-          }),
+          inDeletionPartitions(wave, (scope) => prepareSubagentContentDeletion(mongoose, scope)),
         );
-        // Like subagent content, response erasure is an irreversible part of deletion intent.
-        await eraseResponses(wave);
-        const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
+        // Fence paused projection writers before normal deletion owns counts, tags and projects.
+        for (const [tenantId, ids] of responseGroups(wave))
+          await runAsSystem(async () =>
+            retireResponseRecords(mongoose, { userId: user, tenantId }, ids),
+          );
+        const remove = async () =>
+          await Conversation.deleteMany({
+            user,
+            ...(clearAll
+              ? {
+                  $or: wave.map((row) => ({
+                    conversationId: row.conversationId,
+                    tenantId: row.tenantId || { $in: [null, ''] },
+                  })),
+                }
+              : { conversationId: { $in: waveIds } }),
+          });
+        const result = await (clearAll ? runAsSystem(remove) : remove());
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
            * pre-delete hook or the conversation delete itself fails, so a
@@ -4424,13 +4497,18 @@ export function createConversationMethods(
           seen.add(conversation.conversationId);
           deletedConversations.push(conversation);
         }
-        pending = await retryCascadeOperation(() =>
-          Conversation.find({
+        // Physical Root cleanup follows ordinary accounting, including on a pending retry.
+        await eraseResponses(wave);
+        const readDescendants = async () =>
+          await Conversation.find({
             user,
+            ...(clearAll && { tenantId: historyPartitions }),
             'subagentThread.parentConversationId': { $in: waveIds },
           })
             .select('conversationId tenantId chatProjectId tags')
-            .lean<DeletionConversation[]>(),
+            .lean<DeletionConversation[]>();
+        pending = await retryCascadeOperation(() =>
+          clearAll ? runAsSystem(readDescendants) : readDescendants(),
         );
       }
 
@@ -4468,21 +4546,28 @@ export function createConversationMethods(
        * `conversationIds` that downstream cleanup (e.g. agent-checkpoint pruning)
        * needs, with no way to recover them on retry (the query finds nothing).
        */
+      const cleanupWave = [
+        ...recoveryConversationIds.map((conversationId) => ({ conversationId })),
+        ...deletedConversations,
+      ];
       let deleteMessagesResult: DeleteResult = { acknowledged: false, deletedCount: 0 };
       try {
-        deleteMessagesResult = await deleteMessages({
-          conversationId: { $in: conversationIds },
-          user,
-        });
+        const results = await inDeletionPartitions(cleanupWave, (scope) => deleteMessages(scope));
+        deleteMessagesResult = clearAll
+          ? {
+              acknowledged: results.every((result) => result.acknowledged),
+              deletedCount: results.reduce((total, result) => total + result.deletedCount, 0),
+            }
+          : results[0];
       } catch (error) {
         logger.error('[deleteConvos] Conversations deleted but message cleanup failed', error);
       }
 
       try {
-        await mongoose.models.ToolApprovalGrant?.deleteMany({
-          user,
-          conversationId: { $in: conversationIds },
-        });
+        if (mongoose.models.ToolApprovalGrant)
+          await inDeletionPartitions(cleanupWave, (scope) =>
+            mongoose.models.ToolApprovalGrant.deleteMany(scope),
+          );
       } catch {
         logger.warn('[deleteConvos] Remembered approval cleanup failed.');
       }
@@ -4758,12 +4843,15 @@ export function createConversationMethods(
     user: string,
     conversationId: string,
     responseMessageId: string,
+    target?: CanonicalConversationTarget,
   ) {
     try {
+      if (target && (target.userId !== user || target.conversationId !== conversationId))
+        throw new TypeError('Canonical conversation target mismatch');
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
       const stamped = await stampReplyWithCas(
         Conversation,
-        { conversationId, user },
+        target ? canonicalConversationFilter(mongoose, target) : { conversationId, user },
         responseMessageId,
         {
           conversationId: 1,

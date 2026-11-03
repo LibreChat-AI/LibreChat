@@ -11,6 +11,7 @@ import {
 import { responseScopeKeys, createResponseRetention } from './responseScope';
 import { allocateManagedTarget, managedTargetFilter } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { createManagedMessageId } from '~/utils/managed';
 import { createMessageModel } from '~/models/message';
 import { createResponseStorage } from './response';
 
@@ -308,8 +309,7 @@ describe('bounded Response target discovery on real storage', () => {
       expect(await scopes.findById(f.keys[0]).lean()).not.toHaveProperty('pendingCount');
     });
 
-    const replicaOnly = db === replica ? describe : describe.skip;
-    replicaOnly('transactional reservation coexistence', () => {
+    describe('portable reservation coexistence', () => {
       it('keeps discovery if real reservation shortens retention after canonical proof', async () => {
         const f = await fixture();
         const storage = createResponseStorage(db);
@@ -317,7 +317,7 @@ describe('bounded Response target discovery on real storage', () => {
           storage.reserve({
             ...f.owner,
             conversationId: f.conversationId,
-            responseId: 'resp_' + randomUUID(),
+            responseId: createManagedMessageId(),
             requestKey: randomUUID(),
             fingerprint: randomUUID(),
             agentId: 'agent',
@@ -356,10 +356,9 @@ describe('bounded Response target discovery on real storage', () => {
           pendingCount: 1,
           pending: [{ key: f.entry.key, target: f.target, retentionEpoch: 1 }],
         });
-        expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry)).toBe(false);
-        await db.model('Message').collection.updateOne(managedTargetFilter(db, f.target), {
-          $min: { expiredAt: shorter },
-        });
+        expect(
+          await db.model('Message').collection.findOne(managedTargetFilter(db, f.target)),
+        ).toMatchObject({ expiredAt: shorter });
         expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry)).toBe(true);
       });
     });

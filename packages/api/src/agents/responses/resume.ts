@@ -1,3 +1,4 @@
+import { responseReference } from '@librechat/data-schemas';
 import {
   checkpointerSchema,
   messageFilterSchema,
@@ -31,13 +32,13 @@ import {
 import { hasDurableAgentInterruptCheckpoint, resolveCheckpointerConfig } from '../checkpointer';
 import { getChatProjectContextKey, resolveChatProjectContext } from '~/projects/context';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
+import { matchesResponseRoot, responseTenantId } from './scope';
 import { getResumeAgentSnapshot } from '../hitl/inspection';
 import { preflightResumeContent } from '../hitl/preflight';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { resolveResponseReviewDecision } from './decision';
 import { canonicalResponseJSON } from './background';
 import { isResponseTenantId } from './scope';
-import { responseTenantId } from './scope';
 
 export interface ResponseResumeValidationDependencies {
   findUser: (userId: string) => Promise<IUser | null>;
@@ -289,6 +290,7 @@ export function createResponseResumeAdmission(deps: ResponseResumeAdmissionDepen
     const review = record?.review;
     if (
       !record ||
+      record.persistenceFailure != null ||
       record.pendingTerminal != null ||
       !intent ||
       !review ||
@@ -311,7 +313,8 @@ export function createResponseResumeAdmission(deps: ResponseResumeAdmissionDepen
       job.metadata.agent_id === record.agentId &&
       job.metadata.endpoint === 'responses' &&
       job.metadata.conversationId === record.conversationId &&
-      job.metadata.responseMessageId === responseId;
+      job.metadata.responseMessageId === responseId &&
+      matchesResponseRoot(record, job.metadata);
     let job = await deps.jobs.getJob(responseId);
     if (!matches(job)) return unavailable;
     const checkpointNamespace = job.metadata.checkpointNamespace;
@@ -337,6 +340,27 @@ export function createResponseResumeAdmission(deps: ResponseResumeAdmissionDepen
     const validation = await deps.validate(record, job);
     if (!validation.ok) return unavailable;
     if (!alreadyResolved(job)) {
+      // Persist the drained predecessor before approval replaces its transient identity.
+      let proof = await deps.storage.readExecutionProof(record);
+      if (!proof) {
+        if (
+          !(await deps.storage.settleExecution(responseReference(record), {
+            generationCreatedAt: job.createdAt,
+            providerExecutionId: intent.previousProviderExecutionId,
+            ...(job.metadata.providerExecutionOwnerId
+              ? { ownerId: job.metadata.providerExecutionOwnerId }
+              : {}),
+          }))
+        )
+          return unavailable;
+        proof = await deps.storage.readExecutionProof(record);
+      }
+      if (
+        !proof ||
+        proof.providerExecutionId !== intent.previousProviderExecutionId ||
+        proof.ownerId !== job.metadata.providerExecutionOwnerId
+      )
+        return unavailable;
       let resolutionError: unknown;
       try {
         await deps.jobs.approvals.resolve(

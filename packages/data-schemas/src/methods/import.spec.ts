@@ -2,6 +2,8 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { CONVERSATION_IMPORT_CLEANUP_CHUNK_SIZE, createConversationImportMethods } from './import';
 import { runAsSystem, tenantStorage } from '~/config/tenantContext';
+import { createManagedMessageId } from '~/utils/managed';
+import { createResponseStorage } from './response';
 import { createModels } from '~/models';
 import { createMethods } from './index';
 
@@ -69,20 +71,6 @@ describe('conversation import cleanup methods', () => {
           text: record.conversationId,
         })),
       );
-      await mongoose.models.StoredResponse.insertMany(
-        records.map((record, index) => ({
-          userId: record.user,
-          tenantId: record.tenantId,
-          conversationId: record.conversationId,
-          responseId: `response-${index}`,
-          requestKey: `request-${index}`,
-          fingerprint: 'request',
-          agentId: 'agent',
-          requestJSON: '{"input":"private"}',
-          parentMessageId: 'root',
-          status: 'queued',
-        })),
-      );
       await mongoose.models.ChatProject.updateOne(
         { _id: project._id },
         {
@@ -94,6 +82,26 @@ describe('conversation import cleanup methods', () => {
         },
       );
     });
+
+    const storage = createResponseStorage(mongoose);
+    for (const [index, record] of records.entries()) {
+      const reserved = await tenantStorage.run(
+        { tenantId: record.tenantId, userId: record.user },
+        () =>
+          storage.reserve({
+            userId: record.user,
+            tenantId: record.tenantId,
+            conversationId: record.conversationId,
+            responseId: createManagedMessageId(),
+            requestKey: `request-${index}`,
+            fingerprint: 'request',
+            agentId: 'agent',
+            requestJSON: '{"input":"private"}',
+            parentMessageId: 'root',
+          }),
+      );
+      expect(reserved.ok).toBe(true);
+    }
 
     await tenantStorage.run({ tenantId: target.tenantId, userId: target.user }, async () => {
       const scope = {
@@ -172,29 +180,13 @@ describe('conversation import cleanup methods', () => {
   });
 
   it('chunks every cleanup query while retaining its exact owner and tenant scope', async () => {
-    const deleteMessages = jest.fn().mockResolvedValue(undefined);
-    const findProjects = jest.fn().mockResolvedValue([]);
-    const deleteConversations = jest.fn().mockResolvedValue(undefined);
-    const responseScopes = { bulkWrite: jest.fn().mockResolvedValue(undefined) };
-    const deleteReplies = jest.fn().mockResolvedValue(undefined);
-    const deleteFeedbackEvents = jest.fn().mockResolvedValue(undefined);
-    const deleteFeedback = jest.fn().mockResolvedValue(undefined);
-    const cleanupMongoose = {
-      model: jest.fn().mockReturnValue(responseScopes),
-      models: {
-        Message: { deleteMany: deleteMessages },
-        Conversation: { distinct: findProjects, deleteMany: deleteConversations },
-        ResponseScope: responseScopes,
-        ChannelReply: { deleteMany: deleteReplies },
-        ChannelFeedbackEvent: { deleteMany: deleteFeedbackEvents },
-        ChannelFeedback: { deleteMany: deleteFeedback },
-        StoredResponse: {
-          updateMany: jest.fn().mockResolvedValue(undefined),
-          deleteMany: jest.fn().mockResolvedValue(undefined),
-        },
-      },
-    } as unknown as typeof mongoose;
-    const methods = createConversationImportMethods(cleanupMongoose);
+    const deleteMessages = jest.spyOn(mongoose.models.Message, 'deleteMany');
+    const findProjects = jest.spyOn(mongoose.models.Conversation, 'distinct');
+    const deleteConversations = jest.spyOn(mongoose.models.Conversation, 'deleteMany');
+    const deleteReplies = jest.spyOn(mongoose.models.ChannelReply, 'deleteMany');
+    const deleteFeedbackEvents = jest.spyOn(mongoose.models.ChannelFeedbackEvent, 'deleteMany');
+    const deleteFeedback = jest.spyOn(mongoose.models.ChannelFeedback, 'deleteMany');
+    const methods = createConversationImportMethods(mongoose);
     const conversationIds = Array.from(
       { length: CONVERSATION_IMPORT_CLEANUP_CHUNK_SIZE * 2 + 1 },
       (_, index) => `generated-${index}`,
@@ -204,35 +196,33 @@ describe('conversation import cleanup methods', () => {
     await methods.deleteImportedMessages(scope);
     await methods.deleteImportedConversations(scope);
 
+    const chunks = Array.from({ length: 3 }, (_, index) =>
+      conversationIds.slice(
+        index * CONVERSATION_IMPORT_CLEANUP_CHUNK_SIZE,
+        (index + 1) * CONVERSATION_IMPORT_CLEANUP_CHUNK_SIZE,
+      ),
+    );
     for (const [cleanupMock, ownerField, conversationField] of [
       [deleteReplies, 'principalId', 'conversationId'],
       [deleteFeedbackEvents, 'mapping.principalId', 'mapping.conversationId'],
       [deleteFeedback, 'mapping.principalId', 'mapping.conversationId'],
     ] as const) {
       expect(cleanupMock).toHaveBeenCalledTimes(3);
-      const filters = cleanupMock.mock.calls.map((call) => call[0]);
-      expect(filters.flatMap((filter) => filter[conversationField].$in)).toEqual(conversationIds);
-      expect(filters.every((filter) => filter[ownerField] === scope.user)).toBe(true);
-      expect(filters.every((filter) => filter.tenantId === scope.tenantId)).toBe(true);
-      expect(
-        filters.every(
-          (filter) =>
-            filter[conversationField].$in.length <= CONVERSATION_IMPORT_CLEANUP_CHUNK_SIZE,
-        ),
-      ).toBe(true);
+      expect(cleanupMock.mock.calls.map((call) => call[0])).toEqual(
+        chunks.map((ids) => ({
+          [ownerField]: scope.user,
+          tenantId: scope.tenantId,
+          [conversationField]: { $in: ids },
+        })),
+      );
     }
-
-    for (const cleanupMock of [deleteMessages, findProjects, deleteConversations]) {
-      expect(cleanupMock).toHaveBeenCalledTimes(3);
-      const filters = cleanupMock.mock.calls.map((call) => call.at(-1));
-      expect(filters.flatMap((filter) => filter.conversationId.$in)).toEqual(conversationIds);
-      expect(filters.every((filter) => filter.user === scope.user)).toBe(true);
-      expect(filters.every((filter) => filter.tenantId === scope.tenantId)).toBe(true);
-      expect(
-        filters.every(
-          (filter) => filter.conversationId.$in.length <= CONVERSATION_IMPORT_CLEANUP_CHUNK_SIZE,
-        ),
-      ).toBe(true);
-    }
+    const expected = chunks.map((ids) => ({
+      user: scope.user,
+      tenantId: scope.tenantId,
+      conversationId: { $in: ids },
+    }));
+    expect(deleteMessages.mock.calls.map((call) => call[0])).toEqual(expected);
+    expect(deleteConversations.mock.calls.map((call) => call[0])).toEqual(expected);
+    expect(findProjects.mock.calls.map((call) => call[1])).toEqual(expected);
   });
 });

@@ -18,7 +18,10 @@ const db = require('~/models');
 
 const producer = createAgentTriggerProducerBinding();
 const dependencies = {
-  storage: createResponseStorage(mongoose, { getMCPAppMessageBudget: db.getMCPAppMessageBudget }),
+  storage: createResponseStorage(mongoose, {
+    getDurableStorageConfig: db.getDurableStorageConfig,
+    getMCPAppMessageBudget: db.getMCPAppMessageBudget,
+  }),
   jobs: GenerationJobManager,
   publicBaseURL: process.env.DOMAIN_CLIENT,
   findUser: (userId) => db.findUser({ _id: userId }),
@@ -43,7 +46,6 @@ const dependencies = {
     }).then((result) => result.permissions),
   isPrincipalActive: db.isAgentTriggerPrincipalActive,
   getMessage: db.getMessage,
-  getConvoRetention: db.getConvoRetention,
   enqueue: producer.enqueue,
   isQueueReady: producer.isReady,
   signingSecret: () => process.env.JWT_SECRET,

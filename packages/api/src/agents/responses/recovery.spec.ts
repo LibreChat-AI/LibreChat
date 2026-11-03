@@ -1,7 +1,11 @@
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createResponseStorage,
+  createManagedMessageId,
+  createManagedConversationId,
+  responseReference,
   createModels,
   createMethods,
   tenantStorage,
@@ -12,14 +16,29 @@ import type {
   StoredResponseRecord,
   ResponseTerminalReceipt,
 } from '@librechat/data-schemas';
+import {
+  createResponseCompletion,
+  createResponseExecutionConfirmation,
+  createResponseExecutionRelease,
+} from './completion';
 import { createBackgroundResponseService, buildPendingBackgroundResponse } from './background';
+import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
+import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
+import { normalizeResponseTurnIntent } from './turnProjection';
+import { enrollAgentExecution } from '../remote/lifecycle';
 import { cleanupResponseCheckpoint } from './checkpoint';
-import { createResponseCompletion } from './completion';
 import { createResponseRetirement } from './retirement';
 
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
+let jobs: GenerationJobManagerClass;
+const settings = {
+  type: 'mongo',
+  checkpointCollectionName: 'recovery_checkpoints',
+  checkpointWritesCollectionName: 'recovery_writes',
+};
 const owner = { userId: new mongoose.Types.ObjectId().toString(), tenantId: 'completion-tenant' };
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
 beforeAll(async () => {
@@ -32,6 +51,12 @@ beforeAll(async () => {
   storage = createResponseStorage(mongoose);
 });
 beforeEach(async () => {
+  jobs = new GenerationJobManagerClass();
+  jobs.configure({
+    jobStore: new InMemoryJobStore(),
+    eventTransport: new InMemoryEventTransport(),
+  });
+  jobs.initialize();
   await runAsSystem(async () => {
     await mongoose.models.StoredResponse.deleteMany({});
     await mongoose.models.ResponseScope?.deleteMany({});
@@ -46,26 +71,27 @@ beforeEach(async () => {
     });
   });
 });
-afterEach(() => {
+afterEach(async () => {
   jest.restoreAllMocks();
+  await jobs.destroy();
 });
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo?.stop();
 });
 
-async function setup(): Promise<{
+async function setup(checkpointSettings = settings): Promise<{
   record: StoredResponseRecord;
   receipt: ResponseTerminalReceipt;
 }> {
   const reserved = await storage.reserve({
     ...owner,
-    responseId: 'resp_completion',
+    responseId: createManagedMessageId(),
     requestKey: 'original-request',
     fingerprint: 'original',
     agentId: 'agent',
     sourceKeyId: 'original-key',
-    conversationId: 'conversation',
+    conversationId: createManagedConversationId(),
     parentMessageId: 'root',
     requestJSON: JSON.stringify({
       model: 'agent',
@@ -79,12 +105,53 @@ async function setup(): Promise<{
     ...buildPendingBackgroundResponse(reserved.record),
     status: 'in_progress' as const,
   };
-  const running = await storage.publish(owner, reserved.record.responseId, 0, {
-    status: 'in_progress',
-    generationCreatedAt: 10,
-    responseJSON: JSON.stringify(initial),
+  const execution = await enrollAgentExecution(
+    {
+      runId: reserved.record.responseId,
+      userId: owner.userId,
+      conversationId: reserved.record.conversationId,
+      agentId: 'agent',
+      protocol: 'responses',
+      responseRoot: reserved.record.storageTarget,
+      retainTerminalPersistence: true,
+      captureTerminalOutcome: true,
+      isPrincipalActive: async () => true,
+    },
+    { manager: jobs },
+  );
+  const running = await storage.enrollExecution(
+    reserved.record,
+    execution.getEnrollmentIdentity(),
+    JSON.stringify(initial),
+  );
+  if (!running.ok) throw new Error('Root enrollment failed');
+  await execution.beginProviderExecution();
+  const binding = execution.getPersistenceIdentity();
+  if (!(await storage.bindExecution(running.record, binding)))
+    throw new Error('Provider binding failed');
+  const prepared = await storage.prepareConversation(running.record, binding, {
+    context: { userId: owner.userId },
+    conversation: {
+      conversationId: reserved.record.conversationId,
+      agent_id: 'agent',
+      endpoint: 'agents',
+    },
+    initialAgentId: 'agent',
   });
-  if (!running.ok) throw new Error('Publication failed');
+  if (!prepared.ok) throw new Error('Conversation preparation failed');
+  const namespace = (await jobs.getJob(reserved.record.responseId))!.metadata.checkpointNamespace!;
+  const writer = storage.createCheckpointWriter(responseReference(prepared.record), {
+    ...binding,
+    writerId: randomUUID(),
+    namespace,
+    configJSON: JSON.stringify(checkpointSettings),
+  });
+  if (!(await writer.open()) || !(await writer.settle()))
+    throw new Error('Checkpoint proof failed');
+  await execution.settle();
+  if (!(await storage.settleExecution(responseReference(prepared.record), binding, 'complete')))
+    throw new Error('Provider settlement failed');
+  const record = (await storage.read(owner, reserved.record.responseId))!;
   const response = {
     ...initial,
     status: 'completed' as const,
@@ -98,17 +165,31 @@ async function setup(): Promise<{
       },
     ],
   };
-  return {
-    record: running.record,
-    receipt: {
-      generationCreatedAt: 10,
-      providerExecutionId: 'provider',
-      ownerId: 'winning-worker',
-      status: 'completed',
-      responseJSON: JSON.stringify(response),
-      checkpointNamespace: 'owned-scope',
-    },
+  const inputId = randomUUID();
+  const receipt: ResponseTerminalReceipt = {
+    ...binding,
+    status: 'completed',
+    responseJSON: JSON.stringify(response),
+    checkpointNamespace: namespace,
+    checkpointConfigJSON: JSON.stringify(checkpointSettings),
+    turnJSON: normalizeResponseTurnIntent(
+      record,
+      JSON.stringify({
+        version: 1,
+        context: { userId: owner.userId },
+        conversation: {
+          conversationId: record.conversationId,
+          agent_id: 'agent',
+          endpoint: 'agents',
+        },
+        initialAgentId: 'agent',
+        inputs: [{ index: 0, messageId: inputId, parentMessageId: 'root' }],
+        parentMessageId: inputId,
+        trace: {},
+      }),
+    ),
   };
+  return { record, receipt };
 }
 
 it('retains the exact completed answer across cleanup failure and a fresh recovery instance', () =>
@@ -117,8 +198,8 @@ it('retains the exact completed answer across cleanup failure and a fresh recove
     const cleanup = jest.fn(async () => {});
     cleanup.mockRejectedValueOnce(new Error('checkpoint unavailable'));
     const completion = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage,
       cleanupCheckpoint: cleanup,
     });
@@ -126,11 +207,11 @@ it('retains the exact completed answer across cleanup failure and a fresh recove
       'checkpoint unavailable',
     );
     const pending = (await storage.read(owner, record.responseId))!;
-    expect(pending).toMatchObject({ status: 'in_progress', pendingTerminal: receipt });
+    expect(pending).toMatchObject({ status: 'materializing', pendingTerminal: receipt });
     expect(pending.responseJSON).not.toContain('saved final answer');
     const restarted = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage: createResponseStorage(mongoose),
       cleanupCheckpoint: cleanup,
     });
@@ -146,14 +227,14 @@ it('retains the exact completed answer across cleanup failure and a fresh recove
 
 it('recovers initial-execution checkpoint cleanup without a review record or current deployment settings', () =>
   scoped(async () => {
-    const { record, receipt } = await setup();
-    const namespace = createCheckpointNamespace(owner.userId, owner.tenantId);
-    const sibling = createCheckpointNamespace(owner.userId, owner.tenantId);
     const settings = {
       type: 'mongo',
       checkpointCollectionName: 'initial_receipt_checkpoints',
       checkpointWritesCollectionName: 'initial_receipt_writes',
     };
+    const { record, receipt } = await setup(settings);
+    const namespace = receipt.checkpointNamespace!;
+    const sibling = createCheckpointNamespace(owner.userId, owner.tenantId);
     const savedReceipt = {
       ...receipt,
       checkpointNamespace: namespace,
@@ -175,8 +256,8 @@ it('recovers initial-execution checkpoint cleanup without a review record or cur
       );
     }
     const unavailable = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage,
       cleanupCheckpoint: async () => {
         throw new Error('checkpoint storage temporarily unavailable');
@@ -189,8 +270,8 @@ it('recovers initial-execution checkpoint cleanup without a review record or cur
     expect(pending.review).toBeUndefined();
     expect(pending.pendingTerminal).toEqual(savedReceipt);
     const restarted = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage: createResponseStorage(mongoose),
       cleanupCheckpoint: cleanupResponseCheckpoint,
     });
@@ -207,8 +288,8 @@ it('retries terminal publication without losing the answer after cleanup already
     const { record, receipt } = await setup();
     const cleanup = jest.fn(async () => {});
     const completion = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage,
       cleanupCheckpoint: cleanup,
     });
@@ -232,10 +313,10 @@ it('reconciles a lost finish acknowledgement and retries execution release on a 
       await finish(...args);
       throw new Error('finish acknowledgement lost');
     });
-    const release = jest.fn(async () => {});
+    const release = jest.fn(createResponseExecutionRelease(jobs, storage));
     release.mockRejectedValueOnce(new Error('release transport unavailable'));
     const completion = createResponseCompletion({
-      confirmExecution: async () => null,
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
       storage,
       cleanupCheckpoint: async () => {},
       releaseExecution: release,
@@ -259,8 +340,8 @@ it('reconciles a committed terminal stage whose acknowledgement was lost', () =>
       throw new Error('lost stage acknowledgement');
     });
     const completion = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage,
       cleanupCheckpoint: async () => {},
     });
@@ -277,8 +358,8 @@ it('accepts a lost stage acknowledgement after another completion owner already 
     const restarted = createResponseCompletion({
       storage,
       cleanupCheckpoint: async () => {},
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
     });
     const stage = storage.stageTerminal.bind(storage);
     jest.spyOn(storage, 'stageTerminal').mockImplementationOnce(async (...args) => {
@@ -298,19 +379,22 @@ it.each([false, true])(
   (lateStop) =>
     scoped(async () => {
       const { record, receipt } = await setup();
-      const projected = await storage.publish(owner, record.responseId, record.revision, {
-        status: 'in_progress',
-        responseJSON: JSON.stringify({
-          ...JSON.parse(record.responseJSON!),
-          recovery: 'execution_state_unavailable',
-        }),
-      });
+      const projected = await storage.publishProgress(
+        { ...(await storage.read(owner, record.responseId))!, revision: record.revision },
+        {
+          status: 'in_progress',
+          responseJSON: JSON.stringify({
+            ...JSON.parse(record.responseJSON!),
+            recovery: 'execution_state_unavailable',
+          }),
+        },
+      );
       expect(projected.ok).toBe(true);
       if (lateStop) await storage.requestCancellation(owner, record.responseId, Date.now());
       const stage = jest.spyOn(storage, 'stageTerminal');
       const completion = createResponseCompletion({
-        confirmExecution: async () => null,
-        releaseExecution: async () => {},
+        confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+        releaseExecution: createResponseExecutionRelease(jobs, storage),
         storage,
         cleanupCheckpoint: async () => {},
       });
@@ -323,7 +407,13 @@ it.each([false, true])(
 it('does not replace another terminal receipt after a staging conflict', () =>
   scoped(async () => {
     const { record, receipt } = await setup();
-    const competing = { ...receipt, ownerId: 'another-worker' };
+    const competing = {
+      ...receipt,
+      responseJSON: JSON.stringify({
+        ...JSON.parse(receipt.responseJSON),
+        metadata: { winner: 'other-terminal-observation' },
+      }),
+    };
     expect(
       (
         await storage.stageTerminal(
@@ -337,8 +427,8 @@ it('does not replace another terminal receipt after a staging conflict', () =>
     const stage = jest.spyOn(storage, 'stageTerminal');
     const cleanup = jest.fn(async () => {});
     const completion = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage,
       cleanupCheckpoint: cleanup,
     });
@@ -355,8 +445,8 @@ it('does not retry a receipt from a different generation', () =>
     const { record, receipt } = await setup();
     const stage = jest.spyOn(storage, 'stageTerminal');
     const completion = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage,
       cleanupCheckpoint: async () => {},
     });
@@ -370,15 +460,66 @@ it('does not retry a receipt from a different generation', () =>
     expect((await storage.read(owner, record.responseId))?.pendingTerminal).toBeUndefined();
   }));
 
-it.each(['provider', 'another-provider'])(
+it.each(['same', 'next'] as const)(
   'does not retry across a new review checkpoint owned by %s',
-  (providerExecutionId) =>
+  (segment) =>
     scoped(async () => {
       const { record, receipt } = await setup();
+      let current = record;
+      const providerExecutionId =
+        segment === 'same' ? receipt.providerExecutionId : 'next-provider';
+      if (segment === 'next') {
+        const paused = await storage.publishReview(
+          owner,
+          record.responseId,
+          { execution: current },
+          receipt.generationCreatedAt,
+          {
+            actionId: 'prior-action',
+            providerExecutionId: receipt.providerExecutionId,
+            expiresAt: Date.now() + 60_000,
+            partialResponseJSON: record.responseJSON!,
+          },
+          record.responseJSON!,
+        );
+        if (!paused.ok) throw new Error('Review preparation failed');
+        const decision = await storage.reserveResume(
+          owner,
+          record.responseId,
+          {
+            generationCreatedAt: receipt.generationCreatedAt,
+            intentId: 'next-intent',
+            actionId: 'prior-action',
+            previousProviderExecutionId: receipt.providerExecutionId,
+            providerExecutionId,
+            fingerprint: 'next-decision',
+            resolutionJSON: '{}',
+          },
+          Date.now(),
+        );
+        if (!decision.ok) throw new Error('Resume reservation failed');
+        const admitted = await storage.admitResume(
+          owner,
+          record.responseId,
+          'next-intent',
+          receipt.generationCreatedAt,
+          providerExecutionId,
+          record.responseJSON!,
+          Date.now(),
+        );
+        if (!admitted.ok) throw new Error('Resume admission failed');
+        const enrolled = await storage.enrollExecution(
+          admitted.record,
+          { generationCreatedAt: receipt.generationCreatedAt, providerExecutionId },
+          record.responseJSON!,
+        );
+        if (!enrolled.ok) throw new Error('Resume enrollment failed');
+        current = enrolled.record;
+      }
       const reviewed = await storage.publishReview(
         owner,
         record.responseId,
-        { execution: (await storage.read(owner, record.responseId))! },
+        { execution: current },
         receipt.generationCreatedAt,
         {
           actionId: 'new-action',
@@ -391,8 +532,8 @@ it.each(['provider', 'another-provider'])(
       expect(reviewed.ok).toBe(true);
       const stage = jest.spyOn(storage, 'stageTerminal');
       const completion = createResponseCompletion({
-        confirmExecution: async () => null,
-        releaseExecution: async () => {},
+        confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+        releaseExecution: createResponseExecutionRelease(jobs, storage),
         storage,
         cleanupCheckpoint: async () => {},
       });
@@ -454,8 +595,8 @@ it.each([false, true])(
         ).toBe(true);
       const stage = jest.spyOn(storage, 'stageTerminal');
       const completion = createResponseCompletion({
-        confirmExecution: async () => null,
-        releaseExecution: async () => {},
+        confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+        releaseExecution: createResponseExecutionRelease(jobs, storage),
         storage,
         cleanupCheckpoint: async () => {},
       });
@@ -477,8 +618,8 @@ it('lets authorized polling recover a saved result without queueing or observing
       receipt,
     );
     const completion = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage,
       cleanupCheckpoint: async () => {},
     });
@@ -516,8 +657,8 @@ it('does not let a late Stop overwrite the saved result or require a transient j
       receipt,
     );
     const completion = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage,
       cleanupCheckpoint: async () => {},
     });
@@ -585,30 +726,47 @@ it('converges concurrent finishers on one immutable canonical result', () =>
     );
     if (!staged.ok) throw new Error('Stage failed');
     const completion = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage,
       cleanupCheckpoint: async () => {},
     });
     const results = await Promise.all(
       Array.from({ length: 12 }, () => completion.finish(staged.record)),
     );
+    for (const result of results) {
+      expect(['materializing', 'completed']).toContain(result.status);
+      if (result.status === 'completed') expect(result.responseJSON).toBe(receipt.responseJSON);
+      else expect(result.responseJSON).not.toContain('saved final answer');
+    }
+    const converged = await completion.finish((await storage.read(owner, record.responseId))!);
+    expect(converged).toMatchObject({ status: 'completed', responseJSON: receipt.responseJSON });
+    const revision = converged.revision;
+    const terminalReads = await Promise.all(
+      Array.from({ length: 12 }, () => completion.finish(converged)),
+    );
     expect(
-      results.every(
+      terminalReads.every(
         (result) => result.status === 'completed' && result.responseJSON === receipt.responseJSON,
       ),
     ).toBe(true);
-    expect((await storage.read(owner, record.responseId))?.revision).toBe(
-      staged.record.revision + 1,
-    );
+    expect((await storage.read(owner, record.responseId))?.revision).toBe(revision);
+    expect(
+      await mongoose.models.Message.countDocuments({ conversationId: record.conversationId }),
+    ).toBe(2);
+    const conversation = await mongoose.models.Conversation.findOne({
+      conversationId: record.conversationId,
+    }).lean<{ messages: unknown[] }>();
+    expect(conversation?.messages).toHaveLength(2);
+    expect(await storage.readExecutionProof(record)).toMatchObject({ releaseAcknowledged: true });
   }));
 
 it('rejects invalid receipt identity before it can poison the durable journal', () =>
   scoped(async () => {
     const { record, receipt } = await setup();
     const completion = createResponseCompletion({
-      confirmExecution: async () => null,
-      releaseExecution: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+      releaseExecution: createResponseExecutionRelease(jobs, storage),
       storage,
       cleanupCheckpoint: async () => {},
     });
@@ -627,13 +785,16 @@ it.each(['owner', 'conversation'] as const)(
     scoped(async () => {
       const { record, receipt } = await setup();
       const db = createMethods(mongoose);
-      if (kind === 'owner') await db.deleteUserById(owner.userId);
-      else await db.deleteConvos(owner.userId, { conversationId: record.conversationId });
+      await expect(
+        kind === 'owner'
+          ? db.deleteUserById(owner.userId)
+          : db.deleteConvos(owner.userId, { conversationId: record.conversationId }),
+      ).rejects.toMatchObject({ code: 'response_erasure_pending' });
       expect(await storage.read(owner, record.responseId)).toBeNull();
       const cleanup = jest.fn(async () => {});
-      const release = jest.fn(async () => {});
+      const release = jest.fn(createResponseExecutionRelease(jobs, storage));
       const completion = createResponseCompletion({
-        confirmExecution: async () => null,
+        confirmExecution: createResponseExecutionConfirmation(storage, jobs),
         storage,
         cleanupCheckpoint: cleanup,
         releaseExecution: release,
@@ -669,8 +830,8 @@ it.each(['owner', 'conversation'] as const)(
         receipt,
       );
       const completion = createResponseCompletion({
-        confirmExecution: async () => null,
-        releaseExecution: async () => {},
+        confirmExecution: createResponseExecutionConfirmation(storage, jobs),
+        releaseExecution: createResponseExecutionRelease(jobs, storage),
         storage,
         cleanupCheckpoint: async () => {},
       });
@@ -688,8 +849,11 @@ it.each(['owner', 'conversation'] as const)(
         cancel: async () => {},
         recoverTerminal: async (retained) => {
           const db = createMethods(mongoose);
-          if (kind === 'owner') await db.deleteUserById(owner.userId);
-          else await db.deleteConvos(owner.userId, { conversationId: record.conversationId });
+          await expect(
+            kind === 'owner'
+              ? db.deleteUserById(owner.userId)
+              : db.deleteConvos(owner.userId, { conversationId: record.conversationId }),
+          ).rejects.toMatchObject({ code: 'response_erasure_pending' });
           return completion.finish(retained);
         },
       });
@@ -702,22 +866,11 @@ it.each(['owner', 'conversation'] as const)(
 );
 
 it.each([false, true])(
-  'rejects an unfenced new-format preparation readback (lostAck=%s)',
+  'rejects a prepared receipt whose private phase changed (lostAck=%s)',
   (lostAck) =>
     scoped(async () => {
       const { record, receipt } = await setup();
-      const candidate = {
-        ...receipt,
-        turnJSON: JSON.stringify({
-          version: 1,
-          context: { userId: owner.userId },
-          conversation: { conversationId: record.conversationId, agent_id: record.agentId },
-          inputs: [{ index: 0, messageId: 'input-one', parentMessageId: 'root' }],
-          parentMessageId: 'input-one',
-          initialAgentId: record.agentId,
-          trace: {},
-        }),
-      };
+      const candidate = receipt;
       const prepared = await storage.prepareTerminal(
         owner,
         record.responseId,
@@ -725,7 +878,7 @@ it.each([false, true])(
         candidate,
       );
       if (!prepared.ok) throw new Error('Preparation failed');
-      // An unsafe pre-release receipt is not automatically adopted into the fenced protocol.
+      // Receipt bytes cannot replace the private phase that fences their publication.
       await mongoose.models.StoredResponse.updateOne(
         { responseId: record.responseId },
         {
@@ -738,7 +891,7 @@ it.each([false, true])(
         storage,
         cleanupCheckpoint: async () => {},
         confirmExecution: async () => 'complete',
-        releaseExecution: async () => {},
+        releaseExecution: createResponseExecutionRelease(jobs, storage),
       });
       await expect(completion.prepare(record, candidate)).rejects.toThrow(
         lostAck ? 'ack unavailable' : 'Response terminal preparation conflicted',

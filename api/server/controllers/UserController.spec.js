@@ -76,6 +76,8 @@ jest.mock('~/models', () => {
     deleteToolCalls: jest.fn().mockResolvedValue(undefined),
     deleteUserAgents: jest.fn().mockResolvedValue(undefined),
     deleteTokens: jest.fn().mockResolvedValue(undefined),
+    prepareUserResponseErasure: jest.fn(async () => undefined),
+    eraseUserResponses: jest.fn(async () => undefined),
     deleteConvos: jest.fn().mockResolvedValue(undefined),
     deleteFiles: jest.fn().mockResolvedValue(undefined),
     updateUser: jest.fn(),
@@ -123,11 +125,13 @@ jest.mock('@librechat/api', () => ({
   },
   deleteAgentCheckpoints: (...args) => mockDeleteAgentCheckpoints(...args),
   deleteOwnedAgentCheckpoints: (...args) => mockDeleteOwnedAgentCheckpoints(...args),
-  openCheckpointDeletion: jest.fn(async (userId, tenantId, _root, cfg) => ({
-    remember: jest.fn(async () => undefined),
-    cleanup: async () => mockDeleteOwnedAgentCheckpoints(userId, tenantId, undefined, cfg),
-    acknowledge: jest.fn(async () => undefined),
-    conversationIds: () => [],
+  createCheckpointDeletionService: jest.fn(() => ({
+    openCheckpointDeletion: jest.fn(async (userId, tenantId, _root, cfg) => ({
+      remember: jest.fn(async () => undefined),
+      cleanup: async () => mockDeleteOwnedAgentCheckpoints(userId, tenantId, undefined, cfg),
+      acknowledge: jest.fn(async () => undefined),
+      conversationIds: () => [],
+    })),
   })),
 }));
 
@@ -1049,6 +1053,24 @@ describe('deleteUserController', () => {
 
     const group = await Group.findOne({ name: 'Dupes' }).lean();
     expect(group.memberIds).toEqual(['other']);
+  });
+
+  it('reports pending erasure without deleting the account or leaving the trigger fence held', async () => {
+    const { ResponseErasurePendingError } = require('@librechat/data-schemas');
+    const userId = new mongoose.Types.ObjectId();
+    deleteConvos.mockRejectedValueOnce(new ResponseErasurePendingError());
+    await deleteUserController(
+      { user: { id: String(userId), _id: userId, email: 'pending@test.com' } },
+      mockRes,
+    );
+    expect(mockRes.status).toHaveBeenCalledWith(503);
+    expect(mockRes.json).toHaveBeenCalledWith({
+      code: 'response_erasure_pending',
+      message: 'Deletion is still finishing. Please try again shortly.',
+    });
+    expect(deleteUserById).not.toHaveBeenCalled();
+    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(String(userId), expect.any(Date));
+    expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(String(userId), expect.any(Date));
   });
 
   it('fails closed when conversation deletion fails', async () => {

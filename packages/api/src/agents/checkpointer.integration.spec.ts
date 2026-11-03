@@ -15,10 +15,12 @@ import {
   LazyMongoSaver,
   CheckpointTooLargeError,
   LIBRECHAT_CHECKPOINT_NAMESPACE_KEY,
+  LIBRECHAT_CHECKPOINT_OWNER_KEY,
   LIBRECHAT_EVENT_ACTOR_INVOCATION_KEY,
   setupCheckpointIndexes,
   __resetCheckpointerForTests,
 } from './checkpointer';
+import { createCheckpointWriteWitness } from './checkpoints/witness';
 import { createCheckpointNamespace } from '../stream/checkpoints';
 
 /**
@@ -93,6 +95,23 @@ afterEach(async () => {
 });
 
 describe('checkpointer (mongodb-memory-server integration)', () => {
+  it('isolates a witnessed saver without replacing the shared cached instance', async () => {
+    const shared = await getAgentCheckpointer(MONGO_CFG);
+    const storage = { open: jest.fn(async () => {}), settle: jest.fn(async () => {}) };
+    const witness = createCheckpointWriteWitness(storage);
+    const scoped = await getAgentCheckpointer(MONGO_CFG, { writeWitness: witness });
+    expect(scoped).toBeDefined();
+    expect(scoped).not.toBe(shared);
+    expect(await getAgentCheckpointer(MONGO_CFG)).toBe(shared);
+    await seedInterruptCheckpoint(scoped!, 'witnessed-thread');
+    expect(await witness.close()).toBe('settled');
+    expect(storage.settle).toHaveBeenCalledTimes(1);
+    await expect(seedInterruptCheckpoint(scoped!, 'late-thread')).rejects.toThrow(
+      'Checkpoint writer is closed',
+    );
+    await expect(seedInterruptCheckpoint(shared!, 'ordinary-thread')).resolves.toBeDefined();
+    expect(await getAgentCheckpointer(MONGO_CFG)).toBe(shared);
+  });
   it('builds a real MongoDBSaver when Mongo is connected', async () => {
     const saver = await getAgentCheckpointer(MONGO_CFG);
     expect(saver).toBeDefined();
@@ -725,6 +744,52 @@ describe('checkpointer (mongodb-memory-server integration)', () => {
 });
 
 describe('LazyMongoSaver (lazy persistence — mongodb-memory-server)', () => {
+  it.each([false, true])(
+    'tracks checkpoint commands including buffered bookkeeping (owned: %s)',
+    async (owned) => {
+      const storage = { open: jest.fn(async () => {}), settle: jest.fn(async () => {}) };
+      const witness = createCheckpointWriteWitness(storage);
+      const tracked = jest.spyOn(witness, 'track');
+      const saver = new LazyMongoSaver({
+        client: mongoose.connection.getClient() as unknown as ConstructorParameters<
+          typeof MongoDBSaver
+        >[0]['client'],
+        dbName: mongoose.connection.db!.databaseName,
+        checkpointCollectionName: 'witness_checkpoints',
+        checkpointWritesCollectionName: 'witness_writes',
+        writeWitness: witness,
+      });
+      await saver.setup();
+      const args = putArgs('tracked-siblings');
+      const config = {
+        ...args.config,
+        configurable: {
+          ...args.config.configurable,
+          ...(owned ? { [LIBRECHAT_CHECKPOINT_OWNER_KEY]: `lcg:v2:${'a'.repeat(64)}:` } : {}),
+        },
+      };
+      const { checkpoint, metadata } = args;
+      const writeConfig = {
+        configurable: { ...config.configurable, checkpoint_id: checkpoint.id },
+      };
+      await saver.putWrites(writeConfig, [['__no_writes__', null]], 'completed-sibling');
+      expect(tracked).not.toHaveBeenCalled();
+      await saver.putWrites(writeConfig, [[INTERRUPT, 'approve?']], 'paused-sibling');
+      await saver.put(config, checkpoint, metadata);
+      expect(tracked).toHaveBeenCalledTimes(owned ? 6 : 3);
+      expect(await mongoose.connection.db!.collection('witness_checkpoints').countDocuments()).toBe(
+        1,
+      );
+      expect(await mongoose.connection.db!.collection('witness_writes').countDocuments()).toBe(2);
+      expect(await witness.close()).toBe('settled');
+      expect(storage.open).toHaveBeenCalledTimes(1);
+      expect(storage.settle).toHaveBeenCalledTimes(1);
+      await expect(saver.putWrites(writeConfig, [[INTERRUPT, 'late']], 'late')).rejects.toThrow(
+        'Checkpoint writer is closed',
+      );
+      expect(await mongoose.connection.db!.collection('witness_writes').countDocuments()).toBe(2);
+    },
+  );
   it('does NOT persist a clean-exit checkpoint (a bare put with no pending writes)', async () => {
     const saver = await getAgentCheckpointer(MONGO_CFG);
     const threadId = `convo-${new mongoose.Types.ObjectId().toString()}`;

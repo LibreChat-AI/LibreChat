@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { createManagedMessageId, isManagedMessageId } from '@librechat/data-schemas';
 import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { ResponsesRunEnvelope, JsonValue } from '../envelope';
 import type { ResponseCompletionRecord } from './completion';
@@ -12,7 +13,7 @@ import { publishResponseDispatch } from './outbox';
 
 export type BackgroundResponseResult =
   | { ok: true; response: Response }
-  | { ok: false; status: 400 | 403 | 404 | 409; code: string };
+  | { ok: false; status: 400 | 403 | 404 | 409 | 413; code: string };
 
 /** The host supplies the existing durable queue and Responses execution runtime. */
 export interface BackgroundResponseDependencies {
@@ -24,6 +25,7 @@ export interface BackgroundResponseDependencies {
     previousResponseId?: string,
   ) => Promise<{
     conversationId: string;
+    conversationTarget?: StoredResponseRecord['conversationTarget'];
     parentMessageId: string;
     expiredAt?: Date;
     isTemporary?: boolean;
@@ -57,7 +59,9 @@ export function canonicalResponseJSON(request: object): string {
   });
 }
 
-function terminal(status: StoredResponseRecord['status']) {
+function terminal(
+  status: StoredResponseRecord['status'],
+): status is 'completed' | 'failed' | 'incomplete' | 'cancelled' {
   return ['completed', 'failed', 'incomplete', 'cancelled'].includes(status);
 }
 
@@ -105,7 +109,11 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
   }
 
   function hasTerminalWork(record: StoredResponseRecord): boolean {
-    return record.preparedTerminal != null || hasTerminalResult(record);
+    return (
+      record.persistenceFailure != null ||
+      record.preparedTerminal != null ||
+      hasTerminalResult(record)
+    );
   }
 
   async function canonicalView(record: StoredResponseRecord): Promise<Response | null> {
@@ -139,7 +147,7 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
         observed.generationCreatedAt !== record.generationCreatedAt)
     )
       return freshView(record);
-    const result = await deps.storage.publish(record, record.responseId, record.revision, {
+    const result = await deps.storage.publishProgress(record, {
       status:
         response.required_action || (record.status === 'requires_action' && record.review != null)
           ? 'requires_action'
@@ -187,19 +195,38 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
         return { ok: false, status: 403, code: 'permission_denied' };
       const normalized = { ...request, store: true };
       const requestJSON = canonicalResponseJSON(normalized);
-      const continuation = await deps.resolveContinuation(owner, request.previous_response_id);
+      const previousId = request.previous_response_id;
+      const managedPrevious = previousId && isManagedMessageId(previousId);
+      const previous = managedPrevious
+        ? await deps.storage.readContinuation(owner, previousId)
+        : null;
+      if (managedPrevious && !previous)
+        return { ok: false, status: 409, code: 'response_continuation_unavailable' };
+      const continuation = await deps.resolveContinuation(owner, previousId);
+      if (
+        previous &&
+        (continuation.conversationId !== previous.conversationId ||
+          continuation.parentMessageId !== previous.responseId ||
+          continuation.conversationTarget?.id !== previous.conversationTarget?.id)
+      )
+        return { ok: false, status: 409, code: 'response_continuation_unavailable' };
       const result = await deps.storage.reserve({
         ...owner,
         ...continuation,
         agentId: request.model,
         ...(sourceKeyId == null ? {} : { sourceKeyId }),
-        responseId: `resp_${randomUUID().replaceAll('-', '')}`,
+        responseId: createManagedMessageId(),
         requestKey: idempotencyKey ?? randomUUID(),
         fingerprint: createHash('sha256').update(requestJSON).digest('hex'),
         requestJSON,
         dispatch: true,
       });
-      if (!result.ok) return { ok: false, status: 409, code: result.code };
+      if (!result.ok)
+        return {
+          ok: false,
+          status: result.code === 'document_limit' ? 413 : 409,
+          code: result.code,
+        };
       let record = result.record;
       if (result.replayed && !(await deps.authorize(owner, record.agentId, record.sourceKeyId)))
         return { ok: false, status: 403, code: 'permission_denied' };

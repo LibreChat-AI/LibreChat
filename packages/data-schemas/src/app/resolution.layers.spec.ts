@@ -588,3 +588,26 @@ describe('Azure groups the merge does not resolve, as each layer and a write rep
     ).toEqual([]);
   });
 });
+
+it('keeps durable storage capacity deployment-wide across stored overrides and tombstones', async () => {
+  const yaml = { version: '1.3.0', durableStorage: { maxPendingTargetsPerScope: 2 } };
+  const layers = [
+    base({ durableStorage: { maxPendingTargetsPerScope: 4096 } }),
+    role({ durableStorage: { maxPendingTargetsPerScope: 1 } }),
+    group({}, ['durableStorage']),
+  ];
+  const configured = await AppService({ config: yaml });
+  const resolution = resolveConfigLayers(configured, layers);
+  expect(configured.durableStorage).toEqual({ maxPendingTargetsPerScope: 2 });
+  expect(resolution.merged.durableStorage).toEqual({ maxPendingTargetsPerScope: 2 });
+  expect(resolution.resolved.durableStorage).toEqual({ maxPendingTargetsPerScope: 2 });
+  expect(getIgnoredConfigOverrides(yaml, layers[2], layers.slice(0, 2), configured)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        path: 'durableStorage',
+        reason: 'deployment_only_path',
+        kind: 'tombstone',
+      }),
+    ]),
+  );
+});

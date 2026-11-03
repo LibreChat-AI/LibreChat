@@ -5,7 +5,11 @@ import { ResourceType, PrincipalType } from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
+  createResponseStorage,
+  createManagedMessageId,
+  createManagedConversationId,
   tenantStorage,
+  runAsSystem,
   createSkillDeletionPersistenceAdapter,
   logger,
 } from '@librechat/data-schemas';
@@ -14,6 +18,7 @@ import type { CheckpointDeletion } from '~/agents/checkpoints/deletion';
 import type { UserErasureDeps, MCPOAuthErasureHooks } from './erasure';
 import type { MCPOAuthTokens } from '~/mcp/oauth/types';
 import { MCPOAuthHandler, MCPTokenStorage, getMCPOAuthLeaseId } from '~/mcp/oauth';
+import { createCheckpointDeletionService } from '~/agents/checkpoints/deletion';
 import { deleteAllSharedLinksWithCleanup } from '~/shared-links/service';
 import { createSkillDeletionService } from '../skills/deletionService';
 import { deleteUserMCPServers, eraseUserData } from './erasure';
@@ -161,6 +166,57 @@ async function finishSkillCleanup(skillId: mongoose.Types.ObjectId) {
 }
 
 describe('eraseUserData', () => {
+  it('erases a preseed Response before actual checkpoint acknowledgement while retaining the account principal', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const userIdString = userId.toString();
+    const owner = { userId: userIdString, tenantId: 'erasure-tenant' };
+    await model('User').insertOne({
+      _id: userId,
+      tenantId: owner.tenantId,
+      email: 'erasure@example.test',
+    });
+    const storage = createResponseStorage(mongoose);
+    await tenantStorage.run(owner, async () => {
+      const reserved = await storage.reserve({
+        ...owner,
+        responseId: createManagedMessageId(),
+        conversationId: createManagedConversationId(),
+        requestKey: 'account-preseed',
+        fingerprint: 'account-preseed',
+        agentId: 'agent',
+        requestJSON: '{}',
+        parentMessageId: 'root',
+      });
+      if (!reserved.ok) throw new Error('Root reservation failed');
+      const { deps } = createDeps();
+      deps.openCheckpointDeletion = createCheckpointDeletionService(
+        methods.hasPendingResponseCheckpointCleanup,
+      ).openCheckpointDeletion;
+      const eraseResponses = deps.eraseUserResponses;
+      deps.eraseUserResponses = jest.fn(async (target) => {
+        expect(await model('User').findOne({ _id: userId })).not.toBeNull();
+        expect(
+          await storage.enrollExecution(
+            reserved.record,
+            {
+              generationCreatedAt: Date.now(),
+              providerExecutionId: 'late-account-writer',
+            },
+            '{}',
+          ),
+        ).toEqual({ ok: false, code: 'response_conflict' });
+        await eraseResponses(target);
+      });
+      await eraseUserData({ ...owner, checkpointer: { type: 'memory' } }, deps);
+      expect(deps.eraseUserResponses).toHaveBeenCalledWith(owner);
+      expect(await methods.hasPendingResponseCheckpointCleanup(owner)).toBe(false);
+      expect(await model('User').findOne({ _id: userId })).not.toBeNull();
+      expect(
+        await mongoose.connection.db!.collection('agent_checkpoint_deletions').countDocuments(),
+      ).toBe(0);
+    });
+  });
+
   it('clears skills, MCP servers, shared links, file objects and checkpoints', async () => {
     const userId = new mongoose.Types.ObjectId();
     const otherId = new mongoose.Types.ObjectId();
@@ -169,7 +225,9 @@ describe('eraseUserData', () => {
     const other = await seedUser(otherId);
     const { deps, checkpointDeletion, order } = createDeps();
 
-    await eraseUserData({ userId: user, tenantId: 'tenant-1', checkpointer: { ttl: 60 } }, deps);
+    await runAsSystem(async () =>
+      eraseUserData({ userId: user, tenantId: 'tenant-1', checkpointer: { ttl: 60 } }, deps),
+    );
 
     expect(deps.openCheckpointDeletion).toHaveBeenCalledWith(user, 'tenant-1', undefined, {
       ttl: 60,
@@ -279,7 +337,9 @@ describe('eraseUserData', () => {
       },
     );
 
-    await eraseUserData({ userId: userId.toString(), tenantId: 'tenant-1' }, deps);
+    await runAsSystem(async () =>
+      eraseUserData({ userId: userId.toString(), tenantId: 'tenant-1' }, deps),
+    );
 
     expect(calls).toEqual([
       { userId: userId.toString(), tenantId: 'tenant-1' },

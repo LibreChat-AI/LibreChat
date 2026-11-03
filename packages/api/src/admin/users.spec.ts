@@ -1,6 +1,6 @@
 import { Types } from 'mongoose';
-import { buildUserSearchFilter } from '@librechat/data-schemas';
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
+import { buildUserSearchFilter, ResponseErasurePendingError } from '@librechat/data-schemas';
 import type { IUser, UserDeleteResult } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types/http';
@@ -580,6 +580,28 @@ describe('createAdminUsersHandlers', () => {
       expect(deps.deleteUserById).not.toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserDeletion).toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserPurge).toHaveBeenCalled();
+    });
+
+    it('keeps the account retryable while response cleanup is pending', async () => {
+      jest.mocked(eraseUserData).mockRejectedValueOnce(new ResponseErasurePendingError());
+      const deps = createDeps();
+      const { req, res, status, json } = createReqRes({ params: { id: validUserId } });
+
+      await createAdminUsersHandlers(deps).deleteUser(req, res);
+
+      expect(status).toHaveBeenCalledWith(503);
+      expect(json).toHaveBeenCalledWith({
+        code: 'response_erasure_pending',
+        message: 'Deletion is still finishing. Please try again shortly.',
+      });
+      expect(deps.deleteUserById).not.toHaveBeenCalled();
+      expect(deps.deleteConfig).not.toHaveBeenCalled();
+      const token = jest.mocked(deps.quiesceUserSchedules).mock.calls[0][1];
+      expect(deps.restoreUserSchedulesFromDeletion).toHaveBeenCalledWith(validUserId, token);
+      expect(deps.cancelAgentTriggerUserPurge).toHaveBeenCalled();
+      expect(
+        jest.mocked(deps.restoreUserSchedulesFromDeletion).mock.invocationCallOrder[0],
+      ).toBeLessThan(jest.mocked(deps.cancelAgentTriggerUserDeletion).mock.invocationCallOrder[0]);
     });
 
     it('suspends schedules before erasing and restores them when the deletion fails', async () => {

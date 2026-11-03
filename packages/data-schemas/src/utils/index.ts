@@ -15,3 +15,5 @@ export { isFieldNameRejection } from './fields';
 export type { IndexBuildOptions } from './retry';
 
 export { SERVER_AUTHORED_MESSAGE_FILTER, isServerAuthoredMessage } from './authored';
+export { checkpointOwnerNamespacePrefix } from './checkpoint';
+export { createManagedConversationId, createManagedMessageId, isManagedMessageId } from './managed';

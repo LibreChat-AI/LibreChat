@@ -11,8 +11,8 @@ import {
   getAgentTriggerIdempotencyKey,
   parseAgentTriggerEnvelope,
 } from '../triggers/envelope';
+import { responseRootBinding, responseTenantId, isResponseTenantId } from './scope';
 import { prepareAgentTriggerDelivery } from '../triggers/delivery';
-import { responseTenantId, isResponseTenantId } from './scope';
 import { AgentTriggerExecutionError } from '../triggers/host';
 
 export const BACKGROUND_RESPONSE_SOURCE = 'responses';
@@ -23,7 +23,8 @@ export function createResponseResumeEnvelope(record: StoredResponseRecord): Agen
   const intent = record.resume;
   if (!intent || record.generationCreatedAt == null || !isResponseTenantId(record.tenantId))
     throw new Error('Response resume intent is unavailable');
-  const identity = `${record.responseId}:resume:${intent.intentId}`;
+  const root = responseRootBinding(record);
+  const identity = `${record.responseId}:${root.responseRootId}:${root.responseRootIncarnation}:resume:${intent.intentId}`;
   return createAgentTriggerEnvelope({
     mode: 'fire',
     requestId: identity,
@@ -35,6 +36,7 @@ export function createResponseResumeEnvelope(record: StoredResponseRecord): Agen
     event: {
       id: intent.intentId,
       type: 'response.resume',
+      payload: root,
       occurredAt: intent.reservedAt,
       source: { id: record.responseId, type: BACKGROUND_RESPONSE_RESUME_SOURCE },
     },
@@ -119,10 +121,12 @@ export function createBackgroundResponseEnvelope(
 ): AgentTriggerEnvelope {
   if (!isResponseTenantId(record.tenantId))
     throw new Error('Response tenant authority unavailable');
+  const root = responseRootBinding(record);
+  const identity = `${record.responseId}:${root.responseRootId}:${root.responseRootIncarnation}`;
   return createAgentTriggerEnvelope({
     mode: 'fire',
-    requestId: record.responseId,
-    deliveryId: record.responseId,
+    requestId: identity,
+    deliveryId: identity,
     receivedAt: record.createdAt.getTime(),
     principal: { id: record.userId, tenantId: responseTenantId(record.tenantId) },
     target: { agentId: record.agentId },
@@ -130,6 +134,7 @@ export function createBackgroundResponseEnvelope(
     event: {
       id: record.responseId,
       type: 'response.create',
+      payload: root,
       occurredAt: record.createdAt.getTime(),
       source: { id: record.responseId, type: BACKGROUND_RESPONSE_SOURCE },
     },

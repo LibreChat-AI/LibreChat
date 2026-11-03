@@ -8,6 +8,7 @@ import {
   DEFAULT_CHECKPOINT_TTL_SECONDS,
   __resetCheckpointerForTests,
 } from './checkpointer';
+import { createCheckpointWriteWitness } from './checkpoints/witness';
 
 beforeEach(() => {
   __resetCheckpointerForTests();
@@ -69,6 +70,18 @@ describe('owner checkpoint cleanup', () => {
 });
 
 describe('getAgentCheckpointer', () => {
+  test('never substitutes memory for an explicitly witnessed durable writer', async () => {
+    const writeWitness = createCheckpointWriteWitness({
+      open: async () => {},
+      settle: async () => {},
+    });
+    await expect(getAgentCheckpointer({ type: 'memory' }, { writeWitness })).rejects.toThrow(
+      'Durable checkpoint storage is required',
+    );
+    await expect(getAgentCheckpointer(undefined, { writeWitness })).rejects.toThrow(
+      'Durable checkpoint storage is unavailable',
+    );
+  });
   test('returns undefined for the in-memory type (SDK MemorySaver fallback)', async () => {
     await expect(getAgentCheckpointer({ type: 'memory' })).resolves.toBeUndefined();
   });

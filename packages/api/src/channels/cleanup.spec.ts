@@ -6,6 +6,7 @@ import {
   createMethods,
   createChannelRunStorage,
   createResponseStorage,
+  createManagedMessageId,
   runAsSystem,
   tenantStorage,
 } from '@librechat/data-schemas';
@@ -566,7 +567,7 @@ it.each([false, true])(
     const responses = createResponseStorage(mongoose);
     const execution = prepared.execution!;
     const owner = { userId: prepared.principal.userId, tenantId };
-    const responseId = `resp_${prepared.runId}`;
+    const responseId = createManagedMessageId();
     const reservation = await scope(() =>
       responses.reserve({
         ...owner,
@@ -589,11 +590,19 @@ it.each([false, true])(
       }),
     );
     if (!reservation.ok) throw new Error('Reservation failed');
+    if (pending) {
+      const binding = { generationCreatedAt: 1234, providerExecutionId: 'cleanup-provider' };
+      const enrolled = await scope(() =>
+        responses.enrollExecution(reservation.record, binding, '{}'),
+      );
+      if (!enrolled.ok || !(await scope(() => responses.bindExecution(enrolled.record, binding))))
+        throw new Error('Fixture provider enrollment failed');
+    }
     await scope(() => storage.bindResponse(tenantId, fence, responseId, clock));
     await scope(() =>
       mongoose.models.StoredResponse.updateOne(
         { responseId },
-        { $set: { expiredAt: new Date(0), ...(pending ? { generationCreatedAt: 1234 } : {}) } },
+        { $set: { expiredAt: new Date(0) } },
       ),
     );
     const jobs = {

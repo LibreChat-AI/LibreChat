@@ -1,15 +1,27 @@
 import { isDeepStrictEqual } from 'node:util';
-import { sameResponseTerminalReceipt } from '@librechat/data-schemas';
+import {
+  responseReference,
+  sameResponseTerminalReceipt,
+  responseReceiptKey,
+} from '@librechat/data-schemas';
 import type {
   ResponseStorage,
+  ResponseExecutionBinding,
+  ResponsePersistenceFailure,
   StoredResponseRecord,
   ResponseTerminalReceipt,
   ResponseMutationResult,
   ResponseCleanupIdentity,
+  ResponseExecutionProof,
+  ResponsePausedCancellation,
 } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import type { ResponseCheckpointIdentity } from './checkpoint';
+import type { GenerationJob } from '~/types/stream';
+import { buildAggregatedResponse, createResponseAggregator } from './service';
+import { eraseResponseExecutionCheckpoint } from './checkpoint';
 import { projectCanonicalResponseTurn } from './turnProjection';
-import { responseTenantId } from './scope';
+import { matchesResponseJob, responseTenantId } from './scope';
 
 /** A retirement result carries cleanup authority only and must never render private output. */
 export interface ResponseCompletionRecord extends StoredResponseRecord {
@@ -17,6 +29,12 @@ export interface ResponseCompletionRecord extends StoredResponseRecord {
 }
 
 export interface ResponseCompletion {
+  fail(
+    record: StoredResponseRecord,
+    binding: ResponseExecutionBinding,
+    code: ResponsePersistenceFailure['code'],
+    receipt?: ResponseTerminalReceipt,
+  ): Promise<ResponseCompletionRecord>;
   prepare(
     record: StoredResponseRecord,
     receipt: ResponseTerminalReceipt,
@@ -30,7 +48,7 @@ export interface ResponseCompletion {
 
 export interface ResponseCompletionDependencies {
   storage: ResponseStorage;
-  cleanupCheckpoint: (record: StoredResponseRecord, namespace: string) => Promise<void>;
+  cleanupCheckpoint: (record: ResponseCheckpointIdentity, namespace: string) => Promise<void>;
   /** A prepared result is a proposal; only exact canonical drain permits its promotion. */
   confirmExecution: (
     record: StoredResponseRecord,
@@ -47,7 +65,7 @@ function terminal(record: StoredResponseRecord): boolean {
   return ['completed', 'failed', 'incomplete', 'cancelled'].includes(record.status);
 }
 
-type ExecutionReleaseIdentity = Pick<
+type ExecutionIdentity = Pick<
   StoredResponseRecord,
   | 'userId'
   | 'tenantId'
@@ -55,17 +73,20 @@ type ExecutionReleaseIdentity = Pick<
   | 'agentId'
   | 'conversationId'
   | 'generationCreatedAt'
-  | 'expiredAt'
-  | 'status'
+  | 'storageTarget'
 > & {
-  retirement?: ResponseCleanupIdentity['retirement'];
   resume?: Pick<NonNullable<StoredResponseRecord['resume']>, 'state' | 'providerExecutionId'>;
   review?: Pick<NonNullable<StoredResponseRecord['review']>, 'providerExecutionId'>;
 };
 
+type ExecutionReleaseIdentity = ExecutionIdentity &
+  Pick<StoredResponseRecord, 'status' | 'expiredAt'> & {
+    retirement?: ResponseCleanupIdentity['retirement'];
+  };
+
 async function readExecutionJob(
   jobs: Pick<GenerationJobManagerClass, 'getJob'>,
-  record: ExecutionReleaseIdentity,
+  record: ExecutionIdentity,
   receipt?: Pick<ResponseTerminalReceipt, 'providerExecutionId' | 'ownerId'>,
 ) {
   if (record.generationCreatedAt == null) return null;
@@ -77,13 +98,7 @@ async function readExecutionJob(
       ? record.resume.providerExecutionId
       : record.review?.providerExecutionId);
   if (
-    job.createdAt !== record.generationCreatedAt ||
-    job.metadata.userId !== record.userId ||
-    responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
-    job.metadata.agent_id !== record.agentId ||
-    job.metadata.endpoint !== 'responses' ||
-    job.metadata.responseMessageId !== record.responseId ||
-    job.metadata.conversationId !== record.conversationId ||
+    !matchesResponseJob(record, job) ||
     !job.metadata.providerExecutionId ||
     (expectedProvider != null && job.metadata.providerExecutionId !== expectedProvider) ||
     (receipt != null && job.metadata.providerExecutionOwnerId !== receipt.ownerId)
@@ -92,29 +107,78 @@ async function readExecutionJob(
   return { job, providerExecutionId: job.metadata.providerExecutionId };
 }
 
+/** A frozen Root distinguishes its actual paused writer from a selected unused successor. */
+export function matchesPausedCancellationJob(
+  record: ExecutionIdentity,
+  paused: Pick<ResponsePausedCancellation, 'selection' | 'execution'>,
+  job: GenerationJob,
+): boolean {
+  if (!matchesResponseJob(record, job)) return false;
+  if (job.metadata.providerExecutionId === paused.execution.providerExecutionId)
+    return (
+      job.metadata.providerExecutionOwnerId === paused.execution.ownerId &&
+      (job.metadata.providerExecutionStartedId == null ||
+        job.metadata.providerExecutionStartedId === paused.execution.providerExecutionId)
+    );
+  return (
+    paused.selection != null &&
+    job.metadata.providerExecutionId === paused.selection.providerExecutionId &&
+    job.metadata.providerExecutionStartedId == null &&
+    job.metadata.providerExecutionOwnerId == null
+  );
+}
+
+/** Recover a positive drain result only from a job bound to this physical root.
+ * An uncertain checkpoint remains pending even after provider drain is imported. */
+export async function readResponseExecutionProof(
+  storage: Pick<ResponseStorage, 'readExecutionProof' | 'settleExecution'>,
+  jobs: Pick<GenerationJobManagerClass, 'getJob'>,
+  record: ExecutionIdentity,
+  receipt?: Pick<ResponseTerminalReceipt, 'providerExecutionId' | 'ownerId'>,
+): Promise<ResponseExecutionProof | null> {
+  let proof = await storage.readExecutionProof(record);
+  if (!proof || (receipt && !proof.outcome)) {
+    const transient = await readExecutionJob(jobs, record, receipt);
+    const job = transient?.job;
+    if (!job || job.metadata.providerDrained !== true) return null;
+    const outcome = job.status;
+    if (outcome !== 'complete' && outcome !== 'error' && outcome !== 'aborted') return null;
+    const binding = {
+      generationCreatedAt: job.createdAt,
+      providerExecutionId: transient.providerExecutionId,
+      ...(job.metadata.providerExecutionOwnerId
+        ? { ownerId: job.metadata.providerExecutionOwnerId }
+        : {}),
+    };
+    if (!(await storage.settleExecution(responseReference(record), binding, outcome))) return null;
+    proof = await storage.readExecutionProof(record);
+  }
+  if (
+    proof &&
+    receipt &&
+    (proof.providerExecutionId !== receipt.providerExecutionId || proof.ownerId !== receipt.ownerId)
+  )
+    throw new Error('Response terminal execution identity changed');
+  return proof;
+}
+
 /** Candidate bytes and possession of a provider ID do not prove that execution drained. */
 export function createResponseExecutionConfirmation(
+  storage: Pick<ResponseStorage, 'readExecutionProof' | 'settleExecution'>,
   jobs: Pick<GenerationJobManagerClass, 'getJob'>,
 ): ResponseCompletionDependencies['confirmExecution'] {
   return async (record, receipt) => {
-    const proof = await readExecutionJob(jobs, record, receipt);
-    const job = proof?.job;
-    if (
-      !job ||
-      job.metadata.providerDrained !== true ||
-      job.status === 'running' ||
-      job.status === 'requires_action'
-    )
-      return null;
-    if (job.status !== 'complete' && job.status !== 'error' && job.status !== 'aborted')
-      throw new Error('Response terminal execution outcome is unavailable');
-    return job.status;
+    if (record.generationCreatedAt !== receipt.generationCreatedAt)
+      throw new Error('Response terminal execution identity changed');
+    const proof = await readResponseExecutionProof(storage, jobs, record, receipt);
+    return proof?.outcome ?? null;
   };
 }
 
 /** Release transient provider proof only after its canonical terminal result is durable. */
 export function createResponseExecutionRelease(
   jobs: Pick<GenerationJobManagerClass, 'getJob' | 'finishProviderTerminalPersistence'>,
+  storage: Pick<ResponseStorage, 'readReleaseAuthority' | 'acknowledgeExecutionRelease'>,
 ): (
   record: ExecutionReleaseIdentity,
   receipt?: Pick<ResponseTerminalReceipt, 'providerExecutionId' | 'ownerId'>,
@@ -126,22 +190,87 @@ export function createResponseExecutionRelease(
       !(record.expiredAt && record.expiredAt.getTime() <= Date.now())
     )
       throw new Error('Response terminal publication is unavailable');
-    if (record.generationCreatedAt == null) return;
-    const proof = await readExecutionJob(jobs, record, receipt);
-    if (!proof) return;
-    const { job, providerExecutionId } = proof;
+    const authority = await storage.readReleaseAuthority(record);
+    if (!authority) throw new Error('Response durable release authority is unavailable');
+    if (authority.kind === 'paused') {
+      const { proof, selection } = authority;
+      if (proof.releaseAcknowledged) return;
+      const job = await jobs.getJob(record.responseId);
+      if (job) {
+        if (
+          !matchesPausedCancellationJob(record, { selection, execution: proof }, job) ||
+          !['complete', 'error', 'aborted'].includes(job.status) ||
+          job.metadata.providerDrained !== true ||
+          !job.metadata.providerExecutionId
+        )
+          throw new Error('Response paused cancellation release is pending');
+        if (
+          !(await jobs.finishProviderTerminalPersistence(
+            record.responseId,
+            job.createdAt,
+            job.metadata.providerExecutionId,
+            job.metadata.providerExecutionOwnerId,
+          ))
+        )
+          throw new Error('Response terminal execution release is unavailable');
+      }
+      if (!(await storage.acknowledgeExecutionRelease(record, proof, { selection })))
+        throw new Error('Response execution release acknowledgment conflicted');
+      return;
+    }
+    if (authority.kind === 'unused') {
+      const job = await jobs.getJob(record.responseId);
+      if (!job && authority.releaseAcknowledged) return;
+      if (job) {
+        if (!matchesResponseJob(record, job))
+          throw new Error('Response terminal execution identity changed');
+        if (
+          !['complete', 'error', 'aborted'].includes(job.status) ||
+          job.metadata.providerDrained !== true
+        )
+          return;
+        if (job.metadata.providerExecutionStartedId != null || !job.metadata.providerExecutionId)
+          throw new Error('Response unused execution started outside its canonical fence');
+        if (
+          !(await jobs.finishProviderTerminalPersistence(
+            record.responseId,
+            job.createdAt,
+            job.metadata.providerExecutionId,
+            job.metadata.providerExecutionOwnerId,
+          ))
+        )
+          throw new Error('Response terminal execution release is unavailable');
+      }
+      if (!(await storage.acknowledgeExecutionRelease(record)))
+        throw new Error('Response execution release acknowledgment conflicted');
+      return;
+    }
+    const durable = authority.proof;
     if (
-      !['complete', 'error', 'aborted'].includes(job.status) ||
-      job.metadata.providerDrained !== true
+      receipt &&
+      (durable.providerExecutionId !== receipt.providerExecutionId ||
+        durable.ownerId !== receipt.ownerId)
     )
       throw new Error('Response terminal execution identity changed');
-    const released = await jobs.finishProviderTerminalPersistence(
-      record.responseId,
-      record.generationCreatedAt,
-      providerExecutionId,
-      receipt?.ownerId ?? job.metadata.providerExecutionOwnerId,
-    );
-    if (!released) throw new Error('Response terminal execution release is unavailable');
+    if (durable.releaseAcknowledged) return;
+    const proof = await readExecutionJob(jobs, record, durable);
+    if (proof) {
+      const { job, providerExecutionId } = proof;
+      if (
+        !['complete', 'error', 'aborted'].includes(job.status) ||
+        job.metadata.providerDrained !== true
+      )
+        throw new Error('Response terminal execution identity changed');
+      const released = await jobs.finishProviderTerminalPersistence(
+        record.responseId,
+        durable.generationCreatedAt,
+        providerExecutionId,
+        receipt?.ownerId ?? job.metadata.providerExecutionOwnerId,
+      );
+      if (!released) throw new Error('Response terminal execution release is unavailable');
+    }
+    if (!(await storage.acknowledgeExecutionRelease(record, durable)))
+      throw new Error('Response execution release acknowledgment conflicted');
   };
 }
 
@@ -188,6 +317,7 @@ function sameExecution(
     current.userId === previous.userId &&
     responseTenantId(current.tenantId) === responseTenantId(previous.tenantId) &&
     current.responseId === previous.responseId &&
+    isDeepStrictEqual(current.storageTarget, previous.storageTarget) &&
     current.agentId === previous.agentId &&
     current.sourceKeyId === previous.sourceKeyId &&
     current.conversationId === previous.conversationId &&
@@ -254,36 +384,112 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
   async function discardRetired(record: StoredResponseRecord, receipt: ResponseTerminalReceipt) {
     const retired = await readRetirement(record, receipt);
     if (!retired) return null;
-    const identity = retired;
-    const namespace = identity.checkpointNamespace ?? receipt.checkpointNamespace;
-    if (identity.requiresCheckpointCleanup && !namespace)
-      throw new Error('Response checkpoint cleanup identity unavailable');
-    if (namespace)
-      await deps.cleanupCheckpoint(
-        {
-          ...retired,
-          review: undefined,
-          pendingTerminal: {
-            ...receipt,
-            checkpointNamespace: namespace,
-            checkpointConfigJSON: identity.checkpointConfigJSON ?? receipt.checkpointConfigJSON,
-          },
-        },
-        namespace,
-      );
+    if (
+      !(await deps.storage.retireExecution(retired)) ||
+      (await deps.confirmExecution(retired, receipt)) == null
+    )
+      return redactRetirement(retired);
+    const proof = await deps.storage.readExecutionProof(retired);
+    if (!proof) return redactRetirement(retired);
+    await eraseResponseExecutionCheckpoint(deps.storage, retired, proof, deps.cleanupCheckpoint);
     await deps.releaseExecution(retired, receipt);
+    await deps.storage.finishErasure(retired);
     return {
       ...redactRetirement(retired),
       status: receipt.status,
     };
   }
+  function failureReceipt(record: StoredResponseRecord): ResponseTerminalReceipt {
+    const failure = record.persistenceFailure;
+    if (!failure) throw new Error('Response persistence failure is unavailable');
+    // The fallback must not copy an oversized request, prior view or immutable result.
+    const response = {
+      ...buildAggregatedResponse(
+        {
+          responseId: record.responseId,
+          model: record.agentId,
+          createdAt: Math.floor(record.createdAt.getTime() / 1000),
+        },
+        createResponseAggregator(),
+      ),
+      status: 'failed' as const,
+      output: [],
+      background: true,
+      store: true,
+      error: {
+        type: 'server_error' as const,
+        code: 'response_persistence_failed',
+        message: 'The Agent result could not be saved.',
+      },
+    };
+    return {
+      generationCreatedAt: failure.generationCreatedAt,
+      providerExecutionId: failure.providerExecutionId,
+      ...(failure.ownerId ? { ownerId: failure.ownerId } : {}),
+      status: 'failed',
+      responseJSON: JSON.stringify(response),
+    };
+  }
+  async function fail(
+    record: StoredResponseRecord,
+    binding: ResponseExecutionBinding,
+    code: ResponsePersistenceFailure['code'],
+    proposal?: ResponseTerminalReceipt,
+  ): Promise<ResponseCompletionRecord> {
+    const receipt = record.pendingTerminal ?? record.preparedTerminal ?? proposal;
+    const failure = {
+      generationCreatedAt: binding.generationCreatedAt,
+      providerExecutionId: binding.providerExecutionId,
+      ...(binding.ownerId ? { ownerId: binding.ownerId } : {}),
+      code,
+      ...(receipt ? { receiptKey: responseReceiptKey(receipt) } : {}),
+    };
+    let current: StoredResponseRecord | null;
+    try {
+      const saved = await deps.storage.recordPersistenceFailure(record, failure);
+      current = saved.ok ? saved.record : await deps.storage.read(record, record.responseId);
+    } catch (error) {
+      current = await deps.storage.read(record, record.responseId);
+      if (!isDeepStrictEqual(current?.persistenceFailure, failure)) throw error;
+    }
+    if (!current || !isDeepStrictEqual(current.persistenceFailure, failure))
+      throw new Error('Response persistence failure publication conflicted');
+    return finish(current);
+  }
+  async function finishFailure(record: StoredResponseRecord): Promise<ResponseCompletionRecord> {
+    const receipt = failureReceipt(record);
+    if (terminal(record)) {
+      await deps.releaseExecution(record, receipt);
+      return record;
+    }
+    if ((await deps.confirmExecution(record, receipt)) == null) return record;
+    const proof = await deps.storage.readExecutionProof(record);
+    if (!proof) return record;
+    await eraseResponseExecutionCheckpoint(deps.storage, record, proof, deps.cleanupCheckpoint);
+    let current: StoredResponseRecord | null;
+    try {
+      const finished = await deps.storage.finishPersistenceFailure(record, receipt.responseJSON);
+      current = finished.ok ? finished.record : await deps.storage.read(record, record.responseId);
+    } catch (error) {
+      current = await deps.storage.read(record, record.responseId);
+      if (!current?.persistenceFailure || current.status !== 'failed') throw error;
+    }
+    if (!current) {
+      const retired = await discardRetired(record, receipt);
+      if (retired) return retired;
+      throw new Error('Response persistence failure journal is unavailable');
+    }
+    if (terminal(current)) await deps.releaseExecution(current, receipt);
+    return current;
+  }
   async function finish(record: StoredResponseRecord): Promise<ResponseCompletionRecord> {
-    const authority = record.pendingTerminal ?? record.preparedTerminal;
+    const authority =
+      record.pendingTerminal ??
+      record.preparedTerminal ??
+      (record.persistenceFailure ? failureReceipt(record) : undefined);
     if (authority) {
       const retired = await readRetirement(record, authority);
       if (retired) {
-        if (record.preparedTerminal && (await deps.confirmExecution(record, authority)) == null)
-          return redactRetirement(retired);
         const discarded = await discardRetired(record, authority);
         if (discarded) return discarded;
       }
@@ -295,6 +501,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
         return retired;
       }
     }
+    if (record.persistenceFailure) return finishFailure(record);
     if (authority?.turnJSON != null && record.status !== 'materializing')
       throw new Error('Response private terminal phase is unavailable');
     const receipt = record.pendingTerminal;
@@ -334,8 +541,10 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       return record;
     }
     assertReceipt(record, receipt);
-    if (receipt.checkpointNamespace)
-      await deps.cleanupCheckpoint(record, receipt.checkpointNamespace);
+    if ((await deps.confirmExecution(record, receipt)) == null) return record;
+    const proof = await deps.storage.readExecutionProof(record);
+    if (!proof) return record;
+    await eraseResponseExecutionCheckpoint(deps.storage, record, proof, deps.cleanupCheckpoint);
     let current: StoredResponseRecord | null;
     try {
       const result = await deps.storage.finishTerminal(
@@ -345,6 +554,8 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
         receipt,
         projectCanonicalResponseTurn(record, receipt),
       );
+      if (!result.ok && (result.code === 'target_retired' || result.code === 'document_limit'))
+        return fail(record, receipt, result.code, receipt);
       current = result.ok ? result.record : await deps.storage.read(record, record.responseId);
     } catch (error) {
       current = await deps.storage.read(record, record.responseId);
@@ -403,6 +614,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       return finish(current);
     }
     if (staged.ok) return finish(staged.record);
+    if (staged.code === 'document_limit') return fail(record, receipt, 'document_limit', receipt);
     const current = await deps.storage.read(record, record.responseId);
     if (!current) {
       const expired = await discardRetired(record, receipt);
@@ -414,6 +626,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
     throw new Error('Response terminal receipt publication conflicted');
   }
   return {
+    fail,
     finish,
     stageAndFinish,
     async prepare(record, receipt) {
@@ -427,6 +640,8 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
           receipt,
         );
         if (staged.ok) return staged.record;
+        if (staged.code === 'document_limit')
+          return fail(record, receipt, 'document_limit', receipt);
       } catch (error) {
         const saved = await deps.storage.read(record, record.responseId);
         if (

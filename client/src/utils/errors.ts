@@ -51,3 +51,9 @@ export const getResponseErrorCode = <TCode extends string>(error: unknown): TCod
   const code = error.response?.data?.code;
   return typeof code === 'string' ? (code as TCode) : undefined;
 };
+
+/** Pending erasure is retryable; preserve the caller's ordinary failure copy otherwise. */
+export const getErasureErrorKey = (error: unknown, fallback: TranslationKeys): TranslationKeys =>
+  getResponseStatus(error) === 503 && getResponseErrorCode(error) === 'response_erasure_pending'
+    ? 'com_ui_deletion_pending'
+    : fallback;

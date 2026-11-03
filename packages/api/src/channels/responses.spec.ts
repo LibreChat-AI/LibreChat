@@ -1,9 +1,11 @@
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
   createMethods,
   createResponseStorage,
+  createManagedMessageId,
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -12,6 +14,7 @@ import type {
   ResponseStorage,
   StoredResponseRecord,
 } from '@librechat/data-schemas';
+import type { AgentExecutionEnrollment } from '~/agents/remote/lifecycle';
 import type { Response } from '~/agents/responses/types';
 import {
   createResponseCompletion,
@@ -23,12 +26,19 @@ import {
   createBackgroundResponseService,
 } from '~/agents/responses/background';
 import { createChannelResponseProjection, createChannelResponseRetirement } from './responses';
+import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
+import { normalizeResponseTurnIntent } from '~/agents/responses/turnProjection';
+import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createResponseRetirement } from '~/agents/responses/retirement';
+import { enrollAgentExecution } from '~/agents/remote/lifecycle';
 import { GenerationJobManager } from '~/stream';
 
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
 let stored: StoredResponseRecord;
+let execution: AgentExecutionEnrollment | undefined;
+const responseId = createManagedMessageId();
+const conversationId = randomUUID();
 let run: ChannelRunRecord;
 const owner = { userId: 'user', tenantId: 'projection-test' };
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
@@ -45,16 +55,35 @@ afterAll(async () => {
   await mongoose.disconnect();
   await mongo?.stop();
 });
+afterEach(async () => {
+  await GenerationJobManager.destroy();
+});
 beforeEach(async () => {
+  execution = undefined;
+  GenerationJobManager.configure({
+    jobStore: new InMemoryJobStore(),
+    eventTransport: new InMemoryEventTransport(),
+    cleanupOnComplete: false,
+  });
+  GenerationJobManager.initialize();
   await runAsSystem(async () => {
     await mongoose.models.StoredResponse.deleteMany({});
     await mongoose.models.Conversation.deleteMany({});
+    await mongoose.models.Message.deleteMany({});
     await mongoose.models.ResponseScope?.deleteMany({});
   });
+  const conversation = await scoped(() =>
+    mongoose.models.Conversation.create({
+      user: owner.userId,
+      tenantId: owner.tenantId,
+      conversationId: conversationId,
+      endpoint: 'agents',
+    }),
+  );
   const reserved = await scoped(() =>
     storage.reserve({
       ...owner,
-      responseId: 'resp_saved',
+      responseId,
       requestKey: 'channel:run',
       fingerprint: 'request',
       agentId: 'agent',
@@ -65,7 +94,13 @@ beforeEach(async () => {
         background: true,
         store: true,
       }),
-      conversationId: 'conversation',
+      conversationId: conversationId,
+      conversationTarget: {
+        id: String(conversation._id),
+        userId: owner.userId,
+        tenantId: owner.tenantId,
+        conversationId: conversationId,
+      },
       parentMessageId: 'root',
     }),
   );
@@ -111,8 +146,8 @@ function fixture() {
     recoverTerminal: createResponseCompletion({
       storage,
       cleanupCheckpoint: async () => {},
-      confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
-      releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+      confirmExecution: createResponseExecutionConfirmation(storage, GenerationJobManager),
+      releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
     }).finish,
     authorize: async () => authorized,
     enqueue: async () => {
@@ -138,13 +173,83 @@ function fixture() {
   };
 }
 async function publish(response: Response) {
-  const result = await storage.publish(owner, stored.responseId, stored.revision, {
+  if (!execution) {
+    execution = await enrollAgentExecution(
+      {
+        runId: stored.responseId,
+        userId: owner.userId,
+        agentId: stored.agentId,
+        conversationId: stored.conversationId,
+        protocol: 'responses',
+        responseRoot: stored.storageTarget,
+        retainTerminalPersistence: true,
+        captureTerminalOutcome: true,
+        isPrincipalActive: async () => true,
+      },
+      { manager: GenerationJobManager },
+    );
+    const enrolled = await storage.enrollExecution(
+      stored,
+      execution.getEnrollmentIdentity(),
+      JSON.stringify({ ...buildPendingBackgroundResponse(stored), status: 'in_progress' }),
+    );
+    if (!enrolled.ok) throw new Error('Root enrollment failed');
+    await execution.beginProviderExecution();
+    if (!(await storage.bindExecution(enrolled.record, execution.getPersistenceIdentity())))
+      throw new Error('Provider binding failed');
+    const prepared = await storage.prepareConversation(
+      enrolled.record,
+      execution.getPersistenceIdentity(),
+      {
+        context: { userId: owner.userId },
+        conversation: {
+          conversationId: stored.conversationId,
+          agent_id: stored.agentId,
+          endpoint: 'agents',
+        },
+        initialAgentId: stored.agentId,
+      },
+    );
+    if (!prepared.ok) throw new Error('Conversation preparation failed');
+    stored = prepared.record;
+  }
+  if (response.status === 'in_progress' || response.status === 'queued') {
+    const published = await storage.publishProgress(stored, {
+      status: response.status,
+      responseJSON: JSON.stringify(response),
+    });
+    if (!published.ok) throw new Error('Progress publication failed');
+    stored = published.record;
+    return;
+  }
+  await execution.settle();
+  const inputId = randomUUID();
+  stored = await createResponseCompletion({
+    storage,
+    cleanupCheckpoint: async () => {},
+    confirmExecution: createResponseExecutionConfirmation(storage, GenerationJobManager),
+    releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
+  }).stageAndFinish(stored, {
+    ...execution.getPersistenceIdentity(),
     status: response.status,
     responseJSON: JSON.stringify(response),
-    generationCreatedAt: 1234,
+    turnJSON: normalizeResponseTurnIntent(
+      stored,
+      JSON.stringify({
+        version: 1,
+        context: { userId: owner.userId },
+        conversation: {
+          conversationId: stored.conversationId,
+          agent_id: stored.agentId,
+          endpoint: 'agents',
+        },
+        initialAgentId: stored.agentId,
+        inputs: [{ index: 0, messageId: inputId, parentMessageId: 'root' }],
+        parentMessageId: inputId,
+        trace: {},
+      }),
+    ),
   });
-  if (!result.ok) throw new Error('Publication failed');
-  stored = result.record;
 }
 
 it('carries a nonterminal recovery warning without publishing stale actions, output or enqueueing work', async () => {
@@ -201,9 +306,9 @@ it('projects only the canonical final assistant text and actual usage', () =>
     await publish(response);
     const result = await f.project(run);
     expect(result).toMatchObject({
-      generationCreatedAt: 1234,
+      generationCreatedAt: stored.generationCreatedAt,
       snapshot: {
-        responseId: 'resp_saved',
+        responseId: stored.responseId,
         status: 'completed',
         text: '# Final answer',
         elapsedMs: 4000,
@@ -286,25 +391,7 @@ it.each(['expired', 'closed'] as const)(
           { responseId: stored.responseId },
           { $set: { expiredAt: new Date(0) } },
         );
-      else {
-        await mongoose.models.Conversation.create({
-          user: owner.userId,
-          tenantId: owner.tenantId,
-          conversationId: stored.conversationId,
-          endpoint: 'agents',
-        });
-        await expect(
-          createMethods(mongoose).deleteConvos(
-            owner.userId,
-            { conversationId: stored.conversationId },
-            {
-              beforeDelete: async () => {
-                throw new Error('erasure paused after scope closure');
-              },
-            },
-          ),
-        ).rejects.toThrow('erasure paused after scope closure');
-      }
+      else await createMethods(mongoose).prepareUserResponseErasure(owner);
       expect(await storage.read(owner, stored.responseId)).toBeNull();
       const jobs = {
         getJob: jest.fn(async () => undefined),
@@ -352,9 +439,19 @@ it('preserves pending retirement when an expired generation has no drain proof',
     run.cancellationRequested = true;
     run.errorCode = 'channel_authority_changed';
     run.execution!.apiKeyId = 'key';
+    if (
+      !(
+        await storage.enrollExecution(
+          stored,
+          { generationCreatedAt: 1234, providerExecutionId: 'missing-provider' },
+          '{}',
+        )
+      ).ok
+    )
+      throw new Error('Enrollment failed');
     await mongoose.models.StoredResponse.updateOne(
       { responseId: stored.responseId },
-      { $set: { expiredAt: new Date(0), generationCreatedAt: 1234 } },
+      { $set: { expiredAt: new Date(0) } },
     );
     const jobs = {
       getJob: jest.fn(async () => undefined),

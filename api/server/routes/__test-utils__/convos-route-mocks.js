@@ -81,6 +81,8 @@ module.exports = {
   agents: () => ({ sleep: jest.fn() }),
 
   api: (overrides = {}) => ({
+    sendErasureError: jest.requireActual('../../../../packages/api/src/user/errors.ts')
+      .sendErasureError,
     createGetConversationHandler: jest.requireActual(
       '../../../../packages/api/src/conversations/load.ts',
     ).createGetConversationHandler,
@@ -230,12 +232,14 @@ module.exports = {
     deleteAllSharedLinksWithCleanup: jest.fn(),
     deleteAgentCheckpoints,
     deleteOwnedAgentCheckpoints,
-    openCheckpointDeletion,
+    createCheckpointDeletionService: jest.fn(() => ({ openCheckpointDeletion })),
     isConversationImportError: jest.fn((error) => error?.name === 'ConversationImportError'),
     ...overrides,
   }),
 
   dataSchemas: () => ({
+    ResponseErasurePendingError:
+      jest.requireActual('@librechat/data-schemas').ResponseErasurePendingError,
     logger: {
       debug: jest.fn(),
       info: jest.fn(),
@@ -251,10 +255,15 @@ module.exports = {
   }),
 
   dataProvider: (overrides = {}) => ({
+    ...jest.requireActual('librechat-data-provider'),
     conversationListConfigSchema:
       jest.requireActual('librechat-data-provider').conversationListConfigSchema,
-    CacheKeys: { GEN_TITLE: 'GEN_TITLE' },
+    CacheKeys: {
+      ...jest.requireActual('librechat-data-provider').CacheKeys,
+      GEN_TITLE: 'GEN_TITLE',
+    },
     EModelEndpoint: {
+      ...jest.requireActual('librechat-data-provider').EModelEndpoint,
       azureAssistants: 'azureAssistants',
       assistants: 'assistants',
     },
