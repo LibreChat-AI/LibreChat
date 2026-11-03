@@ -104,7 +104,7 @@ function buildEditArgsPreview(args: ToolCallArgs): TextEditPreview[] {
 }
 
 /** The host-authored summaries a successful create or edit returns. */
-const SUCCESS_SUMMARY = /^(?:Created|Updated|Edited) /;
+const SUCCESS_SUMMARY = /^(?:Created|Updated|Edited)\b/;
 
 export default function FileAuthoringCall({
   toolName,

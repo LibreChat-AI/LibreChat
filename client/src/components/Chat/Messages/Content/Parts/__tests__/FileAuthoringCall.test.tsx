@@ -320,6 +320,31 @@ describe('FileAuthoringCall', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('hides a bare success summary but keeps any other output', () => {
+    const args = { file_path: 'src/a.ts', old_text: 'const a = 1;', new_text: 'const a = 2;' };
+    const { rerender } = render(
+      <FileAuthoringCall
+        toolName="edit_file"
+        initialProgress={1}
+        isSubmitting={false}
+        args={args}
+        output="Edited"
+      />,
+    );
+    expect(screen.queryByText('Edited')).not.toBeInTheDocument();
+
+    rerender(
+      <FileAuthoringCall
+        toolName="edit_file"
+        initialProgress={1}
+        isSubmitting={false}
+        args={args}
+        output="Editor lock held by another process"
+      />,
+    );
+    expect(screen.getByText('Editor lock held by another process')).toBeInTheDocument();
+  });
+
   it('renders replacements from JSON-stringified edits entries after workspace update', () => {
     render(
       <FileAuthoringCall
