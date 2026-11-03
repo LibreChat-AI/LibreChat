@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ToolCallPhase } from '~/utils/toolCallPhase';
+import type { ToolCallPhase } from '@librechat/chat';
 import { useLocalize } from '~/hooks';
 
 /** A command-local clock. Historical calls without timing metadata remain untimed. */

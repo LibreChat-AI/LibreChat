@@ -1,8 +1,12 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
-import { LoneGroupContext, SoleToolContext, GeneratedToolLabelContext } from '@librechat/chat/react';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { Tools, Constants, ContentTypes, isOpaqueReasoning } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
+import {
+  LoneGroupContext,
+  SoleToolContext,
+  GeneratedToolLabelContext,
+} from '@librechat/chat/react';
 import {
   hasPendingApprovalInPart,
   ASK_USER_QUESTION,

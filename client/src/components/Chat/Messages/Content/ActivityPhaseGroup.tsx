@@ -1,8 +1,8 @@
 import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
 import { ContentTypes } from 'librechat-data-provider';
-import { getOutcomeStatus, isSpanFailed, summarizeSpan } from '@librechat/chat';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
+import { getOutcomeStatus, isSpanFailed, summarizeSpan } from '@librechat/chat';
 import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
