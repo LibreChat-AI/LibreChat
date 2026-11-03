@@ -2,6 +2,7 @@ import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
 import { ContentTypes, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ParentSubagentsProvider, StreamHostProvider } from '@librechat/chat/react';
 import type { ParentSubagentSummary, TMessage } from 'librechat-data-provider';
 import type { TMessageChatContext } from '~/common';
 import { ShareMessagesProvider } from '~/components/Share/ShareMessagesProvider';
@@ -9,6 +10,7 @@ import { ShareContext } from '~/Providers/ShareContext';
 import MessageRender from '../MessageRender';
 import '~/Providers/MessagePartsHostContext';
 import '~/Providers/MessagesHostContext';
+import { appStreamHost } from '~/Providers/StreamHostContext';
 
 const mockAgentsMap = {
   agent_reviewer: { id: 'agent_reviewer', name: 'Code Reviewer' },
@@ -16,13 +18,9 @@ const mockAgentsMap = {
 };
 
 let mockChildren = new Map<string, ParentSubagentSummary>();
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useParentSubagents: () => ({ byThreadId: mockChildren }),
-}));
 
 jest.mock('~/Providers', () => ({
-  ...jest.requireActual('~/Providers/MessageContext'),
+  ...jest.requireActual('~/Providers'),
   useAgentsMapContext: () => mockAgentsMap,
 }));
 
@@ -116,6 +114,11 @@ function renderMessage(
       },
     ],
   );
+  queryClient.setQueryData([QueryKeys.parentSubagents, 'conversation-1'], {
+    parentConversationId: 'conversation-1',
+    children: [...mockChildren.values()],
+    childrenTruncated: false,
+  });
   const message = {
     messageId: 'wake',
     parentMessageId: 'parent',
@@ -125,13 +128,17 @@ function renderMessage(
     text,
   } as unknown as TMessage;
   const row = (
-    <MessageRender
-      message={message}
-      chatContext={chatContext}
-      currentEditId={null}
-      setSiblingIdx={() => undefined}
-      {...siblings}
-    />
+    <StreamHostProvider host={appStreamHost}>
+      <ParentSubagentsProvider conversationId="conversation-1" enabled>
+        <MessageRender
+          message={message}
+          chatContext={chatContext}
+          currentEditId={null}
+          setSiblingIdx={() => undefined}
+          {...siblings}
+        />
+      </ParentSubagentsProvider>
+    </StreamHostProvider>
   );
   const sharedReply: TMessage = {
     messageId: 'shared-reply',
@@ -272,7 +279,7 @@ describe('MessageRender wake-up rows', () => {
     });
     renderMessage(subagentWakeup('agent_unknown'));
 
-    expect(screen.getByRole('heading', { name: /com_ui_subagent_actor$/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Agent' })).toBeInTheDocument();
     expect(screen.queryByText(/agent_unknown/)).not.toBeInTheDocument();
   });
 
