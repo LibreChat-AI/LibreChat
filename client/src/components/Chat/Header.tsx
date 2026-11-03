@@ -16,6 +16,7 @@ import ModelSelector from './Menus/Endpoints/ModelSelector';
 import { BackgroundTasksButton } from './BackgroundTasks';
 import { isCodeConversation } from './PullRequest/code';
 import { TraceButton, useTraceControl } from './Trace';
+import { LinksButton, useLinksControl } from './Links';
 import { useGetStartupConfig } from '~/data-provider';
 import ExportAndShareMenu from './ExportAndShareMenu';
 import SubagentThreadLink from './SubagentThreadLink';
@@ -89,6 +90,11 @@ function Header({
     enabled: parentConversationId == null,
   });
 
+  /** The links panel describes the routed conversation, child threads included. */
+  const links = useLinksControl({
+    conversationId: isNewChat ? null : routeConversationId,
+  });
+
   /** The drawer covers the header on mobile; keep its controls out of the tab order. */
   const hiddenBehindNav = navVisible === true && isSmallScreen && 'hidden';
 
@@ -144,12 +150,14 @@ function Header({
         <HeaderMenu
           startupConfig={startupConfig}
           trace={trace}
+          links={links}
           readOnly={readOnly}
           pullRequestConversationId={showPullRequest ? routeConversationId : undefined}
           className={isSmallScreen ? undefined : 'hidden'}
         />
         <div className={cn('items-center gap-2', isSmallScreen ? 'hidden' : 'flex')}>
           {trace.show && <TraceButton onClick={trace.open} />}
+          {links.show && <LinksButton isOpen={links.isOpen} onClick={links.toggle} />}
           <ExportAndShareMenu
             isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false}
             readOnly={readOnly}

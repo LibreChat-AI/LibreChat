@@ -57,6 +57,10 @@ jest.mock('../TemporaryChat', () => ({
   TemporaryChatIndicator: () => null,
 }));
 jest.mock('../Trace', () => ({ useTraceControl: () => ({ show: false }) }));
+jest.mock('../Links', () => ({
+  LinksButton: jest.fn(() => null),
+  useLinksControl: () => ({ show: false, isOpen: false, toggle: () => undefined }),
+}));
 jest.mock('../BackgroundTasks', () => ({
   BackgroundTasksButton: jest.fn(() => <div data-testid="conversation-tasks" />),
 }));

@@ -1,4 +1,9 @@
 {
+  "com_links_panel": "Links",
+  "com_links_header_button": "View session links",
+  "com_links_empty": "No sources have been used in this conversation yet.",
+  "com_links_count_one": "{{count}} source",
+  "com_links_count_other": "{{count}} sources",
   "com_ui_pr_account_checking": "Checking connection",
   "com_ui_pr_account_connect": "Connect",
   "com_ui_pr_account_connect_aria": "Connect {{0}}",

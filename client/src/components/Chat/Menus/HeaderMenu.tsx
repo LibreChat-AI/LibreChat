@@ -3,9 +3,10 @@ import * as Ariakit from '@ariakit/react';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import { DropdownPopup, TooltipAnchor, Button } from '@librechat/client';
 import { BookmarkFilledIcon, BookmarkIcon } from '@radix-ui/react-icons';
-import { Ellipsis, PlusCircle, HatGlasses, Check, ChartNoAxesGantt } from 'lucide-react';
+import { Ellipsis, PlusCircle, HatGlasses, Check, ChartNoAxesGantt, Link2 } from 'lucide-react';
 import type { TStartupConfig } from 'librechat-data-provider';
 import type { TraceControl } from '~/components/Chat/Trace';
+import type { LinksControl } from '~/components/Chat/Links';
 import type * as t from '~/common';
 import useTemporaryChat from '~/hooks/Conversations/useTemporaryChat';
 import { usePullRequestMenu } from '~/components/Chat/PullRequest';
@@ -25,6 +26,7 @@ import { cn } from '~/utils';
 export default function HeaderMenu({
   startupConfig,
   trace,
+  links,
   className,
   readOnly = false,
   pullRequestConversationId,
@@ -34,6 +36,8 @@ export default function HeaderMenu({
   readOnly?: boolean;
   /** Owned by the header, which also renders the desktop trace button from it. */
   trace?: TraceControl;
+  /** Owned by the header, which also renders the desktop links button from it. */
+  links?: LinksControl;
   /** The saved conversation whose pull request this menu offers; none for a new chat or a child thread. */
   pullRequestConversationId?: string;
   className?: string;
@@ -109,6 +113,15 @@ export default function HeaderMenu({
       label: localize('com_ui_trace_view'),
       icon: <ChartNoAxesGantt className="text-text-secondary size-4" />,
       onClick: trace.open,
+    });
+  }
+
+  if (links?.show === true) {
+    pushGroup({
+      id: 'header-links',
+      label: localize('com_links_header_button'),
+      icon: <Link2 className="text-text-secondary size-4" />,
+      onClick: links.toggle,
     });
   }
 

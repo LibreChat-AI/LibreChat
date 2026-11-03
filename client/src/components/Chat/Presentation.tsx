@@ -1,13 +1,14 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
-import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { EModelEndpoint } from 'librechat-data-provider';
+import { useRecoilValue, useSetRecoilState } from 'recoil';
 import {
   activeSubagentPanel,
   useIsSubmitting,
   ParentSubagentsProvider,
 } from '@librechat/chat/react';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
+import { LinksPanel, linksPanelConversationAtom } from '~/components/Chat/Links';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
@@ -34,6 +35,7 @@ export default function Presentation({
 }) {
   const artifacts = useRecoilValue(store.artifactsState);
   const artifactsVisibility = useRecoilValue(store.artifactsVisibility);
+  const setArtifactsVisible = useSetRecoilState(store.artifactsVisibility);
   // Render-gating the panel on `currentArtifactId != null` (in addition
   // to visibility + non-empty artifacts) means the side panel only opens
   // when *something* is actively focused. Conversation navigation
@@ -124,9 +126,40 @@ export default function Presentation({
     );
   }, [conversationId, selectedSubagent]);
 
+  const linksConversationId = useAtomValue(linksPanelConversationAtom);
+  const setLinksConversationId = useSetAtom(linksPanelConversationAtom);
+  const linksOpen = conversationId != null && linksConversationId === conversationId;
+
+  const linksElement = useMemo(() => {
+    if (!linksOpen || conversationId == null) {
+      return null;
+    }
+    return (
+      <LinksPanel conversationId={conversationId} onClose={() => setLinksConversationId(null)} />
+    );
+  }, [linksOpen, conversationId, setLinksConversationId]);
+
+  /* Opening the links panel claims the shared side-panel slot, so a docked
+   * artifacts pane and a conversation-hosted subagent panel step aside, the
+   * same takeover artifacts perform. Undocked artifacts keep their own window
+   * and stay. A panel that arrives afterwards (an artifact auto-focuses while
+   * streaming) simply outranks links in the slot chain below. */
+  const linksWasOpen = useRef(false);
+  useEffect(() => {
+    const opened = linksOpen && !linksWasOpen.current;
+    linksWasOpen.current = linksOpen;
+    if (!opened) {
+      return;
+    }
+    if (!isUndocked) {
+      setArtifactsVisible(false);
+    }
+    setSelectedSubagent((current) => (current?.host === 'conversation' ? null : current));
+  }, [linksOpen, isUndocked, setArtifactsVisible, setSelectedSubagent]);
+
   /* Undocked, the pane renders into its own window: the side panel gives its
    * width back to the conversation instead of holding an empty column. */
-  const panelElement = (isUndocked ? null : artifactsElement) ?? subagentElement;
+  const panelElement = (isUndocked ? null : artifactsElement) ?? subagentElement ?? linksElement;
 
   return (
     <DragDropWrapper className="bg-surface-canvas relative flex w-full grow overflow-hidden">
