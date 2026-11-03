@@ -1,45 +1,60 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import { FileSources } from 'librechat-data-provider';
-import type { ExtendedFile } from '~/common';
+import { EToolResources, FileSources } from 'librechat-data-provider';
+import type { ExtendedFile } from '../../../../core/files';
+import type { FilesHost } from '../../../../react/files';
+import { FilesHostProvider } from '../../../../react/files';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import FileRow from '../FileRow';
 
-jest.mock('~/hooks', () => ({
-  useLocalize: jest.fn(),
-}));
-
-jest.mock('~/data-provider', () => ({
-  useDeleteFilesMutation: jest.fn(),
-}));
-
-jest.mock('~/hooks/Files', () => ({
-  useFileDeletion: jest.fn(),
-}));
-
-jest.mock('~/utils', () => ({
-  logger: {
-    log: jest.fn(),
-  },
-  getCachedPreview: jest.fn(() => undefined),
-}));
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  AttachmentImage: function MockImage({ url, progress, source }: any) {
+jest.mock('../Image', () => ({
+  __esModule: true,
+  default: function MockImage({
+    url,
+    progress,
+    source,
+    onDelete,
+  }: {
+    onDelete?: () => void;
+    url?: string;
+    progress: number;
+    source?: string;
+  }) {
     return (
       <div data-testid="mock-image">
         <span data-testid="image-url">{url}</span>
         <span data-testid="image-progress">{progress}</span>
         <span data-testid="image-source">{source}</span>
+        <div data-testid="mock-delete" role="presentation" onClick={onDelete} />
       </div>
     );
   },
-  FileContainer: function MockFileContainer({ file, onClick, ariaLabel, subtitleAction }: any) {
+}));
+
+jest.mock('../FileContainer', () => ({
+  __esModule: true,
+  default: function MockFileContainer({
+    file,
+    onClick,
+    onDelete,
+    ariaLabel,
+    subtitleAction,
+  }: {
+    onDelete?: () => void;
+    file: ExtendedFile;
+    onClick?: () => void;
+    ariaLabel?: string;
+    subtitleAction?: { label: string; onClick: () => void };
+  }) {
     return (
       <div data-testid="mock-file-container">
         <span data-testid="file-name">{file.filename}</span>
+        <div data-testid="mock-delete" role="presentation" onClick={onDelete} />
         {onClick != null && (
           <button type="button" aria-label={ariaLabel} onClick={onClick}>
             {file.filename}
@@ -55,32 +70,25 @@ jest.mock('@librechat/chat/components', () => ({
   },
 }));
 
-const mockUseLocalize = jest.requireMock('~/hooks').useLocalize;
-const mockUseDeleteFilesMutation = jest.requireMock('~/data-provider').useDeleteFilesMutation;
-const mockUseFileDeletion = jest.requireMock('~/hooks/Files').useFileDeletion;
+beforeAll(initEnglish);
 
 describe('FileRow', () => {
   const mockSetFiles = jest.fn();
   const mockSetFilesLoading = jest.fn();
   const mockDeleteFile = jest.fn();
+  const mockUseDeleteFile = jest.fn((): typeof mockDeleteFile => mockDeleteFile);
+  const mockGetPreviewUrl = jest.fn((): string | undefined => undefined);
+
+  const host: FilesHost = {
+    renderEndpointIcon: () => null,
+    useDeleteFile: mockUseDeleteFile,
+    getPreviewUrl: mockGetPreviewUrl,
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
-
-    mockUseLocalize.mockReturnValue((key: string) => {
-      const translations: Record<string, string> = {
-        com_ui_deleting_file: 'Deleting file...',
-      };
-      return translations[key] || key;
-    });
-
-    mockUseDeleteFilesMutation.mockReturnValue({
-      mutateAsync: jest.fn(),
-    });
-
-    mockUseFileDeletion.mockReturnValue({
-      deleteFile: mockDeleteFile,
-    });
+    mockGetPreviewUrl.mockReset();
+    mockGetPreviewUrl.mockReturnValue(undefined);
   });
 
   /**
@@ -98,8 +106,11 @@ describe('FileRow', () => {
     ...overrides,
   });
 
+  const renderRow = (ui: React.ReactElement) =>
+    render(<FilesHostProvider host={host}>{ui}</FilesHostProvider>);
+
   const renderFileRow = (files: Map<string, ExtendedFile>) => {
-    return render(
+    return renderRow(
       <FileRow files={files} setFiles={mockSetFiles} setFilesLoading={mockSetFilesLoading} />,
     );
   };
@@ -109,7 +120,7 @@ describe('FileRow', () => {
     const filesMap = new Map<string, ExtendedFile>();
     filesMap.set(file.file_id, file);
 
-    render(
+    renderRow(
       <FileRow
         files={filesMap}
         setFiles={mockSetFiles}
@@ -118,10 +129,68 @@ describe('FileRow', () => {
       />,
     );
 
-    expect(mockUseFileDeletion).toHaveBeenCalledWith(
+    expect(mockUseDeleteFile).toHaveBeenCalledWith(
       expect.objectContaining({
         index: 1,
       }),
+    );
+  });
+
+  it('passes the agent, assistant and tool resource scope to file deletion', () => {
+    const file = createMockFile();
+    renderRow(
+      <FileRow
+        files={new Map([[file.file_id, file]])}
+        setFiles={mockSetFiles}
+        agent_id="agent-1"
+        assistant_id="asst-1"
+        tool_resource={EToolResources.file_search}
+        index={2}
+      />,
+    );
+
+    expect(mockUseDeleteFile).toHaveBeenCalledWith({
+      agent_id: 'agent-1',
+      assistant_id: 'asst-1',
+      tool_resource: EToolResources.file_search,
+      index: 2,
+    });
+  });
+
+  it('hands the file and the setter to the deletion function when the chip is removed', async () => {
+    const file = createMockFile();
+    renderFileRow(new Map([[file.file_id, file]]));
+
+    await userEvent.click(screen.getByTestId('mock-delete'));
+
+    expect(mockDeleteFile).toHaveBeenCalledWith({ file, setFiles: mockSetFiles });
+  });
+
+  it('aborts an in-flight upload before deleting it', async () => {
+    const abortUpload = jest.fn();
+    const file = createMockFile({ progress: 0.4 });
+    renderRow(
+      <FileRow
+        files={new Map([[file.file_id, file]])}
+        setFiles={mockSetFiles}
+        abortUpload={abortUpload}
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId('mock-delete'));
+
+    expect(abortUpload).toHaveBeenCalledWith(file.file_id);
+    expect(mockDeleteFile).toHaveBeenCalledWith({ file, setFiles: mockSetFiles });
+  });
+
+  it('prefers the host preview over the file preview', () => {
+    mockGetPreviewUrl.mockReturnValue('blob:http://localhost:3080/host-preview');
+    const file = createMockFile();
+    renderFileRow(new Map([[file.file_id, file]]));
+
+    expect(mockGetPreviewUrl).toHaveBeenCalledWith(file.file_id);
+    expect(screen.getByTestId('image-url').textContent).toBe(
+      'blob:http://localhost:3080/host-preview',
     );
   });
 
@@ -343,7 +412,7 @@ describe('FileRow', () => {
     });
 
     it('should render nothing when files is undefined', () => {
-      const { container } = render(
+      const { container } = renderRow(
         <FileRow files={undefined} setFiles={mockSetFiles} setFilesLoading={mockSetFilesLoading} />,
       );
 
@@ -419,7 +488,7 @@ describe('FileRow', () => {
     ) => {
       const filesMap = new Map<string, ExtendedFile>();
       filesMap.set(file.file_id, file);
-      return render(
+      return renderRow(
         <FileRow
           files={filesMap}
           setFiles={mockSetFiles}
@@ -437,7 +506,9 @@ describe('FileRow', () => {
       const file = pastedFile();
       renderWithEditor(file, { onEditPastedText });
 
-      await userEvent.click(screen.getByRole('button', { name: 'com_ui_pasted_text_edit_chip' }));
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Edit pasted text, pasted-text.txt' }),
+      );
 
       expect(onEditPastedText).toHaveBeenCalledWith(file);
     });
@@ -446,7 +517,7 @@ describe('FileRow', () => {
       renderWithEditor(pastedFile(), { onEditPastedText: jest.fn() });
 
       expect(screen.getByRole('button').getAttribute('aria-label')).toBe(
-        'com_ui_pasted_text_edit_chip',
+        'Edit pasted text, pasted-text.txt',
       );
     });
 
@@ -485,7 +556,7 @@ describe('FileRow', () => {
     it('stays inert where no provenance predicate is wired up', () => {
       const filesMap = new Map<string, ExtendedFile>();
       filesMap.set('pasted-file', pastedFile());
-      render(
+      renderRow(
         <FileRow
           files={filesMap}
           setFiles={mockSetFiles}
@@ -502,7 +573,7 @@ describe('FileRow', () => {
       const file = pastedFile();
       renderWithEditor(file, { onEditPastedText: jest.fn(), onMovePastedTextInline });
 
-      await userEvent.click(screen.getByRole('button', { name: 'com_ui_pasted_text_move_inline' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Move back into message' }));
 
       expect(onMovePastedTextInline).toHaveBeenCalledWith(file);
     });
@@ -514,7 +585,7 @@ describe('FileRow', () => {
       });
 
       expect(
-        screen.queryByRole('button', { name: 'com_ui_pasted_text_move_inline' }),
+        screen.queryByRole('button', { name: 'Move back into message' }),
       ).not.toBeInTheDocument();
     });
 
@@ -532,7 +603,7 @@ describe('FileRow', () => {
       renderWithEditor(pastedFile());
 
       expect(
-        screen.queryByRole('button', { name: 'com_ui_pasted_text_move_inline' }),
+        screen.queryByRole('button', { name: 'Move back into message' }),
       ).not.toBeInTheDocument();
     });
   });
