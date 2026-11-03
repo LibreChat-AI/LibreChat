@@ -1,5 +1,23 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = fileURLToPath(new URL('../..', import.meta.url));
+const fixture = mkdtempSync(join(tmpdir(), 'channel-compose-'));
+for (const file of [
+  'docker-compose.yml',
+  'docker-compose.channels.yml',
+  'docker-compose.channels-build.yml',
+  'docker-compose.mongo-replica.yml',
+  '.env.example',
+]) {
+  copyFileSync(join(root, file), join(fixture, file));
+}
+copyFileSync(join(root, '.env.example'), join(fixture, '.env'));
+process.on('exit', () => rmSync(fixture, { recursive: true, force: true }));
 
 function configuration(tag, source = false) {
   const files = ['docker-compose.yml', 'docker-compose.channels.yml'];
@@ -18,11 +36,11 @@ function configuration(tag, source = false) {
         '--profile',
         'channels',
         'config',
-        '--no-env-resolution',
         '--format',
         'json',
       ],
       {
+        cwd: fixture,
         encoding: 'utf8',
         env: { ...process.env, UID: '1000', GID: '1000', LIBRECHAT_IMAGE_TAG: tag },
       },
