@@ -663,9 +663,13 @@ describe('ToolCallGroup image hoisting', () => {
 
   it('clears a retained group rail when its containing phase collapses', () => {
     const phaseHeader = { current: document.createElement('div') };
+    /** Two calls: a lone call draws no rail at all. */
     const groupProps = {
       ...baseProps,
-      parts: [{ part: makeApprovalPart('t1'), idx: 0 }],
+      parts: [
+        { part: makeApprovalPart('t1'), idx: 0 },
+        { part: makePart('t2'), idx: 1 },
+      ],
     };
     const group = (expanded: boolean) => (
       <RecoilRoot>
@@ -684,6 +688,12 @@ describe('ToolCallGroup image hoisting', () => {
     rerender(group(true));
     expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
     expect(rail).not.toBeDisabled();
+  });
+
+  it('draws no rail for a lone call, titled or not', () => {
+    renderGroup({ ...baseProps, parts: [{ part: makePart('t1'), idx: 0 }] });
+
+    expect(screen.queryByTestId('fold-rail')).toBeNull();
   });
 
   it('keeps deeply nested unresolved approval bodies mounted while the group is collapsed', () => {

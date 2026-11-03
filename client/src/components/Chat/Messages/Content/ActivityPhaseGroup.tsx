@@ -498,6 +498,11 @@ export default function ActivityPhaseGroup({
     [outcomeParts, attachmentsById],
   );
 
+  /** One call and nothing else has no tree to draw, so it lays out like the
+   *  same call without a title: no rail, no indent. */
+  const soleCall =
+    toolCount === 1 && !outcomeParts?.some((part) => part?.type === ContentTypes.THINK);
+
   const partialMarkerFallback =
     labelPart.status === 'partial' &&
     (!hasContent || failedCount === 0 || isSpanFailed(failedCount, toolCount));
@@ -801,11 +806,13 @@ export default function ActivityPhaseGroup({
       >
         {shouldRenderBody && (
           <div
-            className={cn('min-h-0 overflow-hidden', FOLD_RAIL_CLASSES)}
+            className={cn('min-h-0 overflow-hidden', !soleCall && FOLD_RAIL_CLASSES)}
             ref={expandRef}
             data-fold-panel=""
           >
-            <FoldRail hover={railHover} expanded={isExpanded} onCollapse={handleRailCollapse} />
+            {!soleCall && (
+              <FoldRail hover={railHover} expanded={isExpanded} onCollapse={handleRailCollapse} />
+            )}
             <FoldHeaderContext.Provider value={railScope}>
               <FailedRevealContext.Provider value={revealValue}>
                 <GeneratedToolLabelContext.Provider value={toolCount === 1 && label.length > 0}>

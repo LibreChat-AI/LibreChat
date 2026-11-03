@@ -253,6 +253,9 @@ export default function ToolCallGroup({
     () => parts.some((p) => p.part.type === ContentTypes.THINK),
     [parts],
   );
+  /** One call and nothing else has no tree to draw, so it lays out like the
+   *  same call without a title: no rail, no indent. */
+  const soleCall = count === 1 && !hasReasoning;
 
   /** Subagent tool calls get their own label verb ("Running/Ran N agents")
    *  since "Used N tools" reads oddly when the "tools" are actually child
@@ -726,11 +729,14 @@ export default function ToolCallGroup({
       >
         {(flattenGroup || shouldRenderBody) && (
           <div
-            className={cn('min-h-0 overflow-hidden', !flattenGroup && FOLD_RAIL_CLASSES)}
+            className={cn(
+              'min-h-0 overflow-hidden',
+              !flattenGroup && !soleCall && FOLD_RAIL_CLASSES,
+            )}
             ref={expandRef}
             data-fold-panel={flattenGroup ? undefined : ''}
           >
-            {!flattenGroup && (
+            {!flattenGroup && !soleCall && (
               <FoldRail
                 hover={railHover}
                 expanded={isExpanded && (phaseHeader?.expanded ?? true)}
