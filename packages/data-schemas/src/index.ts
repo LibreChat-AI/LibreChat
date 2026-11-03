@@ -18,6 +18,7 @@ export type {
   ResponseStorage,
   ResponseExecutionGuard,
   ResponseExecutionBinding,
+  ResponseExecutionProof,
   ResponseCleanupIdentity,
   ResponseReservation,
   ResponseReservationResult,

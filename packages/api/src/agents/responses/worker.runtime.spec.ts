@@ -445,8 +445,8 @@ describe('background Responses execution handoff', () => {
           createResponseCompletion({
             storage,
             cleanupCheckpoint: async () => {},
-            confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
-            releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+            confirmExecution: createResponseExecutionConfirmation(storage),
+            releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
           }).finish(saved),
         );
       } else expect(errors).toEqual([]);
@@ -1036,8 +1036,8 @@ describe('background Responses execution handoff', () => {
         const recovery = createResponseCompletion({
           storage,
           cleanupCheckpoint: async () => {},
-          confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
-          releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+          confirmExecution: createResponseExecutionConfirmation(storage),
+          releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
         });
         const service = createBackgroundResponseService({
           storage,
@@ -1096,8 +1096,8 @@ describe('background Responses execution handoff', () => {
         const recovery = createResponseCompletion({
           storage,
           cleanupCheckpoint: async () => {},
-          confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
-          releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+          confirmExecution: createResponseExecutionConfirmation(storage),
+          releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
         });
         await scope(() => recovery.finish(pending));
       }
@@ -1196,8 +1196,8 @@ describe('background Responses execution handoff', () => {
       createResponseCompletion({
         storage,
         cleanupCheckpoint: async () => {},
-        confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
-        releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+        confirmExecution: createResponseExecutionConfirmation(storage),
+        releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
       }).finish(pending),
     );
     expect(recovered.status).toBe('completed');

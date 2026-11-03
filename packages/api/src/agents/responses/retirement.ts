@@ -36,88 +36,63 @@ export function createResponseRetirement(
     deps.recoverTerminal ??
     createResponseCompletion({
       storage: deps.storage,
-      confirmExecution: createResponseExecutionConfirmation(deps.jobs),
+      confirmExecution: createResponseExecutionConfirmation(deps.storage),
       cleanupCheckpoint:
         deps.cleanupCheckpoint ??
         (async () => {
           throw new Error('Response checkpoint cleanup unavailable');
         }),
-      releaseExecution: createResponseExecutionRelease(deps.jobs),
+      releaseExecution: createResponseExecutionRelease(deps.jobs, deps.storage),
     }).finish;
   async function retiredAuthority(owner: ResponseOwner, responseId: string) {
-    // Durable live receipts must not depend on transient job availability.
-    const canonical = await deps.storage.readCleanupIdentity(owner, responseId);
-    if (
-      canonical &&
-      !canonical.retirement &&
-      !(canonical.expiredAt && canonical.expiredAt.getTime() <= (deps.now ?? Date.now)())
-    )
-      return null;
-    const job = await deps.jobs.getJob(responseId);
-    const retained =
-      job &&
-      job.metadata.userId === owner.userId &&
-      responseTenantId(job.metadata.tenantId) === responseTenantId(owner.tenantId) &&
-      job.metadata.endpoint === 'responses' &&
-      job.metadata.responseMessageId === responseId &&
-      job.metadata.agent_id &&
-      job.metadata.conversationId
-        ? {
-            userId: job.metadata.userId,
-            tenantId: job.metadata.tenantId,
-            responseId,
-            agentId: job.metadata.agent_id,
-            conversationId: job.metadata.conversationId,
-            generationCreatedAt: job.createdAt,
-            checkpointNamespace: job.metadata.checkpointNamespace,
-            checkpointConfigJSON: job.metadata.responseCheckpointConfigJSON,
-          }
-        : undefined;
-    const identity = await deps.storage.readCleanupIdentity(owner, responseId, retained);
+    const identity = await deps.storage.readCleanupIdentity(owner, responseId);
     if (
       !identity?.retirement &&
       !(identity?.expiredAt && identity.expiredAt.getTime() <= (deps.now ?? Date.now)())
     )
       return null;
-    if (!job)
-      return {
-        identity,
-        job: null,
-        cleanup: async () => {},
-        providerExecutionId: undefined,
-        providerExecutionOwnerId: undefined,
-      };
+    // Enrollment and retirement compete on the physical root. A closed scope alone
+    // cannot fence an enrollment that already passed its scope read.
+    const fenced = await deps.storage.retireExecution(identity);
+    const proof = fenced ? await deps.storage.readExecutionProof(identity) : null;
+    const job = await deps.jobs.getJob(responseId);
     if (
-      job.createdAt !== identity.generationCreatedAt ||
-      job.metadata.userId !== identity.userId ||
-      responseTenantId(job.metadata.tenantId) !== responseTenantId(identity.tenantId) ||
-      job.metadata.agent_id !== identity.agentId ||
-      job.metadata.endpoint !== 'responses' ||
-      job.metadata.conversationId !== identity.conversationId ||
-      job.metadata.responseMessageId !== responseId
+      job &&
+      (job.createdAt !== identity.generationCreatedAt ||
+        job.metadata.userId !== identity.userId ||
+        responseTenantId(job.metadata.tenantId) !== responseTenantId(identity.tenantId) ||
+        job.metadata.agent_id !== identity.agentId ||
+        job.metadata.endpoint !== 'responses' ||
+        job.metadata.conversationId !== identity.conversationId ||
+        job.metadata.responseMessageId !== responseId ||
+        (proof &&
+          (job.metadata.providerExecutionId !== proof.providerExecutionId ||
+            job.metadata.providerExecutionOwnerId !== proof.ownerId)))
     )
       throw new Error('Response retirement generation changed');
-    const providerExecutionId = job.metadata.providerExecutionId;
-    const providerExecutionOwnerId = job.metadata.providerExecutionOwnerId;
-    if (!providerExecutionId) throw new Error('Response retirement provider unavailable');
+    const providerExecutionId = job?.metadata.providerExecutionId ?? proof?.providerExecutionId;
+    const providerExecutionOwnerId = job?.metadata.providerExecutionOwnerId ?? proof?.ownerId;
     const cleanup = async () => {
       if (identity.requiresCheckpointCleanup || identity.checkpointConfigJSON) {
-        const namespace = identity.checkpointNamespace ?? job.metadata.checkpointNamespace;
-        if (!namespace || !deps.cleanupCheckpoint || !identity.checkpointConfigJSON)
+        if (
+          !identity.checkpointNamespace ||
+          !deps.cleanupCheckpoint ||
+          !identity.checkpointConfigJSON
+        )
           throw new Error('Response checkpoint cleanup unavailable');
         await deps.cleanupCheckpoint(
           {
             ...identity,
             pendingTerminal: {
-              checkpointNamespace: namespace,
+              checkpointNamespace: identity.checkpointNamespace,
               checkpointConfigJSON: identity.checkpointConfigJSON,
             },
           },
-          namespace,
+          identity.checkpointNamespace,
         );
       }
     };
-    return { identity, job, cleanup, providerExecutionId, providerExecutionOwnerId };
+    return { identity, job, proof, fenced, cleanup, providerExecutionId, providerExecutionOwnerId };
   }
   async function finishRetired(
     owner: ResponseOwner,
@@ -127,7 +102,17 @@ export function createResponseRetirement(
     const retired = await retiredAuthority(owner, responseId);
     if (!retired) return null;
     const { identity, job, providerExecutionId, providerExecutionOwnerId } = retired;
-    if (!job) return identity.generationCreatedAt == null ? 'stopped' : 'pending';
+    if (!retired.fenced) return 'pending';
+    if (!job) {
+      if (identity.generationCreatedAt == null) return 'stopped';
+      if (!retired.proof) return 'pending';
+      await retired.cleanup();
+      await createResponseExecutionRelease(deps.jobs, deps.storage)(
+        { ...identity, status: 'cancelled' },
+        retired.proof,
+      );
+      return 'stopped';
+    }
     if (!providerExecutionId) throw new Error('Response retirement provider unavailable');
     if (!alreadyDrained) {
       await deps.jobs.abortJob(responseId, {
@@ -138,7 +123,7 @@ export function createResponseRetirement(
     }
     // abortJob's beforePublish runs before its final drain wait. Cleanup belongs after
     // the returned drain barrier, with fresh proof for the same retained attempt.
-    const drained = await retiredAuthority(owner, responseId);
+    const drained = await retiredAuthority(identity, responseId);
     if (
       !drained ||
       drained.identity.generationCreatedAt !== identity.generationCreatedAt ||
@@ -150,18 +135,23 @@ export function createResponseRetirement(
     )
       throw new Error('Response retirement generation changed');
     if (
-      !drained.job ||
-      !['complete', 'error', 'aborted'].includes(drained.job.status) ||
-      drained.job.metadata.providerDrained !== true
+      !drained.fenced ||
+      !drained.proof ||
+      (drained.job &&
+        (!['complete', 'error', 'aborted'].includes(drained.job.status) ||
+          drained.job.metadata.providerDrained !== true))
     )
       return 'pending';
     await drained.cleanup();
-    await createResponseExecutionRelease({
-      getJob: deps.jobs.getJob.bind(deps.jobs),
-      finishProviderTerminalPersistence: deps.jobs.finishProviderTerminalPersistence.bind(
-        deps.jobs,
-      ),
-    })(
+    await createResponseExecutionRelease(
+      {
+        getJob: deps.jobs.getJob.bind(deps.jobs),
+        finishProviderTerminalPersistence: deps.jobs.finishProviderTerminalPersistence.bind(
+          deps.jobs,
+        ),
+      },
+      deps.storage,
+    )(
       { ...identity, status: 'cancelled' },
       { providerExecutionId, ownerId: providerExecutionOwnerId },
     );

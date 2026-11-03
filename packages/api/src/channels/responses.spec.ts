@@ -111,8 +111,8 @@ function fixture() {
     recoverTerminal: createResponseCompletion({
       storage,
       cleanupCheckpoint: async () => {},
-      confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
-      releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+      confirmExecution: createResponseExecutionConfirmation(storage),
+      releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
     }).finish,
     authorize: async () => authorized,
     enqueue: async () => {

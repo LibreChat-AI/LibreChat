@@ -3,6 +3,7 @@ import type {
   ResponseOwner,
   ResponseReference,
   ResponseCheckpointExecution,
+  ResponseProviderExecution,
   ResponseReservation,
   StoredResponseRecord,
   StoredResponseStatus,
@@ -33,6 +34,7 @@ import { allocateManagedTarget, managedTargetFilter } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { getTransactionSupport } from '~/utils/transactions';
+import { includeManagedAllocations } from '~/utils/managed';
 import { activeExpirationFilter } from '~/utils/retention';
 import { materializeResponseTurn } from './responseTurn';
 
@@ -85,6 +87,7 @@ export type ResponseCleanupIdentity = Pick<
   | 'conversationId'
   | 'generationCreatedAt'
   | 'expiredAt'
+  | 'storageTarget'
 > &
   Partial<Pick<StoredResponseRecord, 'requestKey' | 'sourceKeyId' | 'parentMessageId'>> & {
     /** Cleanup authority only; never permission to read output or execute a provider. */
@@ -185,7 +188,17 @@ function responseExecutionFilter(
   return filter;
 }
 
+export interface ResponseExecutionProof extends ResponseExecutionBinding {
+  outcome?: ResponseProviderExecution['outcome'];
+  checkpointNamespace?: string;
+  checkpointConfigJSON?: string;
+}
+
 export interface ResponseStorage {
+  /** Positive proof on the exact retained root; missing jobs are never substituted. */
+  readExecutionProof(identity: ResponseCleanupIdentity): Promise<ResponseExecutionProof | null>;
+  /** Fence enrollment and scrub private data before using provider proof for physical cleanup. */
+  retireExecution(identity: ResponseCleanupIdentity): Promise<boolean>;
   createCheckpointWriter(
     reference: ResponseReference,
     checkpoint: Omit<ResponseCheckpointExecution, 'state'>,
@@ -384,6 +397,67 @@ export function createResponseStorage(
     }
   }
   return {
+    async retireExecution(identity) {
+      if (!identity.storageTarget) return false;
+      const closed = await isResponseScopeClosed(mongoose, identity, identity.conversationId);
+      const now = new Date();
+      const result = await model.updateOne(
+        {
+          ...responseRootFilter(mongoose, { ...identity, target: identity.storageTarget }),
+          agentId: identity.agentId,
+          conversationId: identity.conversationId,
+          generationCreatedAt: identity.generationCreatedAt ?? { $exists: false },
+          '_managed.phase': { $in: ['published', 'retired'] },
+          ...(closed ? {} : { expiredAt: { $lte: now } }),
+        },
+        {
+          $set: { '_managed.phase': 'retired' },
+          $min: { retiredAt: now },
+          $unset: {
+            requestJSON: 1,
+            responseJSON: 1,
+            review: 1,
+            resume: 1,
+            preparedTerminal: 1,
+            pendingTerminal: 1,
+          },
+        },
+        { upsert: false },
+      );
+      return result.matchedCount === 1;
+    },
+    async readExecutionProof(identity) {
+      if (!identity.storageTarget || identity.generationCreatedAt == null) return null;
+      const record = await includeManagedAllocations(
+        model
+          .findOne({
+            ...responseRootFilter(mongoose, {
+              ...identity,
+              target: identity.storageTarget,
+            }),
+            agentId: identity.agentId,
+            conversationId: identity.conversationId,
+            generationCreatedAt: identity.generationCreatedAt,
+            'providerExecution.drained': true,
+            $or: [{ checkpoint: { $exists: false } }, { 'checkpoint.state': 'settled' }],
+          })
+          .select('generationCreatedAt +providerExecution +checkpoint')
+          .lean(),
+      );
+      if (!record?.providerExecution || record.generationCreatedAt == null) return null;
+      return {
+        generationCreatedAt: record.generationCreatedAt,
+        providerExecutionId: record.providerExecution.id,
+        ...(record.providerExecution.ownerId ? { ownerId: record.providerExecution.ownerId } : {}),
+        ...(record.providerExecution.outcome ? { outcome: record.providerExecution.outcome } : {}),
+        ...(record.checkpoint
+          ? {
+              checkpointNamespace: record.checkpoint.namespace,
+              checkpointConfigJSON: record.checkpoint.configJSON,
+            }
+          : {}),
+      };
+    },
     createCheckpointWriter: (reference, checkpoint) =>
       createResponseCheckpointStorage(mongoose, reference, checkpoint),
     async enrollExecution(current, binding, responseJSON) {
@@ -973,12 +1047,14 @@ export function createResponseStorage(
       return record;
     },
     async readCleanupIdentity(owner, responseId, retained) {
-      const record = await model
-        .findOne({ ...ownerScope(owner), responseId })
-        .select(
-          'userId tenantId responseId agentId conversationId requestKey sourceKeyId parentMessageId generationCreatedAt expiredAt pendingTerminal.checkpointNamespace pendingTerminal.checkpointConfigJSON preparedTerminal.checkpointNamespace preparedTerminal.checkpointConfigJSON review.checkpointConfigJSON review.providerExecutionId',
-        )
-        .lean();
+      const record = await includeManagedAllocations(
+        model
+          .findOne({ ...ownerScope(owner), responseId })
+          .select(
+            'userId tenantId responseId agentId conversationId requestKey sourceKeyId parentMessageId generationCreatedAt expiredAt storageTarget +checkpoint pendingTerminal.checkpointNamespace pendingTerminal.checkpointConfigJSON preparedTerminal.checkpointNamespace preparedTerminal.checkpointConfigJSON review.checkpointConfigJSON review.providerExecutionId',
+          )
+          .lean(),
+      );
       // Retained data comes only from an internal job/receipt, never request input.
       // Validate it even when the row exists before using any fallback checkpoint fields.
       const retainedCandidate =
@@ -1033,12 +1109,16 @@ export function createResponseStorage(
       const hasTerminalCheckpoint =
         terminalCheckpoint?.checkpointNamespace != null ||
         terminalCheckpoint?.checkpointConfigJSON != null;
-      const checkpointNamespace = hasTerminalCheckpoint
-        ? terminalCheckpoint?.checkpointNamespace
-        : matchingRetained?.checkpointNamespace;
-      const checkpointConfigJSON = hasTerminalCheckpoint
-        ? terminalCheckpoint?.checkpointConfigJSON
-        : (record?.review?.checkpointConfigJSON ?? matchingRetained?.checkpointConfigJSON);
+      const checkpointNamespace =
+        record?.checkpoint?.namespace ??
+        (hasTerminalCheckpoint
+          ? terminalCheckpoint?.checkpointNamespace
+          : matchingRetained?.checkpointNamespace);
+      const checkpointConfigJSON =
+        record?.checkpoint?.configJSON ??
+        (hasTerminalCheckpoint
+          ? terminalCheckpoint?.checkpointConfigJSON
+          : (record?.review?.checkpointConfigJSON ?? matchingRetained?.checkpointConfigJSON));
       const {
         userId,
         tenantId,
@@ -1053,6 +1133,7 @@ export function createResponseStorage(
         responseId: id,
         agentId,
         conversationId,
+        ...(source.storageTarget ? { storageTarget: source.storageTarget } : {}),
         ...(source.requestKey == null ? {} : { requestKey: source.requestKey }),
         ...(source.sourceKeyId == null ? {} : { sourceKeyId: source.sourceKeyId }),
         ...(source.parentMessageId == null ? {} : { parentMessageId: source.parentMessageId }),

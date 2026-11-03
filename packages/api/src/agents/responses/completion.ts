@@ -57,6 +57,7 @@ type ExecutionReleaseIdentity = Pick<
   | 'generationCreatedAt'
   | 'expiredAt'
   | 'status'
+  | 'storageTarget'
 > & {
   retirement?: ResponseCleanupIdentity['retirement'];
   resume?: Pick<NonNullable<StoredResponseRecord['resume']>, 'state' | 'providerExecutionId'>;
@@ -94,27 +95,26 @@ async function readExecutionJob(
 
 /** Candidate bytes and possession of a provider ID do not prove that execution drained. */
 export function createResponseExecutionConfirmation(
-  jobs: Pick<GenerationJobManagerClass, 'getJob'>,
+  storage: Pick<ResponseStorage, 'readExecutionProof'>,
 ): ResponseCompletionDependencies['confirmExecution'] {
   return async (record, receipt) => {
-    const proof = await readExecutionJob(jobs, record, receipt);
-    const job = proof?.job;
+    if (record.generationCreatedAt !== receipt.generationCreatedAt)
+      throw new Error('Response terminal execution identity changed');
+    const proof = await storage.readExecutionProof(record);
+    if (!proof) return null;
     if (
-      !job ||
-      job.metadata.providerDrained !== true ||
-      job.status === 'running' ||
-      job.status === 'requires_action'
+      proof.providerExecutionId !== receipt.providerExecutionId ||
+      proof.ownerId !== receipt.ownerId
     )
-      return null;
-    if (job.status !== 'complete' && job.status !== 'error' && job.status !== 'aborted')
-      throw new Error('Response terminal execution outcome is unavailable');
-    return job.status;
+      throw new Error('Response terminal execution identity changed');
+    return proof.outcome ?? null;
   };
 }
 
 /** Release transient provider proof only after its canonical terminal result is durable. */
 export function createResponseExecutionRelease(
   jobs: Pick<GenerationJobManagerClass, 'getJob' | 'finishProviderTerminalPersistence'>,
+  storage: Pick<ResponseStorage, 'readExecutionProof'>,
 ): (
   record: ExecutionReleaseIdentity,
   receipt?: Pick<ResponseTerminalReceipt, 'providerExecutionId' | 'ownerId'>,
@@ -127,7 +127,15 @@ export function createResponseExecutionRelease(
     )
       throw new Error('Response terminal publication is unavailable');
     if (record.generationCreatedAt == null) return;
-    const proof = await readExecutionJob(jobs, record, receipt);
+    const durable = await storage.readExecutionProof(record);
+    if (!durable) throw new Error('Response durable execution proof is unavailable');
+    if (
+      receipt &&
+      (durable.providerExecutionId !== receipt.providerExecutionId ||
+        durable.ownerId !== receipt.ownerId)
+    )
+      throw new Error('Response terminal execution identity changed');
+    const proof = await readExecutionJob(jobs, record, durable);
     if (!proof) return;
     const { job, providerExecutionId } = proof;
     if (
@@ -254,6 +262,11 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
   async function discardRetired(record: StoredResponseRecord, receipt: ResponseTerminalReceipt) {
     const retired = await readRetirement(record, receipt);
     if (!retired) return null;
+    if (
+      !(await deps.storage.retireExecution(retired)) ||
+      (await deps.confirmExecution(retired, receipt)) == null
+    )
+      return redactRetirement(retired);
     const identity = retired;
     const namespace = identity.checkpointNamespace ?? receipt.checkpointNamespace;
     if (identity.requiresCheckpointCleanup && !namespace)
@@ -282,8 +295,6 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
     if (authority) {
       const retired = await readRetirement(record, authority);
       if (retired) {
-        if (record.preparedTerminal && (await deps.confirmExecution(record, authority)) == null)
-          return redactRetirement(retired);
         const discarded = await discardRetired(record, authority);
         if (discarded) return discarded;
       }
@@ -334,6 +345,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       return record;
     }
     assertReceipt(record, receipt);
+    if ((await deps.confirmExecution(record, receipt)) == null) return record;
     if (receipt.checkpointNamespace)
       await deps.cleanupCheckpoint(record, receipt.checkpointNamespace);
     let current: StoredResponseRecord | null;

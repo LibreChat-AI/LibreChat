@@ -1,14 +1,44 @@
-import { tenantStorage } from '@librechat/data-schemas';
+import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import {
+  tenantStorage,
+  createResponseStorage,
+  createManagedMessageId,
+  createManagedConversationId,
+  responseReference,
+} from '@librechat/data-schemas';
 import type { StoredResponseRecord, ResponseTerminalReceipt } from '@librechat/data-schemas';
-import { createResponseExecutionRelease, createResponseExecutionConfirmation } from './completion';
+import {
+  createResponseCompletion,
+  createResponseExecutionRelease,
+  createResponseExecutionConfirmation,
+} from './completion';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
+import { createResponseRetirement } from './retirement';
 
 const owner = { userId: 'release-owner', tenantId: 'release-tenant' };
 const scope = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
 let jobs: GenerationJobManagerClass;
-beforeEach(() => {
+let server: MongoMemoryServer;
+let storage: ReturnType<typeof createResponseStorage>;
+beforeAll(async () => {
+  server = await MongoMemoryServer.create();
+  await mongoose.connect(server.getUri());
+  storage = createResponseStorage(mongoose);
+});
+afterAll(async () => {
+  await mongoose.disconnect();
+  await server.stop();
+});
+beforeEach(async () => {
+  await scope(async () => {
+    await mongoose.models.StoredResponse?.deleteMany({});
+    await mongoose.models.ResponseScope?.deleteMany({});
+  });
   jobs = new GenerationJobManagerClass();
   jobs.configure({
     jobStore: new InMemoryJobStore(),
@@ -23,11 +53,30 @@ afterEach(async () => {
 });
 
 async function fixture(phase: 'running' | 'terminal' | 'drained' = 'drained') {
-  const responseId = 'resp_release';
-  const job = await jobs.createJob(responseId, owner.userId, 'conversation', {
+  const responseId = createManagedMessageId();
+  const conversationId = createManagedConversationId();
+  const job = await jobs.createJob(responseId, owner.userId, conversationId, {
     initialMetadata: { endpoint: 'responses', agent_id: 'agent', responseMessageId: responseId },
   });
   const providerExecutionId = job.metadata.providerExecutionId!;
+  const reserved = await storage.reserve({
+    ...owner,
+    responseId,
+    conversationId,
+    agentId: 'agent',
+    sourceKeyId: 'source',
+    requestKey: responseId,
+    requestJSON: '{}',
+    fingerprint: 'fingerprint',
+    parentMessageId: 'parent',
+  });
+  if (!reserved.ok) throw new Error('Reservation failed');
+  const enrolled = await storage.enrollExecution(
+    reserved.record,
+    { generationCreatedAt: job.createdAt, providerExecutionId },
+    '{}',
+  );
+  if (!enrolled.ok) throw new Error('Enrollment failed');
   await jobs.beginProviderExecution(responseId, job.createdAt, providerExecutionId);
   if (phase !== 'running')
     await jobs.completeJob(responseId, undefined, job.createdAt, {
@@ -36,23 +85,13 @@ async function fixture(phase: 'running' | 'terminal' | 'drained' = 'drained') {
     });
   if (phase === 'drained')
     await jobs.markProviderExecutionDrained(responseId, job.createdAt, providerExecutionId, true);
-  const record: StoredResponseRecord = {
-    ...owner,
-    responseId,
-    agentId: 'agent',
-    sourceKeyId: 'source',
-    requestKey: 'request',
-    requestJSON: '{}',
-    fingerprint: 'fingerprint',
-    conversationId: 'conversation',
-    parentMessageId: 'parent',
-    status: 'completed',
-    generationCreatedAt: job.createdAt,
-    revision: 1,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    responseJSON: '{}',
-  };
+  const record: StoredResponseRecord = { ...enrolled.record, status: 'completed' };
+  if (phase === 'drained')
+    await storage.settleExecution(
+      responseReference(record),
+      { generationCreatedAt: job.createdAt, providerExecutionId },
+      'complete',
+    );
   const receipt: ResponseTerminalReceipt = {
     generationCreatedAt: job.createdAt,
     providerExecutionId,
@@ -61,13 +100,13 @@ async function fixture(phase: 'running' | 'terminal' | 'drained' = 'drained') {
   };
   if (phase !== 'running')
     expect((await jobs.getJob(responseId))?.metadata.terminalPersistencePending).toBe(true);
-  return { record, receipt, release: createResponseExecutionRelease(jobs) };
+  return { record, receipt, release: createResponseExecutionRelease(jobs, storage) };
 }
 
 it('confirms a prepared result only after the exact persisted provider outcome and drain', () =>
   scope(async () => {
     const f = await fixture('running');
-    const confirm = createResponseExecutionConfirmation(jobs);
+    const confirm = createResponseExecutionConfirmation(storage);
     expect(await confirm(f.record, f.receipt)).toBeNull();
     await jobs.completeJob(f.record.responseId, undefined, f.receipt.generationCreatedAt, {
       expectedProviderExecutionId: f.receipt.providerExecutionId,
@@ -80,20 +119,23 @@ it('confirms a prepared result only after the exact persisted provider outcome a
       f.receipt.providerExecutionId,
       true,
     );
+    // Transient provider drain alone is insufficient until its exact Root proof is durable.
+    expect(await confirm(f.record, f.receipt)).toBeNull();
+    await storage.settleExecution(responseReference(f.record), f.receipt, 'complete');
     expect(await confirm(f.record, f.receipt)).toBe('complete');
     expect((await jobs.getJob(f.record.responseId))?.metadata.terminalPersistencePending).toBe(
       true,
     );
     await f.release(f.record, f.receipt);
-    expect(await confirm(f.record, f.receipt)).toBeNull();
+    expect(await confirm(f.record, f.receipt)).toBe('complete');
   }));
 
 it('does not turn a confirmation lookup outage into missing or successful drain proof', () =>
   scope(async () => {
     const f = await fixture();
-    const failure = new Error('Injected job-store outage');
-    jest.spyOn(jobs, 'getJob').mockRejectedValueOnce(failure);
-    await expect(createResponseExecutionConfirmation(jobs)(f.record, f.receipt)).rejects.toBe(
+    const failure = new Error('Injected Root proof lookup outage');
+    jest.spyOn(storage, 'readExecutionProof').mockRejectedValueOnce(failure);
+    await expect(createResponseExecutionConfirmation(storage)(f.record, f.receipt)).rejects.toBe(
       failure,
     );
     expect((await jobs.getJob(f.record.responseId))?.metadata.terminalPersistencePending).toBe(
@@ -105,7 +147,7 @@ it('rejects another provider owner when confirming a prepared result', () =>
   scope(async () => {
     const f = await fixture();
     await expect(
-      createResponseExecutionConfirmation(jobs)(f.record, {
+      createResponseExecutionConfirmation(storage)(f.record, {
         ...f.receipt,
         ownerId: 'different-owner',
       }),
@@ -137,12 +179,19 @@ it.each([
 ])('does not release another execution for mismatched record %j', (change) =>
   scope(async () => {
     const f = await fixture();
-    await expect(
-      createResponseExecutionConfirmation(jobs)({ ...f.record, ...change }, f.receipt),
-    ).rejects.toThrow('identity changed');
-    await expect(f.release({ ...f.record, ...change }, f.receipt)).rejects.toThrow(
-      'identity changed',
-    );
+    if ('generationCreatedAt' in change)
+      await expect(
+        createResponseExecutionConfirmation(storage)({ ...f.record, ...change }, f.receipt),
+      ).rejects.toThrow('identity changed');
+    else if ('tenantId' in change)
+      await expect(
+        createResponseExecutionConfirmation(storage)({ ...f.record, ...change }, f.receipt),
+      ).rejects.toThrow();
+    else
+      expect(
+        await createResponseExecutionConfirmation(storage)({ ...f.record, ...change }, f.receipt),
+      ).toBeNull();
+    await expect(f.release({ ...f.record, ...change }, f.receipt)).rejects.toThrow();
     expect((await jobs.getJob(f.record.responseId))?.metadata.terminalPersistencePending).toBe(
       true,
     );
@@ -195,3 +244,115 @@ it.each(['owner_deleted', 'conversation_deleted', 'expired'] as const)(
       expect(await jobs.getJob(f.record.responseId)).toBeUndefined();
     }),
 );
+
+it('retains confirmation after the transient generation has expired', () =>
+  scope(async () => {
+    const f = await fixture();
+    await jobs.getJobStore().deleteJob(f.record.responseId);
+    expect(await createResponseExecutionConfirmation(storage)(f.record, f.receipt)).toBe(
+      'complete',
+    );
+    await expect(f.release(f.record, f.receipt)).resolves.toBeUndefined();
+  }));
+it('does not substitute a drained transient job for a missing physical Root', () =>
+  scope(async () => {
+    const f = await fixture();
+    await mongoose.models.StoredResponse.deleteOne({ responseId: f.record.responseId });
+    expect(await createResponseExecutionConfirmation(storage)(f.record, f.receipt)).toBeNull();
+    await expect(f.release(f.record, f.receipt)).rejects.toThrow(
+      'durable execution proof is unavailable',
+    );
+    expect((await jobs.getJob(f.record.responseId))?.metadata.terminalPersistencePending).toBe(
+      true,
+    );
+  }));
+
+it.each(['pending', 'settled'] as const)(
+  'retirement requires durable %s checkpoint proof after transient job expiry',
+  (state) =>
+    scope(async () => {
+      const f = await fixture('terminal');
+      const checkpoint = storage.createCheckpointWriter(responseReference(f.record), {
+        ...f.receipt,
+        writerId: randomUUID(),
+        namespace: `${checkpointOwnerNamespacePrefix(owner.userId, owner.tenantId)}${randomUUID()}`,
+        configJSON: JSON.stringify({
+          type: 'mongo',
+          checkpointCollectionName: 'release_cp',
+          checkpointWritesCollectionName: 'release_writes',
+        }),
+      });
+      expect(await checkpoint.open()).toBe(true);
+      if (state === 'settled') expect(await checkpoint.settle()).toBe(true);
+      await storage.settleExecution(responseReference(f.record), f.receipt, 'complete');
+      await mongoose.models.StoredResponse.updateOne(
+        { responseId: f.record.responseId },
+        { $set: { expiredAt: new Date(Date.now() - 1) } },
+      );
+      await jobs.getJobStore().deleteJob(f.record.responseId);
+      const cleanup = jest.fn(async () => {});
+      const retire = createResponseRetirement({ storage, jobs, cleanupCheckpoint: cleanup });
+      expect(await retire(f.record, f.record.responseId)).toBe(
+        state === 'settled' ? 'stopped' : 'pending',
+      );
+      expect(cleanup).toHaveBeenCalledTimes(state === 'settled' ? 1 : 0);
+      expect(
+        await mongoose.models.StoredResponse.findOne({ responseId: f.record.responseId }),
+      ).toBeNull();
+      expect(await storage.readCleanupIdentity(f.record, f.record.responseId)).toMatchObject({
+        retirement: 'expired',
+        storageTarget: f.record.storageTarget,
+      });
+    }),
+);
+
+it('never cleans an expired prepared result while checkpoint commands remain unresolved', () =>
+  scope(async () => {
+    const f = await fixture('terminal');
+    const checkpoint = storage.createCheckpointWriter(responseReference(f.record), {
+      ...f.receipt,
+      writerId: randomUUID(),
+      namespace: `${checkpointOwnerNamespacePrefix(owner.userId, owner.tenantId)}${randomUUID()}`,
+      configJSON: JSON.stringify({
+        type: 'mongo',
+        checkpointCollectionName: 'unknown_cp',
+        checkpointWritesCollectionName: 'unknown_writes',
+      }),
+    });
+    expect(await checkpoint.open()).toBe(true);
+    await storage.settleExecution(responseReference(f.record), f.receipt, 'complete');
+    const expiredAt = new Date(Date.now() - 1);
+    await mongoose.models.StoredResponse.updateOne(
+      { responseId: f.record.responseId },
+      { $set: { expiredAt } },
+    );
+    const cleanupCheckpoint = jest.fn(async () => {});
+    const releaseExecution = jest.fn(createResponseExecutionRelease(jobs, storage));
+    const completion = createResponseCompletion({
+      storage,
+      cleanupCheckpoint,
+      releaseExecution,
+      confirmExecution: createResponseExecutionConfirmation(storage),
+    });
+    const responseJSON = JSON.stringify({
+      id: f.record.responseId,
+      model: f.record.agentId,
+      object: 'response',
+      status: 'completed',
+      output: [],
+      background: true,
+      store: true,
+    });
+    const retired = await completion.stageAndFinish(
+      { ...f.record, expiredAt, status: 'in_progress' },
+      { ...f.receipt, responseJSON },
+    );
+    expect(retired.retirement).toBe('expired');
+    expect(retired.responseJSON).toBeUndefined();
+    expect(retired.status).toBe('in_progress');
+    expect(cleanupCheckpoint).not.toHaveBeenCalled();
+    expect(releaseExecution).not.toHaveBeenCalled();
+    expect((await jobs.getJob(f.record.responseId))?.metadata.terminalPersistencePending).toBe(
+      true,
+    );
+  }));

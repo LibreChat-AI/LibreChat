@@ -675,8 +675,8 @@ it.each(['cleanup', 'stage'] as const)(
         const completion = createResponseCompletion({
           storage,
           cleanupCheckpoint: cleanup,
-          confirmExecution: createResponseExecutionConfirmation(manager),
-          releaseExecution: createResponseExecutionRelease(manager),
+          confirmExecution: createResponseExecutionConfirmation(storage),
+          releaseExecution: createResponseExecutionRelease(manager, storage),
         });
         return createResponseRetirement({
           storage,

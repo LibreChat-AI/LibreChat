@@ -391,6 +391,50 @@ describe('managed target allocation on real storage', () => {
         ).toEqual({ ok: false, code: 'response_conflict' });
       },
     );
+    it('fences an enrollment that already passed scope admission and scrubs the retained root', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const reserved = await storage.reserve(input);
+      if (!reserved.ok) throw new Error('Reservation failed');
+      expect(await storage.retireExecution(reserved.record)).toBe(false);
+      const model = createStoredResponseModel(db);
+      const collection = model.collection;
+      const original = collection.findOneAndUpdate.bind(collection);
+      let fenced = false;
+      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        await closeResponseScopes(db, input, [input.conversationId]);
+        fenced = await storage.retireExecution(reserved.record);
+        return original(...args);
+      });
+      expect(
+        await storage.enrollExecution(
+          reserved.record,
+          {
+            generationCreatedAt: Date.now(),
+            providerExecutionId: randomUUID(),
+          },
+          '{}',
+        ),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(fenced).toBe(true);
+      expect(await storage.read(input, input.responseId)).toBeNull();
+      expect(await model.findOne({ responseId: input.responseId })).toBeNull();
+      const retained = await includeManagedAllocations(
+        model
+          .findOne(responseRootFilter(db, responseReference(reserved.record)))
+          .select('+_managed')
+          .lean(),
+      );
+      expect(retained).toMatchObject({
+        _managed: { phase: 'retired' },
+        storageTarget: reserved.record.storageTarget,
+      });
+      expect(retained).not.toHaveProperty('requestJSON');
+      expect(await storage.readCleanupIdentity(reserved.record, input.responseId)).toMatchObject({
+        retirement: 'conversation_deleted',
+        storageTarget: reserved.record.storageTarget,
+      });
+    });
     it('retains exact provider drain proof after expiry without settling checkpoint writes', async () => {
       const f = await checkpointFixture();
       const checkpointStorage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
@@ -412,19 +456,66 @@ describe('managed target allocation on real storage', () => {
       await f.model.updateOne(responseRootFilter(db, f.reference), {
         $set: { retiredAt: new Date(), expiredAt: new Date(Date.now() - 1) },
       });
+      expect(await f.storage.retireExecution(f.record)).toBe(true);
       expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
       expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
       expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'error')).toBe(false);
       expect(
-        await f.model
-          .findOne(responseRootFilter(db, f.reference))
-          .select('+providerExecution +checkpoint')
-          .lean(),
+        await includeManagedAllocations(
+          f.model
+            .findOne(responseRootFilter(db, f.reference))
+            .select('+providerExecution +checkpoint')
+            .lean(),
+        ),
       ).toMatchObject({
         providerExecution: { drained: true, outcome: 'complete' },
         checkpoint: { state: 'pending' },
       });
+      expect(await f.storage.readExecutionProof(f.record)).toBeNull();
       expect(await checkpointStorage.settle()).toBe(true);
+      expect(await f.storage.readExecutionProof(f.record)).toMatchObject({
+        generationCreatedAt: f.checkpoint.generationCreatedAt,
+        providerExecutionId: f.checkpoint.providerExecutionId,
+        ownerId: f.checkpoint.ownerId,
+        outcome: 'complete',
+        checkpointNamespace: f.checkpoint.namespace,
+        checkpointConfigJSON: f.checkpoint.configJSON,
+      });
+      for (const change of [
+        { agentId: 'wrong-agent' },
+        { conversationId: createManagedConversationId() },
+        { generationCreatedAt: f.checkpoint.generationCreatedAt + 1 },
+      ])
+        expect(await f.storage.readExecutionProof({ ...f.record, ...change })).toBeNull();
+      const cleanup = await f.storage.readCleanupIdentity(f.record, f.record.responseId);
+      expect(cleanup).toMatchObject({
+        storageTarget: f.record.storageTarget,
+        checkpointNamespace: f.checkpoint.namespace,
+      });
+      expect(cleanup).not.toHaveProperty('requestJSON');
+      expect(cleanup).not.toHaveProperty('responseJSON');
+    });
+    it('does not adopt a replacement physical root as durable drain proof', async () => {
+      const f = await checkpointFixture();
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      expect(await f.storage.readExecutionProof(f.record)).toMatchObject({ outcome: 'complete' });
+      await f.model.deleteOne(responseRootFilter(db, f.reference));
+      const replacement = await f.storage.reserve(f.input);
+      if (!replacement.ok) throw new Error('Replacement failed');
+      const enrolled = await f.storage.enrollExecution(replacement.record, f.checkpoint, '{}');
+      if (!enrolled.ok) throw new Error('Replacement enrollment failed');
+      expect(
+        await f.storage.settleExecution(
+          responseReference(enrolled.record),
+          f.checkpoint,
+          'complete',
+        ),
+      ).toBe(true);
+      expect(await f.storage.readExecutionProof(enrolled.record)).toMatchObject({
+        outcome: 'complete',
+      });
+      expect(await f.storage.readExecutionProof(f.record)).toBeNull();
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(false);
     });
     it('resumes only after provider drain and checkpoint settlement and rejects the previous closer', async () => {
       const f = await checkpointFixture();

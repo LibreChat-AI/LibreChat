@@ -112,8 +112,8 @@ export function createBackgroundResponsesHost(
   const completion = createResponseCompletion({
     storage: deps.storage,
     cleanupCheckpoint: cleanupResponseCheckpoint,
-    releaseExecution: createResponseExecutionRelease(deps.jobs),
-    confirmExecution: createResponseExecutionConfirmation(deps.jobs),
+    releaseExecution: createResponseExecutionRelease(deps.jobs, deps.storage),
+    confirmExecution: createResponseExecutionConfirmation(deps.storage),
   });
   const retire = createResponseRetirement({
     storage: deps.storage,

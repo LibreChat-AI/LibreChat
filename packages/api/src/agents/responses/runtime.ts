@@ -282,8 +282,8 @@ export function createResponseExecutionRuntime(
     ? createResponseCompletion({
         storage: admission.storage,
         cleanupCheckpoint: cleanupResponseCheckpoint,
-        confirmExecution: createResponseExecutionConfirmation(continuation.jobs!),
-        releaseExecution: createResponseExecutionRelease(continuation.jobs!),
+        confirmExecution: createResponseExecutionConfirmation(admission.storage),
+        releaseExecution: createResponseExecutionRelease(continuation.jobs!, admission.storage),
       })
     : undefined;
   const hooks: Pick<
