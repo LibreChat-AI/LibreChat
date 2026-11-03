@@ -1,3 +1,4 @@
+import { responseReference } from '@librechat/data-schemas';
 import {
   checkpointerSchema,
   messageFilterSchema,
@@ -339,6 +340,27 @@ export function createResponseResumeAdmission(deps: ResponseResumeAdmissionDepen
     const validation = await deps.validate(record, job);
     if (!validation.ok) return unavailable;
     if (!alreadyResolved(job)) {
+      // Persist the drained predecessor before approval replaces its transient identity.
+      let proof = await deps.storage.readExecutionProof(record);
+      if (!proof) {
+        if (
+          !(await deps.storage.settleExecution(responseReference(record), {
+            generationCreatedAt: job.createdAt,
+            providerExecutionId: intent.previousProviderExecutionId,
+            ...(job.metadata.providerExecutionOwnerId
+              ? { ownerId: job.metadata.providerExecutionOwnerId }
+              : {}),
+          }))
+        )
+          return unavailable;
+        proof = await deps.storage.readExecutionProof(record);
+      }
+      if (
+        !proof ||
+        proof.providerExecutionId !== intent.previousProviderExecutionId ||
+        proof.ownerId !== job.metadata.providerExecutionOwnerId
+      )
+        return unavailable;
       let resolutionError: unknown;
       try {
         await deps.jobs.approvals.resolve(

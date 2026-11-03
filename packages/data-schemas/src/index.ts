@@ -18,6 +18,7 @@ export type {
   ResponsePersistenceFailure,
   ResponseProviderExecution,
   ResponseCheckpointExecution,
+  ResponseResumeSelection,
 } from './models/response';
 export type {
   ResponseOwner,
@@ -25,6 +26,7 @@ export type {
   ResponseExecutionGuard,
   ResponseExecutionBinding,
   ResponseExecutionProof,
+  ResponsePausedCancellation,
   ResponseCleanupIdentity,
   ResponseReservation,
   ResponseReservationResult,

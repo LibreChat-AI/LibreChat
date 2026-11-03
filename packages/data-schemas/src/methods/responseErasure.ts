@@ -1,5 +1,11 @@
 import type { UpdateQuery } from 'mongoose';
-import type { ResponseOwner, StoredResponseRecord, ResponseReference } from '~/models/response';
+import type {
+  ResponseOwner,
+  StoredResponseRecord,
+  ResponseReference,
+  ResponseReviewCheckpoint,
+  ResponseResumeIntent,
+} from '~/models/response';
 import type { ManagedState, ManagedRegistration } from '~/types/managed';
 import {
   responseOwnerFilter,
@@ -67,6 +73,41 @@ export function createResponseCheckpointCleanupGuard(
   };
 }
 
+// Every new review/resume field must explicitly choose erasure or bounded cleanup retention.
+const reviewErasure: Record<keyof ResponseReviewCheckpoint, boolean> = {
+  actionId: false,
+  providerExecutionId: false,
+  expiresAt: true,
+  partialResponseJSON: true,
+  visibleOutputTokens: true,
+  pendingActionJSON: true,
+  checkpointConfigJSON: true,
+  checkpointId: true,
+  checkpointNs: true,
+};
+const resumeErasure: Record<keyof ResponseResumeIntent, boolean> = {
+  intentId: false,
+  actionId: false,
+  previousProviderExecutionId: false,
+  providerExecutionId: false,
+  state: false,
+  fingerprint: true,
+  resolutionJSON: true,
+  decisionJSON: true,
+  reservedAt: true,
+  admittedAt: true,
+};
+const privateReviewFields = Object.fromEntries(
+  Object.entries(reviewErasure)
+    .filter(([, erase]) => erase)
+    .map(([field]) => [`review.${field}`, 1]),
+);
+const privateResumeFields = Object.fromEntries(
+  Object.entries(resumeErasure)
+    .filter(([, erase]) => erase)
+    .map(([field]) => [`resume.${field}`, 1]),
+);
+
 /** Retirement invalidates paused selection CASes before any physical target is removed. */
 export function retiredResponseUpdate(now: Date = new Date()): UpdateQuery<StoredResponseRecord> {
   return {
@@ -76,8 +117,8 @@ export function retiredResponseUpdate(now: Date = new Date()): UpdateQuery<Store
     $unset: {
       requestJSON: 1,
       responseJSON: 1,
-      review: 1,
-      resume: 1,
+      ...privateReviewFields,
+      ...privateResumeFields,
       preparedTerminal: 1,
       pendingTerminal: 1,
       terminalReceiptKey: 1,

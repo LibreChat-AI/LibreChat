@@ -1,8 +1,10 @@
+import { responseReference } from '@librechat/data-schemas';
 import type {
   ResponseOwner,
   ResponseStorage,
   StoredResponseRecord,
   ResponseCleanupIdentity,
+  ResponsePausedCancellation,
 } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { ResponseCheckpointIdentity } from './checkpoint';
@@ -10,6 +12,7 @@ import type { ResponseCompletionRecord } from './completion';
 import {
   createResponseCompletion,
   readResponseExecutionProof,
+  matchesPausedCancellationJob,
   createResponseExecutionRelease,
   createResponseExecutionConfirmation,
 } from './completion';
@@ -73,24 +76,29 @@ export function createResponseRetirement(
       // An unused attempt may outlive physical erasure. Its exact root cannot be
       // recreated; closure plus absence fences startup without inventing enrollment.
       (identity.generationCreatedAt == null && (await deps.storage.finishErasure(identity)));
-    const proof = fenced
-      ? await readResponseExecutionProof(deps.storage, deps.jobs, identity)
-      : null;
+    const paused = fenced ? await deps.storage.readPausedCancellation(identity) : null;
+    let proof = paused?.proof ?? null;
+    if (!paused && fenced)
+      proof = await readResponseExecutionProof(deps.storage, deps.jobs, identity);
     const job = await deps.jobs.getJob(responseId);
     if (
       job &&
-      (!matchesResponseRoot(identity, job.metadata) ||
-        (identity.generationCreatedAt != null && job.createdAt !== identity.generationCreatedAt) ||
-        (identity.generationCreatedAt == null && job.metadata.providerExecutionStartedId != null) ||
-        job.metadata.userId !== identity.userId ||
-        responseTenantId(job.metadata.tenantId) !== responseTenantId(identity.tenantId) ||
-        job.metadata.agent_id !== identity.agentId ||
-        job.metadata.endpoint !== 'responses' ||
-        job.metadata.conversationId !== identity.conversationId ||
-        job.metadata.responseMessageId !== responseId ||
-        (proof &&
-          (job.metadata.providerExecutionId !== proof.providerExecutionId ||
-            job.metadata.providerExecutionOwnerId !== proof.ownerId)))
+      (paused
+        ? !matchesPausedCancellationJob(identity, paused, job)
+        : !matchesResponseRoot(identity, job.metadata) ||
+          (identity.generationCreatedAt != null &&
+            job.createdAt !== identity.generationCreatedAt) ||
+          (identity.generationCreatedAt == null &&
+            job.metadata.providerExecutionStartedId != null) ||
+          job.metadata.userId !== identity.userId ||
+          responseTenantId(job.metadata.tenantId) !== responseTenantId(identity.tenantId) ||
+          job.metadata.agent_id !== identity.agentId ||
+          job.metadata.endpoint !== 'responses' ||
+          job.metadata.conversationId !== identity.conversationId ||
+          job.metadata.responseMessageId !== responseId ||
+          (proof &&
+            (job.metadata.providerExecutionId !== proof.providerExecutionId ||
+              job.metadata.providerExecutionOwnerId !== proof.ownerId)))
     )
       throw new Error('Response retirement generation changed');
     const providerExecutionId = job?.metadata.providerExecutionId ?? proof?.providerExecutionId;
@@ -107,7 +115,16 @@ export function createResponseRetirement(
           }),
       );
     };
-    return { identity, job, proof, fenced, cleanup, providerExecutionId, providerExecutionOwnerId };
+    return {
+      identity,
+      job,
+      proof,
+      fenced,
+      cleanup,
+      providerExecutionId,
+      providerExecutionOwnerId,
+      paused,
+    };
   }
   async function finishRetired(
     owner: ResponseOwner,
@@ -119,6 +136,7 @@ export function createResponseRetirement(
     if (!retired) return null;
     const { identity, job, providerExecutionId, providerExecutionOwnerId } = retired;
     if (!retired.fenced) return 'pending';
+    if (retired.paused) return finishPausedCancellation(identity, retired.paused, true);
     if (identity.generationCreatedAt == null) {
       // Retirement won the root CAS before enrollment; a bound job cannot start SDK work.
       if (!job) return (await deps.storage.finishErasure(identity)) ? 'stopped' : 'pending';
@@ -207,6 +225,74 @@ export function createResponseRetirement(
     );
     return (await deps.storage.finishErasure(identity)) ? 'stopped' : 'pending';
   }
+  async function finishPausedCancellation(
+    identity: ResponseCleanupIdentity,
+    paused: ResponsePausedCancellation,
+    erasing: boolean,
+  ): Promise<'stopped' | 'pending'> {
+    if (paused.proof?.releaseAcknowledged)
+      return !erasing || (await deps.storage.finishErasure(identity)) ? 'stopped' : 'pending';
+    const job = await deps.jobs.getJob(identity.responseId);
+    if (job) {
+      if (!matchesPausedCancellationJob(identity, paused, job))
+        throw new Error('Response paused cancellation identity changed');
+      await deps.jobs.abortJob(identity.responseId, {
+        expectedCreatedAt: identity.generationCreatedAt,
+        awaitProviderDrain: true,
+        retainTerminalPersistence: true,
+      });
+    }
+    let current = await deps.storage.readPausedCancellation(identity);
+    if (!current) throw new Error('Response paused cancellation authority changed');
+    const drained = await deps.jobs.getJob(identity.responseId);
+    if (
+      drained &&
+      (!matchesPausedCancellationJob(identity, current, drained) ||
+        !['complete', 'error', 'aborted'].includes(drained.status) ||
+        drained.metadata.providerDrained !== true)
+    )
+      return 'pending';
+    if (
+      !current.providerDrained &&
+      drained &&
+      drained.metadata.providerExecutionId === current.execution.providerExecutionId
+    ) {
+      if (await deps.storage.settleExecution(responseReference(identity), current.execution))
+        current = await deps.storage.readPausedCancellation(identity);
+    }
+    if (!current?.proof) return 'pending';
+    await eraseResponseExecutionCheckpoint(
+      deps.storage,
+      identity,
+      current.proof,
+      deps.cleanupCheckpoint ??
+        (async () => {
+          throw new Error('Response checkpoint cleanup unavailable');
+        }),
+    );
+    if (!erasing) {
+      const record = await deps.storage.read(identity, identity.responseId);
+      if (!record) return (await finishRetired(identity, identity.responseId, true)) ?? 'pending';
+      if (record.status !== 'cancelled') {
+        const response = {
+          ...buildPendingBackgroundResponse(record),
+          status: 'cancelled' as const,
+          completed_at: Math.floor((deps.now ?? Date.now)() / 1000),
+        };
+        const cancelled = await deps.storage.finishPausedCancellation(
+          record,
+          JSON.stringify(response),
+        );
+        if (!cancelled.ok) return 'pending';
+      }
+    }
+    await createResponseExecutionRelease(
+      deps.jobs,
+      deps.storage,
+    )({ ...identity, status: 'cancelled' });
+    if (erasing) return (await deps.storage.finishErasure(identity)) ? 'stopped' : 'pending';
+    return 'stopped';
+  }
   async function recoverState(record: StoredResponseRecord): Promise<'stopped' | 'pending'> {
     const completed = await recover(record);
     if (completed.retirement)
@@ -222,6 +308,8 @@ export function createResponseRetirement(
     const retired = await finishRetired(owner, responseId, false, retained);
     if (retired) return retired;
     if (!record) throw new Error('Response retirement identity unavailable');
+    const paused = await deps.storage.readPausedCancellation(record);
+    if (paused) return finishPausedCancellation(record, paused, false);
     if (terminal(record)) {
       return recoverState(record);
     }

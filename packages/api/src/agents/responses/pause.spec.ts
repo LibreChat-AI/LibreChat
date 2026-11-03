@@ -746,7 +746,7 @@ it('captures a real SDK question interrupt and cancels its actual durable checkp
     expect(await saver!.getTuple(f.config)).toBeUndefined();
   }));
 
-it.each(['cleanup', 'stage'] as const)(
+it.each(['cleanup', 'publication'] as const)(
   'recovers a real SDK paused Stop after %s failure with default job cleanup',
   (failure) =>
     scoped(async () => {
@@ -760,11 +760,11 @@ it.each(['cleanup', 'stage'] as const)(
       ).toBe(true);
       await f.settle();
       let failing = true;
-      const originalStage = storage.stageTerminal.bind(storage);
-      if (failure === 'stage')
-        jest.spyOn(storage, 'stageTerminal').mockImplementation(async (...args) => {
-          if (failing) throw new Error('Injected paused cancellation stage failure');
-          return originalStage(...args);
+      const publish = storage.finishPausedCancellation.bind(storage);
+      if (failure === 'publication')
+        jest.spyOn(storage, 'finishPausedCancellation').mockImplementation(async (...args) => {
+          if (failing) throw new Error('Injected paused cancellation publication failure');
+          return publish(...args);
         });
       const cleanup = async (
         record: Parameters<typeof cleanupResponseCheckpoint>[0],
@@ -791,26 +791,21 @@ it.each(['cleanup', 'stage'] as const)(
       await expect(freshRetirement()(owner, responseId)).rejects.toThrow();
       const saved = (await storage.read(owner, responseId))!;
       expect(saved.status).toBe('requires_action');
-      if (failure === 'stage') {
-        expect(saved.pendingTerminal).toBeUndefined();
-        expect(await manager.getJob(responseId)).toMatchObject({
-          status: 'aborted',
-          createdAt: f.execution.createdAt,
-          metadata: { providerDrained: true, terminalPersistencePending: true },
-        });
-      } else {
-        expect(saved.pendingTerminal?.status).toBe('cancelled');
-        expect(await manager.getJob(responseId)).toMatchObject({
-          status: 'aborted',
-          createdAt: f.execution.createdAt,
-          metadata: {
-            providerExecutionId: saved.pendingTerminal!.providerExecutionId,
-            providerDrained: true,
-            terminalPersistencePending: true,
-          },
-        });
-      }
-      expect(await (await getAgentCheckpointer(checkpointer))!.getTuple(f.config)).toBeDefined();
+      expect(saved.pendingTerminal).toBeUndefined();
+      expect(await manager.getJob(responseId)).toMatchObject({
+        status: 'aborted',
+        createdAt: f.execution.createdAt,
+        metadata: {
+          providerExecutionId: saved.review!.providerExecutionId,
+          providerDrained: true,
+          terminalPersistencePending: true,
+        },
+      });
+      const retainedCheckpoint = await (await getAgentCheckpointer(checkpointer))!.getTuple(
+        f.config,
+      );
+      if (failure === 'cleanup') expect(retainedCheckpoint).toBeDefined();
+      else expect(retainedCheckpoint).toBeUndefined();
       failing = false;
       expect(await freshRetirement()(owner, responseId)).toBe('stopped');
       const cancelled = (await storage.read(owner, responseId))!;

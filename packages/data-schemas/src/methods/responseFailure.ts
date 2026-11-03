@@ -92,6 +92,8 @@ export function createResponseFailureStorage(mongoose: typeof import('mongoose')
         current.generationCreatedAt !== failure.generationCreatedAt ||
         current.providerExecution?.id !== failure.providerExecutionId ||
         current.providerExecution.ownerId !== failure.ownerId ||
+        current.resume?.previousProviderExecutionId === failure.providerExecutionId ||
+        current.review?.providerExecutionId === failure.providerExecutionId ||
         (receipt && responseReceiptKey(receipt) !== failure.receiptKey)
       )
         return { ok: false, code: 'response_conflict' };

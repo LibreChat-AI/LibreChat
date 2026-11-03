@@ -8,6 +8,7 @@ import type {
   ResponseReference,
   ResponseCheckpointExecution,
   ResponseProviderExecution,
+  ResponseResumeSelection,
   ResponseReservation,
   StoredResponseRecord,
   ResponseReviewCheckpoint,
@@ -202,9 +203,17 @@ export interface ResponseExecutionProof extends ResponseExecutionBinding {
   checkpointWriterId?: string;
 }
 
+export interface ResponsePausedCancellation {
+  providerDrained: boolean;
+  execution: ResponseExecutionBinding;
+  selection?: ResponseResumeSelection;
+  proof: ResponseExecutionProof | null;
+}
+
 export type ResponseReleaseAuthority =
   | { kind: 'unused'; releaseAcknowledged: boolean }
-  | { kind: 'provider'; proof: ResponseExecutionProof };
+  | { kind: 'provider'; proof: ResponseExecutionProof }
+  | { kind: 'paused'; proof: ResponseExecutionProof; selection?: ResponseResumeSelection };
 
 export interface ResponseStorage {
   recordPersistenceFailure(
@@ -230,6 +239,13 @@ export interface ResponseStorage {
   ): Promise<ResponseMutationResult>;
   /** Positive proof on the exact retained root; missing jobs are never substituted. */
   readExecutionProof(identity: ResponseCleanupIdentity): Promise<ResponseExecutionProof | null>;
+  readPausedCancellation(
+    identity: ResponseCleanupIdentity,
+  ): Promise<ResponsePausedCancellation | null>;
+  finishPausedCancellation(
+    record: StoredResponseRecord,
+    responseJSON: string,
+  ): Promise<ResponseMutationResult>;
   readReleaseAuthority(identity: ResponseCleanupIdentity): Promise<ResponseReleaseAuthority | null>;
   finishUnstartedExecution(
     record: StoredResponseRecord,
@@ -242,6 +258,7 @@ export interface ResponseStorage {
   acknowledgeExecutionRelease(
     identity: ResponseCleanupIdentity,
     proof?: ResponseExecutionProof,
+    paused?: Pick<ResponsePausedCancellation, 'selection'>,
   ): Promise<boolean>;
   /** Fence enrollment and scrub private data before using provider proof for physical cleanup. */
   retireExecution(identity: ResponseCleanupIdentity): Promise<boolean>;
@@ -508,29 +525,35 @@ export function createResponseStorage(
       conflict,
     );
   }
-  async function readExecutionProof(
-    identity: ResponseCleanupIdentity,
-  ): Promise<ResponseExecutionProof | null> {
+  async function readExecutionState(identity: ResponseCleanupIdentity) {
     if (!identity.storageTarget || identity.generationCreatedAt == null) return null;
-    const record = await includeManagedAllocations(
+    return includeManagedAllocations(
       model
         .findOne({
-          ...responseRootCleanupFilter(mongoose, {
-            ...identity,
-            target: identity.storageTarget,
-          }),
+          ...responseRootCleanupFilter(mongoose, { ...identity, target: identity.storageTarget }),
           agentId: identity.agentId,
           conversationId: identity.conversationId,
           generationCreatedAt: identity.generationCreatedAt,
-          'providerExecution.drained': true,
-          $or: [{ checkpoint: { $exists: false } }, { 'checkpoint.state': 'settled' }],
         })
         .select(
-          'generationCreatedAt status retiredAt releaseAcknowledged +providerExecution +checkpoint',
+          'generationCreatedAt status retiredAt cancellationRequestedAt releaseAcknowledged +providerExecution +checkpoint review.actionId review.providerExecutionId resume.intentId resume.actionId resume.previousProviderExecutionId resume.providerExecutionId resume.state pendingTerminal.providerExecutionId preparedTerminal.providerExecutionId persistenceFailure.providerExecutionId',
         )
+        .read('primary')
         .lean(),
     );
-    if (!record?.providerExecution || record.generationCreatedAt == null) return null;
+  }
+  async function readExecutionProof(
+    identity: ResponseCleanupIdentity,
+  ): Promise<ResponseExecutionProof | null> {
+    return executionProof(await readExecutionState(identity));
+  }
+  function executionProof(record: StoredResponseRecord | null): ResponseExecutionProof | null {
+    if (
+      record?.providerExecution?.drained !== true ||
+      record.generationCreatedAt == null ||
+      (record.checkpoint && record.checkpoint.state !== 'settled')
+    )
+      return null;
     return {
       generationCreatedAt: record.generationCreatedAt,
       releaseReady:
@@ -549,6 +572,54 @@ export function createResponseStorage(
           }
         : {}),
     };
+  }
+  async function readPausedCancellation(
+    identity: ResponseCleanupIdentity,
+  ): Promise<ResponsePausedCancellation | null> {
+    return pausedCancellation(await readExecutionState(identity));
+  }
+  function pausedCancellation(
+    record: StoredResponseRecord | null,
+  ): ResponsePausedCancellation | null {
+    const resume = record?.resume;
+    if (
+      !record?.providerExecution ||
+      record.generationCreatedAt == null ||
+      (record.cancellationRequestedAt == null && record.retiredAt == null) ||
+      record.pendingTerminal != null ||
+      record.preparedTerminal != null ||
+      record.persistenceFailure != null ||
+      record.review?.providerExecutionId !== record.providerExecution.id ||
+      (resume &&
+        (resume.previousProviderExecutionId !== record.providerExecution.id ||
+          resume.providerExecutionId === resume.previousProviderExecutionId ||
+          !['reserved', 'admitted'].includes(resume.state)))
+    )
+      return null;
+    const selection = resume
+      ? {
+          intentId: resume.intentId,
+          actionId: resume.actionId,
+          previousProviderExecutionId: resume.previousProviderExecutionId,
+          providerExecutionId: resume.providerExecutionId,
+          state: resume.state,
+        }
+      : undefined;
+    return {
+      providerDrained: record.providerExecution.drained === true,
+      execution: {
+        generationCreatedAt: record.generationCreatedAt,
+        providerExecutionId: record.providerExecution.id,
+        ...(record.providerExecution.ownerId ? { ownerId: record.providerExecution.ownerId } : {}),
+      },
+      ...(selection ? { selection } : {}),
+      proof: executionProof(record),
+    };
+  }
+  function selectionFilter(selection: ResponseResumeSelection) {
+    return Object.fromEntries(
+      Object.entries(selection).map(([key, value]) => [`resume.${key}`, value]),
+    );
   }
   return {
     ...createResponseFailureStorage(mongoose),
@@ -670,7 +741,7 @@ export function createResponseStorage(
         { ok: false, code: 'response_conflict' },
       );
     },
-    async acknowledgeExecutionRelease(identity, proof) {
+    async acknowledgeExecutionRelease(identity, proof, paused) {
       if (!identity.storageTarget) return false;
       if (proof) assertResponseExecutionBinding(proof);
       if (
@@ -693,6 +764,14 @@ export function createResponseStorage(
                 'providerExecution.id': proof.providerExecutionId,
                 'providerExecution.ownerId': proof.ownerId ?? { $exists: false },
                 'providerExecution.drained': true,
+                ...(paused
+                  ? {
+                      'review.providerExecutionId': proof.providerExecutionId,
+                      ...(paused.selection
+                        ? selectionFilter(paused.selection)
+                        : { resume: { $exists: false } }),
+                    }
+                  : { 'review.providerExecutionId': { $ne: proof.providerExecutionId } }),
                 $and: [
                   {
                     $or: [
@@ -716,7 +795,13 @@ export function createResponseStorage(
     async readReleaseAuthority(identity) {
       if (!identity.storageTarget) return null;
       if (identity.generationCreatedAt != null) {
-        const proof = await readExecutionProof(identity);
+        const record = await readExecutionState(identity);
+        const paused = pausedCancellation(record);
+        if (paused)
+          return paused.proof?.releaseReady
+            ? { kind: 'paused', proof: paused.proof, selection: paused.selection }
+            : null;
+        const proof = executionProof(record);
         return proof?.releaseReady ? { kind: 'provider', proof } : null;
       }
       const record = await includeManagedAllocations(
@@ -741,6 +826,50 @@ export function createResponseStorage(
         : null;
     },
     readExecutionProof,
+    readPausedCancellation,
+    async finishPausedCancellation(record, responseJSON) {
+      const paused = await readPausedCancellation(record);
+      if (!paused?.proof || typeof responseJSON !== 'string')
+        return { ok: false, code: 'response_conflict' };
+      return mutateCapturedRecord(record, (current) =>
+        updateResponseDocument(
+          mongoose,
+          {
+            ...scope(record),
+            revision: record.revision,
+            generationCreatedAt: record.generationCreatedAt,
+            cancellationRequestedAt: { $exists: true },
+            status: { $in: active },
+            ...(paused.selection
+              ? selectionFilter(paused.selection)
+              : { resume: { $exists: false } }),
+            'review.providerExecutionId': paused.execution.providerExecutionId,
+            'providerExecution.id': paused.execution.providerExecutionId,
+            'providerExecution.drained': true,
+            pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
+            $or: [
+              { checkpoint: { $exists: false } },
+              { 'checkpoint.state': 'settled', 'checkpoint.erased': true },
+            ],
+          },
+          {
+            $set: {
+              status: 'cancelled',
+              responseJSON,
+              requestJSON: '{}',
+              ...(paused.selection ? { resume: paused.selection } : {}),
+              review: {
+                actionId: current.review!.actionId,
+                providerExecutionId: paused.execution.providerExecutionId,
+              },
+            },
+          },
+          {},
+          current,
+        ),
+      );
+    },
     createCheckpointWriter: (reference, checkpoint) =>
       createResponseCheckpointStorage(mongoose, reference, checkpoint),
     async enrollExecution(current, binding, responseJSON) {
@@ -765,10 +894,11 @@ export function createResponseStorage(
             ...scope(current),
             ...execution,
             status: 'in_progress',
+            cancellationRequestedAt: { $exists: false },
             'providerExecution.id': binding.providerExecutionId,
           })
           .lean();
-        if (enrolled) return { ok: true, record: enrolled };
+        if (enrolled && (await isVisible(enrolled))) return { ok: true, record: enrolled };
       }
       const admitted = await updateResponseDocument(
         mongoose,
@@ -776,7 +906,9 @@ export function createResponseStorage(
           ...scope(current),
           ...execution,
           revision: current.revision,
-          cancellationRequestedAt: current.cancellationRequestedAt ?? { $exists: false },
+          cancellationRequestedAt: resumed
+            ? { $exists: false }
+            : (current.cancellationRequestedAt ?? { $exists: false }),
           pendingTerminal: { $exists: false },
           preparedTerminal: { $exists: false },
           ...(resumed
@@ -816,7 +948,9 @@ export function createResponseStorage(
       if (!admitted.ok && admitted.code === 'document_limit')
         return { ok: false, code: 'document_limit' };
       const record = admitted.ok ? admitted.record : null;
-      return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
+      return record && (await isVisible(record))
+        ? { ok: true, record }
+        : { ok: false, code: 'response_conflict' };
     },
     async bindExecution(record, binding) {
       assertResponseExecutionBinding(binding);
@@ -1235,7 +1369,10 @@ export function createResponseStorage(
       if (!admitted.ok && admitted.code === 'document_limit')
         return { ok: false, code: 'document_limit' };
       const record = admitted.ok ? admitted.record : null;
-      if (record) return { ok: true, record, replayed: false };
+      if (record)
+        return (await isVisible(record))
+          ? { ok: true, record, replayed: false }
+          : { ok: false, code: 'resume_conflict' };
       const existing = await model.findOne({ ...scope(owner), responseId }).lean();
       const intent = existing?.resume;
       if (
@@ -1245,7 +1382,8 @@ export function createResponseStorage(
         intent.previousProviderExecutionId === input.previousProviderExecutionId &&
         intent.fingerprint === input.fingerprint &&
         intent.resolutionJSON === input.resolutionJSON &&
-        intent.decisionJSON === input.decisionJSON
+        intent.decisionJSON === input.decisionJSON &&
+        (await isVisible(existing))
       )
         return { ok: true, record: existing, replayed: true };
       return { ok: false, code: 'resume_conflict' };
@@ -1288,13 +1426,18 @@ export function createResponseStorage(
       if (!admitted.ok && admitted.code === 'document_limit')
         return { ok: false, code: 'document_limit' };
       const record = admitted.ok ? admitted.record : null;
-      if (record) return { ok: true, record };
+      if (record)
+        return (await isVisible(record))
+          ? { ok: true, record }
+          : { ok: false, code: 'response_conflict' };
       const existing = await model.findOne({ ...scope(owner), responseId }).lean();
       if (
         existing?.generationCreatedAt === generationCreatedAt &&
         existing.resume?.intentId === intentId &&
         existing.resume.providerExecutionId === providerExecutionId &&
-        existing.resume.state === 'admitted'
+        existing.resume.state === 'admitted' &&
+        existing.cancellationRequestedAt == null &&
+        (await isVisible(existing))
       )
         return { ok: true, record: existing };
       return { ok: false, code: 'response_conflict' };

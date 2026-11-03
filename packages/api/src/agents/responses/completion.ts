@@ -13,9 +13,11 @@ import type {
   ResponseMutationResult,
   ResponseCleanupIdentity,
   ResponseExecutionProof,
+  ResponsePausedCancellation,
 } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { ResponseCheckpointIdentity } from './checkpoint';
+import type { GenerationJob } from '~/types/stream';
 import { buildAggregatedResponse, createResponseAggregator } from './service';
 import { eraseResponseExecutionCheckpoint } from './checkpoint';
 import { projectCanonicalResponseTurn } from './turnProjection';
@@ -105,6 +107,27 @@ async function readExecutionJob(
   return { job, providerExecutionId: job.metadata.providerExecutionId };
 }
 
+/** A frozen Root distinguishes its actual paused writer from a selected unused successor. */
+export function matchesPausedCancellationJob(
+  record: ExecutionIdentity,
+  paused: Pick<ResponsePausedCancellation, 'selection' | 'execution'>,
+  job: GenerationJob,
+): boolean {
+  if (!matchesResponseJob(record, job)) return false;
+  if (job.metadata.providerExecutionId === paused.execution.providerExecutionId)
+    return (
+      job.metadata.providerExecutionOwnerId === paused.execution.ownerId &&
+      (job.metadata.providerExecutionStartedId == null ||
+        job.metadata.providerExecutionStartedId === paused.execution.providerExecutionId)
+    );
+  return (
+    paused.selection != null &&
+    job.metadata.providerExecutionId === paused.selection.providerExecutionId &&
+    job.metadata.providerExecutionStartedId == null &&
+    job.metadata.providerExecutionOwnerId == null
+  );
+}
+
 /** Recover a positive drain result only from a job bound to this physical root.
  * An uncertain checkpoint remains pending even after provider drain is imported. */
 export async function readResponseExecutionProof(
@@ -169,6 +192,32 @@ export function createResponseExecutionRelease(
       throw new Error('Response terminal publication is unavailable');
     const authority = await storage.readReleaseAuthority(record);
     if (!authority) throw new Error('Response durable release authority is unavailable');
+    if (authority.kind === 'paused') {
+      const { proof, selection } = authority;
+      if (proof.releaseAcknowledged) return;
+      const job = await jobs.getJob(record.responseId);
+      if (job) {
+        if (
+          !matchesPausedCancellationJob(record, { selection, execution: proof }, job) ||
+          !['complete', 'error', 'aborted'].includes(job.status) ||
+          job.metadata.providerDrained !== true ||
+          !job.metadata.providerExecutionId
+        )
+          throw new Error('Response paused cancellation release is pending');
+        if (
+          !(await jobs.finishProviderTerminalPersistence(
+            record.responseId,
+            job.createdAt,
+            job.metadata.providerExecutionId,
+            job.metadata.providerExecutionOwnerId,
+          ))
+        )
+          throw new Error('Response terminal execution release is unavailable');
+      }
+      if (!(await storage.acknowledgeExecutionRelease(record, proof, { selection })))
+        throw new Error('Response execution release acknowledgment conflicted');
+      return;
+    }
     if (authority.kind === 'unused') {
       const job = await jobs.getJob(record.responseId);
       if (!job && authority.releaseAcknowledged) return;

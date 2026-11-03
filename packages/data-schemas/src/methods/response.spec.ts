@@ -691,6 +691,30 @@ async function beginExecution(
     throw new Error('Fixture provider enrollment failed');
   return enrolled;
 }
+it.each([1, 'true', {}])(
+  'requires a boolean provider-drain acknowledgement, rejecting %p',
+  (value) =>
+    scoped(async () => {
+      await storage.reserve(reservation());
+      const { record } = await beginExecution();
+      await mongoose.models.StoredResponse.collection.updateOne(
+        { responseId: record.responseId },
+        { $set: { 'providerExecution.drained': value } },
+      );
+      expect(await storage.readExecutionProof(record)).toBeNull();
+      expect(
+        await storage.settleExecution(responseReference(record), {
+          generationCreatedAt: 10,
+          providerExecutionId: 'provider-one',
+          ownerId: 'worker-one',
+        }),
+      ).toBe(true);
+      expect(await storage.readExecutionProof(record)).toMatchObject({
+        providerExecutionId: 'provider-one',
+      });
+    }),
+);
+
 async function finishConfirmed(receipt: ResponseTerminalReceipt) {
   const current = (await storage.read(owner, oneId))!;
   expect(await storage.settleExecution(responseReference(current), receipt, 'complete')).toBe(true);

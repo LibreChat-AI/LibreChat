@@ -102,6 +102,11 @@ export interface ResponseResumeIntent {
   admittedAt?: number;
 }
 
+export type ResponseResumeSelection = Pick<
+  ResponseResumeIntent,
+  'intentId' | 'actionId' | 'previousProviderExecutionId' | 'providerExecutionId' | 'state'
+>;
+
 /** Server-written proposed or confirmed terminal result, bound to one provider attempt. */
 export interface ResponseTerminalReceipt {
   generationCreatedAt: number;
