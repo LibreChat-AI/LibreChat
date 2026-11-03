@@ -36,9 +36,9 @@ jest.mock('~/hooks/Chat/useCompactConversation', () => ({
   supportsCompaction: () => false,
 }));
 
-jest.mock('./Breakdown', () => ({
-  __esModule: true,
-  default: () => <div data-testid="context-breakdown-stub" />,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  ContextBreakdown: () => <div data-testid="context-breakdown-stub" />,
 }));
 
 const NOW = Date.parse('2026-07-05T00:00:00.000Z');

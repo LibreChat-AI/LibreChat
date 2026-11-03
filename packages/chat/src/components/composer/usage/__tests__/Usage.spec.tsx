@@ -1,11 +1,15 @@
+/**
+ * @jest-environment jsdom
+ */
 import userEvent from '@testing-library/user-event';
 import { render, screen, within } from '@testing-library/react';
-import type { BranchUsage } from '~/utils/tokens';
-import Usage from './Usage';
+import type { BranchUsage } from '../../../../core/usage';
+import { initEnglish } from '../../../../__fixtures__/i18n';
+import Usage from '../Usage';
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(async () => {
+  await initEnglish();
+});
 
 const usage: BranchUsage = {
   input: 37_900,
@@ -19,10 +23,10 @@ const usage: BranchUsage = {
 const renderUsage = (props: Partial<React.ComponentProps<typeof Usage>> = {}) =>
   render(
     <Usage
-      title="com_ui_context_current_turn"
+      title="Current turn (so far)"
       usage={usage}
       cost={usage.cost}
-      costLabel="com_ui_context_cost_current_turn"
+      costLabel="Cost (current turn so far)"
       testId="usage"
       {...props}
     />,
@@ -32,17 +36,12 @@ describe('Token usage summary', () => {
   it('keeps all metrics visible in a condensed, labelled summary', () => {
     renderUsage();
     expect(screen.getByRole('button')).toHaveAttribute('aria-expanded', 'false');
-    const section = screen.getByRole('region', { name: 'com_ui_context_current_turn' });
+    const section = screen.getByRole('region', { name: 'Current turn (so far)' });
     expect(within(section).getByRole('heading')).toHaveTextContent('$39.45');
     for (const value of ['37.9K', '551.6K', '60.9M', '4.9M']) {
       expect(within(section).getByText(value)).toBeVisible();
     }
-    for (const label of [
-      'com_ui_context_uncached_input',
-      'com_ui_output',
-      'com_ui_cache_read',
-      'com_ui_cache_write',
-    ]) {
+    for (const label of ['Input (uncached)', 'Output', 'Cache read', 'Cache write']) {
       expect(within(section).getByText(label).tagName).toBe('DT');
     }
     expect(section.querySelector('dl')).toHaveClass('grid-cols-2');
@@ -72,14 +71,14 @@ describe('Token usage summary', () => {
     expect(screen.getByTestId('usage-cost')).toHaveTextContent('$0.00');
     rerender(
       <Usage
-        title="com_ui_context_current_turn"
-        unavailable="com_ui_context_waiting_usage"
-        costLabel="com_ui_context_cost_current_turn"
+        title="Current turn (so far)"
+        unavailable="Waiting for model usage..."
+        costLabel="Cost (current turn so far)"
         testId="usage"
       />,
     );
     expect(screen.getByRole('button')).toBeDisabled();
-    expect(screen.getByText('com_ui_context_waiting_usage')).toBeVisible();
+    expect(screen.getByText('Waiting for model usage...')).toBeVisible();
     expect(screen.queryByText('0')).not.toBeInTheDocument();
     expect(screen.queryByTestId('usage-cost')).not.toBeInTheDocument();
   });
@@ -89,7 +88,7 @@ describe('Token usage summary', () => {
       subagentTokens: 44_600_000,
       currency: { code: 'EUR', rate: 2 },
     });
-    expect(screen.getByText('com_ui_context_subagents_all').nextElementSibling).toHaveTextContent(
+    expect(screen.getByText('Subagents (all branches)').nextElementSibling).toHaveTextContent(
       '44.6M',
     );
     expect(screen.getByTestId('usage-cost')).toHaveTextContent('€78.90');
@@ -100,10 +99,10 @@ describe('Token usage summary', () => {
     expect(screen.queryByTestId('usage-cost')).not.toBeInTheDocument();
     rerender(
       <Usage
-        title="com_ui_context_current_turn"
+        title="Current turn (so far)"
         usage={usage}
         cost={NaN}
-        costLabel="com_ui_context_cost_current_turn"
+        costLabel="Cost (current turn so far)"
         testId="usage"
       />,
     );
