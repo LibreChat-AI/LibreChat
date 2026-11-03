@@ -110,7 +110,7 @@ function useThread(
     isError: query.isError,
     isPreviousData: query.isPreviousData,
     isReadinessPending: query.isReadinessPending,
-    refetch: () => void query.refetch(),
+    refetch: query.refetch,
   };
 }
 
@@ -141,7 +141,7 @@ function useToolCallPart(
   return {
     data: query.data,
     isError: query.isError,
-    refetch: () => void query.refetch(),
+    refetch: query.refetch,
   };
 }
 
