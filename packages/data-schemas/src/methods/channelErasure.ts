@@ -14,8 +14,8 @@ import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { ResponseErasurePendingError } from './responseErasure';
-import { createAgentApiKeyModel } from '~/models/agentApiKey';
 import { includeManagedAllocations } from '~/utils/managed';
+import { eraseChannelKeysForOwner } from './channelKey';
 import { createIndexesWithRetry } from '~/utils/retry';
 import { retireAgentChannel } from './channelScope';
 import { managedRegistryCount } from './registry';
@@ -51,10 +51,7 @@ async function eraseChannelPartition(
   if (!anchor?.closed) throw new Error('Channel erasure requires closed owner admission');
   managedRegistryCount(anchor);
   const tenantId = owner.tenantId || '_';
-  await createAgentApiKeyModel(mongoose).deleteMany({
-    userId: owner.userId,
-    tenantId: owner.tenantId || { $in: [null, ''] },
-  });
+  await eraseChannelKeysForOwner(mongoose, owner, anchor.pending ?? []);
   const runs = createChannelRunModel(mongoose);
   const lanes = createChannelLaneModel(mongoose);
   const filter = { tenantId, 'principal.userId': owner.userId };

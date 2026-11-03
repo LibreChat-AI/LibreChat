@@ -10,6 +10,7 @@ import type { ChannelRunOwnership } from './channelOwnership';
 import type { ChannelLaneRoot } from './channelLaneRoot';
 import {
   readChannelRunOwnership,
+  capturedChannelRunOwnership,
   registerChannelOwnership,
   settleChannelOwnership,
   reconcileAbsentChannelOwnership,
@@ -166,7 +167,7 @@ export function createChannelRunPublication(
         throw new ChannelRunConflict('invalid_transition');
     }
     // True physical absence is safe: allocation was acknowledged once and is never replayed.
-    const cleanupRoles = roles ?? (run ? capturedOwnership(run) : undefined);
+    const cleanupRoles = roles ?? (run ? capturedChannelRunOwnership(run) : undefined);
     if (retired && cleanupRoles)
       await reconcileAbsentChannelOwnership(mongoose, intent.run.target, cleanupRoles);
     await lanes.updateOne(
@@ -234,38 +235,6 @@ export function createChannelRunPublication(
       );
     }
   }
-  function capturedOwnership(run: ChannelRunMetadata): ChannelRunOwnership {
-    const saved = run.publication;
-    if (!saved) throw new ChannelRunConflict('invalid_transition');
-    const tenantId = run.tenantId === '_' ? undefined : run.tenantId;
-    const roles: ChannelRunOwnership = {
-      creator: { userId: saved.creatorId, ...(tenantId && { tenantId }) },
-      owner: { userId: run.principal.userId, ...(tenantId && { tenantId }) },
-      channel: {
-        ...saved.channel,
-        channelId: run.channelId,
-        agentId: run.agentId,
-        createdBy: saved.creatorId,
-        teamId: run.admission.actor.teamId,
-        appId: run.admission.actor.appId,
-      },
-    };
-    if (saved.identity) {
-      if (!run.principal.linkId || !run.principal.linkRevision)
-        throw new Error('Channel publication lost its identity');
-      roles.identity = {
-        ...saved.identity,
-        linkId: run.principal.linkId,
-        userId: run.principal.userId,
-        channelId: run.channelId,
-        channelRevision: run.principal.channelRevision,
-        agentId: run.agentId,
-        teamId: run.admission.actor.teamId,
-        externalUserId: run.admission.actor.externalUserId,
-      };
-    }
-    return roles;
-  }
   return {
     /** Bounded existing-worker recovery, without allocating another Run or execution lane. */
     async recoverPending(
@@ -286,7 +255,7 @@ export function createChannelRunPublication(
         .lean<ChannelRunMetadata[]>();
       for (const run of staged) {
         const target = physicalRun(run);
-        const roles = capturedOwnership(run);
+        const roles = capturedChannelRunOwnership(run);
         const current = await readChannelRunOwnership(mongoose, run, now);
         const admitted =
           current &&
@@ -343,7 +312,12 @@ export function createChannelRunPublication(
         };
         await finishPublisher({ target }, lane);
         const run = await readRun(lane.publisher!.run.target);
-        if (run) await settleChannelOwnership(mongoose, physicalRun(run), capturedOwnership(run));
+        if (run)
+          await settleChannelOwnership(
+            mongoose,
+            physicalRun(run),
+            capturedChannelRunOwnership(run),
+          );
       }
     },
     async admit(

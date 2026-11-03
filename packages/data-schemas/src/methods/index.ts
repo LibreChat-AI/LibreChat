@@ -581,7 +581,7 @@ export function createMethods(
     ...createMemoryMethods(mongoose),
     ...createToolFavoriteMethods(mongoose),
     ...createAgentCategoryMethods(mongoose),
-    ...createAgentApiKeyMethods(mongoose),
+    ...createAgentApiKeyMethods(mongoose, deps.getDurableStorageConfig),
     ...createAgentChannelMethods(
       mongoose,
       deps.getChannelStorageConfig,
@@ -737,3 +737,5 @@ export type {
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };
+
+export { channelRunKeyBinding } from './channelKey';

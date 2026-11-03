@@ -2,6 +2,7 @@ import type { Types } from 'mongoose';
 import type { ChannelOwnership, ChannelRegistryAuthority } from './channelRegistry';
 import type { ChannelIdentityRecord } from '~/models/channelIdentity';
 import type { ManagedRegistrationResult } from './registration';
+import type { ChannelRunMetadata } from './channelRunWrite';
 import type { ManagedStorageTarget } from '~/types/managed';
 import type { ChannelLaneScope } from './channelProtocol';
 import type { ChannelAuthority } from './channelRegistry';
@@ -27,6 +28,7 @@ import {
 } from './registration';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { readChannelAuthority } from './channelRegistry';
+import { ChannelRunConflict } from './channelProtocol';
 import { responseScopeKeys } from './responseScope';
 
 export type ChannelRunOwnership = ChannelOwnership & {
@@ -215,4 +217,37 @@ export async function reconcileAbsentChannelOwnership(
       await settleAbsentResponseTarget(mongoose, anchor.owner, anchor.conversationId, entry);
     else await settleAbsentChannelTarget(mongoose, anchor.authority, entry);
   }
+}
+
+export function capturedChannelRunOwnership(run: ChannelRunMetadata): ChannelRunOwnership {
+  const saved = run.publication;
+  if (!saved) throw new ChannelRunConflict('invalid_transition');
+  const tenantId = run.tenantId === '_' ? undefined : run.tenantId;
+  const roles: ChannelRunOwnership = {
+    creator: { userId: saved.creatorId, ...(tenantId && { tenantId }) },
+    owner: { userId: run.principal.userId, ...(tenantId && { tenantId }) },
+    channel: {
+      ...saved.channel,
+      channelId: run.channelId,
+      agentId: run.agentId,
+      createdBy: saved.creatorId,
+      teamId: run.admission.actor.teamId,
+      appId: run.admission.actor.appId,
+    },
+  };
+  if (saved.identity) {
+    if (!run.principal.linkId || !run.principal.linkRevision)
+      throw new Error('Channel publication lost its identity');
+    roles.identity = {
+      ...saved.identity,
+      linkId: run.principal.linkId,
+      userId: run.principal.userId,
+      channelId: run.channelId,
+      channelRevision: run.principal.channelRevision,
+      agentId: run.agentId,
+      teamId: run.admission.actor.teamId,
+      externalUserId: run.admission.actor.externalUserId,
+    };
+  }
+  return roles;
 }

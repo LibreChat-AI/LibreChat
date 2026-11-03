@@ -159,7 +159,7 @@ it('keeps every attacker-chosen public wrapper outside the legacy validator dige
   });
 });
 
-it('serializes bound-key creation with final account erasure', async () => {
+it('fences a registered bound-key publisher before completing account erasure', async () => {
   const user = await mongoose.models.User.create({
     email: 'bound-key-owner@example.com',
     provider: 'local',
@@ -174,37 +174,34 @@ it('serializes bound-key creation with final account erasure', async () => {
     release = resolve;
   });
   const collection = mongoose.models.AgentApiKey.collection;
-  const insert = collection.insertOne.bind(collection);
-  const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
+  const publish = collection.findOneAndUpdate.bind(collection);
+  const paused = jest.spyOn(collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
     entered();
     await gate;
-    return insert(...args);
+    return publish(...args);
   });
   const creating = methods.createAgentApiKey({
     userId: ownerId,
     name: 'in-flight',
     binding: { kind: 'grant', id: 'one' },
   });
-  await started;
-  let deleted = false;
-  const deleting = createUserMethods(mongoose)
-    .deleteUserById(ownerId)
-    .then((value) => {
-      deleted = true;
-      return value;
-    });
+  const outcome = creating.then(
+    () => 'unexpected success',
+    () => 'rejected',
+  );
+  const timer = setTimeout(release, 5000);
   try {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(deleted).toBe(false);
+    await started;
+    await createUserMethods(mongoose).deleteUserById(ownerId);
+    expect(await mongoose.models.User.exists({ _id: user._id })).toBeNull();
+    release();
+    expect(await outcome).toBe('rejected');
   } finally {
+    clearTimeout(timer);
     release();
     paused.mockRestore();
   }
-  const created = await creating;
-  await deleting;
-  expect(await methods.validateAgentApiKey(created.key)).toBeNull();
-  expect(await methods.validateBoundAgentApiKey(created.key)).toBeNull();
-  expect(await mongoose.models.AgentApiKey.exists({ userId: user._id })).toBeNull();
+  expect(await collection.countDocuments({ userId: user._id })).toBe(0);
   await expect(
     methods.createAgentApiKey({
       userId: ownerId,

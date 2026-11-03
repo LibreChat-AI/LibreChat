@@ -4,6 +4,8 @@ import {
   isManagedConversationId,
   channelRunFence,
   channelResponseOwner,
+  channelRunKeyBinding,
+  matchesChannelRunFence,
 } from '@librechat/data-schemas';
 import type {
   AgentApiKeyBinding,
@@ -49,10 +51,16 @@ const requestSchema = z
     previous_response_id: z.string().optional(),
   })
   .strict();
-const bindingFor = (run: ChannelRunRecord): AgentApiKeyBinding => ({
-  kind: 'channel_run',
-  id: `${run.channelId}/${run.runId}`,
-});
+const bindingFor = channelRunKeyBinding;
+function matchesBinding(run: ChannelRunRecord, binding: AgentApiKeyBinding): boolean {
+  const captured = bindingFor(run);
+  return (
+    captured.kind === binding.kind &&
+    captured.id === binding.id &&
+    captured.targetId === binding.targetId &&
+    captured.incarnation === binding.incarnation
+  );
+}
 const previousResponse = (run: ChannelRunRecord) =>
   run.execution?.parentMessageId === Constants.NO_PARENT
     ? undefined
@@ -69,11 +77,13 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
   ) {
     if (binding.kind !== 'channel_run' || !keyId) return null;
     const [channelId, runId, extra] = binding.id.split('/');
-    if (!channelId || !runId || extra != null) return null;
+    if (!channelId || !runId || !binding.targetId || !binding.incarnation || extra != null)
+      return null;
     const run = await deps.storage.read(owner.tenantId || '_', channelId, runId);
     if (
       !run ||
       run.principal.userId !== owner.userId ||
+      !matchesBinding(run, binding) ||
       run.execution?.apiKeyId !== keyId ||
       run.execution.protocol !== 'responses' ||
       (agentId != null && run.agentId !== agentId)
@@ -94,12 +104,11 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
     const execution = run.execution;
     if (!execution?.apiKeyId || execution.protocol !== 'responses' || !execution.encryptedApiKey)
       return false;
-    const binding = bindingFor(run);
     return Boolean(
       key &&
         key.id === execution.apiKeyId &&
-        key.binding?.kind === binding.kind &&
-        key.binding.id === binding.id &&
+        key.binding &&
+        matchesBinding(run, key.binding) &&
         (key.expiresAt == null ||
           (Number.isFinite(new Date(key.expiresAt).getTime()) &&
             new Date(key.expiresAt).getTime() > now())),
@@ -159,8 +168,7 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
           currentRun.principal.userId === run.principal.userId &&
           currentRun.agentId === run.agentId &&
           winner.requestId === run.execution.requestId &&
-          currentRun.leaseOwner === run.leaseOwner &&
-          currentRun.leaseEpoch === run.leaseEpoch;
+          matchesChannelRunFence(currentRun, fence);
         if (!sameAdmission) {
           if (winner?.apiKeyId !== key.id) await deps.deleteKey(key.id, run.principal.userId);
           throw error;

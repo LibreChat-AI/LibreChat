@@ -51,6 +51,7 @@ export {
   createChannelRunStorage,
   channelRunFence,
   channelResponseOwner,
+  channelRunKeyBinding,
   matchesChannelRunFence,
   createChannelSummaryStorage,
   CHANNEL_SUMMARY_MAX_PRIOR_ROWS,

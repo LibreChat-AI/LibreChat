@@ -6,6 +6,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import {
   channelRunFence,
+  channelRunKeyBinding,
   createModels,
   createMethods,
   createChannelIdentityStorage,
@@ -403,7 +404,7 @@ it(
     expect(await db.listAgentApiKeys(users[0].id)).toHaveLength(1);
     expect(await db.validateAgentApiKey(keys[0])).toBeNull();
     const validated = await db.validateBoundAgentApiKey(keys[0]);
-    expect(validated?.binding).toEqual({ kind: 'channel_run', id: `channel/${run.runId}` });
+    expect(validated?.binding).toEqual(channelRunKeyBinding(run));
     // The pre-binding validator used the raw-token hash. An old replica must not admit this key.
     expect(
       await mongoose.models.AgentApiKey.findOne({ keyHash: await hashToken(keys[0]) }),
@@ -1322,7 +1323,7 @@ it.each(['expired', 'revoked', 'changed-binding'] as const)(
         const foreign = await db.createAgentApiKey({
           userId: users[0].id,
           name: 'Other run credential',
-          binding: { kind: 'channel_run', id: 'another/run' },
+          binding: { kind: 'synthetic-foreign', id: 'another/run' },
         });
         checked = { ...saved, execution: { ...saved.execution!, apiKeyId: foreign.id } };
       } else if (change === 'revoked')
@@ -1422,7 +1423,7 @@ it.each(['revoked', 'expired', 'foreign-binding'] as const)(
       const credentials = responseCredentials();
       await credentials.provision(run);
       const saved = (await storage.read(tenantId, 'channel', run.runId))!;
-      const binding = { kind: 'channel_run' as const, id: `channel/${run.runId}` };
+      const binding = channelRunKeyBinding(run);
       const keyId = saved.execution!.apiKeyId!;
       const owner = { tenantId, userId: users[0].id };
       const probe = express();
@@ -1481,7 +1482,7 @@ it(
       res.json({
         allowed: await credentials.authorizeRequest({
           keyId: saved.execution!.apiKeyId!,
-          binding: { kind: 'channel_run', id: `channel/${run.runId}` },
+          binding: channelRunKeyBinding(run),
           user: users[0],
           request: req,
         }),
@@ -1525,7 +1526,7 @@ it.each([false, true])(
         },
       });
       const result = credentials.authorizeSource(
-        { kind: 'channel_run', id: `channel/${run.runId}` },
+        channelRunKeyBinding(run),
         saved.execution!.apiKeyId!,
         { tenantId, userId: users[0].id },
         'agent',
@@ -1660,7 +1661,7 @@ it(
     });
     await expect(
       credentials.authorizeSource(
-        { kind: 'channel_run', id: `channel/${run.runId}` },
+        channelRunKeyBinding(run),
         saved.execution!.apiKeyId!,
         { tenantId, userId: users[0].id },
         'agent',
@@ -1734,7 +1735,7 @@ it(
     const orphan = await db.createAgentApiKey({
       userId: users[0].id,
       name: 'Unpublished candidate',
-      binding: { kind: 'channel_run', id: `channel/${run.runId}` },
+      binding: channelRunKeyBinding(run),
     });
     await call('/api/agents/v1/responses', orphan.key).send(body).expect(403);
     const ordinary = await db.createAgentApiKey({ userId: users[0].id, name: 'Ordinary key' });
@@ -1789,7 +1790,7 @@ it(
       .expect(403);
     expect(
       await credentials.authorizeSource(
-        { kind: 'channel_run', id: `channel/${run.runId}` },
+        channelRunKeyBinding(run),
         saved.execution!.apiKeyId!,
         { userId: users[0].id, tenantId },
         'agent',
@@ -1863,4 +1864,98 @@ it.each([0, 1])('keeps Stop retries bound across relinking to account %i', (targ
       (await storage.read(tenantId, 'channel', second.body.runId))?.cancellationRequested,
     ).toBe(false);
   })(),
+);
+
+it(
+  'rejects a bound source credential on a same-ID replacement physical Run',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    const credentials = responseCredentials();
+    await credentials.provision(run);
+    const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+    const binding = channelRunKeyBinding(saved);
+    const collection = models.ChannelRun.collection;
+    const original = await collection.findOne({ runId: saved.runId });
+    if (!original) throw new Error('Missing fixture Run');
+    const id = new mongoose.Types.ObjectId();
+    await collection.deleteOne({ _id: original._id });
+    await collection.insertOne({
+      ...original,
+      _id: id,
+      _managed: {
+        ...original._managed,
+        parentId: String(id),
+        incarnation: '12345678-1234-4234-8234-123456789012',
+      },
+    });
+    expect(
+      await credentials.authorizeSource(
+        binding,
+        saved.execution!.apiKeyId!,
+        { userId: users[0].id, tenantId },
+        'agent',
+      ),
+    ).toBe(false);
+    const replacement = (await storage.read(tenantId, 'channel', run.runId))!;
+    expect(await credentials.isCurrent(replacement)).toBe(false);
+  }),
+);
+
+it(
+  'does not recover a credential attachment from a replacement physical Run',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    const decrypt = jest.fn(async (value: string) => value);
+    const createKey = jest.fn(db.createAgentApiKey);
+    const credentials = responseCredentials({
+      createKey,
+      encrypt: async (value) => value,
+      decrypt,
+      storage: {
+        read: storage.read,
+        attachResponseCredential: async () => {
+          const collection = models.ChannelRun.collection;
+          const original = await collection.findOne({ runId: run.runId });
+          if (!original) throw new Error('Missing fixture Run');
+          const id = new mongoose.Types.ObjectId();
+          await collection.deleteOne({ _id: original._id });
+          await collection.insertOne({
+            ...original,
+            _id: id,
+            _managed: {
+              ...original._managed,
+              parentId: String(id),
+              incarnation: '12345678-1234-4234-8234-123456789012',
+            },
+          });
+          const replacement = (await storage.read(tenantId, run.channelId, run.runId))!;
+          const key = await db.createAgentApiKey({
+            userId: run.principal.userId,
+            name: 'Replacement key',
+            binding: channelRunKeyBinding(replacement),
+          });
+          await collection.updateOne(
+            { _id: id },
+            {
+              $set: {
+                'execution.apiKeyId': key.id,
+                'execution.encryptedApiKey': key.key,
+              },
+            },
+          );
+          throw new Error('Synthetic lost attachment reply');
+        },
+      },
+    });
+    await expect(credentials.provision(run)).rejects.toThrow('lost attachment reply');
+    expect(decrypt).not.toHaveBeenCalled();
+    const originalKey = await createKey.mock.results[0].value;
+    expect(await db.validateBoundAgentApiKey(originalKey.key)).toBeNull();
+  }),
 );

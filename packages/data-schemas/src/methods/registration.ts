@@ -303,12 +303,22 @@ export async function settleRedactedIdentityTarget(
   return settleTarget(mongoose, owner, undefined, entry, 'redacted-identity');
 }
 
+/** Release only a deleted creator's lifecycle ticket; the other account still owns the key. */
+export async function settleRetainedChannelKeyTarget(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  entry: ManagedRegistrationIntent,
+): Promise<boolean> {
+  if (entry.target.kind !== 'channelKey') throw new TypeError('Invalid retained key target');
+  return settleTarget(mongoose, owner, undefined, entry, 'retained-key');
+}
+
 async function settleTarget(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   conversationId: string | undefined,
   entry: ManagedRegistrationIntent,
-  proof: 'published' | 'absent' | 'redacted-channel' | 'redacted-identity',
+  proof: 'published' | 'absent' | 'redacted-channel' | 'redacted-identity' | 'retained-key',
 ): Promise<boolean> {
   const key = registrationScope(
     mongoose,
@@ -325,7 +335,7 @@ async function settleTarget(
       (anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date())))
   )
     return false;
-  if (proof.startsWith('redacted-') && !anchor.closed) return false;
+  if ((proof.startsWith('redacted-') || proof === 'retained-key') && !anchor.closed) return false;
   const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
   if (!existing || !sameManagedRegistration(existing, entry)) return false;
   const observedRetentionEpoch = anchor.retentionEpoch ?? 0;
@@ -336,6 +346,25 @@ async function settleTarget(
       model.exists(managedTargetPredicate(mongoose, entry.target)),
     ).read('primary');
     if (present) return false;
+  } else if (proof === 'retained-key') {
+    const target = await includeManagedAllocations(
+      model.findOne(managedTargetPredicate(mongoose, entry.target)),
+    )
+      .select(settlementProjection)
+      .read('primary')
+      .lean<SettlementTarget | null>();
+    const privateOwner = target?.userId == null ? '' : String(target.userId);
+    if (
+      !target ||
+      !privateOwner ||
+      privateOwner === owner.userId ||
+      target._managed.phase !== 'published' ||
+      !target._managed.scopeKeys?.includes(key) ||
+      !target._managed.scopeKeys.includes(
+        responseScopeKeys({ ...owner, userId: privateOwner }, '')[0],
+      )
+    )
+      return false;
   } else if (proof === 'redacted-identity') {
     if (
       !(await includeManagedAllocations(
