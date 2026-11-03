@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { v4 } from 'uuid';
-import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
 import { isMacPlatform, resolveComposerKeyDown } from '@librechat/chat';
 import { ArrowUpRight, Clock, OctagonPause, X, Zap } from 'lucide-react';
 import {
@@ -17,13 +16,8 @@ import {
   SubagentActivityScrollSurface,
 } from '@librechat/chat/components';
 import {
-  activeSubagentPanel,
-  subagentPanelFocusRequest,
-  subagentControlStateByTask,
   subagentControlStateKey,
   subagentProgressKey,
-  useSubagentProgress,
-  useSubagentActivityStream,
   adaptDurableThreadActivity,
   adaptDurableThreadConversation,
   adaptLivePersistedActivity,
@@ -42,6 +36,8 @@ import {
   useParentAuthor,
   useChatSurface,
   useSubagentsHost,
+  useSubagentPanelState,
+  useSubagentPanelActions,
   useMessagePartsHost,
   TaskContentScopeContext,
   ACTIVE_THREAD_REFRESH_MS,
@@ -54,8 +50,8 @@ import type {
   SubagentControlRequest,
 } from 'librechat-data-provider';
 import type { ComposerKeyVerdict, ComposerStopProps, SendAction } from '@librechat/client';
-import type { ActiveSubagentPanel, SubagentControlUiState } from '@librechat/chat/react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
+import type { ActiveSubagentPanel } from '@librechat/chat/react';
 import type { ComposerKeyAction } from '@librechat/chat';
 import type { OptionWithIcon } from '@librechat/client';
 import { useFocusTrap, useLocalize } from '~/hooks';
@@ -120,8 +116,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   const { renderAgentAvatar } = useMessagePartsHost();
   const clearsFooter = host.useClearsFooter();
   const localize = useLocalize();
-  const panelStore = useStore();
-  const focusRequest = useAtomValue(subagentPanelFocusRequest);
+  const panelStore = useSubagentPanelState();
+  const panelActions = useSubagentPanelActions();
+  const focusRequest = panelStore.useFocusRequest();
   const { showToast } = useToastContext();
   const navigation = host.useNavigation();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -146,11 +143,14 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   /** Unsent words in the composer are enough on their own: whatever put them
    *  there, an advance would change the control identity and wipe them. */
   const selectionHeldForDraft = continuationPending || controlMessage.trim() !== '';
-  const setSelection = useSetAtom(activeSubagentPanel);
+  const setSelection = useCallback(
+    (next: ActiveSubagentPanel | null) => panelActions?.update(next),
+    [panelActions],
+  );
   const resetSelection = useCallback(() => setSelection(null), [setSelection]);
   const agentsMap = host.useAgentsMap();
   const { byMessageId, byThreadId, refresh } = useParentSubagents();
-  const progress = useSubagentProgress(
+  const progress = panelStore.useProgress(
     subagentProgressKey(
       selection.parentMessageId,
       selection.event?.progressKey ?? selection.toolCallId,
@@ -175,12 +175,8 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     [selection.host, selection.parentConversationId, threadId, taskId],
   );
   const controlIdentity = subagentControlStateKey(selection.parentConversationId, threadId, taskId);
-  const [controlState, setControlState] = useAtom(subagentControlStateByTask(controlIdentity));
-  const setControlStateForIdentity = useCallback(
-    (identity: string, state: SubagentControlUiState | null) =>
-      panelStore.set(subagentControlStateByTask(identity), state),
-    [panelStore],
-  );
+  const [controlState, setControlState] = panelStore.useControlState(controlIdentity);
+  const setControlStateForIdentity = panelStore.useControlStateWriter();
   const transientControl = controlState?.receipt ?? null;
   const retryControl = controlState?.retry ?? null;
   const eventSummary = selection.event == null ? undefined : byThreadId.get(threadId);
@@ -286,7 +282,10 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       taskView?.status === 'interrupted' ||
       taskView?.status === 'cancelled');
   const priorTerminalRef = useRef(false);
-  const contentStream = useSubagentActivityStream(selection, !durableTerminal || eventTaskRunning);
+  const contentStream = panelStore.useActivityStream(
+    selection,
+    !durableTerminal || eventTaskRunning,
+  );
 
   useEffect(() => {
     if (selection.event == null) return;
