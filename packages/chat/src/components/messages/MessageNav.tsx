@@ -1,15 +1,13 @@
 import { memo, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { parseWakeupMessage } from '@librechat/chat';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
-import { pxToRem, useRemScale } from '@librechat/client';
+import { cn, pxToRem, useLocalize, useRemScale } from '@librechat/client';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
-import type { TranslationKeys } from '~/hooks';
-import { useMessagesConversation, useMessagesSubmission } from '~/Providers';
-import { useGetMessagesByConvoId } from '~/data-provider';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import type { TranslationKeys } from '@librechat/client';
+import { parseWakeupMessage } from '../../core/parts/wakeup';
+import { useMessagesHost } from '../../react/messages/host';
+import { useChatContext } from '../../react/chat/context';
 
 type MessageEntry = {
   id: string;
@@ -245,7 +243,7 @@ function entryTop(el: HTMLElement, container: HTMLElement): number {
   let node: Element | null = el;
   while (node instanceof HTMLElement) {
     top += node.offsetTop;
-    const parent = node.offsetParent;
+    const parent: Element | null = node.offsetParent;
     if (!(parent instanceof HTMLElement) || parent === container || !container.contains(parent)) {
       break;
     }
@@ -293,10 +291,10 @@ export function magnifyFalloff(distance: number, influence: number): number {
  *  without it every row compresses to its content the moment the rail overflows —
  *  halving the hit target of every rib in exactly the long conversations the rail
  *  exists to navigate. */
-const indicatorButtonClasses = cn(
+const indicatorButtonClasses = [
   'flex w-full shrink-0 items-center justify-end rounded-sm transition-opacity duration-300',
   'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy',
-);
+].join(' ');
 
 const dimIndicatorClasses =
   'opacity-40 high-contrast:opacity-50 group-hover/nav:opacity-100 group-focus-within/nav:opacity-100';
@@ -358,14 +356,14 @@ const MessageIndicator = memo(function MessageIndicator({
   );
 });
 
-const chevronButtonClasses = cn(
+const chevronButtonClasses = [
   '-me-1 rounded-md p-0.5 text-text-tertiary opacity-40 transition-[color,opacity] duration-300 high-contrast:opacity-50',
   'group-hover/nav:text-text-secondary group-hover/nav:opacity-100',
   'group-focus-within/nav:text-text-secondary group-focus-within/nav:opacity-100',
   'group-hover/nav:hover:text-text-primary',
   'group-hover/nav:disabled:opacity-30 group-focus-within/nav:disabled:opacity-30',
   'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy',
-);
+].join(' ');
 
 function MessageNav({
   scrollableRef,
@@ -373,18 +371,11 @@ function MessageNav({
 }: {
   scrollableRef: React.RefObject<HTMLDivElement>;
   conversationId?: string | null;
-}) {
+}): React.JSX.Element | null {
   const localize = useLocalize();
-  const { conversationId: contextConversationId } = useMessagesConversation();
-  const conversationId = renderedConversationId ?? contextConversationId;
-  const { isSubmitting } = useMessagesSubmission();
-  const { data: messages } = useGetMessagesByConvoId(
-    conversationId ?? '',
-    {
-      enabled: !!conversationId,
-    },
-    { isStreaming: isSubmitting },
-  );
+  const { conversation, isSubmitting } = useChatContext();
+  const conversationId = renderedConversationId ?? conversation?.conversationId;
+  const messages = useMessagesHost().useConversationMessages(conversationId, isSubmitting);
   const messagesById = useMemo(() => {
     const map = new Map<string, TMessage>();
     if (messages) {
@@ -1753,4 +1744,6 @@ function MessageNav({
   );
 }
 
-export default memo(MessageNav);
+const MemoizedMessageNav: ReturnType<typeof memo<typeof MessageNav>> = memo(MessageNav);
+
+export default MemoizedMessageNav;

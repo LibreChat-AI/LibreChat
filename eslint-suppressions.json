@@ -381,14 +381,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/MessageNav.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
-    },
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/ProjectLandingChip.tsx": {
     "shadcn/no-restyle": {
       "count": 14
@@ -1353,6 +1345,11 @@
   },
   "packages/chat/src/components/messages/HoverButtons.tsx": {
     "shadcn/require-static-classes": {
+      "count": 1
+    }
+  },
+  "packages/chat/src/components/messages/MessageNav.tsx": {
+    "design/disabled-recipe": {
       "count": 1
     }
   },

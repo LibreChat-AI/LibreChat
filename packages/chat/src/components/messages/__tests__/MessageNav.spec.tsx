@@ -1,7 +1,7 @@
+/** @jest-environment jsdom */
 import React from 'react';
 import { render, act, fireEvent, screen } from '@testing-library/react';
 
-type ReactNode = React.ReactNode;
 type RefObject<T> = React.RefObject<T>;
 
 type TestMessage = {
@@ -23,34 +23,22 @@ const mockUseMessagesConversation = jest.fn();
 const mockUseMessagesSubmission = jest.fn();
 let mockRemScale = 1;
 
-jest.mock('~/data-provider', () => ({
-  useGetMessagesByConvoId: (...args: unknown[]) => mockUseGetMessagesByConvoId(...args),
-}));
-
-jest.mock('~/Providers', () => ({
-  useMessagesConversation: (...args: unknown[]) => mockUseMessagesConversation(...args),
-  useMessagesSubmission: (...args: unknown[]) => mockUseMessagesSubmission(...args),
-}));
-
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize:
     () =>
     (key: string, opts?: Record<string, string | number>): string =>
       opts ? `${key}|${JSON.stringify(opts)}` : key,
-}));
-
-// The nav no longer renders HoverCard, but `~/utils` transitively imports the
-// dual CJS/ESM @librechat/client whose dist pulls ESM-only @ariakit subpaths
-// that jest cannot resolve. Stub the module so the unit under test stays isolated.
-jest.mock('@librechat/client', () => ({
-  HoverCard: ({ children }: { children: ReactNode }) => <>{children}</>,
-  HoverCardTrigger: ({ children, asChild }: { children: ReactNode; asChild?: boolean }) =>
-    asChild ? children : <div>{children}</div>,
-  HoverCardPortal: ({ children }: { children: ReactNode }) => <>{children}</>,
-  HoverCardContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  pxToRem: jest.requireActual('../../../../../../packages/client/src/utils/theme').pxToRem,
   useRemScale: () => mockRemScale,
 }));
+
+if (typeof window.ResizeObserver !== 'function') {
+  window.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  };
+}
 
 if (typeof window.matchMedia !== 'function') {
   window.matchMedia = (query: string) =>
@@ -127,7 +115,8 @@ if (typeof (global as { PointerEvent?: unknown }).PointerEvent === 'undefined') 
 }
 
 import type { TMessage } from 'librechat-data-provider';
-import MessageNav, {
+import { createChatContract } from '../../../__fixtures__/chat';
+import RealMessageNav, {
   buildEntry,
   previewTextFor,
   buildSteerEntry,
@@ -135,6 +124,36 @@ import MessageNav, {
   magnifyFalloff,
   ribDimsFor,
 } from '../MessageNav';
+import { createMessagesHost } from '../../../__fixtures__/messagesHost';
+import { MessagesHostProvider } from '../../../react/messages/host';
+import { ChatContext } from '../../../react/chat/context';
+
+const host = createMessagesHost({
+  useConversationMessages: (conversationId, isStreaming) =>
+    mockUseGetMessagesByConvoId(
+      conversationId ?? '',
+      { enabled: !!conversationId },
+      { isStreaming },
+    ).data,
+});
+
+/** Renders the rail inside the chat and messages hosts, reading the mocked conversation and
+ *  submission state on every render so a spec can change them between renders. */
+function MessageNav(props: React.ComponentProps<typeof RealMessageNav>): React.JSX.Element {
+  const { conversationId } = mockUseMessagesConversation();
+  const { isSubmitting } = mockUseMessagesSubmission();
+  const chat = createChatContract({
+    isSubmitting,
+    conversation: { conversationId, endpoint: null, title: null, createdAt: '', updatedAt: '' },
+  });
+  return (
+    <ChatContext.Provider value={chat}>
+      <MessagesHostProvider host={host}>
+        <RealMessageNav {...props} />
+      </MessagesHostProvider>
+    </ChatContext.Provider>
+  );
+}
 
 function buildMessage(overrides: Partial<TestMessage> = {}): TestMessage {
   return {
