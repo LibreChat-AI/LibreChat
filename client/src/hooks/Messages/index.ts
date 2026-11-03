@@ -3,7 +3,7 @@ export {
   getRenderedContentMaxScrollTop,
   reconcileMessageContentLayout,
   scheduleMessageContentLayoutReconcile,
-} from './messageLayout';
+} from '@librechat/chat/react';
 export { EXPAND_TRANSITION } from './useExpandCollapse';
 export { default as useAttachments } from './useAttachments';
 export { default as useSubmitMessage } from './useSubmitMessage';
@@ -24,5 +24,4 @@ export {
   useCopyMessageToClipboard,
 } from './useCopyToClipboard';
 export { default as useContentMetadata } from './useContentMetadata';
-export { default as useMessageScrolling } from './useMessageScrolling';
 export { default as useSmoothStreaming } from './useSmoothStreaming';

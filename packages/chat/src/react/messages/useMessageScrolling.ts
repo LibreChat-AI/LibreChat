@@ -1,11 +1,41 @@
 import { useRef, useCallback, useEffect } from 'react';
-import { useAtomValue } from 'jotai';
 import { Constants } from 'librechat-data-provider';
+import type { Dispatch, MouseEvent, RefObject, SetStateAction } from 'react';
 import type { TMessage } from 'librechat-data-provider';
-import { useMessagesConversation, useMessagesSubmission } from '~/Providers';
+import type { ThrottledFunction } from './useScrollToRef';
 import { reconcileMessageContentLayout } from './messageLayout';
-import useScrollToRef from '~/hooks/useScrollToRef';
-import { autoScrollAtom } from '~/store/autoScroll';
+import useScrollToRef from './useScrollToRef';
+
+/** What the list's scrolling follows: the rendered thread, its conversation, the pane's
+ *  submission state and the viewer's auto-scroll preference. */
+export type MessageScrollingInput = {
+  messagesTree?: TMessage[] | null;
+  conversationId?: string | null;
+  isSubmitting: boolean;
+  /** Whether the reader vetoed riding the stream for the current turn. */
+  abortScroll: boolean;
+  setAbortScroll: Dispatch<SetStateAction<boolean>>;
+  /** Whether opening a conversation lands the reader on its newest message. */
+  autoScroll: boolean;
+};
+
+/** The scroll machinery of the message list. */
+export type MessageScrolling = {
+  /** Wraps the rendered thread. */
+  contentRef: RefObject<HTMLDivElement>;
+  /** The scroll container. */
+  scrollableRef: RefObject<HTMLDivElement>;
+  /** The zero-height marker after the last row. */
+  messagesEndRef: RefObject<HTMLDivElement>;
+  /** Jumps to the end marker; absent until the target ref exists. */
+  scrollToBottom?: ThrottledFunction;
+  /** Scrolls smoothly to the end, from the scroll-to-bottom control. */
+  handleSmoothToRef: (event: MouseEvent<HTMLButtonElement>) => void;
+  /** The container's scroll listener. */
+  debouncedHandleScroll: () => void;
+  /** Reports whether the end marker is in view. */
+  handleNearBottomChange: (isNearBottom: boolean) => void;
+};
 
 const resizeFollowThreshold = 120;
 
@@ -25,9 +55,16 @@ const prefersReducedMotion = () =>
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
-  const autoScroll = useAtomValue(autoScrollAtom);
-
+/** Follows the stream, lands on a conversation's end once its rows mount, and keeps the
+ *  reader's position when they scroll away. */
+export default function useMessageScrolling({
+  messagesTree,
+  conversationId,
+  isSubmitting,
+  abortScroll,
+  setAbortScroll,
+  autoScroll,
+}: MessageScrollingInput): MessageScrolling {
   const scrollableRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -51,8 +88,6 @@ export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
   /** The conversation whose newest message has already been landed on, so the
    *  stream deltas that follow cannot re-take a reader who scrolled away. */
   const landedConversationRef = useRef<string | null>(null);
-  const { conversation, conversationId } = useMessagesConversation();
-  const { setAbortScroll, isSubmitting, abortScroll } = useMessagesSubmission();
 
   const getIsNearBottom = useCallback(() => {
     const scrollEl = scrollableRef.current;
@@ -134,7 +169,7 @@ export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
          *  `Message` raises this on every wheel tick, downward ones included, so
          *  it is set again on the way here; and the value this closure can see is
          *  a render behind, so a conditional clear loses the race and leaves the
-         *  ride vetoed for the rest of the answer. Recoil no-ops an unchanged
+         *  ride vetoed for the rest of the answer. The setter no-ops an unchanged
          *  write, so repeating it costs nothing. */
         setAbortScroll(false);
       }
@@ -409,7 +444,7 @@ export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
 
     return () => {
       if (abortScroll === true) {
-        scrollToBottom && scrollToBottom.cancel();
+        scrollToBottom?.cancel();
       }
     };
   }, [isSubmitting, messagesTree, scrollToBottom, abortScroll, followBottom]);
@@ -420,7 +455,7 @@ export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
    * Keyed on the conversation whose rows are actually MOUNTED, not on the id
    * alone. The id reaches this hook a commit or more before the tree does, and
    * firing on it scrolled the outgoing thread to its end and then never ran
-   * again — the reader was left wherever that put them, which on a long thread
+   * again: the reader was left wherever that put them, which on a long thread
    * is the top. Waiting for the rendered tree to name the same conversation
    * costs nothing and is the only moment `messages-end` is where the reader
    * expects it.
@@ -469,7 +504,6 @@ export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
   }, [autoScroll, conversationId, messagesTree, scrollToBottom]);
 
   return {
-    conversation,
     contentRef,
     scrollableRef,
     messagesEndRef,

@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import { StrictMode, createRef, useRef } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { RefObject } from 'react';
@@ -95,6 +98,32 @@ describe('useScrollToRef lifecycle', () => {
       act(() => jest.advanceTimersByTime(1));
       expect(callback).toHaveBeenCalledTimes(2);
       expect(scroll).toHaveBeenLastCalledWith({ behavior });
+    },
+  );
+
+  it.each(scrollActions)(
+    'coalesces a burst of $label calls into one trailing call, as lodash throttle does',
+    ({ label, interval }) => {
+      const callback = jest.fn();
+      render(<Harness callback={callback} smoothCallback={callback} />, { wrapper: StrictMode });
+      screen.getByTestId('end').scrollIntoView = jest.fn();
+
+      fireEvent.click(screen.getByText(label));
+      fireEvent.click(screen.getByText(label));
+      fireEvent.click(screen.getByText(label));
+      fireEvent.click(screen.getByText(label));
+      expect(callback).toHaveBeenCalledTimes(1);
+
+      act(() => jest.advanceTimersByTime(interval));
+      expect(callback).toHaveBeenCalledTimes(2);
+
+      /** The trailing run opens a window of its own; with nothing queued in it, nothing more runs. */
+      act(() => jest.advanceTimersByTime(interval * 3));
+      expect(callback).toHaveBeenCalledTimes(2);
+
+      /** Once that window closes, the next call is a leading call again. */
+      fireEvent.click(screen.getByText(label));
+      expect(callback).toHaveBeenCalledTimes(3);
     },
   );
 
