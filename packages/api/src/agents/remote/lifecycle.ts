@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ResponseReference } from '@librechat/data-schemas';
 import type { Agents } from 'librechat-data-provider';
 import type { ApprovalPauseOptions } from '~/stream/ApprovalLifecycle';
 import type { GenerationJobManagerClass } from '~/stream';
@@ -28,6 +29,7 @@ export interface AgentExecutionEnrollmentParams {
   isPrincipalActive: (userId: string) => Promise<boolean>;
   clientRequestId?: string;
   retainTerminalPersistence?: true;
+  responseRoot?: Pick<ResponseReference['target'], 'id' | 'incarnation'>;
   /** Request a rendering outcome captured before transient generation cleanup. */
   captureTerminalOutcome?: true;
 }
@@ -53,6 +55,7 @@ export class AgentExecutionEnrollment {
   readonly runId: string;
   readonly createdAt: number;
   readonly signal: AbortSignal;
+  readonly responseRoot?: Readonly<NonNullable<AgentExecutionEnrollmentParams['responseRoot']>>;
 
   private readonly manager: GenerationJobManagerClass;
   private readonly providerExecutionId: string;
@@ -105,6 +108,11 @@ export class AgentExecutionEnrollment {
     this.runId = job.streamId;
     this.createdAt = job.createdAt;
     this.providerExecutionId = providerExecutionId;
+    if (job.metadata.responseRootId && job.metadata.responseRootIncarnation)
+      this.responseRoot = Object.freeze({
+        id: job.metadata.responseRootId,
+        incarnation: job.metadata.responseRootIncarnation,
+      });
     this.abortController = job.abortController;
     this.attemptController = ownerId == null ? undefined : new AbortController();
     this.signal =
@@ -571,6 +579,12 @@ export async function enrollAgentExecution(
         endpoint: protocol,
         model: agentId,
         responseMessageId: runId,
+        ...(params.responseRoot
+          ? {
+              responseRootId: params.responseRoot.id,
+              responseRootIncarnation: params.responseRoot.incarnation,
+            }
+          : {}),
         ...(params.retainTerminalPersistence && { terminalPersistenceOwner: 'external' as const }),
       },
     });
@@ -621,6 +635,8 @@ export async function enrollResumedAgentExecution(
     job.metadata.endpoint !== params.protocol ||
     job.metadata.responseMessageId !== params.runId ||
     job.metadata.providerExecutionId !== params.providerExecutionId ||
+    job.metadata.responseRootId !== params.responseRoot?.id ||
+    job.metadata.responseRootIncarnation !== params.responseRoot?.incarnation ||
     Boolean(params.retainTerminalPersistence) !==
       (job.metadata.terminalPersistenceOwner === 'external')
   )

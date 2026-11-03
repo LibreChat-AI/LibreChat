@@ -1,4 +1,4 @@
-import { sanitizeJobMetadata } from './metadata';
+import { sanitizeJobMetadata, parseResponseRootIdentity } from './metadata';
 
 const failure = {
   server: '',
@@ -53,3 +53,20 @@ it.each([null, {}, 'malformed', { ...completion, invocationMode: 'autonomous' }]
     );
   },
 );
+
+const responseRoot = {
+  responseRootId: '0123456789abcdef01234567',
+  responseRootIncarnation: '01234567-89ab-4cde-8fab-0123456789ab',
+};
+it('validates creation-only physical Response bindings and refuses partial or later patches', () => {
+  expect(parseResponseRootIdentity({})).toEqual({});
+  expect(parseResponseRootIdentity(responseRoot)).toEqual(responseRoot);
+  for (const input of [
+    { responseRootId: responseRoot.responseRootId },
+    { responseRootIncarnation: responseRoot.responseRootIncarnation },
+    { ...responseRoot, responseRootId: 'invalid' },
+    { ...responseRoot, responseRootIncarnation: 'invalid' },
+  ])
+    expect(() => parseResponseRootIdentity(input)).toThrow('Invalid Response root identity');
+  expect(() => sanitizeJobMetadata(responseRoot)).toThrow('creation-only');
+});

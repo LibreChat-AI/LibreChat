@@ -1,6 +1,7 @@
 import type {
   AgentExecutionEnrollment,
   AgentExecutionEnrollmentDeps,
+  AgentExecutionEnrollmentParams,
   ResumedAgentExecutionIdentity,
 } from './lifecycle';
 import type { AgentRunEnvelope } from '../envelope';
@@ -18,6 +19,7 @@ export interface ExecuteAgentRunParams<Result> {
   conversationId: string;
   clientRequestId?: string;
   retainTerminalPersistence?: true;
+  responseRoot?: AgentExecutionEnrollmentParams['responseRoot'];
   captureTerminalOutcome?: true;
   /** Server-validated journal identity only; never copied from an API request body. */
   resume?: ResumedAgentExecutionIdentity;
@@ -25,6 +27,8 @@ export interface ExecuteAgentRunParams<Result> {
   isPrincipalActive: (userId: string) => Promise<boolean>;
   /** Persist exact execution identity before any provider/tool work may start. */
   onEnrolled?: (execution: AgentExecutionEnrollment) => void | Promise<void>;
+  /** Persist the winning start-CAS identity before SDK work. */
+  onProviderStarted?: (execution: AgentExecutionEnrollment) => void | Promise<void>;
   execute: (execution: AgentExecutionEnrollment) => Promise<Result>;
   handleExecutionError?: (error: unknown, signal?: AbortSignal) => Result | Promise<Result>;
   beforeSettle?: (
@@ -53,11 +57,13 @@ export async function executeAgentRun<Result>(
     conversationId,
     clientRequestId,
     retainTerminalPersistence,
+    responseRoot,
     captureTerminalOutcome,
     resume,
     connection,
     isPrincipalActive,
     onEnrolled,
+    onProviderStarted,
     execute,
     handleExecutionError,
     beforeSettle,
@@ -67,6 +73,14 @@ export async function executeAgentRun<Result>(
   }: ExecuteAgentRunParams<Result>,
   deps?: AgentExecutionEnrollmentDeps,
 ): Promise<Result> {
+  if (
+    responseRoot &&
+    (envelope.protocol !== 'responses' ||
+      !retainTerminalPersistence ||
+      typeof onEnrolled !== 'function' ||
+      typeof onProviderStarted !== 'function')
+  )
+    throw new Error('Durable Response execution ownership hooks are unavailable');
   const agentId = envelope.payload.model;
   let execution: AgentExecutionEnrollment | undefined;
   let executionError: unknown;
@@ -89,6 +103,7 @@ export async function executeAgentRun<Result>(
         protocol: envelope.protocol,
         clientRequestId,
         retainTerminalPersistence,
+        responseRoot,
         captureTerminalOutcome,
         isPrincipalActive,
       };
@@ -104,6 +119,7 @@ export async function executeAgentRun<Result>(
       }
       await onEnrolled?.(execution);
       await execution.beginProviderExecution();
+      await onProviderStarted?.(execution);
       return await execute(execution);
     } catch (error) {
       executionError = error;

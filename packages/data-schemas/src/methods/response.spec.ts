@@ -2192,7 +2192,13 @@ it('atomically reserves a dispatch outbox and exposes only bounded maintenance i
       record: { dispatchOutbox: { kind: 'create', id: oneId, state: 'pending' } },
     });
     const page = await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false));
-    expect(page.responses).toEqual([{ ...owner, responseId: oneId }]);
+    expect(page.responses).toEqual([
+      {
+        ...owner,
+        responseId: oneId,
+        storageTarget: (await storage.read(owner, oneId))?.storageTarget,
+      },
+    ]);
     expect(JSON.stringify(page)).not.toContain('Hello');
     expect(JSON.stringify(page)).not.toContain('requestJSON');
     expect(await storage.settleDispatch(owner, oneId, { kind: 'create', id: 'wrong' })).toBe(false);
@@ -2225,7 +2231,13 @@ it('recovers pending dispatch tokens without acknowledging another tenant or clo
   scoped(async () => {
     await storage.reserve(reservation({ dispatch: true }));
     const page = await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false));
-    expect(page.responses).toEqual([{ ...owner, responseId: oneId }]);
+    expect(page.responses).toEqual([
+      {
+        ...owner,
+        responseId: oneId,
+        storageTarget: (await storage.read(owner, oneId))?.storageTarget,
+      },
+    ]);
     await expect(storage.listPendingDispatches(undefined, 1, false)).rejects.toThrow('system');
     await expect(
       runAsSystem(() => storage.listPendingDispatches(undefined, 0, false)),
@@ -2306,4 +2318,20 @@ it('cannot overwrite a concurrently reserved resume with a late create acknowled
       id: 'intent-one',
       state: 'pending',
     });
+  }));
+
+it('does not adopt a replacement root through an earlier maintenance page', () =>
+  scoped(async () => {
+    const first = await storage.reserve({ ...reservation(), dispatch: true });
+    if (!first.ok) throw new Error('Reservation failed');
+    const page = await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false));
+    expect(page.responses[0]?.storageTarget).toEqual(first.record.storageTarget);
+    await mongoose.models.StoredResponse.deleteOne({ responseId: oneId });
+    const replacement = await storage.reserve({ ...reservation(), dispatch: true });
+    if (!replacement.ok) throw new Error('Replacement failed');
+    expect(replacement.record.storageTarget?.id).not.toBe(first.record.storageTarget?.id);
+    expect(await storage.read(page.responses[0], oneId)).toBeNull();
+    expect((await storage.read(owner, oneId))?.storageTarget).toEqual(
+      replacement.record.storageTarget,
+    );
   }));

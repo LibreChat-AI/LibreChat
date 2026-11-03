@@ -4,9 +4,9 @@ import type { StoredResponseRecord } from '@librechat/data-schemas';
 import type { ResponseReviewView } from 'librechat-data-provider';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { Response } from './types';
+import { matchesResponseRoot, responseTenantId } from './scope';
 import { buildPendingBackgroundResponse } from './background';
 import { toClientPendingAction } from '../hitl/policy';
-import { responseTenantId } from './scope';
 
 export interface ResponseReviewDependencies {
   jobs: Pick<GenerationJobManagerClass, 'getJob' | 'getResumeState'>;
@@ -57,6 +57,7 @@ export function createResponseReview(deps: ResponseReviewDependencies) {
       !job ||
       !['running', 'requires_action'].includes(job.status) ||
       job.createdAt !== record.generationCreatedAt ||
+      !matchesResponseRoot(record, job.metadata) ||
       job.metadata.userId !== record.userId ||
       responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
       job.metadata.agent_id !== record.agentId ||

@@ -8,8 +8,13 @@ import type { TurnConversationRequest } from '~/conversations/save';
 import type { ResponseResumeAdmissionResult } from './types';
 import type { ContextRequest } from '~/middleware/tenant';
 import type { ServerRequest } from '~/types/http';
+import {
+  responseRootBinding,
+  matchesResponseRoot,
+  responseTenantId,
+  isResponseTenantId,
+} from './scope';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
-import { responseTenantId, isResponseTenantId } from './scope';
 import { tenantContextMiddleware } from '~/middleware/tenant';
 
 const audience = 'librechat-responses-worker';
@@ -23,6 +28,8 @@ const baseClaims = z.object({
   userId: z.string().min(1),
   tenantId: z.string().min(1).refine(isResponseTenantId).optional(),
   sourceKeyId: z.string().min(1),
+  responseRootId: z.string().regex(/^[a-f\d]{24}$/),
+  responseRootIncarnation: z.string().uuid(),
 });
 const claimsSchema = z.discriminatedUnion('purpose', [
   baseClaims.extend({ purpose: z.literal(purpose) }),
@@ -104,6 +111,7 @@ export function mintResponseResumeWorkerToken(
     {
       purpose: resumePurpose,
       responseId: record.responseId,
+      ...responseRootBinding(record),
       userId: record.userId,
       ...(responseTenantId(record.tenantId) == null
         ? {}
@@ -129,6 +137,7 @@ export function mintBackgroundResponseWorkerToken(
     {
       purpose,
       responseId: record.responseId,
+      ...responseRootBinding(record),
       userId: record.userId,
       ...(responseTenantId(record.tenantId) == null
         ? {}
@@ -184,6 +193,7 @@ export function createBackgroundResponseWorkerAuth(
         let record = loaded;
         if (
           !record ||
+          !matchesResponseRoot(record, claims) ||
           !user ||
           String(user._id) !== record.userId ||
           !isResponseTenantId(user.tenantId) ||
@@ -215,6 +225,7 @@ export function createBackgroundResponseWorkerAuth(
           record = result.record;
           if (
             record.responseId !== claims.responseId ||
+            !matchesResponseRoot(record, claims) ||
             record.userId !== claims.userId ||
             !isResponseTenantId(record.tenantId) ||
             responseTenantId(record.tenantId) !== claims.tenantId ||

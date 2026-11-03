@@ -112,7 +112,7 @@ async function fixture(principal: ResponseOwner = owner, retainTerminalPersisten
   const completion = createResponseCompletion({
     storage,
     cleanupCheckpoint: async () => {},
-    confirmExecution: createResponseExecutionConfirmation(storage),
+    confirmExecution: createResponseExecutionConfirmation(storage, jobs),
     releaseExecution: createResponseExecutionRelease(jobs, storage),
   });
   const retire = createResponseRetirement({

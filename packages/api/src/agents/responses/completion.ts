@@ -1,15 +1,16 @@
 import { isDeepStrictEqual } from 'node:util';
-import { sameResponseTerminalReceipt } from '@librechat/data-schemas';
+import { responseReference, sameResponseTerminalReceipt } from '@librechat/data-schemas';
 import type {
   ResponseStorage,
   StoredResponseRecord,
   ResponseTerminalReceipt,
   ResponseMutationResult,
   ResponseCleanupIdentity,
+  ResponseExecutionProof,
 } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import { projectCanonicalResponseTurn } from './turnProjection';
-import { responseTenantId } from './scope';
+import { matchesResponseRoot, responseTenantId } from './scope';
 
 /** A retirement result carries cleanup authority only and must never render private output. */
 export interface ResponseCompletionRecord extends StoredResponseRecord {
@@ -47,7 +48,7 @@ function terminal(record: StoredResponseRecord): boolean {
   return ['completed', 'failed', 'incomplete', 'cancelled'].includes(record.status);
 }
 
-type ExecutionReleaseIdentity = Pick<
+type ExecutionIdentity = Pick<
   StoredResponseRecord,
   | 'userId'
   | 'tenantId'
@@ -55,18 +56,20 @@ type ExecutionReleaseIdentity = Pick<
   | 'agentId'
   | 'conversationId'
   | 'generationCreatedAt'
-  | 'expiredAt'
-  | 'status'
   | 'storageTarget'
 > & {
-  retirement?: ResponseCleanupIdentity['retirement'];
   resume?: Pick<NonNullable<StoredResponseRecord['resume']>, 'state' | 'providerExecutionId'>;
   review?: Pick<NonNullable<StoredResponseRecord['review']>, 'providerExecutionId'>;
 };
 
+type ExecutionReleaseIdentity = ExecutionIdentity &
+  Pick<StoredResponseRecord, 'status' | 'expiredAt'> & {
+    retirement?: ResponseCleanupIdentity['retirement'];
+  };
+
 async function readExecutionJob(
   jobs: Pick<GenerationJobManagerClass, 'getJob'>,
-  record: ExecutionReleaseIdentity,
+  record: ExecutionIdentity,
   receipt?: Pick<ResponseTerminalReceipt, 'providerExecutionId' | 'ownerId'>,
 ) {
   if (record.generationCreatedAt == null) return null;
@@ -79,6 +82,7 @@ async function readExecutionJob(
       : record.review?.providerExecutionId);
   if (
     job.createdAt !== record.generationCreatedAt ||
+    !matchesResponseRoot(record, job.metadata) ||
     job.metadata.userId !== record.userId ||
     responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
     job.metadata.agent_id !== record.agentId ||
@@ -93,21 +97,50 @@ async function readExecutionJob(
   return { job, providerExecutionId: job.metadata.providerExecutionId };
 }
 
+/** Recover a positive drain result only from a job bound to this physical root.
+ * An uncertain checkpoint remains pending even after provider drain is imported. */
+export async function readResponseExecutionProof(
+  storage: Pick<ResponseStorage, 'readExecutionProof' | 'settleExecution'>,
+  jobs: Pick<GenerationJobManagerClass, 'getJob'>,
+  record: ExecutionIdentity,
+  receipt?: Pick<ResponseTerminalReceipt, 'providerExecutionId' | 'ownerId'>,
+): Promise<ResponseExecutionProof | null> {
+  let proof = await storage.readExecutionProof(record);
+  if (!proof || (receipt && !proof.outcome)) {
+    const transient = await readExecutionJob(jobs, record, receipt);
+    const job = transient?.job;
+    if (!job || job.metadata.providerDrained !== true) return null;
+    const outcome = job.status;
+    if (outcome !== 'complete' && outcome !== 'error' && outcome !== 'aborted') return null;
+    const binding = {
+      generationCreatedAt: job.createdAt,
+      providerExecutionId: transient.providerExecutionId,
+      ...(job.metadata.providerExecutionOwnerId
+        ? { ownerId: job.metadata.providerExecutionOwnerId }
+        : {}),
+    };
+    if (!(await storage.settleExecution(responseReference(record), binding, outcome))) return null;
+    proof = await storage.readExecutionProof(record);
+  }
+  if (
+    proof &&
+    receipt &&
+    (proof.providerExecutionId !== receipt.providerExecutionId || proof.ownerId !== receipt.ownerId)
+  )
+    throw new Error('Response terminal execution identity changed');
+  return proof;
+}
+
 /** Candidate bytes and possession of a provider ID do not prove that execution drained. */
 export function createResponseExecutionConfirmation(
-  storage: Pick<ResponseStorage, 'readExecutionProof'>,
+  storage: Pick<ResponseStorage, 'readExecutionProof' | 'settleExecution'>,
+  jobs: Pick<GenerationJobManagerClass, 'getJob'>,
 ): ResponseCompletionDependencies['confirmExecution'] {
   return async (record, receipt) => {
     if (record.generationCreatedAt !== receipt.generationCreatedAt)
       throw new Error('Response terminal execution identity changed');
-    const proof = await storage.readExecutionProof(record);
-    if (!proof) return null;
-    if (
-      proof.providerExecutionId !== receipt.providerExecutionId ||
-      proof.ownerId !== receipt.ownerId
-    )
-      throw new Error('Response terminal execution identity changed');
-    return proof.outcome ?? null;
+    const proof = await readResponseExecutionProof(storage, jobs, record, receipt);
+    return proof?.outcome ?? null;
   };
 }
 
@@ -196,6 +229,7 @@ function sameExecution(
     current.userId === previous.userId &&
     responseTenantId(current.tenantId) === responseTenantId(previous.tenantId) &&
     current.responseId === previous.responseId &&
+    isDeepStrictEqual(current.storageTarget, previous.storageTarget) &&
     current.agentId === previous.agentId &&
     current.sourceKeyId === previous.sourceKeyId &&
     current.conversationId === previous.conversationId &&

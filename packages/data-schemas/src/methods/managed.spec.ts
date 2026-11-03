@@ -332,6 +332,7 @@ describe('managed target allocation on real storage', () => {
       const storage = createResponseStorage(db);
       const enrolled = await storage.enrollExecution(record, checkpoint, '{}');
       if (!enrolled.ok) throw new Error('Provider enrollment failed');
+      expect(await storage.bindExecution(enrolled.record, checkpoint)).toBe(true);
       return { model, reference, checkpoint, input, record: enrolled.record, storage };
     }
     it('admits only one provider and rejects stale physical enrollment without transactions', async () => {
@@ -554,7 +555,15 @@ describe('managed target allocation on real storage', () => {
         code: 'response_conflict',
       });
       expect(await checkpointStorage.settle()).toBe(true);
-      expect(await f.storage.enrollExecution(current, next, '{}')).toMatchObject({ ok: true });
+      const resumed = await f.storage.enrollExecution(current, next, '{}');
+      if (!resumed.ok) throw new Error('Resume enrollment failed');
+      const retry = { ...next, ownerId: randomUUID() };
+      expect(await f.storage.enrollExecution(resumed.record, retry, '{}')).toMatchObject({
+        ok: true,
+      });
+      // Only the attempt selected by the external start CAS binds ownership.
+      expect(await f.storage.bindExecution(resumed.record, next)).toBe(true);
+      expect(await f.storage.bindExecution(resumed.record, retry)).toBe(false);
       expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(false);
       expect(await checkpointStorage.settle()).toBe(false);
       const nextCheckpoint = createResponseCheckpointStorage(db, f.reference, next);

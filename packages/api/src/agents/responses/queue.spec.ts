@@ -4,6 +4,7 @@ import {
   createModels,
   createMethods,
   createResponseStorage,
+  createManagedMessageId,
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -22,6 +23,7 @@ let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
 let methods: ReturnType<typeof createMethods>;
 let service: AgentTriggerService | undefined;
+const responseId = createManagedMessageId();
 const owner = { userId: '000000000000000000000001', tenantId: 'response-queue-test' };
 const scope = <T>(work: () => Promise<T>) => tenantStorage.run({ tenantId: owner.tenantId }, work);
 
@@ -73,7 +75,7 @@ beforeEach(async () => {
 async function reserve(principal: ResponseOwner = owner): Promise<StoredResponseRecord> {
   const result = await storage.reserve({
     ...principal,
-    responseId: 'resp_queue',
+    responseId,
     requestKey: 'key',
     fingerprint: 'request',
     agentId: 'agent',
@@ -205,15 +207,15 @@ it('rejects a tampered source envelope and revoked original authority before exe
 
 async function reserveDecision(): Promise<StoredResponseRecord> {
   await reserve();
-  await storage.publish(owner, 'resp_queue', 0, {
+  await storage.publish(owner, responseId, 0, {
     status: 'in_progress',
     generationCreatedAt: 100,
     responseJSON: '{}',
   });
   const paused = await storage.publishReview(
     owner,
-    'resp_queue',
-    { execution: (await storage.read(owner, 'resp_queue'))! },
+    responseId,
+    { execution: (await storage.read(owner, responseId))! },
     100,
     {
       actionId: 'action-one',
@@ -226,7 +228,7 @@ async function reserveDecision(): Promise<StoredResponseRecord> {
   if (!paused.ok) throw new Error('Pause failed');
   const result = await storage.reserveResume(
     owner,
-    'resp_queue',
+    responseId,
     {
       generationCreatedAt: 100,
       actionId: 'action-one',
@@ -447,3 +449,31 @@ it.each([null, ''])(
     });
   },
 );
+
+it('rejects an old queued delivery after replacement at the same logical response ID', () =>
+  scope(async () => {
+    const execute = jest.fn(async () => ({ status: 'started' as const }));
+    const queue = createBackgroundResponseQueue({
+      storage,
+      enqueue: async () => {
+        throw new Error('Not used');
+      },
+      authorize: async () => true,
+      execute,
+    });
+    const first = await reserve();
+    const stale = createBackgroundResponseEnvelope(first);
+    const oldKey = queue.deliveryKey(first);
+    await mongoose.models.StoredResponse.deleteOne({ responseId: first.responseId });
+    const replacement = await reserve();
+    expect(queue.deliveryKey(replacement)).not.toBe(oldKey);
+    await storage.attachDelivery(
+      replacement,
+      replacement.responseId,
+      queue.deliveryKey(replacement),
+    );
+    await expect(queue.sourceDispatchers.get('responses')!.dispatch(stale)).rejects.toMatchObject({
+      code: 'response_authority_changed',
+    });
+    expect(execute).not.toHaveBeenCalled();
+  }));

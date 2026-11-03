@@ -208,6 +208,8 @@ export interface ResponseStorage {
     binding: ResponseExecutionBinding,
     responseJSON: string,
   ): Promise<ResponseMutationResult>;
+  /** Bind the attempt selected by the existing provider-start CAS before SDK work. */
+  bindExecution(record: StoredResponseRecord, binding: ResponseExecutionBinding): Promise<boolean>;
   /** Positive provider proof is retained independently of transient job lifetime. */
   settleExecution(
     reference: ResponseReference,
@@ -264,7 +266,9 @@ export interface ResponseStorage {
     limit: number,
     includeResume: boolean,
   ): Promise<{
-    responses: Array<ResponseOwner & { responseId: string }>;
+    responses: Array<
+      Pick<StoredResponseRecord, 'userId' | 'tenantId' | 'responseId' | 'storageTarget'>
+    >;
     next?: string;
   }>;
   /** Scope-fenced acknowledgement of one exact source intent, independent of execution revision. */
@@ -474,6 +478,19 @@ export function createResponseStorage(
         return { ok: false, code: 'response_conflict' };
       if (await isResponseScopeClosed(mongoose, current, current.conversationId))
         return { ok: false, code: 'response_conflict' };
+      if (resumed) {
+        // Enrollment admits the provider segment, not a competing attempt owner.
+        // A retry may race the first attempt before the job's start CAS chooses one.
+        const enrolled = await model
+          .findOne({
+            ...scope(current),
+            ...execution,
+            status: 'in_progress',
+            'providerExecution.id': binding.providerExecutionId,
+          })
+          .lean();
+        if (enrolled) return { ok: true, record: enrolled };
+      }
       const record = await model
         .findOneAndUpdate(
           {
@@ -510,7 +527,6 @@ export function createResponseStorage(
               generationCreatedAt: binding.generationCreatedAt,
               providerExecution: {
                 id: binding.providerExecutionId,
-                ...(binding.ownerId ? { ownerId: binding.ownerId } : {}),
                 drained: false,
               },
             },
@@ -521,6 +537,32 @@ export function createResponseStorage(
         .lean();
       return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
     },
+    async bindExecution(record, binding) {
+      assertExecutionBinding(binding);
+      if (!record.storageTarget) return false;
+      const result = await model.updateOne(
+        {
+          ...scope(record),
+          agentId: record.agentId,
+          conversationId: record.conversationId,
+          generationCreatedAt: binding.generationCreatedAt,
+          'providerExecution.id': binding.providerExecutionId,
+          'providerExecution.drained': false,
+          $or: [
+            { 'providerExecution.ownerId': { $exists: false } },
+            { 'providerExecution.ownerId': binding.ownerId ?? { $exists: false } },
+          ],
+        },
+        {
+          $set: {
+            'providerExecution.drained': false,
+            ...(binding.ownerId ? { 'providerExecution.ownerId': binding.ownerId } : {}),
+          },
+        },
+        { upsert: false },
+      );
+      return result.matchedCount === 1;
+    },
     async settleExecution(reference, binding, outcome) {
       assertExecutionBinding(binding);
       if (outcome != null && !['complete', 'error', 'aborted'].includes(outcome))
@@ -530,19 +572,29 @@ export function createResponseStorage(
           ...responseRootFilter(mongoose, reference),
           generationCreatedAt: binding.generationCreatedAt,
           'providerExecution.id': binding.providerExecutionId,
-          'providerExecution.ownerId': binding.ownerId ?? { $exists: false },
-          ...(outcome
-            ? {
-                $or: [
-                  { 'providerExecution.outcome': { $exists: false } },
-                  { 'providerExecution.outcome': outcome },
-                ],
-              }
-            : {}),
+          $and: [
+            {
+              $or: [
+                { 'providerExecution.ownerId': { $exists: false } },
+                { 'providerExecution.ownerId': binding.ownerId ?? { $exists: false } },
+              ],
+            },
+            ...(outcome
+              ? [
+                  {
+                    $or: [
+                      { 'providerExecution.outcome': { $exists: false } },
+                      { 'providerExecution.outcome': outcome },
+                    ],
+                  },
+                ]
+              : []),
+          ],
         },
         {
           $set: {
             'providerExecution.drained': true,
+            ...(binding.ownerId ? { 'providerExecution.ownerId': binding.ownerId } : {}),
             ...(outcome ? { 'providerExecution.outcome': outcome } : {}),
           },
         },
@@ -994,7 +1046,7 @@ export function createResponseStorage(
           $and: [activeExpirationFilter<StoredResponseRecord>()],
           ...pending,
         })
-        .select('_id tenantId userId responseId')
+        .select('_id tenantId userId responseId storageTarget')
         .sort({ _id: 1 })
         .limit(limit + 1)
         .lean();
@@ -1004,6 +1056,7 @@ export function createResponseStorage(
           userId: row.userId,
           ...(row.tenantId ? { tenantId: row.tenantId } : {}),
           responseId: row.responseId,
+          storageTarget: row.storageTarget,
         })),
         ...(rows.length > limit ? { next: String(page[page.length - 1]._id) } : {}),
       };

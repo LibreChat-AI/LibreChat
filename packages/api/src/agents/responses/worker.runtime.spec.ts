@@ -11,6 +11,7 @@ import {
   createResponseStorage,
   createManagedMessageId,
   createManagedConversationId,
+  responseReference,
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -30,6 +31,11 @@ import {
   createResponseExecutionRelease,
   createResponseExecutionConfirmation,
 } from './completion';
+import {
+  buildPendingAction,
+  computeAgentRequestFingerprint,
+  computeLegacyAgentRequestFingerprint,
+} from '../hitl/policy';
 import { buildPendingBackgroundResponse, createBackgroundResponseService } from './background';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { getAgentCheckpointer, __resetCheckpointerForTests } from '../checkpointer';
@@ -41,7 +47,6 @@ import { createResponsePersistence } from './foreground';
 import { createResponseResumeAdmission } from './resume';
 import { buildResponseInputChain } from './persistence';
 import { createAgentRunEnvelope } from '../envelope';
-import { buildPendingAction } from '../hitl/policy';
 import { executeAgentRun } from '../remote/host';
 import { GenerationJobManager } from '~/stream';
 import { createResponseTurn } from './turn';
@@ -166,6 +171,37 @@ it('accepts only a response-bound server token and restores the exact persisted 
     userId: owner.userId,
     body: { model: 'agent', input: 'Saved input', instructions: 'Saved instructions' },
   });
+});
+
+it('rejects a worker credential issued for a replaced physical response root', async () => {
+  const token = mintBackgroundResponseWorkerToken(record, secret);
+  const handler = jest.fn((_req: Request, res: Response) => {
+    res.status(200).end();
+  });
+  const { app } = fixture(handler);
+  await scope(async () => {
+    await mongoose.models.StoredResponse.deleteOne({ responseId: record.responseId });
+    const replacement = await storage.reserve({
+      ...owner,
+      responseId: record.responseId,
+      requestKey: record.requestKey,
+      fingerprint: record.fingerprint,
+      agentId: record.agentId,
+      sourceKeyId: record.sourceKeyId,
+      requestJSON: record.requestJSON,
+      conversationId: record.conversationId,
+      parentMessageId: record.parentMessageId,
+    });
+    if (!replacement.ok) throw new Error('Replacement failed');
+    expect(replacement.record.storageTarget?.id).not.toBe(record.storageTarget?.id);
+  });
+  await request(app)
+    .post('/')
+    .set('x-lc-response-worker', '1')
+    .auth(token, { type: 'bearer' })
+    .send({})
+    .expect(401);
+  expect(handler).not.toHaveBeenCalled();
 });
 
 it('preserves ordinary remote authentication when there is no worker marker', async () => {
@@ -445,7 +481,7 @@ describe('background Responses execution handoff', () => {
           createResponseCompletion({
             storage,
             cleanupCheckpoint: async () => {},
-            confirmExecution: createResponseExecutionConfirmation(storage),
+            confirmExecution: createResponseExecutionConfirmation(storage, GenerationJobManager),
             releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
           }).finish(saved),
         );
@@ -618,13 +654,15 @@ describe('background Responses execution handoff', () => {
         conversationId: record.conversationId,
         protocol: 'responses',
         retainTerminalPersistence: true,
+        responseRoot: record.storageTarget,
         isPrincipalActive: async () => true,
       });
-      await storage.publish(owner, record.responseId, 0, {
-        status: 'in_progress',
-        generationCreatedAt: execution.createdAt,
-        responseJSON: JSON.stringify(buildPendingBackgroundResponse(record)),
-      });
+      const enrolled = await storage.enrollExecution(
+        record,
+        execution.getEnrollmentIdentity(),
+        JSON.stringify(buildPendingBackgroundResponse(record)),
+      );
+      if (!enrolled.ok) throw new Error('Enrollment failed');
       await execution.beginProviderExecution();
       const job = (await GenerationJobManager.getJob(record.responseId))!;
       const action = buildPendingAction(
@@ -636,6 +674,9 @@ describe('background Responses execution handoff', () => {
           threadId: record.conversationId,
           ttlMs: 60_000,
           interruptId: 'interrupt-one',
+          resumeAgentIds: [record.agentId],
+          requestFingerprint: computeLegacyAgentRequestFingerprint(JSON.parse(record.requestJSON)),
+          requestFingerprintV2: computeAgentRequestFingerprint(JSON.parse(record.requestJSON)),
         },
       );
       await execution.pauseForReview(action, async () => {
@@ -663,6 +704,9 @@ describe('background Responses execution handoff', () => {
         if (!result.ok) throw new Error('Pause failed');
       });
       await execution.settle();
+      expect(
+        await storage.settleExecution(responseReference(record), execution.getEnrollmentIdentity()),
+      ).toBe(true);
       const result = await storage.reserveResume(
         owner,
         record.responseId,
@@ -771,108 +815,143 @@ describe('background Responses execution handoff', () => {
     expect(admit).not.toHaveBeenCalled();
   });
 
-  it('resumes through HTTP using only the saved decision and publishes after the owning segment settles', async () => {
-    GenerationJobManager.configure({
-      jobStore: new InMemoryJobStore({ ttlAfterComplete: 60_000 }),
-      eventTransport: new InMemoryEventTransport(),
-    });
-    await prepareResume();
-    const originalEpoch = record.generationCreatedAt;
-    const admit = createResponseResumeAdmission({
-      storage,
-      jobs: GenerationJobManager,
-      authorize: async () => true,
-      validate: async () => ({ ok: true, provenance: {} }),
-    });
-    const processStream = jest.fn(async () => undefined);
-    const resume = jest.fn(async (value: unknown, config: RunStreamConfig) => {
-      expect(value).toEqual({ answer: 'staging' });
-      expect(config.configurable).toMatchObject({
-        thread_id: record.conversationId,
-        checkpoint_id: 'checkpoint-exact',
-        checkpoint_ns: '',
-        private_option: 'preserved',
+  it.each([false, true])(
+    'resumes through HTTP exactly once despite an enrollment replay (first stalled: %s)',
+    async (stalled) => {
+      GenerationJobManager.configure({
+        jobStore: new InMemoryJobStore({ ttlAfterComplete: 60_000 }),
+        eventTransport: new InMemoryEventTransport(),
       });
-      return undefined;
-    });
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let done!: () => void;
-    const finished = new Promise<void>((resolve) => {
-      done = resolve;
-    });
-    const { app } = fixture(
-      async (req, res) => {
-        const runtime = createResponseExecutionRuntime(req, res, {
-          getMessage: async () => null,
-          jobs: GenerationJobManager,
+      await prepareResume();
+      const originalEpoch = record.generationCreatedAt;
+      const admit = createResponseResumeAdmission({
+        storage,
+        jobs: GenerationJobManager,
+        authorize: async () => true,
+        validate: async () => ({ ok: true, provenance: {} }),
+      });
+      let unblockStart!: () => void;
+      const startGate = new Promise<void>((resolve) => {
+        unblockStart = resolve;
+      });
+      let invoked!: () => void;
+      const invocation = new Promise<void>((resolve) => {
+        invoked = resolve;
+      });
+      let enrollments = 0;
+      const processStream = jest.fn(async () => undefined);
+      const resume = jest.fn(async (value: unknown, config: RunStreamConfig) => {
+        expect(value).toEqual({ answer: 'staging' });
+        expect(config.configurable).toMatchObject({
+          thread_id: record.conversationId,
+          checkpoint_id: 'checkpoint-exact',
+          checkpoint_ns: '',
+          private_option: 'preserved',
         });
-        const envelope = createAgentRunEnvelope({
-          protocol: 'responses',
-          requestId: record.responseId,
-          receivedAt: Date.now(),
-          principal: { id: owner.userId, tenantId: owner.tenantId },
-          payload: req.body,
-        });
-        try {
-          await executeAgentRun({
-            envelope,
-            runId: runtime.responseId,
-            conversationId: record.conversationId,
-            ...runtime.hooks,
-            isPrincipalActive: async () => true,
-            execute: async () => {
-              await runtime.processRun(
-                { processStream, resume },
-                { messages: [] },
-                {
-                  configurable: {
-                    thread_id: 'tampered',
-                    checkpoint_id: 'wrong',
-                    private_option: 'preserved',
-                  },
-                  version: 'v2',
+        invoked();
+        return undefined;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let done!: () => void;
+      const finished = new Promise<void>((resolve) => {
+        done = resolve;
+      });
+      const { app } = fixture(
+        async (req, res) => {
+          (req as ServerRequest).config = {
+            config: {},
+            fileStrategy: FileSources.local,
+            imageOutputType: 'png',
+            endpoints: {
+              agents: {
+                checkpointer: {
+                  type: 'mongo',
+                  checkpointCollectionName: 'worker_checkpoints',
+                  checkpointWritesCollectionName: 'worker_checkpoint_writes',
                 },
-              );
-              await gate;
-              await runtime.completion!.prepare({
-                ...buildPendingBackgroundResponse(record),
-                status: 'completed',
-                output: [],
-              });
+              },
             },
-            afterSettle: async (execution, error) => {
-              await runtime.hooks.afterSettle?.(execution, error);
-              done();
-            },
+          };
+          const runtime = createResponseExecutionRuntime(req, res, {
+            getMessage: async () => null,
+            jobs: GenerationJobManager,
           });
-        } catch {
-          if (!res.writableEnded) res.status(409).json({ error: 'resume_conflict' });
-        }
-      },
-      (saved, _user, intentId) => admit(saved, saved.responseId, intentId),
-    );
-    const token = mintResponseResumeWorkerToken(record, secret);
-    const send = () =>
-      request(app)
-        .post('/')
-        .set('x-lc-response-worker', '1')
-        .auth(token, { type: 'bearer' })
-        .send({ resume: { answer: 'attacker answer' }, model: 'wrong' });
-    await send().expect(202);
-    await send().expect(202);
-    expect(resume).toHaveBeenCalledTimes(1);
-    expect(processStream).not.toHaveBeenCalled();
-    release();
-    await finished;
-    expect(await scope(() => storage.read(owner, record.responseId))).toMatchObject({
-      status: 'completed',
-      generationCreatedAt: originalEpoch,
-    });
-    expect(await GenerationJobManager.getJob(record.responseId)).toBeUndefined();
-  });
+          const envelope = createAgentRunEnvelope({
+            protocol: 'responses',
+            requestId: record.responseId,
+            receivedAt: Date.now(),
+            principal: { id: owner.userId, tenantId: owner.tenantId },
+            payload: req.body,
+          });
+          try {
+            await executeAgentRun({
+              envelope,
+              runId: runtime.responseId,
+              conversationId: record.conversationId,
+              ...runtime.hooks,
+              onEnrolled: async (execution) => {
+                const ordinal = ++enrollments;
+                await runtime.hooks.onEnrolled!(execution);
+                if (stalled && ordinal === 1) await startGate;
+              },
+              isPrincipalActive: async () => true,
+              execute: async () => {
+                await runtime.graphOptions([]);
+                await runtime.processRun(
+                  { processStream, resume },
+                  { messages: [] },
+                  {
+                    configurable: {
+                      thread_id: 'tampered',
+                      checkpoint_id: 'wrong',
+                      private_option: 'preserved',
+                    },
+                    version: 'v2',
+                  },
+                );
+                await gate;
+                await runtime.completion!.prepare({
+                  ...buildPendingBackgroundResponse(record),
+                  status: 'completed',
+                  output: [],
+                });
+              },
+              afterSettle: async (execution, error) => {
+                await runtime.hooks.afterSettle?.(execution, error);
+                done();
+              },
+            });
+          } catch {
+            if (!res.writableEnded) res.status(409).json({ error: 'resume_conflict' });
+          }
+        },
+        (saved, _user, intentId) => admit(saved, saved.responseId, intentId),
+      );
+      const token = mintResponseResumeWorkerToken(record, secret);
+      const send = () =>
+        request(app)
+          .post('/')
+          .set('x-lc-response-worker', '1')
+          .auth(token, { type: 'bearer' })
+          .send({ resume: { answer: 'attacker answer' }, model: 'wrong' });
+      await send().expect(202);
+      await send().expect(202);
+      await invocation;
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect(processStream).not.toHaveBeenCalled();
+      unblockStart();
+      release();
+      await finished;
+      expect(await scope(() => storage.read(owner, record.responseId))).toMatchObject({
+        status: 'completed',
+        generationCreatedAt: originalEpoch,
+      });
+      expect(await GenerationJobManager.getJob(record.responseId)).toBeUndefined();
+    },
+  );
 
   it.each([false, true])(
     'keeps final output private until drain and recovers canonical materialization (outage=%s)',
@@ -1036,7 +1115,7 @@ describe('background Responses execution handoff', () => {
         const recovery = createResponseCompletion({
           storage,
           cleanupCheckpoint: async () => {},
-          confirmExecution: createResponseExecutionConfirmation(storage),
+          confirmExecution: createResponseExecutionConfirmation(storage, GenerationJobManager),
           releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
         });
         const service = createBackgroundResponseService({
@@ -1096,7 +1175,7 @@ describe('background Responses execution handoff', () => {
         const recovery = createResponseCompletion({
           storage,
           cleanupCheckpoint: async () => {},
-          confirmExecution: createResponseExecutionConfirmation(storage),
+          confirmExecution: createResponseExecutionConfirmation(storage, GenerationJobManager),
           releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
         });
         await scope(() => recovery.finish(pending));
@@ -1196,7 +1275,7 @@ describe('background Responses execution handoff', () => {
       createResponseCompletion({
         storage,
         cleanupCheckpoint: async () => {},
-        confirmExecution: createResponseExecutionConfirmation(storage),
+        confirmExecution: createResponseExecutionConfirmation(storage, GenerationJobManager),
         releaseExecution: createResponseExecutionRelease(GenerationJobManager, storage),
       }).finish(pending),
     );

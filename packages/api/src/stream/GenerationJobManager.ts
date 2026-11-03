@@ -98,7 +98,7 @@ import { toClientPendingAction } from '~/agents/hitl/policy';
 import { markAbortedCompactionContent } from '~/agents/compaction';
 import { ApprovalLifecycle, pausePersistenceActionId } from './ApprovalLifecycle';
 import { projectPendingMCPOAuthPrompts } from '~/mcp/oauth/resume';
-import { sanitizeJobMetadata } from './metadata';
+import { sanitizeJobMetadata, parseResponseRootIdentity } from './metadata';
 
 /** Terminal error surfaced to a client still attached when its approval window lapses. */
 const APPROVAL_EXPIRED_ERROR = 'Approval expired before a decision was made';
@@ -2590,7 +2590,10 @@ class GenerationJobManagerClass {
     const tenantId = getTenantId();
     const safeTenantId = tenantId && tenantId !== SYSTEM_TENANT_ID ? tenantId : undefined;
     const creationAttemptId = randomUUID();
-    const sanitizedMetadata = sanitizeJobMetadata(options.initialMetadata ?? {});
+    const { responseRootId, responseRootIncarnation, ...metadataInput } =
+      options.initialMetadata ?? {};
+    const rootIdentity = parseResponseRootIdentity({ responseRootId, responseRootIncarnation });
+    const sanitizedMetadata = sanitizeJobMetadata(metadataInput);
     /** Translate the transient capability assertion into its execution-bound
      * marker: valid only while `providerExecutionId` still names this owner,
      * so a legacy replica winning a later HITL resume (which rewrites the
@@ -2598,6 +2601,7 @@ class GenerationJobManagerClass {
     const { steerQuotesCapable, ...storedMetadata } = sanitizedMetadata;
     const initialMetadata = {
       ...storedMetadata,
+      ...rootIdentity,
       ...(steerQuotesCapable === true && {
         steerQuotesExecutionId: creationAttemptId,
       }),
@@ -3130,6 +3134,8 @@ class GenerationJobManagerClass {
         conversationId: jobData.conversationId,
         checkpointNamespace: jobData.checkpointNamespace,
         responseCheckpointConfigJSON: jobData.responseCheckpointConfigJSON,
+        responseRootId: jobData.responseRootId,
+        responseRootIncarnation: jobData.responseRootIncarnation,
         generationProtocolVersion: jobData.generationProtocolVersion,
         earlyBufferOverflow: jobData.earlyBufferOverflow,
         userMessage: jobData.userMessage,

@@ -4,11 +4,12 @@ import type { ResponseCheckpointIdentity } from './checkpoint';
 import type { ResponseCompletionRecord } from './completion';
 import {
   createResponseCompletion,
+  readResponseExecutionProof,
   createResponseExecutionRelease,
   createResponseExecutionConfirmation,
 } from './completion';
+import { matchesResponseRoot, responseTenantId } from './scope';
 import { buildPendingBackgroundResponse } from './background';
-import { responseTenantId } from './scope';
 
 export interface ResponseRetirementDependencies {
   storage: ResponseStorage;
@@ -36,7 +37,7 @@ export function createResponseRetirement(
     deps.recoverTerminal ??
     createResponseCompletion({
       storage: deps.storage,
-      confirmExecution: createResponseExecutionConfirmation(deps.storage),
+      confirmExecution: createResponseExecutionConfirmation(deps.storage, deps.jobs),
       cleanupCheckpoint:
         deps.cleanupCheckpoint ??
         (async () => {
@@ -54,11 +55,15 @@ export function createResponseRetirement(
     // Enrollment and retirement compete on the physical root. A closed scope alone
     // cannot fence an enrollment that already passed its scope read.
     const fenced = await deps.storage.retireExecution(identity);
-    const proof = fenced ? await deps.storage.readExecutionProof(identity) : null;
+    const proof = fenced
+      ? await readResponseExecutionProof(deps.storage, deps.jobs, identity)
+      : null;
     const job = await deps.jobs.getJob(responseId);
     if (
       job &&
-      (job.createdAt !== identity.generationCreatedAt ||
+      (!matchesResponseRoot(identity, job.metadata) ||
+        (identity.generationCreatedAt != null && job.createdAt !== identity.generationCreatedAt) ||
+        (identity.generationCreatedAt == null && job.metadata.providerExecutionStartedId != null) ||
         job.metadata.userId !== identity.userId ||
         responseTenantId(job.metadata.tenantId) !== responseTenantId(identity.tenantId) ||
         job.metadata.agent_id !== identity.agentId ||
@@ -103,6 +108,41 @@ export function createResponseRetirement(
     if (!retired) return null;
     const { identity, job, providerExecutionId, providerExecutionOwnerId } = retired;
     if (!retired.fenced) return 'pending';
+    if (identity.generationCreatedAt == null) {
+      // Retirement won the root CAS before enrollment; a bound job cannot start SDK work.
+      if (!job) return 'stopped';
+      if (!providerExecutionId) throw new Error('Response retirement provider unavailable');
+      await deps.jobs.abortJob(responseId, {
+        expectedCreatedAt: job.createdAt,
+        awaitProviderDrain: true,
+        retainTerminalPersistence: true,
+      });
+      const current = await retiredAuthority(identity, responseId);
+      if (!current?.fenced || current.identity.generationCreatedAt != null)
+        throw new Error('Response retirement generation changed');
+      if (!current.job) return 'stopped';
+      if (
+        current.job.createdAt !== job.createdAt ||
+        current.providerExecutionId !== providerExecutionId ||
+        current.providerExecutionOwnerId !== providerExecutionOwnerId
+      )
+        throw new Error('Response retirement generation changed');
+      if (
+        !['complete', 'error', 'aborted'].includes(current.job.status) ||
+        current.job.metadata.providerDrained !== true
+      )
+        return 'pending';
+      if (
+        !(await deps.jobs.finishProviderTerminalPersistence(
+          responseId,
+          job.createdAt,
+          providerExecutionId,
+          providerExecutionOwnerId,
+        ))
+      )
+        throw new Error('Response terminal execution release is unavailable');
+      return 'stopped';
+    }
     if (!job) {
       if (identity.generationCreatedAt == null) return 'stopped';
       if (!retired.proof) return 'pending';
@@ -201,6 +241,7 @@ export function createResponseRetirement(
     if (
       record.generationCreatedAt == null ||
       job.createdAt !== record.generationCreatedAt ||
+      !matchesResponseRoot(record, job.metadata) ||
       job.metadata.userId !== record.userId ||
       responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
       job.metadata.agent_id !== record.agentId ||
@@ -209,6 +250,7 @@ export function createResponseRetirement(
       job.metadata.responseMessageId !== record.responseId
     )
       throw new Error('Response retirement generation changed');
+    const executionRecord = record;
     const epoch = record.generationCreatedAt;
     const agentId = record.agentId;
     const conversationId = record.conversationId;
@@ -240,6 +282,7 @@ export function createResponseRetirement(
         proof.agent_id !== agentId ||
         proof.endpoint !== 'responses' ||
         proof.responseMessageId !== responseId ||
+        !matchesResponseRoot(executionRecord, proof) ||
         proof.conversationId !== conversationId ||
         proof.providerExecutionId !== providerExecutionId ||
         proof.providerExecutionOwnerId !== providerExecutionOwnerId ||

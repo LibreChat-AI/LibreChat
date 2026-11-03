@@ -378,7 +378,7 @@ it('keeps a submitted decision recoverable through owner review and preserves pa
     const completion = createResponseCompletion({
       storage,
       cleanupCheckpoint: cleanupResponseCheckpoint,
-      confirmExecution: createResponseExecutionConfirmation(storage),
+      confirmExecution: createResponseExecutionConfirmation(storage, jobs),
       releaseExecution: createResponseExecutionRelease(jobs, storage),
     });
     const service = createBackgroundResponseService({

@@ -9,9 +9,9 @@ import {
   mintResponseResumeWorkerToken,
   RESPONSE_WORKER_TOKEN_EXPIRED,
 } from './worker';
+import { matchesResponseRoot, responseTenantId } from './scope';
 import { AgentTriggerExecutionError } from '../triggers/host';
 import { selfOriginFromAddress } from '~/app/origin';
-import { responseTenantId } from './scope';
 
 export interface BackgroundResponseTransportDependencies {
   storage: ResponseStorage;
@@ -80,6 +80,7 @@ function createResponseWorkerTransport(
     if (
       !job ||
       job.createdAt !== current.generationCreatedAt ||
+      !matchesResponseRoot(current, job.metadata) ||
       job.metadata.userId !== current.userId ||
       responseTenantId(job.metadata.tenantId) !== responseTenantId(current.tenantId) ||
       job.metadata.agent_id !== current.agentId ||

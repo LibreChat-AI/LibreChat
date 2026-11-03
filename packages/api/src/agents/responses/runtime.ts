@@ -44,6 +44,7 @@ import { getRunDiscoveredTools, getRunMCPToolAliases } from '../run';
 import { markNativeCodeToolApprovalRequests } from '../hitl/byom';
 import { assertCodeExecutionApprovalBinding } from '../execution';
 import { getBackgroundResponseWorkerAdmission } from './worker';
+import { matchesResponseRoot, responseTenantId } from './scope';
 import { getChatProjectContextKey } from '~/projects/context';
 import { buildPendingBackgroundResponse } from './background';
 import { resolveResponseContinuation } from './persistence';
@@ -53,7 +54,6 @@ import { createResponseRetirement } from './retirement';
 import { collectReachableAgents } from '../traversal';
 import { pauseResponseForReview } from './pause';
 import { generateResponseId } from './service';
-import { responseTenantId } from './scope';
 
 type TerminalResponse = Response & { status: ResponseTerminalReceipt['status'] };
 type ReviewAgent = NonNullable<Parameters<typeof captureRunPendingAction>[0]['agents'][number]> &
@@ -140,11 +140,13 @@ export interface ResponseExecutionRuntime {
   hooks: Pick<
     ExecuteAgentRunParams<unknown>,
     | 'onEnrolled'
+    | 'onProviderStarted'
     | 'afterPause'
     | 'afterSettle'
     | 'clientRequestId'
     | 'resume'
     | 'retainTerminalPersistence'
+    | 'responseRoot'
   >;
   processRun: (
     run: Pick<Run<IState>, 'processStream' | 'resume'>,
@@ -282,21 +284,27 @@ export function createResponseExecutionRuntime(
     ? createResponseCompletion({
         storage: admission.storage,
         cleanupCheckpoint: cleanupResponseCheckpoint,
-        confirmExecution: createResponseExecutionConfirmation(admission.storage),
+        confirmExecution: createResponseExecutionConfirmation(
+          admission.storage,
+          continuation.jobs!,
+        ),
         releaseExecution: createResponseExecutionRelease(continuation.jobs!, admission.storage),
       })
     : undefined;
   const hooks: Pick<
     ExecuteAgentRunParams<unknown>,
     | 'onEnrolled'
+    | 'onProviderStarted'
     | 'afterPause'
     | 'afterSettle'
     | 'clientRequestId'
     | 'resume'
     | 'retainTerminalPersistence'
+    | 'responseRoot'
   > = admission
     ? {
         retainTerminalPersistence: true,
+        responseRoot: responseReference(admission.record).target,
         clientRequestId: admission.record.responseId,
         ...(admission.resume
           ? {
@@ -313,6 +321,13 @@ export function createResponseExecutionRuntime(
             admission.record.responseId,
           );
           if (!current) throw new Error('Background response journal is unavailable');
+          if (
+            !matchesResponseRoot(current, {
+              responseRootId: execution.responseRoot?.id,
+              responseRootIncarnation: execution.responseRoot?.incarnation,
+            })
+          )
+            throw new Error('Background response job root identity changed');
           const binding = execution.getEnrollmentIdentity();
           if (admission.resume) {
             if (
@@ -380,6 +395,15 @@ export function createResponseExecutionRuntime(
             store: true,
           });
         },
+        onProviderStarted: async (execution) => {
+          if (
+            !(await admission.storage.bindExecution(
+              admission.record,
+              execution.getPersistenceIdentity(),
+            ))
+          )
+            throw new Error('Background response provider ownership changed');
+        },
         afterPause: async (execution) => {
           if (!execution.isPaused || !execution.ownsSettlement)
             throw new Error('Background response pause ownership changed');
@@ -403,28 +427,6 @@ export function createResponseExecutionRuntime(
             !['completed', 'failed', 'cancelled', 'incomplete'].includes(current.status)
           )
             return;
-          if (!current) {
-            const identity = await admission.storage.readCleanupIdentity(
-              admission.record,
-              admission.record.responseId,
-              { ...admission.record, generationCreatedAt: execution.createdAt, ...checkpoint },
-            );
-            if (!identity?.retirement || identity.generationCreatedAt !== execution.createdAt)
-              throw new Error('Background response pause retirement identity unavailable');
-            const job = await continuation.jobs!.getJob(admission.record.responseId);
-            if (!job) {
-              // The owned settled pause proves local drain; this permits only checkpoint cleanup.
-              if (identity.requiresCheckpointCleanup) {
-                if (!identity.checkpointNamespace || !identity.checkpointConfigJSON)
-                  throw new Error('Background response pause checkpoint identity unavailable');
-                await cleanupResponseCheckpoint(
-                  { ...identity, pendingTerminal: identity },
-                  identity.checkpointNamespace,
-                );
-              }
-              return;
-            }
-          }
           const stopped = await createResponseRetirement({
             storage: admission.storage,
             jobs: continuation.jobs!,
@@ -683,6 +685,7 @@ export function createResponseExecutionRuntime(
           !job ||
           job.status !== 'running' ||
           job.createdAt !== record.generationCreatedAt ||
+          !matchesResponseRoot(record, job.metadata) ||
           job.metadata.userId !== record.userId ||
           responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
           job.metadata.agent_id !== record.agentId ||
@@ -823,6 +826,7 @@ export function createResponseExecutionRuntime(
           !job ||
           job.status !== 'running' ||
           job.createdAt !== record.generationCreatedAt ||
+          !matchesResponseRoot(record, job.metadata) ||
           job.metadata.userId !== record.userId ||
           responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
           job.metadata.agent_id !== record.agentId ||

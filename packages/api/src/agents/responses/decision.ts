@@ -10,9 +10,9 @@ import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@libr
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { GenerationJob } from '~/types/stream';
 import { resolveAskUserQuestionResume, resolveToolApprovalResume } from '../hitl/resume';
+import { matchesResponseRoot, responseTenantId } from './scope';
 import { canonicalResponseJSON } from './background';
 import { publishResponseDispatch } from './outbox';
-import { responseTenantId } from './scope';
 
 export type ResponseDecisionResolution =
   | {
@@ -192,6 +192,7 @@ export function createResponseDecisionSubmission(
     if (
       !job ||
       job.createdAt !== record.generationCreatedAt ||
+      !matchesResponseRoot(record, job.metadata) ||
       job.metadata.userId !== record.userId ||
       responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
       job.metadata.agent_id !== record.agentId ||

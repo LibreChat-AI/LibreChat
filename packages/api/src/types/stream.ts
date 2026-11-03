@@ -26,6 +26,9 @@ export interface GenerationJobMetadata {
   checkpointNamespace?: string;
   /** Server-pinned saver settings retained for expired background-response cleanup. */
   responseCheckpointConfigJSON?: string;
+  /** Physical durable Response owner; assigned only when this generation is created. */
+  responseRootId?: string;
+  responseRootIncarnation?: string;
   /** Immutable generation protocol. Missing on legacy records means v1. */
   generationProtocolVersion?: 1 | 2;
   earlyBufferOverflow?: EarlyBufferOverflowState;

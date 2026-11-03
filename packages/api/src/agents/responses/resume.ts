@@ -31,13 +31,13 @@ import {
 import { hasDurableAgentInterruptCheckpoint, resolveCheckpointerConfig } from '../checkpointer';
 import { getChatProjectContextKey, resolveChatProjectContext } from '~/projects/context';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
+import { matchesResponseRoot, responseTenantId } from './scope';
 import { getResumeAgentSnapshot } from '../hitl/inspection';
 import { preflightResumeContent } from '../hitl/preflight';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { resolveResponseReviewDecision } from './decision';
 import { canonicalResponseJSON } from './background';
 import { isResponseTenantId } from './scope';
-import { responseTenantId } from './scope';
 
 export interface ResponseResumeValidationDependencies {
   findUser: (userId: string) => Promise<IUser | null>;
@@ -311,7 +311,8 @@ export function createResponseResumeAdmission(deps: ResponseResumeAdmissionDepen
       job.metadata.agent_id === record.agentId &&
       job.metadata.endpoint === 'responses' &&
       job.metadata.conversationId === record.conversationId &&
-      job.metadata.responseMessageId === responseId;
+      job.metadata.responseMessageId === responseId &&
+      matchesResponseRoot(record, job.metadata);
     let job = await deps.jobs.getJob(responseId);
     if (!matches(job)) return unavailable;
     const checkpointNamespace = job.metadata.checkpointNamespace;
