@@ -77,12 +77,14 @@ function parseUpdates(input: string): RefUpdate[] {
     .map(([localRef, localSha]) => ({ localRef, localSha }));
 }
 
-function resolveBase(remote: string, cwd: string): string | null {
-  const candidates = [
-    process.env.LIBRECHAT_PRE_PUSH_BASE,
-    `refs/remotes/${remote}/dev`,
-    'refs/remotes/origin/dev',
-  ].filter((ref): ref is string => Boolean(ref));
+/**
+ * An explicit base is the only candidate: falling back from a canary or
+ * stacked-parent base to dev would check a different diff than the PR's.
+ */
+function resolveBase(remote: string, cwd: string, explicit?: string): string | null {
+  const candidates = explicit
+    ? [explicit]
+    : [`refs/remotes/${remote}/dev`, 'refs/remotes/origin/dev'];
   for (const ref of candidates) {
     const commit = git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd);
     if (commit.ok && commit.out) return commit.out;
@@ -140,7 +142,13 @@ export function prePush(remote: string, input: string, cwd = process.cwd()): num
     return 0;
   }
 
-  const base = resolveBase(remote, root);
+  const explicit = process.env.LIBRECHAT_PRE_PUSH_BASE;
+  const base = resolveBase(remote, root, explicit);
+  if (!base && explicit) {
+    return refuse(
+      `LIBRECHAT_PRE_PUSH_BASE=${explicit} does not name a commit; fetch it or fix the ref.`,
+    );
+  }
   if (!base) {
     return refuse(
       `no base branch to diff against: neither ${remote}/dev nor origin/dev exists. ` +

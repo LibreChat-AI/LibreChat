@@ -287,6 +287,13 @@ test(
     assert.equal(explicit.status, 0, explicit.output);
     assert.equal(explicit.calls[0].args[1], forkBase);
 
+    // An explicit base that does not resolve refuses rather than falling back to dev.
+    fixture.commit('canary');
+    const missing = fixture.push(['origin', 'feature'], { LIBRECHAT_PRE_PUSH_BASE: 'fork/canary' });
+    assert.notEqual(missing.status, 0, missing.output);
+    assert.equal(missing.calls.length, 0);
+    assert.match(missing.output, /LIBRECHAT_PRE_PUSH_BASE=fork\/canary does not name a commit/);
+
     fixture.git('update-ref', '-d', 'refs/remotes/origin/dev');
     fixture.commit('baseless');
     const baseless = fixture.push([mirror, 'feature']);
