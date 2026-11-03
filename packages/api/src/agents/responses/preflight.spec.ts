@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { FileSources, Constants } from 'librechat-data-provider';
 import { HumanMessage } from '@librechat/agents/langchain/messages';
@@ -7,6 +8,8 @@ import {
   createModels,
   createMethods,
   createResponseStorage,
+  createManagedMessageId,
+  responseReference,
   tenantStorage,
 } from '@librechat/data-schemas';
 import type { Agent, Agents, ResponseReviewDecision } from 'librechat-data-provider';
@@ -24,7 +27,7 @@ import {
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
-import { createCheckpointNamespace } from '~/stream/checkpoints';
+import { createCheckpointWriteWitness } from '../checkpoints/witness';
 import { NO_CHAT_PROJECT_CONTEXT_KEY } from '~/projects/context';
 import { resolveResponseReviewDecision } from './decision';
 import { enrollAgentExecution } from '../remote/lifecycle';
@@ -33,7 +36,7 @@ import { createResponseResumeValidation } from './resume';
 import { canonicalResponseJSON } from './background';
 
 const owner = { userId: new mongoose.Types.ObjectId().toString(), tenantId: 'preflight-tenant' };
-const responseId = 'resp_preflight';
+const responseId = createManagedMessageId();
 const conversationId = 'conversation';
 const checkpointConfig = {
   type: 'mongo' as const,
@@ -114,17 +117,6 @@ async function fixture(
   const methods = createMethods(mongoose);
   const storage = createResponseStorage(mongoose);
   const original = { model: 'agent', input: 'Original' };
-  const execution = await enrollAgentExecution(
-    {
-      runId: responseId,
-      userId: owner.userId,
-      conversationId,
-      agentId: 'agent',
-      protocol: 'responses',
-      isPrincipalActive: async () => true,
-    },
-    { manager },
-  );
   const saved = await storage.reserve({
     ...owner,
     responseId,
@@ -137,16 +129,35 @@ async function fixture(
     requestJSON: JSON.stringify(original),
   });
   if (!saved.ok) throw new Error('Reservation failed');
-  await storage.publish(owner, responseId, 0, {
-    status: 'in_progress',
-    generationCreatedAt: execution.createdAt,
-    responseJSON: '{}',
-  });
+  const execution = await enrollAgentExecution(
+    {
+      responseRoot: saved.record.storageTarget,
+      retainTerminalPersistence: true,
+      captureTerminalOutcome: true,
+      runId: responseId,
+      userId: owner.userId,
+      conversationId,
+      agentId: 'agent',
+      protocol: 'responses',
+      isPrincipalActive: async () => true,
+    },
+    { manager },
+  );
+
+  const enrolled = await storage.enrollExecution(
+    saved.record,
+    execution.getEnrollmentIdentity(),
+    '{}',
+  );
+  if (!enrolled.ok) throw new Error('Root enrollment failed');
   await execution.beginProviderExecution();
+  const binding = execution.getPersistenceIdentity();
+  if (!(await storage.bindExecution(enrolled.record, binding)))
+    throw new Error('Provider binding failed');
   const initialJob = await manager.getJob(responseId);
   const providerExecutionId = initialJob?.metadata.providerExecutionId;
   if (!providerExecutionId) throw new Error('Provider identity missing');
-  const namespace = createCheckpointNamespace(owner.userId, owner.tenantId);
+  const namespace = initialJob!.metadata.checkpointNamespace!;
   const checkpoint = emptyCheckpoint();
   checkpoint.channel_values.messages = [
     new HumanMessage({ content: 'Original', id: 'user-message' }),
@@ -158,7 +169,21 @@ async function fixture(
       [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: namespace,
     },
   };
-  const saver = await getAgentCheckpointer(checkpointConfig);
+  const writer = storage.createCheckpointWriter(responseReference(enrolled.record), {
+    ...binding,
+    writerId: randomUUID(),
+    namespace,
+    configJSON: JSON.stringify(checkpointConfig),
+  });
+  const witness = createCheckpointWriteWitness({
+    async open() {
+      if (!(await writer.open())) throw new Error('Saver admission failed');
+    },
+    async settle() {
+      if (!(await writer.settle())) throw new Error('Saver settlement failed');
+    },
+  });
+  const saver = await getAgentCheckpointer(checkpointConfig, { writeWitness: witness });
   if (!saver) throw new Error('Saver unavailable');
   await saver.putWrites(
     { configurable: { ...config.configurable, checkpoint_id: checkpoint.id } },
@@ -215,7 +240,10 @@ async function fixture(
     }))
   )
     throw new Error('Pause failed');
+  if ((await witness.close()) !== 'settled') throw new Error('Saver closure failed');
   await execution.settle();
+  if (!(await storage.settleExecution(responseReference(enrolled.record), binding)))
+    throw new Error('Provider settlement failed');
   let decision: ResponseReviewDecision;
   if (payload.type === 'tool_approval')
     decision = {

@@ -1,10 +1,30 @@
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { createResponseStorage, tenantStorage, runAsSystem } from '@librechat/data-schemas';
+import { emptyCheckpoint, INTERRUPT } from '@langchain/langgraph-checkpoint';
+import {
+  createResponseStorage,
+  createManagedMessageId,
+  responseReference,
+  tenantStorage,
+  runAsSystem,
+} from '@librechat/data-schemas';
 import type { ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
+import type { AgentExecutionEnrollment } from '../remote/lifecycle';
+import {
+  createResponseCompletion,
+  createResponseExecutionConfirmation,
+  createResponseExecutionRelease,
+} from './completion';
+import {
+  getAgentCheckpointer,
+  __resetCheckpointerForTests,
+  LIBRECHAT_CHECKPOINT_NAMESPACE_KEY,
+} from '../checkpointer';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { createCheckpointWriteWitness } from '../checkpoints/witness';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createResponseResumeTransport } from './transport';
 import { enrollAgentExecution } from '../remote/lifecycle';
@@ -20,8 +40,13 @@ let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
 let manager: GenerationJobManagerClass;
 const owner = { userId: 'resume-owner', tenantId: 'resume-tenant' };
-const responseId = 'resp-resume';
+const responseId = createManagedMessageId();
 const conversationId = 'resume-conversation';
+const checkpointSettings = {
+  type: 'mongo' as const,
+  checkpointCollectionName: 'resume_fixture_cp',
+  checkpointWritesCollectionName: 'resume_fixture_writes',
+};
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
 
 beforeAll(async () => {
@@ -37,6 +62,7 @@ afterAll(async () => {
   await mongo?.stop();
 });
 beforeEach(async () => {
+  __resetCheckpointerForTests();
   await runAsSystem(async () => {
     await mongoose.models.StoredResponse.deleteMany({});
     await mongoose.models.ResponseScope?.deleteMany({});
@@ -55,8 +81,23 @@ afterEach(async () => {
 });
 
 async function pausedDecision(): Promise<StoredResponseRecord> {
+  const root = await storage.reserve({
+    ...owner,
+    responseId,
+    requestKey: 'request',
+    fingerprint: 'request',
+    agentId: 'agent',
+    sourceKeyId: 'key',
+    requestJSON: JSON.stringify({ model: 'agent', input: 'Original input', background: true }),
+    conversationId,
+    parentMessageId: 'root',
+  });
+  if (!root.ok) throw new Error('Reservation failed');
   const execution = await enrollAgentExecution(
     {
+      responseRoot: root.record.storageTarget,
+      retainTerminalPersistence: true,
+      captureTerminalOutcome: true,
       runId: responseId,
       userId: owner.userId,
       conversationId,
@@ -66,23 +107,16 @@ async function pausedDecision(): Promise<StoredResponseRecord> {
     },
     { manager },
   );
-  await storage.reserve({
-    ...owner,
-    responseId,
-    requestKey: 'request',
-    fingerprint: 'request',
-    agentId: 'agent',
-    sourceKeyId: 'key',
-    requestJSON: '{}',
-    conversationId,
-    parentMessageId: 'root',
-  });
-  await storage.publish(owner, responseId, 0, {
-    status: 'in_progress',
-    generationCreatedAt: execution.createdAt,
-    responseJSON: '{}',
-  });
+  const enrolled = await storage.enrollExecution(
+    root.record,
+    execution.getEnrollmentIdentity(),
+    '{}',
+  );
+  if (!enrolled.ok) throw new Error('Root enrollment failed');
   await execution.beginProviderExecution();
+  const binding = execution.getPersistenceIdentity();
+  if (!(await storage.bindExecution(enrolled.record, binding)))
+    throw new Error('Provider binding failed');
   const action = buildPendingAction(
     { type: 'ask_user_question', question: { question: 'Which environment?' } },
     {
@@ -94,6 +128,53 @@ async function pausedDecision(): Promise<StoredResponseRecord> {
     },
   );
   const job = (await manager.getJob(responseId))!;
+  const namespace = job.metadata.checkpointNamespace!;
+  await manager.updateMetadata(
+    responseId,
+    { responseCheckpointConfigJSON: JSON.stringify(checkpointSettings) },
+    execution.createdAt,
+  );
+  const writer = storage.createCheckpointWriter(responseReference(enrolled.record), {
+    ...binding,
+    writerId: randomUUID(),
+    namespace,
+    configJSON: JSON.stringify(checkpointSettings),
+  });
+  const witness = createCheckpointWriteWitness({
+    async open() {
+      if (!(await writer.open())) throw new Error('Saver admission failed');
+    },
+    async settle() {
+      if (!(await writer.settle())) throw new Error('Saver settlement failed');
+    },
+  });
+  const saver = await getAgentCheckpointer(checkpointSettings, { writeWitness: witness });
+  if (!saver) throw new Error('Saver missing');
+  const checkpoint = emptyCheckpoint();
+  await saver.putWrites(
+    {
+      configurable: {
+        thread_id: conversationId,
+        checkpoint_ns: '',
+        checkpoint_id: checkpoint.id,
+        [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: namespace,
+      },
+    },
+    [[INTERRUPT, { id: 'interrupt', value: action.payload }]],
+    'task',
+  );
+  await saver.put(
+    {
+      configurable: {
+        thread_id: conversationId,
+        checkpoint_ns: '',
+        [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: namespace,
+      },
+    },
+    checkpoint,
+    { source: 'input', step: -1, parents: {} },
+  );
+  if ((await witness.close()) !== 'settled') throw new Error('Saver closure failed');
   expect(
     await execution.pauseForReview(action, async () => {
       const result = await storage.publishReview(
@@ -106,6 +187,9 @@ async function pausedDecision(): Promise<StoredResponseRecord> {
           providerExecutionId: job.metadata.providerExecutionId!,
           expiresAt: action.expiresAt!,
           partialResponseJSON: '{"output":[]}',
+          checkpointConfigJSON: JSON.stringify(checkpointSettings),
+          checkpointId: checkpoint.id,
+          checkpointNs: '',
           pendingActionJSON: JSON.stringify(action),
         },
         '{"status":"requires_action","required_action":{"type":"librechat_review"}}',
@@ -114,6 +198,12 @@ async function pausedDecision(): Promise<StoredResponseRecord> {
     }),
   ).toBe(true);
   await execution.settle();
+  if (!(await storage.settleExecution(responseReference(enrolled.record), binding)))
+    throw new Error('Provider settlement failed');
+  expect(await storage.readExecutionProof((await storage.read(owner, responseId))!)).toMatchObject({
+    checkpointWriterId: expect.any(String),
+    checkpointNamespace: namespace,
+  });
   const reserved = await storage.reserveResume(
     owner,
     responseId,
@@ -308,30 +398,63 @@ it.each(['intent', 'provider', 'epoch'] as const)(
     }),
 );
 
-it('accepts a canonical terminal receipt after the transient resumed job has expired', () =>
+it('accepts canonical cancellation after the transient resumed job has expired', () =>
   scoped(async () => {
     const record = await pausedDecision();
     const admitted = await admission()(owner, responseId, 'intent');
     if (!admitted.ok) throw new Error('Admission failed');
+    const enrolled = await storage.enrollExecution(
+      admitted.record,
+      {
+        generationCreatedAt: record.generationCreatedAt!,
+        providerExecutionId: 'next-provider',
+      },
+      admitted.record.responseJSON!,
+    );
+    if (!enrolled.ok) throw new Error('Resumed enrollment failed');
     await manager.beginProviderExecution(
       responseId,
       record.generationCreatedAt!,
       'next-provider',
       'owner',
     );
+    const started = (await manager.getJob(responseId))!;
+    if (
+      !(await storage.bindExecution(admitted.record, {
+        generationCreatedAt: started.createdAt,
+        providerExecutionId: started.metadata.providerExecutionId!,
+        ownerId: started.metadata.providerExecutionOwnerId,
+      }))
+    )
+      throw new Error('Resumed binding failed');
     await manager.completeJob(responseId, undefined, record.generationCreatedAt);
     await manager.markProviderExecutionDrained(
       responseId,
       record.generationCreatedAt!,
       'next-provider',
     );
+    const job = (await manager.getJob(responseId))!;
+    const current = (await storage.read(owner, responseId))!;
+    const binding = {
+      generationCreatedAt: job.createdAt,
+      providerExecutionId: job.metadata.providerExecutionId!,
+      ownerId: job.metadata.providerExecutionOwnerId,
+    };
+    const completion = createResponseCompletion({
+      storage,
+      confirmExecution: createResponseExecutionConfirmation(storage, manager),
+      releaseExecution: createResponseExecutionRelease(manager, storage),
+      cleanupCheckpoint: cleanupResponseCheckpoint,
+    });
     expect(
-      await storage.publish(owner, responseId, admitted.record.revision, {
-        status: 'completed',
-        generationCreatedAt: record.generationCreatedAt,
-        responseJSON: JSON.stringify({ ...resumeAck(), status: 'completed' }),
-      }),
-    ).toMatchObject({ ok: true });
+      (
+        await completion.stageAndFinish(current, {
+          ...binding,
+          status: 'cancelled',
+          responseJSON: JSON.stringify({ ...resumeAck(), output: [], status: 'cancelled' }),
+        })
+      ).status,
+    ).toBe('cancelled');
     await manager.getJobStore().deleteJob(responseId, record.generationCreatedAt);
     const lookup = jest.spyOn(manager, 'getJob');
     const send = createResponseResumeTransport({
@@ -522,8 +645,7 @@ it('does not attach to a missing or replacement generation', () =>
 it('retries paused checkpoint cleanup before publishing canonical cancellation', () =>
   scoped(async () => {
     await pausedDecision();
-    const checkpointNamespace = createCheckpointNamespace(owner.userId, owner.tenantId);
-    await manager.getJobStore().updateJob(responseId, { checkpointNamespace });
+    const checkpointNamespace = (await manager.getJob(responseId))!.metadata.checkpointNamespace!;
     const cleanup = jest.fn(async () => {});
     cleanup.mockRejectedValueOnce(new Error('checkpoint storage unavailable'));
     const retire = createResponseRetirement({ storage, jobs: manager, cleanupCheckpoint: cleanup });
@@ -538,7 +660,14 @@ it('retries paused checkpoint cleanup before publishing canonical cancellation',
     expect((await storage.read(owner, responseId))?.status).toBe('cancelled');
     expect(cleanup).toHaveBeenCalledTimes(2);
     expect(cleanup).toHaveBeenLastCalledWith(
-      expect.objectContaining({ responseId }),
+      expect.objectContaining({
+        ...owner,
+        conversationId,
+        pendingTerminal: {
+          checkpointNamespace,
+          checkpointConfigJSON: JSON.stringify(checkpointSettings),
+        },
+      }),
       checkpointNamespace,
     );
   }));
@@ -546,13 +675,8 @@ it('retries paused checkpoint cleanup before publishing canonical cancellation',
 it('cleans an expired paused checkpoint without admitting another provider segment', () =>
   scoped(async () => {
     const record = await pausedDecision();
-    const checkpointNamespace = createCheckpointNamespace(owner.userId, owner.tenantId);
-    const checkpointConfigJSON = JSON.stringify({
-      type: 'mongo',
-      ttl: 3600,
-      checkpointCollectionName: 'checkpoints',
-      checkpointWritesCollectionName: 'writes',
-    });
+    const checkpointNamespace = (await manager.getJob(responseId))!.metadata.checkpointNamespace!;
+    const checkpointConfigJSON = JSON.stringify(checkpointSettings);
     await manager.getJobStore().updateJob(responseId, {
       checkpointNamespace,
       responseCheckpointConfigJSON: checkpointConfigJSON,
@@ -570,7 +694,6 @@ it('cleans an expired paused checkpoint without admitting another provider segme
       ok: false,
       code: 'response_unavailable',
     });
-    await mongoose.models.StoredResponse.deleteOne({ responseId });
     const cleanup = jest.fn(async () => {});
     const start = jest.spyOn(manager, 'beginProviderExecution');
     const retire = createResponseRetirement({ storage, jobs: manager, cleanupCheckpoint: cleanup });
@@ -636,6 +759,23 @@ function resumedRunParams(record: StoredResponseRecord) {
     }),
     runId: responseId,
     conversationId,
+    responseRoot: record.storageTarget,
+    retainTerminalPersistence: true as const,
+    captureTerminalOutcome: true as const,
+    onEnrolled: async (segment: AgentExecutionEnrollment) => {
+      const current = (await storage.read(owner, responseId))!;
+      const enrolled = await storage.enrollExecution(
+        current,
+        segment.getEnrollmentIdentity(),
+        current.responseJSON!,
+      );
+      if (!enrolled.ok) throw new Error('Resume Root enrollment failed');
+    },
+    onProviderStarted: async (segment: AgentExecutionEnrollment) => {
+      const current = (await storage.read(owner, responseId))!;
+      if (!(await storage.bindExecution(current, segment.getPersistenceIdentity())))
+        throw new Error('Resume provider binding failed');
+    },
     isPrincipalActive: async () => true,
     resume: {
       generationCreatedAt: record.generationCreatedAt!,

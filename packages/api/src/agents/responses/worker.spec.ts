@@ -7,6 +7,7 @@ import {
   createModels,
   createMethods,
   createResponseStorage,
+  createManagedMessageId,
   tenantStorage,
   runAsSystem,
   getTenantId,
@@ -24,10 +25,11 @@ import {
 import { createBackgroundResponseEnvelope, createResponseResumeEnvelope } from './queue';
 import { createBackgroundResponseTransport } from './transport';
 import { buildPendingBackgroundResponse } from './background';
+import { responseRootBinding } from './scope';
 
 const secret = 'worker-test-secret';
 const userId = new mongoose.Types.ObjectId().toString();
-const responseId = 'resp_worker';
+const responseId = createManagedMessageId();
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
 let methods: ReturnType<typeof createMethods>;
@@ -190,9 +192,16 @@ it('preserves named partitions and rejects a different request tenant before dat
 });
 
 it.each(['', '_', '__SYSTEM__'])('rejects noncanonical wire tenant %p', async (tenantId) => {
-  await fixture();
+  const record = await fixture();
   const token = jwt.sign(
-    { purpose: 'responses_background', responseId, userId, tenantId, sourceKeyId: 'original-key' },
+    {
+      purpose: 'responses_background',
+      ...responseRootBinding(record),
+      responseId,
+      userId,
+      tenantId,
+      sourceKeyId: 'original-key',
+    },
     secret,
     { algorithm: 'HS256', audience: 'librechat-responses-worker', expiresIn: '60s' },
   );
@@ -227,6 +236,7 @@ it.each(['responses_background', 'responses_resume'])(
         responseId: record.responseId,
         userId,
         sourceKeyId: record.sourceKeyId,
+        ...responseRootBinding(record),
         ...(purpose === 'responses_resume'
           ? { intentId: 'intent', generationCreatedAt: 123, providerExecutionId: 'provider' }
           : {}),
@@ -258,6 +268,7 @@ it.each(['signature', 'audience', 'purpose', 'claims'])(
         responseId: invalid === 'claims' ? 42 : record.responseId,
         userId,
         sourceKeyId: record.sourceKeyId,
+        ...responseRootBinding(record),
       },
       invalid === 'signature' ? 'wrong-secret' : secret,
       {
@@ -292,11 +303,11 @@ it.each([true, false])(
         ...buildPendingBackgroundResponse(admitted),
         status: 'in_progress' as const,
       };
-      const saved = await storage.publish(admitted, admitted.responseId, admitted.revision, {
-        status: 'in_progress',
-        generationCreatedAt: 1234,
-        responseJSON: JSON.stringify(response),
-      });
+      const saved = await storage.enrollExecution(
+        admitted,
+        { generationCreatedAt: 1234, providerExecutionId: 'provider' },
+        JSON.stringify(response),
+      );
       if (!saved.ok) throw new Error('Fixture enrollment failed');
       admissions++;
       res.status(202).json(response);
