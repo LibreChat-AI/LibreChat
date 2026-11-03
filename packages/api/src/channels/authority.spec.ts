@@ -1672,6 +1672,30 @@ it(
 );
 
 it(
+  'keeps lifetime lease coordination separate from current-revision credential authority',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const prepared = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    const credentials = responseCredentials();
+    const key = await credentials.provision(prepared);
+    const saved = (await storage.read(tenantId, 'channel', prepared.runId))!;
+    const binding = channelRunKeyBinding(saved);
+    const owner = { userId: users[0].id, tenantId };
+    expect(
+      await credentials.authorizeSource(binding, saved.execution!.apiKeyId!, owner, 'agent'),
+    ).toBe(true);
+    await db.updateAgentChannel('channel', users[0].id, { revision: 'revision-2' });
+    expect(await storage.renew(tenantId, claimed.body.fence, Date.now(), 1000)).toBe(true);
+    expect(await db.validateBoundAgentApiKey(key)).not.toBeNull();
+    expect(
+      await credentials.authorizeSource(binding, saved.execution!.apiKeyId!, owner, 'agent'),
+    ).toBe(false);
+  }),
+);
+
+it(
   'enforces run, input, endpoint and live actor-link authority for bound API keys',
   scoped(async () => {
     const linked = await link('U1', users[0]);

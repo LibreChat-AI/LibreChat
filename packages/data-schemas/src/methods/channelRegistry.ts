@@ -8,6 +8,7 @@ import type {
   ManagedRegistration,
   ManagedRegistrationIntent,
 } from '~/types/managed';
+import type { ChannelLaneAuthorityRef } from '~/models/channelRun';
 import type { ManagedRegistrationResult } from './registration';
 import type { AgentChannelRecord } from '~/models/channel';
 import type { ResponseOwner } from '~/models/response';
@@ -27,6 +28,7 @@ import {
   managedTargetPredicate,
 } from './managed';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
+import { hasCreatorControlLineage } from './channelControlPrivacy';
 import { includeManagedAllocations } from '~/utils/managed';
 import { createAgentChannelModel } from '~/models/channel';
 import { channelRegistryKey } from './channelRegistryKey';
@@ -347,6 +349,17 @@ export async function settleAbsentChannelTarget(
   return (await reconcileTargets(mongoose, authority, true, entry)) === 1;
 }
 
+interface PublishedChild {
+  _id: Types.ObjectId;
+  _managed: ManagedState;
+  kind?: string;
+  fingerprint?: string;
+  laneId?: string;
+  channelId?: string;
+  tenantId?: string;
+  channelRef?: ChannelLaneAuthorityRef<'channel'>;
+}
+
 async function reconcileTargets(
   mongoose: typeof import('mongoose'),
   authority: RegistryAuthority,
@@ -374,21 +387,53 @@ async function reconcileTargets(
         }),
       }),
     )
-      .select('_id _managed.incarnation _managed.phase _managed.scopeKeys')
+      .select(
+        '_id kind fingerprint laneId channelId tenantId channelRef _managed.incarnation _managed.phase _managed.scopeKeys _managed.parentId _managed.receipt _managed.logicalId',
+      )
       .read('primary')
-      .lean<Array<{ _id: Types.ObjectId; _managed: ManagedState }>>();
+      .lean<PublishedChild[]>();
     const present = new Map(rows.map((row) => [`${row._id}:${row._managed.incarnation}`, row]));
     for (const entry of entries) {
       const row = present.get(`${entry.target.id.toLowerCase()}:${entry.target.incarnation}`);
+      // A stable control belongs to its physical parent lifetime, not a newer private generation.
+      const controlCreation =
+        live &&
+        isChannel(live) &&
+        entry.target.kind === 'channelLane' &&
+        row?.kind === 'control' &&
+        row.channelRef &&
+        row.channelId === live.channelId &&
+        row.tenantId === (live.target.tenantId || '_') &&
+        typeof row.fingerprint === 'string' &&
+        typeof row.laneId === 'string' &&
+        row.channelRef.revision === entry.authorityRevision &&
+        channelRegistryKey(row.channelRef, false) === channelRegistryKey(live, false) &&
+        hasCreatorControlLineage(
+          {
+            userId: live.createdBy,
+            ...(live.target.tenantId && { tenantId: live.target.tenantId }),
+          },
+          { ...entry.target, kind: 'channelLane' },
+          {
+            kind: 'control',
+            tenantId: live.target.tenantId || '_',
+            channelId: live.channelId,
+            laneId: row.laneId,
+            fingerprint: row.fingerprint,
+            channelRef: row.channelRef,
+            _managed: row._managed,
+          },
+        );
       if (
         !row ||
         (!absenceOnly &&
           live &&
-          entry.authorityRevision === live.revision &&
-          row._managed.phase === 'published' &&
-          [channelRegistryKey(live, false), channelRegistryKey(live)].every((key) =>
-            row._managed.scopeKeys?.includes(key),
-          ))
+          (controlCreation ||
+            (entry.authorityRevision === live.revision &&
+              row._managed.phase === 'published' &&
+              [channelRegistryKey(live, false), channelRegistryKey(live)].every((key) =>
+                row._managed.scopeKeys?.includes(key),
+              ))))
       )
         settled.push(entry);
     }

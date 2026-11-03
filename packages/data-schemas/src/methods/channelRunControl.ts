@@ -6,6 +6,7 @@ import type {
   ChannelControlLaneRecord,
   ChannelPrincipalLaneRecord,
   ChannelStopSelection,
+  ChannelLaneAuthorityRef,
 } from '~/models/channelRun';
 import type { PhysicalChannelRun, ChannelRunMetadata } from './channelRunWrite';
 import type { ManagedState, ManagedTarget } from '~/types/managed';
@@ -43,6 +44,12 @@ const terminal = (run: Pick<ChannelRunRecord, 'state'>) =>
   ['delivered', 'failed', 'cancelled'].includes(run.state);
 const same = (left: object | undefined, right: object | undefined) =>
   digest(left ?? {}) === digest(right ?? {});
+
+// The actor control spans configuration versions; each Run's live authority remains versioned.
+const sameParent = (
+  left: ChannelLaneAuthorityRef<'channel'> | undefined,
+  right: ChannelLaneAuthorityRef<'channel'> | undefined,
+): boolean => Boolean(left && right && same(left.target, right.target));
 
 export type ChannelRunClaim = Pick<
   PhysicalChannelRun,
@@ -184,7 +191,7 @@ export function createChannelRunControl(
         !run ||
         run.runId !== grant.run.runId ||
         !same(run.publication?.control, controlTarget(control)) ||
-        !same(run.publication?.channel, control.channelRef) ||
+        !sameParent(run.publication?.channel, control.channelRef) ||
         !same(run.publication?.lane, grant.lane) ||
         laneKey(run) !== grant.principalFingerprint
       )
@@ -257,7 +264,7 @@ export function createChannelRunControl(
         assignment.grantId === run.leaseGrantId &&
         assignment.owner === run.leaseOwner &&
         same(assignment.lane, run.publication.lane) &&
-        same(row?.channelRef, run.publication.channel) &&
+        sameParent(row?.channelRef, run.publication.channel) &&
         assignment.principalFingerprint === laneKey(run),
     );
   }
@@ -430,7 +437,7 @@ export function createChannelRunControl(
             throw new Error('Erased Run control retirement is pending');
           return;
         }
-        if (!same(control.channelRef, run.publication.channel))
+        if (!sameParent(control.channelRef, run.publication.channel))
           throw new Error('Erased Run control authority changed');
         const ownAssignment = same(control.assignment?.run.target, target);
         const stop = control.stop;
@@ -458,7 +465,7 @@ export function createChannelRunControl(
       let selectedGrant: string | undefined;
       for (;;) {
         const control = await readControl(binding);
-        if (!control || !same(control.channelRef, initial.publication.channel)) return null;
+        if (!control || !sameParent(control.channelRef, initial.publication.channel)) return null;
         if (control.assignment?.phase === 'granting') {
           await recoverGrant(control);
           const pending = await readControl(binding);
@@ -561,7 +568,7 @@ export function createChannelRunControl(
         row = await readControl(binding);
         if (
           !row ||
-          !same(row.channelRef, {
+          !sameParent(row.channelRef, {
             target: authority.channel.target,
             revision: authority.channel.revision,
           })

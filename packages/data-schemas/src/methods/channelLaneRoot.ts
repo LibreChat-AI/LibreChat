@@ -23,6 +23,7 @@ import {
   ManagedDocumentTooLargeError,
 } from '~/utils/bson';
 import { laneKey, stopScopeKey, digest, ChannelRunConflict } from './channelProtocol';
+import { hasCreatorControlLineage } from './channelControlPrivacy';
 import { createChannelLaneModel } from '~/models/channelRun';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseScopeKeys } from './responseScope';
@@ -40,8 +41,8 @@ interface LaneMetadata {
   kind: ChannelLaneRecord['kind'];
   fingerprint?: string;
   userId?: string;
-  channelRef?: ChannelLaneAuthorityRef;
-  identityRef?: ChannelLaneAuthorityRef;
+  channelRef?: ChannelLaneAuthorityRef<'channel'>;
+  identityRef?: ChannelLaneAuthorityRef<'channelIdentity'>;
   controlTarget?: ManagedTarget<'channelLane'>;
 }
 
@@ -91,8 +92,8 @@ export function createChannelLaneRootStorage(
           })
           .select('channelRef')
           .read('primary')
-          .lean<{ channelRef: ChannelLaneAuthorityRef } | null>();
-        if (!control || digest(control.channelRef) !== digest(channelRef))
+          .lean<{ channelRef: ChannelLaneAuthorityRef<'channel'> } | null>();
+        if (!control || digest(control.channelRef.target) !== digest(channelRef.target))
           throw new ChannelRunConflict('invalid_transition');
       }
       const body: ChannelLaneRecord =
@@ -124,7 +125,7 @@ export function createChannelLaneRootStorage(
         kind: row.kind,
         fingerprint: row.fingerprint,
         userId: 'userId' in row ? row.userId : undefined,
-        channelRef: row.channelRef,
+        channelRef: row.kind === 'control' ? row.channelRef?.target : row.channelRef,
         identityRef: 'identityRef' in row ? row.identityRef : undefined,
         controlTarget: 'controlTarget' in row ? row.controlTarget : undefined,
       });
@@ -148,6 +149,25 @@ export function createChannelLaneRootStorage(
           incarnation: winner._managed.incarnation,
           ...(captured.channel.target.tenantId && { tenantId: captured.channel.target.tenantId }),
         };
+        if (choice.kind === 'control') {
+          if (
+            winner.kind !== 'control' ||
+            !winner.fingerprint ||
+            !winner.channelRef ||
+            !hasCreatorControlLineage(captured.creator, target, {
+              kind: 'control',
+              tenantId: scope.tenantId,
+              channelId: scope.channelId,
+              laneId,
+              fingerprint: winner.fingerprint,
+              channelRef: winner.channelRef,
+              _managed: winner._managed,
+            })
+          )
+            throw new ChannelRunConflict('invalid_transition');
+          // Reusing opaque lifetime coordination publishes no private versioned association.
+          return readPublished(target, false);
+        }
         return loadRegistered(target);
       }
       async function loadRegistered(
@@ -168,7 +188,10 @@ export function createChannelLaneRootStorage(
           );
         return readPublished(target);
       }
-      async function readPublished(target: ManagedTarget<'channelLane'>): Promise<ChannelLaneRoot> {
+      async function readPublished(
+        target: ManagedTarget<'channelLane'>,
+        settle = true,
+      ): Promise<ChannelLaneRoot> {
         const record = await model
           .findOne({
             ...managedTargetFilter(mongoose, target),
@@ -179,7 +202,7 @@ export function createChannelLaneRootStorage(
           .read('primary')
           .lean();
         if (!record) throw new ChannelRunConflict('invalid_transition');
-        await settleChannelOwnership(mongoose, target, roles);
+        if (settle) await settleChannelOwnership(mongoose, target, roles);
         return { target, record };
       }
       const existing = await readWinner();

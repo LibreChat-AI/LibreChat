@@ -23,11 +23,16 @@ interface StoredControl extends ChannelControlLaneRecord {
   updatedAt?: Date;
 }
 
-/** A control has only the creator and captured channel generation roles, never a private owner. */
-function ownedControl(
+export type ChannelControlLineage = Pick<
+  ChannelControlLaneRecord,
+  'kind' | 'tenantId' | 'channelId' | 'laneId' | 'fingerprint' | 'channelRef'
+> & { _managed: ManagedState };
+
+/** A control retains its creator and creation generation, never a private execution owner. */
+export function hasCreatorControlLineage(
   owner: ResponseOwner,
   target: ManagedTarget<'channelLane'>,
-  row: StoredControl,
+  row: ChannelControlLineage,
 ): boolean {
   const state = row._managed;
   if (
@@ -189,7 +194,7 @@ export async function isRedactedCreatorControl(
     .lean<StoredControl | null>();
   return Boolean(
     row &&
-      ownedControl(owner, target, row) &&
+      hasCreatorControlLineage(owner, target, row) &&
       (await closedParent(mongoose, owner, row)) &&
       digest(row) === digest(await metadataControl(mongoose, row)),
   );
@@ -214,7 +219,10 @@ export async function redactCreatorControl(
       .read('primary')
       .lean<StoredControl | null>();
     if (!row) return;
-    if (!ownedControl(owner, target, row) || !(await closedParent(mongoose, owner, row)))
+    if (
+      !hasCreatorControlLineage(owner, target, row) ||
+      !(await closedParent(mongoose, owner, row))
+    )
       throw new Error('Creator control cleanup authority unavailable');
     const known = await metadataControl(mongoose, row);
     if (digest(row) === digest(known)) return;

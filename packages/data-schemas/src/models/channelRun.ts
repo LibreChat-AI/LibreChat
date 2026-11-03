@@ -90,6 +90,7 @@ export interface ChannelControlLaneRecord {
   laneId: string;
   revision: number;
   fingerprint: string;
+  /** Creation authority for lifetime coordination, not the active Run's configuration version. */
   channelRef: ChannelLaneAuthorityRef<'channel'>;
   assignment?: ChannelControlAssignment;
   stop?: {
