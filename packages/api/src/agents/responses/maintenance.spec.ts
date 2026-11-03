@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   createResponseStorage,
+  createModels,
   createManagedMessageId,
   createManagedConversationId,
   responseReference,
@@ -38,6 +39,7 @@ describe.each(engines)('Response maintenance on %s', (engine) => {
     await mongoose.connect(mongo?.getUri() ?? process.env.FERRETDB_URI!, {
       dbName: `maintenance_${randomUUID().replace(/-/g, '')}`,
     });
+    createModels(mongoose);
   }, 60000);
   beforeEach(async () => {
     storage = createResponseStorage(mongoose);
