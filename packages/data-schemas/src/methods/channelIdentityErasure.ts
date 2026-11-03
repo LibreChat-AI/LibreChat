@@ -107,7 +107,7 @@ async function eraseIdentityTargets(
         ...(after && { _id: { $gt: after } }),
       }),
     )
-      .select('_id +_managed')
+      .select('_id _managed')
       .sort({ _id: 1 })
       .limit(batchSize)
       .read('primary')

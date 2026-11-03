@@ -88,7 +88,7 @@ export function createChannelIdentityStorage(
       };
       const record = await model()
         .findOne(filter)
-        .select('_id +_managed')
+        .select('_id _managed')
         .read('primary')
         .lean<ChannelIdentityRecord & { _id: unknown; _managed: { incarnation: string } }>();
       if (!record?._managed) return false;

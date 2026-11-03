@@ -29,6 +29,7 @@ import {
   writeChannelRunPatch,
   CHANNEL_RUN_METADATA_FIELDS,
 } from './channelRunWrite';
+import { createChannelLaneModel, createChannelRunModel } from '~/models/channelRun';
 import { registerResponseTarget, settleResponseTarget } from './registration';
 import { managedTargetFilter, managedRegistration } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
@@ -80,8 +81,8 @@ export function createChannelRunControl(
   mongoose: typeof import('mongoose'),
   getDurableConfig: () => Promise<Partial<DurableStorageConfig>>,
 ): ChannelRunControl {
-  const lanes = mongoose.model('ChannelLane');
-  const runs = mongoose.model<ChannelRunRecord>('ChannelRun');
+  const lanes = createChannelLaneModel(mongoose);
+  const runs = createChannelRunModel(mongoose);
   const roots = createChannelLaneRootStorage(mongoose, getDurableConfig);
   async function readRun(target: ManagedTarget<'channelRun'>) {
     return runs
