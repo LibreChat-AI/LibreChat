@@ -1,4 +1,4 @@
-import { memo, useRef, useMemo, useState, useLayoutEffect } from 'react';
+import { memo, useRef, useMemo, useState, useEffect, useLayoutEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { ChevronDown } from 'lucide-react';
 import { Button, TooltipAnchor, useMediaQuery, useLocalize, cn } from '@librechat/client';
@@ -14,6 +14,9 @@ export interface ThinkingControlProps {
   disabled: boolean;
   onChange: (value: TReasoningOverride) => void;
 }
+
+/** Past the longest label roll (280ms in the app's stylesheet), with room for a busy frame. */
+const LABEL_ROLL_FALLBACK_MS = 400;
 
 /** The label roll's state: the word shown, the one leaving, and which way they move. */
 type LabelState = {
@@ -97,6 +100,22 @@ function ThinkingControl({
   }
   const clearPrevious = (turn: number) =>
     setLabel((state) => (state.turn === turn ? { ...state, previous: null } : state));
+
+  /* The outgoing word normally leaves when its animation ends. The animation is defined by the
+     host's stylesheet, so a host that does not load it would keep both words stacked in the
+     slot; past the longest roll, the outgoing word is dropped either way. */
+  const rolling = label.previous != null;
+  useEffect(() => {
+    if (!rolling) {
+      return;
+    }
+    const turn = label.turn;
+    const timer = window.setTimeout(
+      () => setLabel((state) => (state.turn === turn ? { ...state, previous: null } : state)),
+      LABEL_ROLL_FALLBACK_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [rolling, label.turn]);
 
   /* Every label this button can show, in the active language. All of them get
      measured rather than picking by character count: the longest string is not

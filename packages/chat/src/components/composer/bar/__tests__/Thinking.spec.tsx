@@ -3,7 +3,7 @@
  */
 import React, { createRef } from 'react';
 import { ComponentTypes, ReasoningEffort } from 'librechat-data-provider';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { SettingDefinition, TConversation, TReasoningOverride } from 'librechat-data-provider';
 import { initEnglish } from '../../../../__fixtures__/i18n';
 import ThinkingControl from '../Thinking';
@@ -116,6 +116,25 @@ describe('ThinkingControl', () => {
     rerenderWith({ value: { key: 'reasoning_effort', value: ReasoningEffort.unset } });
     expect(trigger.querySelector('.composer-label-in-down')).toHaveTextContent('Auto');
     expect(trigger.querySelector('.composer-label-out-down')).toHaveTextContent('High');
+  });
+
+  it('drops the outgoing word even when no stylesheet animates it', () => {
+    jest.useFakeTimers();
+    try {
+      const { rerenderWith } = renderControl();
+      const trigger = screen.getByTestId('composer-thinking-button');
+
+      rerenderWith({ value: { key: 'reasoning_effort', value: ReasoningEffort.high } });
+      expect(trigger.querySelector('.composer-label-out-up')).toHaveTextContent('Low');
+
+      act(() => {
+        jest.advanceTimersByTime(400);
+      });
+      expect(trigger.querySelector('.composer-label-out-up')).toBeNull();
+      expect(trigger.querySelector('.composer-label-in-up')).toHaveTextContent('High');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('hands a pick to the host without the click reaching the composer', async () => {
