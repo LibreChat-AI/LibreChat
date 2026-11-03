@@ -1697,8 +1697,10 @@ it(
       await authenticate(req as ApiKeyAuthRequest, res, next);
     });
     const captured: ServerRequest['preparedResponseConversation'][] = [];
+    const capturedTargets: ServerRequest['preparedResponseTarget'][] = [];
     api.post(/.*/, (req, res) => {
       captured.push((req as ServerRequest).preparedResponseConversation);
+      capturedTargets.push((req as ServerRequest).preparedResponseTarget);
       res.sendStatus(204);
     });
     const body = {
@@ -1767,6 +1769,12 @@ it(
     await call(`/api/agents/v1/responses/${response.record.responseId}/cancel`)
       .send({})
       .expect(204);
+    expect(capturedTargets[capturedTargets.length - 1]).toEqual({
+      userId: users[0].id,
+      tenantId,
+      responseId: response.record.responseId,
+      storageTarget: response.record.storageTarget,
+    });
     await call('/api/agents/v1/responses/resp_unrelated/cancel').send({}).expect(403);
     value(
       await authority.identity.revoke(

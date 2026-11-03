@@ -1,9 +1,10 @@
-import { channelRunFence } from '@librechat/data-schemas';
+import { channelRunFence, channelResponseOwner } from '@librechat/data-schemas';
 import type {
   ChannelRunRecord,
   ChannelRunStorage,
   ResponseStorage,
   ResponseOwner,
+  ResponseCleanupIdentity,
 } from '@librechat/data-schemas';
 import type { ChannelRunSnapshot } from 'librechat-data-provider';
 import type { BackgroundResponseResult } from '~/agents/responses/background';
@@ -22,7 +23,11 @@ export interface ChannelResponseProjectionDependencies {
 export function createChannelResponseRetirement(deps: {
   storage: Pick<ResponseStorage, 'readCleanupIdentity'>;
   recovery: Pick<ChannelRunStorage, 'recoverResponse'>;
-  retireResponse: (owner: ResponseOwner, responseId: string) => Promise<'stopped' | 'pending'>;
+  retireResponse: (
+    owner: ResponseOwner,
+    responseId: string,
+    retained?: ResponseCleanupIdentity,
+  ) => Promise<'stopped' | 'pending'>;
   now?: () => number;
 }): (run: ChannelRunRecord) => Promise<'stopped' | 'pending'> {
   return async (run) => {
@@ -44,11 +49,19 @@ export function createChannelResponseRetirement(deps: {
     }
     const responseId = run.execution?.responseId;
     if (!responseId) return 'pending';
-    const owner = {
-      userId: run.principal.userId,
-      tenantId: run.tenantId === '_' ? undefined : run.tenantId,
+    if (!run.execution?.responseTarget || !run.execution.responseFingerprint)
+      throw new ChannelExecutionError('execution_identity_changed');
+    const owner = channelResponseOwner(run);
+    const retained: ResponseCleanupIdentity = {
+      ...owner,
+      agentId: run.agentId,
+      conversationId: run.execution!.conversationId,
+      parentMessageId: run.execution!.parentMessageId,
+      requestKey: `channel:${run.runId}`,
+      sourceKeyId: run.execution!.apiKeyId,
+      generationCreatedAt: run.execution!.generationCreatedAt,
     };
-    const stored = await deps.storage.readCleanupIdentity(owner, responseId);
+    const stored = await deps.storage.readCleanupIdentity(owner, responseId, retained);
     if (
       stored &&
       (stored.responseId !== responseId ||
@@ -63,7 +76,7 @@ export function createChannelResponseRetirement(deps: {
       throw new ChannelExecutionError('execution_identity_changed');
     // The private retirement owner resolves missing rows from cleanup/job identities;
     // absence here never proves that a provider stopped.
-    return deps.retireResponse(owner, responseId);
+    return deps.retireResponse(owner, responseId, stored ?? retained);
   };
 }
 
@@ -89,13 +102,13 @@ export function createChannelResponseProjection(deps: ChannelResponseProjectionD
     const execution = run.execution;
     if (execution?.protocol !== 'responses' || !execution.responseId)
       throw new ChannelExecutionError('execution_not_prepared');
-    const owner = {
-      userId: run.principal.userId,
-      tenantId: run.tenantId === '_' ? undefined : run.tenantId,
-    };
+    if (!execution.responseTarget || !execution.responseFingerprint)
+      throw new ChannelExecutionError('execution_identity_changed');
+    const owner = channelResponseOwner(run);
     const stored = await deps.storage.read(owner, execution.responseId);
     if (
       !stored ||
+      stored.fingerprint !== execution.responseFingerprint ||
       stored.agentId !== run.agentId ||
       stored.requestKey !== `channel:${run.runId}` ||
       stored.conversationId !== execution.conversationId ||

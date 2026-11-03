@@ -13,7 +13,6 @@ import type {
 } from 'librechat-data-provider';
 import type { ChannelRunRecord, ChannelPrincipalLaneRecord } from '~/models/channelRun';
 import type { ChannelLaneScope, ChannelRunEnrollment } from './channelProtocol';
-import type { StoredResponseRecord } from '~/models/response';
 import type { PhysicalChannelRun } from './channelRunWrite';
 import type { ChannelRunClaim } from './channelRunControl';
 import {
@@ -31,10 +30,10 @@ import {
 } from './channelProtocol';
 import { channelRunTarget, writeChannelRunPatch, channelRunStorageTarget } from './channelRunWrite';
 import { createChannelRunPublication } from './channelRunPublication';
+import { bindChannelRunResponse } from './channelRunResponse';
 import { createManagedConversationId } from '~/utils/managed';
 import { createChannelRunControl } from './channelRunControl';
 import { createChannelIndexGate } from './channelIndexes';
-import { responseOwnerFilter } from './responseScope';
 import { getTenantId } from '~/config/tenantContext';
 import { managedTargetFilter } from './managed';
 
@@ -297,67 +296,6 @@ export function createChannelRunStorage(
       if (!current) throw new ChannelRunConflict('stale_fence');
       run = current;
     }
-  }
-  async function responseBinding(
-    run: ChannelRunRecord,
-    responseId?: string,
-  ): Promise<Partial<ChannelRunRecord> | null> {
-    if (
-      !run.execution ||
-      (run.state !== 'executing' && run.execution.protocol !== 'responses') ||
-      run.execution.deliveryKey != null ||
-      run.execution.enqueueAttemptedAt != null ||
-      (run.execution.responseId != null && run.execution.responseId !== responseId)
-    )
-      throw new ChannelRunConflict('invalid_transition');
-    const response = await mongoose
-      .model<StoredResponseRecord>('StoredResponse')
-      .findOne({
-        ...responseOwnerFilter({
-          tenantId: run.tenantId === '_' ? undefined : run.tenantId,
-          userId: run.principal.userId,
-        }),
-        agentId: run.agentId,
-        ...(responseId === undefined ? {} : { responseId }),
-        requestKey: `channel:${run.runId}`,
-        ...(run.execution.apiKeyId ? { sourceKeyId: run.execution.apiKeyId } : {}),
-      })
-      .lean();
-    if (!response) return null;
-    if (
-      response.conversationId !== run.execution.conversationId ||
-      response.parentMessageId !== run.execution.parentMessageId
-    )
-      throw new ChannelRunConflict('invalid_transition');
-    const request: {
-      input?: string;
-      model?: string;
-      previous_response_id?: string;
-      background?: boolean;
-      store?: boolean;
-    } = JSON.parse(response.requestJSON);
-    const previous =
-      run.execution.parentMessageId === '00000000-0000-0000-0000-000000000000'
-        ? undefined
-        : run.execution.parentMessageId;
-    if (
-      request.model !== run.agentId ||
-      request.input !== run.admission.input ||
-      (run.execution.responseId == null && request.previous_response_id !== previous) ||
-      request.background !== true ||
-      request.store === false
-    )
-      throw new ChannelRunConflict('invalid_transition');
-    return {
-      execution: {
-        ...run.execution,
-        protocol: 'responses',
-        responseId: response.responseId,
-        ...(response.generationCreatedAt == null
-          ? {}
-          : { generationCreatedAt: response.generationCreatedAt }),
-      },
-    };
   }
   async function finishTerminal(
     tenantId: string,
@@ -670,7 +608,7 @@ export function createChannelRunStorage(
     },
     async bindResponse(tenantId, fence, responseId, now) {
       return mutate(tenantId, fence, now, async (run) => {
-        const patch = await responseBinding(run, responseId);
+        const patch = await bindChannelRunResponse(mongoose, run, getDurableConfig, responseId);
         if (!patch) throw new ChannelRunConflict('invalid_transition');
         return patch;
       });
@@ -686,7 +624,9 @@ export function createChannelRunStorage(
           run.execution.enqueueAttemptedAt != null
         )
           throw new ChannelRunConflict('invalid_transition');
-        return run.execution.responseId ? {} : responseBinding(run);
+        return run.execution.responseId
+          ? {}
+          : bindChannelRunResponse(mongoose, run, getDurableConfig, undefined, true);
       });
     },
     async saveSnapshot(tenantId, fence, snapshot, now, generationCreatedAt) {

@@ -10,7 +10,7 @@ import {
 } from '~/utils/bson';
 import { registerResponseTarget, settleResponseTarget } from './registration';
 import { managedRegistration, managedTargetFilter } from './managed';
-import { ChannelRunConflict } from './channelProtocol';
+import { ChannelRunConflict, digest } from './channelProtocol';
 import { responseScopeKeys } from './responseScope';
 
 export type PhysicalChannelRun = ChannelRunRecord & {
@@ -163,6 +163,14 @@ export async function writeChannelRunPatch(
     (current.execution.conversationId !== patch.execution.conversationId ||
       current.execution.parentMessageId !== patch.execution.parentMessageId ||
       current.execution.requestId !== patch.execution.requestId)
+  )
+    throw new ChannelRunConflict('invalid_transition');
+  if (
+    current.execution?.responseTarget &&
+    patch.execution &&
+    (patch.execution.responseId !== current.execution.responseId ||
+      patch.execution.responseFingerprint !== current.execution.responseFingerprint ||
+      digest(patch.execution.responseTarget ?? {}) !== digest(current.execution.responseTarget))
   )
     throw new ChannelRunConflict('invalid_transition');
   const firstConversation = conversationId && !current.execution;

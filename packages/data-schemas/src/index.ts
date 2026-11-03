@@ -50,6 +50,7 @@ export {
   isLaterChannelFeedbackEvent,
   createChannelRunStorage,
   channelRunFence,
+  channelResponseOwner,
   matchesChannelRunFence,
   createChannelSummaryStorage,
   CHANNEL_SUMMARY_MAX_PRIOR_ROWS,

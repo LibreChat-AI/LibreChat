@@ -30,6 +30,8 @@ export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision'> {
   execution?: {
     protocol?: 'responses';
     responseId?: string;
+    responseTarget?: ManagedTarget<'response'>;
+    responseFingerprint?: string;
     apiKeyId?: string;
     encryptedApiKey?: string;
     requestId: string;

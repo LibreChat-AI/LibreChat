@@ -18,8 +18,17 @@ export interface BackgroundResponseHttpDependencies {
 }
 
 function owner(req: Request): ResponseOwner | null {
-  const user = (req as ServerRequest).user;
-  return user?.id ? { userId: user.id, tenantId: responseTenantId(user.tenantId) } : null;
+  const request = req as ServerRequest;
+  const user = request.user;
+  if (!user?.id) return null;
+  const principal = { userId: user.id, tenantId: responseTenantId(user.tenantId) };
+  const captured = request.preparedResponseTarget;
+  if (!captured) return principal;
+  return captured.userId === principal.userId &&
+    responseTenantId(captured.tenantId) === principal.tenantId &&
+    captured.responseId === req.params.id
+    ? captured
+    : null;
 }
 
 function send(res: HttpResponse, result: BackgroundResponseResult, accepted = false): void {
@@ -117,7 +126,11 @@ export function createBackgroundResponseHttpHandlers(deps: BackgroundResponseHtt
         return void sendResponsesErrorResponse(res, 401, 'Unauthorized', 'invalid_request');
       try {
         const result = await deps.service(req).lookup(principal, req.params.id);
-        if (result == null) return deps.ordinary.retrieve(req, res, next);
+        if (result == null) {
+          if ((req as ServerRequest).preparedResponseTarget)
+            return send(res, { ok: false, status: 404, code: 'response_not_found' });
+          return deps.ordinary.retrieve(req, res, next);
+        }
         return send(res, result);
       } catch (error) {
         return unavailable(res, error);

@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { Constants } from 'librechat-data-provider';
-import { isManagedConversationId, channelRunFence } from '@librechat/data-schemas';
+import {
+  isManagedConversationId,
+  channelRunFence,
+  channelResponseOwner,
+} from '@librechat/data-schemas';
 import type {
   AgentApiKeyBinding,
   AgentApiKeyListItem,
@@ -182,6 +186,7 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
     }): Promise<boolean> {
       const request = input.request as ServerRequest;
       delete request.preparedResponseConversation;
+      delete request.preparedResponseTarget;
       const owner = { userId: String(input.user._id), tenantId: input.user.tenantId };
       const run = await current(input.binding, input.keyId, owner);
       if (!run) return false;
@@ -211,15 +216,31 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
       if (!path || (path[2] ? input.request.method !== 'POST' : input.request.method !== 'GET'))
         return false;
       if (path[2] && !run.cancellationRequested) return false;
-      const response = await deps.responses.read(owner, path[1]);
-      return Boolean(
+      if (
+        run.execution?.responseId &&
+        (!run.execution.responseTarget || !run.execution.responseFingerprint)
+      )
+        return false;
+      const captured = run.execution?.responseId ? channelResponseOwner(run) : owner;
+      const response = await deps.responses.read(captured, path[1]);
+      const allowed = Boolean(
         response &&
           response.agentId === run.agentId &&
           response.requestKey === `channel:${run.runId}` &&
           response.sourceKeyId === input.keyId &&
+          (run.execution?.responseFingerprint == null ||
+            response.fingerprint === run.execution.responseFingerprint) &&
           response.conversationId === run.execution!.conversationId &&
+          response.parentMessageId === run.execution!.parentMessageId &&
           (run.execution?.responseId == null || run.execution.responseId === response.responseId),
       );
+      if (allowed && response?.storageTarget)
+        request.preparedResponseTarget = {
+          ...owner,
+          responseId: response.responseId,
+          storageTarget: response.storageTarget,
+        };
+      return allowed && request.preparedResponseTarget != null;
     },
   };
 }

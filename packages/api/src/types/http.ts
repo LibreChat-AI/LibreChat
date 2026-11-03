@@ -7,7 +7,13 @@ import type {
   TReasoningOverride,
   Agents,
 } from 'librechat-data-provider';
-import type { IUser, AppConfig, IConversation } from '@librechat/data-schemas';
+import type {
+  IUser,
+  AppConfig,
+  IConversation,
+  ResponseOwner,
+  StoredResponseRecord,
+} from '@librechat/data-schemas';
 import type { Request } from 'express';
 import type { ResolvedChatProjectContext } from '../projects/context';
 
@@ -59,6 +65,9 @@ export type ServerRequest = Request<unknown, unknown, RequestBody> & {
    *  Derived per request from the sealed decision and never persisted. */
   codeWorkspaceInheritance?: ReadonlyMap<string, string>;
   authStrategy?: string;
+  /** Physical Response selected by bound-key authentication; never populated from input. */
+  preparedResponseTarget?: ResponseOwner &
+    Required<Pick<StoredResponseRecord, 'responseId' | 'storageTarget'>>;
   /** Bound-source authority captured by authentication, never accepted from request bodies. */
   preparedResponseConversation?: {
     sourceKeyId: string;

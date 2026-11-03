@@ -7,6 +7,7 @@ import {
 import type {
   IUser,
   ResponseOwner,
+  ResponseCleanupIdentity,
   ResponseStorage,
   StoredResponseRecord,
 } from '@librechat/data-schemas';
@@ -76,7 +77,11 @@ export interface BackgroundResponsesHost {
   review: RequestHandler;
   submitReview: RequestHandler;
   cancelReview: RequestHandler;
-  retireResponse: (owner: ResponseOwner, responseId: string) => Promise<'stopped' | 'pending'>;
+  retireResponse: (
+    owner: ResponseOwner,
+    responseId: string,
+    retained?: ResponseCleanupIdentity,
+  ) => Promise<'stopped' | 'pending'>;
   readResponse: (owner: ResponseOwner, responseId: string) => Promise<BackgroundResponseResult>;
   cancelResponse: (owner: ResponseOwner, responseId: string) => Promise<BackgroundResponseResult>;
   sourceDispatchers: BackgroundResponseQueue['sourceDispatchers'];

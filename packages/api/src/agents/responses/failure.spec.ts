@@ -477,6 +477,8 @@ describe.each(engines)('permanent Response publication failure on %s', (engine) 
         execution: {
           protocol: 'responses',
           responseId: f.record.responseId,
+          responseTarget: f.record.storageTarget,
+          responseFingerprint: f.record.fingerprint,
           requestId: 'run',
           conversationId: f.record.conversationId,
           parentMessageId: 'root',
