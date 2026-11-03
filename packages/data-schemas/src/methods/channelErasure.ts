@@ -46,16 +46,33 @@ export async function eraseChannelPersistenceForUser(
     for await (const connection of connections) {
       // Keep redacted deletion metadata while other principals' runs drain. The
       // deleted owner's credentials are erased immediately.
-      await retireAgentChannel(mongoose, { ...connection, createdBy: owner.userId }, true);
+      await retireAgentChannel(
+        mongoose,
+        { ...connection, id: String(connection._id), createdBy: owner.userId },
+        true,
+      );
       await eraseChannelFeedbackForChannel(mongoose, connection.tenantId, connection.channelId);
       if (
-        !(await runs.exists({
-          channelId: connection.channelId,
-          tenantId,
-          state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
-        }))
+        !(await runs
+          .exists({
+            channelId: connection.channelId,
+            tenantId,
+            state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
+          })
+          .read('primary')) &&
+        !(await createChannelIdentityModel(mongoose)
+          .exists({
+            tenantId,
+            'identity.channelId': connection.channelId,
+          })
+          .read('primary'))
       )
-        await channels.deleteOne({ _id: connection._id, status: 'deleting' });
+        await channels.deleteOne({
+          _id: connection._id,
+          status: 'deleting',
+          pendingCount: { $in: [null, 0] },
+          'pending.0': { $exists: false },
+        });
     }
   } finally {
     await connections.close();

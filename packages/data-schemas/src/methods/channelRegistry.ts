@@ -8,7 +8,9 @@ import type {
   ManagedRegistration,
   ManagedRegistrationIntent,
 } from '~/types/managed';
+import type { ChannelIdentityRecord } from '~/models/channelIdentity';
 import type { ManagedRegistrationResult } from './registration';
+import type { AgentChannelRecord } from '~/models/channel';
 import type { ResponseOwner } from '~/models/response';
 import {
   assertManagedRegistration,
@@ -25,7 +27,9 @@ import {
   assertManagedCleanupTenant,
   managedTargetPredicate,
 } from './managed';
+import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { includeManagedAllocations } from '~/utils/managed';
+import { createAgentChannelModel } from '~/models/channel';
 import { MANAGED_TARGET_KINDS } from '~/types/managed';
 import { responseScopeKeys } from './responseScope';
 
@@ -357,4 +361,87 @@ async function reconcileTargets(
     { ordered: false },
   );
   return result.matchedCount;
+}
+
+/** Closed canonical registries release only absent children; their domains still own drain. */
+export async function reconcileClosedChannelRegistries(
+  mongoose: typeof import('mongoose'),
+  connection: { id: string; channelId: string; createdBy: string; tenantId?: string },
+): Promise<void> {
+  assertManagedCleanupTenant(connection.tenantId);
+  if (!/^[a-f\d]{24}$/i.test(connection.id))
+    throw new TypeError('Invalid channel cleanup identity');
+  const parent = await includeManagedAllocations(
+    createAgentChannelModel(mongoose).findOne({
+      _id: new mongoose.Types.ObjectId(connection.id),
+      channelId: connection.channelId,
+      createdBy: connection.createdBy,
+      tenantId: connection.tenantId || { $in: [null, ''] },
+      status: 'deleting',
+    }),
+  )
+    .select(
+      '_id channelId agentId createdBy revision slack _managed.incarnation pending pendingCount',
+    )
+    .read('primary')
+    .lean<AgentChannelRecord & ManagedRegistryState & { _managed?: ManagedState }>();
+  if (!parent) return;
+  if (managedRegistryCount(parent)) {
+    if (!parent._managed?.incarnation || !parent.slack?.teamId || !parent.slack.appId)
+      throw new Error('Channel registry authority is unavailable');
+    await reconcileChannelTargets(
+      mongoose,
+      {
+        target: {
+          kind: 'channel',
+          id: connection.id,
+          incarnation: parent._managed.incarnation,
+          ...(connection.tenantId && { tenantId: connection.tenantId }),
+        },
+        revision: parent.revision,
+        channelId: parent.channelId,
+        agentId: parent.agentId,
+        createdBy: parent.createdBy,
+        teamId: parent.slack.teamId,
+        appId: parent.slack.appId,
+      },
+      true,
+    );
+  }
+  const links = includeManagedAllocations(
+    createChannelIdentityModel(mongoose).find({
+      tenantId: connection.tenantId || '_',
+      'identity.channelId': connection.channelId,
+      state: 'revoked',
+      $or: [{ 'pending.0': { $exists: true } }, { pendingCount: { $nin: [null, 0] } }],
+    }),
+  )
+    .select('_id linkId revision userId identity _managed.incarnation')
+    .read('primary')
+    .lean<Array<ChannelIdentityRecord & { _id: Types.ObjectId; _managed?: ManagedState }>>()
+    .cursor({ batchSize: 1 });
+  for await (const link of links) {
+    if (!link._managed?.incarnation || !link.userId)
+      throw new Error('Link registry authority is unavailable');
+    await reconcileChannelTargets(
+      mongoose,
+      {
+        target: {
+          kind: 'channelIdentity',
+          id: String(link._id),
+          incarnation: link._managed.incarnation,
+          ...(connection.tenantId && { tenantId: connection.tenantId }),
+        },
+        revision: link.revision,
+        linkId: link.linkId,
+        userId: link.userId,
+        channelId: link.identity.channelId,
+        channelRevision: link.identity.channelRevision,
+        agentId: link.identity.agentId,
+        teamId: link.identity.teamId,
+        externalUserId: link.identity.externalUserId,
+      },
+      true,
+    );
+  }
 }

@@ -31,6 +31,8 @@ import { responseScopeKeys, createResponseRetention } from './responseScope';
 import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { _resetStrictCache } from '~/models/plugins/tenantIsolation';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { createAgentChannelMethods } from './channel';
+import { retireAgentChannel } from './channelScope';
 import { createModels } from '~/models';
 
 const engines = ['standalone', 'replica', ...(process.env.FERRETDB_URI ? ['FerretDB'] : [])];
@@ -622,6 +624,173 @@ describe.each(engines)('canonical channel registry on %s', (engine) => {
           else process.env.TENANT_ISOLATION_STRICT = previous;
           _resetStrictCache();
         }
+      }));
+
+    it('retires canonical authority and redacts credentials without a transaction', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const sessions = jest.spyOn(mongoose, 'startSession');
+        const result = await retireAgentChannel(
+          mongoose,
+          { channelId: f.channel.channelId, createdBy: f.creator.userId, tenantId },
+          true,
+        );
+        expect(result).toMatchObject({ status: 'deleting' });
+        expect(result).not.toHaveProperty('encryptedBotToken');
+        expect(result).not.toHaveProperty('encryptedSigningSecret');
+        for (const field of ['pending', 'pendingCount', '_managed'])
+          expect(result).not.toHaveProperty(field);
+        expect(
+          await mongoose.model('ChannelIdentity').countDocuments({ linkId: f.identity.linkId }),
+        ).toBe(0);
+        expect((await registerChannelTarget(mongoose, f.channel, f.entry)).status).toBe('closed');
+        expect(sessions).not.toHaveBeenCalled();
+      }));
+
+    it('keeps canonical retirement and redaction durable when shared fence closure fails', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const model = mongoose.model('ChannelScope');
+        const update = model.updateOne.bind(model);
+        jest
+          .spyOn(model, 'updateOne')
+          .mockImplementationOnce((...args) => update(...args))
+          .mockImplementationOnce(() => {
+            throw new Error('synthetic fence closure failure');
+          });
+        await expect(
+          retireAgentChannel(
+            mongoose,
+            { channelId: f.channel.channelId, createdBy: f.creator.userId, tenantId },
+            true,
+          ),
+        ).rejects.toThrow('synthetic fence closure failure');
+        const parent = await f.anchor();
+        expect(parent).toMatchObject({ status: 'deleting' });
+        expect(parent).not.toHaveProperty('encryptedBotToken');
+        expect((await registerChannelTarget(mongoose, f.channel, f.entry)).status).toBe('closed');
+        expect(
+          await mongoose.model('ChannelIdentity').countDocuments({ linkId: f.identity.linkId }),
+        ).toBe(1);
+        await retireAgentChannel(
+          mongoose,
+          { channelId: f.channel.channelId, createdBy: f.creator.userId, tenantId },
+          true,
+        );
+        expect(
+          await mongoose.model('ChannelIdentity').countDocuments({ linkId: f.identity.linkId }),
+        ).toBe(0);
+      }));
+
+    it('retains channel and link cleanup owners until their registered child is physically gone', () =>
+      scoped(async () => {
+        const f = await fixture();
+        await registerChannelTarget(mongoose, f.channel, f.entry);
+        await registerChannelTarget(mongoose, f.identity, f.entry);
+        const methods = createAgentChannelMethods(mongoose);
+        expect(await methods.deleteAgentChannel(f.channel.channelId, f.creator.userId)).toEqual({
+          status: 'pending_drain',
+        });
+        expect(await f.anchor()).toMatchObject({ status: 'deleting', pendingCount: 1 });
+        expect(await f.anchor(f.identity)).toMatchObject({ state: 'revoked', pendingCount: 1 });
+        await discardManagedAllocation(mongoose, f.target);
+        expect(await methods.deleteAgentChannel(f.channel.channelId, f.creator.userId)).toEqual({
+          status: 'deleted',
+        });
+        expect(await f.anchor()).toBeNull();
+        expect(await f.anchor(f.identity)).toBeNull();
+        expect(
+          (
+            await mongoose.model('ChannelRun').updateOne(
+              managedTargetFilter(mongoose, f.target),
+              {
+                $set: { '_managed.phase': 'published' },
+              },
+              { upsert: false },
+            )
+          ).matchedCount,
+        ).toBe(0);
+      }));
+
+    it('does not retarget retirement when the selected physical channel disappears', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const model = mongoose.model('AgentChannel');
+        const write = model.findOneAndUpdate.bind(model);
+        const replacement = new mongoose.Types.ObjectId();
+        jest.spyOn(model, 'findOneAndUpdate').mockImplementationOnce((...args) => {
+          const query = write(...args);
+          const exec = query.exec.bind(query);
+          query.exec = async (...execArgs) => {
+            await model.collection.deleteOne(managedTargetFilter(mongoose, f.channel.target));
+            await model.collection.insertOne({
+              _id: replacement,
+              channelId: f.channel.channelId,
+              agentId: f.channel.agentId,
+              createdBy: f.creator.userId,
+              ...(tenantId && { tenantId }),
+              revision: randomUUID(),
+              type: 'slack',
+              status: 'active',
+              credentialMode: 'shared',
+              slack: { teamId: f.channel.teamId, appId: f.channel.appId },
+              encryptedBotToken: 'synthetic-replacement-token',
+              _managed: { phase: 'published', incarnation: randomUUID() },
+            });
+            return exec(...execArgs);
+          };
+          return query;
+        });
+        expect(
+          await createAgentChannelMethods(mongoose).deleteAgentChannel(
+            f.channel.channelId,
+            f.creator.userId,
+          ),
+        ).toEqual({ status: 'not_found' });
+        expect(await model.collection.findOne({ _id: replacement })).toMatchObject({
+          status: 'active',
+          encryptedBotToken: 'synthetic-replacement-token',
+        });
+      }));
+
+    it('retires strict-mode channels from explicit system cleanup without crossing partitions', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const previous = process.env.TENANT_ISOLATION_STRICT;
+        process.env.TENANT_ISOLATION_STRICT = 'true';
+        _resetStrictCache();
+        try {
+          await tenantStorage.run({ tenantId: SYSTEM_TENANT_ID }, async () => {
+            expect(
+              await retireAgentChannel(
+                mongoose,
+                { channelId: f.channel.channelId, createdBy: f.creator.userId, tenantId },
+                true,
+              ),
+            ).toMatchObject({ status: 'deleting' });
+          });
+        } finally {
+          if (previous === undefined) delete process.env.TENANT_ISOLATION_STRICT;
+          else process.env.TENANT_ISOLATION_STRICT = previous;
+          _resetStrictCache();
+        }
+      }));
+
+    it('refuses invalid explicit physical selectors without falling back to a logical channel', () =>
+      scoped(async () => {
+        const f = await fixture();
+        for (const id of ['', 'not-an-object-id'])
+          await expect(
+            retireAgentChannel(
+              mongoose,
+              { channelId: f.channel.channelId, createdBy: f.creator.userId, tenantId, id },
+              true,
+            ),
+          ).rejects.toThrow('Invalid channel retirement identity');
+        expect(await f.anchor()).toMatchObject({
+          status: 'active',
+          encryptedBotToken: 'synthetic-private-token',
+        });
       }));
 
     it('retains closed-owner discovery until domain erasure proves exact physical absence', () =>

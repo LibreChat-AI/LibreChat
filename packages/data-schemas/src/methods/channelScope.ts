@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import type { ClientSession } from 'mongoose';
+import type { ClientSession, Types } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
-import { startRequiredTransactionSession } from '~/utils/transactions';
-import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { getTenantId, SYSTEM_TENANT_ID, tenantStorage } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
+import { reconcileClosedChannelRegistries } from './channelRegistry';
 import { createChannelScopeModel } from '~/models/channelScope';
 import { touchChannelOwnerAdmission } from './channelOwner';
 import { createAgentChannelModel } from '~/models/channel';
@@ -175,57 +175,79 @@ export async function closeChannelScope(
   }
 }
 
-/** Status, credential redaction and closure commit together; dependent erasure is retryable. */
+/** Close canonical authority first, then drain the shared fence before dependent erasure. */
 export async function retireAgentChannel(
   mongoose: typeof import('mongoose'),
-  connection: { tenantId?: string; channelId: string; createdBy: string },
+  connection: { tenantId?: string; channelId: string; createdBy: string; id?: string },
   redactCredentials = false,
 ): Promise<AgentChannelRecord | null> {
   const { tenantId, channelId, createdBy } = connection;
   assertChannelTenant(tenantId);
-  if (
-    !(await createAgentChannelModel(mongoose)
-      .exists({
+  if (getTenantId() === SYSTEM_TENANT_ID && tenantId)
+    return tenantStorage.run({ tenantId }, () =>
+      retireAgentChannel(mongoose, connection, redactCredentials),
+    );
+  if (connection.id !== undefined && !/^[a-f\d]{24}$/i.test(connection.id))
+    throw new TypeError('Invalid channel retirement identity');
+  const model = createAgentChannelModel(mongoose);
+  const parent = await model
+    .findOne({
+      ...(connection.id && { _id: new mongoose.Types.ObjectId(connection.id) }),
+      channelId,
+      createdBy,
+      tenantId: tenantId || { $in: [null, ''] },
+    })
+    .select('_id _managed.incarnation')
+    .read('primary')
+    .lean<{ _id: Types.ObjectId; _managed?: { incarnation: string } }>();
+  if (!parent) return null;
+  await initializeChannelScope(mongoose, tenantId, channelId);
+  const deleting = await model
+    .findOneAndUpdate(
+      {
+        _id: parent._id,
         channelId,
         createdBy,
         tenantId: tenantId || { $in: [null, ''] },
-      })
-      .read('primary'))
-  )
-    return null;
-  await initializeChannelScope(mongoose, tenantId, channelId);
-  const session = await startRequiredTransactionSession(mongoose);
-  try {
-    const deleting = await session.withTransaction(async () => {
-      const record = await createAgentChannelModel(mongoose)
-        .findOneAndUpdate(
-          { channelId, createdBy, tenantId: tenantId || { $in: [null, ''] } },
-          {
-            $set: { status: 'deleting' },
-            ...(redactCredentials
-              ? {
-                  $unset: {
-                    encryptedBotToken: '',
-                    encryptedSigningSecret: '',
-                  },
-                }
-              : {}),
-          },
-          { new: true, session },
-        )
-        .select('+encryptedBotToken +encryptedSigningSecret')
-        .lean();
-      if (!record) return null;
-      await closeChannelScope(mongoose, tenantId, channelId, session);
-      return record;
-    });
-    if (!deleting) return null;
-    await createChannelIdentityModel(mongoose).deleteMany({
-      tenantId: tenantId || '_',
-      'identity.channelId': channelId,
-    });
-    return deleting;
-  } finally {
-    await session.endSession();
-  }
+        '_managed.incarnation': parent._managed?.incarnation ?? { $exists: false },
+      },
+      {
+        $set: { status: 'deleting' },
+        ...(redactCredentials
+          ? {
+              $unset: {
+                encryptedBotToken: '',
+                encryptedSigningSecret: '',
+              },
+            }
+          : {}),
+      },
+      { new: true, upsert: false },
+    )
+    .select('+encryptedBotToken +encryptedSigningSecret')
+    .lean();
+  if (!deleting) return null;
+  // Existing transactional writers still touch this fence. Closing it waits for
+  // their admitted writes or makes their transaction retry against closed authority.
+  // No dependent sweep or successful retirement acknowledgment precedes this write.
+  await closeChannelScope(mongoose, tenantId, channelId);
+  const identities = createChannelIdentityModel(mongoose);
+  const identityFilter = {
+    tenantId: tenantId || '_',
+    'identity.channelId': channelId,
+  };
+  await identities.updateMany(identityFilter, { $set: { state: 'revoked' } });
+  await reconcileClosedChannelRegistries(mongoose, {
+    id: String(parent._id),
+    tenantId,
+    channelId,
+    createdBy,
+  });
+  // A retained registry remains the cleanup owner for its registered children.
+  await identities.deleteMany({
+    ...identityFilter,
+    pendingCount: { $in: [null, 0] },
+    'pending.0': { $exists: false },
+  });
+  return deleting;
 }

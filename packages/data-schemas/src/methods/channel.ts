@@ -99,9 +99,19 @@ export function createAgentChannelMethods(
   }
 
   async function beginDeletion(channelId: string, createdBy: string) {
-    const parent = await channel().findOne({ channelId, createdBy }).select('tenantId').lean();
+    const parent = await channel()
+      .findOne({ channelId, createdBy })
+      .select('tenantId')
+      .read('primary')
+      .lean();
     if (!parent) return null;
-    return retireAgentChannel(mongoose, { channelId, createdBy, tenantId: parent.tenantId });
+    const record = await retireAgentChannel(mongoose, {
+      channelId,
+      createdBy,
+      tenantId: parent.tenantId,
+      id: String(parent._id),
+    });
+    return record ? { record, id: String(parent._id) } : null;
   }
 
   return {
@@ -207,29 +217,45 @@ export function createAgentChannelMethods(
         return write(session);
       });
     },
-    beginAgentChannelDeletion: beginDeletion,
+    async beginAgentChannelDeletion(channelId, createdBy) {
+      return (await beginDeletion(channelId, createdBy))?.record ?? null;
+    },
     async deleteAgentChannel(
       channelId: string,
       createdBy: string,
     ): Promise<AgentChannelDeletionResult> {
-      const deleting = await beginDeletion(channelId, createdBy);
-      if (!deleting) return { status: 'not_found' };
+      const started = await beginDeletion(channelId, createdBy);
+      if (!started) return { status: 'not_found' };
+      const deleting = started.record;
       if (
         await mongoose.models.ChannelRun.exists({
           channelId,
           tenantId: deleting.tenantId || '_',
           state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
-        })
+        }).read('primary')
+      )
+        return { status: 'pending_drain' };
+      if (
+        await mongoose.models.ChannelIdentity.exists({
+          tenantId: deleting.tenantId || '_',
+          'identity.channelId': channelId,
+        }).read('primary')
       )
         return { status: 'pending_drain' };
       // Keep the deleting parent available for a retry if dependent cleanup fails.
       await eraseChannelFeedbackForChannel(mongoose, deleting.tenantId, channelId);
       const result = await channel().deleteOne({
+        _id: started.id,
         channelId,
         createdBy,
         status: 'deleting',
+        pendingCount: { $in: [null, 0] },
+        'pending.0': { $exists: false },
       });
-      return { status: result.deletedCount > 0 ? 'deleted' : 'not_found' };
+      if (result.deletedCount > 0) return { status: 'deleted' };
+      return (await channel().exists({ _id: started.id, channelId, createdBy }).read('primary'))
+        ? { status: 'pending_drain' }
+        : { status: 'not_found' };
     },
   };
 }

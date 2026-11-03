@@ -159,7 +159,7 @@ it('blocks other principals as soon as channel-owner account admission closes', 
   }));
 
 it.each(['direct', 'account'] as const)(
-  'rolls back channel status and credential changes when %s closure fails',
+  'keeps canonical retirement durable when %s fence closure fails',
   (mode) =>
     scope(async () => {
       const collection = mongoose.models.ChannelScope.collection;
@@ -167,7 +167,7 @@ it.each(['direct', 'account'] as const)(
       const failure = jest
         .spyOn(collection, 'updateOne')
         .mockImplementation(async (filter, update, options) => {
-          if (!Array.isArray(update) && update.$set?.closed === true && options?.session)
+          if (!Array.isArray(update) && update.$set?.closed === true)
             throw new Error('closure unavailable');
           return original(filter, update, options);
         });
@@ -180,19 +180,16 @@ it.each(['direct', 'account'] as const)(
       } finally {
         failure.mockRestore();
       }
-      expect(await channels().getAgentChannel('channel')).toMatchObject({
-        status: 'active',
-        encryptedBotToken: 'private-token',
-      });
+      const retired = await channels().getAgentChannel('channel');
+      expect(retired).toMatchObject({ status: 'deleting' });
+      if (mode === 'account') {
+        expect(retired).not.toHaveProperty('encryptedBotToken');
+        expect(await mongoose.models.User.findById(creatorId).lean()).not.toBeNull();
+      } else expect(retired).toHaveProperty('encryptedBotToken', 'private-token');
       expect(await mongoose.models.ChannelScope.findOne({ closed: true }).lean()).toBeNull();
-      if (mode === 'direct')
-        await expect(runs().admit(event(), Date.now())).resolves.toMatchObject({
-          duplicate: false,
-        });
-      else
-        await expect(runs().admit(event(), Date.now())).rejects.toMatchObject({
-          code: 'invalid_transition',
-        });
+      await expect(runs().admit(event(), Date.now())).rejects.toMatchObject({
+        code: 'invalid_transition',
+      });
       await expect(
         channels().beginAgentChannelDeletion('channel', creatorId),
       ).resolves.toMatchObject({ status: 'deleting' });
