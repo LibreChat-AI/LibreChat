@@ -1,3 +1,4 @@
+import { channelRunFence } from '@librechat/data-schemas';
 import type {
   ChannelRunRecord,
   ChannelRunStorage,
@@ -35,7 +36,7 @@ export function createChannelResponseRetirement(deps: {
       if (!run.leaseOwner) throw new ChannelExecutionError('execution_identity_changed');
       const recovered = await deps.recovery.recoverResponse(
         run.tenantId,
-        { runId: run.runId, owner: run.leaseOwner, epoch: run.leaseEpoch },
+        channelRunFence(run),
         (deps.now ?? Date.now)(),
       );
       if (!recovered) return 'pending';

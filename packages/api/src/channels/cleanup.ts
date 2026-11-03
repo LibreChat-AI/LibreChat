@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { runAsSystem, tenantStorage } from '@librechat/data-schemas';
+import { runAsSystem, tenantStorage, channelRunFence } from '@librechat/data-schemas';
 import type { AgentChannelMethods, ChannelRunStorage } from '@librechat/data-schemas';
 import type { ChannelWorkerSettings } from './settings';
 import type { ChannelRunDependencies } from './runs';
@@ -88,11 +88,7 @@ export function createChannelCleanupRuntime(deps: ChannelCleanupDependencies) {
                     if ((await deps.retireForAuthorityLoss(claimed)) !== 'stopped') return;
                     await deps.storage.finishAuthorityLost(
                       claimed.tenantId,
-                      {
-                        runId: claimed.runId,
-                        owner,
-                        epoch: claimed.leaseEpoch,
-                      },
+                      channelRunFence(claimed),
                       now(),
                     );
                   } catch (error) {

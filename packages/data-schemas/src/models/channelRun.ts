@@ -5,12 +5,14 @@ import type {
   ChannelDeliveryReceipt,
 } from 'librechat-data-provider';
 import type { Model, SchemaDefinition } from 'mongoose';
-import type { ManagedTarget } from '~/types/managed';
+import type { ManagedTarget, ManagedState } from '~/types/managed';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 import { applyChannelStorage } from './plugins/managed';
 
 export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision'> {
   tenantId: string;
+  /** Internal storage metadata; service views omit it. */
+  _managed?: ManagedState;
   agentId: string;
   laneId: string;
   principal: ChannelRunPrincipal;

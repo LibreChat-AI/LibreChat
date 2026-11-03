@@ -83,6 +83,7 @@ export {
 export type { ChannelFeedbackStorage, ChannelFeedbackReplySource } from './channelFeedback';
 export type { ChannelFeedbackEventRecord, ChannelFeedbackLedger } from '~/models/channelFeedback';
 export { createChannelRunStorage, ChannelRunConflict } from './channelRun';
+export { channelRunFence, matchesChannelRunFence } from './channelRunWrite';
 export { createChannelSummaryStorage, CHANNEL_SUMMARY_MAX_PRIOR_ROWS } from './channelSummary';
 export type {
   ChannelSummaryStorage,

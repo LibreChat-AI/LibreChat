@@ -1,7 +1,12 @@
 import { z } from 'zod';
-import { ChannelRunConflict } from '@librechat/data-schemas';
+import {
+  ChannelRunConflict,
+  channelRunFence,
+  matchesChannelRunFence,
+} from '@librechat/data-schemas';
 import {
   responseReviewDecisionSchema,
+  channelRunFenceSchema,
   CHANNEL_DELIVERY_PARTS_HARD_MAX,
   CHANNEL_DELIVERY_TEXT_MAX_CHARS,
   CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
@@ -67,7 +72,6 @@ const id = z
   .max(256)
   .regex(/^[\w:.-]+$/);
 const actorSchema = z.object({ teamId: id, appId: id, externalUserId: id }).strict();
-const fenceSchema = z.object({ runId: id, owner: id, epoch: z.number().int().positive() }).strict();
 const admissionSchema = z
   .object({
     eventId: id,
@@ -78,7 +82,7 @@ const admissionSchema = z
     input: z.string().min(1).max(100_000),
   })
   .strict();
-const fenceBody = z.object({ fence: fenceSchema }).strict();
+const fenceBody = z.object({ fence: channelRunFenceSchema }).strict();
 /** Fixed wire safety bound, not a provider's rendering limit. Content remains opaque to Agents. */
 const presentationSchema = z
   .object({
@@ -101,7 +105,7 @@ const presentationSchema = z
   .strict();
 const planBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     plan: z
       .object({
         revision: id,
@@ -128,10 +132,10 @@ const planBody = z
       .strict(),
   })
   .strict();
-const beginBody = z.object({ fence: fenceSchema, operationId: id }).strict();
+const beginBody = z.object({ fence: channelRunFenceSchema, operationId: id }).strict();
 const uploadBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     operationId: id,
     attempts: z.number().int().positive(),
     upload: z.object({ fileId: id, stage: z.enum(['allocated', 'uploaded']) }).strict(),
@@ -140,16 +144,18 @@ const uploadBody = z
 const progressRevision = z.number().int().positive();
 const progressPlanBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     revision: progressRevision,
     rendererVersion: id,
     text: z.string().max(4000),
   })
   .strict();
-const progressBeginBody = z.object({ fence: fenceSchema, revision: progressRevision }).strict();
+const progressBeginBody = z
+  .object({ fence: channelRunFenceSchema, revision: progressRevision })
+  .strict();
 const progressSettleBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     revision: progressRevision,
     receipt: z
       .object({
@@ -164,7 +170,7 @@ const progressSettleBody = z
   .strict();
 const settleBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     receipt: z
       .object({
         operationId: id,
@@ -181,7 +187,7 @@ const settleBody = z
 
 const reconcileDeliveryBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     receipt: z
       .object({
         operationId: id,
@@ -195,7 +201,7 @@ const reconcileDeliveryBody = z
   .strict();
 const reconcileProgressBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     revision: progressRevision,
     receipt: z
       .object({
@@ -355,7 +361,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
     channel: AgentChannelRecord,
     rawFence: unknown,
   ) {
-    const fence = fenceSchema.safeParse(rawFence);
+    const fence = channelRunFenceSchema.safeParse(rawFence);
     if (!fence.success || fence.data.runId !== req.params.runId) {
       res.status(400).json({ error: 'invalid_run_fence' });
       return null;
@@ -367,6 +373,10 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
     );
     if (!run) {
       res.status(404).json({ error: 'run_not_found' });
+      return null;
+    }
+    if (!matchesChannelRunFence(run, fence.data)) {
+      res.status(409).json({ error: 'stale_fence' });
       return null;
     }
     if (!(await hasAuthority(channel, run))) {
@@ -606,17 +616,13 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       if (!(await hasAuthority(channel, run))) {
-        await retireAuthorityLost(run, {
-          runId: run.runId,
-          owner: run.leaseOwner!,
-          epoch: run.leaseEpoch,
-        });
+        await retireAuthorityLost(run, channelRunFence(run));
         res.status(204).end();
         return;
       }
       res.json({
         run: await presentRun(channel, run),
-        fence: { runId: run.runId, owner: run.leaseOwner!, epoch: run.leaseEpoch },
+        fence: channelRunFence(run),
         leaseExpiresAt: run.leaseExpiresAt,
       } satisfies ChannelRunLease);
     }),
@@ -709,7 +715,10 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       } satisfies ChannelResponsePreparation);
     }),
     bindResponse: guarded(async (req, res, channel) => {
-      const parsed = z.object({ fence: fenceSchema, responseId: id }).strict().safeParse(req.body);
+      const parsed = z
+        .object({ fence: channelRunFenceSchema, responseId: id })
+        .strict()
+        .safeParse(req.body);
       const binding = await bound(req, res, channel, parsed.success ? parsed.data.fence : null);
       if (!binding || !parsed.success) return;
       const run = await deps.storage.bindResponse(

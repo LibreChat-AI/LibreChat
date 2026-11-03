@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import {
+  channelRunFence,
   createModels,
   createMethods,
   createChannelIdentityStorage,
@@ -222,7 +223,7 @@ beforeEach(async () => {
         await reserveFixtureResponse(run, responseId);
         const bound = await storage.bindResponse(
           tenantId,
-          { runId: run.runId, owner: run.leaseOwner!, epoch: run.leaseEpoch },
+          channelRunFence(run),
           responseId,
           Date.now(),
         );
@@ -309,12 +310,7 @@ async function bindFixtureResponse(run: ChannelRunRecord, responseId: string) {
     text: 'answer',
     attachments: [],
   });
-  return storage.bindResponse(
-    tenantId,
-    { runId: run.runId, owner: run.leaseOwner!, epoch: run.leaseEpoch },
-    responseId,
-    Date.now(),
-  );
+  return storage.bindResponse(tenantId, channelRunFence(run), responseId, Date.now());
 }
 
 function responseCredentials(overrides: Partial<ChannelResponseCredentialDependencies> = {}) {
@@ -345,6 +341,46 @@ function responseCredentials(overrides: Partial<ChannelResponseCredentialDepende
     ...overrides,
   });
 }
+
+it.each(['targetId', 'incarnation'] as const)(
+  'rejects a foreign physical %s before preparation or execution',
+  (field) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      const admitted = await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const wrong = {
+        ...claimed.body.fence,
+        [field]:
+          field === 'targetId'
+            ? '000000000000000000000002'
+            : '00000000-0000-4000-8000-000000000002',
+      };
+      for (const action of ['response/prepare', 'advance'])
+        await post(`runs/${admitted.body.runId}/${action}`)
+          .send({ fence: wrong })
+          .expect(409, { error: 'stale_fence' });
+      expect(responseCredential).not.toHaveBeenCalled();
+      expect(invoked).toHaveLength(0);
+    })(),
+);
+it.each(['targetId', 'incarnation'] as const)(
+  'requires the physical %s in every worker capability',
+  (field) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      const admitted = await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const incomplete = Object.fromEntries(
+        Object.entries(claimed.body.fence).filter(([key]) => key !== field),
+      );
+      await post(`runs/${admitted.body.runId}/response/prepare`)
+        .send({ fence: incomplete })
+        .expect(400, { error: 'invalid_run_fence' });
+      expect(responseCredential).not.toHaveBeenCalled();
+      expect(invoked).toHaveLength(0);
+    })(),
+);
 
 it(
   'provisions one encrypted, run-bound credential under concurrent gateway retries',
@@ -1811,15 +1847,7 @@ it.each([0, 1])('keeps Stop retries bound across relinking to account %i', (targ
     const old = (await storage.read(tenantId, 'channel', first.body.runId))!;
     const cleanup = await storage.claimAuthorityLost(old, 'retire-old-link', fakeNow, 60000);
     if (!cleanup) throw new Error('Expected old actor assignment retirement');
-    await storage.finishAuthorityLost(
-      tenantId,
-      {
-        runId: cleanup.runId,
-        owner: cleanup.leaseOwner!,
-        epoch: cleanup.leaseEpoch,
-      },
-      fakeNow,
-    );
+    await storage.finishAuthorityLost(tenantId, channelRunFence(cleanup), fakeNow);
     const claimed = await post('runs/claim').send({ owner: 'second-worker' }).expect(200);
     expect(claimed.body.run.runId).toBe(second.body.runId);
     await post('runs/stop-thread').send(stop).expect(200, { cancellationRequested: false });

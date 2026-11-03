@@ -6,6 +6,7 @@ import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
+import { channelRunFence } from './channelRunWrite';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
@@ -13,11 +14,7 @@ let mongo: MongoMemoryReplSet;
 let storage: ReturnType<typeof createChannelRunStorage>;
 const tenantId = 'channel-storage-test';
 const scope = <T>(work: () => Promise<T>) => tenantStorage.run({ tenantId }, work);
-const fence = (run: ChannelRunRecord) => ({
-  runId: run.runId,
-  owner: run.leaseOwner!,
-  epoch: run.leaseEpoch,
-});
+const fence = channelRunFence;
 const event = (eventId = 'event', actorId = 'actor') => ({
   tenantId,
   channelId: 'channel',

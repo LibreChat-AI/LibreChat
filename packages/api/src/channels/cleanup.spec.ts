@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { channelConfigSchema } from 'librechat-data-provider';
 import {
+  channelRunFence,
   createModels,
   createMethods,
   createChannelRunStorage,
@@ -427,7 +428,7 @@ it('caps maintenance pages by the storage policy and never turns a credential lo
 it('holds an invalid issued credential lane until exact retirement confirms provider drain', async () => {
   const { run } = await admit('expired-credential');
   const claimed = (await scope(() => storage.claim(tenantId, 'channel', 'gateway', clock, 60000)))!;
-  const fence = { runId: run.runId, owner: 'gateway', epoch: claimed.leaseEpoch };
+  const fence = channelRunFence(claimed);
   await scope(() => storage.prepareExecution(tenantId, fence, clock));
   await scope(() =>
     storage.attachResponseCredential(
@@ -446,7 +447,12 @@ it('holds an invalid issued credential lane until exact retirement confirms prov
   expect(retired).toHaveLength(1);
   expect(retired[0].execution?.apiKeyId).toBe('expired-key');
   expect(
-    await scope(() => mongoose.models.ChannelLane.findOne({ activeRunId: run.runId }).lean()),
+    await scope(() =>
+      mongoose.models.ChannelLane.findOne({
+        kind: 'control',
+        'assignment.run.runId': run.runId,
+      }).lean(),
+    ),
   ).not.toBeNull();
   expect((await scope(() => storage.read(tenantId, 'channel', run.runId)))?.state).not.toBe(
     'cancelled',
@@ -561,7 +567,7 @@ it.each([false, true])(
     const claimed = (await scope(() =>
       storage.claim(tenantId, 'channel', 'worker', clock, 60000),
     ))!;
-    const fence = { runId: claimed.runId, owner: claimed.leaseOwner!, epoch: claimed.leaseEpoch };
+    const fence = channelRunFence(claimed);
     const prepared = await scope(() => storage.prepareExecution(tenantId, fence, clock));
     await scope(() =>
       storage.attachResponseCredential(

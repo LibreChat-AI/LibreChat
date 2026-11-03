@@ -1,4 +1,5 @@
-import type { DurableStorageConfig } from 'librechat-data-provider';
+import { channelRunFenceSchema } from 'librechat-data-provider';
+import type { DurableStorageConfig, ChannelRunFence } from 'librechat-data-provider';
 import type { Types, FilterQuery } from 'mongoose';
 import type { ManagedState, ManagedTarget } from '~/types/managed';
 import type { ChannelRunRecord } from '~/models/channelRun';
@@ -49,11 +50,66 @@ export type ChannelRunMetadata = Pick<
 export const CHANNEL_RUN_METADATA_FIELDS: string =
   '_id tenantId channelId agentId runId laneId principal publication sequence leaseOwner leaseGrantId leaseEpoch leaseExpiresAt state errorCode claimCheckedAt receivedAt __v admission.actor admission.externalChannelId admission.externalThreadKey +_managed';
 
+const physicalFenceSchema = channelRunFenceSchema.pick({ targetId: true, incarnation: true });
+/** Canonical self identity is available even before a Run has its first worker lease. */
+export function channelRunStorageTarget(run: ChannelRunRecord): ManagedTarget<'channelRun'> {
+  const metadata = run._managed;
+  const parsed = physicalFenceSchema.safeParse({
+    targetId: metadata?.parentId,
+    incarnation: metadata?.incarnation,
+  });
+  if (metadata?.phase !== 'published' || !parsed.success)
+    throw new Error('Channel Run storage identity unavailable');
+  return {
+    kind: 'channelRun',
+    id: parsed.data.targetId,
+    incarnation: parsed.data.incarnation,
+    ...(run.tenantId !== '_' && { tenantId: run.tenantId }),
+  };
+}
+
+/** Adapt the canonical self descriptor to a plain worker capability, without database types. */
+export function channelRunFence(run: ChannelRunRecord): ChannelRunFence {
+  const target = channelRunStorageTarget(run);
+  const owner =
+    run.leaseOwner ??
+    (run.terminalFence?.epoch === run.leaseEpoch ? run.terminalFence.owner : undefined);
+  const parsed = channelRunFenceSchema.safeParse({
+    targetId: target.id,
+    incarnation: target.incarnation,
+    runId: run.runId,
+    owner,
+    epoch: run.leaseEpoch,
+  });
+  if (!parsed.success) throw new Error('Channel Run lease identity unavailable');
+  return parsed.data;
+}
+
+/** Match identity before a service performs work; expiry and live authority are checked by its owner. */
+export function matchesChannelRunFence(run: ChannelRunRecord, fence: ChannelRunFence): boolean {
+  const owner =
+    run.leaseOwner ??
+    (run.terminalFence?.epoch === run.leaseEpoch ? run.terminalFence.owner : undefined);
+  return (
+    run._managed?.phase === 'published' &&
+    run._managed.parentId === fence.targetId &&
+    run._managed.incarnation === fence.incarnation &&
+    run.runId === fence.runId &&
+    owner === fence.owner &&
+    run.leaseEpoch === fence.epoch
+  );
+}
+
 /** A captured Run can never adopt another physical record with the same public identity. */
 export function channelRunTarget(
   run: Pick<PhysicalChannelRun, '_id' | '_managed' | 'tenantId' | 'publication'>,
 ): ManagedTarget<'channelRun'> {
-  if (!run._managed?.incarnation || run._managed.phase !== 'published' || !run.publication)
+  if (
+    !run._managed?.incarnation ||
+    run._managed.phase !== 'published' ||
+    run._managed.parentId !== String(run._id) ||
+    !run.publication
+  )
     throw new Error('Channel Run publication identity unavailable');
   return {
     kind: 'channelRun',

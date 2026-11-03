@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer, MongoMemoryReplSet } from 'mongodb-memory-server';
-import type { ChannelRunRecord } from '~/models/channelRun';
 import { allocateManagedTarget, managedRegistration } from './managed';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { createManagedMessageId } from '~/utils/managed';
@@ -9,16 +8,13 @@ import { registerResponseTarget } from './registration';
 import { createChannelRunStorage } from './channelRun';
 import { tenantStorage } from '~/config/tenantContext';
 import { createAgentChannelMethods } from './channel';
+import { channelRunFence } from './channelRunWrite';
 import { responseScopeKeys } from './responseScope';
 import { createResponseStorage } from './response';
 import { createModels } from '~/models';
 
 const engines = ['standalone', 'replica', ...(process.env.FERRETDB_URI ? ['FerretDB'] : [])];
-const fence = (run: ChannelRunRecord) => ({
-  runId: run.runId,
-  owner: run.leaseOwner!,
-  epoch: run.leaseEpoch,
-});
+const fence = channelRunFence;
 describe.each(engines)('actor control handoff on %s', (engine) => {
   let server: MongoMemoryServer | MongoMemoryReplSet | undefined;
   beforeAll(async () => {
@@ -132,6 +128,37 @@ describe.each(engines)('actor control handoff on %s', (engine) => {
         ).rejects.toMatchObject({ code: 'stale_fence' });
         expect(sessions).not.toHaveBeenCalled();
       }));
+    it('rejects the old capability after physical replacement even with the same public ID owner and epoch', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const first = (await f.storage.claim(
+          f.input.tenantId,
+          f.input.channelId,
+          'worker',
+          101,
+          1000,
+        ))!;
+        const prior = fence(first);
+        const collection = mongoose.models.ChannelRun.collection;
+        const old = await collection.findOne({ runId: first.runId });
+        const id = new mongoose.Types.ObjectId();
+        await collection.deleteOne({ _id: old!._id });
+        await collection.insertOne({
+          ...old!,
+          _id: id,
+          _managed: { ...old!._managed, parentId: String(id), incarnation: randomUUID() },
+        });
+        expect(await f.storage.renew(f.input.tenantId, prior, 102, 1000)).toBe(false);
+        await expect(
+          f.storage.prepareExecution(f.input.tenantId, prior, 102),
+        ).rejects.toMatchObject({ code: 'stale_fence' });
+        await expect(f.storage.commitDelivery(f.input.tenantId, prior, 102)).rejects.toMatchObject({
+          code: 'stale_fence',
+        });
+        expect(await f.storage.claimAuthorityLost(first, 'cleanup', 102, 1000)).toBeNull();
+        expect((await collection.findOne({ _id: id }))!.execution).toBeUndefined();
+      }));
+
     it('bounds scheduling pages to metadata and loads private payload only after selecting a grant', () =>
       scoped(async () => {
         const f = await fixture();

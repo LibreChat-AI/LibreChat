@@ -7,6 +7,7 @@ import { createManagedConversationId } from '~/utils/managed';
 import { createChannelRunStorage } from './channelRun';
 import { tenantStorage } from '~/config/tenantContext';
 import { createAgentChannelMethods } from './channel';
+import { channelRunFence } from './channelRunWrite';
 import { createModels } from '~/models';
 
 const engines = ['standalone', 'replica', ...(process.env.FERRETDB_URI ? ['FerretDB'] : [])];
@@ -58,7 +59,7 @@ describe.each(engines)('versioned Run mutations on %s', (engine) => {
       const { run } = await storage.admit(input, 100);
       const claimed = await storage.claim(input.tenantId, channelId, 'worker', 100, 10000);
       if (!claimed) throw new Error('Fixture claim failed');
-      const fence = { runId: run.runId, owner: 'worker', epoch: claimed.leaseEpoch };
+      const fence = channelRunFence(claimed);
       return { input, storage, run, fence, owner };
     }
     async function prepared() {

@@ -19,7 +19,13 @@ const config = loadConfig({
 });
 const json = (value: object | null, status = 200) =>
   new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
-const fence: ChannelRunFence = { runId: 'run-1', owner: 'worker-1', epoch: 1 };
+const fence: ChannelRunFence = {
+  runId: 'run-1',
+  owner: 'worker-1',
+  epoch: 1,
+  targetId: '000000000000000000000001',
+  incarnation: '00000000-0000-4000-8000-000000000001',
+};
 const grant: ResponseGrant = {
   apiKey: 'sk-bound-private-test',
   requestKey: 'channel:run-1',
@@ -135,6 +141,10 @@ describe('ChannelClient service boundary', () => {
     { fence: { ...fence, owner: 'other-worker' } },
     { fence: { ...fence, epoch: 0 } },
     { fence: { ...fence, epoch: 1.5 } },
+    { fence: { ...fence, targetId: undefined } },
+    { fence: { ...fence, incarnation: undefined } },
+    { fence: { ...fence, targetId: 'invalid' } },
+    { fence: { ...fence, incarnation: 'invalid' } },
     { run: { ...run, channelId: 'other-channel' } },
     { run: { ...run, revision: '' } },
     { run: { ...run, admission: { ...run.admission, externalThreadKey: 'foreign:123' } } },
@@ -154,6 +164,8 @@ describe('ChannelClient service boundary', () => {
     { fence: { ...fence, runId: 'other-run' } },
     { fence: { ...fence, owner: 'other-worker' } },
     { fence: { ...fence, epoch: 2 } },
+    { fence: { ...fence, targetId: '000000000000000000000002' } },
+    { fence: { ...fence, incarnation: '00000000-0000-4000-8000-000000000002' } },
     { leaseExpiresAt: 0 },
   ])('rejects a renewal that changes the fence %#', async (change) => {
     const transport = jest

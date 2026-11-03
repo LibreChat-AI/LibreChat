@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import { Constants } from 'librechat-data-provider';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
+  channelRunFence,
   createModels,
   createMethods,
   createChannelRunStorage,
@@ -141,7 +142,7 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
       app.use(express.json());
       app.post('/service/:channelId/runs/:runId/advance', runs.advance);
       const route = `/service/${run.channelId}/runs/${run.runId}/advance`;
-      const body = { fence: { runId: run.runId, owner: run.leaseOwner, epoch: run.leaseEpoch } };
+      const body = { fence: channelRunFence(run) };
       await request(app).post(route).send(body).expect(401);
       for (let attempt = 0; attempt < 2; attempt++) {
         await request(app)

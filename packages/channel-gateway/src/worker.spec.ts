@@ -91,7 +91,13 @@ function fixture() {
   };
   const lease: Lease = {
     run: state,
-    fence: { runId: state.runId, owner: 'worker-1', epoch: 1 },
+    fence: {
+      runId: state.runId,
+      owner: 'worker-1',
+      epoch: 1,
+      targetId: '000000000000000000000001',
+      incarnation: '00000000-0000-4000-8000-000000000001',
+    },
     leaseExpiresAt: Date.now() + 60_000,
   };
   const requests: {
@@ -457,6 +463,36 @@ describe('durable Channels worker', () => {
     expect(f.paths().some((path) => /delivery\/settle|commit|yield/.test(path))).toBe(false);
     expect(f.slackRequests).toHaveLength(1);
   });
+
+  test.each(['targetId', 'incarnation'] as const)(
+    'a changed renewal %s fences settlement without replaying an inflight create',
+    async (field) => {
+      const f = fixture();
+      f.savedPlan();
+      f.lease.leaseExpiresAt = Date.now() + 60;
+      f.hooks.renew = async () =>
+        json({
+          fence: {
+            ...f.lease.fence,
+            [field]:
+              field === 'targetId'
+                ? '000000000000000000000002'
+                : '00000000-0000-4000-8000-000000000002',
+          },
+          leaseExpiresAt: Date.now() + 90,
+        });
+      f.hooks.slack = async () => {
+        await delay(100);
+        return slackOK({ channel: 'C1', ts: '123.789' });
+      };
+      f.log.warn = () => f.controller.abort();
+      await f.worker.run(f.controller.signal);
+      expect(f.paths().some((path) => path.endsWith('/renew'))).toBe(true);
+      expect(f.state.receipts[0].outcome).toBe('inflight');
+      expect(f.paths().some((path) => /delivery\/settle|commit|yield/.test(path))).toBe(false);
+      expect(f.slackRequests).toHaveLength(1);
+    },
+  );
 
   test('unknown progress is not replayed and cannot safely yield a waiting run', async () => {
     const f = fixture();

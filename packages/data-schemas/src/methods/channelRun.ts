@@ -29,7 +29,7 @@ import {
   leaseDeadline,
   ChannelRunConflict,
 } from './channelProtocol';
-import { channelRunTarget, writeChannelRunPatch } from './channelRunWrite';
+import { channelRunTarget, writeChannelRunPatch, channelRunStorageTarget } from './channelRunWrite';
 import { createChannelRunPublication } from './channelRunPublication';
 import { createManagedConversationId } from '~/utils/managed';
 import { createChannelRunControl } from './channelRunControl';
@@ -219,7 +219,16 @@ export function createChannelRunStorage(
   const lanes = () => mongoose.model<ChannelPrincipalLaneRecord>('ChannelLane');
   const control = createChannelRunControl(mongoose, getDurableConfig);
   const ensureIndexes = createChannelIndexGate(() => [runs(), lanes()]);
+  const fenceTarget = (tenantId: string, fence: ChannelRunFence) =>
+    managedTargetFilter(mongoose, {
+      kind: 'channelRun',
+      id: fence.targetId,
+      incarnation: fence.incarnation,
+      ...(tenantId !== '_' && { tenantId }),
+    });
   const predicate = (tenantId: string, fence: ChannelRunFence, now: number) => ({
+    ...fenceTarget(tenantId, fence),
+    '_managed.phase': 'published',
     tenantId,
     runId: fence.runId,
     leaseOwner: fence.owner,
@@ -357,7 +366,12 @@ export function createChannelRunStorage(
     authorityLoss: boolean,
   ): Promise<ChannelRunRecord> {
     let run = await runs()
-      .findOne({ tenantId, runId: fence.runId, '_managed.phase': 'published' })
+      .findOne({
+        ...fenceTarget(tenantId, fence),
+        tenantId,
+        runId: fence.runId,
+        '_managed.phase': 'published',
+      })
       .select('+_managed')
       .read('primary')
       .lean<PhysicalChannelRun | null>();
@@ -447,6 +461,7 @@ export function createChannelRunStorage(
       leaseDeadline(now, leaseMs);
       const current = await runs()
         .findOne({
+          ...managedTargetFilter(mongoose, channelRunStorageTarget(run)),
           tenantId: run.tenantId,
           channelId: run.channelId,
           runId: run.runId,

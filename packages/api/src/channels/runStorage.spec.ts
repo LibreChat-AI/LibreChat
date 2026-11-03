@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
+  channelRunFence,
   createModels,
   createMethods,
   createChannelRunStorage,
@@ -14,11 +15,7 @@ import type {
   ChannelRunEnrollment,
   ChannelRunRecord,
 } from '@librechat/data-schemas';
-import type {
-  ChannelRunFence,
-  ChannelDeliveryPlan,
-  ChannelRunSummary,
-} from 'librechat-data-provider';
+import type { ChannelDeliveryPlan, ChannelRunSummary } from 'librechat-data-provider';
 import {
   createBackgroundResponseQueue,
   createBackgroundResponseEnvelope,
@@ -33,11 +30,7 @@ let mongo: MongoMemoryReplSet;
 let storage: ChannelRunStorage;
 const tenantId = 'channel-run-test';
 const scope = <T>(work: () => Promise<T>) => tenantStorage.run({ tenantId }, work);
-const fence = (run: ChannelRunRecord): ChannelRunFence => ({
-  runId: run.runId,
-  owner: run.leaseOwner!,
-  epoch: run.leaseEpoch,
-});
+const fence = channelRunFence;
 const enrollment = (eventId = 'Ev1', userId = 'owner'): ChannelRunEnrollment => ({
   tenantId,
   channelId: 'channel',

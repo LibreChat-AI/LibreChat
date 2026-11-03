@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { Constants } from 'librechat-data-provider';
-import { isManagedConversationId } from '@librechat/data-schemas';
+import { isManagedConversationId, channelRunFence } from '@librechat/data-schemas';
 import type {
   AgentApiKeyBinding,
   AgentApiKeyListItem,
@@ -126,6 +126,7 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
         !run.leaseOwner
       )
         throw new Error('Response credential admission changed');
+      const fence = channelRunFence(run);
       const lifetimeMs = await deps.lifetimeMs();
       if (!Number.isSafeInteger(lifetimeMs) || lifetimeMs <= 0)
         throw new Error('Invalid response credential policy');
@@ -139,7 +140,7 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
       try {
         saved = await deps.storage.attachResponseCredential(
           run.tenantId,
-          { runId: run.runId, owner: run.leaseOwner, epoch: run.leaseEpoch },
+          fence,
           { apiKeyId: key.id, encryptedApiKey: await deps.encrypt(key.key) },
           now(),
         );
