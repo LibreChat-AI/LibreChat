@@ -42,7 +42,6 @@ import {
 } from './reveal';
 import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
@@ -111,7 +110,8 @@ export default function ToolCallGroup({
   parentPhaseOwnsFailurePill = false,
 }: ToolCallGroupProps) {
   const localize = useLocalize();
-  const smoothStreaming = useSmoothStreaming();
+  /** The host's preference, so an embedding host that turns smoothing off is honored. */
+  const smoothStreaming = useMessagePartsHost().useSmoothStreaming();
   const mcpIconMap = useMCPIconMap();
   const mcpServerNames = useMCPServerNames();
   const rootRef = useRef<HTMLDivElement | null>(null);

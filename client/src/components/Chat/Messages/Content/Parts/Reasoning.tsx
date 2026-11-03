@@ -16,7 +16,6 @@ import {
 } from './Thinking';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { cn } from '~/utils';
 
@@ -170,7 +169,7 @@ const Reasoning = memo((props: ReasoningProps) => {
   const { reasoning, isLast, reasoningLabel, partKeyIndex = 0 } = props;
   const contentId = useId();
   const localize = useLocalize();
-  const { useShowThinking, useMessage } = useMessagePartsHost();
+  const { useShowThinking, useMessage, useSmoothStreaming } = useMessagePartsHost();
   const showThinking = useShowThinking();
   const smoothStreaming = useSmoothStreaming();
   const [expansionOverride, setIsExpanded] = useAtom(useReasoningDisclosure(partKeyIndex));

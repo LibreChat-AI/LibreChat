@@ -30,7 +30,7 @@ import {
   FoldHeaderContext,
 } from './rail';
 import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
-import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useThrottledValue from '~/hooks/Messages/useThrottledValue';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
@@ -512,7 +512,7 @@ export default function ActivityPhaseGroup({
   /** Already `smoothStreaming && !reducedMotion` — it owns the media query, so
    *  a second subscription here would install one `matchMedia` listener per
    *  phase card without changing the answer. */
-  const smoothStreaming = useSmoothStreaming();
+  const smoothStreaming = useMessagePartsHost().useSmoothStreaming();
   /** Capture the marker's arrival state. The parent renderer records the new
    *  marker after this commit; a later sibling update must not cancel the
    *  already-scheduled fold before its first animation frame. */
