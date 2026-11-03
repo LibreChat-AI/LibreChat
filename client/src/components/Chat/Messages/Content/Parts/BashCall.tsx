@@ -20,13 +20,13 @@ import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import LangIcon from '~/components/Messages/Content/LangIcon';
+import CommandTime, { useCommandClock } from './CommandTime';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
 import { OutputRenderer } from '../ToolOutput';
 import { ERROR_PATTERNS } from './ExecuteCode';
 import { AttachmentGroup } from './Attachment';
 import PtcToolTrace from './PtcToolTrace';
-import CommandTime from './CommandTime';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -150,6 +150,8 @@ export default function BashCall({
       keepRow: backgroundHandle != null,
       keepLabelRow: intent != null,
     });
+  /** Measured once per card, so the time survives moving from the row into the panel. */
+  const commandMs = useCommandClock(phase, runStepDurationMs);
 
   const highlighted = useLazyHighlight(showCode ? command || undefined : undefined, 'bash');
   const { ref: commandPaneRef, onScroll: onCommandPaneScroll } = useFollowScroll<HTMLDivElement>(
@@ -220,7 +222,7 @@ export default function BashCall({
              *  (and after any reload), when no transient signal survives. */
             timer={
               backgroundHandle == null && backgrounded !== true ? (
-                <CommandTime phase={phase} durationMs={runStepDurationMs} />
+                <CommandTime phase={phase} ms={commandMs} />
               ) : undefined
             }
             icon={
@@ -256,7 +258,7 @@ export default function BashCall({
                     just inside the copy control. */}
                 {showPaneTime && (
                   <span className="absolute end-9 top-2 z-[1]">
-                    <CommandTime phase={phase} durationMs={runStepDurationMs} />
+                    <CommandTime phase={phase} ms={commandMs} />
                   </span>
                 )}
                 <CopyButton

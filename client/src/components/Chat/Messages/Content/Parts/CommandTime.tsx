@@ -3,16 +3,14 @@ import { useTranslation } from 'react-i18next';
 import type { ToolCallPhase } from '@librechat/chat';
 import { useLocalize } from '~/hooks';
 
-/** A command-local clock. Historical calls without timing metadata remain untimed. */
-export default function CommandTime({
-  phase,
-  durationMs,
-}: {
-  phase: ToolCallPhase;
-  durationMs?: number;
-}) {
-  const localize = useLocalize();
-  const { i18n } = useTranslation();
+/**
+ * A command-local clock: ticks while the call runs, then settles on the reported
+ * duration, or on the measured time when the step carries none. Owned by the card
+ * rather than the display, so moving the time from the row into the panel when a
+ * generated title takes over does not reset it. Historical calls without timing
+ * metadata stay untimed.
+ */
+export function useCommandClock(phase: ToolCallPhase, durationMs?: number): number | null {
   const started = useRef(phase === 'running' ? Date.now() : null);
   const [elapsed, setElapsed] = useState<number | null>(null);
   useEffect(() => {
@@ -27,7 +25,13 @@ export default function CommandTime({
     return () => clearInterval(timer);
   }, [phase]);
   const ms = phase === 'running' ? elapsed : (durationMs ?? elapsed);
-  if (ms == null || !Number.isFinite(ms) || ms < 0) {
+  return ms == null || !Number.isFinite(ms) || ms < 0 ? null : ms;
+}
+
+export default function CommandTime({ phase, ms }: { phase: ToolCallPhase; ms: number | null }) {
+  const localize = useLocalize();
+  const { i18n } = useTranslation();
+  if (ms == null) {
     return null;
   }
   const seconds = Math.round(ms / 100) / 10;

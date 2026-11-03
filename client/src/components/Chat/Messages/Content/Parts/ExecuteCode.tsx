@@ -10,12 +10,12 @@ import {
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import CommandTime, { useCommandClock } from './CommandTime';
 import useLazyHighlight from './useLazyHighlight';
 import useToolCallState from './useToolCallState';
 import CodeWindowHeader from './CodeWindowHeader';
 import { AttachmentGroup } from './Attachment';
 import PtcToolTrace from './PtcToolTrace';
-import CommandTime from './CommandTime';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -134,6 +134,8 @@ export default function ExecuteCode({
       keepRow: backgroundHandle != null,
       keepLabelRow: intent != null,
     });
+  /** Measured once per card, so the time survives moving from the row into the panel. */
+  const commandMs = useCommandClock(phase, runStepDurationMs);
 
   const highlighted = useLazyHighlight(showCode ? code : undefined, lang);
   const { ref: codePaneRef, onScroll: onCodePaneScroll } = useFollowScroll<HTMLPreElement>(
@@ -173,7 +175,7 @@ export default function ExecuteCode({
              *  (and after any reload), when no transient signal survives. */
             timer={
               backgroundHandle == null && backgrounded !== true ? (
-                <CommandTime phase={phase} durationMs={runStepDurationMs} />
+                <CommandTime phase={phase} ms={commandMs} />
               ) : undefined
             }
             icon={
@@ -201,7 +203,7 @@ export default function ExecuteCode({
             {bare && code && (
               <div className="flex items-center justify-end px-4 pt-2">
                 {backgroundHandle == null && backgrounded !== true && (
-                  <CommandTime phase={phase} durationMs={runStepDurationMs} />
+                  <CommandTime phase={phase} ms={commandMs} />
                 )}
               </div>
             )}
