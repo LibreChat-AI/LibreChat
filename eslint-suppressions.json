@@ -365,11 +365,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Subagents/SubagentThreadPanel.tsx": {
-    "shadcn/no-restyle": {
-      "count": 7
-    }
-  },
   "client/src/components/Chat/Trace/Button.tsx": {
     "shadcn/no-restyle": {
       "count": 3

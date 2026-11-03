@@ -29,7 +29,7 @@ export { default as useTimeout } from './useTimeout';
 export { default as useNewConvo } from './useNewConvo';
 export { default as useLocalize } from './useLocalize';
 export { default as useGreeting } from './useGreeting';
-export { default as useFocusTrap } from './useFocusTrap';
+export { useFocusTrap } from '@librechat/client';
 export { default as useFavorites } from './useFavorites';
 export { default as useToolFavorites } from './useToolFavorites';
 export { default as useAdaptiveIcon } from './useAdaptiveIcon';
