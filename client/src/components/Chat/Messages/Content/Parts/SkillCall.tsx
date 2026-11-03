@@ -14,6 +14,10 @@ import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
 import { cn } from '~/utils';
 
+/** The confirmation every successful load returns; anything else (a degraded
+ *  file upload, a note from the host) is execution detail worth keeping. */
+const LOAD_CONFIRMATION = /^Skill "[^"]*" loaded\. Follow the instructions below\.$/;
+
 /** The loaded skill's own record, when the user can open it. The tool output
  *  only confirms the load, so the instructions come from the skill itself.
  *  The call carries a name, not an id, and names are unique only per author:
@@ -85,6 +89,9 @@ export default function SkillCall({
 
   const skill = useLoadedSkill(parsedSkillName, showCode && phase === 'completed');
   const instructions = skill?.body.trim();
+  /** Beside the instructions, the output only adds the bare confirmation, so it
+   *  shows only when it says something more. */
+  const showOutput = !instructions || !LOAD_CONFIRMATION.test(output.trim());
 
   const finishedText =
     phase === 'cancelled'
@@ -148,11 +155,17 @@ export default function SkillCall({
                     />
                   )}
                 </div>
-                {instructions ? (
+                {instructions && (
                   <div className="text-text-primary max-h-[18.75rem] overflow-auto text-sm leading-6 break-words whitespace-pre-wrap">
                     {instructions}
                   </div>
-                ) : (
+                )}
+                {instructions && showOutput && (
+                  <div className="border-border-inset text-text-secondary text-3xs mt-3 mb-1.5 border-t pt-3 font-medium tracking-wide uppercase">
+                    {localize('com_ui_output')}
+                  </div>
+                )}
+                {showOutput && (
                   <div className="text-text-primary max-h-[12.5rem] overflow-auto">
                     <Stdout output={output} />
                   </div>

@@ -85,6 +85,23 @@ describe('SkillCall', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/skills/skill-1');
   });
 
+  it('keeps an execution warning in the output beside the instructions', () => {
+    render(
+      <SkillCall
+        initialProgress={1}
+        isSubmitting={false}
+        args={JSON.stringify({ skillName: 'release-notes' })}
+        output={
+          'Skill "release-notes" loaded. Follow the instructions below.\n\n' +
+          "Note: this skill's bundled files could not be loaded into the code environment."
+        }
+      />,
+    );
+
+    expect(screen.getByText(/Summarize merged PRs\./)).toBeInTheDocument();
+    expect(screen.getByText(/bundled files could not be loaded/)).toBeInTheDocument();
+  });
+
   it('falls back to the tool output for a skill outside the library', () => {
     mockSkillsQuery.mockReturnValue({ data: { pages: [{ skills: [] }] } });
     renderSkill();

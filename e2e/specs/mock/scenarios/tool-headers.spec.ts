@@ -297,11 +297,19 @@ test.describe('tool activity headers', () => {
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(skill) }),
     );
     await openConversation(page, [
-      call('k1', 'skill', { skillName: 'release-notes' }, 'Skill "release-notes" loaded.'),
+      call(
+        'k1',
+        'skill',
+        { skillName: 'release-notes' },
+        'Skill "release-notes" loaded. Follow the instructions below.',
+      ),
     ]);
     const view = messagesView(page);
     await expand(page, /release-notes/);
     await expect(view.getByText('Group merged PRs by type.')).toBeVisible();
+    await expect(
+      view.getByText('Skill "release-notes" loaded. Follow the instructions below.'),
+    ).toHaveCount(0);
     await view.getByRole('button', { name: 'Open skill' }).click();
     await expect(page).toHaveURL(new RegExp(`/skills/${skill._id}`));
   });
