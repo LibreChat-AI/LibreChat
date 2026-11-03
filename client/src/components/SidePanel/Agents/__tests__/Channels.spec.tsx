@@ -593,47 +593,56 @@ test('a late operation for A cannot close B or discard B credentials', async () 
   expect(dataService.activateAgentChannel).toHaveBeenCalledTimes(1);
 });
 
-test('the actual activation adapter prevents credential-bearing failures reaching the mutation cache', async () => {
-  const user = userEvent.setup();
-  jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
-  jest
-    .mocked(dataService.activateAgentChannel)
-    .mockImplementation(
-      jest.requireActual('librechat-data-provider').dataService.activateAgentChannel,
-    );
-  const unsafe = Object.assign(new Error('test-token'), {
-    config: { data: JSON.stringify({ botToken: 'test-token', signingSecret: 'test-secret' }) },
-    request: { authorization: 'test-token' },
-  });
-  const patch = jest.spyOn(request, 'patch').mockRejectedValueOnce(unsafe);
-  const { client } = renderChannels();
-  try {
-    await openConnection(user);
-    await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
-    await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
-    await user.type(screen.getByLabelText(/com_ui_channels_signing_secret/), 'test-secret');
-    await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
-    await screen.findByText('com_ui_channels_action_error');
-    await user.keyboard('{Escape}');
-    const errors = client
-      .getMutationCache()
-      .getAll()
-      .map((mutation) => mutation.state.error);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toEqual(new Error('Channel activation failed'));
-    expect(errors[0]).not.toBe(unsafe);
-    const cache = JSON.stringify(
-      client
+test.each([
+  undefined,
+  { status: 403, data: { error: 'channel_drain_pending' } },
+  { status: 409, data: { error: 'PRIVATE-UNAPPROVED-CODE' } },
+])(
+  'the actual activation adapter strips credentials from unapproved failure %j',
+  async (response) => {
+    const user = userEvent.setup();
+    jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
+    jest
+      .mocked(dataService.activateAgentChannel)
+      .mockImplementation(
+        jest.requireActual('librechat-data-provider').dataService.activateAgentChannel,
+      );
+    const unsafe = Object.assign(new Error('test-token'), {
+      isAxiosError: true,
+      response,
+      config: { data: JSON.stringify({ botToken: 'test-token', signingSecret: 'test-secret' }) },
+      request: { authorization: 'test-token' },
+    });
+    const patch = jest.spyOn(request, 'patch').mockRejectedValueOnce(unsafe);
+    const { client } = renderChannels();
+    try {
+      await openConnection(user);
+      await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
+      await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
+      await user.type(screen.getByLabelText(/com_ui_channels_signing_secret/), 'test-secret');
+      await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
+      await screen.findByText('com_ui_channels_action_error');
+      await user.keyboard('{Escape}');
+      const errors = client
         .getMutationCache()
         .getAll()
-        .map((mutation) => mutation.state),
-    );
-    expect(cache).not.toContain('test-token');
-    expect(cache).not.toContain('test-secret');
-  } finally {
-    patch.mockRestore();
-  }
-});
+        .map((mutation) => mutation.state.error);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toEqual(new Error('Channel activation failed'));
+      expect(errors[0]).not.toBe(unsafe);
+      const cache = JSON.stringify(
+        client
+          .getMutationCache()
+          .getAll()
+          .map((mutation) => mutation.state),
+      );
+      expect(cache).not.toContain('test-token');
+      expect(cache).not.toContain('test-secret');
+    } finally {
+      patch.mockRestore();
+    }
+  },
+);
 
 test('switching owner isolates channel caches and discards the old credential form', async () => {
   const user = userEvent.setup();
@@ -735,25 +744,43 @@ test('a completed closed operation cannot close a new dialog for the same channe
   expect(dataService.activateAgentChannel).toHaveBeenCalledTimes(1);
 });
 
-test('explains pending generation drain without exposing diagnostics or retaining activation credentials', async () => {
+test('the actual activation adapter preserves safe drain guidance without caching credentials', async () => {
   const user = userEvent.setup();
   jest
     .mocked(dataService.listAgentChannels)
     .mockResolvedValue([{ ...pending, status: 'disabled' }]);
-  jest.mocked(dataService.activateAgentChannel).mockRejectedValueOnce(
-    Object.assign(new Error('PRIVATE-DIAGNOSTIC'), {
-      isAxiosError: true,
-      response: { data: { error: 'channel_drain_pending' } },
-    }),
-  );
-  renderChannels();
-  await openConnection(user, 'disabled');
-  await user.click(screen.getByRole('button', { name: 'com_ui_channels_setup' }));
-  await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
-  await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'PRIVATE-BOT-TOKEN');
-  await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
-  await screen.findByText('com_ui_channels_drain_pending');
-  expect(screen.queryByText('PRIVATE-DIAGNOSTIC')).not.toBeInTheDocument();
-  expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
-  expect(screen.getByText('com_ui_channels_activation_retry')).toBeInTheDocument();
+  jest
+    .mocked(dataService.activateAgentChannel)
+    .mockImplementation(
+      jest.requireActual('librechat-data-provider').dataService.activateAgentChannel,
+    );
+  const unsafe = Object.assign(new Error('PRIVATE-DIAGNOSTIC'), {
+    isAxiosError: true,
+    config: { data: JSON.stringify({ botToken: 'PRIVATE-BOT-TOKEN' }) },
+    request: { authorization: 'PRIVATE-BOT-TOKEN' },
+    response: {
+      status: 409,
+      data: { error: 'channel_drain_pending', message: 'PRIVATE-DIAGNOSTIC' },
+    },
+  });
+  const patch = jest.spyOn(request, 'patch').mockRejectedValueOnce(unsafe);
+  const { client } = renderChannels();
+  try {
+    await openConnection(user, 'disabled');
+    await user.click(screen.getByRole('button', { name: 'com_ui_channels_setup' }));
+    await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
+    await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'PRIVATE-BOT-TOKEN');
+    await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
+    await screen.findByText('com_ui_channels_drain_pending');
+    expect(screen.queryByText('PRIVATE-DIAGNOSTIC')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
+    expect(screen.getByText('com_ui_channels_activation_retry')).toBeInTheDocument();
+    const mutation = client.getMutationCache().getAll()[0].state;
+    expect(mutation.error).not.toBe(unsafe);
+    expect(JSON.stringify(mutation)).not.toMatch(/PRIVATE-DIAGNOSTIC|PRIVATE-BOT-TOKEN/);
+    for (const key of ['config', 'request', 'response', 'cause'])
+      expect(mutation.error).not.toHaveProperty(key);
+  } finally {
+    patch.mockRestore();
+  }
 });

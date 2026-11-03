@@ -1,5 +1,4 @@
 import { useId, useRef, useState, useEffect } from 'react';
-import { isAxiosError } from 'axios';
 import { Info, Plus, Power, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
@@ -160,9 +159,7 @@ function Channel({
     },
   });
   const busy = !enabled || mutation.isLoading || channel.status === 'deleting';
-  const drainPending =
-    isAxiosError<{ error?: string }>(mutation.error) &&
-    mutation.error.response?.data?.error === 'channel_drain_pending';
+  const drainPending = mutation.error instanceof dataService.ChannelDrainPendingError;
   return (
     <>
       <div className="min-h-0 space-y-4 overflow-y-auto px-6 pb-6">
