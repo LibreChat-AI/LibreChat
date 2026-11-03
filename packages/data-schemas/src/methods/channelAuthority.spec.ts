@@ -123,7 +123,13 @@ it('rejects delayed events, duplicate events and full identity writes at an obso
     await expect(runs().admit(fresh, Date.now())).resolves.toMatchObject({ duplicate: false });
     expect(
       await identities().saveChannelIdentity(
-        { ...link(), revision: 'fresh', identity: { ...link().identity, channelRevision: 'two' } },
+        {
+          ...link(),
+          linkId: 'fresh-link',
+          ticketHash: 'fresh-ticket',
+          revision: 'fresh',
+          identity: { ...link().identity, channelRevision: 'two' },
+        },
         'link-one',
       ),
     ).toBe(true);
@@ -200,9 +206,9 @@ it('commits closure and credential redaction before retryable account identity e
   scope(async () => {
     await identities().saveChannelIdentity(link(), null);
     const collection = mongoose.models.ChannelIdentity.collection;
-    const erase = collection.deleteMany.bind(collection);
-    const failure = jest.spyOn(collection, 'deleteMany').mockImplementation(async (...args) => {
-      if (args[0]?.['identity.channelId'] === 'channel')
+    const erase = collection.updateOne.bind(collection);
+    const failure = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
+      if (!Array.isArray(args[1]) && args[1].$set?.['_managed.phase'] === 'retired')
         throw new Error('identity erasure unavailable');
       return erase(...args);
     });
@@ -269,7 +275,10 @@ it.each(['revoked', 'expired', 'revision', 'user', 'external-user'] as const)(
       if (kind === 'revoked')
         await identities().revokeChannelIdentities(tenantId, 'channel', 'revoked');
       else if (kind === 'expired')
-        await identities().saveChannelIdentity({ ...record, expiresAtMs: 1 }, record.revision);
+        await identities().saveChannelIdentity(
+          { ...record, expiresAtMs: 1, revision: 'expired' },
+          record.revision,
+        );
       else if (kind === 'revision')
         await identities().saveChannelIdentity(
           { ...record, revision: 'new-link' },

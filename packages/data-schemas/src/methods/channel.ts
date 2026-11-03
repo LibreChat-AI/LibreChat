@@ -7,6 +7,7 @@ import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createManagedAgentChannel } from './channelCreation';
+import { includeManagedAllocations } from '~/utils/managed';
 import { createChannelIndexGate } from './channelIndexes';
 import { CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
 import { assertChannelBudget } from './channelBudget';
@@ -108,12 +109,17 @@ export function createAgentChannelMethods(
       .read('primary')
       .lean();
     if (!parent) return null;
-    const record = await retireAgentChannel(mongoose, {
-      channelId,
-      createdBy,
-      tenantId: parent.tenantId,
-      id: String(parent._id),
-    });
+    const record = await retireAgentChannel(
+      mongoose,
+      {
+        channelId,
+        createdBy,
+        tenantId: parent.tenantId,
+        id: String(parent._id),
+      },
+      false,
+      await getStorageConfig(),
+    );
     return record ? { record, id: String(parent._id) } : null;
   }
 
@@ -223,7 +229,7 @@ export function createAgentChannelMethods(
           .read('primary')
           .lean();
         if (!current || current.status === 'deleting') return null;
-        assertChannelBudget(mongoose, current, fields);
+        assertChannelBudget(mongoose, 'channel', current, fields);
         return channel()
           .findOneAndUpdate(
             {
@@ -264,10 +270,12 @@ export function createAgentChannelMethods(
       )
         return { status: 'pending_drain' };
       if (
-        await mongoose.models.ChannelIdentity.exists({
-          tenantId: deleting.tenantId || '_',
-          'identity.channelId': channelId,
-        }).read('primary')
+        await includeManagedAllocations(
+          mongoose.models.ChannelIdentity.exists({
+            tenantId: deleting.tenantId || '_',
+            'identity.channelId': channelId,
+          }),
+        ).read('primary')
       )
         return { status: 'pending_drain' };
       // Keep the deleting parent available for a retry if dependent cleanup fails.

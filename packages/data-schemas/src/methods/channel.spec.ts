@@ -380,7 +380,7 @@ it('keeps identity retirement failure retryable without reopening admission', ()
     const identities = createChannelIdentityStorage(mongoose);
     await identities.saveChannelIdentity(linkRecord(tenantId, 'channel', 'link'), null);
     jest
-      .spyOn(mongoose.models.ChannelIdentity.collection, 'deleteMany')
+      .spyOn(mongoose.models.ChannelIdentity.collection, 'updateOne')
       .mockRejectedValueOnce(new Error('identity cleanup unavailable'));
     await expect(methods.deleteAgentChannel('channel', 'owner')).rejects.toThrow(
       'identity cleanup unavailable',

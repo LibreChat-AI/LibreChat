@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
+import { channelStorageConfigSchema } from 'librechat-data-provider';
+import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { ClientSession, Types } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
 import { getTenantId, SYSTEM_TENANT_ID, tenantStorage } from '~/config/tenantContext';
 import { createAgentChannelModel, CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
+import { eraseChannelIdentitiesForChannel } from './channelIdentityErasure';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { reconcileClosedChannelRegistries } from './channelRegistry';
 import { createChannelScopeModel } from '~/models/channelScope';
@@ -129,24 +132,26 @@ export async function touchChannelAuthority(
     return parent.credentialMode === 'shared';
   if (!principal.linkId || principal.linkRevision === undefined || authority.now === undefined)
     return false;
-  return Boolean(
-    await createChannelIdentityModel(mongoose)
-      .exists({
-        tenantId: authority.tenantId || '_',
-        linkId: principal.linkId,
-        revision: principal.linkRevision,
-        userId: principal.userId,
-        state: 'active',
-        expiresAtMs: { $gt: authority.now },
-        'identity.tenantId': authority.tenantId || '_',
-        'identity.channelId': authority.channelId,
-        'identity.channelRevision': authority.channelRevision,
-        'identity.agentId': authority.agentId,
-        'identity.teamId': authority.teamId,
-        'identity.externalUserId': authority.externalUserId,
-      })
-      .session(session),
+  const admitted = await createChannelIdentityModel(mongoose).updateOne(
+    {
+      tenantId: authority.tenantId || '_',
+      linkId: principal.linkId,
+      revision: principal.linkRevision,
+      userId: principal.userId,
+      state: 'active',
+      '_managed.phase': 'published',
+      expiresAtMs: { $gt: authority.now },
+      'identity.tenantId': authority.tenantId || '_',
+      'identity.channelId': authority.channelId,
+      'identity.channelRevision': authority.channelRevision,
+      'identity.agentId': authority.agentId,
+      'identity.teamId': authority.teamId,
+      'identity.externalUserId': authority.externalUserId,
+    },
+    { $inc: { __v: 1 } },
+    { session, upsert: false },
   );
+  return admitted.matchedCount === 1;
 }
 
 export async function closeChannelScope(
@@ -180,12 +185,14 @@ export async function retireAgentChannel(
   mongoose: typeof import('mongoose'),
   connection: { tenantId?: string; channelId: string; createdBy: string; id?: string },
   redactCredentials = false,
+  options: Partial<ChannelStorageConfig> = {},
 ): Promise<AgentChannelRecord | null> {
+  const { erasureBatchSize } = channelStorageConfigSchema.parse(options);
   const { tenantId, channelId, createdBy } = connection;
   assertChannelTenant(tenantId);
   if (getTenantId() === SYSTEM_TENANT_ID && tenantId)
     return tenantStorage.run({ tenantId }, () =>
-      retireAgentChannel(mongoose, connection, redactCredentials),
+      retireAgentChannel(mongoose, connection, redactCredentials, options),
     );
   if (connection.id !== undefined && !/^[a-f\d]{24}$/i.test(connection.id))
     throw new TypeError('Invalid channel retirement identity');
@@ -228,23 +235,23 @@ export async function retireAgentChannel(
   // their admitted writes or makes their transaction retry against closed authority.
   // No dependent sweep or successful retirement acknowledgment precedes this write.
   await closeChannelScope(mongoose, tenantId, channelId);
-  const identities = createChannelIdentityModel(mongoose);
-  const identityFilter = {
-    tenantId: tenantId || '_',
-    'identity.channelId': channelId,
-  };
-  await identities.updateMany(identityFilter, { $set: { state: 'revoked' } });
+  if (!parent._managed) throw new Error('Channel retirement requires managed ownership');
+  await eraseChannelIdentitiesForChannel(
+    mongoose,
+    {
+      kind: 'channel',
+      id: String(parent._id),
+      incarnation: parent._managed.incarnation,
+      ...(tenantId && { tenantId }),
+    },
+    channelId,
+    erasureBatchSize,
+  );
   await reconcileClosedChannelRegistries(mongoose, {
     id: String(parent._id),
     tenantId,
     channelId,
     createdBy,
-  });
-  // A retained registry remains the cleanup owner for its registered children.
-  await identities.deleteMany({
-    ...identityFilter,
-    pendingCount: { $in: [null, 0] },
-    'pending.0': { $exists: false },
   });
   return deleting;
 }

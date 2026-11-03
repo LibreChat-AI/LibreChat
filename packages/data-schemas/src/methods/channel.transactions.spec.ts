@@ -41,7 +41,7 @@ describe('unconverted channel writes fail before private persistence', () => {
   });
 
   describe.each(engines)('%s', (_name, db) => {
-    it('publishes the portable channel root while guarding unconverted identity, run, key and feedback writes', async () => {
+    it('publishes the portable channel and identity roots while guarding unconverted run, key and feedback writes', async () => {
       const userId = new db.Types.ObjectId();
       const channelId = randomUUID();
       const channels = createAgentChannelMethods(db);
@@ -80,7 +80,7 @@ describe('unconverted channel writes fail before private persistence', () => {
           },
           null,
         ),
-      ).rejects.toBeInstanceOf(TransactionUnavailableError);
+      ).resolves.toBe(true);
       await expect(
         createChannelRunStorage(db).admit(
           {
@@ -131,7 +131,6 @@ describe('unconverted channel writes fail before private persistence', () => {
       ).rejects.toBeInstanceOf(TransactionUnavailableError);
       expect(effect).not.toHaveBeenCalled();
       for (const model of [
-        'ChannelIdentity',
         'ChannelRun',
         'ChannelLane',
         'AgentApiKey',
@@ -142,6 +141,7 @@ describe('unconverted channel writes fail before private persistence', () => {
         expect(await db.model(model).countDocuments()).toBe(0);
       }
       expect(await db.model('AgentChannel').countDocuments({ channelId })).toBe(1);
+      expect(await db.model('ChannelIdentity').countDocuments()).toBe(1);
     });
 
     it('keeps ordinary personal API keys and missing-channel cleanup available', async () => {

@@ -9,6 +9,7 @@ import { createAgentChannelModel, CHANNEL_PRIVATE_FIELDS } from '~/models/channe
 import { responseScopeKeys, assertResponseErasureOwner } from './responseScope';
 import { managedTargetPredicate, retireManagedAllocation } from './managed';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
+import { eraseChannelIdentitiesForOwner } from './channelIdentityErasure';
 import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createResponseScopeModel } from '~/models/responseScope';
@@ -59,7 +60,6 @@ async function eraseChannelPartition(
   const filter = { tenantId, 'principal.userId': owner.userId };
   await lanes.deleteMany({ tenantId, userId: owner.userId });
   await runs.deleteMany(filter);
-  await createChannelIdentityModel(mongoose).deleteMany({ tenantId, userId: owner.userId });
   const channels = createAgentChannelModel(mongoose);
   await createIndexesWithRetry(channels);
   const partition = owner.tenantId || { $in: [null, ''] };
@@ -101,6 +101,7 @@ async function eraseChannelPartition(
       mongoose,
       { ...connection, id: String(connection._id), createdBy: owner.userId },
       true,
+      { erasureBatchSize: batchSize },
     );
     await eraseChannelFeedbackForChannel(mongoose, connection.tenantId, connection.channelId);
     if (
@@ -111,12 +112,12 @@ async function eraseChannelPartition(
           state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
         })
         .read('primary')) &&
-      !(await createChannelIdentityModel(mongoose)
-        .exists({
+      !(await includeManagedAllocations(
+        createChannelIdentityModel(mongoose).exists({
           tenantId,
           'identity.channelId': connection.channelId,
-        })
-        .read('primary'))
+        }),
+      ).read('primary'))
     )
       await channels.deleteOne({
         _id: connection._id,
@@ -157,6 +158,8 @@ async function eraseChannelPartition(
     for (const connection of page) await eraseConnection(connection);
     after = page[page.length - 1]._id;
   }
+  // Creator channels close and redact credentials before any identity cascade can fail.
+  await eraseChannelIdentitiesForOwner(mongoose, owner, batchSize);
   for (const entry of entries) await settleRedactedChannelTarget(mongoose, owner, entry);
   await reconcileErasedResponseTargets(mongoose, owner, []);
   if (

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { durableStorageConfigSchema } from 'librechat-data-provider';
+import type { ChannelExternalIdentity } from 'librechat-data-provider';
 import type { FilterQuery, Types } from 'mongoose';
 import type {
   ManagedTarget,
@@ -8,7 +9,6 @@ import type {
   ManagedRegistration,
   ManagedRegistrationIntent,
 } from '~/types/managed';
-import type { ChannelIdentityRecord } from '~/models/channelIdentity';
 import type { ManagedRegistrationResult } from './registration';
 import type { AgentChannelRecord } from '~/models/channel';
 import type { ResponseOwner } from '~/models/response';
@@ -57,6 +57,11 @@ export interface IdentityAuthority {
 
 export type ChannelRegistryAuthority = ChannelAuthority | IdentityAuthority;
 
+type RegistryAuthority = ChannelRegistryAuthority | { target: ChannelRegistryAuthority['target'] };
+function hasLiveAuthority(authority: RegistryAuthority): authority is ChannelRegistryAuthority {
+  return 'revision' in authority;
+}
+
 export interface ChannelOwnership {
   creator: ResponseOwner;
   owner?: ResponseOwner;
@@ -75,7 +80,10 @@ function isChannel(authority: ChannelRegistryAuthority): authority is ChannelAut
 }
 
 /** Lifetime discovery survives revocation; the generation key additionally fences publication. */
-export function channelRegistryKey(authority: ChannelRegistryAuthority, generation = true): string {
+export function channelRegistryKey(
+  authority: Pick<ChannelRegistryAuthority, 'target' | 'revision'>,
+  generation = true,
+): string {
   return createHash('sha256')
     .update(
       JSON.stringify([
@@ -90,9 +98,46 @@ export function channelRegistryKey(authority: ChannelRegistryAuthority, generati
     .digest('hex');
 }
 
+/** Capture a current physical authority before registering any private channel child. */
+export async function readChannelAuthority(
+  mongoose: typeof import('mongoose'),
+  identity: ChannelExternalIdentity,
+): Promise<ChannelAuthority | null> {
+  const tenantId = identity.tenantId === '_' ? undefined : identity.tenantId;
+  assertManagedTenant(tenantId);
+  const parent = await createAgentChannelModel(mongoose)
+    .findOne({
+      tenantId: tenantId || { $in: [null, ''] },
+      channelId: identity.channelId,
+      agentId: identity.agentId,
+      revision: identity.channelRevision,
+      status: 'active',
+      'slack.teamId': identity.teamId,
+      '_managed.phase': 'published',
+    })
+    .select('channelId agentId revision createdBy slack.teamId slack.appId +_managed')
+    .read('primary')
+    .lean<AgentChannelRecord & { _id: Types.ObjectId; _managed: ManagedState }>();
+  if (!parent || !parent.slack?.appId) return null;
+  return {
+    target: {
+      kind: 'channel',
+      id: String(parent._id),
+      incarnation: parent._managed.incarnation,
+      ...(tenantId && { tenantId }),
+    },
+    channelId: parent.channelId,
+    agentId: parent.agentId,
+    revision: parent.revision,
+    createdBy: parent.createdBy,
+    teamId: identity.teamId,
+    appId: parent.slack.appId,
+  };
+}
+
 function authorityFilter(
   mongoose: typeof import('mongoose'),
-  authority: ChannelRegistryAuthority,
+  authority: RegistryAuthority,
   open: boolean,
 ): FilterQuery<RegistryAnchor> {
   if (!['channel', 'channelIdentity'].includes(authority.target.kind))
@@ -101,6 +146,8 @@ function authorityFilter(
   const physical = open
     ? managedTargetFilter(mongoose, authority.target)
     : managedTargetPredicate(mongoose, authority.target);
+  if (!open) return physical;
+  if (!hasLiveAuthority(authority)) throw new TypeError('Live channel authority required');
   const fields = isChannel(authority)
     ? [
         authority.revision,
@@ -122,7 +169,6 @@ function authorityFilter(
       ];
   if (fields.some((value) => typeof value !== 'string' || !value))
     throw new TypeError('Invalid channel registration authority');
-  if (!open) return physical;
   return {
     ...physical,
     '_managed.phase': 'published',
@@ -188,13 +234,13 @@ export function channelScopeKeys(
   return [...new Set(keys)].sort();
 }
 
-function registryModel(mongoose: typeof import('mongoose'), authority: ChannelRegistryAuthority) {
+function registryModel(mongoose: typeof import('mongoose'), authority: RegistryAuthority) {
   return mongoose.model<RegistryAnchor>(managedTargetModels[authority.target.kind]);
 }
 
 async function readAnchor(
   mongoose: typeof import('mongoose'),
-  authority: ChannelRegistryAuthority,
+  authority: RegistryAuthority,
   open: boolean,
 ): Promise<RegistryAnchor | null> {
   return includeManagedAllocations(
@@ -207,12 +253,16 @@ async function readAnchor(
 
 function registryEntry(
   mongoose: typeof import('mongoose'),
-  authority: ChannelRegistryAuthority,
+  authority: RegistryAuthority,
   entry: ManagedRegistrationIntent,
   retentionEpoch: number,
   cleanup = false,
 ): ManagedRegistration {
-  const stamped = { ...entry, retentionEpoch, authorityRevision: authority.revision };
+  const stamped: ManagedRegistration = {
+    ...entry,
+    retentionEpoch,
+    ...(hasLiveAuthority(authority) && { authorityRevision: authority.revision }),
+  };
   assertManagedRegistration(mongoose, stamped, cleanup ? 'cleanup' : 'publication');
   if ((entry.target.tenantId || undefined) !== (authority.target.tenantId || undefined))
     throw new TypeError('Channel registration tenant changed');
@@ -281,6 +331,14 @@ export async function reconcileChannelTargets(
   return reconcileTargets(mongoose, authority, absenceOnly);
 }
 
+/** Closed registry recovery requires a physical namespace, never erased account or actor data. */
+export async function reconcileClosedChannelTarget(
+  mongoose: typeof import('mongoose'),
+  target: ChannelRegistryAuthority['target'],
+): Promise<number> {
+  return reconcileTargets(mongoose, { target }, true);
+}
+
 /** Normal publication settles only its own entry, without querying unrelated target kinds. */
 export async function settleChannelTarget(
   mongoose: typeof import('mongoose'),
@@ -303,10 +361,12 @@ export async function settleAbsentChannelTarget(
 
 async function reconcileTargets(
   mongoose: typeof import('mongoose'),
-  authority: ChannelRegistryAuthority,
+  authority: RegistryAuthority,
   absenceOnly: boolean,
   selected?: ManagedRegistrationIntent,
 ): Promise<number> {
+  const live = hasLiveAuthority(authority) ? authority : undefined;
+  if (!absenceOnly && !live) throw new TypeError('Live channel authority required');
   const anchor = await readAnchor(mongoose, authority, !absenceOnly);
   if (!anchor) return 0;
   managedRegistryCount(anchor);
@@ -335,9 +395,10 @@ async function reconcileTargets(
       if (
         !row ||
         (!absenceOnly &&
-          entry.authorityRevision === authority.revision &&
+          live &&
+          entry.authorityRevision === live.revision &&
           row._managed.phase === 'published' &&
-          [channelRegistryKey(authority, false), channelRegistryKey(authority)].every((key) =>
+          [channelRegistryKey(live, false), channelRegistryKey(live)].every((key) =>
             row._managed.scopeKeys?.includes(key),
           ))
       )
@@ -380,33 +441,18 @@ export async function reconcileClosedChannelRegistries(
       status: 'deleting',
     }),
   )
-    .select(
-      '_id channelId agentId createdBy revision slack _managed.incarnation pending pendingCount',
-    )
+    .select('_id _managed.incarnation pending pendingCount')
     .read('primary')
     .lean<AgentChannelRecord & ManagedRegistryState & { _managed?: ManagedState }>();
   if (!parent) return;
   if (managedRegistryCount(parent)) {
-    if (!parent._managed?.incarnation || !parent.slack?.teamId || !parent.slack.appId)
-      throw new Error('Channel registry authority is unavailable');
-    await reconcileChannelTargets(
-      mongoose,
-      {
-        target: {
-          kind: 'channel',
-          id: connection.id,
-          incarnation: parent._managed.incarnation,
-          ...(connection.tenantId && { tenantId: connection.tenantId }),
-        },
-        revision: parent.revision,
-        channelId: parent.channelId,
-        agentId: parent.agentId,
-        createdBy: parent.createdBy,
-        teamId: parent.slack.teamId,
-        appId: parent.slack.appId,
-      },
-      true,
-    );
+    if (!parent._managed?.incarnation) throw new Error('Channel registry authority is unavailable');
+    await reconcileClosedChannelTarget(mongoose, {
+      kind: 'channel',
+      id: connection.id,
+      incarnation: parent._managed.incarnation,
+      ...(connection.tenantId && { tenantId: connection.tenantId }),
+    });
   }
   const links = includeManagedAllocations(
     createChannelIdentityModel(mongoose).find({
@@ -416,32 +462,17 @@ export async function reconcileClosedChannelRegistries(
       $or: [{ 'pending.0': { $exists: true } }, { pendingCount: { $nin: [null, 0] } }],
     }),
   )
-    .select('_id linkId revision userId identity _managed.incarnation')
+    .select('_id _managed.incarnation')
     .read('primary')
-    .lean<Array<ChannelIdentityRecord & { _id: Types.ObjectId; _managed?: ManagedState }>>()
+    .lean<Array<{ _id: Types.ObjectId; _managed?: ManagedState }>>()
     .cursor({ batchSize: 1 });
   for await (const link of links) {
-    if (!link._managed?.incarnation || !link.userId)
-      throw new Error('Link registry authority is unavailable');
-    await reconcileChannelTargets(
-      mongoose,
-      {
-        target: {
-          kind: 'channelIdentity',
-          id: String(link._id),
-          incarnation: link._managed.incarnation,
-          ...(connection.tenantId && { tenantId: connection.tenantId }),
-        },
-        revision: link.revision,
-        linkId: link.linkId,
-        userId: link.userId,
-        channelId: link.identity.channelId,
-        channelRevision: link.identity.channelRevision,
-        agentId: link.identity.agentId,
-        teamId: link.identity.teamId,
-        externalUserId: link.identity.externalUserId,
-      },
-      true,
-    );
+    if (!link._managed?.incarnation) throw new Error('Link registry authority is unavailable');
+    await reconcileClosedChannelTarget(mongoose, {
+      kind: 'channelIdentity',
+      id: String(link._id),
+      incarnation: link._managed.incarnation,
+      ...(connection.tenantId && { tenantId: connection.tenantId }),
+    });
   }
 }

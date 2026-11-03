@@ -5,6 +5,7 @@ import {
   createModels,
   createMethods,
   createChannelRunStorage,
+  createChannelIdentityStorage,
   createResponseStorage,
   createManagedMessageId,
   runAsSystem,
@@ -76,24 +77,27 @@ beforeEach(async () => {
     }),
   );
   await scope(() =>
-    mongoose.models.ChannelIdentity.create({
-      tenantId,
-      linkId: 'link',
-      revision: 'link-v1',
-      state: 'active',
-      userId: 'user-a',
-      ticketHash: 'ticket',
-      ticketExpiresAtMs: clock + 60000,
-      expiresAtMs: clock + 600000,
-      identity: {
+    createChannelIdentityStorage(mongoose).saveChannelIdentity(
+      {
         tenantId,
-        channelId: 'channel',
-        channelRevision: 'v1',
-        teamId: 'T1',
-        externalUserId: 'U1',
-        agentId: 'agent',
+        linkId: 'link',
+        revision: 'link-v1',
+        state: 'active',
+        userId: 'user-a',
+        ticketHash: 'ticket',
+        ticketExpiresAtMs: clock + 60000,
+        expiresAtMs: clock + 600000,
+        identity: {
+          tenantId,
+          channelId: 'channel',
+          channelRevision: 'v1',
+          teamId: 'T1',
+          externalUserId: 'U1',
+          agentId: 'agent',
+        },
       },
-    }),
+      null,
+    ),
   );
   deps = {
     storage,
@@ -346,24 +350,27 @@ it('keeps tenantless work authorized and deletes its closed parent in the applic
       revision: 'v1',
       slack: { teamId: 'T1', appId: 'A1', botUserId: 'UBOT' },
     });
-    await mongoose.models.ChannelIdentity.create({
-      tenantId: '_',
-      linkId: 'link',
-      revision: 'link-v1',
-      state: 'active',
-      userId: 'user-a',
-      ticketHash: 'default-ticket',
-      ticketExpiresAtMs: clock + 60000,
-      expiresAtMs: clock + 600000,
-      identity: {
+    await createChannelIdentityStorage(mongoose).saveChannelIdentity(
+      {
         tenantId: '_',
-        channelId: 'default-channel',
-        channelRevision: 'v1',
-        teamId: 'T1',
-        externalUserId: 'U1',
-        agentId: 'agent',
+        linkId: 'link',
+        revision: 'link-v1',
+        state: 'active',
+        userId: 'user-a',
+        ticketHash: 'default-ticket',
+        ticketExpiresAtMs: clock + 60000,
+        expiresAtMs: clock + 600000,
+        identity: {
+          tenantId: '_',
+          channelId: 'default-channel',
+          channelRevision: 'v1',
+          teamId: 'T1',
+          externalUserId: 'U1',
+          agentId: 'agent',
+        },
       },
-    });
+      null,
+    );
     await storage.admit(
       {
         tenantId: '_',

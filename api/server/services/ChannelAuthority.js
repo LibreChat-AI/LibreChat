@@ -22,7 +22,7 @@ module.exports = createChannelApplicationAuthority({
     isPrincipalActive: db.isAgentTriggerPrincipalActive,
   }),
   channels: db,
-  identityStorage: createChannelIdentityStorage(mongoose),
+  identityStorage: createChannelIdentityStorage(mongoose, db.getDurableStorageConfig),
   findUser: (id) => db.findUser({ _id: id }),
   getRole: db.getRoleByName,
   isPrincipalActive: db.isAgentTriggerPrincipalActive,

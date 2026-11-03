@@ -130,7 +130,7 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
       const record: ChannelIdentityRecord = {
         tenantId: identity.tenantId,
         identity,
-        linkId: existing?.linkId ?? nonce(),
+        linkId: nonce(),
         revision: nonce(),
         state: 'pending',
         ticketHash: hash(secret),

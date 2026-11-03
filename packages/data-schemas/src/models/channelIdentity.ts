@@ -18,6 +18,36 @@ export interface ChannelIdentityRecord {
   accountLabel?: string;
 }
 
+// Every field explicitly chooses private erasure or retained coordination metadata.
+const privateFields: Record<keyof ChannelIdentityRecord, boolean> = {
+  tenantId: false,
+  identity: false,
+  linkId: false,
+  revision: false,
+  state: false,
+  ticketHash: true,
+  ticketExpiresAtMs: false,
+  expiresAtMs: false,
+  userId: true,
+  accountLabel: true,
+};
+const privateIdentityFields: Record<keyof ChannelExternalIdentity, boolean> = {
+  tenantId: false,
+  channelId: false,
+  channelRevision: false,
+  teamId: false,
+  agentId: false,
+  externalUserId: true,
+};
+export const CHANNEL_IDENTITY_PRIVATE_FIELDS: readonly string[] = [
+  ...Object.entries(privateFields)
+    .filter(([, privateField]) => privateField)
+    .map(([field]) => field),
+  ...Object.entries(privateIdentityFields)
+    .filter(([, privateField]) => privateField)
+    .map(([field]) => `identity.${field}`),
+];
+
 export function createChannelIdentityModel(
   mongoose: typeof import('mongoose'),
 ): Model<ChannelIdentityRecord> {

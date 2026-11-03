@@ -7,6 +7,7 @@ import {
   createModels,
   createMethods,
   createChannelRunStorage,
+  createChannelIdentityStorage,
   tenantStorage,
 } from '@librechat/data-schemas';
 import type { ChannelRunRecord } from '@librechat/data-schemas';
@@ -76,24 +77,27 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
         revision: fixture.principal.channelRevision,
         slack: { teamId: 'T1', appId: 'A1', botUserId: 'UBOT' },
       });
-      await mongoose.models.ChannelIdentity.create({
-        tenantId: fixture.tenantId,
-        linkId: fixture.principal.linkId,
-        revision: fixture.principal.linkRevision,
-        userId: fixture.principal.userId,
-        state: 'active',
-        ticketHash: 'ticket',
-        ticketExpiresAtMs: Date.now() + 60000,
-        expiresAtMs: Date.now() + 60000,
-        identity: {
+      await createChannelIdentityStorage(mongoose).saveChannelIdentity(
+        {
           tenantId: fixture.tenantId,
-          channelId: fixture.channelId,
-          channelRevision: fixture.principal.channelRevision,
-          teamId: 'T1',
-          externalUserId: 'U1',
-          agentId: fixture.agentId,
+          linkId: fixture.principal.linkId!,
+          revision: fixture.principal.linkRevision!,
+          userId: fixture.principal.userId,
+          state: 'active',
+          ticketHash: 'ticket',
+          ticketExpiresAtMs: Date.now() + 60000,
+          expiresAtMs: Date.now() + 60000,
+          identity: {
+            tenantId: fixture.tenantId,
+            channelId: fixture.channelId,
+            channelRevision: fixture.principal.channelRevision,
+            teamId: 'T1',
+            externalUserId: 'U1',
+            agentId: fixture.agentId,
+          },
         },
-      });
+        null,
+      );
       const storage = createChannelRunStorage(mongoose);
       await storage.admit(
         {

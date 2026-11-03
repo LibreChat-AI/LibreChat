@@ -65,7 +65,11 @@ export async function createManagedAgentChannel(
   candidate.set('pendingCount', Number.MAX_SAFE_INTEGER);
   candidate.set('retentionEpoch', Number.MAX_SAFE_INTEGER);
   await candidate.validate();
-  assertChannelBudget(mongoose, candidate.toObject({ transform: false, minimize: false }));
+  assertChannelBudget(
+    mongoose,
+    'channel',
+    candidate.toObject({ transform: false, minimize: false }),
+  );
   await initializeChannelScope(mongoose, record.tenantId, record.channelId);
   if (!(await touchChannelScope(mongoose, record.tenantId, record.channelId)))
     throw new Error('Channel admission closed');

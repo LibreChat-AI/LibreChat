@@ -22,6 +22,7 @@ import {
   assertResponseErasureOwner,
 } from './responseScope';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { retiredIdentityFilter } from './channelIdentityPrivacy';
 import { includeManagedAllocations } from '~/utils/managed';
 import { CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
 import { MANAGED_TARGET_KINDS } from '~/types/managed';
@@ -226,12 +227,29 @@ export async function reconcileResponseTargets(
       .select(settlementProjection)
       .read('primary')
       .lean<SettlementTarget[]>();
+    const retired =
+      kind === 'channelIdentity'
+        ? await includeManagedAllocations(
+            model.find({
+              '_managed.scopeKeys': key,
+              $or: candidates.map((entry) => ({
+                ...managedTargetFilter(mongoose, entry.target),
+                ...retiredIdentityFilter(entry.target.id),
+              })),
+            }),
+          )
+            .select('_id _managed.incarnation')
+            .read('primary')
+            .lean<SettlementTarget[]>()
+        : [];
+    const redacted = new Set(retired.map((row) => `${row._id}:${row._managed.incarnation}`));
     const targets = new Map(present.map((row) => [`${row._id}:${row._managed.incarnation}`, row]));
     settled.push(
       ...candidates.filter((entry) => {
         const target = targets.get(`${entry.target.id.toLowerCase()}:${entry.target.incarnation}`);
         return (
           !target ||
+          redacted.has(`${entry.target.id.toLowerCase()}:${entry.target.incarnation}`) ||
           hasPublishedOwnership(target, kind, owner, conversationId, key, anchor.expiredAt)
         );
       }),
@@ -274,12 +292,23 @@ function absenceSettlementFilter(
   };
 }
 
+/** A retired identity has no ticket, actor or account payload; its child registry may drain later. */
+export async function settleRedactedIdentityTarget(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  entry: ManagedRegistrationIntent,
+): Promise<boolean> {
+  if (entry.target.kind !== 'channelIdentity')
+    throw new TypeError('Invalid identity cleanup target');
+  return settleTarget(mongoose, owner, undefined, entry, 'redacted-identity');
+}
+
 async function settleTarget(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   conversationId: string | undefined,
   entry: ManagedRegistrationIntent,
-  proof: 'published' | 'absent' | 'redacted-channel',
+  proof: 'published' | 'absent' | 'redacted-channel' | 'redacted-identity',
 ): Promise<boolean> {
   const key = registrationScope(
     mongoose,
@@ -296,7 +325,7 @@ async function settleTarget(
       (anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date())))
   )
     return false;
-  if (proof === 'redacted-channel' && !anchor.closed) return false;
+  if (proof.startsWith('redacted-') && !anchor.closed) return false;
   const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
   if (!existing || !sameManagedRegistration(existing, entry)) return false;
   const observedRetentionEpoch = anchor.retentionEpoch ?? 0;
@@ -307,6 +336,18 @@ async function settleTarget(
       model.exists(managedTargetPredicate(mongoose, entry.target)),
     ).read('primary');
     if (present) return false;
+  } else if (proof === 'redacted-identity') {
+    if (
+      !(await includeManagedAllocations(
+        model.exists({
+          ...managedTargetPredicate(mongoose, entry.target),
+          '_managed.phase': 'retired',
+          '_managed.scopeKeys': key,
+          ...retiredIdentityFilter(entry.target.id),
+        }),
+      ).read('primary'))
+    )
+      return false;
   } else if (proof === 'redacted-channel') {
     if (
       !(await includeManagedAllocations(

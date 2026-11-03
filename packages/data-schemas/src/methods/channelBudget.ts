@@ -1,20 +1,25 @@
 import { MAX_DURABLE_PENDING_TARGETS } from 'librechat-data-provider';
-import type { AgentChannelRecord } from '~/models/channel';
 import {
   MAX_BSON_DOCUMENT_BYTES,
   BSON_WRITE_HEADROOM_BYTES,
   ManagedDocumentTooLargeError,
 } from '~/utils/bson';
+import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { MANAGED_REGISTRATION_BYTES } from '~/types/managed';
 import { createAgentChannelModel } from '~/models/channel';
 
 /** Leave room for the full validated registry ceiling, including later config increases. */
 export function assertChannelBudget<Current extends object>(
   mongoose: typeof import('mongoose'),
+  kind: 'channel' | 'channelIdentity',
   current: Current,
-  fields: Partial<AgentChannelRecord> = {},
+  fields: object = {},
 ): void {
-  const candidate = new (createAgentChannelModel(mongoose))({ ...current, ...fields });
+  const values = { ...current, ...fields };
+  const candidate =
+    kind === 'channel'
+      ? new (createAgentChannelModel(mongoose))(values)
+      : new (createChannelIdentityModel(mongoose))(values);
   candidate.set('pending', undefined);
   candidate.set('pendingCount', Number.MAX_SAFE_INTEGER);
   candidate.set('retentionEpoch', Number.MAX_SAFE_INTEGER);

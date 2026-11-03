@@ -3,6 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelRunSummary } from 'librechat-data-provider';
 import type { ChannelRunRecord } from '~/models/channelRun';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { createChannelIdentityStorage } from './channelIdentity';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
 import { createUserMethods } from './user';
@@ -34,24 +35,27 @@ const event = (eventId = 'event', actorId = 'actor') => ({
 
 async function seedRunLink(input: ReturnType<typeof event>, linkId: string) {
   await mongoose.models.ChannelIdentity.deleteMany({ tenantId, 'identity.channelId': 'channel' });
-  await mongoose.models.ChannelIdentity.create({
-    tenantId,
-    linkId,
-    revision: '1',
-    state: 'active',
-    userId: input.principal.userId,
-    ticketHash: `ticket-${linkId}`,
-    ticketExpiresAtMs: 10000,
-    expiresAtMs: 10000,
-    identity: {
+  await createChannelIdentityStorage(mongoose).saveChannelIdentity(
+    {
       tenantId,
-      channelId: input.channelId,
-      channelRevision: input.principal.channelRevision,
-      teamId: input.admission.actor.teamId,
-      externalUserId: input.admission.actor.externalUserId,
-      agentId: input.agentId,
+      linkId,
+      revision: '1',
+      state: 'active',
+      userId: input.principal.userId,
+      ticketHash: `ticket-${linkId}`,
+      ticketExpiresAtMs: 10000,
+      expiresAtMs: 10000,
+      identity: {
+        tenantId,
+        channelId: input.channelId,
+        channelRevision: input.principal.channelRevision,
+        teamId: input.admission.actor.teamId,
+        externalUserId: input.admission.actor.externalUserId,
+        agentId: input.agentId,
+      },
     },
-  });
+    null,
+  );
 }
 
 beforeAll(async () => {
