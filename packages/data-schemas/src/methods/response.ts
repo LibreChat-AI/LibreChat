@@ -28,10 +28,12 @@ import {
   createResponseRetention,
 } from './responseScope';
 import { sameResponseTerminalReceipt, terminalReceipt, terminalFilter } from '~/utils/receipt';
+import { retiredResponseUpdate, finishResponseErasure } from './responseErasure';
 import { createResponseCheckpointStorage } from './responseCheckpoint';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { allocateManagedTarget, managedTargetFilter } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { reconcileErasedResponseTargets } from './registration';
 import { createStoredResponseModel } from '~/models/response';
 import { getTransactionSupport } from '~/utils/transactions';
 import { includeManagedAllocations } from '~/utils/managed';
@@ -192,6 +194,7 @@ export interface ResponseExecutionProof extends ResponseExecutionBinding {
   outcome?: ResponseProviderExecution['outcome'];
   checkpointNamespace?: string;
   checkpointConfigJSON?: string;
+  checkpointWriterId?: string;
 }
 
 export interface ResponseStorage {
@@ -199,9 +202,14 @@ export interface ResponseStorage {
   readExecutionProof(identity: ResponseCleanupIdentity): Promise<ResponseExecutionProof | null>;
   /** Fence enrollment and scrub private data before using provider proof for physical cleanup. */
   retireExecution(identity: ResponseCleanupIdentity): Promise<boolean>;
+  finishErasure(identity: ResponseCleanupIdentity): Promise<boolean>;
+  acknowledgeCheckpointErasure(
+    identity: ResponseCleanupIdentity,
+    proof: ResponseExecutionProof,
+  ): Promise<boolean>;
   createCheckpointWriter(
     reference: ResponseReference,
-    checkpoint: Omit<ResponseCheckpointExecution, 'state'>,
+    checkpoint: Omit<ResponseCheckpointExecution, 'state' | 'erased'>,
   ): ReturnType<typeof createResponseCheckpointStorage>;
   enrollExecution(
     record: StoredResponseRecord,
@@ -414,18 +422,48 @@ export function createResponseStorage(
           '_managed.phase': { $in: ['published', 'retired'] },
           ...(closed ? {} : { expiredAt: { $lte: now } }),
         },
+        retiredResponseUpdate(now),
+        { upsert: false },
+      );
+      return result.matchedCount === 1;
+    },
+    async finishErasure(identity) {
+      if (!identity.storageTarget) return false;
+      const finished = await finishResponseErasure(mongoose, {
+        ...identity,
+        target: identity.storageTarget,
+      });
+      if (finished)
+        await reconcileErasedResponseTargets(mongoose, identity, [
+          responseScopeKeys(identity, identity.conversationId)[1],
+        ]);
+      return finished;
+    },
+    async acknowledgeCheckpointErasure(identity, proof) {
+      assertExecutionBinding(proof);
+      if (
+        !identity.storageTarget ||
+        identity.generationCreatedAt !== proof.generationCreatedAt ||
+        !proof.checkpointWriterId ||
+        !proof.checkpointNamespace ||
+        !proof.checkpointConfigJSON
+      )
+        return false;
+      const result = await model.updateOne(
         {
-          $set: { '_managed.phase': 'retired' },
-          $min: { retiredAt: now },
-          $unset: {
-            requestJSON: 1,
-            responseJSON: 1,
-            review: 1,
-            resume: 1,
-            preparedTerminal: 1,
-            pendingTerminal: 1,
-          },
+          ...responseRootFilter(mongoose, { ...identity, target: identity.storageTarget }),
+          agentId: identity.agentId,
+          conversationId: identity.conversationId,
+          generationCreatedAt: proof.generationCreatedAt,
+          'providerExecution.id': proof.providerExecutionId,
+          'providerExecution.ownerId': proof.ownerId ?? { $exists: false },
+          'providerExecution.drained': true,
+          'checkpoint.writerId': proof.checkpointWriterId,
+          'checkpoint.namespace': proof.checkpointNamespace,
+          'checkpoint.configJSON': proof.checkpointConfigJSON,
+          'checkpoint.state': 'settled',
         },
+        { $set: { 'checkpoint.erased': true } },
         { upsert: false },
       );
       return result.matchedCount === 1;
@@ -456,6 +494,7 @@ export function createResponseStorage(
         ...(record.providerExecution.outcome ? { outcome: record.providerExecution.outcome } : {}),
         ...(record.checkpoint
           ? {
+              checkpointWriterId: record.checkpoint.writerId,
               checkpointNamespace: record.checkpoint.namespace,
               checkpointConfigJSON: record.checkpoint.configJSON,
             }
@@ -1190,8 +1229,8 @@ export function createResponseStorage(
         ...(source.requestKey == null ? {} : { requestKey: source.requestKey }),
         ...(source.sourceKeyId == null ? {} : { sourceKeyId: source.sourceKeyId }),
         ...(source.parentMessageId == null ? {} : { parentMessageId: source.parentMessageId }),
-        generationCreatedAt:
-          generationCreatedAt ?? (retirement ? matchingRetained?.generationCreatedAt : undefined),
+        // A transient job cannot invent enrollment while the canonical Root still has none.
+        generationCreatedAt: record ? generationCreatedAt : matchingRetained?.generationCreatedAt,
         expiredAt,
         retirement,
         checkpointNamespace,

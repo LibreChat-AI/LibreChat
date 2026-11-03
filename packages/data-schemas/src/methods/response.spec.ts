@@ -7,16 +7,15 @@ import type {
   ResponseResumeReservation,
   ResponseTerminalReceipt,
 } from './response';
-import {
-  closeResponseScopes,
-  eraseResponseRecords,
-  createResponseRetention,
-} from './responseScope';
+import { eraseResponseRecords, ResponseErasurePendingError } from './responseErasure';
+import { closeResponseScopes, createResponseRetention } from './responseScope';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { includeManagedAllocations } from '~/utils/managed';
 import { createConversationMethods } from './conversation';
 import { createConversationImportMethods } from './import';
 import { createManagedMessageId } from '~/utils/managed';
 import { createResponseStorage } from './response';
+import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
 const oneId = createManagedMessageId();
@@ -863,7 +862,7 @@ it('fences a racing Stop when promoting a prepared success without projection-re
     expect((await storage.read(owner, oneId))?.status).toBe('cancelled');
   }));
 
-it('retains only a prepared checkpoint binding for expired cleanup and erases the entire candidate', () =>
+it('scrubs an expired prepared candidate but retains its unresolved execution authority', () =>
   scoped(async () => {
     await storage.reserve(reservation());
     const running = await storage.publish(owner, oneId, 0, {
@@ -881,8 +880,14 @@ it('retains only a prepared checkpoint binding for expired cleanup and erases th
     });
     expect(JSON.stringify(identity)).not.toContain('private until cleanup');
     await closeResponseScopes(mongoose, owner);
-    await eraseResponseRecords(mongoose, owner);
-    expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
+    await expect(eraseResponseRecords(mongoose, owner)).rejects.toBeInstanceOf(
+      ResponseErasurePendingError,
+    );
+    const retained = await mongoose.models.StoredResponse.collection.findOne({ responseId: oneId });
+    expect(retained).toMatchObject({ generationCreatedAt: 10, _managed: { phase: 'retired' } });
+    for (const field of ['requestJSON', 'responseJSON', 'preparedTerminal', 'pendingTerminal'])
+      expect(retained).not.toHaveProperty(field);
+    expect(await storage.read(owner, oneId)).toBeNull();
   }));
 
 it('stages an initial terminal receipt without requiring a review or resume', () =>
@@ -1853,7 +1858,7 @@ it.each(['cancelled', 'terminal', 'erased'] as const)(
 );
 
 it.each(['live', 'owner_deleted', 'conversation_deleted', 'expired'] as const)(
-  'supplements an unpublished generation only under durable retirement proof: %s',
+  'preserves the canonical unenrolled generation under %s retirement',
   (reason) =>
     scoped(async () => {
       await storage.reserve(reservation());
@@ -1880,7 +1885,7 @@ it.each(['live', 'owner_deleted', 'conversation_deleted', 'expired'] as const)(
         );
       const identity = await storage.readCleanupIdentity(owner, oneId, retained);
       expect(identity).toMatchObject({
-        generationCreatedAt: reason === 'live' ? undefined : 42,
+        generationCreatedAt: undefined,
         retirement: reason === 'live' ? undefined : reason,
         checkpointNamespace: reason === 'live' ? undefined : 'owned-checkpoint',
       });
@@ -1955,7 +1960,7 @@ it.each(['owner', 'conversation'] as const)(
     }),
 );
 
-it('cannot finish a pending terminal receipt after scope closure even when physical erasure fails', () =>
+it('retains a scrubbed pending receipt authority after closure without provider drain proof', () =>
   scoped(async () => {
     await storage.reserve(reservation());
     const enrolled = await storage.publish(owner, oneId, 0, {
@@ -1983,16 +1988,19 @@ it('cannot finish a pending terminal receipt after scope closure even when physi
       .mockImplementationOnce(() => {
         throw new Error('Physical erasure temporarily unavailable');
       });
-    await expect(eraseResponseRecords(mongoose, owner, ['conversation-one'])).rejects.toThrow(
-      'Physical erasure',
-    );
+    await expect(
+      eraseResponseRecords(mongoose, owner, ['conversation-one']),
+    ).rejects.toBeInstanceOf(ResponseErasurePendingError);
+    expect(erase).not.toHaveBeenCalled();
     erase.mockRestore();
     expect(await storage.finishTerminal(owner, oneId, pending.record.revision, outcome)).toEqual({
       ok: false,
       code: 'response_conflict',
     });
     expect(await storage.read(owner, oneId)).toBeNull();
-    expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(1);
+    expect(
+      await mongoose.models.StoredResponse.collection.countDocuments({ responseId: oneId }),
+    ).toBe(1);
   }));
 
 it('does not return an aborted attempt success when the transaction retries after scope closure', () =>
@@ -2160,8 +2168,16 @@ it('closes and cooperatively cancels private prepared work while retaining redac
         cancellationRequestedAt: raw!.cancellationRequestedAt,
       }),
     ).toMatchObject({ ok: false });
-    await eraseResponseRecords(mongoose, owner, ['conversation-one']);
-    expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
+    await expect(
+      eraseResponseRecords(mongoose, owner, ['conversation-one']),
+    ).rejects.toBeInstanceOf(ResponseErasurePendingError);
+    const retained = await mongoose.models.StoredResponse.collection.findOne({ responseId: oneId });
+    expect(retained).toMatchObject({ _managed: { phase: 'retired' } });
+    for (const field of ['requestJSON', 'responseJSON', 'review', 'resume', 'preparedTerminal'])
+      expect(retained).not.toHaveProperty(field);
+    expect(await storage.readCleanupIdentity(owner, oneId)).toMatchObject({
+      retirement: 'conversation_deleted',
+    });
   }));
 
 it.each(['live', 'expired', 'closed'] as const)(
@@ -2334,4 +2350,34 @@ it('does not adopt a replacement root through an earlier maintenance page', () =
     expect((await storage.read(owner, oneId))?.storageTarget).toEqual(
       replacement.record.storageTarget,
     );
+  }));
+
+it('keeps the account and typed deletion status while a Response provider is still active', () =>
+  scoped(async () => {
+    const user = await mongoose.models.User.create({
+      email: 'pending-response-owner@example.test',
+      provider: 'local',
+      tenantId: owner.tenantId,
+    });
+    const principal = { userId: String(user._id), tenantId: owner.tenantId };
+    const reserved = await storage.reserve(reservation(principal));
+    if (!reserved.ok) throw new Error('Reservation failed');
+    const enrolled = await storage.enrollExecution(
+      reserved.record,
+      { generationCreatedAt: 100, providerExecutionId: 'active-provider' },
+      '{}',
+    );
+    if (!enrolled.ok) throw new Error('Enrollment failed');
+    await expect(
+      createUserMethods(mongoose).deleteUserById(principal.userId),
+    ).rejects.toMatchObject({ code: 'response_erasure_pending' });
+    expect(await mongoose.models.User.exists({ _id: user._id })).not.toBeNull();
+    const retained = await includeManagedAllocations(
+      mongoose.models.StoredResponse.findOne({ responseId: oneId })
+        .select('+providerExecution')
+        .lean(),
+    );
+    expect(retained).not.toHaveProperty('requestJSON');
+    expect(retained).not.toHaveProperty('responseJSON');
+    expect(retained).toHaveProperty('providerExecution.id', 'active-provider');
   }));

@@ -44,7 +44,6 @@ import {
 } from '~/types/convo';
 import {
   closeResponseScopes,
-  eraseResponseRecords,
   createResponseRetention,
   discoverResponseOwners,
   createResponseConversationReplacement,
@@ -75,6 +74,7 @@ import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { prepareSubagentContentDeletion } from './subagentContent';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { eraseResponseRecords } from './responseErasure';
 import { runAfterTransaction } from '~/utils/postCommit';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';

@@ -9,6 +9,8 @@ import type {
   ResponseExecutionProof,
 } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import type { ResponseCheckpointIdentity } from './checkpoint';
+import { eraseResponseExecutionCheckpoint } from './checkpoint';
 import { projectCanonicalResponseTurn } from './turnProjection';
 import { matchesResponseRoot, responseTenantId } from './scope';
 
@@ -31,7 +33,7 @@ export interface ResponseCompletion {
 
 export interface ResponseCompletionDependencies {
   storage: ResponseStorage;
-  cleanupCheckpoint: (record: StoredResponseRecord, namespace: string) => Promise<void>;
+  cleanupCheckpoint: (record: ResponseCheckpointIdentity, namespace: string) => Promise<void>;
   /** A prepared result is a proposal; only exact canonical drain permits its promotion. */
   confirmExecution: (
     record: StoredResponseRecord,
@@ -301,24 +303,11 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       (await deps.confirmExecution(retired, receipt)) == null
     )
       return redactRetirement(retired);
-    const identity = retired;
-    const namespace = identity.checkpointNamespace ?? receipt.checkpointNamespace;
-    if (identity.requiresCheckpointCleanup && !namespace)
-      throw new Error('Response checkpoint cleanup identity unavailable');
-    if (namespace)
-      await deps.cleanupCheckpoint(
-        {
-          ...retired,
-          review: undefined,
-          pendingTerminal: {
-            ...receipt,
-            checkpointNamespace: namespace,
-            checkpointConfigJSON: identity.checkpointConfigJSON ?? receipt.checkpointConfigJSON,
-          },
-        },
-        namespace,
-      );
+    const proof = await deps.storage.readExecutionProof(retired);
+    if (!proof) return redactRetirement(retired);
+    await eraseResponseExecutionCheckpoint(deps.storage, retired, proof, deps.cleanupCheckpoint);
     await deps.releaseExecution(retired, receipt);
+    await deps.storage.finishErasure(retired);
     return {
       ...redactRetirement(retired),
       status: receipt.status,
@@ -380,8 +369,9 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
     }
     assertReceipt(record, receipt);
     if ((await deps.confirmExecution(record, receipt)) == null) return record;
-    if (receipt.checkpointNamespace)
-      await deps.cleanupCheckpoint(record, receipt.checkpointNamespace);
+    const proof = await deps.storage.readExecutionProof(record);
+    if (!proof) return record;
+    await eraseResponseExecutionCheckpoint(deps.storage, record, proof, deps.cleanupCheckpoint);
     let current: StoredResponseRecord | null;
     try {
       const result = await deps.storage.finishTerminal(

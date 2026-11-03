@@ -315,3 +315,62 @@ async function settleTarget(
   });
   return result.matchedCount === 1;
 }
+
+/** Scope keys come from an owned root or its closed admission anchor, never request input. */
+export async function reconcileErasedResponseTargets(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  conversationKeys: readonly string[],
+): Promise<number> {
+  assertManagedTenant(owner.tenantId);
+  const keys = [...new Set([responseScopeKeys(owner, '')[0], ...conversationKeys])];
+  if (keys.some((key) => !/^[a-f\d]{64}$/.test(key)))
+    throw new TypeError('Invalid Response cleanup scope');
+  const scopes = createResponseScopeModel(mongoose);
+  let count = 0;
+  for (const key of keys) {
+    const anchor = await scopes.findById(key).lean();
+    if (!anchor?.pending?.length) continue;
+    const absent: ManagedRegistration[] = [];
+    for (const kind of ['message', 'conversation', 'response'] as const) {
+      const entries = anchor.pending.filter((entry) => entry.target.kind === kind);
+      if (!entries.length) continue;
+      const model = mongoose.model(managedTargetModels[kind]);
+      const rows = await includeManagedAllocations(
+        model.find({
+          $or: entries.map((entry) => {
+            if ((entry.target.tenantId || undefined) !== (owner.tenantId || undefined))
+              throw new Error('Response cleanup target tenant changed');
+            return managedTargetFilter(mongoose, entry.target);
+          }),
+        }),
+      )
+        .select('_id +_managed')
+        .read('primary')
+        .lean<SettlementTarget[]>();
+      const present = new Set(rows.map((row) => `${row._id}:${row._managed.incarnation}`));
+      absent.push(
+        ...entries.filter(
+          (entry) => !present.has(`${entry.target.id.toLowerCase()}:${entry.target.incarnation}`),
+        ),
+      );
+    }
+    if (!absent.length) continue;
+    // eslint-disable-next-line no-restricted-syntax -- metadata-only exact-entry CAS on validated owned scope hashes, with positive physical absence proof.
+    const result = await scopes.bulkWrite(
+      absent.map((entry) => ({
+        updateOne: {
+          filter: {
+            ...settlementFilter(key, entry, anchor.retentionEpoch ?? 0),
+            closed: anchor.closed,
+            $or: [{ expiredAt: anchor.expiredAt ?? null }],
+          },
+          update: { $pull: { pending: { key: entry.key } }, $inc: { pendingCount: -1 } },
+        },
+      })),
+      { ordered: false },
+    );
+    count += result.matchedCount;
+  }
+  return count;
+}

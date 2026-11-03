@@ -20,16 +20,11 @@ import {
   prepareResponseRootStorage,
 } from './responseRoot';
 import {
-  responseScopeKeys,
-  closeResponseScopes,
-  createResponseRetention,
-  eraseResponseRecords,
-} from './responseScope';
-import {
   registerResponseTarget,
   settleResponseTarget,
   reconcileResponseTargets,
 } from './registration';
+import { responseScopeKeys, closeResponseScopes, createResponseRetention } from './responseScope';
 import { createManagedConversationId, createManagedMessageId } from '~/utils/managed';
 import { createResponseCheckpointStorage } from './responseCheckpoint';
 import { checkpointOwnerNamespacePrefix } from '~/utils/checkpoint';
@@ -40,6 +35,7 @@ import { createChatProjectModel } from '~/models/chatProject';
 import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
 import { createConversationMethods } from './conversation';
+import { eraseResponseRecords } from './responseErasure';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
 import { createResponseStorage } from './response';
@@ -240,6 +236,47 @@ describe('managed target allocation on real storage', () => {
         expect(await storage.read(input, input.responseId)).toBeNull();
       },
     );
+    it('keeps conversation-subset erasure bounded even after owner closure', async () => {
+      const storage = createResponseStorage(db);
+      const firstInput = rootInput();
+      const secondInput = {
+        ...rootInput(),
+        userId: firstInput.userId,
+      };
+      const first = await storage.reserve(firstInput);
+      const second = await storage.reserve(secondInput);
+      if (!first.ok || !second.ok) throw new Error('Reservation failed');
+      await closeResponseScopes(db, firstInput);
+      const model = createStoredResponseModel(db);
+      await eraseResponseRecords(db, firstInput, []);
+      expect(await model.collection.countDocuments({ userId: firstInput.userId })).toBe(2);
+      await eraseResponseRecords(db, firstInput, [firstInput.conversationId]);
+      expect(await model.collection.findOne({ responseId: firstInput.responseId })).toBeNull();
+      expect(await model.collection.findOne({ responseId: secondInput.responseId })).toMatchObject({
+        requestJSON: secondInput.requestJSON,
+        _managed: { phase: 'published' },
+      });
+      await eraseResponseRecords(db, firstInput);
+      expect(await model.collection.countDocuments({ userId: firstInput.userId })).toBe(0);
+    });
+    it('refuses erasure before closure and cannot acknowledge a drifted pending count', async () => {
+      const input = rootInput();
+      const storage = createResponseStorage(db);
+      expect((await storage.reserve(input)).ok).toBe(true);
+      await expect(eraseResponseRecords(db, input)).rejects.toThrow('closed admission');
+      expect((await storage.read(input, input.responseId))?.requestJSON).toBe(input.requestJSON);
+      await closeResponseScopes(db, input);
+      await eraseResponseRecords(db, input);
+      const ownerKey = responseScopeKeys(input, input.conversationId)[0];
+      await createResponseScopeModel(db).updateOne(
+        { _id: ownerKey },
+        { $set: { pendingCount: 1 } },
+      );
+      await expect(eraseResponseRecords(db, input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      expect((await createResponseScopeModel(db).findById(ownerKey).lean())?.pendingCount).toBe(1);
+    });
     it('recovers an applied reservation after a lost publication reply without replaying allocation', async () => {
       const storage = createResponseStorage(db);
       const input = rootInput();
@@ -495,6 +532,133 @@ describe('managed target allocation on real storage', () => {
       });
       expect(cleanup).not.toHaveProperty('requestJSON');
       expect(cleanup).not.toHaveProperty('responseJSON');
+    });
+    it('retains scrubbed cleanup authority until provider, checkpoint and physical deletion are proved', async () => {
+      const f = await checkpointFixture();
+      const checkpoint = f.storage.createCheckpointWriter(f.reference, f.checkpoint);
+      expect(await checkpoint.open()).toBe(true);
+      const entry = {
+        key: createHash('sha256').update('interrupted-root-settlement').digest('hex'),
+        target: f.reference.target,
+      };
+      for (const conversationId of [undefined, f.input.conversationId])
+        expect(await registerResponseTarget(db, f.input, conversationId, entry)).toMatchObject({
+          status: 'registered',
+        });
+      await closeResponseScopes(db, f.input);
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      const retained = await includeManagedAllocations(
+        f.model
+          .findOne(responseRootFilter(db, f.reference))
+          .select('+providerExecution +checkpoint')
+          .lean(),
+      );
+      expect(retained).not.toHaveProperty('requestJSON');
+      expect(retained).not.toHaveProperty('responseJSON');
+      expect(retained).toHaveProperty('providerExecution.id', f.checkpoint.providerExecutionId);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      expect(await checkpoint.settle()).toBe(true);
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      const proof = await f.storage.readExecutionProof(f.record);
+      if (!proof) throw new Error('Drain proof missing');
+      expect(
+        await f.storage.acknowledgeCheckpointErasure(f.record, {
+          ...proof,
+          checkpointWriterId: randomUUID(),
+        }),
+      ).toBe(false);
+      expect(
+        await f.storage.acknowledgeCheckpointErasure(
+          { ...f.record, conversationId: createManagedConversationId() },
+          proof,
+        ),
+      ).toBe(false);
+      expect(
+        await f.storage.acknowledgeCheckpointErasure(
+          { ...f.record, agentId: 'wrong-agent' },
+          proof,
+        ),
+      ).toBe(false);
+      expect(await f.storage.acknowledgeCheckpointErasure(f.record, proof)).toBe(true);
+      // An idempotent late closer preserves the physical erasure acknowledgment.
+      expect(await checkpoint.settle()).toBe(true);
+      await eraseResponseRecords(db, f.input);
+      expect(
+        await includeManagedAllocations(f.model.exists(responseRootFilter(db, f.reference))),
+      ).toBeNull();
+      const anchors = await createResponseScopeModel(db)
+        .find({ _id: { $in: responseScopeKeys(f.input, f.input.conversationId) } })
+        .lean();
+      expect(anchors.every((anchor) => anchor.closed && anchor.pendingCount === 0)).toBe(true);
+    });
+    it('erases published and not-yet-pinned selected targets while retaining an active provider root', async () => {
+      const f = await checkpointFixture();
+      const target = await allocateManagedTarget(db, 'message');
+      const late = await allocateManagedTarget(db, 'message');
+      const [ownerKey, conversationKey] = responseScopeKeys(f.input, f.input.conversationId);
+      const publication = {
+        target,
+        parentId: f.reference.target.id,
+        ownerKey,
+        conversationKey,
+        logicalId: createManagedMessageId(),
+        receipt: createHash('sha256').update('selected').digest('hex'),
+      };
+      expect(await pinManagedTarget(db, target, publication.parentId)).toBe(true);
+      expect(await beginManagedTargetRegistration(db, target, publication.parentId)).toBe(true);
+      expect(await markManagedTargetRegistered(db, publication)).toBe(true);
+      const saved = await createMessageMethods(db, { managedPublication: publication }).saveMessage(
+        { userId: f.input.userId },
+        {
+          messageId: publication.logicalId,
+          conversationId: f.input.conversationId,
+          text: 'confirmed private history',
+          isCreatedByUser: false,
+        },
+      );
+      expect(saved).toHaveProperty('messageId', publication.logicalId);
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
+        $set: {
+          canonicalTargets: [
+            {
+              logicalId: publication.logicalId,
+              receipt: publication.receipt,
+              phase: 'published',
+              target,
+            },
+            {
+              logicalId: createManagedMessageId(),
+              receipt: publication.receipt,
+              phase: 'selected',
+              target: late,
+            },
+          ],
+        },
+      });
+      await closeResponseScopes(db, f.input);
+      await expect(eraseResponseRecords(db, f.input)).rejects.toMatchObject({
+        code: 'response_erasure_pending',
+      });
+      expect(
+        await includeManagedAllocations(
+          db
+            .model('Message')
+            .exists({ $or: [managedTargetFilter(db, target), managedTargetFilter(db, late)] }),
+        ),
+      ).toBeNull();
+      expect(await pinManagedTarget(db, late, publication.parentId)).toBe(false);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      await eraseResponseRecords(db, f.input);
+      expect(
+        await includeManagedAllocations(f.model.exists(responseRootFilter(db, f.reference))),
+      ).toBeNull();
     });
     it('does not adopt a replacement physical root as durable drain proof', async () => {
       const f = await checkpointFixture();

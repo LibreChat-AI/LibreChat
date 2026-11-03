@@ -21,9 +21,10 @@ import {
   eraseChannelPersistenceForUser,
   resolveChannelErasureConfig,
 } from '~/methods/channelErasure';
-import { closeResponseScopes, eraseResponseRecords } from './responseScope';
+import { eraseResponseRecords, ResponseErasurePendingError } from './responseErasure';
 import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocsForUsers } from '~/utils/eviction';
+import { closeResponseScopes } from './responseScope';
 import { signPayload } from '~/crypto';
 import logger from '~/config/winston';
 
@@ -659,6 +660,7 @@ export function createUserMethods(
       await invalidateAuthUserDocCache(userId);
       return { deletedCount: result.deletedCount, message: 'User was deleted successfully.' };
     } catch (error: unknown) {
+      if (error instanceof ResponseErasurePendingError) throw error;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       throw new Error('Error deleting user: ' + errorMessage);
     }

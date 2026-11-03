@@ -133,6 +133,27 @@ export async function publishResponseRoot(
   const [ownerKey, conversationKey] = responseScopeKeys(input, input.conversationId);
   const entry = rootRegistration(target);
   const { key } = entry;
+  const model = createStoredResponseModel(mongoose);
+  const metadata = {
+    '_managed.parentId': target.id,
+    '_managed.logicalId': input.responseId,
+    '_managed.receipt': key,
+    '_managed.ownerKey': ownerKey,
+    '_managed.conversationKey': conversationKey,
+  };
+  // Cleanup can recover both hashed scopes even if the process dies between registrations.
+  const described = await model.updateOne(
+    {
+      ...physical,
+      responseId: `__allocation_${target.id.toLowerCase()}`,
+      requestKey: `__allocation_${target.id.toLowerCase()}`,
+      userId: { $exists: false },
+      $or: [{ '_managed.phase': 'empty' }, { ...metadata, '_managed.phase': 'registered' }],
+    },
+    { $set: metadata },
+    { upsert: false },
+  );
+  if (described.matchedCount !== 1) return null;
   let expiredAt = input.expiredAt;
   for (const conversationId of [undefined, input.conversationId]) {
     const registered = await registerResponseTarget(
@@ -147,14 +168,6 @@ export async function publishResponseRoot(
       expiredAt = registered.expiredAt;
   }
   if (expiredAt && expiredAt <= new Date()) return null;
-  const model = createStoredResponseModel(mongoose);
-  const metadata = {
-    '_managed.parentId': target.id,
-    '_managed.logicalId': input.responseId,
-    '_managed.receipt': key,
-    '_managed.ownerKey': ownerKey,
-    '_managed.conversationKey': conversationKey,
-  };
   const sealed = await includeManagedAllocations(
     model.updateOne(
       {

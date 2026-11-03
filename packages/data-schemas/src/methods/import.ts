@@ -1,8 +1,9 @@
 import type { FilterQuery, Model } from 'mongoose';
 import type { IConversation, IMessage } from '~/types';
-import { closeResponseScopes, eraseResponseRecords } from './responseScope';
 import { runAsSystem, tenantStorage } from '~/config/tenantContext';
 import { refreshChatProjectStatsForUser } from './chatProject';
+import { eraseResponseRecords } from './responseErasure';
+import { closeResponseScopes } from './responseScope';
 
 export interface ConversationImportCleanupScope {
   user: string;

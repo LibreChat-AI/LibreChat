@@ -1,17 +1,12 @@
 import { createHash } from 'node:crypto';
 import type { ClientSession } from 'mongoose';
 import type { ResponseOwner } from '~/models/response';
-import {
-  eraseChannelFeedbackForOwner,
-  retainChannelFeedbackForOwner,
-} from './channelFeedbackErasure';
-import { runAsSystem, tenantStorage } from '~/config/tenantContext';
+import { retainChannelFeedbackForOwner } from './channelFeedbackErasure';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { getTransactionSupport } from '~/utils/transactions';
 import { shortenExpiration } from '~/utils/retention';
-import { ALLOCATION_PREFIX } from '~/utils/managed';
-import { managedTargetFilter } from './managed';
+import { runAsSystem } from '~/config/tenantContext';
 
 /** Response-bound conversation IDs are immutable: jobs and checkpoints retain that identity.
  * An empty source scope is closed before replacement so delayed admission cannot orphan data. */
@@ -124,57 +119,6 @@ export function responseOwnerFilter(owner: ResponseOwner): {
   tenantId: string | { $in: Array<null | string> };
 } {
   return { userId: owner.userId, tenantId: owner.tenantId || { $in: [null, ''] } };
-}
-
-export async function eraseResponseRecords(
-  mongoose: typeof import('mongoose'),
-  owner: ResponseOwner,
-  conversationIds?: readonly string[],
-): Promise<void> {
-  await eraseChannelFeedbackForOwner(mongoose, owner, conversationIds);
-  const scopes = createResponseScopeModel(mongoose);
-  const records = createStoredResponseModel(mongoose);
-  const ownerKey = scopeKey(owner);
-  const ownerAnchor = conversationIds
-    ? await scopes.findById(ownerKey).select('closed expiredAt').lean()
-    : null;
-  const ownerClosed =
-    ownerAnchor?.closed || (ownerAnchor?.expiredAt && ownerAnchor.expiredAt <= new Date());
-  const keys =
-    !conversationIds || ownerClosed ? [ownerKey] : conversationIds.map((id) => scopeKey(owner, id));
-  for (const key of keys) {
-    // One authority has a configured bounded pending list; do not load all owners' lists.
-    const anchor = await scopes.findById(key).select('closed expiredAt pending').lean();
-    if (!anchor || (!anchor.closed && !(anchor.expiredAt && anchor.expiredAt <= new Date())))
-      throw new Error('Response erasure requires closed admission');
-    const roots = (anchor.pending ?? []).filter((entry) => entry.target.kind === 'response');
-    if (!roots.length) continue;
-    await tenantStorage.run({ tenantId: owner.tenantId || undefined }, async () => {
-      const targets = roots.map(({ target }) => {
-        if ((target.tenantId || undefined) !== (owner.tenantId || undefined))
-          throw new Error('Response cleanup target tenant changed');
-        return {
-          ...managedTargetFilter(mongoose, target),
-          responseId: `${ALLOCATION_PREFIX}${target.id.toLowerCase()}`,
-          userId: { $exists: false },
-        };
-      });
-      // Seal before deleting. A paused payload publisher must lose its registered-phase CAS.
-      await records.updateMany(
-        {
-          $or: targets,
-          '_managed.phase': { $in: ['empty', 'pinned', 'registering', 'registered', 'retired'] },
-        },
-        { $set: { '_managed.phase': 'retired' } },
-        { upsert: false },
-      );
-      await records.deleteMany({ $or: targets, '_managed.phase': 'retired' });
-    });
-  }
-  await records.deleteMany({
-    ...responseOwnerFilter(owner),
-    ...(conversationIds ? { conversationId: { $in: conversationIds } } : {}),
-  });
 }
 
 function scopeKey(owner: ResponseOwner, conversationId?: string): string {

@@ -296,10 +296,95 @@ it.each(['pending', 'settled'] as const)(
       expect(
         await mongoose.models.StoredResponse.findOne({ responseId: f.record.responseId }),
       ).toBeNull();
-      expect(await storage.readCleanupIdentity(f.record, f.record.responseId)).toMatchObject({
-        retirement: 'expired',
-        storageTarget: f.record.storageTarget,
+      const retained = await storage.readCleanupIdentity(f.record, f.record.responseId);
+      if (state === 'settled') {
+        expect(retained).toBeNull();
+        expect(
+          await mongoose.models.StoredResponse.collection.countDocuments({
+            ...owner,
+            responseId: f.record.responseId,
+          }),
+        ).toBe(0);
+      } else {
+        expect(retained).toMatchObject({
+          retirement: 'expired',
+          storageTarget: f.record.storageTarget,
+        });
+        expect(
+          await mongoose.models.StoredResponse.collection.countDocuments({
+            ...owner,
+            responseId: f.record.responseId,
+          }),
+        ).toBe(1);
+      }
+    }),
+);
+
+it.each(['delete', 'acknowledgment'] as const)(
+  'retains erasure authority and retries safely after checkpoint %s failure',
+  (failure) =>
+    scope(async () => {
+      const f = await fixture('terminal');
+      const namespace = `${checkpointOwnerNamespacePrefix(owner.userId, owner.tenantId)}${randomUUID()}`;
+      const checkpoint = storage.createCheckpointWriter(responseReference(f.record), {
+        ...f.receipt,
+        writerId: randomUUID(),
+        namespace,
+        configJSON: JSON.stringify({
+          type: 'mongo',
+          checkpointCollectionName: 'erasure_retry_cp',
+          checkpointWritesCollectionName: 'erasure_retry_writes',
+        }),
       });
+      expect(await checkpoint.open()).toBe(true);
+      expect(await checkpoint.settle()).toBe(true);
+      await jobs.markProviderExecutionDrained(
+        f.record.responseId,
+        f.receipt.generationCreatedAt,
+        f.receipt.providerExecutionId,
+        true,
+      );
+      expect(
+        await storage.settleExecution(responseReference(f.record), f.receipt, 'complete'),
+      ).toBe(true);
+      const collection = mongoose.connection.db!.collection('erasure_retry_cp');
+      await collection.insertOne({ namespace, private: 'checkpoint data' });
+      await mongoose.models.StoredResponse.updateOne(
+        { responseId: f.record.responseId },
+        { $set: { expiredAt: new Date(0) } },
+      );
+      let first = true;
+      const cleanup = jest.fn(async () => {
+        if (failure === 'delete' && first) {
+          first = false;
+          throw new Error('Checkpoint delete failed');
+        }
+        await collection.deleteMany({ namespace });
+      });
+      if (failure === 'acknowledgment')
+        jest.spyOn(storage, 'acknowledgeCheckpointErasure').mockResolvedValueOnce(false);
+      const retire = createResponseRetirement({ storage, jobs, cleanupCheckpoint: cleanup });
+      await expect(retire(f.record, f.record.responseId)).rejects.toThrow(
+        failure === 'delete' ? 'Checkpoint delete failed' : 'erasure acknowledgment',
+      );
+      expect(
+        await mongoose.models.StoredResponse.collection.countDocuments({
+          responseId: f.record.responseId,
+        }),
+      ).toBe(1);
+      expect((await jobs.getJob(f.record.responseId))?.metadata.terminalPersistencePending).toBe(
+        true,
+      );
+      expect(await collection.countDocuments({ namespace })).toBe(failure === 'delete' ? 1 : 0);
+      expect(await retire(f.record, f.record.responseId)).toBe('stopped');
+      expect(await collection.countDocuments({ namespace })).toBe(0);
+      expect(
+        await mongoose.models.StoredResponse.collection.countDocuments({
+          responseId: f.record.responseId,
+        }),
+      ).toBe(0);
+      expect(await jobs.getJob(f.record.responseId)).toBeUndefined();
+      expect(cleanup).toHaveBeenCalledTimes(2);
     }),
 );
 
@@ -435,8 +520,8 @@ it('releases a bound unused job when retirement fences its root before enrollmen
     const retire = createResponseRetirement({ storage, jobs });
     expect(await retire(reserved.record, responseId)).toBe('stopped');
     expect(await jobs.getJob(responseId)).toBeUndefined();
-    expect(await storage.readCleanupIdentity(reserved.record, responseId)).toMatchObject({
-      generationCreatedAt: undefined,
-      retirement: 'expired',
-    });
+    expect(await storage.readCleanupIdentity(reserved.record, responseId)).toBeNull();
+    expect(
+      await mongoose.models.StoredResponse.collection.countDocuments({ ...owner, responseId }),
+    ).toBe(0);
   }));

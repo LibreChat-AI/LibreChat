@@ -12,9 +12,16 @@ const uuidPattern = /^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]
 export function createResponseCheckpointStorage(
   mongoose: typeof import('mongoose'),
   reference: ResponseReference,
-  input: Omit<ResponseCheckpointExecution, 'state'>,
+  input: Omit<ResponseCheckpointExecution, 'state' | 'erased'>,
 ): { open: () => Promise<boolean>; settle: () => Promise<boolean> } {
-  const checkpoint = { ...input };
+  const checkpoint = {
+    generationCreatedAt: input.generationCreatedAt,
+    providerExecutionId: input.providerExecutionId,
+    ...(input.ownerId ? { ownerId: input.ownerId } : {}),
+    writerId: input.writerId,
+    namespace: input.namespace,
+    configJSON: input.configJSON,
+  };
   const physical = responseRootFilter(mongoose, reference);
   const prefix = checkpointOwnerNamespacePrefix(reference.userId, reference.tenantId);
   if (
@@ -104,7 +111,14 @@ export function createResponseCheckpointStorage(
             { ...exact, 'checkpoint.state': { $in: ['pending', 'settled'] } },
           ],
         },
-        { $set: { checkpoint: { ...checkpoint, state: 'settled' } } },
+        {
+          $set: Object.fromEntries(
+            Object.entries({ ...checkpoint, state: 'settled' }).map(([field, value]) => [
+              `checkpoint.${field}`,
+              value,
+            ]),
+          ),
+        },
         { upsert: false },
       );
       return result.matchedCount === 1;

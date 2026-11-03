@@ -3,13 +3,10 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelReplyMapping } from 'librechat-data-provider';
 import type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models/channelFeedback';
 import type { ChannelRunRecord } from '~/models/channelRun';
-import {
-  closeResponseScopes,
-  eraseResponseRecords,
-  createResponseRetention,
-} from './responseScope';
 import { createChannelFeedbackStorage, ChannelFeedbackAuthorityError } from './channelFeedback';
+import { closeResponseScopes, createResponseRetention } from './responseScope';
 import { runAsSystem, tenantStorage } from '~/config/tenantContext';
+import { eraseResponseRecords } from './responseErasure';
 import { createModels } from '~/models';
 import { createMethods } from './index';
 

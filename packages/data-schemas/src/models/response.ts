@@ -45,6 +45,7 @@ export interface ResponseCheckpointExecution {
   namespace: string;
   configJSON: string;
   state: 'pending' | 'settled';
+  erased?: boolean;
 }
 
 export type StoredResponseStatus =
@@ -211,6 +212,7 @@ export function createStoredResponseModel(
             namespace: { type: String, required: true },
             configJSON: { type: String, required: true },
             state: { type: String, enum: ['pending', 'settled'], required: true },
+            erased: Boolean,
           },
           { _id: false },
         ),
