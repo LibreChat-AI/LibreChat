@@ -17,6 +17,7 @@ on:
       - '.github/workflows/tag-images.yml'
       - '.github/workflows/main-image-workflow.yml'
       - '.github/workflows/docker-publish.yml'
+      - 'helm/librechat/**'
       - 'docker-compose.mongo-replica.yml'
       - 'utils/docker/init-replica.js'
       - '.env.example'
@@ -38,6 +39,7 @@ on:
       - '.github/workflows/tag-images.yml'
       - '.github/workflows/main-image-workflow.yml'
       - '.github/workflows/docker-publish.yml'
+      - 'helm/librechat/**'
       - 'docker-compose.mongo-replica.yml'
       - 'utils/docker/init-replica.js'
       - '.env.example'
@@ -76,6 +78,10 @@ jobs:
         run: npm run build --workspace @librechat/channel-gateway
       - name: Verify release image provenance
         run: node .github/scripts/test-channel-release.mjs
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+      - name: Verify gateway Helm configuration
+        run: node helm/librechat/tests/channel_gateway_render_test.mjs
       - name: Verify release and source Compose configuration
         run: node .github/scripts/test-channel-compose.mjs
       - name: Verify local replica conversion and restart

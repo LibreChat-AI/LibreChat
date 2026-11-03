@@ -1,0 +1,118 @@
+{{- if .Values.channelGateway.enabled }}
+{{- $gateway := .Values.channelGateway }}
+{{- $secret := required "channelGateway.existingSecretName or global.librechat.existingSecretName is required" ($gateway.existingSecretName | default .Values.global.librechat.existingSecretName) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "librechat.channelGateway.fullname" . }}
+  labels:
+    {{- include "librechat.channelGateway.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "librechat.channelGateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/channel-gateway: {{ toYaml $gateway | sha256sum }}
+        {{- with $gateway.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "librechat.channelGateway.labels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: channel-gateway
+          image: "{{ $gateway.image.repository }}:{{ $gateway.image.tag | default .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $gateway.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: LISTEN_HOST
+              value: "0.0.0.0"
+            - name: LIBRECHAT_INTERNAL_URL
+              value: {{ $gateway.internalUrl | default (printf "http://%s:%v" (include "librechat.fullname" .) .Values.service.port) | quote }}
+            - name: CHANNEL_ID
+              value: {{ required "channelGateway.channelId is required when enabled" $gateway.channelId | quote }}
+            - name: CHANNEL_TENANT_ID
+              value: {{ $gateway.tenantId | quote }}
+            - name: CHANNEL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret | quote }}
+                  key: CHANNEL_SERVICE_TOKEN
+            {{- with $gateway.slackAppTokenKey }}
+            - name: SLACK_APP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret | quote }}
+                  key: {{ . | quote }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          resources:
+            {{- toYaml $gateway.resources | nindent 12 }}
+      {{- with $gateway.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $gateway.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $gateway.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "librechat.channelGateway.fullname" . }}
+  labels:
+    {{- include "librechat.channelGateway.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    {{- include "librechat.channelGateway.selectorLabels" . | nindent 4 }}
+{{- end }}

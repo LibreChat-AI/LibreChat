@@ -293,6 +293,30 @@ dnsConfig: {}
 updateStrategy:
   type: RollingUpdate
 
+# Optional Slack gateway. Enable channel/background policy separately in librechat.yaml.
+# Requires transaction-capable MongoDB; this does not change database topology.
+channelGateway:
+  enabled: false
+  image:
+    repository: ghcr.io/librechat-ai/librechat-channel-gateway
+    # Defaults to image.tag, then Chart.appVersion, to match LibreChat.
+    tag: ""
+    pullPolicy: IfNotPresent
+  channelId: ""
+  tenantId: "_"
+  # Empty derives the in-cluster LibreChat Service URL.
+  internalUrl: ""
+  # Must contain CHANNEL_SERVICE_TOKEN with the same value used by LibreChat.
+  # Empty uses global.librechat.existingSecretName. Other API secrets are not imported.
+  existingSecretName: ""
+  # Set to "" for webhook transport; Socket Mode needs this existing Secret key.
+  slackAppTokenKey: SLACK_APP_TOKEN
+  resources: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 langfuseFanout:
   enabled: false
   replicaCount: 1
