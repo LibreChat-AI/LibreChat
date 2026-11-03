@@ -59,6 +59,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24.22.1'
+          cache: npm
       # The full workspace tree, under the E2E workflows' exact key and path
       # list. This job also runs on dev pushes, so it seeds the dev-scoped
       # entry that every pull request against dev can restore.

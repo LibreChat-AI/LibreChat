@@ -34,6 +34,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24.22.1'
+          cache: npm
       - name: Test Lighthouse failure reporting
         run: node --test e2e/lighthouse.test.mts
       # Shares the E2E workflows' exact key and path list: one installed tree

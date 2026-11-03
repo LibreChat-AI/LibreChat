@@ -158,6 +158,7 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: '24.22.1'
+          cache: npm
 
       # Same key and path list as the E2E workflows, so one installed tree per
       # lockfile serves both. Exact key only: a tree installed from another
