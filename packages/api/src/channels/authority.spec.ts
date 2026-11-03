@@ -37,6 +37,7 @@ import type { IUser, ChannelRunRecord } from '@librechat/data-schemas';
 import type { ChannelResponseCredentialDependencies } from './credentials';
 import type { BackgroundResponsesHost } from '~/agents/responses/host';
 import type { ApiKeyAuthRequest } from '~/apiKeys/middleware';
+import type { ServerRequest } from '~/types/http';
 import { createChannelAuthority, channelExternalIdentity } from './authority';
 import { createChannelResponseCredentials } from './credentials';
 import { createRequireApiKeyAuth } from '~/apiKeys/middleware';
@@ -393,6 +394,8 @@ it(
     await post(`${route}/bind`)
       .send({ fence: claimed.body.fence, responseId: 'resp_missing' })
       .expect(409);
+    const plannedConversationId = (await storage.read(tenantId, 'channel', admitted.body.runId))!
+      .execution!.conversationId;
     const reserved = await createResponseStorage(mongoose).reserve({
       tenantId,
       userId: users[0].id,
@@ -401,7 +404,7 @@ it(
       fingerprint: 'request',
       agentId: 'agent',
       requestJSON: JSON.stringify(prepared.body.request),
-      conversationId: 'canonical-conversation',
+      conversationId: plannedConversationId,
       parentMessageId: '00000000-0000-0000-0000-000000000000',
     });
     if (!reserved.ok) throw new Error('Reservation failed');
@@ -412,7 +415,7 @@ it(
     expect(run?.execution).toMatchObject({
       protocol: 'responses',
       responseId: reserved.record.responseId,
-      conversationId: 'canonical-conversation',
+      conversationId: plannedConversationId,
     });
     await storage.saveSnapshot(
       tenantId,
@@ -475,7 +478,8 @@ it(
         background: true,
         store: true,
       }),
-      conversationId: 'late-canonical-conversation',
+      conversationId: (await storage.read(tenantId, 'channel', admitted.body.runId))!.execution!
+        .conversationId,
       parentMessageId: '00000000-0000-0000-0000-000000000000',
     });
     if (!reserved.ok) throw new Error('Reservation failed');
@@ -511,21 +515,10 @@ it.each(['per_user', 'shared'] as const)(
       const admitted = await post('runs').send(event()).expect(201);
       const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
       const base = `runs/${admitted.body.runId}`;
-      const prepared = await post(`${base}/response/prepare`)
-        .send({ fence: claimed.body.fence })
-        .expect(200);
+      await post(`${base}/response/prepare`).send({ fence: claimed.body.fence }).expect(200);
       const responseId = createManagedMessageId();
-      await createResponseStorage(mongoose).reserve({
-        tenantId,
-        userId: users[0].id,
-        responseId,
-        requestKey: prepared.body.requestKey,
-        fingerprint: 'request',
-        agentId: 'agent',
-        requestJSON: JSON.stringify(prepared.body.request),
-        conversationId: 'native-conversation',
-        parentMessageId: 'root',
-      });
+      const preparedRun = (await storage.read(tenantId, 'channel', admitted.body.runId))!;
+      await reserveFixtureResponse(preparedRun, responseId);
       await post(`${base}/response/bind`)
         .send({ fence: claimed.body.fence, responseId })
         .expect(200);
@@ -1662,7 +1655,9 @@ it(
     api.use(async (req, res, next) => {
       await authenticate(req as ApiKeyAuthRequest, res, next);
     });
-    api.post(/.*/, (_req, res) => {
+    const captured: ServerRequest['preparedResponseConversation'][] = [];
+    api.post(/.*/, (req, res) => {
+      captured.push((req as ServerRequest).preparedResponseConversation);
       res.sendStatus(204);
     });
     const body = {
@@ -1678,6 +1673,14 @@ it(
         .auth(bearer, { type: 'bearer' })
         .set('Idempotency-Key', `channel:${run.runId}`);
     await call().send(body).expect(204);
+    expect(captured[0]).toEqual({
+      sourceKeyId: saved.execution!.apiKeyId!,
+      userId: users[0].id,
+      tenantId,
+      agentId: run.agentId,
+      conversationId: run.execution!.conversationId,
+      parentMessageId: run.execution!.parentMessageId,
+    });
     await call()
       .send({ ...body, model: 'other-agent' })
       .expect(403);
@@ -1713,7 +1716,7 @@ it(
       agentId: 'agent',
       fingerprint: 'cancelled-request',
       requestJSON: JSON.stringify(body),
-      conversationId: 'canonical-cancelled',
+      conversationId: saved.execution!.conversationId,
       parentMessageId: '00000000-0000-0000-0000-000000000000',
     });
     if (!response.ok) throw new Error('Reservation failed');

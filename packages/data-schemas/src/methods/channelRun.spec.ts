@@ -573,11 +573,11 @@ it('reconciles uncertain progress with the same attempt and immutable provider m
     );
   }));
 
-it('replays response binding after the authoritative parent differs from the original request', () =>
+it('retains prepared conversation and parent identity across binding replays', () =>
   scope(async () => {
     await storage.admit(event(), 100);
     const run = (await storage.claim(tenantId, 'channel', 'worker', 101, 1000))!;
-    await storage.prepareExecution(tenantId, fence(run), 102);
+    const prepared = await storage.prepareExecution(tenantId, fence(run), 102);
     await mongoose.models.StoredResponse.create({
       tenantId,
       userId: 'actor',
@@ -591,14 +591,27 @@ it('replays response binding after the authoritative parent differs from the ori
         background: true,
         store: true,
       }),
-      conversationId: 'canonical-conversation',
-      parentMessageId: 'canonical-parent',
+      conversationId: prepared.execution!.conversationId,
+      parentMessageId: prepared.execution!.parentMessageId,
       status: 'queued',
       revision: 0,
     });
+    for (const field of ['conversationId', 'parentMessageId'] as const) {
+      await mongoose.models.StoredResponse.updateOne(
+        { responseId: 'bound-response' },
+        { $set: { [field]: 'another-conversation' } },
+      );
+      await expect(
+        storage.bindResponse(tenantId, fence(run), 'bound-response', 103),
+      ).rejects.toMatchObject({ code: 'invalid_transition' });
+      await mongoose.models.StoredResponse.updateOne(
+        { responseId: 'bound-response' },
+        { $set: { [field]: prepared.execution![field] } },
+      );
+    }
     const first = await storage.bindResponse(tenantId, fence(run), 'bound-response', 103);
     const replay = await storage.bindResponse(tenantId, fence(run), 'bound-response', 104);
-    expect(first.execution?.parentMessageId).toBe('canonical-parent');
+    expect(first.execution?.parentMessageId).toBe(prepared.execution!.parentMessageId);
     expect(replay.execution).toEqual(first.execution);
     await expect(
       storage.bindResponse(tenantId, fence(run), 'different-response', 105),
@@ -754,9 +767,10 @@ it('serializes account erasure with an already inserting channel event', () =>
   }));
 
 async function bindTestResponse(run: ChannelRunRecord, responseId = 'response') {
+  const prepared = (await storage.read(run.tenantId, run.channelId, run.runId))!;
   await mongoose.models.StoredResponse.create({
     tenantId: run.tenantId === '_' ? undefined : run.tenantId,
-    sourceKeyId: (await storage.read(run.tenantId, run.channelId, run.runId))?.execution?.apiKeyId,
+    sourceKeyId: prepared.execution?.apiKeyId,
     userId: run.principal.userId,
     responseId,
     requestKey: `channel:${run.runId}`,
@@ -768,8 +782,8 @@ async function bindTestResponse(run: ChannelRunRecord, responseId = 'response') 
       background: true,
       store: true,
     }),
-    conversationId: 'bound-conversation',
-    parentMessageId: 'bound-parent',
+    conversationId: prepared.execution!.conversationId,
+    parentMessageId: prepared.execution!.parentMessageId,
     status: 'queued',
     revision: 0,
   });
@@ -1004,7 +1018,7 @@ it.each([undefined, null, ''])(
       const input = { ...event(), tenantId: '_' };
       await storage.admit(input, 100);
       const run = (await storage.claim('_', 'channel', 'worker', 101, 1000))!;
-      await storage.prepareExecution('_', fence(run), 102);
+      const prepared = await storage.prepareExecution('_', fence(run), 102);
       await runAsSystem(async () =>
         mongoose.models.StoredResponse.collection.insertOne({
           ...(storedTenant === undefined ? {} : { tenantId: storedTenant }),
@@ -1014,8 +1028,8 @@ it.each([undefined, null, ''])(
           requestKey: `channel:${run.runId}`,
           fingerprint: 'request',
           requestJSON: JSON.stringify({ model: 'agent', input: 'hello', background: true }),
-          conversationId: 'canonical',
-          parentMessageId: 'parent',
+          conversationId: prepared.execution!.conversationId,
+          parentMessageId: prepared.execution!.parentMessageId,
           status: 'queued',
           revision: 0,
         }),

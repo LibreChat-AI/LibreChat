@@ -23,6 +23,7 @@ export interface BackgroundResponseDependencies {
   resolveContinuation: (
     owner: ResponseOwner,
     previousResponseId?: string,
+    source?: { sourceKeyId?: string; agentId: string },
   ) => Promise<{
     conversationId: string;
     conversationTarget?: StoredResponseRecord['conversationTarget'];
@@ -202,7 +203,10 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
         : null;
       if (managedPrevious && !previous)
         return { ok: false, status: 409, code: 'response_continuation_unavailable' };
-      const continuation = await deps.resolveContinuation(owner, previousId);
+      const continuation = await deps.resolveContinuation(owner, previousId, {
+        sourceKeyId,
+        agentId: request.model,
+      });
       if (
         previous &&
         (continuation.conversationId !== previous.conversationId ||

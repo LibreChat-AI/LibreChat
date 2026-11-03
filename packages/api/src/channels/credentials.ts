@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { Constants } from 'librechat-data-provider';
+import { isManagedConversationId } from '@librechat/data-schemas';
 import type {
   AgentApiKeyBinding,
   AgentApiKeyListItem,
@@ -12,6 +13,7 @@ import type {
 } from '@librechat/data-schemas';
 import type { Request } from 'express';
 import type { ChannelRunDependencies } from './runs';
+import type { ServerRequest } from '~/types/http';
 import { hasChannelRunAuthority } from './runs';
 
 export interface ChannelResponseCredentialDependencies {
@@ -177,6 +179,8 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
       user: IUser;
       request: Request;
     }): Promise<boolean> {
+      const request = input.request as ServerRequest;
+      delete request.preparedResponseConversation;
       const owner = { userId: String(input.user._id), tenantId: input.user.tenantId };
       const run = await current(input.binding, input.keyId, owner);
       if (!run) return false;
@@ -184,13 +188,23 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
       if (input.request.method === 'POST' && pathname === '/api/agents/v1/responses') {
         if (run.cancellationRequested) return false;
         const parsed = requestSchema.safeParse(input.request.body);
-        return (
+        const conversationId = run.execution!.conversationId;
+        const allowed =
           parsed.success &&
           parsed.data.model === run.agentId &&
           parsed.data.input === run.admission.input &&
           parsed.data.previous_response_id === previousResponse(run) &&
-          input.request.headers['idempotency-key'] === `channel:${run.runId}`
-        );
+          input.request.headers['idempotency-key'] === `channel:${run.runId}` &&
+          (previousResponse(run) != null || isManagedConversationId(conversationId));
+        if (allowed)
+          request.preparedResponseConversation = {
+            ...owner,
+            sourceKeyId: input.keyId,
+            agentId: run.agentId,
+            conversationId,
+            parentMessageId: run.execution!.parentMessageId,
+          };
+        return allowed;
       }
       const path = /^\/api\/agents\/v1\/responses\/(resp_[\w-]+)(\/cancel)?$/.exec(pathname);
       if (!path || (path[2] ? input.request.method !== 'POST' : input.request.method !== 'GET'))
@@ -202,6 +216,7 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
           response.agentId === run.agentId &&
           response.requestKey === `channel:${run.runId}` &&
           response.sourceKeyId === input.keyId &&
+          response.conversationId === run.execution!.conversationId &&
           (run.execution?.responseId == null || run.execution.responseId === response.responseId),
       );
     },

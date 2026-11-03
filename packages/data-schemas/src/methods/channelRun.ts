@@ -32,6 +32,7 @@ import {
 import { initializeChannelScope, touchChannelAuthority, touchChannelScope } from './channelScope';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { prepareChannelOwnerAdmission } from './channelOwner';
+import { createManagedConversationId } from '~/utils/managed';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseOwnerFilter } from './responseScope';
 import { getTenantId } from '~/config/tenantContext';
@@ -294,6 +295,11 @@ export function createChannelRunStorage(
       .session(session)
       .lean();
     if (!response) return null;
+    if (
+      response.conversationId !== run.execution.conversationId ||
+      response.parentMessageId !== run.execution.parentMessageId
+    )
+      throw new ChannelRunConflict('invalid_transition');
     const request: {
       input?: string;
       model?: string;
@@ -318,8 +324,6 @@ export function createChannelRunStorage(
         ...run.execution,
         protocol: 'responses',
         responseId: response.responseId,
-        conversationId: response.conversationId,
-        parentMessageId: response.parentMessageId,
         ...(response.generationCreatedAt == null
           ? {}
           : { generationCreatedAt: response.generationCreatedAt }),
@@ -610,7 +614,7 @@ export function createChannelRunStorage(
           state: 'executing',
           execution: {
             requestId: run.runId,
-            conversationId: lane.conversationId ?? randomUUID(),
+            conversationId: lane.conversationId ?? createManagedConversationId(),
             parentMessageId: lane.responseId ?? '00000000-0000-0000-0000-000000000000',
           },
         };
