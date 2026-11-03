@@ -17,6 +17,7 @@ const {
   stopUserGenerations,
   deleteAllSharedLinksWithCleanup,
   eraseUserData,
+  sendErasureError,
   deleteUserMCPServers,
   revokeUserCodeEnvironmentWorkers,
   finalizeMCPAuthorizationMutation,
@@ -515,7 +516,7 @@ const deleteUserController = async (req, res) => {
       }
     }
     logger.error('[deleteUserController]', err);
-    return res.status(500).json({ message: 'Something went wrong.' });
+    return sendErasureError(res, err, { message: 'Something went wrong.' });
   }
 };
 

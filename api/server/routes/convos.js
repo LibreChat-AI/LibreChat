@@ -2,6 +2,7 @@ const multer = require('multer');
 const express = require('express');
 const {
   reportLocatorTraversalFailure,
+  sendErasureError,
   isEnabled,
   normalizeLimit,
   normalizeSortDirection,
@@ -636,7 +637,7 @@ router.delete('/', configMiddleware, async (req, res) => {
     res.status(201).json(dbResponse);
   } catch (error) {
     logger.error('Error clearing conversations', error);
-    res.status(500).send('Error clearing conversations');
+    sendErasureError(res, error, 'Error clearing conversations');
   }
 });
 
@@ -662,7 +663,7 @@ router.delete('/all', configMiddleware, async (req, res) => {
     res.status(201).json(dbResponse);
   } catch (error) {
     logger.error('Error clearing conversations', error);
-    res.status(500).send('Error clearing conversations');
+    sendErasureError(res, error, 'Error clearing conversations');
   }
 });
 

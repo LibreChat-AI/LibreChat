@@ -2,17 +2,19 @@ import React, { useState } from 'react';
 import { useClearConversationsMutation } from 'librechat-data-provider/react-query';
 import {
   OGDialogTemplate,
+  useToastContext,
   Label,
   Button,
   OGDialog,
   OGDialogTrigger,
   Spinner,
 } from '@librechat/client';
-import { clearAllConversationStorage } from '~/utils';
+import { clearAllConversationStorage, getErasureErrorKey } from '~/utils';
 import { useLocalize, useNewConvo } from '~/hooks';
 
 export const ClearChats = () => {
   const localize = useLocalize();
+  const { showToast } = useToastContext();
   const [open, setOpen] = useState(false);
   const { newConversation } = useNewConvo();
   const clearConvosMutation = useClearConversationsMutation();
@@ -21,6 +23,12 @@ export const ClearChats = () => {
     clearConvosMutation.mutate(
       {},
       {
+        onError: (error) => {
+          showToast({
+            message: localize(getErasureErrorKey(error, 'com_ui_convo_delete_error')),
+            status: 'error',
+          });
+        },
         onSuccess: () => {
           clearAllConversationStorage();
           newConversation();

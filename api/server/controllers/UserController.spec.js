@@ -1055,6 +1055,24 @@ describe('deleteUserController', () => {
     expect(group.memberIds).toEqual(['other']);
   });
 
+  it('reports pending erasure without deleting the account or leaving the trigger fence held', async () => {
+    const { ResponseErasurePendingError } = require('@librechat/data-schemas');
+    const userId = new mongoose.Types.ObjectId();
+    deleteConvos.mockRejectedValueOnce(new ResponseErasurePendingError());
+    await deleteUserController(
+      { user: { id: String(userId), _id: userId, email: 'pending@test.com' } },
+      mockRes,
+    );
+    expect(mockRes.status).toHaveBeenCalledWith(503);
+    expect(mockRes.json).toHaveBeenCalledWith({
+      code: 'response_erasure_pending',
+      message: 'Deletion is still finishing. Please try again shortly.',
+    });
+    expect(deleteUserById).not.toHaveBeenCalled();
+    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(String(userId), expect.any(Date));
+    expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(String(userId), expect.any(Date));
+  });
+
   it('fails closed when conversation deletion fails', async () => {
     const userId = new mongoose.Types.ObjectId();
     deleteConvos.mockRejectedValueOnce(new Error('no convos'));

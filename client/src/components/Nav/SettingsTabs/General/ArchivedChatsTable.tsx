@@ -24,8 +24,8 @@ import {
   useArchiveConvoMutation,
 } from '~/data-provider';
 import ConversationEndpointIcon from '~/components/Conversations/ConversationEndpointIcon';
+import { formatDate, logger, getErasureErrorKey } from '~/utils';
 import { NotificationSeverity } from '~/common';
-import { formatDate, logger } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -133,7 +133,7 @@ export default function ArchivedChatsTable() {
     onError: (error: unknown) => {
       logger.error('Error deleting archived conversation:', error);
       showToast({
-        message: localize('com_ui_archive_delete_error') as string,
+        message: localize(getErasureErrorKey(error, 'com_ui_archive_delete_error')),
         severity: NotificationSeverity.ERROR,
       });
     },
