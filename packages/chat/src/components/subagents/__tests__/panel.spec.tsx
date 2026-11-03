@@ -1,35 +1,46 @@
-import React from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
+/**
+ * @jest-environment jsdom
+ */
+import React, { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { initSubagentAggregatorState, initSubagentTickerState } from '@librechat/chat';
+import { ContentTypes, EModelEndpoint, QueryKeys } from 'librechat-data-provider';
+import { Provider as JotaiProvider, createStore, useAtomValue, useSetAtom } from 'jotai';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { ContentTypes, EModelEndpoint, ForkOptions, QueryKeys } from 'librechat-data-provider';
-import {
-  activeSubagentPanel,
-  subagentProgressByToolCallId,
-  subagentProgressKey,
-  useOpenSubagentPanel,
-} from '@librechat/chat/react';
 import type {
+  Agent,
   TMessage,
+  SubagentControlResponse,
+  ToolCallPartResponse,
   SubagentThreadView,
-  TMessageContentParts,
   ParentSubagentSummary,
 } from 'librechat-data-provider';
-import type { ActiveSubagentPanel } from '@librechat/chat/react';
-import type { JotaiStore } from 'test/harness';
-import { ChatSurfaceHarness, testChatSurface } from 'test/harness';
-import SubagentThreadPanel from './SubagentThreadPanel';
-import { getDraft } from '~/utils';
-import '~/Providers/MessagePartsHostContext';
-import '~/Providers/MessagesHostContext';
-import '~/Providers/SubagentsHostContext';
+import type { ChatSurface, SubagentPanelState } from '../../../react/subagents/surface';
+import type { ActiveSubagentPanel } from '../../../react/subagents/state';
+import type { SubagentsHost } from '../../../react/subagents/host';
+import type { MessagePartsHost } from '../../../react/host';
+import {
+  activeSubagentPanel,
+  subagentProgressKey,
+  subagentProgressByToolCallId,
+} from '../../../react/subagents/state';
+import { useOpenSubagentPanel, SubagentPanelStateContext } from '../../../react/subagents/surface';
+import { initSubagentAggregatorState, initSubagentTickerState } from '../../../core';
+import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
+import { ChatSurfaceProvider } from '../../../react/subagents/provider';
+import { createMessagesHost } from '../../../__fixtures__/messagesHost';
+import { SubagentsHostProvider } from '../../../react/subagents/host';
+import { subagentPanelState } from '../../../react/subagents/runtime';
+import { MessagesHostProvider } from '../../../react/messages/host';
+import { MessagePartsHostProvider } from '../../../react/host';
+import SubagentThreadPanel from '../panel';
+
+type JotaiStore = ReturnType<typeof createStore>;
 
 const mockUseSubagentThreadQuery = jest.fn();
 const mockUseToolCallPartQuery = jest.fn(
   (
     ..._args: unknown[]
-  ): { data?: unknown; isError: boolean; refetch?: () => Promise<unknown> } => ({
+  ): { data?: ToolCallPartResponse; isError: boolean; refetch?: () => Promise<unknown> } => ({
     data: undefined,
     isError: false,
   }),
@@ -60,6 +71,135 @@ const mockHandOffComposerText = jest.fn();
  *  conversation's loaded thread, the cache main chat itself renders from. */
 let queryClient = new QueryClient();
 
+/** The width at which the app lays the panel out as a sheet, before the reader's text scale. */
+const SHEET_MAX_WIDTH = 868;
+
+const agentFixture = (id: string, name: string, filepath?: string): Agent => ({
+  id,
+  name,
+  description: null,
+  created_at: 0,
+  avatar: filepath == null ? null : { filepath, source: 'local' },
+  provider: 'openAI',
+  model: null,
+  model_parameters: {
+    temperature: null,
+    maxContextTokens: null,
+    max_context_tokens: null,
+    max_output_tokens: null,
+    top_p: null,
+    frequency_penalty: null,
+    presence_penalty: null,
+  },
+});
+
+/** The agents map the app's subagents host reads. */
+const agentsMap: Record<string, Agent | undefined> = {
+  'agent-1': agentFixture('agent-1', 'Analyst One', '/analyst.png'),
+  'agent-2': agentFixture('agent-2', 'Analyst Two'),
+};
+
+/** The agent's avatar face, or an empty one: what main chat's author glyph and the actor picker
+ *  both reduce to here. */
+function AuthorFace({ src }: { src?: string }) {
+  return src != null ? (
+    <img src={src} alt="" data-testid="author-face" />
+  ) : (
+    <span data-testid="author-face" />
+  );
+}
+
+const partsHost: MessagePartsHost = {
+  useMessage: () => ({ messageId: 'parent-message' }),
+  renderMarkdown: ({ content }) => <div>{content}</div>,
+  useSmoothStreaming: () => false,
+  useAgent: (agentId) => agentsMap[agentId],
+  renderAgentIcon: () => null,
+  renderAgentAvatar: (agent) => <AuthorFace src={agent?.avatar?.filepath} />,
+  renderContentParts: () => null,
+  renderImage: () => null,
+  renderFilePreview: () => null,
+  useFontSize: () => 'text-base',
+  useShowThinking: () => false,
+  useAutoExpandTools: () => false,
+  useLaTeXParsing: () => false,
+  useChatDirection: () => 'ltr',
+  useUserTextPreferences: () => ({
+    usernameDisplay: false,
+    enableUserMsgMarkdown: false,
+    collapseLongUserMessages: false,
+  }),
+  useUser: () => undefined,
+  useFileMap: () => undefined,
+  useToast: () => jest.fn(),
+  useSandboxStarting: () => false,
+  useToolArtifactClaim: () => [null, jest.fn()],
+  useSteerEscalating: () => false,
+  usePaneConversationId: () => null,
+  useLiveAppliedSteer: () => [false, jest.fn()],
+  useShare: () => ({}),
+};
+
+/** Main chat's author glyph, reduced to the face it draws: the agent's avatar
+ *  when it has one. */
+const messagesHost = createMessagesHost({
+  renderMessageIcon: ({ agent, iconData }) => (
+    <AuthorFace src={iconData?.iconURL ?? agent?.avatar?.filepath} />
+  ),
+});
+
+/** The app's approval scope, reduced to the one thing the panel relies on: it mounts per key. */
+function ApprovalScopeProbe({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    mockApprovalProviderMounted();
+    return () => mockApprovalProviderUnmounted();
+  }, []);
+  return children;
+}
+
+const subagentsHost: SubagentsHost = createSubagentsHost({
+  useAgentsMap: () => agentsMap,
+  useThread: (...args) => mockUseSubagentThreadQuery(...args),
+  loadThread: (...args) => mockGetSubagentThread(...args),
+  useToolCallPart: (...args) => {
+    const query = mockUseToolCallPartQuery(...args);
+    return {
+      data: query.data,
+      isError: query.isError,
+      refetch: () => void query.refetch?.(),
+    };
+  },
+  useContinueChat: (options) => ({
+    mutate: (payload) => mockForkMutate(payload, options),
+    isLoading: false,
+  }),
+  useControl: (options) => ({
+    mutate: (variables) =>
+      mockControlMutate(variables, {
+        onSuccess: (result: SubagentControlResponse) => options.onSuccess?.(result, variables),
+        onError: (error: unknown) => options.onError?.(error, variables),
+      }),
+    isLoading: false,
+  }),
+  useNavigation: () => ({
+    openConversation: (conversation) => mockNavigateToConvo(conversation),
+    openConversationId: (conversationId) => mockNavigate(conversationId),
+  }),
+  /** The app scales the sheet breakpoint by the reader's text size before it asks. */
+  useSheetLayout: () =>
+    mockViewportWidth == null ? mockIsMobile : mockViewportWidth <= SHEET_MAX_WIDTH * mockRemScale,
+  renderApprovalScope: ({ scopeKey, children }) => (
+    <ApprovalScopeProbe key={scopeKey}>{children}</ApprovalScopeProbe>
+  ),
+});
+
+/** The panel's own state: the real atoms, except the activity stream, which would open a
+ *  transport. */
+const panelState: SubagentPanelState = {
+  ...subagentPanelState,
+  useActivityStream: (...args) => mockUseSubagentActivityStream(...args),
+};
+
 function Root({
   seed,
   children,
@@ -67,73 +207,44 @@ function Root({
   seed?: (store: JotaiStore) => void;
   children: React.ReactNode;
 }) {
+  const [store] = useState(() => {
+    const created = createStore();
+    seed?.(created);
+    return created;
+  });
+  const surface: ChatSurface = {
+    enterToSend: mockEnterToSend,
+    maximizeChatSpace: false,
+    showScrollButton: true,
+    composerBindings: {
+      shortcutsEnabled: true,
+      submitOverride: undefined,
+      yieldedChords: new Set<string>(),
+    },
+    claimForeground: mockClaimForeground,
+    handOffComposerText: mockHandOffComposerText,
+  };
   return (
     <QueryClientProvider client={queryClient}>
-      <ChatSurfaceHarness
-        seed={seed}
-        surface={testChatSurface({
-          enterToSend: mockEnterToSend,
-          claimForeground: mockClaimForeground,
-          handOffComposerText: mockHandOffComposerText,
-        })}
-      >
-        {children}
-      </ChatSurfaceHarness>
+      <JotaiProvider store={store}>
+        <MessagePartsHostProvider host={partsHost}>
+          <MessagesHostProvider host={messagesHost}>
+            <SubagentsHostProvider host={subagentsHost}>
+              <ChatSurfaceProvider value={surface}>
+                <SubagentPanelStateContext.Provider value={panelState}>
+                  {children}
+                </SubagentPanelStateContext.Provider>
+              </ChatSurfaceProvider>
+            </SubagentsHostProvider>
+          </MessagesHostProvider>
+        </MessagePartsHostProvider>
+      </JotaiProvider>
     </QueryClientProvider>
   );
 }
 
-jest.mock('react-router-dom', () => ({
-  ...jest.requireActual('react-router-dom'),
-  useNavigate: () => mockNavigate,
-}));
-
-jest.mock('librechat-data-provider', () => {
-  const actual = jest.requireActual('librechat-data-provider');
-  return {
-    ...actual,
-    dataService: {
-      ...actual.dataService,
-      getSubagentThread: (...args: unknown[]) => mockGetSubagentThread(...args),
-    },
-  };
-});
-
-jest.mock('~/data-provider', () => ({
-  ACTIVE_THREAD_REFRESH_MS: 2000,
-  /** The panel's bottom clearance follows the conversation's configured footer
-   *  (`useConfiguredFooter`), so the panel now reads the startup config. */
-  useGetStartupConfig: () => ({ data: undefined }),
-  useSubagentThreadQuery: (...args: unknown[]) => mockUseSubagentThreadQuery(...args),
-  useToolCallPartQuery: (...args: unknown[]) => mockUseToolCallPartQuery(...args),
-  subagentThreadHasTaskEvidence: (view: SubagentThreadView | undefined, taskId: string): boolean =>
-    view?.messages.some(
-      (message) =>
-        message.messageId === `${taskId}:user` || message.messageId === `${taskId}:assistant`,
-    ) === true,
-  useForkConvoMutation: (options: {
-    onSuccess: (result: unknown) => void;
-    onError: () => void;
-  }) => ({
-    mutate: (payload: unknown) => mockForkMutate(payload, options),
-    isLoading: false,
-  }),
-  useSubagentControlMutation: (options: {
-    onSuccess: (result: unknown, variables: unknown) => void;
-    onError: (error: unknown, variables: unknown) => void;
-  }) => ({
-    mutate: (variables: unknown) =>
-      mockControlMutate(variables, {
-        onSuccess: (result: unknown) => options.onSuccess(result, variables),
-        onError: (error: unknown) => options.onError(error, variables),
-      }),
-    isLoading: false,
-  }),
-}));
-
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useSubagentActivityStream: (...args: unknown[]) => mockUseSubagentActivityStream(...args),
+jest.mock('../../../react/subagents/parents', () => ({
+  ...jest.requireActual('../../../react/subagents/parents'),
   useParentSubagents: () => ({
     byMessageId: mockParentChildrenByMessage,
     byThreadId: mockParentChildrenByThread,
@@ -141,68 +252,9 @@ jest.mock('@librechat/chat/react', () => ({
   }),
 }));
 
-jest.mock('~/hooks', () => ({
-  /** The real trap: its Escape listener is native and sits on the panel, so it
-   *  runs before the panel's own React handler. Stubbing it made the panel's
-   *  Escape assertions pass in both directions. */
-  useFocusTrap: jest.requireActual('~/hooks/useFocusTrap').default,
-  useLocalize: () => (key: string, values?: { 0: string }) =>
-    values == null ? key : `${key}: ${values[0]}`,
-}));
-
-jest.mock('~/hooks/Conversations/useNavigateToConvo', () => ({
+jest.mock('../conversation', () => ({
   __esModule: true,
-  default: () => ({ navigateToConvo: mockNavigateToConvo }),
-}));
-
-/** The agents map the app's subagents host reads. */
-jest.mock('~/Providers/AgentsMapContext', () => ({
-  useAgentsMapContext: () => ({
-    'agent-1': { id: 'agent-1', name: 'Analyst One', avatar: { filepath: '/analyst.png' } },
-    'agent-2': { id: 'agent-2', name: 'Analyst Two' },
-  }),
-}));
-
-/** Main chat's author glyph, reduced to the face it draws: the agent's avatar
- *  when it has one. */
-jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
-  __esModule: true,
-  default: ({
-    agent,
-    iconData,
-  }: {
-    agent?: { avatar?: { filepath?: string } };
-    iconData?: { iconURL?: string };
-  }) => {
-    const src = iconData?.iconURL ?? agent?.avatar?.filepath;
-    return src != null ? (
-      <img src={src} alt="" data-testid="author-face" />
-    ) : (
-      <span data-testid="author-face" />
-    );
-  },
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ApprovalContext', () => ({
-  __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => {
-    const mockReact = jest.requireActual<typeof import('react')>('react');
-    mockReact.useEffect(() => {
-      mockApprovalProviderMounted();
-      return () => mockApprovalProviderUnmounted();
-    }, []);
-    return children;
-  },
-}));
-
-jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
-  __esModule: true,
-  default: ({ content }: { content: string }) => <div>{content}</div>,
-}));
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  SubagentConversation: function MockConversation({
+  default: function MockConversation({
     turns,
     author,
     parentAuthor,
@@ -224,8 +276,8 @@ jest.mock('@librechat/chat/components', () => ({
   }) {
     const { useContext } = jest.requireActual<typeof import('react')>('react');
     const { TaskContentScopeContext } = jest.requireActual<
-      typeof import('~/data-provider/Subagents/content')
-    >('~/data-provider/Subagents/content');
+      typeof import('../../../react/subagents/scope')
+    >('../../../react/subagents/scope');
     const scope = useContext(TaskContentScopeContext);
     return (
       <div
@@ -253,6 +305,9 @@ jest.mock('@librechat/chat/components', () => ({
       </div>
     );
   },
+}));
+
+jest.mock('../transcript', () => ({
   SubagentActivityScrollSurface: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="shared-scroll-surface">{children}</div>
   ),
@@ -274,8 +329,8 @@ jest.mock('@librechat/chat/components', () => ({
   }) {
     const { useContext } = jest.requireActual<typeof import('react')>('react');
     const { TaskContentScopeContext } = jest.requireActual<
-      typeof import('~/data-provider/Subagents/content')
-    >('~/data-provider/Subagents/content');
+      typeof import('../../../react/subagents/scope')
+    >('../../../react/subagents/scope');
     const scope = useContext(TaskContentScopeContext);
     return (
       <div
@@ -317,6 +372,7 @@ const mockComposerVerdict = (
 };
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   Alert: ({ children, ...props }: React.ComponentProps<'div'>) => (
     <div role="alert" {...props}>
       {children}
@@ -462,12 +518,13 @@ jest.mock('@librechat/client', () => ({
       )}
     </div>
   ),
-  useRemScale: () => mockRemScale,
-  useMediaQuery: (query: string) => {
-    if (query.includes('hover')) return mockCoarsePointer;
-    if (mockViewportWidth == null) return mockIsMobile;
-    return mockViewportWidth <= Number(/max-width:\s*([\d.]+)/.exec(query)?.[1]);
-  },
+  useMediaQuery: (query: string) => query.includes('hover') && mockCoarsePointer,
+  /** The real trap: its Escape listener is native and sits on the panel, so it
+   *  runs before the panel's own React handler. Stubbing it made the panel's
+   *  Escape assertions pass in both directions. */
+  useFocusTrap: jest.requireActual('@librechat/client').useFocusTrap,
+  useLocalize: () => (key: string, values?: { 0: string }) =>
+    values == null ? key : `${key}: ${values[0]}`,
   useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
@@ -541,8 +598,11 @@ const completedTurns: SubagentThreadView['turns'] = [
 
 describe('SubagentThreadPanel', () => {
   beforeEach(() => {
+    /** The app's jest config clears mock calls between tests; this package's does not. */
+    jest.clearAllMocks();
     queryClient = new QueryClient();
     window.sessionStorage.clear();
+    window.localStorage.clear();
     mockIsMobile = false;
     mockCoarsePointer = false;
     mockViewportWidth = null;
@@ -682,7 +742,7 @@ describe('SubagentThreadPanel', () => {
             model: 'agent-2',
             sender: 'Analyst Two',
             text: '',
-          } as unknown as TMessage,
+          },
         ],
       );
       const { container } = render(
@@ -1511,7 +1571,7 @@ describe('SubagentThreadPanel', () => {
     expect(screen.getByRole('region', { name: 'com_ui_subagent_thread_panel' })).toHaveFocus();
     expect(mockNavigate).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_go_to_parent' }));
-    expect(mockNavigate).toHaveBeenCalledWith('/c/parent-conversation');
+    expect(mockNavigate).toHaveBeenCalledWith('parent-conversation');
   });
 
   it('returns focus to the task disclosure when its originating call is not loaded', async () => {
@@ -1698,7 +1758,7 @@ describe('SubagentThreadPanel', () => {
           model: 'agent-2',
           sender: 'Analyst Two',
           text: '',
-        } as unknown as TMessage,
+        },
       ],
     );
     render(
@@ -1708,7 +1768,7 @@ describe('SubagentThreadPanel', () => {
     );
 
     /** One name for the child everywhere it appears, and the dispatching agent
-     *  as the author of every briefing — never an id or a role. */
+     *  as the author of every briefing, never an id or a role. */
     const conversation = screen.getByTestId('subagent-conversation');
     expect(conversation).toHaveAttribute('data-author', 'Analyst One');
     expect(conversation).toHaveAttribute('data-parent-author', 'Analyst Two');
@@ -1781,7 +1841,7 @@ describe('SubagentThreadPanel', () => {
 
   /** A delivery re-keys the query to its new task and the task view blanks for
    *  the render or two that takes. Measured against the live panel, the
-   *  composer used to unmount and remount inside 10ms there — taking focus and
+   *  composer used to unmount and remount inside 10ms there, taking focus and
    *  a half-typed steer with it. */
   it('keeps the composer mounted while a delivery re-keys the task view', () => {
     mockUseSubagentThreadQuery.mockReturnValue({
@@ -1820,9 +1880,9 @@ describe('SubagentThreadPanel', () => {
 
   /** A task on its way to an executor is live: withdrawing the composer until
    *  the first token lands is the swap this panel exists to avoid. But the
-   *  server can only address a task that has a durable input row — it answers
+   *  server can only address a task that has a durable input row, it answers
    *  404 otherwise, which this panel reads as inaccessible and closes controls
-   *  for good — so the field stays and submission waits instead. */
+   *  for good, so the field stays and submission waits instead. */
   it.each([
     ['has its durable input row', completedView.messages, 1],
     ['has not been written yet', [], 0],
@@ -1854,7 +1914,7 @@ describe('SubagentThreadPanel', () => {
     expect(mockControlMutate).toHaveBeenCalledTimes(invocations);
   });
 
-  /** Every door onto a command answers to the same gate — including the inline
+  /** Every door onto a command answers to the same gate, including the inline
    *  controls a touch reader gets instead of the hovercard. */
   it('withholds the inline actions while a dispatched task is unaddressable', () => {
     mockCoarsePointer = true;
@@ -1881,7 +1941,7 @@ describe('SubagentThreadPanel', () => {
   });
 
   /** While the panel is a focus-trapped modal the portaled list sits outside
-   *  the `aside` the trap knows, so Tab never reaches it — the actions come
+   *  the `aside` the trap knows, so Tab never reaches it, the actions come
    *  inside the panel instead, hover or no hover. */
   it('keeps the actions inside the panel while it is a modal', () => {
     mockIsMobile = true;
@@ -1964,8 +2024,8 @@ describe('SubagentThreadPanel', () => {
     expect(mockControlMutate.mock.calls[0][0].command.action).toBe('steer');
   });
 
-  /** Where there is no hover, the send control's action list cannot be opened —
-   *  a tap on that anchor submits — so those readers get the actions as
+  /** Where there is no hover, the send control's action list cannot be opened:
+   *  a tap on that anchor submits, so those readers get the actions as
    *  controls of their own instead. */
   it('offers the alternate submissions inline when the pointer cannot hover', () => {
     mockIsMobile = true;
@@ -1992,7 +2052,7 @@ describe('SubagentThreadPanel', () => {
     expect(mockControlMutate.mock.calls[0][0].command.action).toBe('queue');
   });
 
-  /** Queue and interrupt keep a pointer of their own — a touch reader, or one
+  /** Queue and interrupt keep a pointer of their own, a touch reader, or one
    *  whose shortcuts are off or rebound, still has to reach them. */
   it.each([
     ['com_ui_queue', 'queue'],
@@ -2041,14 +2101,14 @@ describe('SubagentThreadPanel', () => {
     fireEvent.keyDown(composer, { key: 'Enter', ctrlKey: true });
 
     expect(mockControlMutate).toHaveBeenCalledTimes(1);
-    const [variables, callbacks] = mockControlMutate.mock.calls[0] as [
+    const [variables, callbacks]: [
       {
         parentConversationId: string;
         threadId: string;
         command: { taskId: string; invocationId: string; action: string; message: string };
       },
       { onSuccess: (value: unknown) => void },
-    ];
+    ] = mockControlMutate.mock.calls[0];
     expect(variables).toEqual({
       parentConversationId: 'parent-conversation',
       threadId: 'child-thread',
@@ -2294,8 +2354,8 @@ describe('SubagentThreadPanel', () => {
       screen.getByText('com_ui_subagent_control_reason_owner_unavailable'),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'com_ui_retry' })).toBeInTheDocument();
-    /** The settled child leaves the composer standing — Enter continues the
-     *  thread from here — but nothing in it still addresses the finished run. */
+    /** The settled child leaves the composer standing, Enter continues the
+     *  thread from here, but nothing in it still addresses the finished run. */
     expect(screen.queryByRole('button', { name: 'com_ui_steer_send' })).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'com_ui_subagent_cancel_task' }),
@@ -2546,9 +2606,7 @@ describe('SubagentThreadPanel', () => {
       partIndex: 3,
       subagentType: 'researcher',
       prompt: 'Review this change.',
-      persistedContent: [
-        { type: 'text', text: 'Review complete.' },
-      ] as unknown as TMessageContentParts[],
+      persistedContent: [{ type: ContentTypes.TEXT, text: 'Review complete.' }],
       initialProgress: 1,
       isSubmitting: false,
     };
@@ -2629,7 +2687,7 @@ describe('SubagentThreadPanel', () => {
             name: 'subagent',
             args: '{"prompt":"Review this change, including the migration and its rollback."}',
             output: 'Full final answer.',
-            subagent_content: [{ type: 'text', text: 'Stored review transcript.' }],
+            subagent_content: [{ type: ContentTypes.TEXT, text: 'Stored review transcript.' }],
           },
         },
         isError: false,
@@ -2708,7 +2766,6 @@ describe('SubagentThreadPanel', () => {
       {
         conversationId: 'child-thread',
         messageId: 'task:assistant',
-        option: ForkOptions.DIRECT_PATH,
       },
       expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
     );
@@ -2729,7 +2786,11 @@ describe('SubagentThreadPanel', () => {
       'continued-chat',
       'Take this further, starting from the endgame.',
     );
-    expect(getDraft('continued-chat')).toBe('');
+    expect(
+      [window.localStorage, window.sessionStorage].flatMap((storage) =>
+        Object.keys(storage).filter((key) => key.includes('continued-chat')),
+      ),
+    ).toEqual([]);
   });
 
   /** The composer is shared across selections, so a continuation that lands
@@ -2753,7 +2814,7 @@ describe('SubagentThreadPanel', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_continue_new_chat' }));
 
-    /** A different selection owns the composer now — same child thread, but the
+    /** A different selection owns the composer now, same child thread, but the
      *  panel is showing it for another parent, so its control identity (and its
      *  draft) is not the one the fork was sent from. */
     const laterSelection = { ...selection, parentConversationId: 'other-parent-conversation' };
@@ -2941,7 +3002,7 @@ describe('SubagentThreadPanel', () => {
   });
 
   /** Emptying the field after asking to continue is the reader withdrawing the
-   *  words, not leaving them behind — the destination must not reinstate what
+   *  words, not leaving them behind, the destination must not reinstate what
    *  they deleted. */
   it('hands over nothing when the draft is cleared before the fork lands', () => {
     mockUseSubagentThreadQuery.mockReturnValue({
@@ -3057,9 +3118,7 @@ describe('SubagentThreadPanel', () => {
     );
     const detachedSelection: ActiveSubagentPanel = {
       ...selection,
-      persistedContent: [
-        { type: ContentTypes.TEXT, text: 'Dispatch-time snapshot.' },
-      ] as TMessageContentParts[],
+      persistedContent: [{ type: ContentTypes.TEXT, text: 'Dispatch-time snapshot.' }],
     };
 
     render(
@@ -3383,6 +3442,7 @@ describe('SubagentThreadPanel', () => {
       'parent-conversation',
       'child-thread',
       'task-earlier',
+      {},
     );
 
     fireEvent.click(screen.getByRole('option', { name: /Analyst Two/ }));
@@ -3402,11 +3462,11 @@ describe('SubagentThreadPanel', () => {
 
   /** The picker's popover renders inside the panel so the mobile focus trap can
    *  see it. That same trap closes the panel on Escape, which would take the
-   *  composer's text with it — so an Escape aimed at the open picker has to
+   *  composer's text with it, so an Escape aimed at the open picker has to
    *  stop there. */
   /** The picker's popover renders inside the panel so the mobile focus trap can
    *  see it. That same trap closes the panel on Escape, which would take the
-   *  composer's text with it — so an Escape aimed at the OPEN picker has to stop
+   *  composer's text with it, so an Escape aimed at the OPEN picker has to stop
    *  there, while an Escape anywhere else still closes the panel. */
   it.each([
     ['closes the panel when the actor picker is shut', false, true],
@@ -3535,7 +3595,7 @@ describe('SubagentThreadPanel', () => {
             latestTaskId: 'task-new',
             tasks: [{ taskId: 'task-new', status: 'running' }],
             tasksTruncated: false,
-          } as ParentSubagentSummary,
+          },
         ],
       ]);
       mockUseSubagentThreadQuery.mockReturnValue({
