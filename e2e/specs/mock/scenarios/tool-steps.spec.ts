@@ -95,7 +95,12 @@ test.describe('tool call steps', () => {
 
     const response = await sendMessageAndWaitForCompletion(page, `E2E_EXECUTE_CODE:${label}`);
     expect(response.ok()).toBeTruthy();
-    const row = toolCard(page).locator('.progress-text-wrapper').first();
+    /** The label row wraps the card's toggle, so it is found around the button rather than in it. */
+    const row = messagesView(page)
+      .locator('.progress-text-wrapper', {
+        has: page.getByRole('button', { name: /^Ran command/ }),
+      })
+      .first();
     await expect(row).toBeVisible({ timeout: 30_000 });
 
     /** The rule ships in `@librechat/client/style.css`; without it the row falls back to the
