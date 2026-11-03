@@ -1,21 +1,22 @@
-import type { BalanceTone } from '~/utils';
-import { cn } from '~/utils';
+import { cn } from '@librechat/client';
+
+export type GaugeTone = 'normal' | 'warning' | 'danger';
 
 const SIZE = 20;
 const STROKE_WIDTH = 2.5;
 const RADIUS = (SIZE - STROKE_WIDTH) / 2;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
-interface GaugeProps {
-  /** 0–100, clamped by the caller */
+export interface GaugeProps {
+  /** 0 to 100, clamped by the caller */
   percent: number;
-  /** Max context unknown — render an empty track only */
+  /** Max context unknown: render an empty track only */
   indeterminate: boolean;
   /** A tone the caller already classified (the balance's), in place of the context thresholds */
-  tone?: BalanceTone;
+  tone?: GaugeTone;
 }
 
-function getStrokeClass(percent: number, indeterminate: boolean, tone?: BalanceTone): string {
+function getStrokeClass(percent: number, indeterminate: boolean, tone?: GaugeTone): string {
   if (indeterminate) {
     return 'stroke-text-secondary';
   }
@@ -37,7 +38,7 @@ function getStrokeClass(percent: number, indeterminate: boolean, tone?: BalanceT
   return 'stroke-text-secondary';
 }
 
-export default function Gauge({ percent, indeterminate, tone }: GaugeProps) {
+export default function Gauge({ percent, indeterminate, tone }: GaugeProps): React.JSX.Element {
   const offset = CIRCUMFERENCE - (percent / 100) * CIRCUMFERENCE;
 
   return (

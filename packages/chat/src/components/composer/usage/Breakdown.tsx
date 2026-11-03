@@ -1,5 +1,4 @@
 import { Fragment, useId, useMemo, useState } from 'react';
-import { useAtom } from 'jotai';
 import { ChevronDown, ExternalLink, Info, TriangleAlert } from 'lucide-react';
 import {
   Button,
@@ -12,13 +11,12 @@ import {
   SegmentedMeter,
   CollapsibleContent,
   CollapsibleTrigger,
+  useLocalize,
+  cn,
 } from '@librechat/client';
 import type { MeterSegment } from '@librechat/client';
-import type { TokenUsageView } from '~/hooks/Chat/useTokenUsage';
-import type { CurrencyConfig } from '~/utils';
-import { groupToolTokens, formatTokens, normalizeTokenCount, cn } from '~/utils';
-import { contextBreakdownExpandedAtom } from './store';
-import { useLocalize } from '~/hooks';
+import type { CurrencyConfig, TokenUsageView } from '../../../core/usage';
+import { groupToolTokens, formatTokens, normalizeTokenCount } from '../../../core/usage';
 import Usage from './Usage';
 
 interface RowProps {
@@ -101,12 +99,15 @@ function Row({
   );
 }
 
-interface BreakdownProps {
+export interface BreakdownProps {
   view: TokenUsageView;
   showCost: boolean;
   compactionAvailable?: boolean;
   currency?: CurrencyConfig;
   langfuseSessionUrl?: string;
+  /** Whether the totals disclosure is open; owned by the host so it survives remounts */
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
 }
 
 export default function Breakdown({
@@ -115,9 +116,10 @@ export default function Breakdown({
   compactionAvailable = false,
   currency,
   langfuseSessionUrl,
-}: BreakdownProps) {
+  expanded,
+  onExpandedChange,
+}: BreakdownProps): React.JSX.Element {
   const localize = useLocalize();
-  const [expanded, setExpanded] = useAtom(contextBreakdownExpandedAtom);
   const [hoveredSegment, setHoveredSegment] = useState<string | null>(null);
   const [toolsExpanded, setToolsExpanded] = useState(false);
   const [insightsOpen, setInsightsOpen] = useState(false);
@@ -147,7 +149,7 @@ export default function Breakdown({
 
   /** Every normalized bucket of the subagent calls: a cached call reports its
    *  prompt under `cacheRead`/`cacheWrite`, so summing input+output alone
-   *  under-reports it — and hides a fully cached call with no output entirely,
+   *  under-reports it: and hides a fully cached call with no output entirely,
    *  while the Totals rows above still count its cache traffic. */
   const subagentTokens =
     normalizeTokenCount(view.subagentUsage?.input) +
@@ -201,10 +203,8 @@ export default function Breakdown({
   const { largestTool, toolBreakdown } = useMemo(() => {
     const counts = view.toolMessageTokenCounts;
     if (counts == null) {
-      return {
-        largestTool: null,
-        toolBreakdown: [] as Array<{ name: string; tokens: number }>,
-      };
+      const empty: Array<{ name: string; tokens: number }> = [];
+      return { largestTool: null, toolBreakdown: empty };
     }
     const candidates: Array<{ name: string; tokens: number }> = [];
     for (const name in counts) {
@@ -260,7 +260,7 @@ export default function Breakdown({
 
   /** Single source of truth for both the meter and its legend: a row carries a
    *  swatch if and only if it is a segment, so the two can never disagree.
-   *  Deferred tools keep their family's slot and are hatched — same identity,
+   *  Deferred tools keep their family's slot and are hatched: same identity,
    *  held out of the active set. */
   const segments: Array<MeterSegment & { label: string }> =
     breakdown == null
@@ -353,7 +353,7 @@ export default function Breakdown({
 
   return (
     <div className="@container w-full" role="region" aria-label={localize('com_ui_context_usage')}>
-      <Collapsible open={expanded} onOpenChange={setExpanded}>
+      <Collapsible open={expanded} onOpenChange={onExpandedChange}>
         <CollapsibleTrigger
           focusOutline="hidden"
           className="group focus-visible:ring-text-primary flex w-full flex-wrap items-center justify-between gap-2 rounded-sm focus-visible:ring-2"
@@ -513,7 +513,7 @@ export default function Breakdown({
                     {/** The reconciling call's cached prompt share is already inside
                      *  the segments above (reconciliation counted it in `usedTokens`),
                      *  so it renders indented, like the estimate path's tool-call
-                     *  share — as peer rows a fully cached prompt would show its
+                     *  share: as peer rows a fully cached prompt would show its
                      *  tokens twice and the visible rows would sum past the meter. */}
                     {(normalizeTokenCount(view.cacheRead) > 0 ||
                       normalizeTokenCount(view.cacheWrite) > 0) && (
@@ -582,7 +582,7 @@ export default function Breakdown({
                     )}
                     {/** Retained tool traffic is already inside the message rows above
                      *  (their clamped tool-content share), so it renders as an indented
-                     *  subtotal — as a peer row the visible rows would sum past
+                     *  subtotal: as a peer row the visible rows would sum past
                      *  `usedTokens`. The snapshot path instead subtracts it from
                      *  Messages, which is exact there; here the counted Input/Output
                      *  rows are provider counts and this share is a char estimate, so

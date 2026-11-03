@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { cn } from '@librechat/client';
 import * as Ariakit from '@ariakit/react';
 import type { ReactNode } from 'react';
-import { cn } from '~/utils';
 
 /** Hover pacing: a brief intent delay so sweeping past the gauge doesn't pop
  *  the card open, and a grace period for the pointer to travel into it. */
 const SHOW_DELAY_MS = 100;
 const HIDE_DELAY_MS = 150;
 
-interface UsagePopoverProps {
+export interface UsagePopoverProps {
   /** Pending hover work is dropped when this changes (the viewed conversation) */
   resetKey: string;
   /** Accessible name of the gauge button */
@@ -33,7 +33,7 @@ export default function UsagePopover({
   busy = false,
   trigger,
   children,
-}: UsagePopoverProps) {
+}: UsagePopoverProps): React.JSX.Element {
   const popover = Ariakit.usePopoverStore({ placement: 'top' });
   const popoverOpen = Ariakit.useStoreState(popover, 'open');
   const disclosureRef = useRef<HTMLButtonElement>(null);
@@ -172,7 +172,9 @@ export default function UsagePopover({
         /* Without this the gauge could not close its own popup: mousedown on
            the trigger counts as "outside", so Ariakit hid the popup and the
            button's own click immediately re-opened it. */
-        hideOnInteractOutside={(event) => !disclosureRef.current?.contains(event.target as Node)}
+        hideOnInteractOutside={(event) =>
+          !(event.target instanceof Node && disclosureRef.current?.contains(event.target) === true)
+        }
         aria-label={cardLabel}
         onPointerEnter={cancelTimers}
         onPointerLeave={(e) => {

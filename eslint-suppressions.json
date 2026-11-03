@@ -116,11 +116,6 @@
       "count": 3
     }
   },
-  "client/src/components/Chat/Input/TokenUsage/Breakdown.tsx": {
-    "shadcn/no-restyle": {
-      "count": 10
-    }
-  },
   "client/src/components/Chat/Input/chip.ts": {
     "design/disabled-recipe": {
       "count": 1
@@ -1317,6 +1312,14 @@
   "packages/chat/src/components/composer/files/SourceIcon.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
+    }
+  },
+  "packages/chat/src/components/composer/usage/Breakdown.tsx": {
+    "shadcn/no-restyle": {
+      "count": 10
+    },
+    "shadcn/no-unknown-classes": {
+      "count": 2
     }
   },
   "packages/chat/src/components/messages/Feedback.tsx": {

@@ -17,7 +17,7 @@ const themedControls = [
   /** The submit slot's faces share one recipe, which owns the coarse-pointer
    *  tap-target floor as well as the geometry. */
   ['DuringRunSendButton.tsx', ['composerSubmitClasses()']],
-  ['TokenUsage/Popover.tsx', ['size-theme-control', 'rounded-theme-control-round']],
+  ['usage/Popover.tsx', ['size-theme-control', 'rounded-theme-control-round']],
   /** The context rail's pills share one recipe built on the composer control classes. */
   ['chip.ts', ['composerControlClasses()']],
   ['CodeApprovalMenu.tsx', ['chipClasses']],
