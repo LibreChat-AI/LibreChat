@@ -6,17 +6,14 @@ export const createTurnServices = (overrides: Partial<TurnServices> = {}): TurnS
   isTemporary: false,
   getEndpointsConfig: () => undefined,
   getEphemeralAgent: () => null,
-  getSender: () => 'Assistant',
   getUserKey: () => undefined,
   getRouteProjectId: () => null,
   resolveCode: () => ({
     code: { approvalMode: undefined, environmentMode: undefined, workspaces: undefined },
     apply: (conversation) => conversation,
   }),
-  resolveReasoning: ({ reasoningOverride }) => ({ reasoningOverride, retryable: false }),
   openNewChat: jest.fn(),
   releaseFiles: jest.fn(),
   clearFilesToDelete: jest.fn(),
-  bindLaunch: jest.fn(),
   ...overrides,
 });

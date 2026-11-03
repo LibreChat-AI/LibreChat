@@ -5,8 +5,8 @@ import React from 'react';
 import { createStore, Provider } from 'jotai';
 import { renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { QueryKeys, Constants, EModelEndpoint } from 'librechat-data-provider';
-import type { TMessage, TSubmission, TConversation } from 'librechat-data-provider';
+import { QueryKeys, Constants, Providers, EModelEndpoint } from 'librechat-data-provider';
+import type { Agent, TMessage, TSubmission, TConversation } from 'librechat-data-provider';
 import type { ChatTurnsParams, TurnServices } from '../host';
 import type { ExtendedFile } from '../../../core';
 import {
@@ -16,6 +16,7 @@ import {
   pendingReasoningOverrideFamily,
 } from '../../composer';
 import { createTurnServices } from '../__fixtures__/services';
+import { launchedConversationFamily } from '../../generation';
 import { siblingIdxFamily, siblingKey } from '../../thread';
 import { activeUsageResponseIdFamily } from '../../usage';
 import { isSubmittingFamily } from '../../submission';
@@ -63,6 +64,7 @@ function setup({
   latestMessage = response,
   files = new Map<string, ExtendedFile>(),
   services = createTurnServices(),
+  agent,
   isSubmitting = false,
   revalidating = false,
 }: {
@@ -72,12 +74,17 @@ function setup({
   latestMessage?: TMessage | null;
   files?: Map<string, ExtendedFile>;
   services?: TurnServices;
+  /** The saved agent cached for the conversation's `agent_id`. */
+  agent?: Partial<Agent>;
   isSubmitting?: boolean;
   /** The cached history is mid-refetch and older than a locally written tail. */
   revalidating?: boolean;
 } = {}) {
   const store = createStore();
   const queryClient = new QueryClient();
+  if (agent != null) {
+    queryClient.setQueryData([QueryKeys.agent, conversation?.agent_id], agent);
+  }
   if (revalidating) {
     const key = [QueryKeys.messages, conversationId];
     queryClient.setQueryData(key, messages ?? [], { updatedAt: Date.now() - 60_000 });
@@ -141,7 +148,7 @@ describe('useTurns', () => {
     expect(chat.store.get(activeUsageResponseIdFamily(conversationId))).toBe(
       submission?.initialResponse?.messageId,
     );
-    expect(chat.services.bindLaunch).toHaveBeenCalledWith(submission?.conversation, 0);
+    expect(chat.store.get(launchedConversationFamily(0))).toBe(submission?.conversation);
   });
 
   it('refuses a second send inside the same task', () => {
@@ -188,7 +195,8 @@ describe('useTurns', () => {
   });
 
   it('drains queued skills, quotes and reasoning into a fresh send', () => {
-    const chat = setup();
+    // A saved OpenAI agent on a reasoning model, whose effort control accepts "high".
+    const chat = setup({ agent: { provider: EModelEndpoint.openAI, model: 'gpt-5' } });
     const reasoningKey = getReasoningStateKey(conversationId, 0);
     chat.store.set(pendingManualSkillsByConvoId(conversationId), ['skill-b']);
     chat.store.set(pendingQuotesByConvoId(conversationId), ['quote-b']);
@@ -207,9 +215,22 @@ describe('useTurns', () => {
   });
 
   it('puts a drained reasoning choice back when the capabilities are not known yet', () => {
+    // An OpenRouter-style custom endpoint whose per-model efforts were never fetched.
     const chat = setup({
+      conversation: {
+        ...agentsConversation,
+        endpoint: EModelEndpoint.custom,
+        model: 'openai/gpt-5',
+      },
       services: createTurnServices({
-        resolveReasoning: () => ({ reasoningOverride: undefined, retryable: true }),
+        getEndpointsConfig: () => ({
+          [EModelEndpoint.custom]: {
+            type: EModelEndpoint.custom,
+            userProvide: false,
+            order: 0,
+            customParams: { defaultParamsEndpoint: Providers.OPENROUTER },
+          },
+        }),
       }),
     });
     const reasoningKey = getReasoningStateKey(conversationId, 0);

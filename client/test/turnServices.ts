@@ -7,13 +7,10 @@ export const createTestTurnServices = (): TurnServices => ({
   isTemporary: false,
   getEndpointsConfig: () => undefined,
   getEphemeralAgent: () => null,
-  getSender: () => 'Assistant',
   getUserKey: () => undefined,
   getRouteProjectId: () => null,
   resolveCode: () => null,
-  resolveReasoning: () => ({ reasoningOverride: undefined, retryable: false }),
   openNewChat: jest.fn(),
   releaseFiles: jest.fn(),
   clearFilesToDelete: jest.fn(),
-  bindLaunch: jest.fn(),
 });

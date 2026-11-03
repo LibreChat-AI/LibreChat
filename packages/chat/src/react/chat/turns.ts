@@ -13,13 +13,19 @@ import {
 } from '../composer';
 import {
   buildTurn,
+  resolveSender,
   createRegenerate,
   isSubmittableMessage,
   hasPendingAssistantParent,
 } from '../../core';
-import { submissionStartFamily, showStopButtonByIndex } from '../generation';
+import {
+  submissionStartFamily,
+  showStopButtonByIndex,
+  launchedConversationFamily,
+} from '../generation';
 import { revealedQueuedTurnFamily } from '../steer/atoms';
 import { siblingIdxFamily, siblingKey } from '../thread';
+import { resolveSubmittedReasoning } from './reasoning';
 import { activeUsageResponseIdFamily } from '../usage';
 import { isSubmittingFamily } from '../submission';
 import { isHistoryRevalidating } from './guards';
@@ -231,15 +237,19 @@ export function useTurns(
     }
     const stagedReasoning = reasoningOverride;
     if (reasoningOverride != null) {
-      const resolved = services.resolveReasoning({
+      const resolved = resolveSubmittedReasoning({
+        queryClient,
+        agentsMap: services.agentsMap,
         endpoint,
         conversation,
         endpointsConfig,
         reasoningOverride,
+        drainedReasoning: true,
+        stagedReasoning: reasoningOverride,
       });
       reasoningOverride = resolved.reasoningOverride;
       /** Refused only because the catalog is not loaded yet: put a drained choice back. */
-      if (resolved.retryable && drainedReasoning && stagedReasoning != null) {
+      if (resolved.restoreStaged && drainedReasoning && stagedReasoning != null) {
         store.set(pendingReasoningOverrideFamily(reasoningStateKey), stagedReasoning);
       }
     }
@@ -275,7 +285,8 @@ export function useTurns(
       user: services.user,
       isTemporary: services.isTemporary,
       ephemeralAgent: services.getEphemeralAgent(convoKey),
-      getSender: services.getSender,
+      getSender: (endpointOption) =>
+        resolveSender(endpointOption, endpointsConfig, services.modelSpecs),
       userKey: endpoint !== EModelEndpoint.agents ? services.getUserKey() : undefined,
       manualSkills,
       quotes,
@@ -330,7 +341,7 @@ export function useTurns(
      *  the whole window it has to cover. */
     askInFlightRef.current = true;
     setSubmissionStart(Date.now());
-    services.bindLaunch(submission.conversation, index);
+    store.set(launchedConversationFamily(index), submission.conversation);
     setSubmission(submission);
     logger.dir('message_stream', {
       conversationId,
