@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { timingSafeEqual } from 'node:crypto';
-import { runAsSystem, tenantStorage } from '@librechat/data-schemas';
+import { runAsSystem, tenantStorage, ChannelDrainPendingError } from '@librechat/data-schemas';
 import {
   channelConfigSchema,
   channelGatewayWirePolicySchema,
@@ -165,6 +165,10 @@ export function createChannelHandlers(deps: ChannelDependencies): {
         }
         await handler(req, res, channelConfigSchema.parse(loaded));
       } catch (error) {
+        if (error instanceof ChannelDrainPendingError) {
+          res.status(409).json({ error: error.code });
+          return;
+        }
         deps.logError(getSafeErrorMetadata(error));
         res.status(503).json({ error: 'channel_operation_failed' });
       }

@@ -60,6 +60,7 @@
   "com_ui_channels_deleting": "Deleting",
   "com_ui_channels_workspace": "Workspace: {{0}}",
   "com_ui_channels_action_error": "Couldn't update this channel. Check the configuration and try again.",
+  "com_ui_channels_drain_pending": "Previous requests are still stopping. Wait for them to finish, or reconcile uncertain Slack deliveries, then retry activation.",
   "com_ui_channels_setup": "Continue setup",
   "com_ui_channels_manage": "Manage connection",
   "com_ui_channels_setup_title": "Connect to Slack",

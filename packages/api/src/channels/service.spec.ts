@@ -6,6 +6,7 @@ import {
   createModels,
   createMethods,
   createChannelRunStorage,
+  channelRunFence,
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -89,6 +90,28 @@ function activation(channelId: string) {
     .send({
       slack: { botToken: 'xoxb-local-test', appId: 'ATEST' },
     });
+}
+
+function admitChannelRun(channelId: string, revision: string) {
+  return tenantStorage.run({ tenantId }, () =>
+    createChannelRunStorage(mongoose).admit(
+      {
+        tenantId,
+        channelId,
+        agentId: 'agent-test',
+        principal: { userId: owner, channelRevision: revision },
+        admission: {
+          eventId: 'pending-event',
+          externalChannelId: 'CTEST',
+          externalThreadKey: 'CTEST:1',
+          externalMessageKey: 'CTEST:2',
+          actor: { teamId: 'TTEST', appId: 'ATEST', externalUserId: 'UTEST' },
+          input: 'Pending request',
+        },
+      },
+      Date.now(),
+    ),
+  );
 }
 
 it('requires an adequately sized service secret and compares the complete bearer', () => {
@@ -257,25 +280,7 @@ it('leaves a failed deletion closed and retryable without allowing reactivation'
 it('returns a safe deleting state while a persisted run is still active', async () => {
   const id = await createChannel();
   const active = await activation(id).expect(200);
-  await tenantStorage.run({ tenantId }, () =>
-    createChannelRunStorage(mongoose).admit(
-      {
-        tenantId,
-        channelId: id,
-        agentId: 'agent-test',
-        principal: { userId: owner, channelRevision: active.body.revision },
-        admission: {
-          eventId: 'pending-event',
-          externalChannelId: 'CTEST',
-          externalThreadKey: 'CTEST:1',
-          externalMessageKey: 'CTEST:2',
-          actor: { teamId: 'TTEST', appId: 'ATEST', externalUserId: 'UTEST' },
-          input: 'Pending request',
-        },
-      },
-      Date.now(),
-    ),
-  );
+  await admitChannelRun(id, active.body.revision);
   const response = await request(app).delete(`/ui/agent-test/channels/${id}`).expect(202);
   expect(response.body).toMatchObject({ channelId: id, status: 'deleting' });
   expect(JSON.stringify(response.body)).not.toMatch(/encrypted|xoxb|apiKey/);
@@ -378,4 +383,31 @@ it('fails closed if an existing socket-mode channel is switched to webhook trans
     .expect(409);
   expect(result.body).toEqual({ error: 'channel_signing_secret_required' });
   expect(JSON.stringify(result.body)).not.toContain('xoxb-');
+});
+
+it('reports pending activation until old work drains, then re-enables the same channel', async () => {
+  const id = await createChannel();
+  const active = await activation(id).expect(200);
+  const admitted = await admitChannelRun(id, active.body.revision);
+  await request(app)
+    .patch(`/ui/agent-test/channels/${id}`)
+    .send({ status: 'disabled' })
+    .expect(200);
+  await activation(id).expect(409, { error: 'channel_drain_pending' });
+  await tenantStorage.run({ tenantId }, async () => {
+    const storage = createChannelRunStorage(mongoose);
+    const saved = (await storage.read(tenantId, id, admitted.run.runId))!;
+    const cleanup = (await storage.claimAuthorityLost(saved, 'cleanup', Date.now(), 60000))!;
+    expect(cleanup.execution).toBeUndefined();
+    expect(await storage.finishAuthorityLost(tenantId, channelRunFence(cleanup), Date.now())).toBe(
+      'stopped',
+    );
+  });
+  expect((await activation(id).expect(200)).body.status).toBe('active');
+  expect(
+    await mongoose.models.ChannelRun.collection.findOne({ runId: admitted.run.runId }),
+  ).toMatchObject({ state: 'cancelled', cursorState: 'complete' });
+  expect(
+    await mongoose.models.ChannelLane.collection.countDocuments({ channelId: id, kind: 'control' }),
+  ).toBe(1);
 });

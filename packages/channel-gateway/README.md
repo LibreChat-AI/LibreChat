@@ -94,6 +94,10 @@ Disabling the feature or channel, revoking an actor link, or starting account er
 
 If a required result cannot be verified, preserve its unknown receipt and held slot. Optional unknown effects keep their existing best-effort policy.
 
+### Re-enable a disabled connection
+
+Reactivation waits for previous requests to stop and their delivery outcomes to be known. If activation reports that requests are still draining, allow cleanup to finish; reconcile any uncertain required Slack delivery using the revoked-authority procedure above, then retry activation. Reactivation preserves processed-event receipts, chat history and Stop selections, so an old event or retried Stop click cannot start or cancel new work. Per-user connections require a fresh account link after reactivation.
+
 ## Transport adapter boundary
 
 The standalone process composes private transport adapters with native presentation, HTTP and Socket Mode ingress, durable workers and process lifecycle.

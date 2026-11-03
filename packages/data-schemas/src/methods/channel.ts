@@ -195,6 +195,8 @@ export function createAgentChannelMethods(
         update,
         expectedStatus,
         expectedRevision,
+        channelStorageConfigSchema.parse(await getStorageConfig()).erasureBatchSize,
+        getDurableConfig,
       );
     },
     async beginAgentChannelDeletion(channelId, createdBy) {

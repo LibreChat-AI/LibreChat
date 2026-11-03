@@ -5,19 +5,6 @@ import { Readable } from 'node:stream';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import {
-  channelRunFence,
-  channelRunKeyBinding,
-  createModels,
-  createMethods,
-  createChannelIdentityStorage,
-  createChannelRunStorage,
-  createResponseStorage,
-  createManagedMessageId,
-  hashToken,
-  tenantStorage,
-  runAsSystem,
-} from '@librechat/data-schemas';
-import {
   PermissionBits,
   Permissions,
   PermissionTypes,
@@ -28,6 +15,20 @@ import {
   CHANNEL_DELIVERY_TEXT_MAX_CHARS,
   CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
 } from 'librechat-data-provider';
+import {
+  channelRunFence,
+  channelRunKeyBinding,
+  createModels,
+  createMethods,
+  createChannelIdentityStorage,
+  createChannelRunStorage,
+  ChannelDrainPendingError,
+  createResponseStorage,
+  createManagedMessageId,
+  hashToken,
+  tenantStorage,
+  runAsSystem,
+} from '@librechat/data-schemas';
 import type {
   ChannelRunAdmission,
   ChannelIdentityResult,
@@ -2089,6 +2090,10 @@ it.each([
       );
       const held = (await storage.read(tenantId, 'channel', target.runId))!;
       expect(held.state).toBe('delivering');
+      if (reason === 'disabled')
+        await expect(
+          db.updateAgentChannel('channel', users[0].id, { status: 'active' }),
+        ).rejects.toBeInstanceOf(ChannelDrainPendingError);
       expect(await storage.finishAuthorityLost(tenantId, recovery.body.fence, Date.now())).toBe(
         'pending',
       );

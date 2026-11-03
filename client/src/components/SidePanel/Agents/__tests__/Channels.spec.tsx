@@ -734,3 +734,26 @@ test('a completed closed operation cannot close a new dialog for the same channe
   expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('new-dialog-token');
   expect(dataService.activateAgentChannel).toHaveBeenCalledTimes(1);
 });
+
+test('explains pending generation drain without exposing diagnostics or retaining activation credentials', async () => {
+  const user = userEvent.setup();
+  jest
+    .mocked(dataService.listAgentChannels)
+    .mockResolvedValue([{ ...pending, status: 'disabled' }]);
+  jest.mocked(dataService.activateAgentChannel).mockRejectedValueOnce(
+    Object.assign(new Error('PRIVATE-DIAGNOSTIC'), {
+      isAxiosError: true,
+      response: { data: { error: 'channel_drain_pending' } },
+    }),
+  );
+  renderChannels();
+  await openConnection(user, 'disabled');
+  await user.click(screen.getByRole('button', { name: 'com_ui_channels_setup' }));
+  await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
+  await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'PRIVATE-BOT-TOKEN');
+  await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
+  await screen.findByText('com_ui_channels_drain_pending');
+  expect(screen.queryByText('PRIVATE-DIAGNOSTIC')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
+  expect(screen.getByText('com_ui_channels_activation_retry')).toBeInTheDocument();
+});

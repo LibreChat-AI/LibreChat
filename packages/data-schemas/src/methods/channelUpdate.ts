@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { channelStorageConfigSchema } from 'librechat-data-provider';
+import type { DurableStorageConfig } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
 import type { ManagedState } from '~/types/managed';
+import { drainDisabledChannelGeneration, ChannelDrainPendingError } from './channelGeneration';
 import { createAgentChannelModel, CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
 import { managedTargetFilter, managedRegistration } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
@@ -25,6 +28,8 @@ export async function updateManagedAgentChannel(
   update: ChannelPatch,
   expectedStatus?: AgentChannelRecord['status'],
   expectedRevision?: string,
+  batchSize: number = channelStorageConfigSchema.parse({}).erasureBatchSize,
+  getDurableConfig: () => Promise<Partial<DurableStorageConfig>> = async () => ({}),
 ): Promise<AgentChannelRecord | null> {
   if (expectedStatus === 'deleting' || update.status === 'deleting') return null;
   const fields: ChannelPatch = {
@@ -100,6 +105,17 @@ export async function updateManagedAgentChannel(
     const candidate = new model({ ...current, ...patch });
     await candidate.validate();
     assertChannelBudget(mongoose, 'channel', current, patch);
+    const reactivating = current.status === 'disabled' && patch.status === 'active';
+    if (reactivating) {
+      const drained = await drainDisabledChannelGeneration(
+        mongoose,
+        { target, channelId, createdBy, revision: current.revision, version: current.__v },
+        batchSize,
+        getDurableConfig,
+      );
+      if (drained === 'changed') return null;
+      if (drained === 'pending') throw new ChannelDrainPendingError();
+    }
     const updated = await model
       .findOneAndUpdate(
         {
@@ -111,6 +127,10 @@ export async function updateManagedAgentChannel(
           status: current.status,
           revision: current.revision,
           __v: current.__v,
+          ...(reactivating && {
+            pendingCount: { $in: [null, 0] },
+            'pending.0': { $exists: false },
+          }),
         },
         {
           $set: patch,

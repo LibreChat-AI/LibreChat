@@ -13,6 +13,7 @@ export {
 } from './methods/responseErasure';
 export { responseReference } from './methods/responseRoot';
 export { createResponseCheckpointStorage } from './methods/responseCheckpoint';
+export { ChannelDrainPendingError } from './methods/channelGeneration';
 export type {
   ResponseReference,
   ResponsePersistenceFailure,
