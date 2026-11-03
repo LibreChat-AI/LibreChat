@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { durableStorageConfigSchema } from 'librechat-data-provider';
 import type { ChannelExternalIdentity } from 'librechat-data-provider';
 import type { FilterQuery, Types } from 'mongoose';
@@ -30,8 +29,10 @@ import {
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { includeManagedAllocations } from '~/utils/managed';
 import { createAgentChannelModel } from '~/models/channel';
+import { channelRegistryKey } from './channelRegistryKey';
 import { MANAGED_TARGET_KINDS } from '~/types/managed';
 import { responseScopeKeys } from './responseScope';
+export { channelRegistryKey } from './channelRegistryKey';
 
 export interface ChannelAuthority {
   target: ManagedTarget<'channel'>;
@@ -77,25 +78,6 @@ interface RegistryAnchor extends ManagedRegistryState {
 
 function isChannel(authority: ChannelRegistryAuthority): authority is ChannelAuthority {
   return authority.target.kind === 'channel';
-}
-
-/** Lifetime discovery survives revocation; the generation key additionally fences publication. */
-export function channelRegistryKey(
-  authority: Pick<ChannelRegistryAuthority, 'target' | 'revision'>,
-  generation = true,
-): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
-        'channel-authority',
-        authority.target.kind,
-        authority.target.id.toLowerCase(),
-        authority.target.incarnation,
-        authority.target.tenantId || null,
-        generation ? authority.revision : null,
-      ]),
-    )
-    .digest('hex');
 }
 
 /** Capture a current physical authority before registering any private channel child. */

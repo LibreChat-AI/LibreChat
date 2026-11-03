@@ -3,6 +3,7 @@ import { channelStorageConfigSchema } from 'librechat-data-provider';
 import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { ClientSession, Types } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
+import type { ManagedTarget } from '~/types/managed';
 import { getTenantId, SYSTEM_TENANT_ID, tenantStorage } from '~/config/tenantContext';
 import { createAgentChannelModel, CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
 import { eraseChannelIdentitiesForChannel } from './channelIdentityErasure';
@@ -182,19 +183,29 @@ export async function closeChannelScope(
   }
 }
 
-/** Close canonical authority first, then drain the shared fence before dependent erasure. */
-export async function retireAgentChannel(
+type ChannelConnection = {
+  tenantId?: string;
+  channelId: string;
+  createdBy: string;
+  id?: string;
+  incarnation?: string;
+};
+interface ClosedChannel {
+  record: AgentChannelRecord;
+  target: ManagedTarget<'channel'>;
+}
+
+/** Close/redact canonical authority without entering a dependent storage cascade. */
+export async function closeAgentChannel(
   mongoose: typeof import('mongoose'),
-  connection: { tenantId?: string; channelId: string; createdBy: string; id?: string },
+  connection: ChannelConnection,
   redactCredentials = false,
-  options: Partial<ChannelStorageConfig> = {},
-): Promise<AgentChannelRecord | null> {
-  const { erasureBatchSize } = channelStorageConfigSchema.parse(options);
+): Promise<ClosedChannel | null> {
   const { tenantId, channelId, createdBy } = connection;
   assertChannelTenant(tenantId);
   if (getTenantId() === SYSTEM_TENANT_ID && tenantId)
     return tenantStorage.run({ tenantId }, () =>
-      retireAgentChannel(mongoose, connection, redactCredentials, options),
+      closeAgentChannel(mongoose, connection, redactCredentials),
     );
   if (connection.id !== undefined && !/^[a-f\d]{24}$/i.test(connection.id))
     throw new TypeError('Invalid channel retirement identity');
@@ -205,6 +216,7 @@ export async function retireAgentChannel(
       channelId,
       createdBy,
       tenantId: tenantId || { $in: [null, ''] },
+      ...(connection.incarnation && { '_managed.incarnation': connection.incarnation }),
     })
     .select('_id _managed.incarnation')
     .read('primary')
@@ -238,22 +250,38 @@ export async function retireAgentChannel(
   // No dependent sweep or successful retirement acknowledgment precedes this write.
   await closeChannelScope(mongoose, tenantId, channelId);
   if (!parent._managed) throw new Error('Channel retirement requires managed ownership');
-  await eraseChannelIdentitiesForChannel(
-    mongoose,
-    {
+  return {
+    record: deleting,
+    target: {
       kind: 'channel',
       id: String(parent._id),
       incarnation: parent._managed.incarnation,
       ...(tenantId && { tenantId }),
     },
-    channelId,
-    erasureBatchSize,
-  );
+  };
+}
+
+/** Close canonical authority first, then drain dependent identities and registrations. */
+export async function retireAgentChannel(
+  mongoose: typeof import('mongoose'),
+  connection: ChannelConnection,
+  redactCredentials = false,
+  options: Partial<ChannelStorageConfig> = {},
+): Promise<AgentChannelRecord | null> {
+  const { erasureBatchSize } = channelStorageConfigSchema.parse(options);
+  if (getTenantId() === SYSTEM_TENANT_ID && connection.tenantId)
+    return tenantStorage.run({ tenantId: connection.tenantId }, () =>
+      retireAgentChannel(mongoose, connection, redactCredentials, options),
+    );
+  const closed = await closeAgentChannel(mongoose, connection, redactCredentials);
+  if (!closed) return null;
+  const { tenantId, channelId, createdBy } = connection;
+  await eraseChannelIdentitiesForChannel(mongoose, closed.target, channelId, erasureBatchSize);
   await reconcileClosedChannelRegistries(mongoose, {
-    id: String(parent._id),
+    id: closed.target.id,
     tenantId,
     channelId,
     createdBy,
   });
-  return deleting;
+  return closed.record;
 }

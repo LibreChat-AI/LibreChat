@@ -21,6 +21,7 @@ import {
   responseScopeKeys,
   assertResponseErasureOwner,
 } from './responseScope';
+import { isRedactedCreatorControl } from './channelControlPrivacy';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { retiredIdentityFilter } from './channelIdentityPrivacy';
 import { includeManagedAllocations } from '~/utils/managed';
@@ -319,6 +320,16 @@ export async function settleRetainedChannelOwnerTarget(
   return settleTarget(mongoose, owner, undefined, entry, 'retained-channel-owner');
 }
 
+/** A closed creator may release only a fully inspected payload-free actor control. */
+export async function settleRedactedChannelControlTarget(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  entry: ManagedRegistrationIntent,
+): Promise<boolean> {
+  if (entry.target.kind !== 'channelLane') throw new TypeError('Invalid control cleanup target');
+  return settleTarget(mongoose, owner, undefined, entry, 'redacted-control');
+}
+
 async function settleTarget(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
@@ -329,6 +340,7 @@ async function settleTarget(
     | 'absent'
     | 'redacted-channel'
     | 'redacted-identity'
+    | 'redacted-control'
     | 'retained-channel-owner',
 ): Promise<boolean> {
   const key = registrationScope(
@@ -383,6 +395,12 @@ async function settleTarget(
       !target._managed.scopeKeys.includes(
         responseScopeKeys({ ...owner, userId: privateOwner }, '')[0],
       )
+    )
+      return false;
+  } else if (proof === 'redacted-control') {
+    if (
+      entry.target.kind !== 'channelLane' ||
+      !(await isRedactedCreatorControl(mongoose, owner, { ...entry.target, kind: 'channelLane' }))
     )
       return false;
   } else if (proof === 'redacted-identity') {

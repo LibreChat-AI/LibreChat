@@ -11,6 +11,7 @@ import { managedTargetPredicate, retireManagedAllocation } from './managed';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { eraseChannelIdentitiesForOwner } from './channelIdentityErasure';
 import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { retireAgentChannel, closeAgentChannel } from './channelScope';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createChannelRunModel } from '~/models/channelRun';
@@ -18,7 +19,6 @@ import { eraseOwnedChannelRuns } from './channelRunErasure';
 import { includeManagedAllocations } from '~/utils/managed';
 import { eraseChannelKeysForOwner } from './channelKey';
 import { createIndexesWithRetry } from '~/utils/retry';
-import { retireAgentChannel } from './channelScope';
 import { managedRegistryCount } from './registry';
 
 /** Validate operation configuration before the caller closes irreversible admission fences. */
@@ -36,9 +36,14 @@ export async function eraseChannelPersistenceForUser(
 ): Promise<void> {
   const config = resolveChannelErasureConfig(options);
   assertResponseErasureOwner(owner);
+  const partitions = owner.tenantId ? [owner, { userId: owner.userId }] : [owner];
+  for (const partition of partitions)
+    await tenantStorage.run({ tenantId: partition.tenantId || SYSTEM_TENANT_ID }, () =>
+      eraseChannelPartition(mongoose, partition, config.erasureBatchSize, true),
+    );
   // Provider and checkpoint retirement must positively complete before removing any Run.
   await createResponseOwnerErasureMethods(mongoose).eraseUserResponses(owner);
-  for (const partition of owner.tenantId ? [owner, { userId: owner.userId }] : [owner])
+  for (const partition of partitions)
     await tenantStorage.run({ tenantId: partition.tenantId || SYSTEM_TENANT_ID }, () =>
       eraseChannelPartition(mongoose, partition, config.erasureBatchSize),
     );
@@ -48,13 +53,14 @@ async function eraseChannelPartition(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   batchSize: number,
+  closeOnly = false,
 ): Promise<void> {
   const ownerKey = responseScopeKeys(owner, '')[0];
   const anchor = await createResponseScopeModel(mongoose).findById(ownerKey).read('primary').lean();
   if (!anchor?.closed) throw new Error('Channel erasure requires closed owner admission');
   managedRegistryCount(anchor);
   const tenantId = owner.tenantId || '_';
-  await eraseChannelKeysForOwner(mongoose, owner, anchor.pending ?? []);
+  if (!closeOnly) await eraseChannelKeysForOwner(mongoose, owner, anchor.pending ?? []);
   const runs = createChannelRunModel(mongoose);
   const channels = createAgentChannelModel(mongoose);
   await createIndexesWithRetry(channels);
@@ -91,14 +97,19 @@ async function eraseChannelPartition(
       (connection._managed && connection._managed.phase !== 'published')
     )
       throw new ResponseErasurePendingError();
+    const captured = {
+      ...connection,
+      id: String(connection._id),
+      incarnation: connection._managed?.incarnation,
+      createdBy: owner.userId,
+    };
+    if (closeOnly) {
+      await closeAgentChannel(mongoose, captured, true);
+      return;
+    }
     // Keep redacted deletion metadata while other principals' runs drain. The
     // deleted owner's credentials are erased immediately.
-    await retireAgentChannel(
-      mongoose,
-      { ...connection, id: String(connection._id), createdBy: owner.userId },
-      true,
-      { erasureBatchSize: batchSize },
-    );
+    await retireAgentChannel(mongoose, captured, true, { erasureBatchSize: batchSize });
     if (!connection._managed) throw new Error('Channel cleanup ownership unavailable');
     await eraseChannelFeedbackForChannel(mongoose, {
       kind: 'channel',
@@ -160,6 +171,7 @@ async function eraseChannelPartition(
     for (const connection of page) await eraseConnection(connection);
     after = page[page.length - 1]._id;
   }
+  if (closeOnly) return;
   // Redact creator credentials before private Run control cleanup can fail.
   await eraseOwnedChannelRuns(mongoose, owner, anchor.pending ?? [], batchSize);
   // Creator channels close and redact credentials before any identity cascade can fail.

@@ -2,9 +2,14 @@ import type { Types } from 'mongoose';
 import type { ManagedState, ManagedTarget, ManagedRegistration } from '~/types/managed';
 import type { ChannelRunRecord } from '~/models/channelRun';
 import type { ResponseOwner } from '~/models/response';
-import { settleAbsentResponseTarget, settleRetainedChannelOwnerTarget } from './registration';
+import {
+  settleAbsentResponseTarget,
+  settleRetainedChannelOwnerTarget,
+  settleRedactedChannelControlTarget,
+} from './registration';
 import { ALLOCATION_PREFIX, includeManagedAllocations } from '~/utils/managed';
 import { managedTargetPredicate, retireManagedAllocation } from './managed';
+import { redactCreatorControl } from './channelControlPrivacy';
 import { createChannelRunControl } from './channelRunControl';
 import { responseScopeKeys } from './responseScope';
 
@@ -72,6 +77,10 @@ export async function eraseOwnedChannelRuns(
         if (!['published', 'retired'].includes(current._managed.phase))
           throw new Error('Channel cleanup publication unavailable');
         if (kind === 'channelLane') {
+          if (current.kind === 'control') {
+            await redactCreatorControl(mongoose, owner, { ...target, kind: 'channelLane' });
+            return;
+          }
           if (current.kind !== 'principal' || current.userId !== owner.userId) return;
           await model.deleteOne({ ...exact, kind: 'principal', userId: owner.userId });
           return;
@@ -114,6 +123,7 @@ export async function eraseOwnedChannelRuns(
       if (entry.target.kind !== kind) continue;
       await erase({ ...entry.target, kind });
       await settleRetainedChannelOwnerTarget(mongoose, owner, entry);
+      if (kind === 'channelLane') await settleRedactedChannelControlTarget(mongoose, owner, entry);
       await settleAbsentResponseTarget(mongoose, owner, undefined, entry);
     }
     let after: Types.ObjectId | undefined;

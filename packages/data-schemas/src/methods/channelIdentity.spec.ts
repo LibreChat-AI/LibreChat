@@ -374,11 +374,14 @@ it('cannot move a revoked full record out of a closed channel to escape retireme
 
 it('creates and activates a per-user link at the canonical channel revision and fences rotation', () =>
   scope(async () => {
+    const now = Date.now();
     await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'connection-owner', {
       revision: 'canonical',
     });
     const pending = {
       ...identity(),
+      ticketExpiresAtMs: now + 60000,
+      expiresAtMs: now + 600000,
       identity: { ...identity().identity, channelRevision: 'canonical' },
     };
     expect(await storage.saveChannelIdentity(pending, null)).toBe(true);
@@ -412,14 +415,17 @@ it('creates and activates a per-user link at the canonical channel revision and 
       },
     };
     const runs = createChannelRunStorage(mongoose);
-    await expect(runs.admit(input, 100)).resolves.toMatchObject({
+    await expect(runs.admit(input, now)).resolves.toMatchObject({
       run: { principal: { channelRevision: 'canonical' } },
     });
     await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'connection-owner', {
       revision: 'rotated',
     });
     await expect(
-      runs.admit({ ...input, admission: { ...input.admission, eventId: 'stale-revision' } }, 101),
+      runs.admit(
+        { ...input, admission: { ...input.admission, eventId: 'stale-revision' } },
+        now + 1,
+      ),
     ).rejects.toMatchObject({ code: 'invalid_transition' });
   }));
 

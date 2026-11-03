@@ -95,6 +95,7 @@ export function createAgentChannelMethods(
         createdBy,
         tenantId: parent.tenantId,
         id: String(parent._id),
+        incarnation: parent._managed.incarnation,
       },
       false,
       await getStorageConfig(),
