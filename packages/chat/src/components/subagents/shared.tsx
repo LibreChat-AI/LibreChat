@@ -1,22 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtom } from 'jotai';
-import { SubagentActivityScrollSurface } from '@librechat/chat/components';
-import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '@librechat/client';
 import {
-  activeSubagentPanel,
-  adaptLivePersistedActivity,
-  resolveSubagentAgentId,
-  isSelfSpawn as isSelfSpawnType,
+  OGDialog,
+  useLocalize,
+  OGDialogTitle,
+  OGDialogHeader,
+  OGDialogContent,
+} from '@librechat/client';
+import type { TMessage } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
+import {
   messageAuthor,
   findAgentLaneId,
   resolveSubagentAuthor,
   findAgentAuthorMessage,
-  useSubagentsHost,
-} from '@librechat/chat/react';
-import type { TMessage } from 'librechat-data-provider';
-import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
-import SubagentConversation from './SubagentConversation';
-import { useLocalize } from '~/hooks';
+  isSelfSpawn as isSelfSpawnType,
+} from '../../react/subagents/author';
+import { adaptLivePersistedActivity } from '../../react/subagents/adapters';
+import { resolveSubagentAgentId } from '../../react/subagents/identity';
+import { MessageSurfaceContext } from '../../react/messages/surface';
+import { activeSubagentPanel } from '../../react/subagents/state';
+import { useSubagentsHost } from '../../react/subagents/host';
+import { SubagentActivityScrollSurface } from './transcript';
+import SubagentConversation from './conversation';
 
 /** Public-share fallback for subagent activity already embedded in the shared message payload. */
 export default function SharedSubagentActivityDialog({
@@ -26,7 +32,7 @@ export default function SharedSubagentActivityDialog({
   shareId?: string;
   /** The shared thread, which names the agent that dispatched the child. */
   messages?: TMessage[];
-}) {
+}): ReactNode {
   const localize = useLocalize();
   const agentsMap = useSubagentsHost().useAgentsMap();
   const [selected, setSelected] = useAtom(activeSubagentPanel);

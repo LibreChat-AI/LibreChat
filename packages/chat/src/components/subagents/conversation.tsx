@@ -2,51 +2,42 @@ import { useContext, useMemo, useState } from 'react';
 import { Radio } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
 import {
+  cn,
   Alert,
   Button,
   Collapsible,
+  useLocalize,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@librechat/client';
-import {
-  isAbnormalTerminalStatus,
-  isLiveSubagentStatus,
-  hasTerminalOutcome,
-  standardContent,
-  useChatSurface,
-  useSubagentsHost,
-  TaskContentScopeContext,
-  MessagePartsHostProvider,
-  useMessagePartsHost,
-} from '@librechat/chat/react';
-import {
-  SystemEventHeader,
-  SystemEventIcon,
-  systemEventHeaderClasses,
-  messageFooterClasses,
-  ElapsedTimer,
-  MessageRow,
-  SubagentActivityContent,
-  SubagentStatus,
-  getActivityContent,
-  MinimalHoverButtons,
-  ResumeAuthorHeader,
-} from '@librechat/chat/components';
-import type {
-  ChildConversationTurn,
-  TaskContentScope,
-  ToolContentQuery,
-  TurnAuthor,
-} from '@librechat/chat/react';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { useSearchResultsByTurn } from '~/hooks/Messages/useSearchResultsByTurn';
-import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
-import { AuthorContext } from '~/Providers/AuthorContext';
-import { ChatContext } from '~/Providers/ChatContext';
-import { isEmptyContentPart } from '~/utils/messages';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import type { ChildConversationTurn } from '../../react/subagents/adapters';
+import type { ToolContentQuery } from '../../react/parts/disclosure';
+import type { TaskContentScope } from '../../react/subagents/scope';
+import type { TurnAuthor } from '../../react/subagents/author';
+import SystemEventHeader, {
+  SystemEventIcon,
+  systemEventHeaderClasses,
+} from '../messages/SystemEvent';
+import { isAbnormalTerminalStatus, isLiveSubagentStatus } from '../../react/subagents/status';
+import { SubagentActivityContent, SubagentStatus, getActivityContent } from './transcript';
+import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host';
+import { TaskContentScopeContext } from '../../react/subagents/scope';
+import { hasTerminalOutcome } from '../../react/subagents/outcome';
+import MinimalHoverButtons from '../messages/MinimalHoverButtons';
+import { standardContent } from '../../react/subagents/adapters';
+import { ErrorSourceProvider } from '../../react/messages/error';
+import { useChatSurface } from '../../react/subagents/surface';
+import { useSubagentsHost } from '../../react/subagents/host';
+import ResumeAuthorHeader from '../parts/ResumeAuthorHeader';
+import { AuthorContext } from '../../react/messages/author';
+import { messageFooterClasses } from '../messages/styles';
+import { useSearchResultsByTurn } from '../messages/useSearchResultsByTurn';
+import { isEmptyContentPart } from '../../core/content';
+import { ChatContext } from '../../react/chat/context';
+import { ElapsedTimer } from '../messages/Elapsed';
+import MessageRow from '../messages/MessageRow';
 
 type ConversationRecovery = Omit<TaskContentScope, 'taskId'> & {
   selectedTaskId: string;
@@ -464,7 +455,7 @@ export default function SubagentConversation({
   onCancelControl?: (taskId: string, controlId: string) => void;
   detailStateByTask?: ReadonlyMap<string, 'idle' | 'loading' | 'unavailable' | 'error'>;
   onLoadTurnDetails?: (taskId: string) => void;
-}) {
+}): ReactNode {
   const { maximizeChatSpace: fullWidth } = useChatSurface();
   const parentChat = useContext(ChatContext);
   const host = useMessagePartsHost();

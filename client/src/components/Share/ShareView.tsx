@@ -4,6 +4,7 @@ import { useStore } from 'jotai';
 import { buildTree } from 'librechat-data-provider';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import { useParams, useNavigate } from 'react-router-dom';
+import { SharedSubagentActivityDialog } from '@librechat/chat/components';
 import { useGetSharedMessages } from 'librechat-data-provider/react-query';
 import { CalendarDays, ExternalLink, RefreshCw, Settings, MessageSquarePlus } from 'lucide-react';
 import {
@@ -24,7 +25,6 @@ import {
   CodeHighlightThrottleContext,
   normalizeCodeHighlightThrottleMs,
 } from '~/components/Chat/Messages/Content/Parts/useLazyHighlight';
-import SharedSubagentActivityDialog from '~/components/Chat/Subagents/SharedSubagentActivityDialog';
 import { cn, DEFAULT_APP_TITLE, getResponseStatus, selectActiveBranchTail } from '~/utils';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import AnalyticsConsentToggle from '../Nav/SettingsTabs/Data/AnalyticsConsent';
