@@ -1,11 +1,8 @@
-# Optional source-built application and stateless gateway.
+# Optional release-matched application and stateless gateway.
 # Setup: https://www.librechat.ai/docs/features/agent_channels#docker-compose
 services:
   api:
-    image: librechat-channels-api:local
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/librechat-ai/librechat:${LIBRECHAT_IMAGE_TAG:-latest}
     volumes:
       - ./librechat.yaml:/app/librechat.yaml:ro
     healthcheck:
@@ -22,9 +19,7 @@ services:
       retries: 12
   channel-gateway:
     profiles: [channels]
-    build:
-      context: .
-      dockerfile: packages/channel-gateway/Dockerfile
+    image: ghcr.io/librechat-ai/librechat-channel-gateway:${LIBRECHAT_IMAGE_TAG:-latest}
     depends_on:
       api:
         condition: service_healthy

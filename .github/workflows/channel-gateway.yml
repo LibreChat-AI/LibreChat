@@ -10,6 +10,8 @@ on:
       - 'scripts/typecheck.mts'
       - '.dockerignore'
       - 'docker-compose.channels.yml'
+      - 'docker-compose.channels-build.yml'
+      - '.github/scripts/test-channel-compose.mjs'
       - 'docker-compose.mongo-replica.yml'
       - 'utils/docker/init-replica.js'
       - '.env.example'
@@ -24,6 +26,8 @@ on:
       - 'scripts/typecheck.mts'
       - '.dockerignore'
       - 'docker-compose.channels.yml'
+      - 'docker-compose.channels-build.yml'
+      - '.github/scripts/test-channel-compose.mjs'
       - 'docker-compose.mongo-replica.yml'
       - 'utils/docker/init-replica.js'
       - '.env.example'
@@ -60,6 +64,8 @@ jobs:
         run: npm run test:ci --workspace @librechat/channel-gateway
       - name: Build gateway
         run: npm run build --workspace @librechat/channel-gateway
+      - name: Verify release and source Compose configuration
+        run: node .github/scripts/test-channel-compose.mjs
       - name: Verify local replica conversion and restart
         shell: bash
         run: |
