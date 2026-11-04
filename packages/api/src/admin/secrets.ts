@@ -227,6 +227,11 @@ interface ResolvedSecretField {
  * returns one either.
  */
 const RESOLVED_SECRET_FIELDS: readonly ResolvedSecretField[] = [
+  { path: 'endpoints.agents.channels.slackApp.clientSecret', isPassthroughValue: isEnvPlaceholder },
+  {
+    path: 'endpoints.agents.channels.slackApp.signingSecret',
+    isPassthroughValue: isEnvPlaceholder,
+  },
   { path: 'endpoints.azureOpenAI.groups.*.apiKey', isPassthroughValue: isCredentialReference },
   { path: 'endpoints.azureOpenAI.groupMap.*.apiKey', isPassthroughValue: isCredentialReference },
   { path: 'endpoints.anthropic.vertex.serviceKeyFile', isPassthroughValue: isEnvPlaceholder },
