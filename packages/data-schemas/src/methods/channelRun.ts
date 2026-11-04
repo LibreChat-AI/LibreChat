@@ -31,6 +31,7 @@ import {
 } from './channelProtocol';
 import { initializeChannelScope, touchChannelAuthority, touchChannelScope } from './channelScope';
 import { startRequiredTransactionSession } from '~/utils/transactions';
+import { createSlackThreadRouteModel } from '~/models/slackRoute';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseOwnerFilter } from './responseScope';
@@ -213,7 +214,8 @@ export function createChannelRunStorage(
   const limits = channelStorageConfigSchema.parse(options);
   const runs = () => mongoose.model<ChannelRunRecord>('ChannelRun');
   const lanes = () => mongoose.model<ChannelLaneRecord>('ChannelLane');
-  const ensureIndexes = createChannelIndexGate(() => [runs(), lanes()]);
+  const threads = createSlackThreadRouteModel(mongoose);
+  const ensureIndexes = createChannelIndexGate(() => [runs(), lanes(), threads]);
   async function transaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
     await ensureIndexes();
     const session = await startRequiredTransactionSession(mongoose);
@@ -430,6 +432,25 @@ export function createChannelRunStorage(
               throw new ChannelRunConflict('event_conflict');
             return { run: existing, duplicate: true };
           }
+          if (input.workspaceId) {
+            const threadKey = {
+              tenantId: input.tenantId === '_' ? null : input.tenantId,
+              workspaceId: input.workspaceId,
+              externalUserId: input.admission.actor.externalUserId,
+              externalThreadKey: input.admission.externalThreadKey,
+            };
+            const thread = await threads.findOne(threadKey).session(session).lean();
+            if (thread && thread.channelId !== input.channelId)
+              throw new ChannelRunConflict('thread_route_changed');
+            await threads.updateOne(
+              threadKey,
+              {
+                $set: { userId: input.principal.userId },
+                $setOnInsert: { channelId: input.channelId },
+              },
+              { session, upsert: true },
+            );
+          }
           const lane = await lanes()
             .findOneAndUpdate(
               { tenantId: input.tenantId, laneId },
@@ -465,6 +486,12 @@ export function createChannelRunStorage(
           return { run: record.toObject(), duplicate: false };
         });
       } catch (error) {
+        if (
+          error instanceof mongoose.mongo.MongoServerError &&
+          error.code === 11000 &&
+          error.message.includes('slack_thread_binding')
+        )
+          throw new ChannelRunConflict('thread_route_changed');
         if (
           !(error instanceof mongoose.mongo.MongoServerError) ||
           error.code !== 11000 ||

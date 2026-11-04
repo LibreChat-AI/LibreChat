@@ -1,4 +1,8 @@
-import type { ChannelStorageConfig, ChannelGatewayWirePolicy } from '../config';
+import type {
+  ChannelStorageConfig,
+  ChannelGatewayWirePolicy,
+  SharedSlackGatewayPolicy,
+} from '../config';
 
 export const SLACK_CHANNEL_BOT_SCOPES = [
   'app_mentions:read',
@@ -66,6 +70,54 @@ export interface SlackWorkspaceConnect {
   expiresInSeconds: number;
 }
 
+/** Deployment-service protocol; never returned by browser configuration endpoints. */
+export interface SharedSlackGatewayBootstrap {
+  appId: string;
+  signingSecret: string;
+  gateway: ChannelGatewayWirePolicy;
+  workers: SharedSlackGatewayPolicy;
+}
+
+export type SharedSlackRoute =
+  | { kind: 'bound'; tenantId: string; workspaceId: string; channelId: string }
+  | { kind: 'unmapped' | 'retired_thread'; workspace: SlackWorkspace; botToken: string };
+
+const routingId = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(/^[\w-]+$/);
+const messageKey = z
+  .string()
+  .min(1)
+  .max(512)
+  .regex(/^[^:\s/\\]+:\d{1,10}\.\d{1,6}$/);
+export const sharedSlackRouteLookupSchema = z
+  .object({
+    appId: routingId,
+    teamId: routingId,
+    target: z.discriminatedUnion('kind', [
+      z
+        .object({
+          kind: z.literal('thread'),
+          actorId: routingId,
+          externalChannelId: routingId,
+          externalThreadKey: messageKey,
+        })
+        .strict(),
+      z.object({ kind: z.literal('run'), runId: routingId }).strict(),
+      z.object({ kind: z.literal('link'), linkId: routingId }).strict(),
+      z.object({ kind: z.literal('message'), externalMessageKey: messageKey }).strict(),
+    ]),
+  })
+  .strict()
+  .refine(
+    ({ target }) =>
+      target.kind !== 'thread' ||
+      target.externalThreadKey.startsWith(`${target.externalChannelId}:`),
+  );
+export type SharedSlackRouteLookup = z.infer<typeof sharedSlackRouteLookupSchema>;
+
 export interface AgentChannel {
   channelId: string;
   tenantId?: string;
@@ -76,6 +128,8 @@ export interface AgentChannel {
   credentialMode: 'shared' | 'per_user';
   /** Changes whenever existing identity/execution consent must be re-established. */
   revision: string;
+  /** Shared app installation; credentials remain owned by the workspace. */
+  workspaceId?: string;
   slack?: { teamId: string; appId: string; botUserId: string };
 }
 
@@ -115,3 +169,4 @@ export interface ChannelServiceBundle {
   gateway: ChannelGatewayWirePolicy;
   delivery: Pick<ChannelStorageConfig, 'maxDeliveryParts'>;
 }
+import { z } from 'zod';

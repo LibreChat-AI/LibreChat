@@ -25,6 +25,7 @@ export function createAgentChannelModel(
       },
       credentialMode: { type: String, enum: ['shared', 'per_user'], required: true },
       revision: { type: String, required: true },
+      workspaceId: String,
       slack: { teamId: String, appId: String, botUserId: String },
       encryptedBotToken: { type: String, select: false },
       encryptedSigningSecret: { type: String, select: false },

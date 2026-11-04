@@ -93,11 +93,16 @@ export function parseEnvelope(body: unknown, bundle: ChannelBundle): SlackEnvelo
   return envelope;
 }
 
-/** Every webhook payload, including installation challenges, must authenticate its original bytes. */
-export function parseWebhookRequest(
+export interface SlackWebhookSecurity {
+  signingSecret: string;
+  signatureToleranceSeconds: number;
+}
+
+/** Authenticate original bytes before any workspace lookup or URL-verification acknowledgement. */
+export function parseSignedWebhook(
   body: Buffer,
   headers: { signature?: unknown; timestamp?: unknown; contentType?: unknown },
-  bundle: ChannelBundle,
+  security: SlackWebhookSecurity,
   interactive: boolean,
   now = Date.now(),
 ): SlackWebhookResult {
@@ -110,14 +115,12 @@ export function parseWebhookRequest(
       body,
       headers.signature,
       headers.timestamp,
-      bundle.credentials.signingSecret ?? '',
-      bundle.gateway.signatureToleranceSeconds,
+      security.signingSecret,
+      security.signatureToleranceSeconds,
       now,
     )
   )
     return { ok: false, status: 401, code: 'invalid_signature' };
-  if (bundle.gateway.transport !== 'webhook')
-    return { ok: false, status: 400, code: 'invalid_payload' };
   try {
     if (interactive) {
       if (
@@ -137,15 +140,44 @@ export function parseWebhookRequest(
       .safeParse(value);
     if (challenge.success)
       return { ok: true, request: { kind: 'challenge', challenge: challenge.data.challenge } };
-    return { ok: true, request: { kind: 'event', envelope: parseEnvelope(value, bundle) } };
+    return { ok: true, request: { kind: 'event', envelope: envelopeSchema.parse(value) } };
   } catch {
     return { ok: false, status: 400, code: 'invalid_payload' };
   }
 }
 
+/** The manual gateway additionally binds every accepted event to its configured installation. */
+export function parseWebhookRequest(
+  body: Buffer,
+  headers: { signature?: unknown; timestamp?: unknown; contentType?: unknown },
+  bundle: ChannelBundle,
+  interactive: boolean,
+  now = Date.now(),
+): SlackWebhookResult {
+  const result = parseSignedWebhook(
+    body,
+    headers,
+    {
+      signingSecret: bundle.credentials.signingSecret ?? '',
+      signatureToleranceSeconds: bundle.gateway.signatureToleranceSeconds,
+    },
+    interactive,
+    now,
+  );
+  if (!result.ok) return result;
+  if (
+    bundle.gateway.transport !== 'webhook' ||
+    (result.request.kind === 'event' &&
+      (result.request.envelope.team_id !== bundle.channel.slack.teamId ||
+        result.request.envelope.api_app_id !== bundle.channel.slack.appId))
+  )
+    return { ok: false, status: 400, code: 'invalid_payload' };
+  return result;
+}
+
 export function normalizeEvent(
   envelope: SlackEnvelope,
-  bundle: ChannelBundle,
+  bundle: { channel: Pick<ChannelBundle['channel'], 'slack'> },
 ): NormalizedEvent | null {
   const event = envelope.event;
   if (!event.user || event.bot_id || event.user === bundle.channel.slack.botUserId) return null;

@@ -6,6 +6,11 @@ export * from './schema';
 export * from './utils';
 export { createModels } from './models';
 export { createSlackWorkspaceStorage } from './methods/slackWorkspace';
+export { createSlackRouteStorage } from './methods/slackRoute';
+export { createSlackDispatchStorage } from './methods/slackDispatch';
+export type { SlackDispatchStorage } from './methods/slackDispatch';
+export type { SlackRouteStorage } from './methods/slackRoute';
+export type { SlackRouteRecord } from './models/slackRoute';
 export type {
   SlackWorkspaceStorage,
   SlackWorkspaceMetadata,

@@ -39,25 +39,19 @@ export type GatewayRuntimeConfig = GatewayConfig & {
   socketReconnectDelayMs: number;
 };
 
-export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
-  if (
-    ['SLACK_NATIVE_SESSIONS', 'SLACK_LIFECYCLE_REACTIONS', 'SLACK_SIGNATURE_TOLERANCE_SECS'].some(
-      (key) => env[key] !== undefined,
-    )
-  )
-    throw new Error(
-      'Configure gateway features and signature policy in librechat.yaml channel settings',
-    );
-  const input = env;
-  const parsed = environment.safeParse(input);
-  if (!parsed.success)
-    throw new Error(
-      `Invalid gateway configuration: ${[...new Set(parsed.error.issues.map((issue) => String(issue.path[0])))].join(', ')}`,
-    );
-  const config = parsed.data;
-  const backend = new URL(config.LIBRECHAT_INTERNAL_URL);
-  const slack = new URL(config.SLACK_API_BASE_URL);
-  for (const url of [backend, slack]) {
+export type SharedGatewayConfig = Omit<
+  GatewayConfig,
+  'CHANNEL_TENANT_ID' | 'CHANNEL_ID' | 'SLACK_APP_TOKEN'
+>;
+export type GatewayBootstrap =
+  | { mode: 'single'; config: GatewayConfig }
+  | { mode: 'shared'; config: SharedGatewayConfig };
+
+function validateServiceURLs(
+  config: Pick<GatewayConfig, 'LIBRECHAT_INTERNAL_URL' | 'SLACK_API_BASE_URL'>,
+): void {
+  for (const value of [config.LIBRECHAT_INTERNAL_URL, config.SLACK_API_BASE_URL]) {
+    const url = new URL(value);
     if (
       !['http:', 'https:'].includes(url.protocol) ||
       url.username ||
@@ -67,7 +61,49 @@ export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     )
       throw new Error('Invalid gateway service URL');
   }
+}
+
+function validatePolicyEnvironment(env: NodeJS.ProcessEnv): void {
+  if (
+    ['SLACK_NATIVE_SESSIONS', 'SLACK_LIFECYCLE_REACTIONS', 'SLACK_SIGNATURE_TOLERANCE_SECS'].some(
+      (key) => env[key] !== undefined,
+    )
+  )
+    throw new Error(
+      'Configure gateway features and signature policy in librechat.yaml channel settings',
+    );
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
+  validatePolicyEnvironment(env);
+  const input = env;
+  const parsed = environment.safeParse(input);
+  if (!parsed.success)
+    throw new Error(
+      `Invalid gateway configuration: ${[...new Set(parsed.error.issues.map((issue) => String(issue.path[0])))].join(', ')}`,
+    );
+  const config = parsed.data;
+  validateServiceURLs(config);
   return config;
+}
+
+/** A bound gateway supplies both IDs; otherwise the server must authorize shared app bootstrap. */
+export function loadBootstrap(env: NodeJS.ProcessEnv): GatewayBootstrap {
+  if (env.CHANNEL_ID?.trim()) return { mode: 'single', config: loadConfig(env) };
+  if (env.CHANNEL_TENANT_ID?.trim() && env.CHANNEL_TENANT_ID !== '_')
+    throw new Error('CHANNEL_ID is required for a tenant-bound gateway');
+  validatePolicyEnvironment(env);
+  const parsed = environment
+    .omit({ CHANNEL_TENANT_ID: true, CHANNEL_ID: true, SLACK_APP_TOKEN: true })
+    .safeParse(env);
+  if (!parsed.success)
+    throw new Error(
+      `Invalid gateway configuration: ${[
+        ...new Set(parsed.error.issues.map((issue) => String(issue.path[0]))),
+      ].join(', ')}`,
+    );
+  validateServiceURLs(parsed.data);
+  return { mode: 'shared', config: parsed.data };
 }
 
 /** Bootstrap settings cannot override the server's current installation/ingress policy. */

@@ -4,7 +4,7 @@ import type { PlainTextElement, ModalView, InputBlock, Button } from '@slack/typ
 import type { SlackClient, SlackBlocks } from './slack';
 import type { ChannelBundle, Review } from './types';
 import type { ChannelClient } from './client';
-import { ServiceError, expectedServiceFailure as expectedFailure } from './client';
+import { ServiceError, expectedServiceFailure as expectedFailure } from './transport';
 import { IdentityFlow, safePrivateURL } from './identity';
 
 type PendingAction = NonNullable<Review['pendingAction']>;

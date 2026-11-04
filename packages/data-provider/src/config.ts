@@ -1250,6 +1250,21 @@ export const channelStorageConfigSchema = z.object({
 
 export type ChannelStorageConfig = z.infer<typeof channelStorageConfigSchema>;
 
+/** One bounded shared ingress and worker pool, independent of installation count. */
+export const sharedSlackGatewayPolicySchema = z.object({
+  ingressConcurrency: z.number().int().min(1).max(128).default(32),
+  workerConcurrency: z.number().int().min(1).max(32).default(4),
+  discoveryBatchSize: z.number().int().min(1).max(100).default(32),
+  pollIntervalMs: z.number().int().min(100).max(60_000).default(1000),
+});
+export type SharedSlackGatewayPolicy = z.infer<typeof sharedSlackGatewayPolicySchema>;
+export const sharedSlackGatewayWirePolicySchema = sharedSlackGatewayPolicySchema.extend({
+  ingressConcurrency: sharedSlackGatewayPolicySchema.shape.ingressConcurrency.removeDefault(),
+  workerConcurrency: sharedSlackGatewayPolicySchema.shape.workerConcurrency.removeDefault(),
+  discoveryBatchSize: sharedSlackGatewayPolicySchema.shape.discoveryBatchSize.removeDefault(),
+  pollIntervalMs: sharedSlackGatewayPolicySchema.shape.pollIntervalMs.removeDefault(),
+});
+
 /** Channel runtime and operator policy; execution remains disabled by default. */
 export const channelConfigSchema = channelStorageConfigSchema.extend({
   enabled: z.boolean().default(false),
@@ -1271,6 +1286,7 @@ export const channelConfigSchema = channelStorageConfigSchema.extend({
   slackApp: z
     .object({
       enabled: z.boolean().default(false),
+      gateway: sharedSlackGatewayPolicySchema.prefault({}),
       flowLifetimeMs: z
         .number()
         .int()

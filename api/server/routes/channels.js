@@ -3,6 +3,7 @@ const handlers = require('~/server/services/Channels');
 
 const router = express.Router();
 router.use(require('./slack-workspaces'));
+router.use(require('./slack-dispatch'));
 router.use(require('./channels-identity'));
 router.use(require('./channels-feedback'));
 router.get('/service/slack/:tenantId/:channelId', handlers.bundle);

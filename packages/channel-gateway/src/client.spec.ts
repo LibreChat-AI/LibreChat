@@ -8,7 +8,8 @@ import {
 } from 'librechat-data-provider';
 import type { ChannelArtifact, ChannelRunFence, ChannelRunView } from 'librechat-data-provider';
 import type { ChannelBundle, ResponseGrant } from './types';
-import { ChannelClient, ServiceError, boundedBody } from './client';
+import { ServiceError, boundedBody } from './transport';
+import { ChannelClient } from './client';
 import { loadConfig } from './config';
 
 const config = loadConfig({

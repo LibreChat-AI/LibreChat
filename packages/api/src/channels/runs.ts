@@ -275,7 +275,12 @@ export async function hasChannelRunAuthority(
   run: ChannelRunRecord,
   resolve: ChannelRunDependencies['resolvePrincipal'],
 ): Promise<boolean> {
-  if (run.errorCode === 'channel_authority_changed' || channel.status !== 'active') return false;
+  if (
+    run.errorCode === 'channel_authority_changed' ||
+    channel.status !== 'active' ||
+    run.workspaceId !== channel.workspaceId
+  )
+    return false;
   const principal = await resolve(channel, run.admission.actor);
   return Boolean(
     principal &&
@@ -579,6 +584,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
           tenantId: channel.tenantId ?? '_',
           channelId: channel.channelId,
           agentId: channel.agentId,
+          workspaceId: channel.workspaceId,
           principal,
           admission,
         },
