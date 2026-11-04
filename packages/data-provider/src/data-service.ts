@@ -7,6 +7,13 @@ import type {
   ResponseReviewDecisionReceipt,
 } from './types/responseReview';
 import type {
+  AgentChannel,
+  ActivateAgentChannel,
+  SlackChannelManifest,
+  SlackWorkspaceStatus,
+  SlackWorkspaceConnect,
+} from './types/channels';
+import type {
   TTracePage,
   TTracePageParams,
   TTraceAvailability,
@@ -19,7 +26,6 @@ import type {
   ChannelLinkView,
 } from './types/channelIdentity';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
-import type { AgentChannel, ActivateAgentChannel, SlackChannelManifest } from './types/channels';
 import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
 import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { TFileConfig } from './file-config';
@@ -128,6 +134,24 @@ export function changeAgentChannelMode(
 
 export function deleteAgentChannel(agentId: string, channelId: string): Promise<void> {
   return request.delete(endpoints.agentChannels(agentId, channelId));
+}
+
+export function getSlackWorkspaces(cursor?: string): Promise<SlackWorkspaceStatus> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function connectSlackWorkspace(workspaceId?: string): Promise<SlackWorkspaceConnect> {
+  return request.post(`${endpoints.slackWorkspaces()}/connect`, workspaceId ? { workspaceId } : {});
+}
+
+export function disconnectSlackWorkspace(workspaceId: string): Promise<void> {
+  return request.delete(endpoints.slackWorkspaces(workspaceId));
+}
+
+export function cancelSlackWorkspaceInstall(flowId: string): Promise<void> {
+  return request.delete(`${endpoints.slackWorkspaces()}/attempts/${encodeURIComponent(flowId)}`);
 }
 
 export const channelIdentityClient: ChannelIdentityClient = {
