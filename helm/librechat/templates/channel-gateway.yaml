@@ -1,5 +1,12 @@
 {{- if .Values.channelGateway.enabled }}
 {{- $gateway := .Values.channelGateway }}
+{{- $mode := $gateway.mode | default "single" }}
+{{- if not (has $mode (list "single" "shared")) }}
+{{- fail "channelGateway.mode must be single or shared" }}
+{{- end }}
+{{- if and (eq $mode "shared") (or $gateway.channelId (ne $gateway.tenantId "_")) }}
+{{- fail "Shared gateway mode requires an empty channelId and the default tenantId _" }}
+{{- end }}
 {{- $tag := include "librechat.channelGateway.imageTag" . }}
 {{- $secret := required "channelGateway.existingSecretName or global.librechat.existingSecretName is required" ($gateway.existingSecretName | default .Values.global.librechat.existingSecretName) }}
 apiVersion: apps/v1
@@ -51,21 +58,25 @@ spec:
               value: "0.0.0.0"
             - name: LIBRECHAT_INTERNAL_URL
               value: {{ $gateway.internalUrl | default (printf "http://%s:%v" (include "librechat.fullname" .) .Values.service.port) | quote }}
+            {{- if eq $mode "single" }}
             - name: CHANNEL_ID
               value: {{ required "channelGateway.channelId is required when enabled" $gateway.channelId | quote }}
             - name: CHANNEL_TENANT_ID
               value: {{ $gateway.tenantId | quote }}
+            {{- end }}
             - name: CHANNEL_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ $secret | quote }}
                   key: CHANNEL_SERVICE_TOKEN
+            {{- if eq $mode "single" }}
             {{- with $gateway.slackAppTokenKey }}
             - name: SLACK_APP_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ $secret | quote }}
                   key: {{ . | quote }}
+            {{- end }}
             {{- end }}
           startupProbe:
             httpGet:

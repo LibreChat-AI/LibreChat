@@ -7,6 +7,7 @@ import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createChannelScopeModel } from '~/models/channelScope';
 import { touchChannelOwnerAdmission } from './channelOwner';
 import { touchSlackWorkspace } from './slackWorkspaceScope';
+import { createSlackRouteModel } from '~/models/slackRoute';
 import { createAgentChannelModel } from '~/models/channel';
 
 export function assertChannelTenant(tenantId: string | undefined): void {
@@ -236,6 +237,10 @@ export async function retireAgentChannel(
         .lean();
       if (!record) return null;
       await closeChannelScope(mongoose, tenantId, channelId, session);
+      await createSlackRouteModel(mongoose).deleteMany(
+        { tenantId: tenantId || { $in: [null, ''] }, channelId },
+        { session },
+      );
       return record;
     });
     if (!deleting) return null;

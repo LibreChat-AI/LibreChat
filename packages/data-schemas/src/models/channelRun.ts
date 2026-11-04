@@ -174,6 +174,7 @@ export function createChannelRunModel(
     receivedAt: -1,
   });
   schema.index({ workspaceId: 1, 'receipts.externalMessageKey': 1 });
+  schema.index({ workspaceId: 1, 'progress.externalMessageKey': 1 });
   schema.index({ tenantId: 1, channelId: 1, 'receipts.externalMessageKey': 1 });
   applyTenantIsolation(schema);
   return mongoose.models.ChannelRun ?? mongoose.model<ChannelRunRecord>('ChannelRun', schema);

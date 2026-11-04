@@ -217,6 +217,129 @@ describe('workspace routing and live channel authority', () => {
       );
     }));
 
+  it('retires routing with the channel, preserves old threads and lets new conversations use the default', async () =>
+    scoped(async () => {
+      const workspaceId = await install();
+      await binding(workspaceId);
+      await binding(workspaceId, 'specific');
+      await assign(workspaceId, 'binding-a');
+      await assign(workspaceId, 'specific', 'C123');
+      await db.models.SlackThreadRoute.create({
+        workspaceId,
+        externalUserId: 'U123',
+        externalThreadKey: 'C123:old',
+        channelId: 'specific',
+        userId: 'member',
+      });
+      await db.models.ChannelRun.collection.insertOne({
+        tenantId: 'org-a',
+        channelId: 'specific',
+        runId: 'draining',
+        laneId: 'draining',
+        sequence: 1,
+        state: 'executing',
+      });
+      expect(await channels.deleteAgentChannel('specific', 'agent-manager')).toEqual({
+        status: 'pending_drain',
+      });
+      expect(await routes.read(workspaceId, 'C123')).toBeNull();
+      expect((await routes.resolve(workspaceId, 'C123'))?.channelId).toBe('binding-a');
+      expect(await dispatch.thread(workspaceId, 'U123', 'C123:old')).toBe('specific');
+      expect(await channels.getActiveAgentChannel('specific')).toBeNull();
+      expect(await routes.listForChannel('specific')).toEqual({ routes: [] });
+      await db.models.ChannelRun.deleteMany({ runId: 'draining' });
+      expect(await channels.deleteAgentChannel('specific', 'agent-manager')).toEqual({
+        status: 'deleted',
+      });
+      await channels.deleteAgentChannel('binding-a', 'agent-manager');
+      expect(await routes.resolve(workspaceId, 'C123')).toBeNull();
+    }));
+
+  it('serializes assignment against retirement without erasing another tenant’s routes', async () => {
+    const workspaceId = await scoped(async () => {
+      const id = await install();
+      await binding(id);
+      return id;
+    });
+    await scoped(
+      () =>
+        db.models.SlackRoute.create({
+          workspaceId: 'foreign-workspace',
+          channelId: 'binding-a',
+          revision: 'foreign',
+        }),
+      'org-b',
+    );
+    await scoped(async () => {
+      await Promise.all([
+        assign(workspaceId, 'binding-a', 'C123'),
+        channels.beginAgentChannelDeletion('binding-a', 'agent-manager'),
+      ]);
+      expect(await routes.resolve(workspaceId, 'C123')).toBeNull();
+      expect(await routes.listForChannel('binding-a')).toEqual({ routes: [] });
+    });
+    expect((await scoped(() => routes.read('foreign-workspace'), 'org-b'))?.revision).toBe(
+      'foreign',
+    );
+  });
+
+  it('uses indexed OR branches for progress and receipt lookups in an established workspace', async () =>
+    scoped(async () => {
+      const workspaceId = await install();
+      await db.models.ChannelRun.collection.insertMany(
+        Array.from({ length: 500 }, (_, i) => ({
+          tenantId: 'org-a',
+          workspaceId,
+          channelId: 'binding-a',
+          runId: `lookup-${i}`,
+          laneId: `lookup-${i}`,
+          sequence: 1,
+          admission: { actor: { teamId: 'T123', appId: 'A123' }, eventId: `lookup-${i}` },
+          progress: { externalMessageKey: i === 0 ? 'progress-target' : `other-${i}` },
+          receipts: i === 1 ? [{ externalMessageKey: 'receipt-target' }] : [],
+        })),
+      );
+      for (const externalMessageKey of ['progress-target', 'receipt-target']) {
+        expect(await dispatch.message(workspaceId, externalMessageKey)).toBe('binding-a');
+        const plan = await db.models.ChannelRun.collection
+          .find({
+            tenantId: 'org-a',
+            workspaceId,
+            $or: [
+              { 'progress.externalMessageKey': externalMessageKey },
+              { 'receipts.externalMessageKey': externalMessageKey },
+            ],
+          })
+          .limit(2)
+          .explain('executionStats');
+        expect(plan.executionStats.nReturned).toBe(1);
+        expect(plan.executionStats.totalDocsExamined).toBeLessThanOrEqual(2);
+        expect(JSON.stringify(plan.queryPlanner.winningPlan)).not.toContain('COLLSCAN');
+      }
+    }));
+
+  it('removes the deleted creator’s routes without deleting the organization installation', async () =>
+    scoped(async () => {
+      const workspaceId = await install();
+      const owner = { tenantId: 'org-a', userId: '000000000000000000000020' };
+      await channels.createAgentChannel({
+        channelId: 'account-owned',
+        workspaceId,
+        agentId: 'agent-account',
+        createdBy: owner.userId,
+        type: 'slack',
+        status: 'active',
+        credentialMode: 'per_user',
+        revision: 'account-consent',
+      });
+      expect((await assign(workspaceId, 'account-owned', 'C123')).ok).toBe(true);
+      await closeResponseScopes(db, owner);
+      await eraseChannelPersistenceForUser(db, owner);
+      expect(await routes.read(workspaceId, 'C123')).toBeNull();
+      expect(await channels.getAgentChannel('account-owned')).toBeNull();
+      expect((await installations.metadata(workspaceId))?.status).toBe('active');
+    }));
+
   it('never borrows another tenant’s installation credentials or routing configuration', async () => {
     const workspaceId = await scoped(async () => {
       const id = await install();

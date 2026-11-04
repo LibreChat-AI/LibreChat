@@ -297,6 +297,9 @@ updateStrategy:
 # Requires transaction-capable MongoDB; this does not change database topology.
 channelGateway:
   enabled: false
+  # single binds a manually configured connection; shared serves installed workspaces.
+  # Shared mode requires webhook transport and slackApp configuration in librechat.yaml.
+  mode: single
   image:
     repository: ghcr.io/librechat-ai/librechat-channel-gateway
     # Defaults to image.tag, which must explicitly select a release containing Channels.
