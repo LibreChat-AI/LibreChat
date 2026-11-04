@@ -15,3 +15,6 @@ docs
 
 # Ignore all hidden files
 .*
+
+# Include the deployment configuration in repository-built Docker images.
+!librechat.yaml
