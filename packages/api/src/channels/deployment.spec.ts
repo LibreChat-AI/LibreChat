@@ -1,4 +1,7 @@
 import '~/mcp/registry/__tests__/helpers/setupCredsEnv';
+import { resolve } from 'node:path';
+import { parseEnv } from 'node:util';
+import { readFileSync } from 'node:fs';
 import { AppService } from '@librechat/data-schemas';
 import { agentsEndpointSchema } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
@@ -14,9 +17,57 @@ const environment = {
   SLACK_SIGNING_SECRET: 'fixture-signature',
   SLACK_GATEWAY_URL: 'https://slack.example.com',
   DOMAIN_SERVER: 'https://chat.example.com/librechat',
+  DOMAIN_CLIENT: 'https://client.example.com/librechat',
 };
 
 describe('shared Slack deployment setup', () => {
+  it('rejects the active localhost defaults shipped in .env.example', () => {
+    const defaults = parseEnv(readFileSync(resolve(__dirname, '../../../../.env.example'), 'utf8'));
+    expect(() =>
+      applySlackWorkspaceEnvironment(
+        {},
+        {
+          ...environment,
+          DOMAIN_SERVER: defaults.DOMAIN_SERVER,
+          DOMAIN_CLIENT: defaults.DOMAIN_CLIENT,
+        },
+      ),
+    ).toThrow('public HTTPS');
+    const ordinary = {};
+    expect(applySlackWorkspaceEnvironment(ordinary, defaults)).toBe(ordinary);
+  });
+
+  it('accepts a public hostname starting with an IP-range prefix and an omitted client origin', () => {
+    expect(() =>
+      applySlackWorkspaceEnvironment(
+        {},
+        {
+          ...environment,
+          DOMAIN_SERVER: 'https://fc.example.com/librechat',
+          DOMAIN_CLIENT: undefined,
+        },
+      ),
+    ).not.toThrow();
+  });
+
+  describe.each(['DOMAIN_SERVER', 'DOMAIN_CLIENT', 'SLACK_GATEWAY_URL'] as const)('%s', (field) => {
+    it.each([
+      'http://chat.example.com',
+      'https://localhost',
+      'https://localhost.',
+      'https://chat.localhost',
+      'https://127.1',
+      'https://2130706433',
+      'https://[::1]',
+      'https://[::ffff:127.0.0.1]',
+      'https://10.0.0.1',
+    ])('rejects a nonpublic installation URL: %s', (value) => {
+      expect(() => applySlackWorkspaceEnvironment({}, { ...environment, [field]: value })).toThrow(
+        'public HTTPS',
+      );
+    });
+  });
+
   it.each([undefined, '', 'false'])(
     'leaves ordinary and manual setup unchanged when %s',
     (enabled) => {
