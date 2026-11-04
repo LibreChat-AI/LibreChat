@@ -4,13 +4,18 @@ import { useWatch } from 'react-hook-form';
 import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useDirection } from '@radix-ui/react-direction';
-import { useSteering, showStopButtonByIndex, useComposerRestoreHost } from '@librechat/chat/react';
 import {
   PastedTextDialog,
   QuoteButton,
   composerHintId,
   ComposerHints as Hints,
 } from '@librechat/chat/components';
+import {
+  useSteering,
+  useComposerItems,
+  showStopButtonByIndex,
+  useComposerRestoreHost,
+} from '@librechat/chat/react';
 import {
   Constants,
   Permissions,
@@ -66,7 +71,6 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskUserQuestionPopover from './AskUserQuestionPopover';
-import useComposerItems from '~/hooks/Input/useComposerItems';
 import useAttachTarget from '~/hooks/Input/useAttachTarget';
 import { chatDirectionAtom } from '~/store/chatDirection';
 import ProjectLandingChip from '../ProjectLandingChip';

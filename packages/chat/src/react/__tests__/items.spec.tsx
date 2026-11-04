@@ -1,8 +1,11 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { act, renderHook } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
-import { pendingQuotesByConvoId, pendingManualSkillsByConvoId } from '@librechat/chat/react';
-import useComposerItems from '../useComposerItems';
+import { pendingManualSkillsByConvoId, pendingQuotesByConvoId } from '../composer';
+import useComposerItems from '../items';
 
 /**
  * The tray's staged context. Removal is the whole surface here, and quotes are
