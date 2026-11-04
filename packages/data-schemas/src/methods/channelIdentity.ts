@@ -21,6 +21,11 @@ export interface ChannelIdentityStorage {
     record: ChannelIdentityRecord,
     expectedRevision: string | null,
   ): Promise<boolean>;
+  /** Owner-only authority reduction remains available after the channel closes. */
+  revokeChannelIdentity(
+    owner: Pick<ChannelIdentityRecord, 'tenantId' | 'linkId' | 'revision'> & { userId: string },
+    revision: string,
+  ): Promise<boolean>;
   /** Existing-row authority reduction only: no inserts or private-field replacements. */
   revokeChannelIdentities(tenantId: string, channelId: string, revision: string): Promise<void>;
 }
@@ -147,6 +152,41 @@ export function createChannelIdentityStorage(
       } catch (error) {
         if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) return false;
         throw error;
+      }
+    },
+
+    async revokeChannelIdentity(owner, revision) {
+      assertChannelTenant(owner.tenantId);
+      if (
+        ![owner.tenantId, owner.userId, owner.linkId, owner.revision, revision].every(
+          (value) => typeof value === 'string' && value.length > 0,
+        )
+      )
+        throw new TypeError('Channel identity revocation requires owner and revision');
+      const filter = {
+        tenantId: owner.tenantId,
+        userId: owner.userId,
+        linkId: owner.linkId,
+        revision: owner.revision,
+      };
+      const record = await model().findOne(filter).select('identity.channelId').lean();
+      if (!record) return false;
+      await initializeChannelScope(mongoose, owner.tenantId, record.identity.channelId);
+      const session = await mongoose.startSession();
+      try {
+        let matched = false;
+        await session.withTransaction(async () => {
+          await lockChannelScope(mongoose, owner.tenantId, record.identity.channelId, session);
+          const result = await model().updateOne(
+            filter,
+            { $set: { state: 'revoked', revision } },
+            { session, runValidators: true },
+          );
+          matched = result.matchedCount === 1;
+        });
+        return matched;
+      } finally {
+        await session.endSession();
       }
     },
 
