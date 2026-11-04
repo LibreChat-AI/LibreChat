@@ -267,9 +267,14 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
     }
     const duplicates: string[] = [];
     const oversized: string[] = [];
+    const unsupported: string[] = [];
     for (const { file, reason } of skipped) {
       if (reason === 'duplicate') {
         duplicates.push(file.name);
+        continue;
+      }
+      if (reason === 'unsupportedType') {
+        unsupported.push(file.name);
         continue;
       }
       oversized.push(file.name);
@@ -284,6 +289,9 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
           1: oversized.join(', '),
         }),
       );
+    }
+    if (unsupported.length > 0) {
+      setError(localize('com_error_files_skipped_type', { 0: unsupported.join(', ') }));
     }
   };
   const { addFile, replaceFile, updateFileById, deleteFileById } = useUpdateFiles(fileSetter);
@@ -732,6 +740,8 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       files: filesForValidation,
       fileList,
       endpointFileConfig,
+      fileConfig: currentFileConfig,
+      toolResource: _toolResource,
       skipSizeValidation: true,
     });
     /** Nothing survived, so the whole selection is rejected and the untouched list reports it
@@ -966,6 +976,8 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
         files: filesForValidation,
         fileList: processedFileList,
         endpointFileConfig,
+        fileConfig: currentFileConfig,
+        toolResource: _toolResource,
       });
       acceptedUploads = batch.keptIndices.map((index) => eligibleUploads[index]);
       const acceptedFiles = acceptedUploads.map(({ extendedFile }) => extendedFile.file as File);
