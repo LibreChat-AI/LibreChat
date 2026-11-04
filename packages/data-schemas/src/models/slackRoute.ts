@@ -25,7 +25,7 @@ export function createSlackRouteModel(
     { timestamps: true },
   );
   schema.index({ workspaceId: 1, externalChannelId: 1 }, { unique: true });
-  schema.index({ tenantId: 1, channelId: 1 });
+  schema.index({ tenantId: 1, channelId: 1, _id: 1 });
   applyTenantIsolation(schema);
   return mongoose.models.SlackRoute ?? mongoose.model<SlackRouteRecord>('SlackRoute', schema);
 }

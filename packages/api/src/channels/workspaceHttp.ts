@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getTenantId, tenantStorage } from '@librechat/data-schemas';
+import { getTenantId, tenantStorage, TransactionUnavailableError } from '@librechat/data-schemas';
 import type { SlackWorkspaceStorage } from '@librechat/data-schemas';
 import type { Request, Response, RequestHandler } from 'express';
 import type { SlackWorkspaceService, SlackWorkspacePrincipal } from './workspaces';
@@ -40,6 +40,7 @@ export interface SlackWorkspaceHandlers {
   configureApp: RequestHandler;
   removeApp: RequestHandler;
   list: RequestHandler;
+  get: RequestHandler;
   connect: RequestHandler;
   disconnect: RequestHandler;
   cancel: RequestHandler;
@@ -79,7 +80,12 @@ export function createSlackWorkspaceHandlers(deps: {
         await action(req, res, principal);
       } catch (error) {
         deps.logError(getSafeErrorMetadata(error));
-        res.status(503).json({ ok: false, error: { code: 'unavailable' } });
+        res.status(503).json({
+          ok: false,
+          error: {
+            code: error instanceof TransactionUnavailableError ? error.code : 'unavailable',
+          },
+        });
       }
     };
 
@@ -128,15 +134,39 @@ export function createSlackWorkspaceHandlers(deps: {
       if (!result.ok) res.status(result.error.code === 'forbidden' ? 403 : 409).json(result);
       else res.sendStatus(204);
     }),
+    get: browser(async (req, res, principal) => {
+      const id = identifier.safeParse(req.params.workspaceId);
+      if (!id.success) {
+        res.sendStatus(400);
+        return;
+      }
+      const [workspace, settings, canManage] = await Promise.all([
+        deps.storage.metadata(id.data),
+        deps.settings(),
+        deps.canManage(principal),
+      ]);
+      if (!workspace) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json({ configured: settings.configured, canManage, workspace });
+    }),
     list: browser(async (req, res, principal) => {
       const page = pageQuery.safeParse(req.query);
       if (!page.success) {
         res.status(400).json({ ok: false, error: { code: 'invalid_page' } });
         return;
       }
-      const [settings, canManage] = await Promise.all([deps.settings(), deps.canManage(principal)]);
-      const workspaces = await deps.storage.list(page.data.cursor, settings.pageSize);
-      res.json({ configured: settings.configured, canManage, ...workspaces });
+      const settings = await deps.settings();
+      const [workspaces, canManage] = await Promise.all([
+        deps.storage.list(page.data.cursor, settings.pageSize),
+        deps.canManage(principal),
+      ]);
+      res.json({
+        configured: settings.configured,
+        canManage,
+        ...workspaces,
+      });
     }),
     connect: browser(async (req, res, principal) => {
       const body = connectBody.safeParse(req.body);
@@ -242,7 +272,11 @@ export function createSlackWorkspaceHandlers(deps: {
         res.redirect(landing('/oauth/success', { serverName: 'Slack', flow: flowId }));
       } catch (error) {
         deps.logError(getSafeErrorMetadata(error));
-        fail();
+        fail(
+          error instanceof TransactionUnavailableError
+            ? 'slack_transactions_unavailable'
+            : undefined,
+        );
       }
     }) as RequestHandler,
   };

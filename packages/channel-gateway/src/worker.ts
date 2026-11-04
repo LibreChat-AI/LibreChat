@@ -106,6 +106,7 @@ function canYield(run: ChannelRunView): void {
 /** Bounded diagnostics distinguish recovery causes without retaining remote error text. */
 export function recoveryEvent(error: unknown): string {
   if (error instanceof ServiceError) {
+    if (error.code === 'transactions_unavailable') return 'channel_storage_transactions_required';
     if (error.status === 401) return 'channel_service_authentication_failed';
     if (error.status === 403) return 'channel_service_authority_unavailable';
     if (error.status === 404) return 'channel_binding_unavailable';

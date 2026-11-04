@@ -59,9 +59,36 @@ export interface SlackWorkspace {
 
 export interface SlackWorkspaceStatus {
   configured: boolean;
+  appId?: string;
   canManage: boolean;
   workspaces: SlackWorkspace[];
   next?: string;
+}
+
+export interface SlackWorkspaceDetail {
+  configured: boolean;
+  appId?: string;
+  canManage: boolean;
+  workspace: SlackWorkspace;
+}
+
+export interface SlackWorkspaceRouteTarget {
+  externalChannelId?: string;
+  revision: string;
+}
+export interface SlackWorkspaceRoutePage {
+  routes: SlackWorkspaceRouteTarget[];
+  next?: string;
+}
+export interface SlackWorkspaceRouteStatus {
+  occupied: boolean;
+  assignedToThisChannel: boolean;
+  revision?: string;
+}
+export interface SetSlackWorkspaceRoute {
+  channelRevision: string;
+  externalChannelId?: string;
+  expectedRevision?: string;
 }
 
 export interface SlackWorkspaceConnect {

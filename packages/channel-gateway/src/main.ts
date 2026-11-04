@@ -3,11 +3,12 @@ import { Registry, collectDefaultMetrics, Counter } from 'prom-client';
 import type { Server } from 'node:http';
 import type { SocketConnection } from './socket';
 import { loadBootstrap, resolveGatewayConfig } from './config';
+import { ChannelWorker, recoveryEvent } from './worker';
 import { runSharedWorkers } from './shared/worker';
 import { WorkspaceClient } from './shared/client';
 import { SharedGatewayApp } from './shared/app';
+import { ServiceError } from './transport';
 import { connectSocket } from './socket';
-import { ChannelWorker } from './worker';
 import { ChannelClient } from './client';
 import { SlackClient } from './slack';
 import { GatewayApp } from './app';
@@ -118,7 +119,8 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch(() => {
+void main().catch((error: unknown) => {
+  if (error instanceof ServiceError) logger.error(recoveryEvent(error));
   logger.error('channel_gateway_startup_failed');
   process.exitCode = 1;
 });

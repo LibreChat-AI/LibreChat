@@ -68,13 +68,22 @@ describe('workspace routing and live channel authority', () => {
       revision: `consent-${channelId}`,
     });
   }
-  const assign = (
+  const assign = async (
     workspaceId: string,
     channelId: string,
     externalChannelId?: string,
     expectedRevision?: string,
-  ) =>
-    routes.assign({ userId: 'admin', workspaceId, channelId, externalChannelId, expectedRevision });
+  ) => {
+    const channel = await channels.getAgentChannel(channelId);
+    return routes.assign({
+      userId: 'admin',
+      workspaceId,
+      channelId,
+      externalChannelId,
+      expectedRevision,
+      channelRevision: channel?.revision ?? 'missing',
+    });
+  };
 
   beforeAll(async () => {
     mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
@@ -314,6 +323,76 @@ describe('workspace routing and live channel authority', () => {
     actor: { teamId: 'T123', appId: 'A123', externalUserId: 'UACTOR' },
     input: 'Private test input',
   });
+
+  it('reads committed installation and routing authority from primary despite a secondary connection default', async () =>
+    scoped(async () => {
+      const workspaceId = await install();
+      await binding(workspaceId);
+      await assign(workspaceId, 'binding-a');
+      const principal = await linked('binding-a');
+      const admitted = await createChannelRunStorage(db).admit(
+        {
+          tenantId: 'org-a',
+          workspaceId,
+          channelId: 'binding-a',
+          agentId: 'agent-binding-a',
+          principal,
+          admission: event('one'),
+        },
+        Date.now(),
+      );
+      await installations.startInstall({
+        stateHash: 'pending-read',
+        userId: 'admin',
+        appId: 'A123',
+        clientId: '123.456',
+        expiresAt: new Date(Date.now() + 60000),
+      });
+      const reader = new mongoose.Mongoose();
+      let restoreDatabase: (() => void) | undefined;
+      try {
+        await reader.connect(mongo.getUri(), {
+          serverSelectionTimeoutMS: 1000,
+          autoIndex: false,
+          autoCreate: false,
+        });
+        const database = jest.replaceProperty(
+          reader.connection,
+          'db',
+          reader.connection.getClient().db(reader.connection.name, { readPreference: 'secondary' }),
+        );
+        restoreDatabase = () => database.restore();
+        createModels(reader);
+        const saved = createSlackWorkspaceStorage(reader);
+        const routing = createSlackRouteStorage(reader);
+        const discovery = createSlackDispatchStorage(reader);
+        const live = createAgentChannelMethods(reader);
+        // This replica set has no secondary: any accidental inherited read preference fails.
+        await expect(
+          reader.models.AgentChannel.findOne({ channelId: 'binding-a' }).lean(),
+        ).rejects.toThrow('Server selection timed out');
+        expect((await saved.list()).workspaces).toHaveLength(1);
+        expect((await saved.metadata(workspaceId))?.status).toBe('active');
+        expect((await saved.read(workspaceId))?.encryptedBotToken).toBe('encrypted-bot-token');
+        expect((await saved.route('A123', 'T123'))?.workspaceId).toBe(workspaceId);
+        expect((await saved.findInstall('pending-read'))?.stateHash).toBe('pending-read');
+        expect((await routing.resolve(workspaceId, 'C123'))?.channelId).toBe('binding-a');
+        expect((await routing.listForChannel('binding-a')).routes).toHaveLength(1);
+        expect((await live.getActiveAgentChannel('binding-a'))?.workspaceId).toBe(workspaceId);
+        expect((await live.getAgentChannelMetadata('binding-a'))?.status).toBe('active');
+        expect((await live.listAgentChannels('agent-binding-a'))[0].status).toBe('active');
+        expect(await discovery.thread(workspaceId, 'UACTOR', 'C123:1.000001')).toBe('binding-a');
+        expect(await discovery.run(workspaceId, admitted.run.runId)).toBe('binding-a');
+        expect(await discovery.link(principal.linkId)).toBe('binding-a');
+        expect(await discovery.message(workspaceId, 'C123:1.000001')).toBeNull();
+        expect(await runAsSystem(() => discovery.discover(1, Date.now()))).toEqual([
+          { tenantId: 'org-a', channelId: 'binding-a' },
+        ]);
+      } finally {
+        restoreDatabase?.();
+        await reader.disconnect();
+      }
+    }));
 
   it('pins authorized admission to its original agent when a default changes', async () =>
     scoped(async () => {

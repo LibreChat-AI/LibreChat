@@ -83,7 +83,8 @@ export class ServiceClient {
         const failure: { error?: string } = JSON.parse(bytes.toString());
         if (
           (response.status === 403 && failure.error === 'channel_link_required') ||
-          (response.status === 409 && failure.error === 'trace_unavailable')
+          (response.status === 409 && failure.error === 'trace_unavailable') ||
+          (response.status === 503 && failure.error === 'transactions_unavailable')
         )
           code = failure.error;
       } catch {

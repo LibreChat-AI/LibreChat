@@ -367,6 +367,7 @@ describe('standalone database', () => {
     try {
       await db.connect(mongo.getUri());
       const store = createSlackWorkspaceStorage(db);
+      expect(await store.list()).toEqual({ workspaces: [] });
       await expect(
         store.startInstall({
           stateHash: 'private-state',

@@ -4,15 +4,25 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { dataService, request, QueryKeys, MutationKeys } from 'librechat-data-provider';
 import { SLACK_CHANNEL_BOT_SCOPES, SLACK_CHANNEL_BOT_EVENTS } from 'librechat-data-provider';
-import type { AgentChannel, SlackChannelManifest } from 'librechat-data-provider';
+import type { AgentChannel, SlackChannelManifest, SlackWorkspace } from 'librechat-data-provider';
 import Channels from '../Channels';
 
-jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
+jest.mock('~/hooks', () => ({
+  useLocalize: () => (key: string) => key,
+  useDebounce: jest.requireActual('~/hooks/Input/useDebounce').default,
+}));
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
   dataService: {
     ...jest.requireActual('librechat-data-provider').dataService,
     listAgentChannels: jest.fn(),
+    getSlackWorkspaces: jest.fn(),
+    getSlackWorkspace: jest.fn(),
+    createWorkspaceAgentChannel: jest.fn(),
+    getAgentChannelWorkspaceRoutes: jest.fn(),
+    getAgentChannelWorkspaceTarget: jest.fn(),
+    setAgentChannelWorkspaceRoute: jest.fn(),
+    removeAgentChannelWorkspaceRoute: jest.fn(),
     createAgentChannel: jest.fn(),
     getAgentChannelManifest: jest.fn(),
     activateAgentChannel: jest.fn(),
@@ -89,6 +99,10 @@ async function openAdd(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'com_ui_channels_add' }));
 }
 beforeEach(() => {
+  jest
+    .mocked(dataService.getSlackWorkspaces)
+    .mockReset()
+    .mockResolvedValue({ configured: false, canManage: false, workspaces: [] });
   jest.mocked(dataService.listAgentChannels).mockReset().mockResolvedValue([]);
   jest.mocked(dataService.createAgentChannel).mockReset().mockResolvedValue(pending);
   jest.mocked(dataService.getAgentChannelManifest).mockReset().mockResolvedValue(manifest);
@@ -782,4 +796,161 @@ test('the activation adapter preserves only the approved setup code and clears c
   } finally {
     patch.mockRestore();
   }
+});
+
+describe('organization workspace connections', () => {
+  const workspace: SlackWorkspace = {
+    workspaceId: 'workspace-1',
+    tenantId: 'tenant-a',
+    appId: 'A123',
+    teamId: 'T123',
+    teamName: 'Engineering',
+    botUserId: 'U123',
+    status: 'active',
+    revision: 'installation-1',
+    scopes: [],
+  };
+  const configured: AgentChannel = { ...pending, workspaceId: workspace.workspaceId };
+  let rows: AgentChannel[];
+  beforeEach(() => {
+    rows = [];
+    jest.mocked(dataService.listAgentChannels).mockImplementation(async () => rows);
+    jest.mocked(dataService.getSlackWorkspaces).mockResolvedValue({
+      configured: true,
+      appId: 'A123',
+      canManage: true,
+      workspaces: [workspace],
+    });
+    jest
+      .mocked(dataService.getSlackWorkspace)
+      .mockReset()
+      .mockResolvedValue({ configured: true, appId: 'A123', canManage: true, workspace });
+    jest
+      .mocked(dataService.createWorkspaceAgentChannel)
+      .mockReset()
+      .mockImplementation(async () => {
+        rows = [configured];
+        return configured;
+      });
+    jest
+      .mocked(dataService.getAgentChannelWorkspaceRoutes)
+      .mockReset()
+      .mockResolvedValue({ routes: [] });
+    jest
+      .mocked(dataService.getAgentChannelWorkspaceTarget)
+      .mockReset()
+      .mockResolvedValue({ occupied: false, assignedToThisChannel: false });
+    jest
+      .mocked(dataService.setAgentChannelWorkspaceRoute)
+      .mockReset()
+      .mockImplementation(async () => {
+        const active: AgentChannel = {
+          ...configured,
+          status: 'active',
+          revision: 'active-revision',
+        };
+        rows = [active];
+        return active;
+      });
+    jest
+      .mocked(dataService.removeAgentChannelWorkspaceRoute)
+      .mockReset()
+      .mockResolvedValue(undefined);
+  });
+  test('chooses a saved workspace and requires explicit confirmation before replacing another agent', async () => {
+    const user = userEvent.setup();
+    jest.mocked(dataService.getAgentChannelWorkspaceTarget).mockResolvedValue({
+      occupied: true,
+      assignedToThisChannel: false,
+      revision: 'observed-route',
+    });
+    const { submit } = renderChannels({ wrapInForm: true });
+    await openAdd(user);
+    await user.click(await screen.findByRole('button', { name: 'Engineering' }));
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    const activate = await screen.findByRole('button', { name: 'com_ui_channels_activate' });
+    expect(activate).toBeDisabled();
+    await user.click(
+      await screen.findByRole('checkbox', { name: 'com_ui_channels_workspace_replace' }),
+    );
+    await waitFor(() => expect(activate).toBeEnabled());
+    expect(screen.queryByLabelText('com_ui_channels_bot_token')).not.toBeInTheDocument();
+    await user.click(activate);
+    await screen.findByText('com_ui_channels_active');
+    expect(dataService.createWorkspaceAgentChannel).toHaveBeenCalledWith('agent-1', 'workspace-1');
+    expect(dataService.setAgentChannelWorkspaceRoute).toHaveBeenCalledWith('agent-1', 'channel-1', {
+      channelRevision: 'revision-1',
+      externalChannelId: undefined,
+      expectedRevision: 'observed-route',
+    });
+    expect(dataService.createAgentChannel).not.toHaveBeenCalled();
+    expect(dataService.activateAgentChannel).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+  test('waits for the current channel target instead of submitting a previous lookup while typing', async () => {
+    rows = [{ ...configured, status: 'active' }];
+    const user = userEvent.setup();
+    renderChannels();
+    await openConnection(user, 'active');
+    await user.click(
+      await screen.findByRole('button', { name: 'com_ui_channels_workspace_specific' }),
+    );
+    await user.type(screen.getByLabelText('com_ui_channels_workspace_channel_id'), 'C999');
+    const assign = screen.getByRole('button', { name: 'com_ui_channels_workspace_assign' });
+    expect(assign).toBeDisabled();
+    await waitFor(() => expect(assign).toBeEnabled());
+    await user.click(assign);
+    expect(dataService.setAgentChannelWorkspaceRoute).toHaveBeenCalledWith(
+      'agent-1',
+      'channel-1',
+      expect.objectContaining({ externalChannelId: 'C999' }),
+    );
+  });
+  test('does not expose route management when integration administration is unavailable', async () => {
+    rows = [{ ...configured, status: 'active' }];
+    jest
+      .mocked(dataService.getSlackWorkspace)
+      .mockResolvedValue({ configured: true, appId: 'A123', canManage: false, workspace });
+    const user = userEvent.setup();
+    renderChannels();
+    await openConnection(user, 'active');
+    await screen.findByText('com_ui_slack_workspaces_admin');
+    expect(dataService.getAgentChannelWorkspaceRoutes).not.toHaveBeenCalled();
+    expect(dataService.getAgentChannelWorkspaceTarget).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_channels_workspace_assign' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_delete' })).toBeEnabled();
+  });
+  test('removes a selected route only after confirmation and keeps the connection active', async () => {
+    rows = [{ ...configured, status: 'active' }];
+    let routes = [{ externalChannelId: 'C123', revision: 'route-1' }];
+    jest
+      .mocked(dataService.getAgentChannelWorkspaceRoutes)
+      .mockImplementation(async () => ({ routes }));
+    jest.mocked(dataService.removeAgentChannelWorkspaceRoute).mockImplementation(async () => {
+      routes = [];
+    });
+    const user = userEvent.setup();
+    renderChannels();
+    await openConnection(user, 'active');
+    await user.click(
+      await screen.findByRole('button', { name: 'com_ui_channels_workspace_remove_route' }),
+    );
+    expect(dataService.removeAgentChannelWorkspaceRoute).not.toHaveBeenCalled();
+    await user.click(
+      within(
+        screen.getByRole('group', { name: 'com_ui_channels_workspace_confirm_title' }),
+      ).getByRole('button', { name: 'com_ui_confirm' }),
+    );
+    await screen.findByText('com_ui_channels_workspace_no_routes');
+    expect(dataService.removeAgentChannelWorkspaceRoute).toHaveBeenCalledWith(
+      'agent-1',
+      'channel-1',
+      { externalChannelId: 'C123', expectedRevision: 'route-1' },
+    );
+    expect(rows[0].status).toBe('active');
+    expect(dataService.deleteAgentChannel).not.toHaveBeenCalled();
+    expect(dataService.disableAgentChannel).not.toHaveBeenCalled();
+  });
 });

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   channelGatewayWirePolicySchema,
   sharedSlackGatewayWirePolicySchema,
+  tenantIdSchema,
 } from 'librechat-data-provider';
 import type {
   SharedSlackGatewayBootstrap,
@@ -22,9 +23,9 @@ const bootstrapSchema = z.object({
   gateway: channelGatewayWirePolicySchema,
   workers: sharedSlackGatewayWirePolicySchema,
 });
-const scopeSchema = z.object({ tenantId: identifier, channelId: identifier });
+const scopeSchema = z.object({ tenantId: tenantIdSchema, channelId: identifier });
 const workspaceSchema = z.object({
-  tenantId: identifier.optional(),
+  tenantId: tenantIdSchema.optional(),
   workspaceId: identifier,
   appId: identifier,
   teamId: identifier,
