@@ -41,3 +41,15 @@ export type TMessageProps = {
   setCurrentEditId?: Dispatch<SetStateAction<string | number | null>> | null;
   setSiblingIdx?: ((value: number) => void | Dispatch<SetStateAction<number>>) | null;
 };
+
+/** What the thread renders one visible row from. */
+export type ThreadMessageProps = {
+  message: TMessage;
+  /** Position of the message among its siblings, oldest first. */
+  siblingIdx: number;
+  siblingCount: number;
+  /** Shows the sibling at the given position, oldest first. */
+  setSiblingIdx: (value: number) => void;
+  currentEditId: string | number | null;
+  setCurrentEditId: Dispatch<SetStateAction<string | number | null>>;
+};

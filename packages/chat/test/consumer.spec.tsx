@@ -15,7 +15,6 @@ import {
   ChatScreen,
   HoverButtons,
   MessagesView,
-  SiblingSwitch,
   ComposerField,
   ComposerFrame,
   ComposerActions,
@@ -243,7 +242,11 @@ const messagesHost: MessagesHost = {
     consumeFocusSuppression: () => false,
   }),
   renderMessageIcon: () => null,
-  renderMessageRow: () => null,
+  useMaximizeChatSpace: () => false,
+  useAgentsMap: () => undefined,
+  renderMessageBody: () => null,
+  renderWakeup: () => null,
+  renderPrivateText: () => null,
   renderActivity: () => null,
   useFileMap: () => undefined,
 };
@@ -651,27 +654,7 @@ describe('a consumer rendering subagent activity', () => {
     ];
     const threadHost: MessagesHost = {
       ...messagesHost,
-      renderMessageRow: ({ message, siblingIdx, siblingCount, setSiblingIdx }) => {
-        const label = message.isCreatedByUser ? 'You' : 'Assistant';
-        return (
-          <MessageRow
-            message={message}
-            label={label}
-            ariaLabel={label}
-            icon={null}
-            footer={
-              <SiblingSwitch
-                siblingIdx={siblingIdx}
-                siblingCount={siblingCount}
-                setSiblingIdx={setSiblingIdx}
-              />
-            }
-            isCreatedByUser={message.isCreatedByUser}
-          >
-            <p>{message.text}</p>
-          </MessageRow>
-        );
-      },
+      renderMessageBody: ({ text }) => <p>{text}</p>,
     };
     const contract = {
       index: 0,
@@ -698,13 +681,13 @@ describe('a consumer rendering subagent activity', () => {
       </I18nextProvider>,
     );
 
-    const reply = screen.getByRole('group', { name: 'Assistant' });
-    expect(screen.getByRole('group', { name: 'You' })).toHaveTextContent('Question');
+    const [prompt, reply] = screen.getAllByRole('group', { name: /^com_endpoint_message/ });
+    expect(prompt).toHaveTextContent('Question');
     expect(reply).toHaveTextContent('Second');
     expect(within(reply).getByRole('status')).toHaveTextContent('2 / 2');
 
     fireEvent.click(within(reply).getByRole('button', { name: 'com_ui_previous_sibling' }));
-    const older = screen.getByRole('group', { name: 'Assistant' });
+    const older = screen.getAllByRole('group', { name: /^com_endpoint_message/ })[1];
     expect(older).toHaveTextContent('First');
     expect(within(older).getByRole('status')).toHaveTextContent('1 / 2');
   });

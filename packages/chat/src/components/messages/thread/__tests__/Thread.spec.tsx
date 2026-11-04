@@ -5,6 +5,7 @@ import { Provider, createStore } from 'jotai';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { TFile, TMessage } from 'librechat-data-provider';
+import type { ThreadMessageProps } from '../../../../react/messages/types';
 import type { MessagesHost } from '../../../../react/messages/host';
 import type { ChatContract } from '../../../../react/chat/contract';
 import type { MessagePartsHost } from '../../../../react/host';
@@ -52,27 +53,33 @@ const branchedTree = (): TMessage[] => {
   return [{ ...user, children: [older, newer] }];
 };
 
+const mockThreadRow = ({
+  message: row,
+  siblingIdx,
+  siblingCount,
+  setSiblingIdx,
+  setCurrentEditId,
+}: ThreadMessageProps) => (
+  <article aria-label={row.messageId} data-sibling={`${siblingIdx + 1} / ${siblingCount}`}>
+    <span>{row.files?.map((file) => file.filename).join(',')}</span>
+    <button aria-label="Previous" onClick={() => setSiblingIdx(siblingIdx - 1)} />
+    <button aria-label="Next" onClick={() => setSiblingIdx(siblingIdx + 1)} />
+    <button aria-label="Edit" onClick={() => setCurrentEditId(row.messageId)} />
+    <button aria-label="Cancel" onClick={() => setCurrentEditId(-1)} />
+  </article>
+);
+
+jest.mock('../Message', () => ({
+  __esModule: true,
+  default: (props: ThreadMessageProps) => mockThreadRow(props),
+}));
+
 const partsHost = { useFontSize: () => 'text-base' } as unknown as MessagePartsHost;
 
 const renderActivity = jest.fn<null, Parameters<MessagesHost['renderActivity']>>(() => null);
 
 function createHost(overrides: Partial<MessagesHost> = {}): MessagesHost {
   return createMessagesHost({
-    renderMessageRow: ({
-      message: row,
-      siblingIdx,
-      siblingCount,
-      setSiblingIdx,
-      setCurrentEditId,
-    }) => (
-      <article aria-label={row.messageId} data-sibling={`${siblingIdx + 1} / ${siblingCount}`}>
-        <span>{row.files?.map((file) => file.filename).join(',')}</span>
-        <button aria-label="Previous" onClick={() => setSiblingIdx(siblingIdx - 1)} />
-        <button aria-label="Next" onClick={() => setSiblingIdx(siblingIdx + 1)} />
-        <button aria-label="Edit" onClick={() => setCurrentEditId(row.messageId)} />
-        <button aria-label="Cancel" onClick={() => setCurrentEditId(-1)} />
-      </article>
-    ),
     renderActivity: (props) => {
       renderActivity(props);
       return <aside aria-label={`Activity ${props.parentMessageIds.join(',')}`} />;

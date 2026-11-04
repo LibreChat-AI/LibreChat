@@ -1,11 +1,19 @@
-import React from 'react';
-import { RecoilRoot } from 'recoil';
+/**
+ * @jest-environment jsdom
+ */
+import { memo, createContext, useContext } from 'react';
 import { render, screen, within } from '@testing-library/react';
 import type { Agent, TConversation, TMessage } from 'librechat-data-provider';
-import type { TMessageChatContext } from '~/common';
+import type { ReactNode } from 'react';
+import type { MessagePartsHost, ContentPartsSlotProps } from '../../../react/host';
+import type { TMessageChatContext } from '../../../react/messages/types';
+import { createMessagesHost } from '../../../__fixtures__/messagesHost';
+import { MessagesHostProvider } from '../../../react/messages/host';
+import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import ContentRender from '../ContentRender';
-import '~/components/Chat/Messages/Content/register';
-import '~/Providers/MessagesHostContext';
+
+beforeAll(initEnglish);
 
 const mockRenders = { parts: 0 };
 
@@ -13,70 +21,41 @@ const mockRenders = { parts: 0 };
  * Memoized like the real parts tree with its default comparator, and rendering the
  * resume header it is handed where a steer would place it.
  */
-jest.mock('~/components/Chat/Messages/Content/ContentParts', () => {
-  const { memo } = jest.requireActual<typeof import('react')>('react');
-  return {
-    __esModule: true,
-    default: memo(function MockContentParts({ authorHeader }: { authorHeader?: React.ReactNode }) {
-      mockRenders.parts += 1;
-      return <div data-testid="parts">{authorHeader}</div>;
-    }),
-  };
+const MockContentParts = memo(function MockContentParts({
+  authorHeader,
+}: Pick<ContentPartsSlotProps, 'authorHeader'>) {
+  mockRenders.parts += 1;
+  return <div data-testid="parts">{authorHeader}</div>;
 });
 
-jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
-  __esModule: true,
-  default: ({ agent }: { agent?: { name?: string } }) => (
-    <span data-testid="message-icon" data-agent={agent?.name ?? ''} />
-  ),
-}));
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  HoverButtons: () => null,
-}));
-
 /**
- * Stands in for the agents map: `useMessageActions` reads it through context, so the
+ * Stands in for the agents list: the parts host resolves the agent through context, so the
  * agents list landing re-renders the memoized row without any new props.
  */
-const mockAgentContext = React.createContext<Agent | undefined>(undefined);
-const mockActions = {
-  enterEdit: jest.fn(),
-  handleContinue: jest.fn(),
-  handleFeedback: jest.fn(),
-  copyToClipboard: jest.fn(),
-  getCanCopy: jest.fn(() => true),
-  regenerateMessage: jest.fn(),
-};
+const mockAgentContext = createContext<Agent | undefined>(undefined);
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-  useAttachments: () => ({ attachments: undefined, searchResults: undefined }),
-  useContentMetadata: () => ({ hasParallelContent: false }),
-  useMessageActions: ({
-    message,
-    chatContext,
-  }: {
-    message?: TMessage;
-    chatContext: TMessageChatContext;
-  }) => {
-    const { useContext } = jest.requireActual<typeof import('react')>('react');
-    const agent = useContext(mockAgentContext);
-    return {
-      ...mockActions,
-      edit: false,
-      index: chatContext.index,
-      agent,
-      assistant: undefined,
-      conversation: chatContext.conversation,
-      messageLabel: agent?.name ?? message?.sender,
-      latestMessageId: chatContext.latestMessageId,
-      latestMessageDepth: chatContext.latestMessageDepth,
-      hasConfiguredSender: false,
-    };
-  },
-}));
+const partsHost = {
+  useAgent: () => useContext(mockAgentContext),
+  useUser: () => undefined,
+  useUserTextPreferences: () => ({
+    usernameDisplay: false,
+    enableUserMsgMarkdown: false,
+    collapseLongUserMessages: false,
+  }),
+  useShowThinking: () => true,
+  useAutoExpandTools: () => false,
+  renderContentParts: (props: ContentPartsSlotProps) => (
+    <MockContentParts authorHeader={props.authorHeader} />
+  ),
+} as unknown as MessagePartsHost;
+
+const messagesHost = createMessagesHost({
+  renderMessageIcon: ({ agent }) => (
+    <span data-testid="message-icon" data-agent={agent?.name ?? ''} />
+  ),
+});
+
+jest.mock('../HoverButtons', () => ({ __esModule: true, default: () => null }));
 
 const conversation = {
   conversationId: 'convo-1',
@@ -113,20 +92,22 @@ const setCurrentEditId = jest.fn();
 
 /** Renders one row with no agent resolved yet, and lets the test land the agents list. */
 const renderRow = (message: TMessage) => {
-  const view = (agent?: Agent) => (
-    <RecoilRoot>
-      <mockAgentContext.Provider value={agent}>
-        <ContentRender
-          message={message}
-          chatContext={chatContext}
-          siblingIdx={0}
-          siblingCount={1}
-          setSiblingIdx={setSiblingIdx}
-          currentEditId={null}
-          setCurrentEditId={setCurrentEditId}
-        />
-      </mockAgentContext.Provider>
-    </RecoilRoot>
+  const view = (agent?: Agent): ReactNode => (
+    <MessagesHostProvider host={messagesHost}>
+      <MessagePartsHostProvider host={partsHost}>
+        <mockAgentContext.Provider value={agent}>
+          <ContentRender
+            message={message}
+            chatContext={chatContext}
+            siblingIdx={0}
+            siblingCount={1}
+            setSiblingIdx={setSiblingIdx}
+            currentEditId={null}
+            setCurrentEditId={setCurrentEditId}
+          />
+        </mockAgentContext.Provider>
+      </MessagePartsHostProvider>
+    </MessagesHostProvider>
   );
   const result = render(view());
   return { ...result, resolveAgent: (agent: Agent) => result.rerender(view(agent)) };

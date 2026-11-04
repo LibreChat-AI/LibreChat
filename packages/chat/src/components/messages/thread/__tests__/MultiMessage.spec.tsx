@@ -4,12 +4,18 @@
 import { Provider as JotaiProvider } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
-import type { MessageRowSlotProps, MessagesHost } from '../../../../react/messages/host';
+import type { ThreadMessageProps } from '../../../../react/messages/types';
+import type { MessagesHost } from '../../../../react/messages/host';
 import { RowMountProvider } from '../../../../react/messages/useProgressiveRowMount';
 import { setDefaultMessagesHost } from '../../../../react/messages/host';
 import MultiMessage from '../MultiMessage';
 
-const RowStub = ({ message, siblingIdx, setSiblingIdx }: MessageRowSlotProps) => (
+jest.mock('../Message', () => ({
+  __esModule: true,
+  default: (props: ThreadMessageProps) => mockRowStub(props),
+}));
+
+const mockRowStub = ({ message, siblingIdx, setSiblingIdx }: ThreadMessageProps) => (
   <div>
     <div data-testid="row">{message.messageId}</div>
     <button data-testid="prev" onClick={() => setSiblingIdx(siblingIdx - 1)} />
@@ -47,7 +53,11 @@ const host: MessagesHost = {
     consumeFocusSuppression: () => false,
   }),
   renderMessageIcon: () => null,
-  renderMessageRow: (props) => <RowStub {...props} />,
+  useMaximizeChatSpace: () => false,
+  useAgentsMap: () => undefined,
+  renderMessageBody: () => null,
+  renderWakeup: () => null,
+  renderPrivateText: () => null,
   renderActivity: ({ parentMessageIds, hasParallelContent }) => (
     <div
       data-testid="event-subagent-activity"

@@ -1,28 +1,21 @@
 import React, { useCallback, useMemo, memo } from 'react';
-import { useRecoilValue } from 'recoil';
-import { parseWakeupMessage } from '@librechat/chat';
-import {
-  HoverButtons,
-  MessageFooter,
-  getHeaderHoverLabel,
-  MessageRow,
-  WakeupRow,
-} from '@librechat/chat/components';
+import { useLocalize } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
-import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
-import {
-  isSameTailRelation,
-  getMessageAriaLabel,
-  areMessageFieldsEqual,
-  getHeaderPrefixForScreenReader,
-} from '~/utils';
-import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
-import { useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
-import { PrivateText } from '~/components/Chat/Messages/PrivateText';
-import { MessageContext, useAgentsMapContext } from '~/Providers';
-import MessageIcon from '~/components/Chat/Messages/MessageIcon';
-import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
-import store from '~/store';
+import type { NamedExoticComponent } from 'react';
+import type { TMessageProps, TMessageChatContext } from '../../react/messages/types';
+import type { MessageIconData } from '../../react/messages/host';
+import { areMessageFieldsEqual, isSameTailRelation } from '../../react/messages/equal';
+import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from './labels';
+import { MessageIconSlot, useMessagesHost } from '../../react/messages/host';
+import useContentMetadata from '../../react/messages/useContentMetadata';
+import { parseWakeupMessage } from '../../core/parts/wakeup';
+import { MessageContext } from '../../react/message';
+import { getHeaderHoverLabel } from './HeaderLabel';
+import useMessageActions from './useMessageActions';
+import MessageFooter from './MessageFooter';
+import HoverButtons from './HoverButtons';
+import MessageRow from './MessageRow';
+import WakeupRow from './WakeupRow';
 
 type MessageRenderProps = {
   message?: TMessage;
@@ -32,7 +25,7 @@ type MessageRenderProps = {
    * when the value actually matters.
    */
   isSubmitting?: boolean;
-  /** Stable context object from wrapper — avoids ChatContext subscription inside memo */
+  /** Stable context object from wrapper, avoids ChatContext subscription inside memo */
   chatContext: TMessageChatContext;
   /** The thread's tail; the comparator re-renders only when this row's relation to it changes */
   latestMessageId?: string;
@@ -73,7 +66,7 @@ function areMessageRenderPropsEqual(prev: MessageRenderProps, next: MessageRende
   return areMessageFieldsEqual(prev.message, next.message) && isSameTailRelation(prev, next);
 }
 
-const MessageRender = memo(function MessageRender({
+const MessageRender: NamedExoticComponent<MessageRenderProps> = memo(function MessageRender({
   message: msg,
   siblingIdx,
   siblingCount,
@@ -86,7 +79,8 @@ const MessageRender = memo(function MessageRender({
   latestMessageDepth,
 }: MessageRenderProps) {
   const localize = useLocalize();
-  const agentsMap = useAgentsMapContext();
+  const host = useMessagesHost();
+  const agentsMap = host.useAgentsMap();
   const {
     ask,
     edit,
@@ -108,7 +102,7 @@ const MessageRender = memo(function MessageRender({
     setCurrentEditId,
     chatContext,
   });
-  const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
+  const maximizeChatSpace = host.useMaximizeChatSpace();
 
   const handleRegenerateMessage = useCallback(() => regenerateMessage(), [regenerateMessage]);
   const getLatestMessageId = useCallback(() => chatContext.latestMessageId, [chatContext]);
@@ -119,7 +113,7 @@ const MessageRender = memo(function MessageRender({
   );
   const isLatestMessage = msg?.messageId === latestMessageId;
 
-  const iconData: TMessageIcon = useMemo(
+  const iconData: MessageIconData = useMemo(
     () => ({
       endpoint: msg?.endpoint ?? conversation?.endpoint,
       model: msg?.model ?? conversation?.model,
@@ -170,7 +164,7 @@ const MessageRender = memo(function MessageRender({
       conversationId={msg.conversationId ?? conversation?.conversationId ?? ''}
       message={wakeupDisplay != null ? undefined : msg}
       id={msg.messageId}
-      icon={<MessageIcon iconData={iconData} assistant={assistant} agent={agent} />}
+      icon={<MessageIconSlot iconData={iconData} assistant={assistant} agent={agent} />}
       label={messageLabel ?? ''}
       hoverLabel={getHeaderHoverLabel(
         hasConfiguredSender,
@@ -223,26 +217,27 @@ const MessageRender = memo(function MessageRender({
       }
     >
       <MessageContext.Provider value={messageContextValue}>
-        {showOwnerText && <PrivateText message={msg} />}
+        {showOwnerText && host.renderPrivateText({ message: msg })}
         {!showOwnerText &&
-          (wakeupDisplay != null && !edit ? (
-            <Wakeup display={wakeupDisplay} conversationId={conversation?.conversationId} />
-          ) : (
-            <MessageContent
-              ask={ask}
-              edit={edit}
-              isLast={isLast}
-              text={msg.text || ''}
-              message={msg}
-              enterEdit={enterEdit}
-              error={!!(msg.error ?? false)}
-              isSubmitting={isSubmitting}
-              unfinished={msg.unfinished ?? false}
-              isCreatedByUser={msg.isCreatedByUser ?? true}
-              siblingIdx={siblingIdx ?? 0}
-              setSiblingIdx={setSiblingIdx ?? (() => ({}))}
-            />
-          ))}
+          (wakeupDisplay != null && !edit
+            ? host.renderWakeup({
+                display: wakeupDisplay,
+                conversationId: conversation?.conversationId,
+              })
+            : host.renderMessageBody({
+                ask,
+                edit,
+                isLast,
+                text: msg.text || '',
+                message: msg,
+                enterEdit,
+                error: !!(msg.error ?? false),
+                isSubmitting,
+                unfinished: msg.unfinished ?? false,
+                isCreatedByUser: msg.isCreatedByUser ?? true,
+                siblingIdx: siblingIdx ?? 0,
+                setSiblingIdx: setSiblingIdx ?? (() => ({})),
+              }))}
       </MessageContext.Provider>
     </Row>
   );

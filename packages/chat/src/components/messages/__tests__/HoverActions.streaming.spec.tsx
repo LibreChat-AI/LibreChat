@@ -1,60 +1,34 @@
-import React, { useMemo } from 'react';
-import { getDefaultStore } from 'jotai';
-import { MemoryRouter } from 'react-router-dom';
+/**
+ * @jest-environment jsdom
+ */
+import { useMemo, useState } from 'react';
 import userEvent from '@testing-library/user-event';
-import { RecoilRoot, type MutableSnapshot } from 'recoil';
 import { render, screen, act } from '@testing-library/react';
-import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
-import { QueryKeys, type TConversation, type TMessage } from 'librechat-data-provider';
-import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
-import { ChatContext, MessagesViewProvider, useChatContext } from '~/Providers';
-import StructuredMessage from '~/components/Messages/MessageContent';
-import MessageParts from '~/components/Chat/Messages/MessageParts';
-import Message from '~/components/Chat/Messages/Message';
-import store from '~/store';
-import '~/components/Chat/Messages/Content/register';
-import '~/Providers/MessagesHostContext';
+import type { TConversation, TMessage } from 'librechat-data-provider';
+import type { MessagePartsHost, ContentPartsSlotProps } from '../../../react/host';
+import type { MessageBodySlotProps } from '../../../react/messages/host';
+import type { ChatContract } from '../../../react/chat/contract';
+import { createMessagesHost } from '../../../__fixtures__/messagesHost';
+import { MessagesHostProvider } from '../../../react/messages/host';
+import { useErrorSource } from '../../../react/messages/error';
+import { MessagePartsHostProvider } from '../../../react/host';
+import { ChatContext } from '../../../react/chat/context';
+import { initEnglish } from '../../../__fixtures__/i18n';
+import MessageContent from '../MessageContent';
+import MessageParts from '../MessageParts';
+import Message from '../Message';
+
+beforeAll(initEnglish);
 
 let mockHoverButtonsRenderCount = 0;
 let mockContentRenderCount = 0;
 
-jest.mock('~/components/Chat/Messages/Content/MessageContent', () => ({
+jest.mock('../HoverButtons', () => ({
   __esModule: true,
-  default: ({ text }: { text: string }) => {
-    mockContentRenderCount += 1;
-    return <div data-testid="message-content">{text}</div>;
-  },
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ContentParts', () => {
-  const { useErrorSource } = jest.requireActual('~/components/Messages/Content/Error/source');
-  return {
-    __esModule: true,
-    default: function ContentParts({ content }: { content?: TMessage['content'] }) {
-      mockContentRenderCount += 1;
-      const errorSource = useErrorSource();
-      return (
-        <div data-testid="structured-message-content" data-error-source-model={errorSource?.model}>
-          {JSON.stringify(content ?? [])}
-        </div>
-      );
-    },
-  };
-});
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  HoverButtons: () => {
+  default: () => {
     mockHoverButtonsRenderCount += 1;
     return <div data-testid="hover-buttons" />;
   },
-  AuthorHeader: () => <div data-testid="author-header" />,
-}));
-
-jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
-  __esModule: true,
-  default: () => <div data-testid="message-icon" />,
 }));
 
 jest.mock('@librechat/client', () => ({
@@ -62,52 +36,7 @@ jest.mock('@librechat/client', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks', () => {
-  const { useMessageProcess, useMemoizedChatContext } = jest.requireActual('@librechat/chat/react');
-  const { useMessageHelpers } = jest.requireActual('@librechat/chat/components');
-  const { getMessageClipboardSource, hasCopyableText, useCopyMessageToClipboard } =
-    jest.requireActual('~/hooks/Messages/useCopyToClipboard');
-  return {
-    getMessageClipboardSource,
-    hasCopyableText,
-    useCopyMessageToClipboard,
-    useMessageProcess,
-    useMessageHelpers,
-    useMemoizedChatContext,
-    useContentMetadata: () => ({ hasParallelContent: false }),
-    useAttachments: () => ({ attachments: [], searchResults: undefined }),
-    useLocalize: () => (key: string) => key,
-    useMessageActions: ({
-      chatContext,
-      message,
-    }: {
-      chatContext: {
-        ask: jest.Mock;
-        index: number;
-        regenerate: jest.Mock;
-        conversation: TConversation | null;
-        latestMessageId: string | undefined;
-        latestMessageDepth: number | undefined;
-        handleContinue: jest.Mock;
-      };
-      message?: TMessage;
-    }) => ({
-      ask: chatContext.ask,
-      edit: false,
-      index: chatContext.index,
-      agent: undefined,
-      assistant: undefined,
-      conversation: chatContext.conversation,
-      messageLabel: message?.sender ?? 'Assistant',
-      handleFeedback: jest.fn(),
-      handleContinue: chatContext.handleContinue,
-      copyToClipboard: jest.fn(),
-      latestMessageId: chatContext.latestMessageId,
-      regenerateMessage: jest.fn(),
-      latestMessageDepth: chatContext.latestMessageDepth,
-    }),
-  };
-});
+const StructuredMessage = MessageContent;
 
 const conversation = {
   conversationId: 'conversation-streaming',
@@ -148,33 +77,60 @@ const canonicalStructuredAssistantMessage = {
   content: [{ type: 'text', text: 'Streaming structured response' }],
 } as TMessage;
 
-function createQueryClient() {
-  return new QueryClient({
-    defaultOptions: {
-      queries: {
-        retry: false,
-      },
-    },
-  });
-}
-
 type RowComponent = typeof Message;
 
+const partsHost = {
+  useAgent: () => undefined,
+  useUser: () => undefined,
+  useUserTextPreferences: () => ({
+    usernameDisplay: false,
+    enableUserMsgMarkdown: false,
+    collapseLongUserMessages: false,
+  }),
+  useShare: () => ({}),
+  useShowThinking: () => true,
+  useAutoExpandTools: () => false,
+  renderContentParts: function ContentParts({ content }: ContentPartsSlotProps) {
+    mockContentRenderCount += 1;
+    return <StructuredContent content={content} />;
+  },
+} as unknown as MessagePartsHost;
+
+function StructuredContent({ content }: Pick<ContentPartsSlotProps, 'content'>) {
+  const errorSource = useErrorSource();
+  return (
+    <div data-testid="structured-message-content" data-error-source-model={errorSource?.model}>
+      {JSON.stringify(content ?? [])}
+    </div>
+  );
+}
+
+const messagesHost = createMessagesHost({
+  renderMessageBody: ({ text }: MessageBodySlotProps) => {
+    mockContentRenderCount += 1;
+    return <div data-testid="message-content">{text}</div>;
+  },
+});
+
+let replaceLatest: (message: TMessage) => void = () => undefined;
+
 function DerivedStreamingRow({
+  initial,
   structured = false,
   submitting = true,
   siblingIdx = 1,
   row,
 }: {
+  initial: TMessage;
   structured?: boolean;
   submitting?: boolean;
   siblingIdx?: number;
   row?: RowComponent;
 }) {
-  const queryClient = useQueryClient();
-  const latestMessage = useLatestMessage(0);
-  const latestMessageId = useLatestMessageId(0);
-  const latestMessageDepth = latestMessage?.depth;
+  const [latestMessage, setLatestMessage] = useState<TMessage>(initial);
+  replaceLatest = setLatestMessage;
+  const latestMessageId = latestMessage.messageId;
+  const latestMessageDepth = latestMessage.depth;
 
   const chatContext = useMemo(
     () =>
@@ -183,41 +139,27 @@ function DerivedStreamingRow({
         index: 0,
         regenerate: jest.fn(),
         conversation,
-        latestMessageId: latestMessageId ?? undefined,
+        latestMessageId,
         latestMessageDepth,
         handleContinue: jest.fn(),
         isSubmitting: submitting,
         abortScroll: false,
         setAbortScroll: jest.fn(),
-        getMessages: () =>
-          queryClient.getQueryData<TMessage[]>([QueryKeys.messages, conversation.conversationId]),
-        setMessages: (messages: TMessage[]) => {
-          queryClient.setQueryData<TMessage[]>(
-            [QueryKeys.messages, conversation.conversationId],
-            messages,
-          );
-        },
-      }) as unknown as ReturnType<typeof useChatContext>,
-    [latestMessageDepth, latestMessageId, queryClient, submitting],
+      }) as unknown as ChatContract,
+    [latestMessageDepth, latestMessageId, submitting],
   );
-
-  if (!latestMessage) {
-    return null;
-  }
 
   const MessageComponent = row ?? (structured ? StructuredMessage : Message);
   return (
     <ChatContext.Provider value={chatContext}>
-      <MessagesViewProvider>
-        <MessageComponent
-          message={latestMessage}
-          currentEditId={null}
-          setCurrentEditId={jest.fn()}
-          siblingIdx={siblingIdx}
-          siblingCount={2}
-          setSiblingIdx={jest.fn()}
-        />
-      </MessagesViewProvider>
+      <MessageComponent
+        message={latestMessage}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+        siblingIdx={siblingIdx}
+        siblingCount={2}
+        setSiblingIdx={jest.fn()}
+      />
     </ChatContext.Provider>
   );
 }
@@ -229,42 +171,24 @@ function renderStreamingRow(
   row?: RowComponent,
   assistantMessage?: TMessage,
 ) {
-  const queryClient = createQueryClient();
-  queryClient.setQueryData<TMessage[]>(
-    [QueryKeys.messages, conversation.conversationId],
-    [
-      userMessage,
-      assistantMessage ??
-        (structured ? optimisticStructuredAssistantMessage : optimisticAssistantMessage),
-    ],
-  );
-
-  const initializeState = ({ set }: MutableSnapshot) => {
-    set(store.conversationByIndex(0), conversation);
-    getDefaultStore().set(isSubmittingFamily(0), submitting);
-  };
+  const initial =
+    assistantMessage ??
+    (structured ? optimisticStructuredAssistantMessage : optimisticAssistantMessage);
 
   render(
-    <QueryClientProvider client={queryClient}>
-      <RecoilRoot initializeState={initializeState}>
-        <MemoryRouter initialEntries={[`/c/${conversation.conversationId}`]}>
-          <DerivedStreamingRow
-            structured={structured}
-            submitting={submitting}
-            siblingIdx={siblingIdx}
-            row={row}
-          />
-        </MemoryRouter>
-      </RecoilRoot>
-    </QueryClientProvider>,
+    <MessagesHostProvider host={messagesHost}>
+      <MessagePartsHostProvider host={partsHost}>
+        <DerivedStreamingRow
+          initial={initial}
+          structured={structured}
+          submitting={submitting}
+          siblingIdx={siblingIdx}
+          row={row}
+        />
+      </MessagePartsHostProvider>
+    </MessagesHostProvider>,
   );
-
-  return queryClient;
 }
-
-afterEach(() => {
-  resetSubmitting(getDefaultStore());
-});
 
 describe('streaming hover actions', () => {
   beforeEach(() => {
@@ -274,7 +198,7 @@ describe('streaming hover actions', () => {
 
   it('keeps actions mounted while an optimistic assistant row is replaced', async () => {
     const user = userEvent.setup();
-    const queryClient = renderStreamingRow();
+    renderStreamingRow();
 
     await user.hover(screen.getByTestId('message-content'));
 
@@ -282,10 +206,7 @@ describe('streaming hover actions', () => {
     expect(mockHoverButtonsRenderCount).toBeGreaterThan(0);
 
     act(() => {
-      queryClient.setQueryData<TMessage[]>(
-        [QueryKeys.messages, conversation.conversationId],
-        [userMessage, canonicalAssistantMessage],
-      );
+      replaceLatest(canonicalAssistantMessage);
     });
 
     expect(screen.getByTestId('hover-buttons')).toBeInTheDocument();
@@ -294,17 +215,14 @@ describe('streaming hover actions', () => {
 
   it('keeps actions mounted for structured tool-capable responses', async () => {
     const user = userEvent.setup();
-    const queryClient = renderStreamingRow(true);
+    renderStreamingRow(true);
 
     await user.hover(screen.getByTestId('structured-message-content'));
 
     expect(screen.getByTestId('hover-buttons')).toBeInTheDocument();
 
     act(() => {
-      queryClient.setQueryData<TMessage[]>(
-        [QueryKeys.messages, conversation.conversationId],
-        [userMessage, canonicalStructuredAssistantMessage],
-      );
+      replaceLatest(canonicalStructuredAssistantMessage);
     });
 
     expect(screen.getByTestId('hover-buttons')).toBeInTheDocument();
@@ -399,7 +317,7 @@ describe('streaming hover actions', () => {
   /**
    * `latestMessageId` follows the SELECTED branch, so a settled older sibling
    * the reader paged to mid-regeneration satisfies the latest+submitting gate.
-   * The timer additionally requires the newest sibling position — a counting
+   * The timer additionally requires the newest sibling position: a counting
    * timer under settled content misleads in a way withheld buttons don't.
    */
   it('renders no elapsed timer under an older sibling selected mid-stream', () => {
