@@ -77,8 +77,12 @@ beforeEach(() => {
   Object.defineProperty(window, 'BroadcastChannel', {
     configurable: true,
     value: class {
-      onmessage = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
       close = jest.fn();
+      addEventListener(_type: string, callback: (event: MessageEvent) => void) {
+        this.onmessage = callback;
+      }
+
       constructor() {
         channels.push(this);
       }
@@ -152,6 +156,50 @@ test('OAuth completion refreshes the list only for the flow this user started', 
   );
   await screen.findByText('Design');
   expect(screen.queryByText('com_ui_slack_workspaces_waiting')).not.toBeInTheDocument();
+});
+
+test('observes only its callback storage notice when BroadcastChannel is unavailable', async () => {
+  Object.defineProperty(window, 'BroadcastChannel', { configurable: true, value: undefined });
+  const user = userEvent.setup();
+  const view = page();
+  await screen.findByText('Engineering');
+  await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
+  await screen.findByText('com_ui_slack_workspaces_waiting');
+  const settled = (flowId: string, outcome = 'succeeded') =>
+    act(() =>
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'librechat:oauth-settled',
+          newValue: JSON.stringify({ flowId, outcome }),
+        }),
+      ),
+    );
+  settled('foreign-flow');
+  expect(screen.getByText('com_ui_slack_workspaces_waiting')).toBeInTheDocument();
+  response = {
+    ...response,
+    workspaces: [workspace, { ...workspace, workspaceId: 'design', teamName: 'Design' }],
+  };
+  settled('this-flow');
+  await screen.findByText('Design');
+  expect(screen.queryByText('com_ui_slack_workspaces_waiting')).not.toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  connect.mockResolvedValue({
+    url: 'https://slack.com/oauth/v2/authorize?state=next',
+    flowId: 'next-flow',
+    expiresInSeconds: 600,
+  });
+  await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
+  await screen.findByText('com_ui_slack_workspaces_waiting');
+  settled('this-flow', 'failed');
+  expect(screen.getByText('com_ui_slack_workspaces_waiting')).toBeInTheDocument();
+  settled('next-flow', 'failed');
+  await screen.findByRole('alert');
+  expect(screen.queryByText('com_ui_slack_workspaces_waiting')).not.toBeInTheDocument();
+  view.unmount();
+  const reads = list.mock.calls.length;
+  settled('next-flow');
+  expect(list).toHaveBeenCalledTimes(reads);
 });
 
 test('a blocked popup is actionable and does not create an installation attempt', async () => {

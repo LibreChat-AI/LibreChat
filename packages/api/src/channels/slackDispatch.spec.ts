@@ -12,6 +12,7 @@ import {
   createSlackDispatchStorage,
   tenantStorage,
   runAsSystem,
+  TransactionUnavailableError,
 } from '@librechat/data-schemas';
 import { createSlackWorkspaceBindingHandlers } from './workspaceBindings';
 import { createSlackDispatchHandlers } from './slackDispatch';
@@ -420,6 +421,51 @@ describe('shared Slack service routing', () => {
     enabled = false;
     await request.get('/bootstrap').set('Authorization', `Bearer ${serviceToken}`).expect(404);
     await post('/resolve', query()).expect(404);
+  });
+  it('shares successful readiness, retries failure and still refreshes current signing policy', async () => {
+    const dispatch = createSlackDispatchStorage(db);
+    const ready = jest
+      .spyOn(dispatch, 'ready')
+      .mockRejectedValueOnce(new TransactionUnavailableError());
+    let secret = 'first-policy';
+    let configured = true;
+    const handlers = createSlackDispatchHandlers({
+      workspaces: storage,
+      routes,
+      channels,
+      dispatch,
+      readSettings: async () => {
+        const current = channelConfigSchema.parse({
+          ...config,
+          slackApp: { ...config.slackApp, signingSecret: secret },
+        });
+        return {
+          channels: current,
+          app: configured
+            ? resolveSlackWorkspaceApp(
+                current,
+                'https://chat.example/api/channels/workspaces/oauth/callback',
+              )
+            : undefined,
+        };
+      },
+      serviceToken: () => serviceToken,
+      fetch: provider,
+      logError: jest.fn(),
+    });
+    const server = supertest(express().get('/bootstrap', handlers.bootstrap));
+    const bootstrap = () => server.get('/bootstrap').set('Authorization', `Bearer ${serviceToken}`);
+    await server.get('/bootstrap').expect(401);
+    expect(ready).not.toHaveBeenCalled();
+    expect((await bootstrap().expect(503)).body.error).toBe('transactions_unavailable');
+    await Promise.all([bootstrap().expect(200), bootstrap().expect(200), bootstrap().expect(200)]);
+    expect(ready).toHaveBeenCalledTimes(2);
+    secret = 'replacement-policy';
+    expect((await bootstrap().expect(200)).body.signingSecret).toBe(secret);
+    configured = false;
+    await bootstrap().expect(404);
+    expect(ready).toHaveBeenCalledTimes(2);
+    ready.mockRestore();
   });
   it('resolves two workspaces to their saved tenants regardless of a supplied tenant header', async () => {
     const first = await scoped(async () => {
