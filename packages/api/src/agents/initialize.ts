@@ -885,6 +885,8 @@ export type InitializedAgent = Agent & {
    * that should be routed to the bash fallback) without an extra DB lookup.
    */
   activeSkillNames?: Set<string>;
+  /** Names of the skills in the model's catalog, reported to Langfuse as the agent's available skills. */
+  catalogSkillNames?: string[];
   /** Number of skills in the catalog (used to determine if SkillTool should be registered) */
   skillCount?: number;
   /**
@@ -2650,6 +2652,7 @@ export async function initializeAgent(
    */
   let executableSkillIds = params.accessibleSkillIds;
   let activeSkillNames: Set<string> | undefined;
+  let catalogSkillNames: string[] | undefined;
   const { accessibleSkillIds } = params;
   /**
    * Authoring runs go through catalog injection even with nothing accessible:
@@ -2686,6 +2689,7 @@ export async function initializeAgent(
     skillCount = skillResult.skillCount;
     executableSkillIds = skillResult.activeSkillIds;
     activeSkillNames = skillResult.activeSkillNames;
+    catalogSkillNames = skillResult.catalogSkillNames;
     recordCapabilityToolNames(AgentCapabilities.skills, skillResult.toolNames);
   }
 
@@ -2868,6 +2872,7 @@ export async function initializeAgent(
     skillCount,
     accessibleSkillIds: executableSkillIds,
     activeSkillNames,
+    catalogSkillNames,
     manualSkillPrimes,
     alwaysApplySkillPrimes,
     attachments: compatibilityAttachments,
