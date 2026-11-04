@@ -161,6 +161,7 @@ describe('shared Slack service routing', () => {
     app.post('/ui/:agentId/:channelId/routes', bindings.assign);
     app.delete('/ui/:agentId/:channelId/routes', bindings.remove);
     app.patch('/ui/:agentId/:channelId/manual', bound.update);
+    app.delete('/ui/:agentId/:channelId', bound.remove);
     app.get('/ui/:agentId/:channelId/manual-manifest', bound.manifest);
     request = supertest(app);
   }, 60000);
@@ -474,6 +475,44 @@ describe('shared Slack service routing', () => {
     expect(replacement.workspaceId).not.toBe(workspace.workspaceId);
     await bundle().expect(404);
   });
+  it('deletes routes through the existing connection API while preserving retired thread identity', async () => {
+    const workspace = await scoped(async () => {
+      const installed = await install();
+      await bind(installed.workspaceId);
+      return installed;
+    });
+    const specific = await pending(workspace.workspaceId);
+    await browserPost(`agent/${specific.channelId}/routes`, {
+      channelRevision: specific.revision,
+      externalChannelId: 'C123',
+    }).expect(200);
+    await scoped(() =>
+      db.models.SlackThreadRoute.create({
+        workspaceId: workspace.workspaceId,
+        externalUserId: 'UACTOR',
+        externalThreadKey: 'C123:2.000002',
+        channelId: specific.channelId,
+        userId: 'member',
+      }),
+    );
+    await request.delete(`/ui/agent/${specific.channelId}`).set('x-test-user', 'admin').expect(204);
+    expect((await post('/resolve', query()).expect(200)).body.channelId).toBe('binding-a');
+    expect(
+      (
+        await post('/resolve', {
+          ...query(),
+          target: {
+            kind: 'thread',
+            actorId: 'UACTOR',
+            externalChannelId: 'C123',
+            externalThreadKey: 'C123:2.000002',
+          },
+        }).expect(200)
+      ).body.kind,
+    ).toBe('retired_thread');
+    expect(await scoped(() => routes.read(workspace.workspaceId, 'C123'))).toBeNull();
+  });
+
   it('keeps an established thread on its original binding instead of falling back after retirement', async () => {
     await scoped(async () => {
       const workspace = await install();
