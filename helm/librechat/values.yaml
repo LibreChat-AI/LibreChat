@@ -303,7 +303,8 @@ channelGateway:
     tag: ""
     pullPolicy: IfNotPresent
   # Defaults to librechat.configEnv.APP_TITLE or LibreChat. Set explicitly when
-  # the application title comes from a Secret or global.librechat.env.
+  # the application title comes from a Secret or global.librechat.env, or exceeds
+  # the gateway limit (40 UTF-16 characters, no <, >, | or control characters).
   appTitle: ""
   channelId: ""
   tenantId: "_"
@@ -316,6 +317,15 @@ channelGateway:
   slackAppTokenKey: SLACK_APP_TOKEN
   resources: {}
   podAnnotations: {}
+  # Optional webhook routing. Socket Mode requires no public ingress.
+  # Set server transport/gatewayUrl separately; only Slack callbacks are exposed.
+  ingress:
+    enabled: false
+    # Empty uses ingress.className (or the cluster default).
+    className: ""
+    annotations: {}
+    host: ""
+    tls: []
   # Pod identity, DNS, networking and scheduling use the chart's shared settings.
   # Global security contexts are honored; gateway defaults also enable seccomp,
   # a read-only root filesystem and disable privilege escalation/API token mounting.

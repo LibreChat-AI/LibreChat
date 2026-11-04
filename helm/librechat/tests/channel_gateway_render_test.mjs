@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
+import { loadConfig } from '../../../packages/channel-gateway/src/config.ts';
 
 const chart = fileURLToPath(new URL('..', import.meta.url));
 const fixture = mkdtempSync(join(tmpdir(), 'channel-gateway-chart-'));
@@ -24,10 +25,12 @@ try {
     'configmap-env.yaml',
     'serviceaccount.yaml',
     'channel-gateway.yaml',
+    'channel-gateway-ingress.yaml',
+    'ingress.yaml',
   ]) {
     copyFileSync(resolve(chart, 'templates', file), join(fixture, 'templates', file));
   }
-  function render(values = {}, platform = {}) {
+  function render(values = {}, platform = {}, kubeVersion) {
     writeFileSync(join(fixture, 'platform.yaml'), yaml.dump(platform));
     return yaml
       .loadAll(
@@ -39,6 +42,7 @@ try {
             fixture,
             '-f',
             join(fixture, 'platform.yaml'),
+            ...(kubeVersion ? ['--kube-version', kubeVersion] : []),
             ...Object.entries(values).flatMap(([key, value]) => [
               typeof value === 'boolean' ? '--set' : '--set-string',
               `${key}=${value}`,
@@ -76,6 +80,10 @@ try {
   for (const overrides of [
     {},
     { 'librechat.configEnv.APP_TITLE': 'Example Agents' },
+    { 'librechat.configEnv.APP_TITLE': 'é'.repeat(40) },
+    { 'librechat.configEnv.APP_TITLE': '😀'.repeat(20) },
+    { 'librechat.configEnv.APP_TITLE': '\ufeff  Example Agents  \ufeff' },
+    { 'librechat.configEnv.APP_TITLE': 'x'.repeat(41), 'channelGateway.appTitle': 'Short Title' },
     {
       'librechat.configEnv.APP_TITLE': 'Example Agents',
       'channelGateway.appTitle': 'Custom Agents',
@@ -136,9 +144,22 @@ try {
     );
     assert.equal(
       env.APP_TITLE.value,
-      overrides['channelGateway.appTitle'] ||
+      (
+        overrides['channelGateway.appTitle'] ||
         overrides['librechat.configEnv.APP_TITLE'] ||
-        'LibreChat',
+        'LibreChat'
+      ).trim(),
+    );
+    const runtime = loadConfig({
+      CHANNEL_SERVICE_TOKEN: 'fixture',
+      CHANNEL_TENANT_ID: '_',
+      CHANNEL_ID: 'fixture',
+      APP_TITLE: env.APP_TITLE.value,
+    });
+    assert.equal(
+      runtime.APP_TITLE,
+      env.APP_TITLE.value,
+      'accepted Helm titles must satisfy the actual runtime schema',
     );
     assert.notEqual(deployment.metadata.name, mainService.metadata.name);
     assert.equal(Boolean(env.SLACK_APP_TOKEN), overrides['channelGateway.slackAppTokenKey'] !== '');
@@ -148,6 +169,93 @@ try {
     assert.equal(container.securityContext.readOnlyRootFilesystem, true);
     assert.equal(deployment.spec.strategy.type, 'Recreate');
   }
+  for (const title of ['x'.repeat(41), '😀'.repeat(21), '<title>', 'a|b', '\u0085', '\ufeff']) {
+    assert.throws(
+      () => render(enabled, { librechat: { configEnv: { APP_TITLE: title } } }),
+      /channelGateway.appTitle/,
+    );
+    assert.throws(
+      () => render({ ...enabled, 'channelGateway.appTitle': title }),
+      /channelGateway.appTitle/,
+    );
+  }
+  assert.doesNotThrow(
+    () => render({}, { librechat: { configEnv: { APP_TITLE: 'x'.repeat(41) } } }),
+    'disabled gateways must not restrict the application title',
+  );
+  assert.throws(
+    () => render({}, { channelGateway: { ingress: { enabled: true } } }),
+    /Enable channelGateway/,
+  );
+  assert.throws(
+    () => render(enabled, { channelGateway: { ingress: { enabled: true } } }),
+    /ingress.host/,
+  );
+  assert.throws(
+    () =>
+      render(
+        enabled,
+        { channelGateway: { ingress: { enabled: true, host: 'gateway.example.test' } } },
+        '1.18.20',
+      ),
+    /Kubernetes 1.19/,
+  );
+  const webhooks = render(enabled, {
+    ingress: {
+      enabled: true,
+      className: 'platform-controller',
+      annotations: { apiOnly: 'fixture' },
+      hosts: [{ host: 'gateway.example.test', paths: [{ path: '/', pathType: 'Prefix' }] }],
+    },
+    channelGateway: {
+      slackAppTokenKey: '',
+      ingress: {
+        enabled: true,
+        host: 'gateway.example.test',
+        annotations: { callback: 'fixture' },
+        tls: [{ hosts: ['gateway.example.test'], secretName: 'gateway-tls' }],
+      },
+    },
+  });
+  const webhookDeployment = webhooks.find(
+    (doc) =>
+      doc.kind === 'Deployment' && doc.spec.template.spec.containers[0].name === 'channel-gateway',
+  );
+  const webhookIngress = webhooks.find(
+    (doc) => doc.kind === 'Ingress' && doc.metadata.name === webhookDeployment.metadata.name,
+  );
+  const apiIngress = webhooks.find((doc) => doc.kind === 'Ingress' && doc !== webhookIngress);
+  assert.equal(webhookIngress.spec.ingressClassName, 'platform-controller');
+  assert.equal(webhookIngress.spec.tls[0].secretName, 'gateway-tls');
+  assert.equal(
+    webhookIngress.metadata.annotations.apiOnly,
+    undefined,
+    'API rewrite annotations must not alter gateway callbacks',
+  );
+  assert.deepEqual(
+    webhookIngress.spec.rules[0].http.paths.map((route) => route.path),
+    ['/slack/events', '/slack/interactions'],
+  );
+  for (const route of webhookIngress.spec.rules[0].http.paths) {
+    assert.equal(route.pathType, 'Prefix');
+    assert.equal(route.backend.service.name, webhookDeployment.metadata.name);
+    assert.equal(route.backend.service.port.number, 8080);
+    assert.notEqual(
+      route.backend.service.name,
+      apiIngress.spec.rules[0].http.paths[0].backend.service.name,
+    );
+  }
+  assert(
+    !webhookDeployment.spec.template.spec.containers[0].env.some(
+      (entry) => entry.name === 'SLACK_APP_TOKEN',
+    ),
+  );
+  const ownClass = render(enabled, {
+    channelGateway: {
+      ingress: { enabled: true, host: 'gateway.example.test', className: 'gateway-controller' },
+    },
+  }).find((doc) => doc.kind === 'Ingress');
+  assert.equal(ownClass.spec.ingressClassName, 'gateway-controller');
   const platform = {
     serviceAccount: { create: false, name: 'workload-account' },
     enableServiceLinks: false,

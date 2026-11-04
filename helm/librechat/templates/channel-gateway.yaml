@@ -44,7 +44,7 @@ spec:
               containerPort: 8080
           env:
             - name: APP_TITLE
-              value: {{ $gateway.appTitle | default (get (default dict .Values.librechat.configEnv) "APP_TITLE") | default "LibreChat" | quote }}
+              value: {{ include "librechat.channelGateway.appTitle" . | quote }}
             - name: PORT
               value: "8080"
             - name: LISTEN_HOST
