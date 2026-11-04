@@ -4,6 +4,7 @@ import type { ResponseOwner } from '~/models/response';
 import { createChannelRunModel, createChannelLaneModel } from '~/models/channelRun';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
+import { createSlackInstallModel } from '~/models/slackWorkspace';
 import { createAgentApiKeyModel } from '~/models/agentApiKey';
 import { createAgentChannelModel } from '~/models/channel';
 import { createIndexesWithRetry } from '~/utils/retry';
@@ -34,6 +35,10 @@ export async function eraseChannelPersistenceForUser(
   await lanes.deleteMany({ tenantId, userId: owner.userId });
   await runs.deleteMany(filter);
   await createChannelIdentityModel(mongoose).deleteMany({ tenantId, userId: owner.userId });
+  await createSlackInstallModel(mongoose).deleteMany({
+    tenantId: owner.tenantId || { $in: [null, ''] },
+    userId: owner.userId,
+  });
   const channels = createAgentChannelModel(mongoose);
   await createIndexesWithRetry(channels);
   const partition = owner.tenantId || { $in: [null, ''] };

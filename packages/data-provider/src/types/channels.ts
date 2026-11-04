@@ -17,6 +17,32 @@ export const SLACK_CHANNEL_BOT_EVENTS = [
   'reaction_removed',
 ] as const;
 
+/** A tenant's Slack installation. Provider credentials are never part of browser metadata. */
+export interface SlackWorkspace {
+  tenantId?: string;
+  workspaceId: string;
+  appId: string;
+  teamId: string;
+  teamName: string;
+  botUserId: string;
+  status: 'active' | 'disconnected';
+  revision: string;
+  scopes: string[];
+}
+
+export interface SlackWorkspaceStatus {
+  configured: boolean;
+  canManage: boolean;
+  workspaces: SlackWorkspace[];
+  next?: string;
+}
+
+export interface SlackWorkspaceConnect {
+  url: string;
+  flowId: string;
+  expiresInSeconds: number;
+}
+
 export interface AgentChannel {
   channelId: string;
   tenantId?: string;

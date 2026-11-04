@@ -1,0 +1,161 @@
+import { z } from 'zod';
+import { getTenantId, tenantStorage } from '@librechat/data-schemas';
+import type { SlackWorkspaceStorage } from '@librechat/data-schemas';
+import type { Request, Response, RequestHandler } from 'express';
+import type { SlackWorkspaceService, SlackWorkspacePrincipal } from './workspaces';
+import { setOAuthCsrfCookie, validateOAuthCsrf, validateOAuthSession } from '~/oauth/csrf';
+import { SLACK_WORKSPACE_CALLBACK_PATH } from './workspaces';
+import { getSafeErrorMetadata } from '~/utils/errors';
+import { getBasePath } from '~/utils/path';
+
+const principalSchema = z.object({ id: z.string().min(1), tenantId: z.string().nullish() });
+const identifier = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[\w-]+$/);
+const connectBody = z.object({ workspaceId: identifier.optional() }).strict();
+const pageQuery = z.object({ cursor: identifier.optional() }).strict();
+
+export interface SlackWorkspaceHandlers {
+  list: RequestHandler;
+  connect: RequestHandler;
+  disconnect: RequestHandler;
+  cancel: RequestHandler;
+  callback: RequestHandler;
+}
+
+/** Browser routes additionally require JWT auth and same-origin protection on writes. */
+export function createSlackWorkspaceHandlers(deps: {
+  service: SlackWorkspaceService;
+  storage: SlackWorkspaceStorage;
+  settings: () => Promise<{ configured: boolean; pageSize: number }>;
+  canManage: (principal: SlackWorkspacePrincipal) => Promise<boolean>;
+  logError: (metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
+}): SlackWorkspaceHandlers {
+  const browser =
+    (
+      action: (req: Request, res: Response, principal: SlackWorkspacePrincipal) => Promise<void>,
+    ): RequestHandler =>
+    async (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      const user = principalSchema.safeParse(req.user);
+      if (!user.success) {
+        res.status(401).json({ ok: false, error: { code: 'forbidden' } });
+        return;
+      }
+      const principal = { id: user.data.id, tenantId: user.data.tenantId || undefined };
+      if ((getTenantId() || undefined) !== principal.tenantId) {
+        res.status(403).json({ ok: false, error: { code: 'forbidden' } });
+        return;
+      }
+      try {
+        await action(req, res, principal);
+      } catch (error) {
+        deps.logError(getSafeErrorMetadata(error));
+        res.status(503).json({ ok: false, error: { code: 'unavailable' } });
+      }
+    };
+
+  return {
+    list: browser(async (req, res, principal) => {
+      const page = pageQuery.safeParse(req.query);
+      if (!page.success) {
+        res.status(400).json({ ok: false, error: { code: 'invalid_page' } });
+        return;
+      }
+      const [settings, canManage] = await Promise.all([deps.settings(), deps.canManage(principal)]);
+      const workspaces = await deps.storage.list(page.data.cursor, settings.pageSize);
+      res.json({ configured: settings.configured, canManage, ...workspaces });
+    }),
+    connect: browser(async (req, res, principal) => {
+      const body = connectBody.safeParse(req.body);
+      if (!body.success) {
+        res.status(400).json({ ok: false, error: { code: 'invalid_install' } });
+        return;
+      }
+      const result = await deps.service.start(principal, body.data.workspaceId);
+      if (!result.ok) {
+        res.status(result.error.code === 'forbidden' ? 403 : 409).json(result);
+        return;
+      }
+      setOAuthCsrfCookie(
+        res,
+        result.value.flowId,
+        SLACK_WORKSPACE_CALLBACK_PATH,
+        result.value.expiresInSeconds * 1000,
+      );
+      res.json(result.value);
+    }),
+    disconnect: browser(async (req, res, principal) => {
+      const id = identifier.safeParse(req.params.workspaceId);
+      if (!id.success) {
+        res.status(400).json({ ok: false, error: { code: 'workspace_changed' } });
+        return;
+      }
+      const result = await deps.service.disconnect(principal, id.data);
+      if (!result.ok) res.status(403).json(result);
+      else if (!result.value) res.sendStatus(404);
+      else res.sendStatus(204);
+    }),
+    cancel: browser(async (req, res, principal) => {
+      if (!/^[a-f0-9]{64}$/.test(req.params.flowId)) {
+        res.status(400).json({ ok: false, error: { code: 'invalid_install' } });
+        return;
+      }
+      const result = await deps.service.cancel(principal, req.params.flowId);
+      if (!result.ok) res.status(403).json(result);
+      else res.sendStatus(204);
+    }),
+    callback: (async (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      let flowId: string | undefined;
+      const fail = (code = 'callback_failed') =>
+        res.redirect(
+          `${getBasePath()}/oauth/error?error=${encodeURIComponent(code)}${flowId ? `&flow=${encodeURIComponent(flowId)}` : ''}`,
+        );
+      try {
+        if (typeof req.query.state !== 'string') {
+          fail('invalid_state');
+          return;
+        }
+        const flow = await deps.service.flow(req.query.state);
+        if (!flow) {
+          fail('invalid_state');
+          return;
+        }
+        const current = getTenantId();
+        if (current && current !== flow.tenantId) {
+          fail('invalid_state');
+          return;
+        }
+        const bound =
+          validateOAuthCsrf(req, res, flow.stateHash, SLACK_WORKSPACE_CALLBACK_PATH) ||
+          validateOAuthSession(req, flow.userId);
+        if (!bound) {
+          fail('invalid_state');
+          return;
+        }
+        flowId = flow.stateHash;
+        if (req.query.error || typeof req.query.code !== 'string') {
+          fail();
+          return;
+        }
+        const code = req.query.code;
+        const result = await tenantStorage.run({ tenantId: flow.tenantId }, async () =>
+          deps.service.finish(flow, code),
+        );
+        if (!result.ok) {
+          fail(`slack_${result.error.code}`);
+          return;
+        }
+        res.redirect(
+          `${getBasePath()}/oauth/success?serverName=Slack&flow=${encodeURIComponent(flowId)}`,
+        );
+      } catch (error) {
+        deps.logError(getSafeErrorMetadata(error));
+        fail();
+      }
+    }) as RequestHandler,
+  };
+}
