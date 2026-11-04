@@ -27,11 +27,20 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-const STUB = `import { appendFileSync, readFileSync } from 'node:fs';
+const STUB = `import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 const app = readFileSync('app.txt', 'utf8').trim();
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 appendFileSync(process.env.STUB_LOG, JSON.stringify({ args: process.argv.slice(2), app, head }) + '\\n');
+const scratch = process.env.STUB_SCRATCH_REPO;
+if (scratch) {
+  mkdirSync(scratch);
+  writeFileSync(scratch + '/scratch.txt', 'scratch\\n');
+  const git = (...args) => execFileSync('git', args, { cwd: scratch });
+  git('init', '-q');
+  git('add', '-A');
+  git('-c', 'user.name=s', '-c', 'user.email=s@s', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'scratch');
+}
 if (app === 'error') {
   console.error('stub: app.txt has an error');
   process.exit(1);
@@ -435,5 +444,52 @@ test(
     assert.equal(pushed.calls.length, 0);
     assert.doesNotMatch(pushed.output, /deletions only/);
     assert.match(pushed.output, /could not read refs\/heads\/feature: fatal: shim/);
+  }),
+);
+
+test(
+  'a check that creates a scratch repository cannot reach the linked worktree being pushed',
+  withFixture((fixture) => {
+    const linked = join(fixture.dir, 'linked');
+    const scratch = join(fixture.dir, 'scratch');
+    const head = fixture.commit('pushed');
+    fixture.git('worktree', 'add', '-q', '-b', 'linked', linked);
+
+    // Git exports GIT_DIR to a hook, and in a linked worktree it is absolute.
+    const pushed = run('git', ['push', 'origin', 'linked'], linked, {
+      STUB_LOG: join(fixture.dir, 'checks.log'),
+      STUB_SCRATCH_REPO: scratch,
+    });
+
+    assert.equal(pushed.status, 0, pushed.output);
+    assert.equal(fixture.remoteSha('refs/heads/linked'), head);
+    assert.equal(run('git', ['rev-parse', 'HEAD'], linked).output.trim(), head);
+    assert.match(run('git', ['ls-files'], linked).output, /^app\.txt$/m);
+    assert.equal(fixture.git('config', 'core.bare'), 'false');
+    assert.equal(run('git', ['log', '-1', '--format=%s'], scratch).output.trim(), 'scratch');
+  }),
+);
+
+test(
+  'the imports suite keeps its fixtures out of a repository named by GIT_DIR',
+  withFixture((fixture) => {
+    const linked = join(fixture.dir, 'linked');
+    const head = fixture.commit('pushed');
+    fixture.git('worktree', 'add', '-q', '-b', 'linked', linked);
+    const gitDir = run('git', ['rev-parse', '--absolute-git-dir'], linked).output.trim();
+
+    // Unset NODE_TEST_CONTEXT, or the nested runner would run nothing and pass.
+    const env: NodeJS.ProcessEnv = { ...process.env, GIT_DIR: gitDir };
+    delete env.NODE_TEST_CONTEXT;
+    const suite = spawnSync(process.execPath, ['--test', 'scripts/imports.test.mts'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env,
+    });
+
+    assert.equal(suite.status, 0, `${suite.stdout}${suite.stderr}`);
+    assert.match(suite.stdout, /pass [1-9]/);
+    assert.equal(run('git', ['rev-parse', 'HEAD'], linked).output.trim(), head);
+    assert.equal(fixture.git('config', 'core.bare'), 'false');
   }),
 );
