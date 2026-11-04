@@ -130,7 +130,7 @@ export default function MessageRow({
       role="group"
       aria-label={ariaLabel}
       className={cn(
-        'message-render group font-theme-ui duration-theme-normal mx-auto flex min-w-0 flex-1 transition-[max-width] motion-reduce:transition-none',
+        'message-render group font-theme-ui duration-theme-normal transition-max-width mx-auto flex min-w-0 flex-1 motion-reduce:transition-none',
         'focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
         isUserSide ? 'justify-end' : 'items-start',
         widthClass,

@@ -70,6 +70,8 @@ const twMerge = extendTailwindMerge({
       'font-size': [{ text: [...TYPE_STEPS] }],
       'outline-w': [{ outline: ['theme-focus'] }],
       'outline-offset': [{ 'outline-offset': ['theme-focus'] }],
+      transition: [{ transition: ['reveal', 'crossfade', 'max-width', 'stroke-dashoffset'] }],
+      blur: [{ blur: ['crossfade'] }],
     },
   },
 });

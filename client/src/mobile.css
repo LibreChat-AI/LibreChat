@@ -3,11 +3,6 @@
  * emitting its CSS a second time. */
 @reference './style.css';
 
-.hover-button.active {
-  display: block;
-  visibility: visible;
-}
-
 .nav {
   position: fixed;
   z-index: 110;

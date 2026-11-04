@@ -2,7 +2,7 @@ import { memo, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
-import { cn, pxToRem, useLocalize, useRemScale } from '@librechat/client';
+import { cn, pxToRem, useLocalize, useRemScale, disabledInkClasses } from '@librechat/client';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { TranslationKeys } from '@librechat/client';
 import { parseWakeupMessage } from '../../core/parts/wakeup';
@@ -356,14 +356,17 @@ const MessageIndicator = memo(function MessageIndicator({
   );
 });
 
-const chevronButtonClasses = [
-  '-me-1 rounded-md p-0.5 text-text-tertiary opacity-40 transition-[color,opacity] duration-300 high-contrast:opacity-50',
-  'group-hover/nav:text-text-secondary group-hover/nav:opacity-100',
-  'group-focus-within/nav:text-text-secondary group-focus-within/nav:opacity-100',
-  'group-hover/nav:hover:text-text-primary',
-  'group-hover/nav:disabled:opacity-30 group-focus-within/nav:disabled:opacity-30',
-  'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy',
-].join(' ');
+/** Built on call: this module must not read `@librechat/client` while it loads. */
+const chevronButtonClasses = (): string =>
+  cn(
+    '-me-1 rounded-md p-0.5 text-text-tertiary opacity-40 transition-reveal duration-300 high-contrast:opacity-50',
+    'group-hover/nav:text-text-secondary group-hover/nav:opacity-100',
+    'group-focus-within/nav:text-text-secondary group-focus-within/nav:opacity-100',
+    'group-hover/nav:hover:text-text-primary',
+    'group-hover/nav:disabled:opacity-30 group-focus-within/nav:disabled:opacity-30',
+    'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy',
+    disabledInkClasses,
+  );
 
 function MessageNav({
   scrollableRef,
@@ -1625,7 +1628,7 @@ function MessageNav({
         type="button"
         onClick={jumpToPrevious}
         disabled={!canGoUp}
-        className={chevronButtonClasses}
+        className={chevronButtonClasses()}
         aria-label={localize('com_ui_message_nav_previous')}
       >
         <ChevronUp className="h-4 w-4" />
@@ -1715,7 +1718,7 @@ function MessageNav({
         type="button"
         onClick={jumpToNext}
         disabled={!canGoDown}
-        className={chevronButtonClasses}
+        className={chevronButtonClasses()}
         aria-label={localize('com_ui_message_nav_next')}
       >
         <ChevronDown className="h-4 w-4" />
