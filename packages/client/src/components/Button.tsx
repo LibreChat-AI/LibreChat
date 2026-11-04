@@ -164,7 +164,7 @@ const buttonVariantRecipe = cva(
           'rounded-xl bg-surface-fixed p-2 text-text-fixed shadow-lg hover:bg-surface-fixed-hover hover:shadow-xl',
         /** A suggested first message on the welcome screen: a filled chip that wraps its text. */
         starter:
-          'fade-in max-w-[16rem] cursor-pointer whitespace-normal [animation-delay:var(--starter-delay,0ms)] [animation-fill-mode:backwards] rounded-2xl bg-surface-secondary text-center font-normal text-text-secondary duration-200 hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary focus-visible:ring-offset-0',
+          'fade-in cursor-pointer whitespace-normal [animation-delay:var(--starter-delay,0ms)] [animation-fill-mode:backwards] rounded-2xl bg-surface-secondary text-center font-normal text-text-secondary duration-200 hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary focus-visible:ring-offset-0',
         /** A compact text action in a toolbar, quiet until hovered. */
         toolbar:
           'rounded-sm bg-transparent px-2 py-1 text-xs font-normal text-text-secondary hover:bg-surface-hover',

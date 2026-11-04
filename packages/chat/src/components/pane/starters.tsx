@@ -24,6 +24,7 @@ export default function ChatStarters({
         <Button
           key={index}
           variant="starter"
+          className="max-w-64"
           onClick={() => onSelect(text)}
           style={{ '--starter-delay': `${index * 75}ms` } as CSSProperties}
         >
