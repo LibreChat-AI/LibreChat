@@ -1,12 +1,14 @@
 import { SystemCapabilities } from '@librechat/data-schemas';
 import { channelConfigSchema } from 'librechat-data-provider';
 import type { AppConfig, SlackWorkspaceStorage } from '@librechat/data-schemas';
+import type { ChannelConfig } from 'librechat-data-provider';
 import type { SlackWorkspacePrincipal, SlackWorkspaceFetch } from './workspaces';
 import type { SlackWorkspaceHandlers } from './workspaceHttp';
 import type { GetAppConfigOptions } from '~/app/service';
 import {
   createSlackWorkspaceService,
   resolveSlackWorkspaceApp,
+  slackPublicURL,
   SLACK_WORKSPACE_CALLBACK_PATH,
 } from './workspaces';
 import { createSlackWorkspaceHandlers } from './workspaceHttp';
@@ -30,6 +32,7 @@ export function createSlackWorkspaceRuntime(deps: {
     capability: typeof SystemCapabilities.ACCESS_ADMIN | typeof SystemCapabilities.MANAGE_AGENTS,
   ) => Promise<boolean>;
   publicBaseUrl: string;
+  clientBaseUrl: string;
   fetch: SlackWorkspaceFetch;
   logError: (metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
 }): SlackWorkspaceHandlers {
@@ -38,7 +41,12 @@ export function createSlackWorkspaceRuntime(deps: {
     return channelConfigSchema.parse(app.endpoints?.agents?.channels ?? {});
   };
   const redirectUri = getOAuthCallbackUrl(deps.publicBaseUrl, SLACK_WORKSPACE_CALLBACK_PATH);
-  const config = async () => resolveSlackWorkspaceApp(await policy(), redirectUri);
+  const appFromPolicy = (channels: ChannelConfig) => {
+    const app = resolveSlackWorkspaceApp(channels, redirectUri);
+    if (app) slackPublicURL(deps.clientBaseUrl);
+    return app;
+  };
+  const config = async () => appFromPolicy(await policy());
   const canManage = async (principal: SlackWorkspacePrincipal) => {
     const [user, active] = await Promise.all([
       deps.findUser(principal.id),
@@ -70,7 +78,7 @@ export function createSlackWorkspaceRuntime(deps: {
     settings: async () => {
       const channels = await policy();
       return {
-        configured: Boolean(resolveSlackWorkspaceApp(channels, redirectUri)),
+        configured: Boolean(appFromPolicy(channels)),
         pageSize: channels.maxMetadataPageSize,
       };
     },

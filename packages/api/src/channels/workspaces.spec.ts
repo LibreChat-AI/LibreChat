@@ -15,6 +15,7 @@ import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceRuntime } from './workspaceRuntime';
 import { createSlackWorkspaceHandlers } from './workspaceHttp';
 import { createSlackWorkspaceService } from './workspaces';
+import { setOAuthSession } from '~/oauth/csrf';
 
 describe('Slack workspace installation', () => {
   const db = new mongoose.Mongoose();
@@ -37,12 +38,21 @@ describe('Slack workspace installation', () => {
     scope: SLACK_CHANNEL_BOT_SCOPES.join(','),
   };
   const reply = (body = grant) => new Response(JSON.stringify(body), { status: 200 });
+  const browserCookie = (response: supertest.Response, name: string): string => {
+    const header = response.headers['set-cookie'];
+    const cookies = Array.isArray(header) ? header : [header];
+    const cookie = cookies.find((value) => value?.startsWith(`${name}=`));
+    if (!cookie) throw new Error(`Missing ${name} test cookie`);
+    return cookie.split(';')[0];
+  };
   const start = async () => {
     const result = await scoped(() => service.start(principal));
     if (!result.ok) throw new Error(result.error.code);
     const state = new URL(result.value.url).searchParams.get('state')!;
-    const flow = await service.flow(state);
-    if (!flow) throw new Error('Missing test flow');
+    const pending = await service.flow(state);
+    if (!pending) throw new Error('Missing test flow');
+    const flow = await scoped(() => service.claim(pending));
+    if (!flow) throw new Error('Missing test claim');
     return { ...result.value, state, flow };
   };
 
@@ -248,11 +258,12 @@ describe('Slack workspace installation', () => {
         service,
         storage,
         canManage,
+        clientBaseUrl: 'https://client.example/librechat',
         settings: async () => ({ configured: Boolean(app), pageSize: 50 }),
         logError: jest.fn(),
       });
     server.get('/workspaces', handlers.list);
-    server.post('/workspaces/connect', handlers.connect);
+    server.post('/workspaces/connect', setOAuthSession, handlers.connect);
     server.delete('/workspaces/attempts/:flowId', handlers.cancel);
     server.get('/api/channels/workspaces/oauth/callback', handlers.callback);
     return supertest(server);
@@ -300,6 +311,7 @@ describe('Slack workspace installation', () => {
       isPrincipalActive,
       hasCapability,
       publicBaseUrl: 'https://chat.example/base',
+      clientBaseUrl: 'https://client.example/librechat',
       fetch: request,
       logError: jest.fn(),
     });
@@ -360,7 +372,7 @@ describe('Slack workspace installation', () => {
       .send({})
       .expect(200);
     const state = new URL(started.body.url).searchParams.get('state');
-    const cookie = started.headers['set-cookie'][0].split(';')[0];
+    const cookie = browserCookie(started, 'oauth_csrf');
     const path = '/api/channels/workspaces/oauth/callback';
     const rejected = await http().get(path).query({ state, code: 'test-code' }).expect(302);
     expect(rejected.headers.location).toContain('error=invalid_state');
@@ -371,6 +383,8 @@ describe('Slack workspace installation', () => {
       .query({ state, code: 'test-code' })
       .expect(302);
     expect(complete.headers.location).toContain('/oauth/success?serverName=Slack');
+    expect(new URL(complete.headers.location).origin).toBe('https://client.example');
+    expect(new URL(complete.headers.location).pathname).toBe('/librechat/oauth/success');
     expect((await scoped(() => storage.list())).workspaces).toHaveLength(1);
     const replay = await http()
       .get(path)
@@ -381,6 +395,85 @@ describe('Slack workspace installation', () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['denied', 'missing-code', 'outage'])(
+    'retires a %s callback even with a reusable OAuth session',
+    async (outcome) => {
+      const started = await http()
+        .post('/workspaces/connect')
+        .set('x-test-user', 'yes')
+        .set('x-test-tenant', 'org-a')
+        .send({})
+        .expect(200);
+      const state = new URL(started.body.url).searchParams.get('state');
+      const session = browserCookie(started, 'oauth_session');
+      if (outcome === 'outage') request.mockRejectedValueOnce(new Error('Provider unavailable'));
+      const result = await http()
+        .get('/api/channels/workspaces/oauth/callback')
+        .set('Cookie', session)
+        .query({
+          state,
+          ...(outcome === 'denied' ? { error: 'access_denied' } : {}),
+          ...(outcome === 'outage' ? { code: 'test-code' } : {}),
+        })
+        .expect(302);
+      const destination = new URL(result.headers.location);
+      expect(destination.origin).toBe('https://client.example');
+      expect(destination.pathname).toBe('/librechat/oauth/error');
+      expect(destination.searchParams.get('flow')).toBe(started.body.flowId);
+      expect(await service.flow(state!)).toBeNull();
+      const calls = request.mock.calls.length;
+      const replay = await http()
+        .get('/api/channels/workspaces/oauth/callback')
+        .set('Cookie', session)
+        .query({ state, code: 'replay' })
+        .expect(302);
+      expect(new URL(replay.headers.location).searchParams.has('flow')).toBe(false);
+      expect(request).toHaveBeenCalledTimes(calls);
+      expect((await scoped(() => storage.list())).workspaces).toEqual([]);
+    },
+  );
+
+  it('claims a callback before exchanging its code and does not correlate a duplicate failure', async () => {
+    const started = await http()
+      .post('/workspaces/connect')
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-a')
+      .send({})
+      .expect(200);
+    const state = new URL(started.body.url).searchParams.get('state');
+    const session = browserCookie(started, 'oauth_session');
+    let release!: (value: Response) => void;
+    let entered!: () => void;
+    const exchanging = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    request.mockImplementationOnce(() => {
+      entered();
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    });
+    const first = http()
+      .get('/api/channels/workspaces/oauth/callback')
+      .set('Cookie', session)
+      .query({ state, code: 'first' })
+      .then((response) => response);
+    try {
+      await exchanging;
+      const duplicate = await http()
+        .get('/api/channels/workspaces/oauth/callback')
+        .set('Cookie', session)
+        .query({ state, code: 'duplicate' })
+        .expect(302);
+      expect(new URL(duplicate.headers.location).searchParams.has('flow')).toBe(false);
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {
+      release(reply());
+    }
+    expect(new URL((await first).headers.location).pathname).toBe('/librechat/oauth/success');
+    expect((await scoped(() => storage.list())).workspaces).toHaveLength(1);
+  });
+
   it('does not let a tenant-bound host override the tenant in a valid browser flow', async () => {
     const started = await http()
       .post('/workspaces/connect')
@@ -389,7 +482,7 @@ describe('Slack workspace installation', () => {
       .send({})
       .expect(200);
     const state = new URL(started.body.url).searchParams.get('state');
-    const cookie = started.headers['set-cookie'][0].split(';')[0];
+    const cookie = browserCookie(started, 'oauth_csrf');
     const result = await http()
       .get('/api/channels/workspaces/oauth/callback')
       .set('Cookie', cookie)

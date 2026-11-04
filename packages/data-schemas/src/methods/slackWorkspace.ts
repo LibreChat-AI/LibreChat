@@ -1,7 +1,11 @@
 import { nanoid } from 'nanoid';
 import type { SlackWorkspace } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
-import type { SlackInstallRecord, SlackWorkspaceRecord } from '~/models/slackWorkspace';
+import type {
+  SlackInstallRecord,
+  SlackWorkspaceRecord,
+  SlackClaimedInstall,
+} from '~/models/slackWorkspace';
 import {
   createSlackInstallModel,
   createSlackWorkspaceModel,
@@ -22,13 +26,16 @@ export type SlackWorkspaceInstallResult =
 
 export interface SlackWorkspaceStorage {
   startInstall(
-    input: Omit<SlackInstallRecord, 'tenantId' | 'generation' | 'installOrder'>,
+    input: Omit<SlackInstallRecord, 'tenantId' | 'generation' | 'installOrder' | 'callbackId'>,
   ): Promise<SlackInstallRecord>;
   /** Internal callback lookup only; an opaque state alone does not authorize completion. */
   findInstall(stateHash: string): Promise<SlackInstallRecord | null>;
+  claimInstall(stateHash: string, userId: string, now: Date): Promise<SlackClaimedInstall | null>;
+  retireInstall(stateHash: string, callbackId: string): Promise<void>;
   cancelInstall(stateHash: string, userId: string): Promise<void>;
   completeInstall(
     stateHash: string,
+    callbackId: string,
     input: Required<
       Pick<
         SlackWorkspaceRecord,
@@ -136,11 +143,34 @@ export function createSlackWorkspaceStorage(
     async cancelInstall(stateHash, userId) {
       await flows.deleteOne({ stateHash, userId, tenantId: tenant() ?? null });
     },
-    async completeInstall(stateHash, input, now) {
+    async claimInstall(stateHash, userId, now) {
+      const callbackId = nanoid();
+      const record = await flows
+        .findOneAndUpdate(
+          {
+            stateHash,
+            userId,
+            tenantId: tenant() ?? null,
+            expiresAt: { $gt: now },
+            callbackId: { $exists: false },
+          },
+          { $set: { callbackId } },
+          { new: true },
+        )
+        .select('+stateHash')
+        .lean();
+      return record ? { ...record, callbackId } : null;
+    },
+    async retireInstall(stateHash, callbackId) {
+      await flows.deleteOne({ stateHash, callbackId, tenantId: tenant() ?? null });
+    },
+    async completeInstall(stateHash, callbackId, input, now) {
+      if (typeof callbackId !== 'string' || !callbackId)
+        return { ok: false, code: 'invalid_install' };
       const tenantId = tenant();
       return transaction<SlackWorkspaceInstallResult>(async (session) => {
         const flow = await flows
-          .findOneAndDelete({ stateHash, tenantId: tenantId ?? null }, { session })
+          .findOneAndDelete({ stateHash, callbackId, tenantId: tenantId ?? null }, { session })
           .lean();
         if (!flow || flow.appId !== input.appId || flow.expiresAt <= now)
           return { ok: false, code: 'invalid_install' };

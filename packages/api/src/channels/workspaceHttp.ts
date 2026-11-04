@@ -4,9 +4,9 @@ import type { SlackWorkspaceStorage } from '@librechat/data-schemas';
 import type { Request, Response, RequestHandler } from 'express';
 import type { SlackWorkspaceService, SlackWorkspacePrincipal } from './workspaces';
 import { setOAuthCsrfCookie, validateOAuthCsrf, validateOAuthSession } from '~/oauth/csrf';
-import { SLACK_WORKSPACE_CALLBACK_PATH } from './workspaces';
+import { SLACK_WORKSPACE_CALLBACK_PATH, slackPublicURL } from './workspaces';
 import { getSafeErrorMetadata } from '~/utils/errors';
-import { getBasePath } from '~/utils/path';
+import { getOAuthCallbackUrl } from '~/oauth/url';
 
 const principalSchema = z.object({ id: z.string().min(1), tenantId: z.string().nullish() });
 const identifier = z
@@ -31,6 +31,7 @@ export function createSlackWorkspaceHandlers(deps: {
   storage: SlackWorkspaceStorage;
   settings: () => Promise<{ configured: boolean; pageSize: number }>;
   canManage: (principal: SlackWorkspacePrincipal) => Promise<boolean>;
+  clientBaseUrl: string;
   logError: (metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
 }): SlackWorkspaceHandlers {
   const browser =
@@ -110,10 +111,21 @@ export function createSlackWorkspaceHandlers(deps: {
     callback: (async (req, res) => {
       res.set('Cache-Control', 'no-store');
       let flowId: string | undefined;
-      const fail = (code = 'callback_failed') =>
-        res.redirect(
-          `${getBasePath()}/oauth/error?error=${encodeURIComponent(code)}${flowId ? `&flow=${encodeURIComponent(flowId)}` : ''}`,
-        );
+      const landing = (path: string, params: Record<string, string | undefined>) => {
+        const url = slackPublicURL(getOAuthCallbackUrl(deps.clientBaseUrl, path));
+        for (const [key, value] of Object.entries(params)) {
+          if (value !== undefined) url.searchParams.set(key, value);
+        }
+        return url.toString();
+      };
+      const fail = (code = 'callback_failed') => {
+        try {
+          res.redirect(landing('/oauth/error', { error: code, flow: flowId }));
+        } catch (error) {
+          deps.logError(getSafeErrorMetadata(error));
+          res.status(503).json({ ok: false, error: { code: 'unavailable' } });
+        }
+      };
       try {
         if (typeof req.query.state !== 'string') {
           fail('invalid_state');
@@ -136,22 +148,29 @@ export function createSlackWorkspaceHandlers(deps: {
           fail('invalid_state');
           return;
         }
-        flowId = flow.stateHash;
-        if (req.query.error || typeof req.query.code !== 'string') {
-          fail();
+        const claimed = await tenantStorage.run({ tenantId: flow.tenantId }, () =>
+          deps.service.claim(flow),
+        );
+        if (!claimed) {
+          fail('invalid_state');
           return;
         }
+        flowId = claimed.stateHash;
         const code = req.query.code;
-        const result = await tenantStorage.run({ tenantId: flow.tenantId }, async () =>
-          deps.service.finish(flow, code),
-        );
+        const result = await tenantStorage.run({ tenantId: flow.tenantId }, async () => {
+          try {
+            if (req.query.error || typeof code !== 'string')
+              return { ok: false, error: { code: 'slack_refused' } } as const;
+            return await deps.service.finish(claimed, code);
+          } finally {
+            await deps.service.retire(claimed);
+          }
+        });
         if (!result.ok) {
           fail(`slack_${result.error.code}`);
           return;
         }
-        res.redirect(
-          `${getBasePath()}/oauth/success?serverName=Slack&flow=${encodeURIComponent(flowId)}`,
-        );
+        res.redirect(landing('/oauth/success', { serverName: 'Slack', flow: flowId }));
       } catch (error) {
         deps.logError(getSafeErrorMetadata(error));
         fail();

@@ -12,6 +12,7 @@ module.exports = createSlackWorkspaceRuntime({
   isPrincipalActive: db.isAgentTriggerPrincipalActive,
   hasCapability,
   publicBaseUrl: process.env.DOMAIN_SERVER || 'http://localhost:3080',
+  clientBaseUrl: process.env.DOMAIN_CLIENT || process.env.DOMAIN_SERVER || 'http://localhost:3080',
   fetch: createProxyAwareFetch(),
   logError: (metadata) => logger.error('[SlackWorkspaces] Operation failed', metadata),
 });

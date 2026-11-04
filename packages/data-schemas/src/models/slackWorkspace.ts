@@ -20,7 +20,10 @@ export interface SlackInstallRecord {
   expiresAt: Date;
   workspaceId?: string;
   workspaceRevision?: string;
+  callbackId?: string;
 }
+
+export type SlackClaimedInstall = SlackInstallRecord & { callbackId: string };
 
 export interface SlackInstallGeneration {
   tenantId?: string;
@@ -74,6 +77,7 @@ export function createSlackInstallModel(
       expiresAt: { type: Date, required: true },
       workspaceId: String,
       workspaceRevision: String,
+      callbackId: { type: String, select: false },
     },
     { timestamps: true },
   );

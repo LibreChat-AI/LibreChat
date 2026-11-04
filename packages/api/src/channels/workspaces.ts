@@ -2,8 +2,12 @@ import { z } from 'zod';
 import { createHash, randomBytes } from 'node:crypto';
 import { SLACK_CHANNEL_BOT_SCOPES } from 'librechat-data-provider';
 import { getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import type {
+  SlackWorkspaceStorage,
+  SlackInstallRecord,
+  SlackClaimedInstall,
+} from '@librechat/data-schemas';
 import type { ChannelConfig, SlackWorkspace, SlackWorkspaceConnect } from 'librechat-data-provider';
-import type { SlackWorkspaceStorage, SlackInstallRecord } from '@librechat/data-schemas';
 
 export const SLACK_WORKSPACE_CALLBACK_PATH = '/api/channels/workspaces/oauth/callback';
 
@@ -42,6 +46,20 @@ const failure = (
 const stateHash = (state: string) => createHash('sha256').update(state).digest('hex');
 const statePattern = /^[A-Za-z0-9_-]{43}$/;
 
+export function slackPublicURL(value: string): URL {
+  const url = new URL(value);
+  if (
+    (url.protocol !== 'https:' &&
+      !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  )
+    throw new Error('Slack installation requires trusted public URLs');
+  return url;
+}
+
 const grantSchema = z.object({
   ok: z.literal(true),
   app_id: z.string().regex(/^A[A-Z0-9]+$/),
@@ -75,16 +93,7 @@ export function resolveSlackWorkspaceApp(
     throw new Error(
       'Shared Slack workspaces require webhook transport and deployment app credentials',
     );
-  const url = new URL(redirectUri);
-  if (
-    (url.protocol !== 'https:' &&
-      !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash
-  )
-    throw new Error('Slack OAuth requires a trusted public callback URL');
+  slackPublicURL(redirectUri);
   return {
     ...app,
     appId: app.appId,
@@ -185,7 +194,18 @@ export function createSlackWorkspaceService(deps: {
       return { ok: true, value: true };
     },
 
-    async finish(flow: SlackInstallRecord, code: string): Promise<Result<SlackWorkspace>> {
+    async claim(flow: SlackInstallRecord): Promise<SlackClaimedInstall | null> {
+      if (!inScope({ id: flow.userId, tenantId: flow.tenantId })) return null;
+      return deps.storage.claimInstall(flow.stateHash, flow.userId, new Date(now()));
+    },
+
+    async retire(flow: SlackClaimedInstall): Promise<void> {
+      if (!inScope({ id: flow.userId, tenantId: flow.tenantId }))
+        throw new Error('Slack callback tenant changed');
+      await deps.storage.retireInstall(flow.stateHash, flow.callbackId);
+    },
+
+    async finish(flow: SlackClaimedInstall, code: string): Promise<Result<SlackWorkspace>> {
       const principal = { id: flow.userId, tenantId: flow.tenantId };
       if (!inScope(principal) || !(await deps.canManage(principal))) return failure('forbidden');
       const app = await deps.config();
@@ -234,6 +254,7 @@ export function createSlackWorkspaceService(deps: {
       if (!(await deps.canManage(principal))) return failure('forbidden');
       const installed = await deps.storage.completeInstall(
         flow.stateHash,
+        flow.callbackId,
         {
           appId: app.appId,
           teamId: grant.data.team.id,
