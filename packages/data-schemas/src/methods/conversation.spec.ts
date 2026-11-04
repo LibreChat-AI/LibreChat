@@ -20,6 +20,7 @@ import type {
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChatProjectMethods } from './chatProject';
+import { createResponseStorage } from './response';
 import { createModels } from '../models';
 
 jest.mock('~/config/winston', () => ({
@@ -3727,6 +3728,150 @@ describe('Conversation Operations', () => {
   });
 
   describe('deleteConvos', () => {
+    describe('stored responses on standalone Mongo', () => {
+      beforeEach(async () => {
+        await runAsSystem(async () => {
+          await mongoose.models.StoredResponse.deleteMany({});
+          await mongoose.models.ResponseScope.deleteMany({});
+        });
+      });
+
+      async function seedResponse(conversationId: string, tenantId?: string) {
+        return runAsSystem(() =>
+          mongoose.models.StoredResponse.create({
+            userId: 'user123',
+            tenantId,
+            conversationId,
+            responseId: uuidv4(),
+            requestKey: uuidv4(),
+            fingerprint: 'request',
+            agentId: 'agent',
+            requestJSON: '{"input":"private"}',
+            responseJSON: '{"output":"private"}',
+            parentMessageId: 'root',
+            status: 'completed',
+          }),
+        );
+      }
+
+      it('rejects background reservation on standalone Mongo before storing private state', async () => {
+        const result = await createResponseStorage(mongoose).reserve({
+          userId: 'user123',
+          responseId: uuidv4(),
+          requestKey: uuidv4(),
+          fingerprint: 'request',
+          agentId: 'agent',
+          requestJSON: '{"input":"private"}',
+          conversationId: uuidv4(),
+          parentMessageId: 'root',
+        });
+        expect(result).toEqual({ ok: false, code: 'response_unavailable' });
+        expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
+        expect(await mongoose.models.ResponseScope.countDocuments({})).toBe(0);
+      });
+
+      it('erases only the selected tenant and keeps ordinary deletion nontransactional', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          tenantId: 'tenant-a',
+          endpoint: EModelEndpoint.agents,
+        });
+        await seedResponse(conversationId, 'tenant-a');
+        await seedResponse(conversationId, 'tenant-b');
+        const session = jest.spyOn(mongoose, 'startSession');
+        await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+          deleteConvos('user123', { conversationId }),
+        );
+        expect(session).not.toHaveBeenCalled();
+        session.mockRestore();
+        await runAsSystem(async () => {
+          expect(
+            await mongoose.models.StoredResponse.countDocuments({ tenantId: 'tenant-a' }),
+          ).toBe(0);
+          expect(
+            await mongoose.models.StoredResponse.countDocuments({ tenantId: 'tenant-b' }),
+          ).toBe(1);
+        });
+      });
+
+      it('retains payloads when an earlier hook fails but keeps deletion intent closed until retry', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          endpoint: EModelEndpoint.agents,
+        });
+        const response = await seedResponse(conversationId);
+        await expect(
+          deleteConvos(
+            'user123',
+            { conversationId },
+            {
+              beforeDelete: async () => {
+                throw new Error('drain failed');
+              },
+            },
+          ),
+        ).rejects.toThrow('drain failed');
+        expect(await Conversation.exists({ conversationId })).not.toBeNull();
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(1);
+        expect(
+          await createResponseStorage(mongoose).read({ userId: 'user123' }, response.responseId),
+        ).not.toBeNull();
+        await deleteConvos('user123', { conversationId });
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+      });
+
+      it('recovers private response cleanup after the root and its messages are already gone', async () => {
+        const conversationId = uuidv4();
+        await seedResponse(conversationId);
+        const result = await deleteConvos('user123', { conversationId });
+        expect(result.conversationIds).toContain(conversationId);
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+      });
+
+      it('retries irreversible response erasure when the subsequent parent deletion fails', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          endpoint: EModelEndpoint.agents,
+        });
+        await seedResponse(conversationId);
+        const deletion = jest
+          .spyOn(Conversation.collection, 'deleteMany')
+          .mockRejectedValueOnce(new Error('parent delete failed'));
+        await expect(deleteConvos('user123', { conversationId })).rejects.toThrow(
+          'parent delete failed',
+        );
+        deletion.mockRestore();
+        expect(await Conversation.exists({ conversationId })).not.toBeNull();
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+        await deleteConvos('user123', { conversationId });
+        expect(await Conversation.exists({ conversationId })).toBeNull();
+      });
+
+      it('allows concurrent erasers to finish without reopening admission', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          endpoint: EModelEndpoint.agents,
+        });
+        const response = await seedResponse(conversationId);
+        await Promise.all([
+          deleteConvos('user123', { conversationId }, { allowEmpty: true }),
+          deleteConvos('user123', { conversationId }, { allowEmpty: true }),
+        ]);
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+        expect(
+          await createResponseStorage(mongoose).read({ userId: 'user123' }, response.responseId),
+        ).toBeNull();
+      });
+    });
+
     it('retires queued-turn work before each conversation deletion wave', async () => {
       const conversationId = uuidv4();
       await Conversation.create({
