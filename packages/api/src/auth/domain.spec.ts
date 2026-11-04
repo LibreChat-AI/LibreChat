@@ -838,6 +838,14 @@ describe('isActionDomainAllowed', () => {
         expect(await isActionDomainAllowed('https://localhost:3000', mixedDomains)).toBe(false);
       });
     });
+
+    it('should match a wildcard that carries a protocol', async () => {
+      const allowed = ['https://*.example.com'];
+      expect(await isActionDomainAllowed('https://api.example.com', allowed)).toBe(true);
+      expect(await isActionDomainAllowed('https://example.com', allowed)).toBe(true);
+      expect(await isActionDomainAllowed('http://api.example.com', allowed)).toBe(false);
+      expect(await isActionDomainAllowed('https://api.other.com', allowed)).toBe(false);
+    });
   });
 });
 
@@ -1299,6 +1307,14 @@ describe('isOAuthUrlAllowed', () => {
     it('should reject wrong port even when hostname matches (prevents port-scanning)', () => {
       expect(isOAuthUrlAllowed('http://10.0.0.1:6379/token', ['http://10.0.0.1:8080'])).toBe(false);
       expect(isOAuthUrlAllowed('http://10.0.0.1:25/token', ['http://10.0.0.1:8080'])).toBe(false);
+    });
+
+    it('should match a wildcard that carries a protocol and port', () => {
+      const allowed = ['https://*.example.com:8443'];
+      expect(isOAuthUrlAllowed('https://auth.example.com:8443/token', allowed)).toBe(true);
+      expect(isOAuthUrlAllowed('http://auth.example.com:8443/token', allowed)).toBe(false);
+      expect(isOAuthUrlAllowed('https://auth.example.com/token', allowed)).toBe(false);
+      expect(isOAuthUrlAllowed('https://auth.other.com:8443/token', allowed)).toBe(false);
     });
   });
 });
