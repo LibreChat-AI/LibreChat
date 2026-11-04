@@ -18,6 +18,7 @@ export interface ExecuteAgentRunParams<Result> {
   conversationId: string;
   clientRequestId?: string;
   retainTerminalPersistence?: true;
+  captureTerminalOutcome?: true;
   /** Server-validated journal identity only; never copied from an API request body. */
   resume?: ResumedAgentExecutionIdentity;
   connection?: AgentExecutionConnection;
@@ -52,6 +53,7 @@ export async function executeAgentRun<Result>(
     conversationId,
     clientRequestId,
     retainTerminalPersistence,
+    captureTerminalOutcome,
     resume,
     connection,
     isPrincipalActive,
@@ -87,6 +89,7 @@ export async function executeAgentRun<Result>(
         protocol: envelope.protocol,
         clientRequestId,
         retainTerminalPersistence,
+        captureTerminalOutcome,
         isPrincipalActive,
       };
       execution =

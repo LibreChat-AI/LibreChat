@@ -1,5 +1,4 @@
 const { nanoid } = require('nanoid');
-const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
@@ -61,8 +60,15 @@ const {
   getRemoteAgentPermissions,
   resolveAgentScopedSkillIds,
   // Responses API
+  resolveResponseContinuation,
+  buildResponseInputChain,
+  loadForegroundResponseHistory,
+  createForegroundResponseTerminal,
+  stageForegroundResponse,
+  createStoredForegroundResponseReader,
+  createResponseAccountingSnapshot,
+  withResponsePersistenceErrors,
   writeDone,
-  buildResponse,
   generateResponseId,
   isValidationFailure,
   emitResponseCreated,
@@ -88,10 +94,8 @@ const {
   resolveToolRoleGrants,
   resolveApiConversationProject,
   resolveAdmittedCodeEnvironmentDecision,
-  resolvePersistableCodeEnvironmentDecision,
   createTerminalRunErrorObserver,
   announceReply,
-  getConversationWriteContext,
   isTemporaryTurn,
   getModelEndUsage,
   hasEntityEmbeddings,
@@ -333,158 +337,10 @@ function extractResponseRequestContent(request, messageFragments) {
  * @param {string} userId - The user ID
  * @returns {Promise<Array>} Messages from the conversation
  */
-async function loadPreviousMessages(conversationId, userId) {
-  try {
-    const messages = await db.getMessages({ conversationId, user: userId });
-    if (!messages || messages.length === 0) {
-      return [];
-    }
-
-    // Convert stored messages to internal format
-    return messages.map((msg) => {
-      let text;
-      if (typeof msg.text === 'string') {
-        text = msg.text;
-      } else if (msg.text != null) {
-        text = String(msg.text);
-      }
-      const internalMsg = {
-        role: msg.isCreatedByUser ? 'user' : 'assistant',
-        content: Array.isArray(msg.content) ? msg.content : (text ?? ''),
-        messageId: msg.messageId,
-        isCreatedByUser: msg.isCreatedByUser === true,
-        ...(text !== undefined && { text }),
-        ...(typeof msg.isUserSubmitted === 'boolean' && {
-          isUserSubmitted: msg.isUserSubmitted,
-        }),
-        ...(Array.isArray(msg.userSubmittedPaths) && {
-          userSubmittedPaths: msg.userSubmittedPaths,
-        }),
-        ...(Array.isArray(msg.userSubmittedMessageFieldPaths) && {
-          userSubmittedMessageFieldPaths: msg.userSubmittedMessageFieldPaths,
-        }),
-      };
-
-      return internalMsg;
-    });
-  } catch (error) {
-    logger.error('[Responses API] Error loading previous messages:', getSafeErrorMetadata(error));
-    return [];
-  }
-}
-
-/**
- * Save input messages to database
- * @param {import('express').Request} req
- * @param {string} conversationId
- * @param {Array} inputMessages - Internal format messages
- * @param {string} agentId
- * @returns {Promise<void>}
- */
-async function saveInputMessages(req, conversationId, inputMessages, agentId) {
-  for (const msg of inputMessages) {
-    if (msg.role === 'user') {
-      await db.saveMessage(
-        getConversationWriteContext(req),
-        {
-          messageId: msg.messageId || nanoid(),
-          conversationId,
-          parentMessageId: null,
-          isCreatedByUser: true,
-          text: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
-          sender: 'User',
-          endpoint: EModelEndpoint.agents,
-          model: agentId,
-        },
-        { context: 'Responses API - save user input' },
-      );
-    }
-  }
-}
-
-/**
- * Save response output to database
- * @param {import('express').Request} req
- * @param {string} conversationId
- * @param {string} responseId
- * @param {import('@librechat/api').Response} response
- * @param {string} agentId
- * @param {number | undefined} visibleOutputTokens
- * @returns {Promise<void>}
- */
-async function saveResponseOutput(
-  req,
-  conversationId,
-  responseId,
-  response,
-  agentId,
-  visibleOutputTokens,
-) {
-  // Extract text content from output items
-  let responseText = '';
-  for (const item of response.output) {
-    if (item.type === 'message' && item.content) {
-      for (const part of item.content) {
-        if (part.type === 'output_text' && part.text) {
-          responseText += part.text;
-        }
-      }
-    }
-  }
-
-  const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId, {
-    isTemporary: isTemporaryTurn(req),
-  });
-
-  // Save the assistant message
-  return db.saveMessage(
-    getConversationWriteContext(req),
-    {
-      messageId: responseId,
-      conversationId,
-      parentMessageId: null,
-      isCreatedByUser: false,
-      ...langfuseTraceFields,
-      text: responseText,
-      sender: 'Agent',
-      endpoint: EModelEndpoint.agents,
-      model: agentId,
-      finish_reason: response.status === 'completed' ? 'stop' : response.status,
-      tokenCount: visibleOutputTokens ?? response.usage?.output_tokens,
-    },
-    { context: 'Responses API - save assistant response' },
-  );
-}
-
-/**
- * Save or update conversation
- * @param {import('express').Request} req
- * @param {string} conversationId
- * @param {string} agentId
- * @param {object} agent
- * @param {import('@librechat/api').ConversationCodeEnvironmentDecision} codeEnvironmentDecision
- * @returns {Promise<void>}
- */
-async function saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision) {
-  const title = resolveConversationTitle(req, agent?.name || 'Open Responses Conversation');
-  await db.saveConvo(
-    getConversationWriteContext(req),
-    {
-      conversationId,
-      endpoint: EModelEndpoint.agents,
-      agent_id: agentId,
-      ...resolvePersistableCodeEnvironmentDecision({
-        conversationId,
-        decision: codeEnvironmentDecision,
-        conversation: req.resolvedConversation,
-      }),
-      ...(title != null && { title }),
-      model: agent?.model,
-    },
-    {
-      context: 'Responses API - save conversation',
-      initialAgentId: agent?.id === agentId ? agentId : null,
-    },
+async function loadPreviousMessages(conversationId, userId, previousResponseId) {
+  return loadForegroundResponseHistory(
+    { conversationId, userId, previousResponseId },
+    { getMessages: db.getMessages },
   );
 }
 
@@ -493,29 +349,6 @@ async function saveConversation(req, conversationId, agentId, agent, codeEnviron
  * @param {Array} messages - Stored messages
  * @returns {Array} Output items
  */
-function convertMessagesToOutputItems(messages) {
-  const output = [];
-
-  for (const msg of messages) {
-    if (!msg.isCreatedByUser) {
-      output.push({
-        type: 'message',
-        id: msg.messageId,
-        role: 'assistant',
-        status: 'completed',
-        content: [
-          {
-            type: 'output_text',
-            text: msg.text || '',
-            annotations: [],
-          },
-        ],
-      });
-    }
-  }
-
-  return output;
-}
 
 /**
  * Runs a validated Responses envelope in the current process.
@@ -639,11 +472,21 @@ const executeResponse = async (envelope, { req, res }) => {
     `[Responses API] Request ${responseId} started for agent ${agentId}, stream: ${isStreaming}`,
   );
 
-  const conversationId = request.previous_response_id ?? uuidv4();
+  const { conversationId, parentMessageId: previousMessageId } = await resolveResponseContinuation(
+    request.previous_response_id,
+    principal.userId,
+    { getMessage: db.getMessage },
+  );
+  const terminal = createForegroundResponseTerminal({
+    context,
+    requestedStore: request.store,
+    logger,
+  });
   /** @type {Promise<import('librechat-data-provider').TAttachment | null>[]} */
   const artifactPromises = [];
   let artifactWritesCovered = false;
   return executeAgentRun({
+    captureTerminalOutcome: true,
     envelope,
     runId: responseId,
     conversationId,
@@ -663,7 +506,8 @@ const executeResponse = async (envelope, { req, res }) => {
     /** Conversation delete-all uses the shared owner-admission fence. Remote
      * execution must observe it after durable enrollment and before provider work. */
     isPrincipalActive: db.isSubagentOwnerAdmissible,
-    beforeSettle: (execution) => {
+    afterSettle: terminal.afterSettle,
+    beforeSettle: (execution, error) => {
       if (!artifactWritesCovered && artifactPromises.length > 0) {
         execution.track(
           waitForAgentExecutionWrites(artifactPromises).catch((artifactError) => {
@@ -674,10 +518,9 @@ const executeResponse = async (envelope, { req, res }) => {
           }),
         );
       }
+      terminal.beforeSettle(execution, error);
     },
-    onSettlementError: (error) => {
-      logger.error('[Responses API] Failed to settle execution:', getSafeErrorMetadata(error));
-    },
+    onSettlementError: terminal.onSettlementError,
     handleExecutionError: (error, signal) => {
       terminalRunError.log(error, signal);
       return handleExecutionError({ error, res, appConfig });
@@ -692,7 +535,7 @@ const executeResponse = async (envelope, { req, res }) => {
           {
             userId: principal.userId,
             tenantId: principal.tenantId,
-            conversationId: request.previous_response_id,
+            conversationId,
             rejectSubagentThread: true,
           },
           {
@@ -757,7 +600,6 @@ const executeResponse = async (envelope, { req, res }) => {
         chatProjectContext: req.chatProjectContext,
       });
 
-      const parentMessageId = null;
       const mcpRequestBody = createMCPRuntimeRequestBody({
         messageId: responseId,
         conversationId,
@@ -770,8 +612,14 @@ const executeResponse = async (envelope, { req, res }) => {
       const backgroundCompletionResultMaxChars =
         agentsEConfig?.backgroundTasks?.completionResultMaxChars;
       const previousMessages = request.previous_response_id
-        ? await loadPreviousMessages(request.previous_response_id, principal.userId)
+        ? await loadPreviousMessages(conversationId, principal.userId, previousMessageId)
         : [];
+      const inputChain = buildResponseInputChain(
+        inputMessages,
+        previousMessageId,
+        previousMessages,
+      );
+      const parentMessageId = inputChain.parentMessageId;
       if (request.previous_response_id) {
         assertModelBoundContent({
           onTraversalFailure: reportLocatorTraversalFailure,
@@ -1212,6 +1060,18 @@ const executeResponse = async (envelope, { req, res }) => {
       const tracker = actuallyStreaming ? createResponseTracker() : null;
       const aggregator = actuallyStreaming ? null : createResponseAggregator();
 
+      const collectedUsage = [];
+      const snapshotAccounting = createResponseAccountingSnapshot({
+        collectedUsage,
+        emittedUsage: [],
+        billingEnabled: getTransactionsConfig(appConfig)?.enabled === true,
+        billing: {
+          pricing: { getMultiplier: db.getMultiplier, getCacheMultiplier: db.getCacheMultiplier },
+          getValueKey: db.getValueKey,
+          resolveEndpointTokenConfig,
+        },
+      });
+
       // Set up response for streaming
       if (actuallyStreaming) {
         setupStreamingResponse(res);
@@ -1234,11 +1094,12 @@ const executeResponse = async (envelope, { req, res }) => {
         const {
           handlers: responsesHandlers,
           finalizeStream,
+          prepareStreamResponse,
+          failStream,
           emitClientToolDeferral,
         } = createResponsesEventHandlers(handlerConfig);
 
         // Collect usage for balance tracking
-        const collectedUsage = [];
 
         // Artifact promises for processing tool outputs
         // Use Responses API-specific callback that emits librechat:attachment events
@@ -1317,7 +1178,7 @@ const executeResponse = async (envelope, { req, res }) => {
             },
           },
           on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
-          on_run_step_completed: { handle: () => {} },
+          on_run_step_completed: responsesHandlers.on_run_step_completed,
           on_chain_stream: { handle: () => {} },
           on_chain_end: { handle: () => {} },
           on_agent_update: { handle: () => {} },
@@ -1425,51 +1286,37 @@ const executeResponse = async (envelope, { req, res }) => {
 
         const usage = buildResponsesUsage(collectedUsage);
 
-        // Finalize the stream
-        finalizeStream(usage);
-        res.end();
-
-        const duration = Date.now() - requestStartTime;
-        logger.debug(
-          `[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`,
+        const accounting = snapshotAccounting();
+        const finalResponse = prepareStreamResponse(usage, accounting);
+        stageForegroundResponse(
+          {
+            terminal,
+            request: req,
+            response: finalResponse,
+            conversationId,
+            agentId,
+            agent,
+            codeEnvironmentDecision,
+            messages: inputChain.messages,
+            parentMessageId,
+            visibleOutputTokens: tracker.usage.outputTokens,
+            transport: {
+              type: 'stream',
+              response: res,
+              finalize: finalizeStream,
+              fail: failStream,
+            },
+          },
+          {
+            saveConvo: db.saveConvo,
+            saveMessage: db.saveMessage,
+            announceReply: announceReply.bind(null, db),
+            resolveTitle: resolveConversationTitle,
+            traceFields: getLangfuseTraceMessageFields,
+          },
         );
 
-        // Save to database if store: true
-        if (request.store === true) {
-          try {
-            // Save conversation
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
-
-            // Save input messages
-            await saveInputMessages(req, conversationId, inputMessages, agentId);
-
-            // Build response for saving (use tracker with buildResponse for streaming)
-            const finalResponse = buildResponse(context, tracker, 'completed');
-            const savedResponse = await saveResponseOutput(
-              req,
-              conversationId,
-              responseId,
-              finalResponse,
-              agentId,
-              tracker.usage.outputTokens,
-            );
-            await announceReply(db, {
-              userId: req?.user?.id,
-              conversationId,
-              reply: savedResponse,
-              context: 'Responses API - announce stored reply',
-            });
-
-            logger.debug(
-              `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
-            );
-          } catch (saveError) {
-            logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
-            // Don't fail the request if saving fails
-          }
-        }
-
-        // The HTTP response is complete, while destructive cleanup still waits for artifacts.
+        // Register artifact writes before the host drains and publishes the terminal response.
         if (artifactPromises.length > 0) {
           execution.track(
             waitForAgentExecutionWrites(artifactPromises).catch((artifactError) => {
@@ -1485,7 +1332,6 @@ const executeResponse = async (envelope, { req, res }) => {
         const aggregatorHandlers = createAggregatorEventHandlers(aggregator);
 
         // Collect usage for balance tracking
-        const collectedUsage = [];
 
         const toolEndCallback = createToolEndCallback({
           req,
@@ -1560,7 +1406,7 @@ const executeResponse = async (envelope, { req, res }) => {
             },
           },
           on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
-          on_run_step_completed: { handle: () => {} },
+          on_run_step_completed: aggregatorHandlers.on_run_step_completed,
           on_chain_stream: { handle: () => {} },
           on_chain_end: { handle: () => {} },
           on_agent_update: { handle: () => {} },
@@ -1678,39 +1524,30 @@ const executeResponse = async (envelope, { req, res }) => {
           context,
           aggregator,
           buildResponsesUsage(collectedUsage),
+          snapshotAccounting(),
         );
-
-        if (request.store === true) {
-          try {
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
-
-            await saveInputMessages(req, conversationId, inputMessages, agentId);
-
-            const savedResponse = await saveResponseOutput(
-              req,
-              conversationId,
-              responseId,
-              response,
-              agentId,
-              aggregator.usage.outputTokens,
-            );
-            await announceReply(db, {
-              userId: req?.user?.id,
-              conversationId,
-              reply: savedResponse,
-              context: 'Responses API - announce stored reply',
-            });
-
-            logger.debug(
-              `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
-            );
-          } catch (saveError) {
-            logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
-            // Don't fail the request if saving fails
-          }
-        }
-
-        res.json(response);
+        stageForegroundResponse(
+          {
+            terminal,
+            request: req,
+            response: response,
+            conversationId,
+            agentId,
+            agent,
+            codeEnvironmentDecision,
+            messages: inputChain.messages,
+            parentMessageId,
+            visibleOutputTokens: aggregator.usage.outputTokens,
+            transport: { type: 'json', response: res },
+          },
+          {
+            saveConvo: db.saveConvo,
+            saveMessage: db.saveMessage,
+            announceReply: announceReply.bind(null, db),
+            resolveTitle: resolveConversationTitle,
+            traceFields: getLangfuseTraceMessageFields,
+          },
+        );
 
         const duration = Date.now() - requestStartTime;
         logger.debug(
@@ -1823,104 +1660,15 @@ const listModels = async (req, res) => {
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  */
-const getResponse = async (req, res) => {
-  try {
-    const responseId = req.params.id;
-    const userId = req.user?.id;
-
-    if (!responseId) {
-      return sendResponsesErrorResponse(res, 400, 'Response ID is required');
-    }
-
-    // The responseId could be either the response ID or the conversation ID
-    // Try to find a conversation with this ID
-    const conversation = await db.getConvo(userId, responseId);
-
-    if (!conversation) {
-      return sendResponsesErrorResponse(
-        res,
-        404,
-        `Response not found: ${responseId}`,
-        'not_found',
-        'response_not_found',
-      );
-    }
-
-    // Load messages for this conversation
-    const messages = await db.getMessages({ conversationId: responseId, user: userId });
-
-    if (!messages || messages.length === 0) {
-      return sendResponsesErrorResponse(
-        res,
-        404,
-        `No messages found for response: ${responseId}`,
-        'not_found',
-        'response_not_found',
-      );
-    }
-
-    // Convert messages to Open Responses output format
-    const output = convertMessagesToOutputItems(messages);
-
-    // Find the last assistant message for usage info
-    const lastAssistantMessage = messages.filter((m) => !m.isCreatedByUser).pop();
-
-    // Build the response object
-    const response = {
-      id: responseId,
-      object: 'response',
-      created_at: Math.floor(new Date(conversation.createdAt || Date.now()).getTime() / 1000),
-      completed_at: Math.floor(new Date(conversation.updatedAt || Date.now()).getTime() / 1000),
-      status: 'completed',
-      incomplete_details: null,
-      model: conversation.agentId || conversation.model || 'unknown',
-      previous_response_id: null,
-      instructions: null,
-      output,
-      error: null,
-      tools: [],
-      tool_choice: 'auto',
-      truncation: 'disabled',
-      parallel_tool_calls: true,
-      text: { format: { type: 'text' } },
-      temperature: 1,
-      top_p: 1,
-      presence_penalty: 0,
-      frequency_penalty: 0,
-      top_logprobs: null,
-      reasoning: null,
-      user: userId,
-      usage: lastAssistantMessage?.tokenCount
-        ? {
-            input_tokens: 0,
-            output_tokens: lastAssistantMessage.tokenCount,
-            total_tokens: lastAssistantMessage.tokenCount,
-          }
-        : null,
-      max_output_tokens: null,
-      max_tool_calls: null,
-      store: true,
-      background: false,
-      service_tier: 'default',
-      metadata: {},
-      safety_identifier: null,
-      prompt_cache_key: null,
-    };
-
-    res.json(response);
-  } catch (error) {
-    logger.error('[Responses API] Error getting response:', getSafeErrorMetadata(error));
-    sendResponsesErrorResponse(
-      res,
-      500,
-      error instanceof Error ? error.message : 'Failed to get response',
-      'server_error',
-    );
-  }
-};
+const getResponse = createStoredForegroundResponseReader({
+  getMessage: db.getMessage,
+  getMessages: db.getMessages,
+  getConvo: db.getConvo,
+  logger,
+});
 
 module.exports = {
-  createResponse,
+  createResponse: withResponsePersistenceErrors(createResponse),
   getResponse,
   listModels,
 };
