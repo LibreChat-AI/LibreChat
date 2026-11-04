@@ -1,4 +1,5 @@
 const fs = require('fs').promises;
+const { randomUUID } = require('node:crypto');
 const os = require('os');
 const path = require('path');
 const mongoose = require('mongoose');
@@ -77,6 +78,69 @@ describe('importConversations database hardening', () => {
     });
     expect(persisted.messages).toHaveLength(6);
     expect(persisted.messages.every((message) => message.tenantId === tenantId)).toBe(true);
+  });
+
+  it('round-trips managed history with fresh identities and no storage controls', async () => {
+    const filepath = path.join(tempDir, 'managed-export.json');
+    const owner = 'managed-import-owner';
+    const tenantId = 'managed-import-tenant';
+    const conversationId = '11111111-1111-8111-a111-111111111111';
+    const ids = ['resp_d_' + 'a'.repeat(32), 'resp_d_' + 'b'.repeat(32)];
+    const physical = ids.map(() => new mongoose.Types.ObjectId());
+    const control = {
+      phase: 'published',
+      incarnation: randomUUID(),
+      parentId: String(new mongoose.Types.ObjectId()),
+    };
+    await fs.writeFile(
+      filepath,
+      JSON.stringify({
+        conversationId,
+        endpoint: EModelEndpoint.openAI,
+        title: 'Managed export',
+        options: { endpoint: EModelEndpoint.openAI, model: 'gpt-4o', _managed: control },
+        messages: ids.map((messageId, index) => ({
+          _id: String(physical[index]),
+          messageId,
+          conversationId,
+          user: 'old-owner',
+          parentMessageId: index ? ids[0] : Constants.NO_PARENT,
+          text: index ? 'Answer' : 'Question',
+          isCreatedByUser: index === 0,
+          createdAt: new Date(2026, 0, 1, 0, index).toISOString(),
+          _managed: control,
+          '_managed.phase': 'registered',
+        })),
+      }),
+    );
+    await tenantStorage.run({ tenantId, userId: owner }, () =>
+      importConversations({ filepath, requestUserId: owner, userRole: 'USER' }),
+    );
+    const persisted = await runAsSystem(async () => ({
+      conversation: await mongoose.models.Conversation.findOne({ user: owner })
+        .select('+_managed')
+        .lean(),
+      messages: await mongoose.models.Message.find({ user: owner })
+        .select('+_managed')
+        .sort({ createdAt: 1 })
+        .lean(),
+    }));
+    expect(persisted.conversation.conversationId).toMatch(/^[a-f\d]{8}-[a-f\d]{4}-4/);
+    expect(persisted.conversation).not.toHaveProperty('_managed');
+    expect(persisted.messages).toHaveLength(2);
+    for (const message of persisted.messages) {
+      expect(message).toMatchObject({
+        user: owner,
+        tenantId,
+        conversationId: persisted.conversation.conversationId,
+      });
+      expect(message.messageId).toMatch(/^[a-f\d]{8}-[a-f\d]{4}-4/);
+      expect(physical.map(String)).not.toContain(String(message._id));
+      expect(message).not.toHaveProperty('_managed');
+      expect(message).not.toHaveProperty('_managed.phase');
+    }
+    expect(persisted.messages.map((message) => message.text)).toEqual(['Question', 'Answer']);
+    expect(persisted.messages[1].parentMessageId).toBe(persisted.messages[0].messageId);
   });
 
   it('rejects an oversized BSON record before persisting any part of a browser import', async () => {

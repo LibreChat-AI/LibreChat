@@ -47,6 +47,18 @@ export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RECEIPT_BATCHING_DEFAULT: boolean = true;
 export const AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT = 5_000;
 export const DEFAULT_SKILL_DELETION_BATCH_SIZE = 100;
+export const DEFAULT_DURABLE_PENDING_TARGETS = 256;
+export const durableStorageConfigSchema = z
+  .object({
+    /** Pending metadata per authority; each entry is separately bounded to 512 BSON bytes. */
+    maxPendingTargetsPerScope: z
+      .number()
+      .int()
+      .min(1)
+      .max(4096)
+      .default(DEFAULT_DURABLE_PENDING_TARGETS),
+  })
+  .strict();
 import {
   DEFAULT_MCP_APP_CSP_LIMITS,
   resolveMCPAppCspLimits,
@@ -4579,6 +4591,7 @@ export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchem
 
 export const configSchema = z.object({
   version: z.string(),
+  durableStorage: durableStorageConfigSchema.optional(),
   telemetry: telemetrySchema.optional(),
   clientLimits: clientLimitsSchema.optional(),
   permissions: z

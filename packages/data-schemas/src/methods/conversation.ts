@@ -32,6 +32,7 @@ import type {
   ISubagentThreadReservation,
   IUser,
 } from '~/types';
+import type { ManagedPublication, CanonicalConversationTarget } from '~/types/managed';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { MessageMethods } from './message';
 import {
@@ -47,11 +48,20 @@ import {
   createResponseRetention,
   discoverResponseOwners,
   createResponseConversationReplacement,
+  responseScopeKeys,
 } from './responseScope';
+import {
+  isManagedConversationId,
+  isAllocationId,
+  stripManagedFields,
+  managedVisibilityFilter,
+  stripManagedIdentityFields,
+} from '~/utils/managed';
 import {
   activeExpirationFilter,
   buildRetentionVisibilityFilter,
   createFallbackRetentionDate,
+  initializeExpiration,
 } from '~/utils/retention';
 import {
   refreshChatProjectStatsForUser,
@@ -59,6 +69,7 @@ import {
 } from './chatProject';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { getTenantId, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantContext';
+import { managedPublicationFilter, canonicalConversationFilter } from './managed';
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
@@ -662,6 +673,10 @@ export interface ConversationMethodDeps
   extends Pick<MessageMethods, 'getMessages' | 'deleteMessages'> {
   /** Private data-schemas transaction for canonical response turn saves. */
   saveSession?: ClientSession;
+  /** Canonical creation into a server-selected payload-free physical row. */
+  managedPublication?: ManagedPublication;
+  /** Append/reply updates to a captured existing record, including legacy conversation IDs. */
+  conversationTarget?: CanonicalConversationTarget;
   searchMessages?: MessageMethods['searchMessages'];
   deleteAgentQueuedTurns?: (
     user: string,
@@ -2107,10 +2122,14 @@ export function createConversationMethods(
     conversation: Partial<IConversation>;
     tenantId?: string;
   }): Promise<ISubagentThreadReservation> {
+    if (isAllocationId(input.conversationId)) throw new TypeError('Invalid conversation ID');
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const fields = { ...input.conversation };
+    stripManagedFields(fields);
     const filter = {
       user: input.user,
       conversationId: input.conversationId,
+      ...(isManagedConversationId(input.conversationId) && managedVisibilityFilter),
       ...(input.tenantId == null ? { tenantId: { $exists: false } } : { tenantId: input.tenantId }),
     };
     try {
@@ -2118,13 +2137,18 @@ export function createConversationMethods(
         filter,
         {
           $setOnInsert: {
-            ...input.conversation,
+            ...fields,
             user: input.user,
             conversationId: input.conversationId,
             messages: [],
           },
         },
-        { new: true, upsert: true, includeResultMetadata: true, setDefaultsOnInsert: true },
+        {
+          new: true,
+          upsert: !isManagedConversationId(input.conversationId),
+          includeResultMetadata: true,
+          setDefaultsOnInsert: true,
+        },
       ).select('+agentEventBinding')) as unknown as ConversationUpdateResult;
       if (result.value == null) {
         throw new Error('Unable to reserve the subagent thread.');
@@ -2351,6 +2375,7 @@ export function createConversationMethods(
 
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const stored = await Conversation.findOne({ conversationId, user: userId })
+      .read('primary')
       .select({ _id: 1, isTemporary: 1, expiredAt: 1, tags: 1, tenantId: 1 })
       .lean<{
         _id: Types.ObjectId;
@@ -2374,7 +2399,11 @@ export function createConversationMethods(
     }
 
     await retainResponses({ userId, tenantId: stored.tenantId }, conversationId, expiredAt);
-    let stampedDeadline = stored.expiredAt != null;
+    const initialization = initializeExpiration({ _id: stored._id }, expiredAt);
+    await Conversation.updateOne(initialization.filter, initialization.update, {
+      upsert: initialization.upsert,
+      timestamps: initialization.timestamps,
+    });
     if (stored.isTemporary !== true) {
       /**
        * Conditional on the transition, so concurrent stamps release the bookmark counts once;
@@ -2382,36 +2411,34 @@ export function createConversationMethods(
        */
       const converted = await Conversation.updateOne(
         { _id: stored._id, isTemporary: { $ne: true } },
-        { $set: { isTemporary: true, expiredAt, tags: [] } },
+        { $set: { isTemporary: true, tags: [] }, $min: { expiredAt } },
         { timestamps: false },
       );
-      stampedDeadline ||= converted.modifiedCount > 0;
       if (converted.modifiedCount > 0 && stored.tags?.length) {
         await decrementTagCounts(mongoose, userId, stored.tags);
       }
-    } else if (stored.expiredAt == null) {
-      const stamped = await Conversation.updateOne(
-        { _id: stored._id, expiredAt: null },
-        { $set: { expiredAt } },
-        { timestamps: false },
-      );
-      stampedDeadline = stamped.modifiedCount > 0;
     }
 
     if (messageIds.length === 0) {
       return;
     }
-    if (!stampedDeadline) {
-      /** A concurrent stamp set the conversation's deadline first; its messages share that one. */
-      const current = await Conversation.findOne({ _id: stored._id })
-        .select({ expiredAt: 1 })
-        .lean<{ expiredAt?: Date | null } | null>();
-      expiredAt = current?.expiredAt ?? expiredAt;
-    }
+    /** A concurrent shortening may have won even when this call converted the chat type. */
+    const current = await Conversation.findOne({ _id: stored._id })
+      .read('primary')
+      .select({ expiredAt: 1 })
+      .lean<{ expiredAt?: Date | null } | null>();
+    if (!current) return;
+    expiredAt = current.expiredAt ?? expiredAt;
     const Message = mongoose.models.Message as Model<IMessage>;
+    const filter = { user: userId, conversationId, messageId: { $in: messageIds } };
+    const messageInitialization = initializeExpiration(filter, expiredAt);
+    await Message.updateMany(messageInitialization.filter, messageInitialization.update, {
+      upsert: false,
+      timestamps: false,
+    });
     await Message.updateMany(
-      { user: userId, conversationId, messageId: { $in: messageIds } },
-      { $set: { isTemporary: true, expiredAt } },
+      filter,
+      { $set: { isTemporary: true }, $min: { expiredAt } },
       { timestamps: false },
     );
   }
@@ -2456,8 +2483,52 @@ export function createConversationMethods(
       replyMessageId?: string;
     },
   ) {
+    if (isAllocationId(conversationId) || isAllocationId(newConversationId))
+      throw new TypeError('Allocation IDs cannot be saved as conversations');
+    if (
+      newConversationId &&
+      newConversationId !== conversationId &&
+      (isManagedConversationId(conversationId) || isManagedConversationId(newConversationId))
+    )
+      throw new TypeError('Managed conversation IDs cannot be replaced');
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
+      const publication = deps?.managedPublication;
+      const target = deps?.conversationTarget;
+      const exactTarget = target ? canonicalConversationFilter(mongoose, target) : undefined;
+      if (
+        target &&
+        (publication ||
+          target.userId !== userId ||
+          target.conversationId !== conversationId ||
+          (newConversationId != null && newConversationId !== conversationId))
+      )
+        throw new TypeError('Canonical conversation target mismatch');
+      const publishedFilter = publication
+        ? {
+            ...managedPublicationFilter(mongoose, publication),
+            '_managed.phase': 'published',
+          }
+        : undefined;
+      if (publication) {
+        const [ownerKey, conversationKey] = responseScopeKeys(
+          {
+            userId,
+            tenantId: publication.target.tenantId,
+          },
+          conversationId,
+        );
+        if (
+          publication.target.kind !== 'conversation' ||
+          publication.logicalId !== conversationId ||
+          publication.ownerKey !== ownerKey ||
+          publication.conversationKey !== conversationKey ||
+          (newConversationId != null && newConversationId !== conversationId)
+        )
+          throw new TypeError('Managed conversation publication identity mismatch');
+        const published = await Conversation.findOne(publishedFilter).read('primary');
+        if (published) return published.toObject();
+      }
       const { getMessages } = getMessageMethods();
 
       if (metadata?.context) {
@@ -2466,6 +2537,7 @@ export function createConversationMethods(
 
       const appendMessageIds = metadata?.appendMessageIds;
       const update: Record<string, unknown> = { ...convo, user: userId };
+      stripManagedFields(update);
       delete update.isTemporary;
       delete update.expiredAt;
       /* Read-state fields are server-owned. A stale marker must never be reintroduced by a
@@ -2500,6 +2572,13 @@ export function createConversationMethods(
         delete update.messages;
       }
       const unsetFields: Record<string, number> = { ...(metadata?.unsetFields ?? {}) };
+      stripManagedFields(unsetFields);
+      if (publication || target || isManagedConversationId(conversationId)) {
+        stripManagedIdentityFields(update);
+        update.user = userId;
+        stripManagedIdentityFields(unsetFields);
+        stripFields(unsetFields, ['expiredAt']);
+      }
       delete unsetFields.lastResponseIsManual;
       delete unsetFields.isMarkedUnread;
       delete unsetFields.lastResponseMessageId;
@@ -2518,7 +2597,7 @@ export function createConversationMethods(
       const candidate = update.chatProjectId;
       delete update.chatProjectId;
       delete unsetFields.chatProjectId;
-      if (metadata?.noUpsert !== true && typeof candidate === 'string') {
+      if ((publication || metadata?.noUpsert !== true) && typeof candidate === 'string') {
         if (isValidObjectIdString(candidate)) {
           const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
           const project = await ChatProject.exists({
@@ -2601,7 +2680,7 @@ export function createConversationMethods(
         update.expiredAt instanceof Date ? update.expiredAt : retentionOnInsert?.expiredAt;
       const replacingConversationId = newConversationId && newConversationId !== conversationId;
       if (responseDeadline || replacingConversationId) {
-        const stored = await Conversation.findOne({ user: userId, conversationId })
+        const stored = await Conversation.findOne(exactTarget ?? { user: userId, conversationId })
           .session(deps?.saveSession ?? null)
           .select('tenantId expiredAt')
           .lean<Pick<IConversation, 'tenantId' | 'expiredAt'>>();
@@ -2649,9 +2728,13 @@ export function createConversationMethods(
         timestampOptions.timestamps = false;
       }
 
-      const canUpsert = metadata?.noUpsert !== true && metadata?.titleSource !== 'generated';
+      const canUpsert =
+        metadata?.noUpsert !== true &&
+        metadata?.titleSource !== 'generated' &&
+        !isManagedConversationId(conversationId) &&
+        !target;
       const initialAgentId =
-        canUpsert &&
+        (publication || canUpsert) &&
         typeof metadata?.initialAgentId === 'string' &&
         metadata.initialAgentId.trim() !== ''
           ? metadata.initialAgentId
@@ -2695,32 +2778,79 @@ export function createConversationMethods(
           ...(chatProjectIdOnInsert ? { chatProjectId: chatProjectIdOnInsert } : {}),
           ...(createdAtForInsert ? { createdAt: createdAtForInsert } : {}),
         };
+        if (publication) {
+          const initial = new Conversation({
+            ...(operation.$setOnInsert as Record<string, unknown>),
+            ...(operation.$set as Record<string, unknown>),
+            conversationId: publication.logicalId,
+            createdAt: createdAtForInsert ?? new Date(),
+            updatedAt: new Date(),
+          }).toObject();
+          const fields: Record<string, unknown> = { ...initial };
+          for (const key of ['_id', 'tenantId', '__v', '_managed']) delete fields[key];
+          if (operation.$addToSet) delete fields.messages;
+          if (operation.$max) delete fields.lastResponseAt;
+          for (const key of Object.keys((operation.$unset ?? {}) as Record<string, unknown>))
+            delete fields[key.split('.')[0]];
+          const expiredAt = fields.expiredAt;
+          delete fields.expiredAt;
+          operation.$set = { ...fields, '_managed.phase': 'published' };
+          if (expiredAt instanceof Date) operation.$min = { expiredAt };
+          delete operation.$setOnInsert;
+        }
+        if (publication || target || isManagedConversationId(conversationId)) {
+          const fields = operation.$set as Record<string, unknown>;
+          const expiredAt = fields.expiredAt;
+          stripFields(fields, ['expiredAt']);
+          if (expiredAt instanceof Date) operation.$min = { expiredAt };
+          if (operation.$unset) delete (operation.$unset as Record<string, unknown>).expiredAt;
+        }
         return operation;
       };
 
       const baseFilter = {
-        conversationId,
-        user: userId,
-        // Initial ID assignment must never match a source inserted after the
-        // absence check. Upsert may create the new ID, but cannot rename that row.
-        ...(replacingConversationId ? { _id: { $exists: false } } : {}),
+        ...(publication
+          ? {
+              ...managedPublicationFilter(mongoose, publication),
+              '_managed.phase': 'registered',
+            }
+          : {
+              ...exactTarget,
+              conversationId,
+              user: userId,
+              ...(isManagedConversationId(conversationId) && managedVisibilityFilter),
+              // Initial ID assignment must never match a source inserted after the
+              // absence check. Upsert may create the new ID, but cannot rename that row.
+              ...(replacingConversationId ? { _id: { $exists: false } } : {}),
+            }),
         ...(metadata?.titleSource === 'generated' && {
           titleSetByUser: { $ne: true },
           title: { $in: [null, '', 'New Chat'] },
         }),
       };
-      const runUpdate = (
+      const runUpdate = async (
         filter: Record<string, unknown>,
         operation: Record<string, unknown>,
         upsert: boolean,
-      ) =>
-        Conversation.findOneAndUpdate(filter, operation, {
+      ) => {
+        const deadline = (operation.$min as { expiredAt?: Date } | undefined)?.expiredAt;
+        if (deadline) {
+          const initialization = initializeExpiration(filter, deadline);
+          await Conversation.updateOne(initialization.filter, initialization.update, {
+            session: deps?.saveSession,
+            upsert: initialization.upsert,
+            timestamps: initialization.timestamps,
+          });
+        }
+        return Conversation.findOneAndUpdate(filter, operation, {
           new: true,
           upsert,
           includeResultMetadata: true,
           session: deps?.saveSession,
           ...timestampOptions,
+          ...(publication && { timestamps: false, overwriteImmutable: true }),
         }) as unknown as Promise<ConversationUpdateResult>;
+      };
 
       let conversationResult: ConversationUpdateResult;
       if (update.isArchived === true) {
@@ -2782,6 +2912,10 @@ export function createConversationMethods(
           buildOperation(updatesArchiveState ? { ...update, archivedAt: null } : update),
           canUpsert,
         );
+      }
+      if (!conversationResult.value && publication) {
+        const published = await Conversation.findOne(publishedFilter).read('primary');
+        if (published) return published.toObject();
       }
       const conversation = conversationResult.value;
 
@@ -2932,7 +3066,8 @@ export function createConversationMethods(
               conversation.isTemporary === true ||
               (conversation.expiredAt != null &&
                 new Date(conversation.expiredAt).getTime() <= Date.now());
-            const isNewConversation = conversationResult.lastErrorObject?.updatedExisting === false;
+            const isNewConversation =
+              publication != null || conversationResult.lastErrorObject?.updatedExisting === false;
             const shouldRefreshProjectStats =
               isNewConversation ||
               typeof update.isArchived === 'boolean' ||
@@ -2959,7 +3094,7 @@ export function createConversationMethods(
 
       return conversation.toObject();
     } catch (error) {
-      if (deps?.saveSession) throw error;
+      if (deps?.saveSession || deps?.managedPublication || deps?.conversationTarget) throw error;
       logger.error('[saveConvo] Error saving conversation', error);
       if (metadata?.context) {
         logger.info(`[saveConvo] ${metadata.context}`);
@@ -3511,7 +3646,13 @@ export function createConversationMethods(
 
       const affectedProjectStats = new Map<string, { user: string; projectId: string }>();
       const bulkOps = conversations.map((convo) => {
+        if (isAllocationId(convo.conversationId)) throw new TypeError('Invalid conversation ID');
         const { codeEnvironmentMode, codeWorkspaces, ...sanitized } = convo;
+        stripManagedFields(sanitized);
+        const managed = isManagedConversationId(sanitized.conversationId);
+        const deadline =
+          managed && sanitized.expiredAt instanceof Date ? sanitized.expiredAt : undefined;
+        if (managed) stripFields(sanitized, ['expiredAt']);
         /* Read state belongs to the reader who lived through the replies, so an import never
            carries one in: the rows arrive unseen-free and unread-free. */
         delete sanitized.lastResponseAt;
@@ -3548,26 +3689,36 @@ export function createConversationMethods(
             });
           }
         }
+        const filter = {
+          conversationId: sanitized.conversationId,
+          user: sanitized.user,
+          ...(managed && managedVisibilityFilter),
+        };
+        if (managed) stripManagedIdentityFields(sanitized);
         return {
           updateOne: {
-            filter: {
-              conversationId: sanitized.conversationId,
-              user: sanitized.user,
-            },
+            filter,
             update: {
               $set: sanitized,
+              ...(deadline && { $min: { expiredAt: deadline } }),
               $setOnInsert: {
                 initial_agent_id: null,
                 ...(codeEnvironmentMode != null && { codeEnvironmentMode }),
                 ...(codeWorkspaces != null && { codeWorkspaces }),
               },
             },
-            upsert: true,
+            upsert: !managed,
             timestamps: false,
           },
         };
       });
 
+      const initializations = bulkOps.flatMap(({ updateOne }) =>
+        updateOne.update.$min
+          ? [{ updateOne: initializeExpiration(updateOne.filter, updateOne.update.$min.expiredAt) }]
+          : [],
+      );
+      if (initializations.length) await tenantSafeBulkWrite(Conversation, initializations);
       const result = await tenantSafeBulkWrite(Conversation, bulkOps);
       await Promise.all(
         [...affectedProjectStats.values()].map(({ user, projectId }) =>

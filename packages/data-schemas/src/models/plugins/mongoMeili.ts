@@ -13,6 +13,7 @@ import type {
 import type { SearchResponse, SearchParams, Index, MeiliSearchErrorInfo } from 'meilisearch';
 import type { IConversation, IMessage } from '~/types';
 import { buildRetentionVisibilityFilter, legacyPermanentExpirationFilter } from '~/utils/retention';
+import { managedVisibilityFilter } from '~/utils/managed';
 import { runAfterTransaction } from '~/utils/postCommit';
 import logger from '~/config/meiliLogger';
 
@@ -55,6 +56,7 @@ interface SyncProgress {
 }
 
 interface _DocumentWithMeiliIndex extends Document {
+  _managed?: { phase: string };
   _meiliIndex?: boolean;
   _meiliIndexAttempted?: boolean;
   _meiliIndexVersion?: string;
@@ -184,7 +186,9 @@ const buildIndexableQuery = (
   schema: Schema,
   excludeFromIndexPath?: string,
 ): FilterQuery<unknown> => {
-  const retentionFilter = buildRetentionIndexableQuery(schema);
+  const retentionFilter = {
+    $and: [buildRetentionIndexableQuery(schema), managedVisibilityFilter],
+  };
 
   if (excludeFromIndexPath == null) {
     return retentionFilter;
@@ -247,6 +251,7 @@ const captureExplicitTemporaryFlag = (doc: DocumentWithMeiliIndex): void => {
  * with an expiration are treated as temporary and stay out of search.
  */
 const isIndexableDocument = (doc: DocumentWithMeiliIndex, excludeFromIndexPath?: string): boolean =>
+  (doc._managed == null || doc._managed.phase === 'published') &&
   !isExcludedFromIndex(doc, excludeFromIndexPath) &&
   ((doc.isTemporary === false &&
     hasExplicitTemporaryFlag(doc) &&

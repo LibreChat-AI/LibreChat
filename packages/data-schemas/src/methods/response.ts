@@ -10,10 +10,12 @@ import type {
 import type { ResponseTurnWrites } from './responseTurn';
 import {
   responseScopeKeys,
+  responseScopeRetentionUpdate,
   responseOwnerFilter,
   isResponseScopeClosed,
   initializeResponseScopes,
 } from './responseScope';
+import { sameResponseTerminalReceipt, terminalReceipt, terminalFilter } from '~/utils/receipt';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
@@ -21,6 +23,8 @@ import { getTransactionSupport } from '~/utils/transactions';
 import { activeExpirationFilter } from '~/utils/retention';
 import { materializeResponseTurn } from './responseTurn';
 import { createIndexesWithRetry } from '~/utils/retry';
+
+export { sameResponseTerminalReceipt } from '~/utils/receipt';
 
 export type {
   ResponseOwner,
@@ -234,59 +238,6 @@ export interface ResponseStorage {
 }
 
 const active = ['queued', 'in_progress', 'requires_action'];
-
-export function sameResponseTerminalReceipt(
-  a: ResponseTerminalReceipt,
-  b: ResponseTerminalReceipt,
-): boolean {
-  const fields: Record<keyof ResponseTerminalReceipt, boolean> = {
-    generationCreatedAt: a.generationCreatedAt === b.generationCreatedAt,
-    providerExecutionId: a.providerExecutionId === b.providerExecutionId,
-    ownerId: a.ownerId === b.ownerId,
-    status: a.status === b.status,
-    responseJSON: a.responseJSON === b.responseJSON,
-    turnJSON: a.turnJSON === b.turnJSON,
-    checkpointNamespace: a.checkpointNamespace === b.checkpointNamespace,
-    checkpointConfigJSON: a.checkpointConfigJSON === b.checkpointConfigJSON,
-  };
-  return Object.values(fields).every(Boolean);
-}
-
-function terminalReceipt(receipt: ResponseTerminalReceipt): ResponseTerminalReceipt {
-  return {
-    generationCreatedAt: receipt.generationCreatedAt,
-    providerExecutionId: receipt.providerExecutionId,
-    ...(receipt.ownerId == null ? {} : { ownerId: receipt.ownerId }),
-    status: receipt.status,
-    responseJSON: receipt.responseJSON,
-    ...(receipt.turnJSON == null ? {} : { turnJSON: receipt.turnJSON }),
-    ...(receipt.checkpointNamespace == null
-      ? {}
-      : { checkpointNamespace: receipt.checkpointNamespace }),
-    ...(receipt.checkpointConfigJSON == null
-      ? {}
-      : { checkpointConfigJSON: receipt.checkpointConfigJSON }),
-  };
-}
-
-function terminalFilter(prefix: string, receipt: ResponseTerminalReceipt): Record<string, unknown> {
-  const fields: Record<
-    keyof ResponseTerminalReceipt,
-    ResponseTerminalReceipt[keyof ResponseTerminalReceipt]
-  > = {
-    generationCreatedAt: receipt.generationCreatedAt,
-    providerExecutionId: receipt.providerExecutionId,
-    ownerId: receipt.ownerId,
-    status: receipt.status,
-    responseJSON: receipt.responseJSON,
-    turnJSON: receipt.turnJSON,
-    checkpointNamespace: receipt.checkpointNamespace,
-    checkpointConfigJSON: receipt.checkpointConfigJSON,
-  };
-  return Object.fromEntries(
-    Object.entries(fields).map(([key, value]) => [`${prefix}.${key}`, value ?? { $exists: false }]),
-  );
-}
 
 function terminalProviderFilter(receipt: ResponseTerminalReceipt) {
   return {
@@ -785,8 +736,9 @@ export function createResponseStorage(
             .findOneAndUpdate(
               { _id: conversationKey, closed: false },
               {
-                $inc: { revision: 1 },
-                ...(input.expiredAt ? { $min: { expiredAt: input.expiredAt } } : {}),
+                ...(input.expiredAt
+                  ? responseScopeRetentionUpdate(input.expiredAt)
+                  : { $inc: { revision: 1 } }),
               },
               { session, new: true },
             )

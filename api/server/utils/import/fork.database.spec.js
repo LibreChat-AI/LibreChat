@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { randomUUID } = require('node:crypto');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const { Constants, EModelEndpoint, ForkOptions } = require('librechat-data-provider');
 const { createModels, runAsSystem, tenantStorage } = require('@librechat/data-schemas');
@@ -149,6 +150,71 @@ describe('forkConversation with excludeFiles (database)', () => {
   afterAll(async () => {
     await mongoose.disconnect();
     await mongoServer?.stop();
+  });
+
+  it('forks managed canonical history with fresh IDs and parent links', async () => {
+    const managedConversation = '22222222-2222-8222-a222-222222222222';
+    const mapping = new Map(
+      sourceMessages.map((message, index) => [
+        message.messageId,
+        'resp_d_' + String(index + 1).repeat(32),
+      ]),
+    );
+    const control = {
+      phase: 'published',
+      incarnation: randomUUID(),
+      parentId: String(new mongoose.Types.ObjectId()),
+    };
+    await runAsSystem(async () => {
+      await mongoose.models.Conversation.updateOne(
+        { conversationId },
+        { $set: { conversationId: managedConversation, _managed: control } },
+      );
+      for (const source of sourceMessages) {
+        await mongoose.models.Message.updateOne(
+          { messageId: source.messageId, user: owner },
+          {
+            $set: {
+              messageId: mapping.get(source.messageId),
+              conversationId: managedConversation,
+              parentMessageId: mapping.get(source.parentMessageId) ?? source.parentMessageId,
+              _managed: control,
+            },
+          },
+        );
+      }
+    });
+    const result = await fork({
+      originalConvoId: managedConversation,
+      targetMessageId: mapping.get('assistant-2'),
+    });
+    const persisted = await readPersisted(result.conversation.conversationId);
+    expect(persisted.conversation.conversationId).toMatch(/^[a-f\d]{8}-[a-f\d]{4}-4/);
+    expect(persisted.messages).toHaveLength(4);
+    for (let index = 0; index < persisted.messages.length; index++) {
+      const message = persisted.messages[index];
+      expect(message.messageId).toMatch(/^[a-f\d]{8}-[a-f\d]{4}-4/);
+      expect(message.parentMessageId).toBe(
+        index ? persisted.messages[index - 1].messageId : Constants.NO_PARENT,
+      );
+    }
+    const controls = await runAsSystem(() =>
+      mongoose.models.Message.find({
+        conversationId: result.conversation.conversationId,
+      })
+        .select('+_managed')
+        .lean(),
+    );
+    expect(controls.every((message) => message._managed === undefined)).toBe(true);
+    expect(
+      await runAsSystem(() =>
+        mongoose.models.Conversation.findOne({
+          conversationId: result.conversation.conversationId,
+        })
+          .select('+_managed')
+          .lean(),
+      ),
+    ).not.toHaveProperty('_managed');
   });
 
   it('copies the visible branch with no uploads, code outputs or conversation file list', async () => {

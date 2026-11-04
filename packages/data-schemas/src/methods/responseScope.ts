@@ -73,6 +73,14 @@ export async function discoverResponseOwners(
   });
 }
 
+/** Every deadline writer advances the same version consumed by discovery settlement. */
+export function responseScopeRetentionUpdate(expiredAt: Date): {
+  $min: { expiredAt: Date };
+  $inc: { revision: number; retentionEpoch: number };
+} {
+  return { $min: { expiredAt }, $inc: { revision: 1, retentionEpoch: 1 } };
+}
+
 /** Retention intent is monotonic, like erasure: failed parent saves never reopen private data. */
 export function createResponseRetention(
   mongoose: typeof import('mongoose'),
@@ -99,11 +107,10 @@ export function createResponseRetention(
     }
     const apply = async (session?: import('mongoose').ClientSession) => {
       const anchor = await scopes
-        .findOneAndUpdate(
-          { _id: key },
-          { $min: { expiredAt }, $inc: { revision: 1 } },
-          { new: true, ...(session ? { session } : {}) },
-        )
+        .findOneAndUpdate({ _id: key }, responseScopeRetentionUpdate(expiredAt), {
+          new: true,
+          ...(session ? { session } : {}),
+        })
         .lean();
       if (!anchor?.expiredAt) throw new Error('Response retention scope unavailable');
       await records.updateMany(
