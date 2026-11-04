@@ -19,10 +19,17 @@ jest.mock('~/server/middleware', () => ({
     next();
   },
   canAccessAgentResource: () => (_req, _res, next) => next(),
+  requireSameOrigin: (_req, _res, next) => next(),
 }));
 jest.mock('../middleware', () => ({ checkRemoteAgentsFeature: (_req, _res, next) => next() }));
 jest.mock('../actions', () => require('express').Router());
 jest.mock('../tools', () => require('express').Router());
+jest.mock('~/server/services/SlackWorkspaceBindings', () => ({
+  create: (_req, res) => res.sendStatus(204),
+  read: (_req, res) => res.sendStatus(204),
+  assign: (_req, res) => res.sendStatus(204),
+  remove: (_req, res) => res.sendStatus(204),
+}));
 jest.mock(
   '~/server/services/Channels',
   () =>
