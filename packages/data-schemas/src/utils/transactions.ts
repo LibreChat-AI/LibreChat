@@ -111,3 +111,20 @@ export async function startRequiredTransactionSession(
   if (!state.supported) throw new TransactionUnavailableError();
   return mongoose.startSession({ defaultTransactionOptions: { readPreference: 'primary' } });
 }
+
+/** Prepare indexes outside the transaction, after confirming storage capability. */
+export async function withRequiredTransaction<T>(
+  mongoose: typeof import('mongoose'),
+  write: (session: ClientSession) => Promise<T>,
+  prepare?: () => Promise<void>,
+): Promise<T> {
+  const session = await startRequiredTransactionSession(mongoose);
+  try {
+    await prepare?.();
+    const result = await session.withTransaction(() => write(session));
+    if (result === undefined) throw new Error('Required transaction did not commit');
+    return result;
+  } finally {
+    await session.endSession();
+  }
+}

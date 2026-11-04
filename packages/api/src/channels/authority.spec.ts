@@ -1142,7 +1142,7 @@ it(
     const admitted = await post('runs').send(event()).expect(201);
     const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
     const lookup = jest
-      .spyOn(db, 'getAgentChannel')
+      .spyOn(db, 'getActiveAgentChannel')
       .mockRejectedValueOnce(new Error('database unavailable'));
     await post(`runs/${admitted.body.runId}/advance`)
       .send({ fence: claimed.body.fence })

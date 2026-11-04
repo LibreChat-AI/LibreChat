@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { createHash, randomBytes } from 'node:crypto';
 import { SLACK_CHANNEL_BOT_SCOPES } from 'librechat-data-provider';
+import type { SharedSlackGatewayPolicy } from 'librechat-data-provider';
 import { getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import type {
   ChannelConfig,
@@ -27,6 +28,7 @@ export interface SlackWorkspaceApp {
   clientId: string;
   clientSecret: string;
   signingSecret: string;
+  gateway: SharedSlackGatewayPolicy;
   redirectUri: string;
   flowLifetimeMs: number;
   requestTimeoutMs: number;
@@ -108,7 +110,7 @@ export function resolveSlackWorkspaceApp(
   };
 }
 
-async function readGrant(response: Response, limit: number): Promise<unknown> {
+export async function readSlackJSON(response: Response, limit: number): Promise<unknown> {
   const reader = response.body?.getReader();
   if (!reader) throw new Error('Slack returned an empty OAuth response');
   const chunks: Uint8Array[] = [];
@@ -267,7 +269,7 @@ export function createSlackWorkspaceService(deps: {
         signal: AbortSignal.timeout(app.requestTimeoutMs),
       });
       if (!response.ok) throw new Error('Slack OAuth service unavailable');
-      const grant = grantSchema.safeParse(await readGrant(response, app.maxResponseBytes));
+      const grant = grantSchema.safeParse(await readSlackJSON(response, app.maxResponseBytes));
       if (!grant.success || grant.data.app_id !== app.appId) return failure('slack_refused');
       if (
         grant.data.is_enterprise_install ||

@@ -82,6 +82,7 @@ export function publicChannel(
   | 'status'
   | 'credentialMode'
   | 'revision'
+  | 'workspaceId'
   | 'slack'
 > {
   return {
@@ -93,6 +94,7 @@ export function publicChannel(
     status: channel.status,
     credentialMode: channel.credentialMode,
     revision: channel.revision,
+    workspaceId: channel.workspaceId,
     slack: channel.slack,
   };
 }
@@ -361,7 +363,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
           return;
         }
         const channel = await runAsSystem(async () =>
-          deps.db.getAgentChannel(req.params.channelId),
+          deps.db.getActiveAgentChannel(req.params.channelId),
         );
         const requestedTenant = req.params.tenantId ?? req.get('x-tenant-id') ?? '_';
         if (
@@ -378,7 +380,17 @@ export function createChannelHandlers(deps: ChannelDependencies): {
             res.status(404).json({ error: 'channels_disabled' });
             return;
           }
-          await handler(req, res, channel, channelConfigSchema.parse(loaded));
+          const config = channelConfigSchema.parse(loaded);
+          if (
+            channel.workspaceId &&
+            (!config.slackApp?.enabled ||
+              config.transport !== 'webhook' ||
+              config.slackApp.appId !== channel.slack?.appId)
+          ) {
+            res.status(404).json({ error: 'channel_not_found' });
+            return;
+          }
+          await handler(req, res, channel, config);
         });
       } catch (error) {
         operationFailed(error, res);
@@ -401,11 +413,14 @@ export function createChannelHandlers(deps: ChannelDependencies): {
       res.status(404).json({ error: 'channel_not_found' });
       return;
     }
+    let signing = Promise.resolve(config.slackApp?.signingSecret || '');
+    if (!channel.workspaceId)
+      signing = channel.encryptedSigningSecret
+        ? decryptCredential(channel.encryptedSigningSecret)
+        : Promise.resolve('');
     const [botToken, signingSecret] = await Promise.all([
       decryptCredential(channel.encryptedBotToken),
-      channel.encryptedSigningSecret
-        ? decryptCredential(channel.encryptedSigningSecret)
-        : Promise.resolve(''),
+      signing,
     ]);
     res.set('Cache-Control', 'no-store');
     if (!validSigningSecret(config, signingSecret)) {
