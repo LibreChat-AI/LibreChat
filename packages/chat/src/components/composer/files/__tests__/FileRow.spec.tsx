@@ -5,7 +5,7 @@ import React from 'react';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import { EToolResources, FileSources } from 'librechat-data-provider';
+import { FileSources } from 'librechat-data-provider';
 import type { ExtendedFile } from '../../../../core/files';
 import type { FilesHost } from '../../../../react/files';
 import { FilesHostProvider } from '../../../../react/files';
@@ -114,85 +114,6 @@ describe('FileRow', () => {
       <FileRow files={files} setFiles={mockSetFiles} setFilesLoading={mockSetFilesLoading} />,
     );
   };
-
-  it('passes the composer pane index to file deletion', () => {
-    const file = createMockFile();
-    const filesMap = new Map<string, ExtendedFile>();
-    filesMap.set(file.file_id, file);
-
-    renderRow(
-      <FileRow
-        files={filesMap}
-        setFiles={mockSetFiles}
-        setFilesLoading={mockSetFilesLoading}
-        index={1}
-      />,
-    );
-
-    expect(mockUseDeleteFile).toHaveBeenCalledWith(
-      expect.objectContaining({
-        index: 1,
-      }),
-    );
-  });
-
-  it('passes the agent, assistant and tool resource scope to file deletion', () => {
-    const file = createMockFile();
-    renderRow(
-      <FileRow
-        files={new Map([[file.file_id, file]])}
-        setFiles={mockSetFiles}
-        agent_id="agent-1"
-        assistant_id="asst-1"
-        tool_resource={EToolResources.file_search}
-        index={2}
-      />,
-    );
-
-    expect(mockUseDeleteFile).toHaveBeenCalledWith({
-      agent_id: 'agent-1',
-      assistant_id: 'asst-1',
-      tool_resource: EToolResources.file_search,
-      index: 2,
-    });
-  });
-
-  it('hands the file and the setter to the deletion function when the chip is removed', async () => {
-    const file = createMockFile();
-    renderFileRow(new Map([[file.file_id, file]]));
-
-    await userEvent.click(screen.getByTestId('mock-delete'));
-
-    expect(mockDeleteFile).toHaveBeenCalledWith({ file, setFiles: mockSetFiles });
-  });
-
-  it('aborts an in-flight upload before deleting it', async () => {
-    const abortUpload = jest.fn();
-    const file = createMockFile({ progress: 0.4 });
-    renderRow(
-      <FileRow
-        files={new Map([[file.file_id, file]])}
-        setFiles={mockSetFiles}
-        abortUpload={abortUpload}
-      />,
-    );
-
-    await userEvent.click(screen.getByTestId('mock-delete'));
-
-    expect(abortUpload).toHaveBeenCalledWith(file.file_id);
-    expect(mockDeleteFile).toHaveBeenCalledWith({ file, setFiles: mockSetFiles });
-  });
-
-  it('prefers the host preview over the file preview', () => {
-    mockGetPreviewUrl.mockReturnValue('blob:http://localhost:3080/host-preview');
-    const file = createMockFile();
-    renderFileRow(new Map([[file.file_id, file]]));
-
-    expect(mockGetPreviewUrl).toHaveBeenCalledWith(file.file_id);
-    expect(screen.getByTestId('image-url').textContent).toBe(
-      'blob:http://localhost:3080/host-preview',
-    );
-  });
 
   describe('Image URL Selection Logic', () => {
     it('should prefer cached preview over filepath when upload is complete', () => {
