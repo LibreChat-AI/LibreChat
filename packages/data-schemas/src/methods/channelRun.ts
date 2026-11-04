@@ -28,6 +28,7 @@ import {
   leaseDeadline,
   ChannelRunConflict,
 } from './channelProtocol';
+import { initializeChannelScope, touchChannelAuthority } from './channelScope';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseOwnerFilter } from './responseScope';
@@ -397,6 +398,28 @@ export function createChannelRunStorage(
         userId: input.principal.userId,
         tenantId: input.tenantId === '_' ? undefined : input.tenantId,
       });
+      await initializeChannelScope(mongoose, input.tenantId, input.channelId);
+      const assertAuthority = async (session: ClientSession) => {
+        if (!(await ownerAdmission(session))) throw new ChannelRunConflict('invalid_transition');
+        if (
+          !(await touchChannelAuthority(
+            mongoose,
+            {
+              tenantId: input.tenantId,
+              channelId: input.channelId,
+              agentId: input.agentId,
+              channelRevision: input.principal.channelRevision,
+              teamId: input.admission.actor.teamId,
+              appId: input.admission.actor.appId,
+              principal: input.principal,
+              externalUserId: input.admission.actor.externalUserId,
+              now,
+            },
+            session,
+          ))
+        )
+          throw new ChannelRunConflict('invalid_transition');
+      };
       const eventKey = {
         tenantId: input.tenantId,
         channelId: input.channelId,
@@ -408,7 +431,7 @@ export function createChannelRunStorage(
       const laneId = laneKey(input);
       try {
         return await transaction(async (session) => {
-          if (!(await ownerAdmission(session))) throw new ChannelRunConflict('invalid_transition');
+          await assertAuthority(session);
           const existing = await runs().findOne(eventKey).session(session).lean();
           if (existing) {
             if (
@@ -461,15 +484,18 @@ export function createChannelRunStorage(
             !error.message.includes('channel_run_event_v2'))
         )
           throw error;
-        const existing = await runs().findOne(eventKey).lean();
-        if (!existing) throw new ChannelRunConflict('event_conflict');
-        if (
-          digest(existing.admission) !== payloadHash ||
-          existing.agentId !== input.agentId ||
-          digest(existing.principal) !== digest(input.principal)
-        )
-          throw new ChannelRunConflict('event_conflict');
-        return { run: existing, duplicate: true };
+        return transaction(async (session) => {
+          await assertAuthority(session);
+          const existing = await runs().findOne(eventKey).session(session).lean();
+          if (!existing) throw new ChannelRunConflict('event_conflict');
+          if (
+            digest(existing.admission) !== payloadHash ||
+            existing.agentId !== input.agentId ||
+            digest(existing.principal) !== digest(input.principal)
+          )
+            throw new ChannelRunConflict('event_conflict');
+          return { run: existing, duplicate: true };
+        });
       }
     },
     async claim(tenantId, channelId, owner, now, leaseMs) {

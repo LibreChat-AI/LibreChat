@@ -4,6 +4,7 @@ import type { ChannelRunSummary } from 'librechat-data-provider';
 import type { ChannelRunRecord } from '~/models/channelRun';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelRunStorage } from './channelRun';
+import { createAgentChannelMethods } from './channel';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
@@ -31,6 +32,28 @@ const event = (eventId = 'event', actorId = 'actor') => ({
   },
 });
 
+async function seedRunLink(input: ReturnType<typeof event>, linkId: string) {
+  await mongoose.models.ChannelIdentity.deleteMany({ tenantId, 'identity.channelId': 'channel' });
+  await mongoose.models.ChannelIdentity.create({
+    tenantId,
+    linkId,
+    revision: '1',
+    state: 'active',
+    userId: input.principal.userId,
+    ticketHash: `ticket-${linkId}`,
+    ticketExpiresAtMs: 10000,
+    expiresAtMs: 10000,
+    identity: {
+      tenantId,
+      channelId: input.channelId,
+      channelRevision: input.principal.channelRevision,
+      teamId: input.admission.actor.teamId,
+      externalUserId: input.admission.actor.externalUserId,
+      agentId: input.agentId,
+    },
+  });
+}
+
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongo.getUri(), { autoIndex: false });
@@ -39,6 +62,21 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   await runAsSystem(async () => {
+    await mongoose.models.AgentChannel.deleteMany({});
+    await mongoose.models.ChannelIdentity.deleteMany({});
+    await mongoose.models.ChannelScope.deleteMany({});
+    await mongoose.models.ResponseScope.deleteMany({});
+    await createAgentChannelMethods(mongoose).createAgentChannel({
+      tenantId,
+      channelId: 'channel',
+      agentId: 'agent',
+      createdBy: 'channel-owner',
+      type: 'slack',
+      status: 'active',
+      credentialMode: 'shared',
+      revision: 'revision',
+      slack: { teamId: 'T1', appId: 'A1', botUserId: 'B1' },
+    });
     await mongoose.models.ChannelRun.deleteMany({});
     await mongoose.models.ChannelLane.deleteMany({});
     await mongoose.models.StoredResponse.deleteMany({});
@@ -135,10 +173,12 @@ it('isolates actor lanes across distinct personal links with the same revision',
   scope(async () => {
     const first = event('link-one');
     const second = event('link-two');
+    await seedRunLink(first, 'one');
     const a = await storage.admit(
       { ...first, principal: { ...first.principal, linkId: 'one', linkRevision: '1' } },
       100,
     );
+    await seedRunLink(second, 'two');
     const b = await storage.admit(
       { ...second, principal: { ...second.principal, linkId: 'two', linkRevision: '1' } },
       101,
@@ -452,10 +492,13 @@ it('does not replay an admitted event through a different principal or linked ac
       { ...input.principal, channelRevision: 'new-revision' },
     ])
       await expect(storage.admit({ ...input, principal }, 101)).rejects.toMatchObject({
-        code: 'event_conflict',
+        code:
+          principal.channelRevision !== input.principal.channelRevision || 'linkId' in principal
+            ? 'invalid_transition'
+            : 'event_conflict',
       });
     await expect(storage.admit({ ...input, agentId: 'another-agent' }, 101)).rejects.toMatchObject({
-      code: 'event_conflict',
+      code: 'invalid_transition',
     });
   }));
 
@@ -575,6 +618,24 @@ it.each(['teamId', 'appId', 'externalChannelId', 'externalThreadKey', 'agentId']
       else if (field === 'agentId') second.agentId = 'different';
       else second.admission[field] = 'different';
       const a = await storage.admit(first, 100);
+      if (field === 'agentId') {
+        await expect(storage.admit(second, 101)).rejects.toMatchObject({
+          code: 'invalid_transition',
+        });
+        expect(await mongoose.models.ChannelRun.countDocuments({ tenantId })).toBe(1);
+        return;
+      }
+      if (field === 'teamId' || field === 'appId') {
+        await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'channel-owner', {
+          revision: 'rotated',
+          slack: {
+            teamId: second.admission.actor.teamId,
+            appId: second.admission.actor.appId,
+            botUserId: 'B1',
+          },
+        });
+        second.principal.channelRevision = 'rotated';
+      }
       const b = await storage.admit(second, 101);
       expect(a.run.laneId).not.toBe(b.run.laneId);
       const claimedA = (await storage.claim(tenantId, 'channel', 'a', 102, 1000))!;
@@ -747,6 +808,15 @@ it.each([undefined, null, ''])(
   'binds tenantless responses stored with tenantId %s',
   (storedTenant) =>
     tenantStorage.run({}, async () => {
+      await runAsSystem(async () =>
+        mongoose.models.AgentChannel.updateOne(
+          { channelId: 'channel' },
+          { $unset: { tenantId: '' } },
+        ),
+      );
+      await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'channel-owner', {
+        revision: 'revision',
+      });
       const input = { ...event(), tenantId: '_' };
       await storage.admit(input, 100);
       const run = (await storage.claim('_', 'channel', 'worker', 101, 1000))!;
@@ -808,7 +878,13 @@ it('migrates the prototype event constraint before admitting colliding event IDs
     const revised = createChannelRunStorage(mongoose);
     const second = event();
     second.admission.actor.appId = 'other-app';
-    const [a, b] = await Promise.all([revised.admit(event(), 100), revised.admit(second, 100)]);
+    const a = await revised.admit(event(), 100);
+    await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'channel-owner', {
+      revision: 'rotated',
+      slack: { teamId: 'T1', appId: 'other-app', botUserId: 'B1' },
+    });
+    second.principal.channelRevision = 'rotated';
+    const b = await revised.admit(second, 100);
     expect(a.run.runId).not.toBe(b.run.runId);
     expect((await revised.admit(second, 101)).run.runId).toBe(b.run.runId);
     const indexes = await collection.indexes();
@@ -1091,6 +1167,11 @@ it('distinguishes two apps whose delivered provider-local reply keys collide', (
     const second = event('two');
     second.admission.actor.appId = 'another-app';
     const a = await storage.admit(first, 100);
+    await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'channel-owner', {
+      revision: 'rotated',
+      slack: { teamId: 'T1', appId: 'another-app', botUserId: 'B1' },
+    });
+    second.principal.channelRevision = 'rotated';
     const b = await storage.admit(second, 100);
     for (const item of [a, b])
       await mongoose.models.ChannelRun.updateOne(
@@ -1178,7 +1259,18 @@ it('replays exact settled transport acknowledgements without opening another att
 
 it('refuses every named underscore context before it can read or mutate tenantless runs', async () => {
   const input = { ...event(), tenantId: '_' };
-  const { run } = await tenantStorage.run({}, async () => storage.admit(input, 100));
+  const { run } = await tenantStorage.run({}, async () => {
+    await runAsSystem(async () =>
+      mongoose.models.AgentChannel.updateOne(
+        { channelId: 'channel' },
+        { $unset: { tenantId: '' } },
+      ),
+    );
+    await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'channel-owner', {
+      revision: 'revision',
+    });
+    return storage.admit(input, 100);
+  });
   for (const action of [
     () => storage.read('_', 'channel', run.runId),
     () => storage.claim('_', 'channel', 'worker', 101, 1000),
@@ -1222,7 +1314,10 @@ it.each(['principal', 'agent'] as const)(
       const failure = results.find((result) => result.status === 'rejected');
       expect(failure).toMatchObject({
         status: 'rejected',
-        reason: { name: 'ChannelRunConflict', code: 'event_conflict' },
+        reason: {
+          name: 'ChannelRunConflict',
+          code: kind === 'agent' ? 'invalid_transition' : 'event_conflict',
+        },
       });
       expect(await mongoose.models.ChannelRun.countDocuments({ tenantId })).toBe(1);
       expect(await mongoose.models.ChannelLane.countDocuments({ tenantId })).toBe(1);
@@ -1287,4 +1382,49 @@ it('persists cancellation as language-neutral status without presentation copy',
     await storage.requestCancel(event(), run.runId);
     const result = await storage.finishUnstartedResponseCancellation(tenantId, fence(run), 103);
     expect(result.snapshot).toMatchObject({ status: 'cancelled', text: '' });
+  }));
+
+it('allocates separate canonical conversations for identical timestamps in different external channels', () =>
+  scope(async () => {
+    const first = event('first-channel');
+    first.admission.externalThreadKey = '123.456';
+    const second = event('second-channel');
+    second.admission.externalThreadKey = '123.456';
+    second.admission.externalChannelId = 'C2';
+    const [a, b] = await Promise.all([storage.admit(first, 100), storage.admit(second, 100)]);
+    expect(a.run.laneId).not.toBe(b.run.laneId);
+    const claimedA = (await storage.claim(tenantId, 'channel', 'a', 101, 1000))!;
+    const claimedB = (await storage.claim(tenantId, 'channel', 'b', 102, 1000))!;
+    const prepared = await Promise.all([
+      storage.prepareExecution(tenantId, fence(claimedA), 103),
+      storage.prepareExecution(tenantId, fence(claimedB), 103),
+    ]);
+    expect(new Set(prepared.map((run) => run.execution!.conversationId)).size).toBe(2);
+    expect(
+      prepared.every(
+        (run) => run.execution!.parentMessageId === '00000000-0000-0000-0000-000000000000',
+      ),
+    ).toBe(true);
+    expect(new Set(prepared.map((run) => run.admission.externalThreadKey))).toEqual(
+      new Set(['123.456']),
+    );
+    expect(new Set(prepared.map((run) => run.admission.externalChannelId))).toEqual(
+      new Set(['C1', 'C2']),
+    );
+  }));
+
+it('returns one canonical conversation across racing preparation retries in the same actor lane', () =>
+  scope(async () => {
+    await storage.admit(event(), 100);
+    const claimed = (await storage.claim(tenantId, 'channel', 'worker', 101, 1000))!;
+    const attempts = await Promise.all(
+      Array.from({ length: 8 }, () => storage.prepareExecution(tenantId, fence(claimed), 102)),
+    );
+    const saved = await storage.read(tenantId, 'channel', claimed.runId);
+    expect(new Set(attempts.map((run) => run.execution!.conversationId))).toEqual(
+      new Set([saved!.execution!.conversationId]),
+    );
+    expect(new Set(attempts.map((run) => run.execution!.requestId))).toEqual(
+      new Set([claimed.runId]),
+    );
   }));
