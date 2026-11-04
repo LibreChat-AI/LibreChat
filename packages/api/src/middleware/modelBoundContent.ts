@@ -147,6 +147,7 @@ const MAX_PROVIDER_PROVENANCE_PARSE_WORK =
   MAX_PROVIDER_PROVENANCE_INDEX_REFS + MAX_PROVIDER_PROVENANCE_PARTS;
 const MAX_PROVIDER_STORED_STATE_WORK =
   MAX_PROVIDER_PROJECTION_WORK + MAX_PROVIDER_PROVENANCE_PARTS * 2;
+const AGENT_FILE_INSPECTION_OMITTED_ROOT_KEYS = new Set(['toolDefinitions']);
 /** One root plus bounded structural bookkeeping for every valid provider part. */
 const MAX_MODEL_BOUND_NESTED_TRAVERSAL_WORK = CONTENT_TRAVERSAL_MAX_NODES * 2;
 
@@ -3880,6 +3881,7 @@ function inspectModelBoundContent(
     assertInspectableFileInput(
       input.filters,
       omitResolvedCanonicalFileLocators(agent, agentFilesById, {
+        omittedRootKeys: AGENT_FILE_INSPECTION_OMITTED_ROOT_KEYS,
         onTraversalFailure: input.onTraversalFailure,
         messageCount: input.storedMessages?.length ?? 0,
       }),
