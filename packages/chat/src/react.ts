@@ -242,6 +242,8 @@ export {
   releasedComposerTextAtom,
 } from './react/parts/ask';
 export type { AskAnswerStatus, ReleasedComposerStash } from './react/parts/ask';
+export { default as useComposerItems } from './react/items';
+export type { ComposerItem, ComposerItemKind } from './react/items';
 export { useFilesHost, FilesHostProvider } from './react/files';
 export type { FilesHost, FileDeleteScope, FileMapSetter } from './react/files';
 export { default as useReducedMotion } from './react/motion';
