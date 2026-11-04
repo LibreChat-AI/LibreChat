@@ -4,7 +4,7 @@
 import { useRef } from 'react';
 import { QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { ConversationSeenSource, MessagesHost } from '../../../react/messages/host';
 import type { MessagesScrollButtonProps, MessagesViewProps } from '../MessagesView';
@@ -294,9 +294,6 @@ describe('MessagesView', () => {
 });
 
 describe('MessagesView default rail', () => {
-  const originalObserver = global.IntersectionObserver;
-  const originalResizeObserver = global.ResizeObserver;
-  const originalMatchMedia = window.matchMedia;
   const turns = (conversationId: string) =>
     ['one', 'two', 'three'].map((id, index) => ({
       messageId: `${conversationId}-${id}`,
@@ -304,47 +301,6 @@ describe('MessagesView default rail', () => {
       isCreatedByUser: index % 2 === 0,
       text: id,
     })) as TMessage[];
-  class StubIntersectionObserver implements IntersectionObserver {
-    root = null;
-    rootMargin = '0px';
-    thresholds = [0];
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-    takeRecords(): IntersectionObserverEntry[] {
-      return [];
-    }
-  }
-  class StubResizeObserver implements ResizeObserver {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-  const matchMedia = (media: string): MediaQueryList => ({
-    matches: false,
-    media,
-    onchange: null,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    dispatchEvent: () => false,
-  });
-
-  beforeEach(() => {
-    global.IntersectionObserver = StubIntersectionObserver;
-    global.ResizeObserver = StubResizeObserver;
-    window.matchMedia = matchMedia;
-  });
-
-  afterEach(() => {
-    /** The rail measures itself on a later frame, so it leaves before the stubs do. */
-    cleanup();
-    global.IntersectionObserver = originalObserver;
-    global.ResizeObserver = originalResizeObserver;
-    window.matchMedia = originalMatchMedia;
-  });
-
   /** The rail builds its entries from the rendered rows. */
   const renderThread: MessagesViewProps['renderThread'] = ({ messages }) => (
     <ol aria-label="Thread">
@@ -369,17 +325,5 @@ describe('MessagesView default rail', () => {
     rerenderView({ messagesTree: turns('convo-2'), messages: turns('convo-2') });
     expect(rail.isConnected).toBe(false);
     expect(await screen.findByRole('navigation')).not.toBe(rail);
-  });
-
-  it('shows no rail where the runtime has no intersection observer', () => {
-    // @ts-expect-error a runtime without the API, such as a server render
-    delete global.IntersectionObserver;
-    renderView(
-      { messagesTree: turns('convo-1'), messages: turns('convo-1') },
-      createHost({ useConversationMessages: (id) => turns(id ?? 'convo-1') }).host,
-    );
-
-    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
-    expect(screen.getByRole('list', { name: 'Thread' })).toBeInTheDocument();
   });
 });

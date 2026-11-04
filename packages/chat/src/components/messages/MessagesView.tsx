@@ -63,19 +63,13 @@ export type MessagesViewProps = {
 };
 
 const renderDefaultThread = (props: MessagesThreadProps): ReactNode => <Thread {...props} />;
-/** Keyed so a warm switch releases the outgoing conversation's rail. The rail tracks rows with an
- *  observer, so without one (a server render, a test DOM) there is no rail to show. */
+/** Keyed so a warm switch releases the outgoing conversation's rail. */
 const renderDefaultNav: NonNullable<MessagesViewProps['renderNav']> = ({
   conversationId,
   scrollableRef,
-}) =>
-  typeof IntersectionObserver === 'undefined' ? null : (
-    <MessageNav
-      key={conversationId}
-      conversationId={conversationId}
-      scrollableRef={scrollableRef}
-    />
-  );
+}) => (
+  <MessageNav key={conversationId} conversationId={conversationId} scrollableRef={scrollableRef} />
+);
 
 /**
  * The message list: the scroll container, the rendered thread with its progressive mount
