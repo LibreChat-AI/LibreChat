@@ -101,18 +101,34 @@ describe('preflightCodeOutputBatch', () => {
     expect(result.every((entry) => entry.downloadFallback === true)).toBe(true);
   });
 
-  it('preserves configured files above the inspection count as URL fallbacks', async () => {
+  it('prepares files above the default inspection count when inspection is inactive and fileLimit permits', async () => {
     const prepare = jest.fn(async (input: PrepareCodeOutputInput) => prepared(input));
 
     const result = await preflightCodeOutputBatch({
       artifact: artifact(12),
-      limits: { ...limits, fileLimit: 12 },
+      limits: { ...limits, fileLimit: 12, totalSizeLimit: 64 },
+      prepare,
+    });
+
+    expect(prepare).toHaveBeenCalledTimes(12);
+    expect(result.map((entry) => entry.file.id)).toEqual(
+      Array.from({ length: 12 }, (_, index) => `file-${index}`),
+    );
+    expect(result.every((entry) => entry.downloadFallback !== true)).toBe(true);
+  });
+
+  it('preserves files as URL fallbacks when configured fileLimit is exceeded without inspection', async () => {
+    const prepare = jest.fn(async (input: PrepareCodeOutputInput) => prepared(input));
+
+    const result = await preflightCodeOutputBatch({
+      artifact: artifact(12),
+      limits: { ...limits, fileLimit: 10 },
       prepare,
     });
 
     expect(prepare).not.toHaveBeenCalled();
     expect(result.map((entry) => entry.file.id)).toEqual(
-      Array.from({ length: 12 }, (_, index) => `file-${index}`),
+      Array.from({ length: 10 }, (_, index) => `file-${index}`),
     );
     expect(result.every((entry) => entry.downloadFallback === true)).toBe(true);
   });
