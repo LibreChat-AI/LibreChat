@@ -106,13 +106,7 @@ const ScrollButton: MemoExoticComponent<
   const phase = useFadePhase(showScrollButton && enabled && !panelOpen, scrollToBottomRef);
 
   useEffect(() => {
-    /** Without an observer (a server render, a test DOM) the control stays hidden rather than
-     *  taking the list down with it. */
-    if (
-      !messagesEndRef.current ||
-      !scrollableRef.current ||
-      typeof IntersectionObserver === 'undefined'
-    ) {
+    if (!messagesEndRef.current || !scrollableRef.current) {
       return;
     }
 
