@@ -67,7 +67,21 @@ const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { startExpiredFileSweep } = require('./services/Files/process');
 const { initializeGitHubSkillSync } = require('./services/Skills/sync');
 const { startSkillDeletionSweep } = require('./services/Skills/deletion');
-const { initializeAgentTriggerService } = require('./services/Agents/triggers');
+const {
+  initializeAgentTriggerService,
+  enqueueAgentTrigger,
+  isAgentTriggerServiceReady,
+} = require('./services/Agents/triggers');
+const {
+  initializeBackgroundResponses,
+  configureBackgroundResponseQueue,
+} = require('./services/Responses');
+const {
+  initializeChannelFeedback,
+  stopChannelFeedback,
+  initializeChannelCleanup,
+  stopChannelCleanup,
+} = require('./services/Channels');
 const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
 const {
   recordExpiredScheduleApproval,
@@ -687,6 +701,7 @@ if (cluster.isMaster) {
     app.use('/api/share', preAuthTenantMiddleware, routes.share);
     app.use('/api/roles', routes.roles);
     app.use('/api/agents', routes.agents);
+    app.use('/api/channels', routes.channels);
     app.use('/api/banner', routes.banner);
     app.use('/api/memories', routes.memories);
     app.use('/api/schedules', rejectScheduleWritesUntilReady, routes.schedules);
@@ -706,6 +721,10 @@ if (cluster.isMaster) {
     app.use(ErrorController);
 
     /** Start listening on shared port (cluster will distribute connections) */
+    configureBackgroundResponseQueue({
+      enqueue: enqueueAgentTrigger,
+      isReady: isAgentTriggerServiceReady,
+    });
     const server = app.listen(port, host, async (err) => {
       if (err) {
         logger.error(`Worker ${process.pid} failed to start server:`, err);
@@ -730,6 +749,7 @@ if (cluster.isMaster) {
         await initializeMCPs();
         await initializeOAuthReconnectManager();
         await checkMigrations();
+        initializeBackgroundResponses(server.address());
         await initializeAgentTriggerService({
           address: server.address(),
           completionResultBatchSize:
@@ -740,6 +760,10 @@ if (cluster.isMaster) {
             appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
           idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
         });
+        await initializeChannelFeedback();
+        registerShutdownTask('channel feedback export', stopChannelFeedback, { priority: 100 });
+        registerShutdownTask('channel authority cleanup', stopChannelCleanup, { priority: 100 });
+        await initializeChannelCleanup();
       } catch (initErr) {
         logger.error(`Worker ${process.pid} post-listen initialization failed:`, initErr);
         process.exit(1);

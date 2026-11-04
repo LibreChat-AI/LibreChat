@@ -84,6 +84,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
 
     if (mergedConfig[EModelEndpoint.agents] && appConfig?.endpoints?.[EModelEndpoint.agents]) {
       const {
+        channels,
         disableBuilder,
         capabilities,
         allowedProviders,
@@ -136,6 +137,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         : undefined;
       mergedConfig[EModelEndpoint.agents] = {
         ...mergedConfig[EModelEndpoint.agents],
+        channels: { enabled: channels?.enabled === true },
         allowedProviders,
         disableBuilder,
         capabilities,

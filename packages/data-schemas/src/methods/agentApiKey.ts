@@ -30,8 +30,8 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
   } | null>;
   /** Private grant lookup; its caller must authorize the binding before authentication. */
   validateBoundAgentApiKey: (apiKey: string) => Promise<{
-    userId: Types.ObjectId;
-    keyId: Types.ObjectId;
+    userId: string;
+    keyId: string;
     binding: AgentApiKeyBinding;
   } | null>;
   listAgentApiKeys: (userId: string | Types.ObjectId) => Promise<AgentApiKeyListItem[]>;
@@ -159,13 +159,15 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
   }
 
   async function validateBoundAgentApiKey(apiKey: string): Promise<{
-    userId: Types.ObjectId;
-    keyId: Types.ObjectId;
+    userId: string;
+    keyId: string;
     binding: AgentApiKeyBinding;
   } | null> {
     if (!apiKey.startsWith('sk-bound-')) return null;
     const key = await lookupKey(apiKey);
-    return key?.binding ? { userId: key.userId, keyId: key.keyId, binding: key.binding } : null;
+    return key?.binding
+      ? { userId: String(key.userId), keyId: String(key.keyId), binding: key.binding }
+      : null;
   }
 
   async function listAgentApiKeys(userId: string | Types.ObjectId): Promise<AgentApiKeyListItem[]> {
