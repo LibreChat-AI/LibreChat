@@ -755,6 +755,9 @@ describe('a consumer styled by the published stylesheet alone', () => {
     expect(declaredFor(screen.getByText('Woke up'))).toMatch(
       /font-size:[^;]*--markdown-font-size[^;]*;\s*line-height:[^;]*--markdown-font-size/,
     );
+    /** Neither custom property is defined by the published theme, so each chain ends in a length. */
+    const statusRule = declaredFor(screen.getByText('Woke up'));
+    expect(statusRule.match(/var\(--font-size-base, 1rem\)/g)).toHaveLength(2);
 
     expect(declaredFor(screen.getByTestId('stream-elapsed'))).toMatch(/animation:[^;]*\bshimmer\b/);
     expect(stylesheet).toMatch(/@keyframes shimmer\s*\{/);
