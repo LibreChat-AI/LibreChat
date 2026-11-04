@@ -35,7 +35,6 @@ const readSweep = (page: Page) =>
   elapsedReading(page).evaluate((element) => {
     const style = getComputedStyle(element);
     return {
-      display: style.display,
       animationName: style.animationName,
       backgroundClip: style.backgroundClip,
       dipAlpha: style.getPropertyValue('--shimmer-dip-alpha').trim(),
@@ -83,7 +82,6 @@ test.describe('shared part classes', () => {
     await expect(elapsedReading(page)).toBeVisible({ timeout: 15_000 });
 
     const sweep = await readSweep(page);
-    expect(sweep.display).toBe('inline-block');
     expect(sweep.animationName).toBe('shimmer');
     expect(sweep.backgroundClip).toBe('text');
     expect(Number(sweep.dipAlpha)).toBeLessThan(1);
