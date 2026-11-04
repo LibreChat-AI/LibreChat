@@ -665,6 +665,63 @@ describe('createResponse controller', () => {
     },
   );
 
+  it.each([false, true])(
+    'passes one complete multimodal tool result through protection and SDK formatting: stream=%s',
+    async (stream) => {
+      const api = require('@librechat/api');
+      const actualApi = jest.requireActual('@librechat/api');
+      const { formatAgentMessages } = require('@librechat/agents');
+      const input = [
+        {
+          type: 'function_call',
+          id: 'fc_media',
+          call_id: 'call_media',
+          name: 'read_media',
+          arguments: '{}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_media',
+          output: [
+            { type: 'input_text', text: 'inspect this result' },
+            { type: 'input_image', image_url: 'https://example.com/image.png', detail: null },
+            { type: 'input_file', file_url: 'https://example.com/report.pdf', filename: null },
+          ],
+        },
+      ];
+      req.body = { model: 'agent-123', input, stream };
+      api.validateResponseRequest.mockImplementationOnce(actualApi.validateResponseRequest);
+      api.convertInputToMessages.mockImplementationOnce(actualApi.convertInputToMessages);
+      api.extractMessageContent.mockImplementationOnce(actualApi.extractMessageContent);
+
+      await createResponse(req, res);
+
+      const expected = [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_call',
+              tool_call: {
+                id: 'call_media',
+                name: 'read_media',
+                args: '{}',
+                output: [
+                  { type: 'text', text: 'inspect this result' },
+                  { type: 'image_url', image_url: { url: 'https://example.com/image.png' } },
+                  { type: 'file', file: { file_url: 'https://example.com/report.pdf' } },
+                ],
+              },
+            },
+          ],
+        },
+      ];
+      expect(api.extractMessageContent).toHaveBeenCalledWith(expected);
+      expect(formatAgentMessages).toHaveBeenCalledWith(expected, {}, expect.anything());
+      expect(api.initializeAgent).toHaveBeenCalled();
+    },
+  );
+
   /** The SDK formatter takes the last summary part carrying text as the history
    *  boundary, so a stored summary whose round failed would replace the turns it
    *  never finished summarizing. The formatter must see the stripped history. */
