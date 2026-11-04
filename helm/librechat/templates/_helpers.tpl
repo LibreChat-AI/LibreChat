@@ -287,3 +287,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $tag := required "Set image.tag to a published LibreChat release containing Channels before enabling channelGateway" .Values.image.tag -}}
 {{- .Values.channelGateway.image.tag | default $tag -}}
 {{- end }}
+
+{{/* Match the gateway runtime title contract, including UTF-16 length. */}}
+{{- define "librechat.channelGateway.appTitle" -}}
+{{- $raw := .Values.channelGateway.appTitle | default (get (default dict .Values.librechat.configEnv) "APP_TITLE") | default "LibreChat" | toString -}}
+{{- $title := regexReplaceAll "^[\\s\\p{Z}\\x{FEFF}]+|[\\s\\p{Z}\\x{FEFF}]+$" $raw "" -}}
+{{- $units := add (len (regexFindAll "." $title -1)) (len (regexFindAll "[\\x{10000}-\\x{10FFFF}]" $title -1)) -}}
+{{- if or (empty $title) (gt $units 40) (regexMatch "[<>|\\p{Cc}]" $title) -}}
+{{- fail "Set channelGateway.appTitle to a compatible title: 1-40 UTF-16 characters, without <, >, | or control characters" -}}
+{{- end -}}
+{{- $title -}}
+{{- end }}
