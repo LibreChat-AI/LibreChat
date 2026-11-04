@@ -7,6 +7,13 @@
 {{- if and (eq $mode "shared") (or $gateway.channelId (ne $gateway.tenantId "_")) }}
 {{- fail "Shared gateway mode requires an empty channelId and the default tenantId _" }}
 {{- end }}
+{{- $replicas := $gateway.replicaCount | toString }}
+{{- if not (regexMatch "^[1-9][0-9]*$" $replicas) }}
+{{- fail "channelGateway.replicaCount must be a positive integer" }}
+{{- end }}
+{{- if and (eq $mode "single") (ne $replicas "1") }}
+{{- fail "Single gateway mode requires channelGateway.replicaCount: 1" }}
+{{- end }}
 {{- $tag := include "librechat.channelGateway.imageTag" . }}
 {{- $secret := required "channelGateway.existingSecretName or global.librechat.existingSecretName is required" ($gateway.existingSecretName | default .Values.global.librechat.existingSecretName) }}
 apiVersion: apps/v1
@@ -20,9 +27,16 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  replicas: 1
+  replicas: {{ $replicas }}
   strategy:
+    {{- if eq $mode "shared" }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    {{- else }}
     type: Recreate
+    {{- end }}
   selector:
     matchLabels:
       {{- include "librechat.channelGateway.selectorLabels" . | nindent 6 }}

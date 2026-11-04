@@ -161,6 +161,7 @@ export * from './channels/workspaces';
 export * from './channels/workspaceHttp';
 export * from './channels/workspaceRuntime';
 export * from './channels/workspaceBindings';
+export { applySlackWorkspaceEnvironment } from './channels/deployment';
 export * from './channels/slackDispatch';
 export * from './channels/applicationPolicy';
 export * from './channels/applicationAuthority';

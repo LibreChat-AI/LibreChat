@@ -105,6 +105,77 @@ try {
     'shared',
     'rendered shared pods must select the actual shared runtime',
   );
+  assert.equal(sharedDeployment.spec.strategy.type, 'RollingUpdate');
+  for (const count of ['0', '-1', '1.5', 'invalid'])
+    assert.throws(
+      () => render({ ...shared, 'channelGateway.replicaCount': count }),
+      /positive integer/,
+    );
+  assert.throws(
+    () => render({ ...enabled, 'channelGateway.replicaCount': '2' }),
+    /Single gateway mode/,
+  );
+  const sharedDocs = render(
+    { ...shared, 'channelGateway.replicaCount': '2' },
+    {
+      channelGateway: {
+        existingSecretName: 'service-credentials',
+        slackAppSecretName: 'slack-app',
+        ingress: { enabled: true, host: 'slack.example.test' },
+      },
+    },
+  );
+  const gatewayPod = sharedDocs.find(
+    (doc) => doc.kind === 'Deployment' && doc.metadata.name === sharedDeployment.metadata.name,
+  );
+  assert.equal(gatewayPod.spec.replicas, 2);
+  assert.deepEqual(gatewayPod.spec.strategy.rollingUpdate, { maxSurge: 1, maxUnavailable: 0 });
+  const apiPod = sharedDocs.find((doc) => doc.kind === 'Deployment' && doc !== gatewayPod);
+  const apiEnv = Object.fromEntries(
+    apiPod.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
+  );
+  assert.equal(apiEnv.CHANNEL_SERVICE_TOKEN.valueFrom.secretKeyRef.name, 'service-credentials');
+  for (const key of [
+    'SLACK_APP_ID',
+    'SLACK_CLIENT_ID',
+    'SLACK_CLIENT_SECRET',
+    'SLACK_SIGNING_SECRET',
+  ])
+    assert.deepEqual(apiEnv[key].valueFrom.secretKeyRef, { name: 'slack-app', key });
+  const appDefaults = sharedDocs.find(
+    (doc) => doc.kind === 'ConfigMap' && doc.metadata.name.endsWith('-configenv'),
+  ).data;
+  assert.equal(appDefaults.SLACK_WORKSPACES_ENABLED, 'true');
+  assert.equal(appDefaults.SLACK_GATEWAY_URL, 'https://slack.example.test');
+  const gatewaySecrets = gatewayPod.spec.template.spec.containers[0].env.filter(
+    (entry) => entry.valueFrom,
+  );
+  assert.deepEqual(
+    gatewaySecrets.map((entry) => entry.name),
+    ['CHANNEL_SERVICE_TOKEN'],
+  );
+  const explicit = render(shared, {
+    librechat: { configEnv: { SLACK_APP_ID: 'AEXPLICIT' } },
+    global: {
+      librechat: {
+        env: [
+          {
+            name: 'SLACK_CLIENT_SECRET',
+            valueFrom: { secretKeyRef: { name: 'explicit', key: 'client' } },
+          },
+        ],
+      },
+    },
+  }).find(
+    (doc) => doc.kind === 'Deployment' && doc.metadata.name !== sharedDeployment.metadata.name,
+  );
+  const explicitEnv = explicit.spec.template.spec.containers[0].env;
+  assert(!explicitEnv.some((entry) => entry.name === 'SLACK_APP_ID'));
+  assert.equal(explicitEnv.filter((entry) => entry.name === 'SLACK_CLIENT_SECRET').length, 1);
+  assert.equal(
+    explicitEnv.find((entry) => entry.name === 'SLACK_CLIENT_SECRET').valueFrom.secretKeyRef.name,
+    'explicit',
+  );
   assert.throws(
     () => render({ ...enabled, 'global.librechat.existingSecretName': '' }),
     /existingSecretName/,

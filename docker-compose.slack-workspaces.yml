@@ -1,0 +1,16 @@
+# Add after docker-compose.channels.yml for UI-managed workspace installations.
+# Setup: https://www.librechat.ai/docs/features/agent_channels
+services:
+  api:
+    environment:
+      SLACK_WORKSPACES_ENABLED: 'true'
+      SLACK_APP_ID: ${SLACK_APP_ID:-}
+      SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
+      SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      SLACK_GATEWAY_URL: ${SLACK_GATEWAY_URL:-}
+  channel-gateway:
+    environment:
+      CHANNEL_ID: ''
+      CHANNEL_TENANT_ID: '_'
+      SLACK_APP_TOKEN: ''
