@@ -51,6 +51,8 @@ test.describe('password reset failure', () => {
     await expect(page.getByText('Your new password is active', { exact: false })).toBeVisible();
     await expect(page.getByText('This password reset token is no longer valid.')).toHaveCount(0);
     await page.getByRole('button', { name: 'Sign in' }).click();
+    /** The form, not only the URL: a live session passes through /login on its way to chat. */
+    await expect(page.getByLabel('Email')).toBeVisible();
     await expect(page).toHaveURL(/\/login/);
   });
 
