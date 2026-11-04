@@ -1,4 +1,4 @@
-import { AppService } from '@librechat/data-schemas';
+import { AppService, logger } from '@librechat/data-schemas';
 import { AuthType, PrincipalType, EModelEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types';
@@ -429,4 +429,64 @@ describe('createLoadConfigModels – Azure and Vertex models a profile merges', 
     expect((await load(base))[EModelEndpoint.anthropic]).toEqual(['claude-sonnet-4-6']);
     expect((await load(merged))[EModelEndpoint.anthropic]).toEqual(['claude-opus-4-8']);
   });
+});
+
+describe('discovery outcomes', () => {
+  it.each([
+    {
+      discovered: ['account-model'],
+      defaults: ['fallback'],
+      failed: false,
+      expected: ['account-model'],
+    },
+    { discovered: [], defaults: ['fallback'], failed: false, expected: [] },
+    { discovered: [], defaults: ['fallback'], failed: true, expected: ['fallback'] },
+    { discovered: [], defaults: [], failed: true, expected: [] },
+  ])(
+    'returns $expected when failed=$failed',
+    async ({ discovered, defaults, failed, expected }) => {
+      const warning = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+      const fetchModels = jest.fn().mockImplementation(({ name }) => {
+        if (name === 'working') return Promise.resolve(['working-model']);
+        return failed
+          ? Promise.reject(new Error('secret-key provider-body'))
+          : Promise.resolve(discovered);
+      });
+      const load = createLoadConfigModels({
+        getAppConfig: jest.fn().mockResolvedValue({
+          endpoints: {
+            custom: [
+              {
+                name: 'gateway',
+                apiKey: 'secret-key',
+                baseURL: 'https://gateway.test',
+                models: { fetch: true, default: defaults },
+              },
+              {
+                name: 'working',
+                apiKey: 'another-key',
+                baseURL: 'https://working.test',
+                models: { fetch: true, default: [] },
+              },
+            ],
+          },
+        }),
+        getUserKeyValues: jest.fn(),
+        fetchModels,
+      });
+      expect(await load({ user: { id: 'account-a' } } as ServerRequest)).toEqual({
+        gateway: expected,
+        working: ['working-model'],
+      });
+      if (failed) {
+        expect(warning).toHaveBeenCalledWith(
+          '[loadConfigModels] Model fetch failed for "gateway"',
+          { type: 'Error' },
+        );
+      }
+      expect(JSON.stringify(warning.mock.calls)).not.toMatch(
+        /secret-key|provider-body|another-key/,
+      );
+    },
+  );
 });

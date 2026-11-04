@@ -440,6 +440,15 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
     );
   });
 
+  it('continues without token metadata when discovery fails', async () => {
+    const params = createTokenConfigParams({
+      apiKey: 'test',
+      baseURL: 'https://openrouter.ai/api/v1',
+    });
+    fetchModels.mockRejectedValueOnce(new Error('provider response with credentials'));
+    await expect(initializeCustom(params)).resolves.toBeDefined();
+  });
+
   it('uses the unscoped endpoint tokenKey when no user-bound headers are configured', async () => {
     const params = createTokenConfigParams({
       apiKey: 'sk-test-key',

@@ -129,6 +129,7 @@ function renderComposer({ legacyUploadUX = false }: { legacyUploadUX?: boolean }
     legacyUploadUX ? { legacyFileUploadUX: true } : {},
   );
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
+  queryClient.setQueryData([QueryKeys.models], { openAI: ['gpt-4o'] });
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
 
   return render(

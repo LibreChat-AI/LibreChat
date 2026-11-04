@@ -83,6 +83,8 @@ export type TurnServices = {
   user?: TUser;
   modelSpecs?: TModelSpec[];
   getEndpointsConfig: () => TEndpointsConfig | undefined;
+  /** Whether the selected model can receive a new turn. Hosts without a catalog may omit this. */
+  canSubmitModel?: (conversation: TConversation | null) => boolean;
   /** The agents a send resolves a saved agent's provider and model from, when the agent query
    *  has not cached it. */
   agentsMap?: Record<string, Agent | undefined> | null;

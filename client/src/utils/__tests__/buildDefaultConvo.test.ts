@@ -200,3 +200,39 @@ describe('buildDefaultConvo - defaultParamsEndpoint', () => {
     });
   });
 });
+
+describe('existing model fallback selection', () => {
+  it.each([
+    [['first', 'second'], 'removed', 'first'],
+    [['first', 'second'], 'second', 'second'],
+    [[], 'saved', 'saved'],
+    [[], undefined, undefined],
+  ])('keeps parser fallback rules for catalog %j and saved model %s', (models, model, expected) => {
+    const conversation = { ...baseConversation, endpoint: EModelEndpoint.openAI, model };
+    const result = buildDefaultConvo({
+      models,
+      endpoint: EModelEndpoint.openAI,
+      conversation,
+      lastConversationSetup: conversation,
+    });
+    expect(result.model).toBe(expected);
+    expect(result.conversationId).toBe(conversation.conversationId);
+    expect(conversation.model).toBe(model);
+  });
+
+  it('uses the target provider models for an explicit provider switch', () => {
+    const conversation = {
+      ...baseConversation,
+      endpoint: EModelEndpoint.anthropic,
+      model: 'source-model',
+    };
+    expect(
+      buildDefaultConvo({
+        models: ['target-model'],
+        endpoint: EModelEndpoint.openAI,
+        conversation,
+        lastConversationSetup: null,
+      }).model,
+    ).toBe('target-model');
+  });
+});

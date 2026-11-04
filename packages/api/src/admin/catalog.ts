@@ -32,6 +32,7 @@ import type {
   TEndpointsConfig,
 } from 'librechat-data-provider';
 import type { Response } from 'express';
+import type { LoadConfigModelsOptions } from '~/endpoints/config/models';
 import type { CapabilityUser } from '~/middleware/capabilities';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { ManifestTool } from '~/tools/available';
@@ -91,7 +92,10 @@ export interface AdminConfigCatalogDeps {
   /** The built-in endpoints' models for a request's config (`loadDefaultModels`). */
   loadDefaultModels: (req: CatalogScopeRequest) => Promise<TModelsConfig>;
   /** The configured and custom endpoints' models for a request's config (`loadConfigModels`). */
-  loadConfigModels: (req: CatalogScopeRequest) => Promise<TModelsConfig>;
+  loadConfigModels: (
+    req: CatalogScopeRequest,
+    options?: LoadConfigModelsOptions,
+  ) => Promise<TModelsConfig>;
   /** The tool definitions the server loaded (the tool cache). */
   getCachedTools?: () => Promise<Record<string, unknown> | null | undefined>;
   /** The tool manifest and its toolkits (`api/app/clients/tools`). */
@@ -400,9 +404,13 @@ export function createAdminConfigCatalogHandlers(deps: AdminConfigCatalogDeps): 
   async function loadModels(
     request: CatalogScopeRequest,
   ): Promise<Record<string, AdminCatalogModels>> {
+    const failedEndpoints = new Set<string>();
     const [defaults, configured] = await Promise.all([
       loadDefaultModels({ ...request, config: withoutModelLists(request.config) }),
-      loadConfigModels({ ...request, config: withoutFetchFallbacks(request.config) }),
+      loadConfigModels(
+        { ...request, config: withoutFetchFallbacks(request.config) },
+        { onFetchFailure: (endpoint) => failedEndpoints.add(endpoint) },
+      ),
     ]);
     const custom = resolveCustomEndpoints(request.config);
     const models: Record<string, AdminCatalogModels> = {};
@@ -428,7 +436,7 @@ export function createAdminConfigCatalogHandlers(deps: AdminConfigCatalogDeps): 
       }
       const fetched = loaded ?? [];
       models[name] = {
-        served: fetched.length > 0 ? fetched : (list ?? []),
+        served: failedEndpoints.has(name) ? (list ?? []) : fetched,
         ...(list && { configured: list }),
         defaults: fetched,
       };

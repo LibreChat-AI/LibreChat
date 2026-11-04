@@ -61,6 +61,7 @@ import {
   PendingToolApprovalButton,
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
+import useModelAvailability from '~/hooks/Endpoint/useModelAvailability';
 import useComposerRestore from '~/hooks/Input/useComposerRestore';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
@@ -177,6 +178,7 @@ const ChatForm = memo(function ChatForm({
     setConversation: setAddedConvo,
   } = useAddedChatContext();
   const assistantMap = useAssistantsMapContext();
+  const modelAvailability = useModelAvailability(conversation, addedConvo);
   const { data: startupConfig } = useGetStartupConfig();
 
   const endpoint = useMemo(
@@ -535,6 +537,7 @@ const ChatForm = memo(function ChatForm({
           isPreparingFromUrl ||
           disableInputs ||
           !codeWorkspace.canSubmit ||
+          (!answerMode.composerAnswers && !modelAvailability.canSubmit) ||
           isNotAppendable ||
           answerMode.composerLocked
         }
@@ -562,6 +565,7 @@ const ChatForm = memo(function ChatForm({
       isPreparingFromUrl,
       disableInputs,
       codeWorkspace.canSubmit,
+      modelAvailability.canSubmit,
       isNotAppendable,
       showStopButton,
       setShowStopButton,
@@ -714,6 +718,12 @@ const ChatForm = memo(function ChatForm({
         onClose={pastedTextEdit.closeEditor}
         onSave={pastedTextEdit.saveEdit}
       />
+      {modelAvailability.ready && !modelAvailability.canSubmit && !answerMode.composerAnswers && (
+        <div role="status" className="text-text-secondary px-5 py-2 text-sm">
+          {localize('com_ui_select_model_to_continue')}
+          {!modelAvailability.hasModels && <> {localize('com_ui_models_unavailable_wait')}</>}
+        </div>
+      )}
       {endpoint && (
         <ComposerField
           textAreaRef={textAreaRef as React.MutableRefObject<HTMLTextAreaElement | null>}

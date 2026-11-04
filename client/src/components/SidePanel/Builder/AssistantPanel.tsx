@@ -289,6 +289,16 @@ export default function AssistantPanel({
           )}
         </div>
         <div className="bg-surface-primary h-auto px-4 pt-3 pb-8">
+          {modelsReady && model && !models.includes(model) && (
+            <p role="status" className="text-text-secondary">
+              {localize('com_ui_model_unavailable', { 0: model })}
+            </p>
+          )}
+          {modelsReady && models.length === 0 && (
+            <p role="status" className="text-text-secondary">
+              {localize('com_ui_no_models_available')}
+            </p>
+          )}
           {/* Avatar & Name */}
           <div className="mb-4">
             <AssistantAvatar

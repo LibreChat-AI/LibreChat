@@ -155,6 +155,12 @@ export function useTurns(
 
     /** The builder resolves `promptPrefix` on its copy; the pane's conversation stays as is. */
     const conversation = immutableConversation == null ? null : { ...immutableConversation };
+    if (
+      services.canSubmitModel?.(conversation) === false ||
+      (addedConvo != null && services.canSubmitModel?.(addedConvo) === false)
+    ) {
+      return false;
+    }
     const codeDecision = services.resolveCode(conversation);
     if (codeDecision == null) {
       logger.warn('[useTurns] Refusing to send without an available code workspace');

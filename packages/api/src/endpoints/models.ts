@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import axios from 'axios';
 import crypto from 'crypto';
 import { logger } from '@librechat/data-schemas';
@@ -16,7 +17,7 @@ import {
   isUserProvided,
   resolveHeaders,
   deriveBaseURL,
-  logAxiosError,
+  getSafeErrorMetadata,
   inputSchema,
   applyAxiosProxyConfig,
 } from '~/utils';
@@ -114,7 +115,13 @@ async function fetchOllamaModels(
     requestOptions,
   );
 
-  return response.data.models.map((tag) => tag.name);
+  const result = z
+    .object({ models: z.array(z.object({ name: z.string().min(1) })) })
+    .safeParse(response.data);
+  if (!result.success) {
+    throw new Error('Invalid model discovery response');
+  }
+  return result.data.models.map((tag) => tag.name);
 }
 
 async function backfillTokenConfigFromModelCache(
@@ -149,6 +156,8 @@ export function splitAndTrim(input: string | null | undefined): string[] {
  * Fetches models from the specified base API path or Azure, based on the provided configuration.
  *
  * @param params - The parameters for fetching the models.
+ * Empty discovery is authoritative. Missing credentials, malformed responses, and request failures throw.
+ * Callers choose configured fallbacks when a request fails.
  * @returns A promise that resolves to an array of model identifiers.
  */
 export async function fetchModels({
@@ -171,11 +180,11 @@ export async function fetchModels({
   const baseURL = direct ? extractBaseURL(_baseURL ?? '') : _baseURL;
 
   if (!baseURL && !azure) {
-    return models;
+    throw new Error('Model discovery requires a base URL');
   }
 
   if (!apiKey) {
-    return models;
+    throw new Error('Model discovery requires an API key');
   }
 
   const ssrfAgents = baseURLIsUserProvided ? createSSRFSafeAgents(allowedAddresses) : undefined;
@@ -220,11 +229,10 @@ export async function fetchModels({
         user: userObject,
       });
     } catch (ollamaError) {
-      logAxiosError({
-        message:
-          'Failed to fetch models from Ollama API. Attempting to fetch via OpenAI-compatible endpoint.',
-        error: ollamaError as Error,
-      });
+      logger.warn(
+        'Ollama discovery failed; trying the OpenAI-compatible endpoint',
+        getSafeErrorMetadata(ollamaError),
+      );
     }
     if (ollamaModels !== null) {
       if (modelsCache && cacheKey && ollamaModels.length > 0) {
@@ -234,75 +242,76 @@ export async function fetchModels({
     }
   }
 
-  try {
-    // Resolve template variables (e.g. {{LIBRECHAT_OPENID_ID_TOKEN}}) in the
-    // configured headers, mirroring fetchOllamaModels above. Without this,
-    // placeholder strings are forwarded literally on the model-fetch path.
-    const resolvedHeaders = resolveHeaders({
-      headers: headers ?? undefined,
-      user: userObject,
-      stripUnresolved: true,
-    });
+  // Resolve template variables (e.g. {{LIBRECHAT_OPENID_ID_TOKEN}}) in the
+  // configured headers, mirroring fetchOllamaModels above. Without this,
+  // placeholder strings are forwarded literally on the model-fetch path.
+  const resolvedHeaders = resolveHeaders({
+    headers: headers ?? undefined,
+    user: userObject,
+    stripUnresolved: true,
+  });
 
-    const options: AxiosRequestConfig & {
-      headers: Record<string, string>;
-      timeout: number;
-    } = {
-      headers: {
-        ...resolvedHeaders,
-      },
-      timeout: 5000,
+  const options: AxiosRequestConfig & {
+    headers: Record<string, string>;
+    timeout: number;
+  } = {
+    headers: {
+      ...resolvedHeaders,
+    },
+    timeout: 5000,
+  };
+
+  if (name === EModelEndpoint.anthropic) {
+    // Keep configured custom headers (e.g. gateway metadata) while the
+    // provider-managed auth/version headers stay authoritative.
+    options.headers = {
+      ...resolvedHeaders,
+      'x-api-key': apiKey,
+      'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
     };
-
-    if (name === EModelEndpoint.anthropic) {
-      // Keep configured custom headers (e.g. gateway metadata) while the
-      // provider-managed auth/version headers stay authoritative.
-      options.headers = {
-        ...resolvedHeaders,
-        'x-api-key': apiKey,
-        'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
-      };
-    } else {
-      // Only fall back to the apiKey-based Bearer when the configured
-      // headers did not already supply an Authorization. This lets
-      // auth-aware proxies (e.g. LiteLLM with JWT auth) receive the user's
-      // token on /v1/models so they can return a per-user filtered list.
-      const hasAuthHeader = Object.keys(options.headers).some(
-        (k) => k.toLowerCase() === 'authorization',
-      );
-      if (!hasAuthHeader) {
-        options.headers.Authorization = `Bearer ${apiKey}`;
-      }
+  } else {
+    // Only fall back to the apiKey-based Bearer when the configured
+    // headers did not already supply an Authorization. This lets
+    // auth-aware proxies (e.g. LiteLLM with JWT auth) receive the user's
+    // token on /v1/models so they can return a per-user filtered list.
+    const hasAuthHeader = Object.keys(options.headers).some(
+      (k) => k.toLowerCase() === 'authorization',
+    );
+    if (!hasAuthHeader) {
+      options.headers.Authorization = `Bearer ${apiKey}`;
     }
-
-    if (process.env.OPENAI_ORGANIZATION && baseURL?.includes('openai')) {
-      options.headers['OpenAI-Organization'] = process.env.OPENAI_ORGANIZATION;
-    }
-
-    const url = new URL(`${(baseURL ?? '').replace(/\/+$/, '')}${azure ? '' : '/models'}`);
-    if (user && userIdQuery) {
-      url.searchParams.append('user', user);
-    }
-    applyAxiosProxyConfig(options, url);
-    applyUserProvidedBaseURLProtection(options, ssrfAgents);
-    const res = await axios.get(url.toString(), options);
-
-    const input = res.data;
-
-    const validationResult = inputSchema.safeParse(input);
-    if (validationResult.success && createTokenConfig) {
-      const endpointTokenConfig = processModelData(input);
-      const cache = tokenConfigCache();
-      await cache.set(tokenKey ?? name, endpointTokenConfig);
-      if (modelsCache && cacheKey) {
-        await cache.set(getModelCacheTokenConfigKey(cacheKey), endpointTokenConfig);
-      }
-    }
-    models = input.data.map((item: { id: string }) => item.id);
-  } catch (error) {
-    const logMessage = `Failed to fetch models from ${azure ? 'Azure ' : ''}${name} API`;
-    logAxiosError({ message: logMessage, error: error as Error });
   }
+
+  if (process.env.OPENAI_ORGANIZATION && baseURL?.includes('openai')) {
+    options.headers['OpenAI-Organization'] = process.env.OPENAI_ORGANIZATION;
+  }
+
+  const url = new URL(`${(baseURL ?? '').replace(/\/+$/, '')}${azure ? '' : '/models'}`);
+  if (user && userIdQuery) {
+    url.searchParams.append('user', user);
+  }
+  applyAxiosProxyConfig(options, url);
+  applyUserProvidedBaseURLProtection(options, ssrfAgents);
+  const res = await axios.get(url.toString(), options);
+
+  const result = z
+    .object({ data: z.array(z.object({ id: z.string().min(1) })) })
+    .safeParse(res.data);
+  if (!result.success) {
+    throw new Error('Invalid model discovery response');
+  }
+  const input = res.data;
+
+  const validationResult = inputSchema.safeParse(input);
+  if (validationResult.success && createTokenConfig) {
+    const endpointTokenConfig = processModelData(input);
+    const cache = tokenConfigCache();
+    await cache.set(tokenKey ?? name, endpointTokenConfig);
+    if (modelsCache && cacheKey) {
+      await cache.set(getModelCacheTokenConfigKey(cacheKey), endpointTokenConfig);
+    }
+  }
+  models = result.data.data.map((item) => item.id);
 
   if (modelsCache && cacheKey && models.length > 0) {
     await modelsCache.set(cacheKey, models, Time.TWO_MINUTES);
@@ -365,7 +374,7 @@ export async function fetchOpenAIModels(
     baseURL = extractBaseURL(reverseProxyUrl) ?? openaiBaseURL;
   }
 
-  if (baseURL || opts.azure) {
+  try {
     models = await fetchModels({
       apiKey: apiKey ?? '',
       baseURL,
@@ -376,9 +385,8 @@ export async function fetchOpenAIModels(
       headers: opts.headers,
       userObject: opts.userObject,
     });
-  }
-
-  if (models.length === 0) {
+  } catch (error) {
+    logger.warn('OpenAI model discovery failed', getSafeErrorMetadata(error));
     return _models;
   }
 
@@ -460,7 +468,7 @@ export async function fetchAnthropicModels(
     return models;
   }
 
-  if (baseURL) {
+  try {
     models = await fetchModels({
       apiKey,
       baseURL,
@@ -471,9 +479,8 @@ export async function fetchAnthropicModels(
       headers: opts.headers,
       userObject: opts.userObject,
     });
-  }
-
-  if (models.length === 0) {
+  } catch (error) {
+    logger.warn('Anthropic model discovery failed', getSafeErrorMetadata(error));
     return _models;
   }
 
@@ -516,7 +523,7 @@ export async function getAnthropicModels(
   try {
     return await fetchAnthropicModels(opts, models);
   } catch (error) {
-    logger.error('Error fetching Anthropic models:', error);
+    logger.warn('Anthropic model discovery failed', getSafeErrorMetadata(error));
     return models;
   }
 }

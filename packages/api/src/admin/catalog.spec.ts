@@ -171,7 +171,7 @@ async function createDeps(extra: Partial<AdminConfigCatalogDeps> = {}) {
     getAppConfig,
     getEndpointsConfig: (req) => getEndpointsConfig(req as ServerRequest),
     loadDefaultModels,
-    loadConfigModels: (req) => loadConfigModels(req as ServerRequest),
+    loadConfigModels: (req, options) => loadConfigModels(req as ServerRequest, options),
     getCachedTools: async () => ({ calculator: {}, image_gen_oai: {} }),
     toolManifest: [
       { name: 'Calculator', pluginKey: 'calculator', description: 'Math' },
@@ -318,6 +318,20 @@ describe('GET /catalog', () => {
     });
     expect(role.body.models?.Extra).toEqual({ served: ['extra-1'], configured: ['extra-1'] });
   });
+
+  it.each([false, true])(
+    'keeps empty discovery separate from failure (failed=%s)',
+    async (failed) => {
+      const { deps, fetchModels } = await createDeps();
+      fetchModels.mockImplementation(async () => {
+        if (failed) throw new Error('provider-secret');
+        return [];
+      });
+      const result = await catalog({}, deps);
+      expect(result.body.models?.Gateway?.served).toEqual(failed ? ['gpt-4o'] : []);
+      expect(result.body.models?.Gateway?.defaults).toEqual([]);
+    },
+  );
 
   it('never loads models with a user key or the caller identity', async () => {
     const { body, fetchModels, getUserKeyValues } = await catalog({});

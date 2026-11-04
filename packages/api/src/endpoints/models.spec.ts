@@ -1,4 +1,6 @@
 import axios from 'axios';
+import { Keyv } from 'keyv';
+import { logger } from '@librechat/data-schemas';
 import { Time, EModelEndpoint, defaultModels, AuthType } from 'librechat-data-provider';
 import {
   fetchModels,
@@ -62,7 +64,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 const mockedAxios = axios as jest.Mocked<typeof axios>;
-const { logAxiosError, resolveHeaders } = jest.requireMock('~/utils');
+const { resolveHeaders } = jest.requireMock('~/utils');
 
 mockedAxios.get.mockResolvedValue({
   data: {
@@ -683,21 +685,17 @@ describe('fetchModels with Ollama specific logic', () => {
     });
 
     expect(models).toEqual(['fallback-model-1', 'fallback-model-2']);
-    expect(logAxiosError).toHaveBeenCalledWith({
-      message:
-        'Failed to fetch models from Ollama API. Attempting to fetch via OpenAI-compatible endpoint.',
-      error: expect.any(Error),
-    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Ollama discovery failed; trying the OpenAI-compatible endpoint',
+      { type: 'Error' },
+    );
     expect(mockedAxios.get).toHaveBeenCalledTimes(2);
   });
 
-  it('should return an empty array if no baseURL is provided', async () => {
-    const models = await fetchModels({
-      user: 'user789',
-      apiKey: 'testApiKey',
-      name: 'OllamaAPI',
-    });
-    expect(models).toEqual([]);
+  it('rejects discovery without a base URL', async () => {
+    await expect(fetchModels({ apiKey: 'test', name: 'OllamaAPI' })).rejects.toThrow(
+      'requires a base URL',
+    );
   });
 
   it('should not fetch Ollama models if the name does not start with "ollama"', async () => {
@@ -1138,4 +1136,100 @@ describe('configured model lists skip provider discovery', () => {
     await getOpenAIModels({ user: 'user-1' });
     expect(mockedAxios.get).toHaveBeenCalled();
   });
+});
+
+describe('authoritative model discovery', () => {
+  it.each([{}, { data: null }, { data: [{}] }, { data: [{ id: 42 }] }, { data: [{ id: '' }] }])(
+    'rejects malformed response %j',
+    async (data) => {
+      mockedAxios.get.mockResolvedValue({ data });
+      await expect(
+        fetchModels({ apiKey: 'test', baseURL: 'https://gateway.test' }),
+      ).rejects.toThrow('Invalid model discovery response');
+    },
+  );
+  it('propagates provider failure instead of returning an empty success', async () => {
+    mockedAxios.get.mockRejectedValue(new Error('provider failure'));
+    await expect(fetchModels({ apiKey: 'test', baseURL: 'https://gateway.test' })).rejects.toThrow(
+      'provider failure',
+    );
+  });
+  it.each([false, true])(
+    'keeps empty OpenAI discovery instead of defaults (assistants=%s)',
+    async (assistants) => {
+      mockedAxios.get.mockResolvedValue({ data: { data: [] } });
+      expect(await getOpenAIModels({ openAIApiKey: 'test', assistants })).toEqual([]);
+    },
+  );
+  it('keeps empty Anthropic discovery instead of defaults', async () => {
+    const originalEnv = { ...process.env };
+    try {
+      process.env.ANTHROPIC_API_KEY = 'test';
+      delete process.env.ANTHROPIC_MODELS;
+      mockedAxios.get.mockResolvedValue({ data: { data: [] } });
+      expect(await getAnthropicModels()).toEqual([]);
+    } finally {
+      process.env = originalEnv;
+    }
+  });
+
+  it('keeps empty Ollama discovery without trying the compatibility API', async () => {
+    mockedAxios.get.mockClear().mockResolvedValue({ data: { models: [] } });
+    expect(
+      await fetchModels({ name: 'ollama', apiKey: 'test', baseURL: 'https://ollama.test' }),
+    ).toEqual([]);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+  });
+});
+
+it('keeps account-specific model requests isolated and restores later availability', async () => {
+  const realResolveHeaders = jest.requireActual('~/utils/env').resolveHeaders;
+  resolveHeaders.mockImplementation(realResolveHeaders);
+  mockedAxios.get.mockImplementation(async (_url, options) => ({
+    data: {
+      data: options?.headers?.['User-Id'] === 'account-a' ? [] : [{ id: 'account-b-model' }],
+    },
+  }));
+  const params = {
+    apiKey: 'shared-key',
+    baseURL: 'https://gateway.test',
+    headers: { 'User-Id': '{{LIBRECHAT_USER_ID}}' },
+  };
+  expect(await fetchModels({ ...params, userObject: { id: 'account-a' } })).toEqual([]);
+  expect(await fetchModels({ ...params, userObject: { id: 'account-b' } })).toEqual([
+    'account-b-model',
+  ]);
+  mockedAxios.get.mockResolvedValue({ data: { data: [{ id: 'restored-a-model' }] } });
+  expect(await fetchModels({ ...params, userObject: { id: 'account-a' } })).toEqual([
+    'restored-a-model',
+  ]);
+  expect(mockCacheGet).not.toHaveBeenCalled();
+  expect(mockCacheSet).not.toHaveBeenCalled();
+  resolveHeaders.mockImplementation(
+    (options: { headers?: Record<string, string> }) => options?.headers || {},
+  );
+});
+
+it('fetches again after the existing two-minute model cache expires', async () => {
+  jest.useFakeTimers({ now: 1000 });
+  try {
+    const cache = new Keyv();
+    mockCacheGet.mockImplementation((key: string) => cache.get(key));
+    mockCacheSet.mockImplementation((key: string, value: string[], ttl: number) =>
+      cache.set(key, value, ttl),
+    );
+    mockedAxios.get
+      .mockClear()
+      .mockResolvedValueOnce({ data: { data: [{ id: 'first' }] } })
+      .mockResolvedValue({ data: { data: [{ id: 'later' }] } });
+    const params = { apiKey: 'test', baseURL: 'https://cache.test', createTokenConfig: false };
+    expect(await fetchModels(params)).toEqual(['first']);
+    jest.setSystemTime(1000 + Time.TWO_MINUTES - 1);
+    expect(await fetchModels(params)).toEqual(['first']);
+    jest.setSystemTime(1000 + Time.TWO_MINUTES + 1);
+    expect(await fetchModels(params)).toEqual(['later']);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  } finally {
+    jest.useRealTimers();
+  }
 });

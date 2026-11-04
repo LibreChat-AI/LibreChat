@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
 import debounce from 'lodash/debounce';
+import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
   EModelEndpoint,
   PermissionBits,
@@ -19,6 +20,7 @@ import { useAgentsMapContext, useAssistantsMapContext, useLiveAnnouncer } from '
 import { useGetEndpointsQuery, useListAgentsQuery } from '~/data-provider';
 import { useModelSelectorChatContext } from './ModelSelectorChatContext';
 import useSelectMention from '~/hooks/Input/useSelectMention';
+import { isModelSpecAvailable } from '~/utils/availability';
 import { filterItems } from './utils';
 
 type ModelSelectorContextType = {
@@ -61,6 +63,9 @@ interface ModelSelectorProviderProps {
 
 export function ModelSelectorProvider({ children, startupConfig }: ModelSelectorProviderProps) {
   const agentsMap = useAgentsMapContext();
+  const modelsQuery = useGetModelsQuery();
+  const modelsConfig =
+    modelsQuery.isFetched && modelsQuery.isSuccess ? modelsQuery.data : undefined;
   const assistantsMap = useAssistantsMapContext();
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const { endpoint, model, spec, agent_id, assistant_id, getConversation, newConversation } =
@@ -69,7 +74,9 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
   const { announcePolite } = useLiveAnnouncer();
   const modelSpecs = useMemo(() => {
     /** Labels are normalized at the startup-config query boundary. */
-    const specs = startupConfig?.modelSpecs?.list ?? [];
+    const specs = (startupConfig?.modelSpecs?.list ?? []).filter((spec) =>
+      isModelSpecAvailable(spec, modelsConfig),
+    );
     if (!agentsMap) {
       return specs;
     }
@@ -85,7 +92,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
       /** Keep non-agent modelSpecs */
       return true;
     });
-  }, [startupConfig, agentsMap]);
+  }, [startupConfig, agentsMap, modelsConfig]);
 
   const permissionLevel = useAgentDefaultPermissionLevel();
   /**

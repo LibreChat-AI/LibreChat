@@ -528,3 +528,20 @@ describe('ModelPanel', () => {
     });
   });
 });
+
+it('shows the all-empty state and preserves the saved model', () => {
+  const formRef: React.MutableRefObject<UseFormReturn<AgentForm> | null> = { current: null };
+  const { getByRole } = render(
+    <TestForm
+      providers={[]}
+      models={{ gateway: [] }}
+      modelsReady={true}
+      defaultProvider="gateway"
+      defaultModel="saved-model"
+      formRef={formRef}
+    />,
+  );
+  expect(getByRole('status')).toHaveTextContent('com_ui_no_models_available');
+  expect(formRef.current?.getValues('provider')).toBe('gateway');
+  expect(formRef.current?.getValues('model')).toBe('saved-model');
+});

@@ -51,7 +51,7 @@ export function configuredModelList(
 import { resolveConfigSecret } from '~/admin/secrets';
 import { validateEndpointURL } from '~/auth';
 import { tokenConfigCache } from '~/cache';
-import { isUserProvided } from '~/utils';
+import { isUserProvided, getSafeErrorMetadata } from '~/utils';
 
 /**
  * Stable fingerprint of a headers object, used to disambiguate the
@@ -85,10 +85,18 @@ export interface LoadConfigModelsDeps {
   fetchModels?: (params: FetchModelsParams) => Promise<string[]>;
 }
 
+export interface LoadConfigModelsOptions {
+  /** Lets the admin catalog keep fetched models separate from configured fallbacks. */
+  onFetchFailure?: (endpoint: string) => void;
+}
+
 export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
   const { getAppConfig, getUserKeyValues, fetchModels = defaultFetchModels } = deps;
 
-  return async function loadConfigModels(req: ServerRequest): Promise<TModelsConfig> {
+  return async function loadConfigModels(
+    req: ServerRequest,
+    options?: LoadConfigModelsOptions,
+  ): Promise<TModelsConfig> {
     const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
     if (!appConfig) {
       return {};
@@ -181,7 +189,8 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
             );
           } else {
             logger.warn(
-              `[loadConfigModels] Failed to retrieve user key for "${userKeyEndpoints[i].name}": ${msg}`,
+              `[loadConfigModels] Failed to retrieve user key for "${userKeyEndpoints[i].name}"`,
+              getSafeErrorMetadata(settled.reason),
             );
           }
           userKeyMap.set(userKeyEndpoints[i].name, null);
@@ -288,10 +297,6 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
     for (let i = 0; i < settledResults.length; i++) {
       const currentKey = uniqueKeys[i];
       const settled = settledResults[i];
-      if (settled.status === 'rejected') {
-        logger.warn(`[loadConfigModels] Model fetch failed for "${currentKey}":`, settled.reason);
-      }
-      const modelData = settled.status === 'fulfilled' ? settled.value : [];
       const associatedNames = uniqueKeyToEndpointsMap[currentKey];
 
       for (const name of associatedNames) {
@@ -299,7 +304,14 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
         const defaults = (endpoint.models?.default ?? []).map((m) =>
           typeof m === 'string' ? m : m.name,
         );
-        modelsConfig[name] = !modelData?.length ? defaults : modelData;
+        if (settled.status === 'rejected') {
+          options?.onFetchFailure?.(name);
+          logger.warn(
+            `[loadConfigModels] Model fetch failed for "${name}"`,
+            getSafeErrorMetadata(settled.reason),
+          );
+        }
+        modelsConfig[name] = settled.status === 'fulfilled' ? settled.value : defaults;
       }
 
       /** A shared fetch caches token config under one endpoint's tokenKey;

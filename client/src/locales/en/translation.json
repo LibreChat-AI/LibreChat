@@ -1,4 +1,8 @@
 {
+  "com_ui_select_model_to_continue": "Select a model to continue.",
+  "com_ui_models_unavailable_wait": "No models are available. Wait for access to return or contact an administrator.",
+  "com_ui_model_unavailable": "{{0}} (unavailable)",
+  "com_ui_no_models_available": "No models available.",
   "com_ui_pr_account_checking": "Checking connection",
   "com_ui_pr_account_connect": "Connect",
   "com_ui_pr_account_connect_aria": "Connect {{0}}",

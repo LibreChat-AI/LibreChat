@@ -20,6 +20,7 @@ import type {
 import type { ProviderIconResolution } from './useProviderIcon';
 import type { Endpoint } from '~/common';
 import { useHasAccess, useShowMarketplace } from '~/hooks';
+import { isProviderAvailable } from '~/utils/availability';
 import { resolveProviderIcon } from './useProviderIcon';
 import { useGetEndpointsQuery } from '~/data-provider';
 import { mapEndpoints } from '~/utils';
@@ -107,11 +108,29 @@ export const useEndpoints = ({
       if (includedEndpoints.size > 0 && !includedEndpoints.has(endpoints[i])) {
         continue;
       }
+      if (
+        !isProviderAvailable(
+          endpoints[i],
+          modelsQuery.isFetched && modelsQuery.isSuccess ? modelsQuery.data : undefined,
+          endpointsConfig,
+        )
+      ) {
+        continue;
+      }
       result.push(endpoints[i]);
     }
 
     return result;
-  }, [endpoints, hasAgentAccess, includedEndpoints, interfaceConfig.modelSelect]);
+  }, [
+    endpoints,
+    hasAgentAccess,
+    includedEndpoints,
+    interfaceConfig.modelSelect,
+    modelsQuery.data,
+    modelsQuery.isFetched,
+    modelsQuery.isSuccess,
+    endpointsConfig,
+  ]);
 
   const endpointRequiresUserKey = useCallback(
     (ep: string) => {

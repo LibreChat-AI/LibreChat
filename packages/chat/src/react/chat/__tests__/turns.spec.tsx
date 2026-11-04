@@ -130,6 +130,39 @@ function setup({
 }
 
 describe('useTurns', () => {
+  it('keeps history and staged inputs while a model is unavailable, then sends after recovery', () => {
+    let available = false;
+    const chat = setup({ services: createTurnServices({ canSubmitModel: () => available }) });
+    chat.store.set(pendingManualSkillsByConvoId(conversationId), ['staged-skill']);
+    chat.store.set(pendingQuotesByConvoId(conversationId), ['staged-quote']);
+    expect(chat.turns.ask({ text: 'Next' })).toBe(false);
+    expect(chat.turns.ask({ text: '' }, { isRegenerate: true })).toBe(false);
+    expect(chat.submission()).toBeNull();
+    expect(chat.written).toEqual([]);
+    expect(chat.store.get(pendingManualSkillsByConvoId(conversationId))).toEqual(['staged-skill']);
+    expect(chat.store.get(pendingQuotesByConvoId(conversationId))).toEqual(['staged-quote']);
+    available = true;
+    chat.turns.ask({ text: 'Next' });
+    expect(chat.submission()?.userMessage).toMatchObject({
+      text: 'Next',
+      parentMessageId: 'response-1',
+    });
+    expect(chat.written[0].slice(0, 2)).toEqual([user, response]);
+  });
+
+  it('blocks a multi-model send when the added model is unavailable', () => {
+    const chat = setup({
+      services: createTurnServices({
+        canSubmitModel: (selection) => selection?.model !== 'removed',
+      }),
+    });
+    expect(
+      chat.turns.ask({ text: 'Next' }, { addedConvo: { ...agentsConversation, model: 'removed' } }),
+    ).toBe(false);
+    expect(chat.submission()).toBeNull();
+    expect(chat.written).toEqual([]);
+  });
+
   it('publishes the turn and marks the pane submitting', () => {
     const chat = setup();
 

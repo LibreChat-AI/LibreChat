@@ -159,6 +159,11 @@ export default function ModelPanel({
           className="size-theme-button min-h-theme-target min-w-theme-target"
         />
       </header>
+      {modelsReady && providers.length === 0 && (
+        <p role="status" className="text-text-secondary">
+          {localize('com_ui_no_models_available')}
+        </p>
+      )}
       <div>
         {/* Endpoint aka Provider for Agents */}
         <div className="mb-3" aria-busy={modelsPending}>
@@ -251,6 +256,11 @@ export default function ModelPanel({
                   <ControlCombobox
                     selectId="model"
                     selectedValue={field.value || ''}
+                    displayValue={
+                      modelsReady && field.value && !models.includes(field.value)
+                        ? localize('com_ui_model_unavailable', { 0: field.value })
+                        : field.value || ''
+                    }
                     selectPlaceholder={localize(getModelPlaceholderKey(modelsPending, provider))}
                     searchPlaceholder={localize('com_ui_select_model')}
                     setValue={(value) => {

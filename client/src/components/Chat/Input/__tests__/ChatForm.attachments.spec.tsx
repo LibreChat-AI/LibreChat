@@ -174,6 +174,7 @@ function renderComposer({
     endpoints: { default: { legacyFileUploadUX: true } },
   });
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
+  queryClient.setQueryData([QueryKeys.models], { openAI: ['gpt-4o'] });
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
 
   getDefaultStore().set(pendingQuotesByConvoId(conversation.conversationId ?? ''), quotes);

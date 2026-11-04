@@ -45,6 +45,7 @@ import { useSelectAgent, useLocalize, useAuthContext } from '~/hooks';
 import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
 import { resolveCapabilityTools } from './Tools/items/capabilities';
 import ResetApprovals from '~/components/Agents/ResetApprovals';
+import { isProviderAvailable } from '~/utils/availability';
 import AgentPanelSkeleton from './AgentPanelSkeleton';
 import AdvancedPanel from './Advanced/AdvancedPanel';
 import { Panel, isEphemeralAgent } from '~/common';
@@ -672,10 +673,23 @@ export default function AgentPanel() {
           (key) =>
             !isAssistantsEndpoint(key) &&
             (allowedProviders.size > 0 ? allowedProviders.has(key) : true) &&
-            key !== EModelEndpoint.agents,
+            key !== EModelEndpoint.agents &&
+            isProviderAvailable(
+              key,
+              modelsQuery.isFetchedAfterMount && modelsQuery.isSuccess
+                ? modelsQuery.data
+                : undefined,
+              endpointsConfig,
+            ),
         )
         .map((provider) => createProviderOption(provider)),
-    [endpointsConfig, allowedProviders],
+    [
+      endpointsConfig,
+      allowedProviders,
+      modelsQuery.data,
+      modelsQuery.isFetchedAfterMount,
+      modelsQuery.isSuccess,
+    ],
   );
   useEffect(() => {
     if (endpointsConfig == null || !modelsReady || !modelsQuery.isSuccess) {

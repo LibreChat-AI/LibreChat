@@ -4,8 +4,8 @@ import { useNavigate } from 'react-router-dom';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import { launchedConversationFamily } from '@librechat/chat/react';
+import type { TEndpointsConfig, TModelsConfig } from 'librechat-data-provider';
 import type { ChatTurnsParams, TurnServices } from '@librechat/chat/react';
-import type { TEndpointsConfig } from 'librechat-data-provider';
 import {
   logger,
   requestChatFocus,
@@ -19,6 +19,7 @@ import {
 } from '~/hooks/Agents/codeDecision';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
+import { isConversationModelAvailable } from '~/utils/availability';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
@@ -61,6 +62,14 @@ export default function useTurnServices({
     modelSpecs: config.modelSpecs,
     getEndpointsConfig: () => queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]),
     agentsMap,
+    canSubmitModel: (selection) =>
+      isConversationModelAvailable({
+        conversation: selection,
+        endpoints: queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]),
+        models: queryClient.getQueryState([QueryKeys.models])?.dataUpdateCount
+          ? queryClient.getQueryData<TModelsConfig>([QueryKeys.models])
+          : undefined,
+      }),
     getEphemeralAgent,
     getUserKey: getExpiry,
     getRouteProjectId: getRouteChatProjectId,

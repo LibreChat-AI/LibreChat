@@ -3317,3 +3317,21 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
     }
   });
 });
+
+describe('fetch-only custom endpoints', () => {
+  const endpoint = { name: 'gateway', apiKey: 'test', baseURL: 'https://gateway.test' };
+  it.each([
+    { fetch: true },
+    { fetch: true, default: [] },
+    { fetch: true, default: ['fallback'] },
+    { default: ['static'] },
+  ])('accepts %j', (models) => {
+    expect(endpointSchema.safeParse({ ...endpoint, models }).success).toBe(true);
+  });
+  it.each([{}, { default: [] }, { fetch: false }, { fetch: false, default: [] }])(
+    'rejects %j',
+    (models) => {
+      expect(endpointSchema.safeParse({ ...endpoint, models }).success).toBe(false);
+    },
+  );
+});

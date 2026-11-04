@@ -2195,3 +2195,82 @@ describe('importClaudeConvo', () => {
     );
   });
 });
+
+describe('existing LibreChat import fallbacks', () => {
+  it.each([
+    ['removed', {}, undefined, 'runtime-model'],
+    ['removed', { model: 'saved-model' }, undefined, 'saved-model'],
+    ['removed', {}, 'root-model', 'runtime-model'],
+    ['openAI', { model: '' }, undefined, ''],
+    ['openAI', { model: 'saved-model' }, undefined, 'saved-model'],
+  ])(
+    'keeps existing import selection for %s with options %j',
+    async (endpoint, options, model, expectedModel) => {
+      mockGetEndpointsConfig.mockResolvedValueOnce({ openAI: { userProvide: false } });
+      mockGetModelsConfig.mockResolvedValueOnce({ openAI: ['runtime-model'] });
+      const data = {
+        conversationId: 'import-fallback',
+        title: 'Fallback history',
+        endpoint,
+        options,
+        model,
+        messages: [
+          {
+            messageId: 'source',
+            parentMessageId: Constants.NO_PARENT,
+            text: 'Keep history',
+            isCreatedByUser: true,
+          },
+        ],
+      };
+      const builder = new ImportBatchBuilder('owner');
+      await getImporter(data)(data, 'owner', () => builder);
+      expect(builder.conversations[0]).toMatchObject({
+        endpoint: 'openAI',
+        model: expectedModel,
+        title: 'Fallback history',
+      });
+      expect(builder.messages[0].text).toBe('Keep history');
+    },
+  );
+
+  it('uses an import default without restoring a successful empty discovery catalog', async () => {
+    const models = { anthropic: [], openAI: ['other-model'] };
+    mockGetEndpointsConfig.mockResolvedValueOnce({ anthropic: {} });
+    mockGetModelsConfig.mockResolvedValueOnce(models);
+    const data = {
+      conversationId: 'empty-catalog',
+      title: 'History',
+      endpoint: 'anthropic',
+      messages: [{ messageId: 'source', text: 'Keep history', isCreatedByUser: true }],
+    };
+    const builder = new ImportBatchBuilder('owner');
+    await getImporter(data)(data, 'owner', () => builder);
+    expect(builder.conversations[0]).toMatchObject({
+      endpoint: 'anthropic',
+      model: anthropicSettings.model.default,
+    });
+    expect(models).toEqual({ anthropic: [], openAI: ['other-model'] });
+  });
+});
+
+it('keeps the ChatbotUI conversation default separate from historical message models', async () => {
+  mockGetModelsConfig.mockResolvedValueOnce({ openAI: ['import-default'] });
+  const data = {
+    version: 1,
+    history: [
+      {
+        name: 'Historical model',
+        model: { id: 'historical-model' },
+        messages: [
+          { role: 'user', content: 'Original question' },
+          { role: 'assistant', content: 'Original reply' },
+        ],
+      },
+    ],
+  };
+  const builder = new ImportBatchBuilder('owner');
+  await getImporter(data)(data, 'owner', () => builder);
+  expect(builder.conversations[0]).toMatchObject({ endpoint: 'openAI', model: 'import-default' });
+  expect(builder.messages[1]).toMatchObject({ model: 'historical-model', text: 'Original reply' });
+});
