@@ -27,9 +27,19 @@ export function isProviderAvailable(
   );
 }
 
-export function isModelSpecAvailable(spec: TModelSpec, models: TModelsConfig | undefined): boolean {
+export function isModelSpecAvailable(
+  spec: TModelSpec,
+  models: TModelsConfig | undefined,
+  endpoints: TEndpointsConfig | null | undefined,
+): boolean {
   const endpoint = spec.preset.endpoint;
-  if (models == null || !endpoint || isAgentsEndpoint(endpoint) || isAssistantsEndpoint(endpoint)) {
+  if (
+    models == null ||
+    !endpoint ||
+    isAgentsEndpoint(endpoint) ||
+    isAssistantsEndpoint(endpoint) ||
+    endpoints?.[endpoint]?.userProvide === true
+  ) {
     return true;
   }
   const available = models[resolveModelCatalogKey(endpoint, models)] ?? [];
@@ -64,7 +74,11 @@ export function isConversationModelAvailable({
   if (!endpoint || !endpoints?.[endpoint] || !model) {
     return false;
   }
-  if (endpoints[endpoint]?.userProvide) {
+  // Only Assistants use the legacy send path. Other chats validate the catalog through agents.
+  if (
+    endpoints[endpoint]?.userProvide &&
+    isAssistantsEndpoint(conversation?.endpointType ?? conversation?.endpoint)
+  ) {
     return true;
   }
   return (models?.[resolveModelCatalogKey(endpoint, models)] ?? []).includes(model);

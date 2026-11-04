@@ -75,7 +75,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
   const modelSpecs = useMemo(() => {
     /** Labels are normalized at the startup-config query boundary. */
     const specs = (startupConfig?.modelSpecs?.list ?? []).filter((spec) =>
-      isModelSpecAvailable(spec, modelsConfig),
+      isModelSpecAvailable(spec, modelsConfig, endpointsConfig),
     );
     if (!agentsMap) {
       return specs;
@@ -92,7 +92,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
       /** Keep non-agent modelSpecs */
       return true;
     });
-  }, [startupConfig, agentsMap, modelsConfig]);
+  }, [startupConfig, agentsMap, modelsConfig, endpointsConfig]);
 
   const permissionLevel = useAgentDefaultPermissionLevel();
   /**

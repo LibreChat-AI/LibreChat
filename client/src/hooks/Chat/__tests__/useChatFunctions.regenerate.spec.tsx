@@ -17,6 +17,7 @@ import type {
   Agent,
   CodeEnvironmentMode,
   CodeWorkspaceSelection,
+  TModelsConfig,
   TConversation,
   TMessage,
   TSubmission,
@@ -40,6 +41,7 @@ const mockSetFilesToDelete = jest.fn();
 const mockGetSender = jest.fn(() => 'Assistant');
 const mockGetExpiry = jest.fn(() => 'expiry-key');
 const mockAgentQueryData: { current?: Agent } = {};
+const mockModelsQueryData: { current?: TModelsConfig } = {};
 const mockEndpointsQueryData: { current?: Record<string, unknown> } = {};
 const mockCapabilitiesData: { current?: Record<string, unknown> } = {};
 const mockCapabilitiesState: {
@@ -57,11 +59,13 @@ const mockGetQueryData = jest.fn((queryKey: readonly unknown[]) => {
     return mockCapabilitiesData.current;
   }
   if (queryKey[0] === QueryKeys.models) {
-    return {
-      openAI: ['gpt-4o', 'gpt-5.1', 'gpt-5', 'openai/gpt-6.1-sol'],
-      OpenRouter: ['gpt-4o', 'gpt-5.1', 'gpt-5', 'openai/gpt-6.1-sol'],
-      'Mock Provider A': ['mock-model-a'],
-    };
+    return (
+      mockModelsQueryData.current ?? {
+        openAI: ['gpt-4o', 'gpt-5.1', 'gpt-5', 'openai/gpt-6.1-sol'],
+        OpenRouter: ['gpt-4o', 'gpt-5.1', 'gpt-5', 'openai/gpt-6.1-sol'],
+        'Mock Provider A': ['mock-model-a'],
+      }
+    );
   }
   if (queryKey[0] === QueryKeys.agent) {
     return mockAgentQueryData.current;
@@ -250,6 +254,7 @@ function renderAsk(
 describe('useChatFunctions ask', () => {
   beforeEach(() => {
     mockEndpointsQueryData.current = undefined;
+    mockModelsQueryData.current = undefined;
     mockCapabilitiesData.current = undefined;
     mockCapabilitiesState.current = undefined;
     localStorage.clear();
@@ -608,6 +613,52 @@ describe('useChatFunctions ask', () => {
     expect(setMessages).not.toHaveBeenCalled();
     expect(setSubmission).not.toHaveBeenCalled();
   });
+
+  it.each(['Personal' as EModelEndpoint, EModelEndpoint.agents])(
+    'refuses unavailable personal-key sends through %s before consuming staged inputs',
+    (endpoint) => {
+      mockEndpointsQueryData.current = {
+        Personal: { userProvide: true, order: 0, type: EModelEndpoint.custom },
+      };
+      mockModelsQueryData.current = { Personal: [] };
+      const files = new Map<string, ExtendedFile>([
+        [
+          'staged-file',
+          {
+            file_id: 'staged-file',
+            filename: 'draft.txt',
+            type: 'text/plain',
+            filepath: '/uploads/draft.txt',
+            size: 10,
+            progress: 1,
+          },
+        ],
+      ]);
+      const { result, setMessages, setSubmission, setFiles } = renderAsk([], 'conversation-1', {
+        endpoint,
+        model: 'personal-model',
+        agentId: 'Personal__personal-model',
+        files,
+      });
+      let accepted: ReturnType<typeof result.current.ask>;
+      act(() => {
+        accepted = result.current.ask({ text: 'Keep this draft' });
+      });
+      expect(accepted!).toBe(false);
+      expect(setMessages).not.toHaveBeenCalled();
+      expect(setSubmission).not.toHaveBeenCalled();
+      expect(setFiles).not.toHaveBeenCalled();
+      expect(mockSetFilesToDelete).not.toHaveBeenCalled();
+      expect(mockResolveCodeWorkspaceSubmission).not.toHaveBeenCalled();
+
+      mockModelsQueryData.current = { Personal: ['personal-model'] };
+      act(() => {
+        result.current.ask({ text: 'Keep this draft' });
+      });
+      expect(setSubmission).toHaveBeenCalledTimes(1);
+      expect(setMessages).toHaveBeenCalled();
+    },
+  );
 
   it('allows an existing conversation whose loaded history is empty', () => {
     const { result, setMessages, setSubmission } = renderAsk([]);

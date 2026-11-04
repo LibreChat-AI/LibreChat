@@ -165,7 +165,7 @@ export default function useMentions({
 
   const modelSpecs = useMemo(() => {
     const specs = (startupConfig?.modelSpecs?.list ?? []).filter((spec) =>
-      isModelSpecAvailable(spec, modelsConfig),
+      isModelSpecAvailable(spec, modelsConfig, endpointsConfig),
     );
     if (!agentsMap) {
       return specs;
@@ -182,7 +182,7 @@ export default function useMentions({
       /** Keep non-agent modelSpecs */
       return true;
     });
-  }, [startupConfig, agentsMap, modelsConfig]);
+  }, [startupConfig, agentsMap, modelsConfig, endpointsConfig]);
 
   const options: MentionOption[] = useMemo(() => {
     const modelOptions = validEndpoints.flatMap((endpoint) => {
