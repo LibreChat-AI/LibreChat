@@ -43,7 +43,6 @@
   "com_ui_channel_link_loading": "Checking this connection…",
   "com_ui_channel_link_open_slack": "Open Slack",
   "com_ui_channel_link_details": "Connection details",
-  "com_ui_channel_link_signed_in": "Signed in as {{0}}",
   "com_ui_channel_link_boundary": "Your existing permissions and tool approvals still apply. Linking does not grant offline access to connected services. You can revoke the link in Account settings.",
   "com_ui_channel_link_invalid": "This link is invalid. Request a new link from the Slack agent.",
   "com_ui_channel_link_expired": "This link has expired. Request a new link from the Slack agent.",
