@@ -261,6 +261,7 @@ function nextPrincipalId(): string {
   return `admin-${principalCounter}`;
 }
 
+// Cold CI setup may need to download the MongoDB binary before starting the database.
 beforeAll(async () => {
   jest.resetModules();
   const dataSchemas = await import('@librechat/data-schemas');
@@ -287,7 +288,7 @@ beforeAll(async () => {
   ({ patchConfigFields } = configMethods);
 
   handlers = createRealHandlers();
-});
+}, 60_000);
 
 /** Handlers over the real Config collection; `getAppConfig` supplies a librechat.yaml base. */
 function createRealHandlers(
