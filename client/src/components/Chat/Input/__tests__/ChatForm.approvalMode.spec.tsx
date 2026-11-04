@@ -24,6 +24,7 @@ jest.mock('~/hooks/Agents/useCodeApprovalMode', () => ({
     available: true,
     modes: ['ask', 'acceptEdits'],
     selected: 'ask',
+    readInputs: () => ({ conversation: null, reachable: { agents: [], complete: true } }),
   }),
 }));
 

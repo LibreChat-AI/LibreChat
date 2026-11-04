@@ -1,4 +1,5 @@
 import React from 'react';
+import { getMappingOptions } from '@librechat/chat';
 import { act, render, renderHook } from '@testing-library/react';
 import { QueryKeys, Constants, ContentTypes } from 'librechat-data-provider';
 import { useChat, ChatContext, useChatActions, resumeRequestsAtom } from '@librechat/chat/react';
@@ -8,7 +9,6 @@ import type { ChatContract } from '../contract';
 import type { JotaiStore } from 'test/harness';
 import { createMessageCache } from '~/Providers/ChatHostContext';
 import { IsolatedAtomStore } from 'test/harness';
-import { getMappingOptions } from '../outcomes';
 
 const userMessage: TMessage = {
   messageId: 'user-1',
