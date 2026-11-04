@@ -7,12 +7,18 @@ import type { ExecuteAgentRunParams, AgentExecutionConnection } from '../remote/
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { MarkToolApprovalAllowAlwaysOptions } from '../hitl/allow';
 import type { AgentExecutionEnrollment } from '../remote/lifecycle';
+import type { ResponseTerminalCompletion } from './foreground';
 import type { ResponsesRunEnvelope } from '../envelope';
 import type { ResponseAggregator } from './service';
 import type { ReachableAgent } from '../traversal';
 import type { ServerRequest } from '~/types/http';
 import type { Response } from './types';
 import type { createRun } from '../run';
+import {
+  createResponseCompletion,
+  createResponseExecutionRelease,
+  createResponseExecutionConfirmation,
+} from './completion';
 import {
   computeAgentRequestFingerprint,
   computeLegacyAgentRequestFingerprint,
@@ -28,7 +34,6 @@ import {
   resolveCheckpointerConfig,
   LIBRECHAT_CHECKPOINT_NAMESPACE_KEY,
 } from '../checkpointer';
-import { createResponseCompletion, createResponseExecutionRelease } from './completion';
 import { combineResponseSegments, seedResponseAggregator } from './segments';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
 import { getRunDiscoveredTools, getRunMCPToolAliases } from '../run';
@@ -83,6 +88,7 @@ function responseBody(value: unknown): value is TerminalResponse {
 }
 
 export interface ResponseExecutionRuntime {
+  completion?: ResponseTerminalCompletion;
   responseId: string;
   inputChain: <T>(chain: { messages: T[]; parentMessageId: string }) => {
     messages: T[];
@@ -222,20 +228,14 @@ export function createResponseExecutionRuntime(
       : response;
   }
   let candidate: TerminalResponse | undefined;
-  if (admission) {
-    const writeJSON = res.json.bind(res);
-    res.json = (body: unknown) => {
-      if (responseBody(body)) {
-        if (body.id !== admission.record.responseId || body.model !== admission.record.agentId)
-          throw new Error('Background response output identity changed');
-        candidate = { ...body, background: true, store: true };
-        if (res.writableEnded) return res;
-        return writeJSON(candidate);
-      }
-      if (res.writableEnded) return res;
-      return writeJSON(body);
-    };
-  }
+  const completion = admission
+    ? createResponseCompletion({
+        storage: admission.storage,
+        cleanupCheckpoint: cleanupResponseCheckpoint,
+        confirmExecution: createResponseExecutionConfirmation(continuation.jobs!),
+        releaseExecution: createResponseExecutionRelease(continuation.jobs!),
+      })
+    : undefined;
   const hooks: Pick<
     ExecuteAgentRunParams<unknown>,
     | 'onEnrolled'
@@ -367,11 +367,6 @@ export function createResponseExecutionRuntime(
         },
         afterSettle: async (execution, error) => {
           let current = await admission.storage.read(admission.record, admission.record.responseId);
-          const completion = createResponseCompletion({
-            storage: admission.storage,
-            cleanupCheckpoint: cleanupResponseCheckpoint,
-            releaseExecution: createResponseExecutionRelease(continuation.jobs!),
-          });
           if (!current || current.generationCreatedAt == null) {
             const retired = await admission.storage.readCleanupIdentity(
               admission.record,
@@ -386,14 +381,20 @@ export function createResponseExecutionRuntime(
               current.generationCreatedAt == null
             ) {
               // Stop won the enrollment CAS. This exact local attempt must still release its drain proof.
-              await completion.finish({ ...current, generationCreatedAt: execution.createdAt });
+              await completion!.finish({ ...current, generationCreatedAt: execution.createdAt });
               return;
             }
           }
           if (!current || current.generationCreatedAt !== execution.createdAt)
             throw new Error('Background response settlement identity changed');
           if (['completed', 'failed', 'cancelled', 'incomplete'].includes(current.status)) {
-            await completion.finish(current);
+            await completion!.finish(current);
+            return;
+          }
+          if (current.pendingTerminal || current.preparedTerminal) {
+            admission.record = await completion!.finish(current);
+            if (admission.record.preparedTerminal || admission.record.pendingTerminal)
+              throw new Error('Background response terminal publication is pending');
             return;
           }
           const identity = await execution.confirmTerminalIdentity();
@@ -433,7 +434,7 @@ export function createResponseExecutionRuntime(
               },
             };
 
-          admission.record = await completion.stageAndFinish(current, {
+          admission.record = await completion!.stageAndFinish(current, {
             ...identity,
             status: final.status,
             responseJSON: JSON.stringify(final),
@@ -449,7 +450,52 @@ export function createResponseExecutionRuntime(
       }
     : {};
 
+  const settle = hooks.afterSettle;
   return {
+    completion:
+      admission && completion && settle
+        ? {
+            async prepare(response, turnJSON) {
+              if (
+                !enrolledExecution ||
+                candidate ||
+                !responseBody(response) ||
+                response.id !== admission.record.responseId ||
+                response.model !== admission.record.agentId ||
+                response.store !== true
+              )
+                throw new Error('Background response output identity changed');
+              const prepared = { ...response, background: true, store: true };
+              const result = await completion.prepare(admission.record, {
+                ...enrolledExecution.getPersistenceIdentity(),
+                status: prepared.status,
+                responseJSON: JSON.stringify(prepared),
+                ...(turnJSON == null ? {} : { turnJSON }),
+                ...(checkpoint ??
+                  (admission.resume && admission.record.review?.checkpointConfigJSON
+                    ? {
+                        checkpointNamespace: admission.resume.checkpointNamespace,
+                        checkpointConfigJSON: admission.record.review.checkpointConfigJSON,
+                      }
+                    : {})),
+              });
+              if (result.retirement) return;
+              admission.record = result;
+              candidate = prepared;
+            },
+            afterSettle: async (execution, error) => {
+              await settle(execution, error);
+              if (
+                !admission.record.preparedTerminal &&
+                !admission.record.pendingTerminal &&
+                !('retirement' in admission.record) &&
+                admission.record.responseJSON &&
+                ['completed', 'failed', 'incomplete', 'cancelled'].includes(admission.record.status)
+              )
+                return JSON.parse(admission.record.responseJSON) as Response;
+            },
+          }
+        : undefined,
     composeResponse,
     inputChain(chain) {
       if (!admission?.resume) {

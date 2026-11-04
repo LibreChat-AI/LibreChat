@@ -11,6 +11,8 @@ export type StoredResponseStatus =
   | 'queued'
   | 'in_progress'
   | 'requires_action'
+  /** Private terminal protocol phase; legacy active-only writers cannot finalize it. */
+  | 'materializing'
   | 'completed'
   | 'failed'
   | 'incomplete'
@@ -47,13 +49,15 @@ export interface ResponseResumeIntent {
   admittedAt?: number;
 }
 
-/** Server-written receipt after provider and trailing writes have definitively settled. */
+/** Server-written proposed or confirmed terminal result, bound to one provider attempt. */
 export interface ResponseTerminalReceipt {
   generationCreatedAt: number;
   providerExecutionId: string;
   ownerId?: string;
   status: 'completed' | 'failed' | 'incomplete' | 'cancelled';
   responseJSON: string;
+  /** Private immutable projection facts for canonical history recovery. */
+  turnJSON?: string;
   checkpointNamespace?: string;
   /** Server-pinned saver settings, including initial failures before a review exists. */
   checkpointConfigJSON?: string;
@@ -82,6 +86,8 @@ export interface StoredResponseRecord {
   review?: ResponseReviewCheckpoint;
   resume?: ResponseResumeIntent;
   pendingTerminal?: ResponseTerminalReceipt;
+  /** Durable candidate only; independent provider drain proof is required before promotion. */
+  preparedTerminal?: ResponseTerminalReceipt;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -89,6 +95,23 @@ export interface StoredResponseRecord {
 export function createStoredResponseModel(
   mongoose: typeof import('mongoose'),
 ): Model<StoredResponseRecord> {
+  const terminalSchema = new Schema<ResponseTerminalReceipt>(
+    {
+      generationCreatedAt: { type: Number, required: true, min: 1 },
+      providerExecutionId: { type: String, required: true, maxlength: 128 },
+      ownerId: { type: String, maxlength: 128 },
+      status: {
+        type: String,
+        required: true,
+        enum: ['completed', 'failed', 'incomplete', 'cancelled'],
+      },
+      responseJSON: { type: String, required: true },
+      turnJSON: String,
+      checkpointNamespace: String,
+      checkpointConfigJSON: String,
+    },
+    { _id: false },
+  );
   const schema = new Schema<StoredResponseRecord>(
     {
       tenantId: String,
@@ -110,6 +133,7 @@ export function createStoredResponseModel(
           'queued',
           'in_progress',
           'requires_action',
+          'materializing',
           'completed',
           'failed',
           'incomplete',
@@ -122,22 +146,11 @@ export function createStoredResponseModel(
       responseJSON: String,
       cancellationRequestedAt: Number,
       pendingTerminal: {
-        type: new Schema<ResponseTerminalReceipt>(
-          {
-            generationCreatedAt: { type: Number, required: true, min: 1 },
-            providerExecutionId: { type: String, required: true, maxlength: 128 },
-            ownerId: { type: String, maxlength: 128 },
-            status: {
-              type: String,
-              required: true,
-              enum: ['completed', 'failed', 'incomplete', 'cancelled'],
-            },
-            responseJSON: { type: String, required: true },
-            checkpointNamespace: String,
-            checkpointConfigJSON: String,
-          },
-          { _id: false },
-        ),
+        type: terminalSchema,
+        required: false,
+      },
+      preparedTerminal: {
+        type: terminalSchema,
         required: false,
       },
       review: {

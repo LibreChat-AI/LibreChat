@@ -261,6 +261,21 @@ export class AgentExecutionEnrollment {
     return this.settlement;
   }
 
+  /** Bind tracked persistence to this attempt; this witness is not terminal or drain authority. */
+  getPersistenceIdentity(): {
+    generationCreatedAt: number;
+    providerExecutionId: string;
+    ownerId?: string;
+  } {
+    if (!this.ownsSettlement || !this.providerStarted || this.pendingPause || this.isPaused)
+      throw new Error('Agent persistence ownership is unavailable');
+    return {
+      generationCreatedAt: this.createdAt,
+      providerExecutionId: this.providerExecutionId,
+      ...(this.ownerId == null ? {} : { ownerId: this.ownerId }),
+    };
+  }
+
   /** The journal may retain this proof after the generation's transient job expires. */
   async confirmTerminalIdentity(): Promise<{
     generationCreatedAt: number;

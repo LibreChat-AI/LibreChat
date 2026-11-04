@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { ClientSession } from 'mongoose';
 import type { ResponseOwner } from '~/models/response';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
@@ -69,6 +70,7 @@ export async function discoverResponseOwners(
 /** Retention intent is monotonic, like erasure: failed parent saves never reopen private data. */
 export function createResponseRetention(
   mongoose: typeof import('mongoose'),
+  parentSession?: ClientSession,
 ): (owner: ResponseOwner, conversationId: string, expiredAt: Date) => Promise<void> {
   let supported: boolean | null = null;
   let indexes: Promise<void> | undefined;
@@ -76,11 +78,11 @@ export function createResponseRetention(
     if (!(expiredAt instanceof Date) || !Number.isFinite(expiredAt.getTime()))
       throw new TypeError('Invalid response expiration');
     const key = responseScopeKeys(owner, conversationId)[1];
-    await initializeResponseScopes(mongoose, [key]);
+    await initializeResponseScopes(mongoose, [key], parentSession);
     const scopes = createResponseScopeModel(mongoose);
     const records = createStoredResponseModel(mongoose);
-    supported = await getTransactionSupport(mongoose, supported);
-    if (supported) {
+    supported = parentSession ? true : await getTransactionSupport(mongoose, supported);
+    if (supported && !parentSession) {
       indexes ??= createIndexesWithRetry(records)
         .then(() => undefined)
         .catch((error: unknown) => {
@@ -108,6 +110,7 @@ export function createResponseRetention(
         session ? { session } : {},
       );
     };
+    if (parentSession) return apply(parentSession);
     if (!supported) return apply();
     const session = await mongoose.startSession();
     try {
@@ -151,6 +154,7 @@ export function responseScopeKeys(owner: ResponseOwner, conversationId: string):
 export async function initializeResponseScopes(
   mongoose: typeof import('mongoose'),
   keys: string[],
+  session?: ClientSession,
 ): Promise<void> {
   const model = createResponseScopeModel(mongoose);
   for (const key of keys) {
@@ -158,13 +162,13 @@ export async function initializeResponseScopes(
       await model.updateOne(
         { _id: key },
         { $setOnInsert: { closed: false, revision: 0 } },
-        { upsert: true },
+        { upsert: true, session },
       );
     } catch (error) {
       if (
         !(error instanceof mongoose.mongo.MongoServerError) ||
         error.code !== 11000 ||
-        !(await model.exists({ _id: key }))
+        !(await model.exists({ _id: key }).session(session ?? null))
       )
         throw error;
     }
@@ -179,7 +183,7 @@ export async function isResponseScopeClosed(
   return (
     (await createResponseScopeModel(mongoose).exists({
       _id: { $in: responseScopeKeys(owner, conversationId) },
-      closed: true,
+      $or: [{ closed: true }, { expiredAt: { $lte: new Date() } }],
     })) != null
   );
 }
@@ -215,7 +219,7 @@ export async function closeResponseScopes(
     {
       ...responseOwnerFilter(owner),
       ...(conversationIds ? { conversationId: { $in: conversationIds } } : {}),
-      status: { $in: ['queued', 'in_progress', 'requires_action'] },
+      status: { $in: ['queued', 'in_progress', 'requires_action', 'materializing'] },
       cancellationRequestedAt: { $exists: false },
       pendingTerminal: { $exists: false },
     },

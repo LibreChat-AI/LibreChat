@@ -68,7 +68,8 @@ export function buildPendingBackgroundResponse(
   context.createdAt = Math.floor(record.createdAt.getTime() / 1000);
   return {
     ...buildAggregatedResponse(context, createResponseAggregator()),
-    status: 'queued',
+    // A private terminal phase is already enrolled; never expose its database status.
+    status: record.status === 'materializing' ? 'in_progress' : 'queued',
     completed_at: null,
     output: [],
     usage: null,
@@ -96,8 +97,12 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
     return record;
   }
 
-  function hasTerminalWork(record: StoredResponseRecord): boolean {
+  function hasTerminalResult(record: StoredResponseRecord): boolean {
     return record.pendingTerminal != null || terminal(record.status);
+  }
+
+  function hasTerminalWork(record: StoredResponseRecord): boolean {
+    return record.preparedTerminal != null || hasTerminalResult(record);
   }
 
   async function canonicalView(record: StoredResponseRecord): Promise<Response | null> {
@@ -201,10 +206,10 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
     async cancel(owner: ResponseOwner, responseId: string): Promise<BackgroundResponseResult> {
       const authorized = await readAuthorized(owner, responseId);
       if (!authorized) return { ok: false, status: 404, code: 'response_not_found' };
-      if (hasTerminalWork(authorized)) return responseResult(authorized);
+      if (hasTerminalResult(authorized)) return responseResult(authorized);
       const record = await deps.storage.requestCancellation(owner, responseId, now());
       if (!record) return { ok: false, status: 404, code: 'response_not_found' };
-      if (!hasTerminalWork(record)) await deps.cancel(record);
+      if (!hasTerminalResult(record)) await deps.cancel(record);
       const current = await readAuthorized(owner, responseId);
       if (!current) return { ok: false, status: 404, code: 'response_not_found' };
       return responseResult(current);
