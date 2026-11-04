@@ -10,23 +10,6 @@ import type { ExtendedFile } from '../../../../core/files';
 import { initEnglish } from '../../../../__fixtures__/i18n';
 import FileRow from '../FileRow';
 
-jest.mock('../FileContainer', () => ({
-  __esModule: true,
-  default: function MockFileContainer({
-    file,
-    onDelete,
-  }: {
-    file: ExtendedFile;
-    onDelete?: () => void;
-  }) {
-    return (
-      <button type="button" onClick={onDelete}>
-        {`Remove ${file.filename}`}
-      </button>
-    );
-  },
-}));
-
 beforeAll(initEnglish);
 
 const file: ExtendedFile = {
@@ -47,8 +30,10 @@ describe('FileRow without a files host', () => {
   it('removes the deleted file from the map', async () => {
     render(<Harness />);
 
-    await userEvent.click(screen.getByRole('button', { name: 'Remove document.pdf' }));
+    expect(screen.getByText('document.pdf')).toBeInTheDocument();
 
-    expect(screen.queryByRole('button', { name: 'Remove document.pdf' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Remove file' }));
+
+    expect(screen.queryByText('document.pdf')).not.toBeInTheDocument();
   });
 });
