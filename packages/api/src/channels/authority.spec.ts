@@ -1,0 +1,1550 @@
+import express from 'express';
+import request from 'supertest';
+import mongoose from 'mongoose';
+import { Readable } from 'node:stream';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import {
+  PermissionBits,
+  Permissions,
+  PermissionTypes,
+  FileSources,
+  channelConfigSchema,
+} from 'librechat-data-provider';
+import {
+  createModels,
+  createMethods,
+  createChannelIdentityStorage,
+  createChannelRunStorage,
+  createResponseStorage,
+  hashToken,
+  tenantStorage,
+  runAsSystem,
+} from '@librechat/data-schemas';
+import type {
+  ChannelRunAdmission,
+  ChannelIdentityResult,
+  ChannelRunSnapshot,
+  ChannelRunSummary,
+} from 'librechat-data-provider';
+import type { IUser, ChannelRunRecord } from '@librechat/data-schemas';
+import type { ChannelResponseCredentialDependencies } from './credentials';
+import type { BackgroundResponsesHost } from '~/agents/responses/host';
+import { createChannelAuthority, channelExternalIdentity } from './authority';
+import { createChannelResponseCredentials } from './credentials';
+import { createChannelArtifactService } from './artifacts';
+import { ChannelExecutionError } from './execution';
+import { createChannelHandlers } from './service';
+import { createChannelRunHandlers } from './runs';
+
+let mongo: MongoMemoryReplSet;
+let db: ReturnType<typeof createMethods>;
+let models: ReturnType<typeof createModels>;
+let authority: ReturnType<typeof createChannelAuthority>;
+let storage: ReturnType<typeof createChannelRunStorage>;
+let users: IUser[];
+let acl: Map<string, number>;
+let invoked: ChannelRunRecord[];
+let advanceError: ChannelExecutionError | undefined;
+let retired: ChannelRunRecord[];
+let retirement: 'stopped' | 'pending';
+let artifactRead: () => Promise<void>;
+let nextSnapshot: ChannelRunSnapshot;
+let summarize: jest.Mock<Promise<ChannelRunSummary>, [ChannelRunRecord, ChannelRunSnapshot]>;
+let responseCredential: jest.Mock<Promise<string>, [ChannelRunRecord]>;
+let app: express.Express;
+let fakeNow: number | undefined;
+let interactive: Pick<BackgroundResponsesHost, 'readInteractiveReview' | 'submitInteractiveReview'>;
+const tenantId = 'tenant-channel-authority';
+const token = 'test-channel-service-bearer-32-characters';
+const scoped = (work: () => Promise<void>) => () => tenantStorage.run({ tenantId }, work);
+const value = <T>(result: ChannelIdentityResult<T>): T => {
+  if (!result.ok) throw new Error(result.error.code);
+  return result.value;
+};
+
+beforeAll(async () => {
+  mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+  await mongoose.connect(mongo.getUri());
+  models = createModels(mongoose);
+  db = createMethods(mongoose);
+  storage = createChannelRunStorage(mongoose);
+  await Promise.all([
+    models.ChannelIdentity.init(),
+    models.ChannelRun.init(),
+    models.ChannelLane.init(),
+  ]);
+});
+afterAll(async () => {
+  await mongoose.disconnect();
+  await mongo?.stop();
+});
+beforeEach(async () => {
+  await runAsSystem(async () => {
+    await Promise.all([
+      models.ChannelIdentity.deleteMany({}),
+      models.StoredResponse.deleteMany({}),
+      models.ResponseScope.deleteMany({}),
+      models.ChannelRun.deleteMany({}),
+      models.ChannelLane.deleteMany({}),
+      models.AgentChannel.deleteMany({}),
+      models.User.deleteMany({}),
+      models.Role.deleteMany({}),
+      models.File.deleteMany({}),
+      models.Message.deleteMany({}),
+    ]);
+  });
+  await tenantStorage.run({ tenantId }, async () => {
+    users = await models.User.create([
+      { email: 'a@example.test', name: 'Account A', role: 'USER' },
+      { email: 'b@example.test', name: 'Account B', role: 'USER' },
+    ]);
+    await models.Role.create({
+      name: 'USER',
+      permissions: {
+        [PermissionTypes.REMOTE_AGENTS]: { [Permissions.USE]: true },
+        [PermissionTypes.AGENTS]: { [Permissions.USE]: true },
+      },
+    });
+    await db.createAgentChannel({
+      channelId: 'channel',
+      tenantId,
+      agentId: 'agent',
+      createdBy: users[0].id,
+      type: 'slack',
+      status: 'active',
+      credentialMode: 'per_user',
+      revision: 'revision-1',
+      slack: { teamId: 'T1', appId: 'A1', botUserId: 'UBOT' },
+    });
+  });
+  acl = new Map(users.map((user) => [user.id, PermissionBits.VIEW]));
+  invoked = [];
+  fakeNow = undefined;
+  advanceError = undefined;
+  retired = [];
+  retirement = 'stopped';
+  artifactRead = async () => {};
+  nextSnapshot = { status: 'running', text: '', elapsedMs: 1 };
+  summarize = jest.fn<Promise<ChannelRunSummary>, [ChannelRunRecord, ChannelRunSnapshot]>(
+    async () => ({
+      version: 1,
+      scope: 'actor_lane',
+      throughSequence: 1,
+      includesCurrent: true,
+      priorRuns: 0,
+      expectedRuns: 1,
+      observedRuns: 1,
+      costUSD: { coverage: 'unavailable', coveredRuns: 0 },
+      elapsedMs: { coverage: 'complete', coveredRuns: 1, value: 12 },
+      tokens: { coverage: 'unavailable', coveredRuns: 0 },
+    }),
+  );
+  authority = createChannelAuthority({
+    channels: db,
+    identityStorage: createChannelIdentityStorage(mongoose),
+    getConfig: async () => ({ enabled: true }),
+    findUser: (id) => db.findUser({ _id: id }),
+    getRole: (name) => models.Role.findOne({ name }),
+    isPrincipalActive: async () => true,
+    getAgentPermissions: async (_id, user) => acl.get(user.id) ?? 0,
+    publicBaseUrl: 'http://127.0.0.1:3088',
+  });
+  const handlers = createChannelHandlers({
+    db,
+    serviceToken: () => token,
+    config: async () => ({ enabled: true }),
+    getAgent: async (id) => ({ id }),
+    deleteApiKey: async () => true,
+    verifySlackToken: async () => null,
+    logError: jest.fn(),
+  });
+  responseCredential = jest.fn<Promise<string>, [ChannelRunRecord]>(async () => 'sk-test');
+  interactive = {
+    readInteractiveReview: jest.fn(async (_owner, responseId) => ({
+      responseId,
+      status: 'in_progress' as const,
+      oauth: [],
+      canSubmitDecision: true,
+      pendingAction: {
+        actionId: 'native-action',
+        expiresAt: Date.now() + 60000,
+        payload: { type: 'ask_user_question' as const, question: { question: 'Private question' } },
+      },
+    })),
+    submitInteractiveReview: jest.fn(async (_owner, responseId, decision) => ({
+      ok: true as const,
+      receipt: {
+        responseId,
+        actionId: (decision as { actionId: string }).actionId,
+        intentId: 'intent',
+        status: 'queued' as const,
+      },
+    })),
+  };
+  const runs = createChannelRunHandlers({
+    now: () => fakeNow ?? Date.now(),
+    interactive,
+    responseCredential,
+    storage,
+    artifacts: createChannelArtifactService({
+      readArtifacts: db.readResponseArtifacts,
+      readFile: async () => {
+        await artifactRead();
+        return Readable.from(Buffer.from('file'));
+      },
+      limits: async () =>
+        channelConfigSchema.parse({
+          artifactMaxBytes: 1000,
+          artifactMaxFiles: 1,
+          artifactReadTimeoutMs: 1000,
+        }),
+    }),
+    guard: handlers.service,
+    resolvePrincipal: authority.resolvePrincipal,
+    summarize: (run, snapshot) => summarize(run, snapshot),
+    publicBaseUrl: 'http://127.0.0.1:3088/base',
+    advance: async (run) => {
+      if (advanceError) throw advanceError;
+      invoked.push(run);
+      if (nextSnapshot.status === 'completed' && !run.execution?.responseId) {
+        const responseId = nextSnapshot.responseId ?? `resp_${run.runId}`;
+        const execution = run.execution!;
+        await models.StoredResponse.create({
+          tenantId,
+          userId: run.principal.userId,
+          responseId,
+          requestKey: `channel:${run.runId}`,
+          sourceKeyId: execution.apiKeyId,
+          agentId: run.agentId,
+          fingerprint: 'fixture',
+          requestJSON: JSON.stringify({
+            model: run.agentId,
+            input: run.admission.input,
+            background: true,
+            store: true,
+          }),
+          conversationId: execution.conversationId,
+          parentMessageId: execution.parentMessageId,
+          status: 'queued',
+          revision: 0,
+        });
+        const bound = await storage.bindResponse(
+          tenantId,
+          { runId: run.runId, owner: run.leaseOwner!, epoch: run.leaseEpoch },
+          responseId,
+          Date.now(),
+        );
+        run.execution = bound.execution;
+        nextSnapshot.responseId = responseId;
+      }
+      return { snapshot: { ...nextSnapshot } };
+    },
+    retireForAuthorityLoss: async (run) => {
+      retired.push(run);
+      return retirement;
+    },
+  });
+  app = express();
+  app.use(express.json());
+  app.post('/service/:channelId/runs', runs.admit);
+  app.post('/service/:channelId/runs/claim', runs.claim);
+  app.post('/service/:channelId/runs/stop-thread', runs.stopThread);
+  app.post('/service/:channelId/runs/:runId/yield', runs.yieldLease);
+  app.post('/service/:channelId/runs/:runId/advance', runs.advance);
+  app.post('/service/:channelId/runs/:runId/response/prepare', runs.prepareResponse);
+  app.post('/service/:channelId/runs/:runId/response/bind', runs.bindResponse);
+  app.post('/service/:channelId/runs/:runId/cancel', runs.cancel);
+  app.post('/service/:channelId/runs/:runId/review', runs.review);
+  app.post('/service/:channelId/runs/:runId/review/decision', runs.submitReview);
+  app.post('/service/:channelId/runs/:runId/plan', runs.plan);
+  app.post('/service/:channelId/runs/:runId/settle', runs.settle);
+  app.post('/service/:channelId/runs/:runId/commit', runs.commit);
+  app.post('/service/:channelId/runs/:runId/progress/plan', runs.planProgress);
+  app.post('/service/:channelId/runs/:runId/progress/begin', runs.beginProgress);
+  app.post('/service/:channelId/runs/:runId/progress/settle', runs.settleProgress);
+  app.post('/service/:channelId/runs/:runId/delivery/reconcile', runs.reconcileDelivery);
+  app.post('/service/:channelId/runs/:runId/progress/reconcile', runs.reconcileProgress);
+
+  app.post('/service/:channelId/runs/:runId/begin', runs.begin);
+  app.post('/service/:channelId/runs/:runId/artifacts/:artifactId', runs.artifact);
+});
+
+function event(actor = 'U1', eventId = `Ev-${actor}`): ChannelRunAdmission {
+  return {
+    eventId,
+    externalChannelId: 'C1',
+    externalThreadKey: 'C1:1.000001',
+    externalMessageKey: `C1:${eventId}`,
+    actor: { teamId: 'T1', appId: 'A1', externalUserId: actor },
+    input: 'Use my own permissions',
+  };
+}
+
+async function bindFixtureResponse(run: ChannelRunRecord, responseId: string) {
+  const execution = run.execution!;
+  await models.StoredResponse.create({
+    tenantId,
+    userId: run.principal.userId,
+    responseId,
+    requestKey: `channel:${run.runId}`,
+    sourceKeyId: execution.apiKeyId,
+    agentId: run.agentId,
+    fingerprint: 'fixture',
+    requestJSON: JSON.stringify({
+      model: run.agentId,
+      input: run.admission.input,
+      background: true,
+      store: true,
+    }),
+    conversationId: execution.conversationId,
+    parentMessageId: execution.parentMessageId,
+    status: 'queued',
+    revision: 0,
+  });
+  await models.Message.create({
+    tenantId,
+    user: run.principal.userId,
+    conversationId: execution.conversationId,
+    messageId: responseId,
+    isCreatedByUser: false,
+    sender: 'Agent',
+    text: 'answer',
+    attachments: [],
+  });
+  return storage.bindResponse(
+    tenantId,
+    { runId: run.runId, owner: run.leaseOwner!, epoch: run.leaseEpoch },
+    responseId,
+    Date.now(),
+  );
+}
+
+function responseCredentials(overrides: Partial<ChannelResponseCredentialDependencies> = {}) {
+  const key = randomBytes(32);
+  return createChannelResponseCredentials({
+    storage,
+    responses: createResponseStorage(mongoose),
+    getChannel: db.getAgentChannelMetadata,
+    resolvePrincipal: authority.resolvePrincipal,
+    createKey: db.createAgentApiKey,
+    getKey: db.getAgentApiKeyById,
+    deleteKey: db.deleteAgentApiKey,
+    lifetimeMs: async () => 60000,
+    encrypt: async (value) => {
+      const iv = randomBytes(12);
+      const cipher = createCipheriv('aes-256-gcm', key, iv);
+      const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+      return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64');
+    },
+    decrypt: async (value) => {
+      const encoded = Buffer.from(value, 'base64');
+      const decipher = createDecipheriv('aes-256-gcm', key, encoded.subarray(0, 12));
+      decipher.setAuthTag(encoded.subarray(12, 28));
+      return Buffer.concat([decipher.update(encoded.subarray(28)), decipher.final()]).toString(
+        'utf8',
+      );
+    },
+    ...overrides,
+  });
+}
+
+it(
+  'provisions one encrypted, run-bound credential under concurrent gateway retries',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    const credentials = responseCredentials();
+    const keys = await Promise.all([
+      credentials.provision(run),
+      credentials.provision(run),
+      credentials.provision(run),
+    ]);
+    expect(new Set(keys).size).toBe(1);
+    expect(keys[0]).toMatch(/^sk-bound-/);
+    const saved = (await storage.read(tenantId, 'channel', admitted.body.runId))!;
+    expect(saved.execution?.encryptedApiKey).not.toContain(keys[0]);
+    expect(saved.execution?.protocol).toBe('responses');
+    expect(await db.listAgentApiKeys(users[0].id)).toHaveLength(1);
+    expect(await db.validateAgentApiKey(keys[0])).toBeNull();
+    const validated = await db.validateBoundAgentApiKey(keys[0]);
+    expect(validated?.binding).toEqual({ kind: 'channel_run', id: `channel/${run.runId}` });
+    // The pre-binding validator used the raw-token hash. An old replica must not admit this key.
+    expect(
+      await mongoose.models.AgentApiKey.findOne({ keyHash: await hashToken(keys[0]) }),
+    ).toBeNull();
+    await db.deleteAgentApiKey(saved.execution!.apiKeyId!, users[0].id);
+    await expect(credentials.provision(saved)).rejects.toThrow('authority changed');
+  }),
+);
+
+it(
+  'prepares and binds a canonical Response without executing through the Channels service',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const route = `runs/${admitted.body.runId}/response`;
+    const prepared = await post(`${route}/prepare`).send({ fence: claimed.body.fence }).expect(200);
+    expect(prepared.body).toEqual({
+      apiKey: 'sk-test',
+      requestKey: `channel:${admitted.body.runId}`,
+      request: { model: 'agent', input: event().input, background: true, store: true },
+    });
+    expect(invoked).toHaveLength(0);
+    await post(`${route}/bind`)
+      .send({ fence: claimed.body.fence, responseId: 'resp_missing' })
+      .expect(409);
+    const reserved = await createResponseStorage(mongoose).reserve({
+      tenantId,
+      userId: users[0].id,
+      responseId: `resp_${admitted.body.runId}`,
+      requestKey: prepared.body.requestKey,
+      fingerprint: 'request',
+      agentId: 'agent',
+      requestJSON: JSON.stringify(prepared.body.request),
+      conversationId: 'canonical-conversation',
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+    });
+    if (!reserved.ok) throw new Error('Reservation failed');
+    const body = { fence: claimed.body.fence, responseId: reserved.record.responseId };
+    await post(`${route}/bind`).send(body).expect(200);
+    await post(`${route}/bind`).send(body).expect(200);
+    const run = await storage.read(tenantId, 'channel', admitted.body.runId);
+    expect(run?.execution).toMatchObject({
+      protocol: 'responses',
+      responseId: reserved.record.responseId,
+      conversationId: 'canonical-conversation',
+    });
+    await storage.saveSnapshot(
+      tenantId,
+      claimed.body.fence,
+      {
+        responseId: reserved.record.responseId,
+        status: 'requires_action',
+        text: '',
+        elapsedMs: 1,
+        pendingAction: { actionId: 'oauth-action', kind: 'oauth', expiresAt: Date.now() + 60_000 },
+      },
+      Date.now(),
+    );
+    const reviewPath = `runs/${admitted.body.runId}/review`;
+    const review = await post(reviewPath)
+      .send({ actor: event().actor, revision: 'revision-1' })
+      .expect(200);
+    expect(review.body.url).toBe(
+      `http://127.0.0.1:3088/base/responses/${reserved.record.responseId}/review`,
+    );
+    await post(reviewPath)
+      .send({ actor: event('U2').actor, revision: 'revision-1' })
+      .expect(403);
+    expect(invoked).toHaveLength(0);
+  }),
+);
+
+it(
+  'holds cancelled unbound credentials and recovers a late canonical response without execution',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const route = `runs/${admitted.body.runId}/response`;
+    await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    await storage.attachResponseCredential(
+      tenantId,
+      claimed.body.fence,
+      { apiKeyId: 'issued-key', encryptedApiKey: 'ciphertext' },
+      Date.now(),
+    );
+    await post(`runs/${admitted.body.runId}/cancel`)
+      .send({ actor: event().actor, revision: 'revision-1' })
+      .expect(202);
+    await post(`${route}/prepare`)
+      .send({ fence: claimed.body.fence })
+      .expect(409, { error: 'response_cancellation_pending' });
+    expect(responseCredential).not.toHaveBeenCalled();
+    const reserved = await createResponseStorage(mongoose).reserve({
+      tenantId,
+      userId: users[0].id,
+      responseId: `resp_${admitted.body.runId}`,
+      requestKey: `channel:${admitted.body.runId}`,
+      sourceKeyId: 'issued-key',
+      fingerprint: 'late-request',
+      agentId: 'agent',
+      requestJSON: JSON.stringify({
+        model: 'agent',
+        input: event().input,
+        background: true,
+        store: true,
+      }),
+      conversationId: 'late-canonical-conversation',
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+    });
+    if (!reserved.ok) throw new Error('Reservation failed');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const prepared = await post(`${route}/prepare`)
+        .send({ fence: claimed.body.fence })
+        .expect(200);
+      expect(prepared.body.responseId).toBe(reserved.record.responseId);
+    }
+    expect(responseCredential).toHaveBeenCalledTimes(2);
+    expect(responseCredential.mock.calls[0][0]).toMatchObject({ cancellationRequested: true });
+    expect(invoked).toHaveLength(0);
+    expect(
+      (await storage.read(tenantId, 'channel', admitted.body.runId))?.snapshot,
+    ).toBeUndefined();
+    expect(
+      await createResponseStorage(mongoose).read(reserved.record, reserved.record.responseId),
+    ).toEqual(reserved.record);
+  }),
+);
+
+it.each(['per_user', 'shared'] as const)(
+  'keeps native review private and actor-bound in %s mode, including same-account thread participants',
+  (mode) =>
+    tenantStorage.run({ tenantId }, async () => {
+      if (mode === 'shared')
+        await models.AgentChannel.updateOne(
+          { channelId: 'channel' },
+          { $set: { credentialMode: 'shared' } },
+        );
+      const linked = await link('U1', users[0]);
+      await link('U2', users[0]);
+      const admitted = await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const base = `runs/${admitted.body.runId}`;
+      const prepared = await post(`${base}/response/prepare`)
+        .send({ fence: claimed.body.fence })
+        .expect(200);
+      const responseId = `resp_${admitted.body.runId}`;
+      await createResponseStorage(mongoose).reserve({
+        tenantId,
+        userId: users[0].id,
+        responseId,
+        requestKey: prepared.body.requestKey,
+        fingerprint: 'request',
+        agentId: 'agent',
+        requestJSON: JSON.stringify(prepared.body.request),
+        conversationId: 'native-conversation',
+        parentMessageId: 'root',
+      });
+      await post(`${base}/response/bind`)
+        .send({ fence: claimed.body.fence, responseId })
+        .expect(200);
+      await storage.saveSnapshot(
+        tenantId,
+        claimed.body.fence,
+        {
+          responseId,
+          status: 'requires_action',
+          text: '',
+          elapsedMs: 1,
+          pendingAction: {
+            actionId: 'native-action',
+            kind: 'ask_user_question',
+            expiresAt: Date.now() + 60000,
+          },
+        },
+        Date.now(),
+      );
+      const body = { actor: event().actor, revision: 'revision-1', externalChannelId: 'C1' };
+      const view = await post(`${base}/review`).send(body).expect(200);
+      expect(view.body.pendingAction.payload.question.question).toBe('Private question');
+      const savedView = await interactive.readInteractiveReview(
+        { userId: users[0].id, tenantId },
+        responseId,
+      );
+      if (!savedView) throw new Error('Expected the current actor review');
+      const pendingDecision = {
+        intentId: 'saved-native-intent',
+        decision: { actionId: 'native-action', answer: 'Private saved answer' },
+      };
+      jest.mocked(interactive.readInteractiveReview).mockImplementation(async () => ({
+        ...savedView,
+        pendingDecision,
+      }));
+      const saved = await post(`${base}/review`).send(body).expect(200);
+      expect(saved.body.pendingDecision).toEqual(pendingDecision);
+      const browser = await post(`${base}/review`)
+        .send({ actor: event().actor, revision: 'revision-1' })
+        .expect(200);
+      expect(browser.body.pendingAction).toBeUndefined();
+      expect(browser.body.pendingDecision).toBeUndefined();
+      for (const invalid of [
+        { ...body, actor: event('U2').actor },
+        { ...body, externalChannelId: 'C2' },
+        { ...body, revision: 'stale' },
+      ]) {
+        await post(`${base}/review`).send(invalid).expect(403);
+        await post(`${base}/review/decision`)
+          .send({ ...invalid, decision: { actionId: 'native-action', answer: 'yes' } })
+          .expect(403);
+      }
+      expect(interactive.submitInteractiveReview).not.toHaveBeenCalled();
+      await post(`${base}/review/decision`)
+        .send({ ...body, decision: { actionId: 'native-action', answer: 'yes' } })
+        .expect(202);
+      expect(interactive.submitInteractiveReview).toHaveBeenCalledWith(
+        { userId: users[0].id, tenantId },
+        responseId,
+        { actionId: 'native-action', answer: 'yes' },
+      );
+      value(
+        await authority.identity.revoke(
+          { tenantId, userId: users[0].id, accountLabel: 'A' },
+          linked.linkId,
+          linked.revision,
+        ),
+      );
+      await post(`${base}/review`).send(body).expect(403);
+      await post(`${base}/review/decision`)
+        .send({ ...body, decision: { actionId: 'native-action', answer: 'yes' } })
+        .expect(403);
+      expect(interactive.submitInteractiveReview).toHaveBeenCalledTimes(1);
+      expect(invoked).toHaveLength(0);
+    }),
+);
+
+it(
+  'native Stop resolves only the current actor lane and ignores stale or foreign clicks',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await link('U2', users[1]);
+    const admission = event();
+    const admitted = await post('runs').send(admission).expect(201);
+    await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const stop = {
+      actor: admission.actor,
+      externalThreadKey: admission.externalThreadKey,
+      externalChannelId: admission.externalChannelId,
+      eventAt: Date.now(),
+    };
+    const route = 'runs/stop-thread';
+    await post(route)
+      .send({ ...stop, actor: { ...stop.actor, externalUserId: 'U2' } })
+      .expect(200, { cancellationRequested: false });
+    await post(route)
+      .send({ ...stop, externalThreadKey: 'C1:other' })
+      .expect(200, { cancellationRequested: false });
+    await post(route)
+      .send({ ...stop, eventAt: 1 })
+      .expect(200, { cancellationRequested: false });
+    await post(route)
+      .send({ ...stop, actor: { ...stop.actor, teamId: 'other' } })
+      .expect(403);
+    expect(
+      (await storage.read(tenantId, 'channel', admitted.body.runId))?.cancellationRequested,
+    ).toBe(false);
+    await post(route).send(stop).expect(202, { cancellationRequested: true });
+    await post(route).send(stop).expect(202, { cancellationRequested: true });
+    expect(
+      (await storage.read(tenantId, 'channel', admitted.body.runId))?.cancellationRequested,
+    ).toBe(true);
+  }),
+);
+
+it(
+  'summarizes only terminal snapshots and freezes the first summary across advance retries',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const route = `runs/${admitted.body.runId}/advance`;
+    const body = { fence: claimed.body.fence };
+    await post(route).send(body).expect(200);
+    expect(summarize).not.toHaveBeenCalled();
+    nextSnapshot = { status: 'completed', text: 'Answer', elapsedMs: 12 };
+    const first = await post(route).send(body).expect(200);
+    expect(summarize).toHaveBeenCalledTimes(2);
+    expect(first.body.snapshot.summary).toMatchObject({ version: 1, throughSequence: 1 });
+    summarize.mockRejectedValue(new Error('Optional diagnostics unavailable'));
+    const replay = await post(route).send(body).expect(200);
+    expect(replay.body.snapshot.summary).toEqual(first.body.snapshot.summary);
+    expect(summarize).toHaveBeenCalledTimes(3);
+  }),
+);
+
+it(
+  'keeps a valid terminal answer when optional summary storage is unavailable',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    nextSnapshot = { status: 'completed', text: 'Answer', elapsedMs: 12 };
+    summarize.mockRejectedValue(new Error('Private database failure'));
+    const response = await post(`runs/${admitted.body.runId}/advance`)
+      .send({ fence: claimed.body.fence })
+      .expect(200);
+    expect(response.body.snapshot).toMatchObject({ status: 'completed', text: 'Answer' });
+    expect(response.body.snapshot).not.toHaveProperty('summary');
+    expect(JSON.stringify(response.body)).not.toContain('Private database failure');
+  }),
+);
+
+it(
+  'rechecks actor authority after summary retrieval before persisting or returning the answer',
+  scoped(async () => {
+    const linked = await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    nextSnapshot = { status: 'completed', text: 'Do not deliver', elapsedMs: 12 };
+    summarize.mockImplementation(async () => {
+      value(
+        await authority.identity.revoke(
+          { tenantId, userId: users[0].id, accountLabel: 'A' },
+          linked.linkId,
+          linked.revision,
+        ),
+      );
+      throw new Error('Optional metadata unavailable after revocation');
+    });
+    const response = await post(`runs/${admitted.body.runId}/advance`)
+      .send({ fence: claimed.body.fence })
+      .expect(403);
+    expect(response.body).toEqual({ error: 'channel_authority_changed' });
+    const persisted = await storage.read(tenantId, 'channel', admitted.body.runId);
+    expect(persisted?.state).toBe('cancelled');
+    expect(persisted?.snapshot).toBeUndefined();
+    expect(retired).toHaveLength(1);
+  }),
+);
+
+it(
+  'does not swallow an authority lookup outage as an optional summary failure',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    nextSnapshot = { status: 'completed', text: 'Do not deliver', elapsedMs: 12 };
+    const lookup = jest.spyOn(db, 'findUser');
+    summarize.mockImplementation(async () => {
+      lookup.mockRejectedValue(new Error('Authority storage unavailable'));
+      throw new Error('Optional summary unavailable');
+    });
+    try {
+      await post(`runs/${admitted.body.runId}/advance`)
+        .send({ fence: claimed.body.fence })
+        .expect(503);
+      const persisted = await storage.read(tenantId, 'channel', admitted.body.runId);
+      expect(persisted?.state).toBe('executing');
+      expect(persisted?.snapshot).toBeUndefined();
+      expect(retired).toHaveLength(0);
+    } finally {
+      lookup.mockRestore();
+    }
+  }),
+);
+
+it(
+  'reports only a stable execution hold code without exposing diagnostics or fabricating completion',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker-A' }).expect(200);
+    advanceError = new ChannelExecutionError('dispatch_outcome_unknown');
+    advanceError.message = 'sensitive provider details must remain private';
+    const response = await post(`runs/${admitted.body.runId}/advance`)
+      .send({ fence: claimed.body.fence })
+      .expect(409);
+    expect(response.body).toEqual({ error: 'dispatch_outcome_unknown' });
+    const persisted = await storage.read(tenantId, 'channel', admitted.body.runId);
+    expect(persisted?.state).toBe('executing');
+    expect(persisted?.snapshot).toBeUndefined();
+    expect(invoked).toHaveLength(0);
+  }),
+);
+
+it(
+  'validates and durably preserves opaque provider presentation with an immutable text fallback',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker-A' }).expect(200);
+    const fence = claimed.body.fence;
+    await post(`runs/${admitted.body.runId}/advance`).send({ fence }).expect(200);
+    await bindFixtureResponse(
+      (await storage.read(tenantId, 'channel', admitted.body.runId))!,
+      'reply-1',
+    );
+    await storage.saveSnapshot(
+      tenantId,
+      fence,
+      { status: 'completed', responseId: 'reply-1', text: '# Answer', elapsedMs: 1 },
+      Date.now(),
+    );
+    const payload = JSON.stringify([
+      { type: 'header', text: { type: 'plain_text', text: 'Answer' } },
+    ]);
+    const part = {
+      operationId: 'reply-part',
+      kind: 'message',
+      required: true,
+      text: '*Answer*',
+      presentation: { format: 'slack-blocks-v1', payload },
+    };
+    const plan = { revision: 'plan-1', rendererVersion: 'slack-structured-v2', parts: [part] };
+    const route = `runs/${admitted.body.runId}/plan`;
+    for (const invalid of [
+      { ...part, kind: 'artifact' },
+      { ...part, presentation: { format: 'bad format', payload } },
+      { ...part, presentation: { format: 'slack-blocks-v1', payload: '{' } },
+      { ...part, presentation: { format: 'slack-blocks-v1', payload: 'null' } },
+      {
+        ...part,
+        presentation: { format: 'slack-blocks-v1', payload: JSON.stringify(['界'.repeat(22_000)]) },
+      },
+    ]) {
+      await post(route)
+        .send({ fence, plan: { ...plan, parts: [invalid] } })
+        .expect(400);
+    }
+    await post(route).send({ fence, plan }).expect(200);
+    expect((await storage.read(tenantId, 'channel', admitted.body.runId))?.plan).toEqual(plan);
+    await post(route).send({ fence, plan }).expect(200);
+    await post(route)
+      .send({
+        fence,
+        plan: {
+          ...plan,
+          parts: [{ ...part, presentation: { ...part.presentation, payload: '[]' } }],
+        },
+      })
+      .expect(409);
+  }),
+);
+function post(path: string) {
+  return request(app)
+    .post(`/service/channel/${path}`)
+    .set('Authorization', `Bearer ${token}`)
+    .set('X-Tenant-Id', tenantId);
+}
+
+it(
+  'yields only a currently authorized exact polling lease and rejects revoked authority',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    await models.ChannelRun.updateOne(
+      { tenantId, runId: run.runId },
+      {
+        $set: { execution: { ...run.execution, protocol: 'responses', responseId: 'response-1' } },
+      },
+    );
+    const route = `runs/${admitted.body.runId}/yield`;
+    await request(app)
+      .post(`/service/channel/${route}`)
+      .send({ fence: claimed.body.fence })
+      .expect(401);
+    await post(route)
+      .send({ fence: { ...claimed.body.fence, runId: 'foreign' } })
+      .expect(400);
+    await post(route)
+      .send({ fence: { ...claimed.body.fence, owner: 'foreign' } })
+      .expect(409);
+    const yieldSpy = jest.spyOn(storage, 'yieldLease');
+    acl.set(users[0].id, 0);
+    await post(route).send({ fence: claimed.body.fence }).expect(403);
+    expect(yieldSpy).not.toHaveBeenCalled();
+    yieldSpy.mockRestore();
+  }),
+);
+
+it(
+  'acknowledges a safe polling yield without invoking an Agent or releasing its lane',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    await models.ChannelRun.updateOne(
+      { tenantId, runId: run.runId },
+      {
+        $set: { execution: { ...run.execution, protocol: 'responses', responseId: 'response-1' } },
+      },
+    );
+    const route = `runs/${admitted.body.runId}/yield`;
+    await post(route).send({ fence: claimed.body.fence }).expect(204);
+    await post(route).send({ fence: claimed.body.fence }).expect(409);
+    expect((await storage.read(tenantId, 'channel', run.runId))?.leaseOwner).toBeUndefined();
+    expect(invoked).toHaveLength(0);
+    const lane = await models.ChannelLane.findOne({ tenantId, laneId: run.laneId }).lean();
+    expect(lane?.activeRunId).toBe(run.runId);
+  }),
+);
+async function link(actor: string, user: IUser) {
+  const channel = (await db.getAgentChannel('channel'))!;
+  const identity = channelExternalIdentity(channel, actor);
+  const issued = value(await authority.identity.issue(identity));
+  const ticket = new URL(issued.url).hash.slice(1);
+  const principal = { tenantId, userId: user.id, accountLabel: user.name! };
+  const preview = value(await authority.identity.preview(principal, ticket));
+  const accepted = value(await authority.identity.accept(principal, ticket, preview.revision));
+  return value(await authority.identity.confirm(identity, accepted.linkId, accepted.revision));
+}
+
+it(
+  'routes same-thread A and B to their own linked principals and independent histories through actual service handlers',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await post('runs').send(event('U2')).expect(403);
+    await link('U2', users[1]);
+    const a = await post('runs').send(event()).expect(201);
+    const b = await post('runs').send(event('U2')).expect(201);
+    const claimedA = await post('runs/claim').send({ owner: 'worker-A' }).expect(200);
+    await post(`runs/${a.body.runId}/advance`).send({ fence: claimedA.body.fence }).expect(200);
+    const claimedB = await post('runs/claim').send({ owner: 'worker-B' }).expect(200);
+    await post(`runs/${b.body.runId}/advance`).send({ fence: claimedB.body.fence }).expect(200);
+    expect(invoked.map((run) => run.principal.userId)).toEqual([users[0].id, users[1].id]);
+    expect(invoked[0].execution?.conversationId).not.toBe(invoked[1].execution?.conversationId);
+    expect(invoked[1].execution?.parentMessageId).toBe('00000000-0000-0000-0000-000000000000');
+    expect(
+      await storage.requestCancel(
+        {
+          tenantId,
+          channelId: 'channel',
+          agentId: 'agent',
+          principal: (await authority.resolvePrincipal(
+            (await db.getAgentChannelMetadata('channel'))!,
+            event('U2').actor,
+          ))!,
+          admission: event('U2'),
+        },
+        a.body.runId,
+      ),
+    ).toBe(false);
+  }),
+);
+
+it(
+  'accepts cancel only from the original actor with its current account link and channel revision',
+  scoped(async () => {
+    const linked = await link('U1', users[0]);
+    await link('U2', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const path = `runs/${admitted.body.runId}/cancel`;
+    await post(path)
+      .send({ actor: event('U2').actor, revision: 'revision-1' })
+      .expect(403);
+    await post(path).send({ actor: event().actor, revision: 'old' }).expect(403);
+    expect(
+      (await storage.read(tenantId, 'channel', admitted.body.runId))?.cancellationRequested,
+    ).toBe(false);
+    await post(path).send({ actor: event().actor, revision: 'revision-1' }).expect(202);
+    expect(
+      (await storage.read(tenantId, 'channel', admitted.body.runId))?.cancellationRequested,
+    ).toBe(true);
+    value(
+      await authority.identity.revoke(
+        { tenantId, userId: users[0].id, accountLabel: 'A' },
+        linked.linkId,
+        linked.revision,
+      ),
+    );
+    await post(path).send({ actor: event().actor, revision: 'revision-1' }).expect(403);
+  }),
+);
+
+it(
+  'shared mode is deny-by-default owner-only and never falls back to creator authority for B',
+  scoped(async () => {
+    await db.updateAgentChannel('channel', users[0].id, { credentialMode: 'shared' });
+    await link('U1', users[0]);
+    await expect(link('U2', users[1])).rejects.toThrow('forbidden');
+    await post('runs').send(event('U2')).expect(403);
+    await post('runs')
+      .send({ ...event('U2'), principal: { userId: users[0].id } })
+      .expect(400);
+    await post('runs').send(event()).expect(201);
+  }),
+);
+
+it(
+  'rechecks link revocation and current ACL before execution, not only at admission',
+  scoped(async () => {
+    const linked = await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    acl.set(users[0].id, 0);
+    await post(`runs/${admitted.body.runId}/advance`)
+      .send({ fence: claimed.body.fence })
+      .expect(403);
+    expect((await storage.read(tenantId, 'channel', admitted.body.runId))?.state).toBe('cancelled');
+    acl.set(users[0].id, PermissionBits.VIEW);
+    const next = await post('runs').send(event('U1', 'after-acl-restored')).expect(201);
+    const nextClaim = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    value(
+      await authority.identity.revoke(
+        { tenantId, userId: users[0].id, accountLabel: 'A' },
+        linked.linkId,
+        linked.revision,
+      ),
+    );
+    await post(`runs/${next.body.runId}/advance`).send({ fence: nextClaim.body.fence }).expect(403);
+    expect(invoked).toHaveLength(0);
+  }),
+);
+
+it(
+  'retires revoked queued work without exposing its view, then admits the next actor lane',
+  scoped(async () => {
+    const linked = await link('U1', users[0]);
+    await link('U2', users[1]);
+    const a = await post('runs').send(event()).expect(201);
+    const b = await post('runs').send(event('U2')).expect(201);
+    value(
+      await authority.identity.revoke(
+        { tenantId, userId: users[0].id, accountLabel: 'A' },
+        linked.linkId,
+        linked.revision,
+      ),
+    );
+    await post('runs/claim').send({ owner: 'cleanup-worker' }).expect(204);
+    expect(retired).toHaveLength(1);
+    expect(retired[0]).toMatchObject({
+      runId: a.body.runId,
+      cancellationRequested: true,
+      errorCode: 'channel_authority_changed',
+    });
+    expect(retired[0].execution).toBeUndefined();
+    expect((await storage.read(tenantId, 'channel', a.body.runId))?.state).toBe('cancelled');
+    const next = await post('runs/claim').send({ owner: 'next-worker' }).expect(200);
+    expect(next.body.run.runId).toBe(b.body.runId);
+    expect(invoked).toHaveLength(0);
+  }),
+);
+
+it(
+  'requires the exact worker fence for cleanup, never another actor action, and latches authority loss',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await link('U2', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    acl.set(users[0].id, 0);
+    await post(`runs/${admitted.body.runId}/cancel`)
+      .send({ actor: event('U2').actor, revision: 'revision-1' })
+      .expect(403);
+    await post(`runs/${admitted.body.runId}/advance`)
+      .send({ fence: { ...claimed.body.fence, owner: 'other-worker' } })
+      .expect(409);
+    expect(retired).toHaveLength(0);
+    retirement = 'pending';
+    await post(`runs/${admitted.body.runId}/advance`)
+      .send({ fence: claimed.body.fence })
+      .expect(403);
+    expect((await storage.read(tenantId, 'channel', admitted.body.runId))?.state).toBe('queued');
+    acl.set(users[0].id, PermissionBits.VIEW);
+    retirement = 'stopped';
+    await post(`runs/${admitted.body.runId}/advance`)
+      .send({ fence: claimed.body.fence })
+      .expect(403);
+    expect((await storage.read(tenantId, 'channel', admitted.body.runId))?.state).toBe('cancelled');
+    expect(invoked).toHaveLength(0);
+  }),
+);
+
+it(
+  'does not turn a permission lookup outage into revocation or cleanup',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const lookup = jest
+      .spyOn(db, 'getAgentChannel')
+      .mockRejectedValueOnce(new Error('database unavailable'));
+    await post(`runs/${admitted.body.runId}/advance`)
+      .send({ fence: claimed.body.fence })
+      .expect(503);
+    lookup.mockRestore();
+    expect(retired).toHaveLength(0);
+    expect(await storage.read(tenantId, 'channel', admitted.body.runId)).toMatchObject({
+      cancellationRequested: false,
+      state: 'queued',
+    });
+    await post(`runs/${admitted.body.runId}/advance`)
+      .send({ fence: claimed.body.fence })
+      .expect(200);
+  }),
+);
+
+it(
+  'rejects wrong workspace/app, foreign tenant and unauthenticated admission',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const forged = event();
+    forged.actor.teamId = 'T2';
+    await post('runs').send(forged).expect(403);
+    await request(app).post('/service/channel/runs').send(event()).expect(401);
+    await request(app)
+      .post('/service/channel/runs')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-Tenant-Id', 'other')
+      .send(event())
+      .expect(404);
+    expect(invoked).toHaveLength(0);
+  }),
+);
+
+it.each(['revoked', 'renewed', 'expired', 'replaced'] as const)(
+  'checks refreshed authority and lease after artifact retrieval: %s',
+  (change) =>
+    scoped(async () => {
+      const linked = await link('U1', users[0]);
+      await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const fence = claimed.body.fence;
+      const run = await storage.prepareExecution(tenantId, fence, Date.now());
+      await bindFixtureResponse(run, 'response');
+      const file = await db.publishRunArtifactFile({
+        scope: {
+          userId: users[0].id,
+          tenantId,
+          conversationId: run.execution!.conversationId,
+          runId: 'response',
+          executionId: 'execution',
+          agentId: 'agent',
+          sourceFileId: 'source',
+        },
+        provenance: {
+          runId: 'response',
+          executionId: 'execution',
+          agentId: 'agent',
+          sourceFileId: 'source',
+          publishedAt: new Date().toISOString(),
+          inputFileIds: [],
+        },
+        file: {
+          filename: 'result.txt',
+          filepath: '/synthetic/result.txt',
+          bytes: 4,
+          type: 'text/plain',
+          source: FileSources.local,
+        },
+      });
+      const sha256 = createHash('sha256').update('file').digest('hex');
+      const descriptor = {
+        artifactId: `${file.file_id}:${sha256}`,
+        filename: 'result.txt',
+        mediaType: 'text/plain',
+        bytes: 4,
+        sha256,
+      };
+      await storage.saveSnapshot(
+        tenantId,
+        fence,
+        {
+          status: 'completed',
+          responseId: 'response',
+          text: 'answer',
+          elapsedMs: 1,
+          artifacts: [descriptor],
+        },
+        Date.now(),
+      );
+      const initial = (await storage.read(tenantId, 'channel', run.runId))!;
+      artifactRead = async () => {
+        if (change === 'revoked') {
+          value(
+            await authority.identity.revoke(
+              { tenantId, userId: users[0].id, accountLabel: 'A' },
+              linked.linkId,
+              linked.revision,
+            ),
+          );
+          return;
+        }
+        if (change === 'renewed')
+          await storage.renew(tenantId, fence, initial.leaseExpiresAt - 1, 60000);
+        fakeNow = initial.leaseExpiresAt + 1;
+        if (change === 'replaced')
+          expect(
+            await storage.claim(tenantId, 'channel', 'replacement', fakeNow, 60000),
+          ).not.toBeNull();
+      };
+      const response = await post(
+        `runs/${run.runId}/artifacts/${encodeURIComponent(descriptor.artifactId)}`,
+      )
+        .send({ fence })
+        .expect({ renewed: 200, revoked: 403, expired: 409, replaced: 409 }[change]);
+      if (change === 'renewed') {
+        expect(response.body).toEqual(Buffer.from('file'));
+        expect(response.headers['x-artifact-sha256']).toBe(sha256);
+      } else {
+        expect(response.body).toEqual({
+          error: change === 'revoked' ? 'channel_authority_changed' : 'stale_fence',
+        });
+        expect(response.headers['x-artifact-sha256']).toBeUndefined();
+        if (change === 'revoked')
+          expect((await storage.read(tenantId, 'channel', run.runId))?.state).toBe('cancelled');
+      }
+    })(),
+);
+
+it.each(['expired', 'revoked', 'changed-binding'] as const)(
+  'refuses %s issued credentials without minting replacements',
+  (change) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+      const credentials = responseCredentials();
+      await credentials.provision(run);
+      const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+      expect(await credentials.isCurrent(saved)).toBe(true);
+      let checked = saved;
+      if (change === 'changed-binding') {
+        const foreign = await db.createAgentApiKey({
+          userId: users[0].id,
+          name: 'Other run credential',
+          binding: { kind: 'channel_run', id: 'another/run' },
+        });
+        checked = { ...saved, execution: { ...saved.execution!, apiKeyId: foreign.id } };
+      } else if (change === 'revoked')
+        await db.deleteAgentApiKey(saved.execution!.apiKeyId!, users[0].id);
+      else
+        await models.AgentApiKey.updateOne(
+          { _id: saved.execution!.apiKeyId },
+          { $set: { expiresAt: new Date(0) } },
+        );
+      const create = jest.spyOn(db, 'createAgentApiKey');
+      expect(await credentials.isCurrent(checked)).toBe(false);
+      await expect(credentials.provision(checked)).rejects.toThrow('authority changed');
+      expect(create).not.toHaveBeenCalled();
+      expect((await storage.read(tenantId, 'channel', run.runId))?.execution?.apiKeyId).toBe(
+        saved.execution!.apiKeyId,
+      );
+    })(),
+);
+
+it(
+  'reauthorizes trace operations on retry without rewriting frozen answers or metric totals',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claim = await post('runs/claim').send({ owner: 'first' }).expect(200);
+    const run = (await storage.read(tenantId, 'channel', admitted.body.runId))!;
+    const metrics = await summarize(run, { status: 'completed', text: 'Answer', elapsedMs: 12 });
+    let allowed = true;
+    const traceUrl = 'https://cloud.langfuse.com/project/project/sessions/conversation';
+    let currentUrl = traceUrl;
+    let amount = '1';
+    summarize.mockImplementation(async () => ({
+      ...metrics,
+      costUSD: { coverage: 'complete', coveredRuns: 1, value: amount, basis: 'provider_reported' },
+      ...(allowed ? { session: { url: currentUrl } } : {}),
+    }));
+    nextSnapshot = { status: 'completed', text: 'Answer', elapsedMs: 12 };
+    const route = `runs/${admitted.body.runId}`;
+    const first = await post(`${route}/advance`).send({ fence: claim.body.fence }).expect(200);
+    const answer = { operationId: 'answer', kind: 'message', required: true, text: 'Answer' };
+    const trace = {
+      operationId: 'trace',
+      kind: 'message',
+      required: false,
+      text: traceUrl,
+      traceUrl,
+    };
+    const plan = { revision: 'v1', rendererVersion: 'v1', parts: [answer, trace] };
+    await post(`${route}/plan`)
+      .send({
+        fence: claim.body.fence,
+        plan: { ...plan, parts: [answer, { ...trace, required: true }] },
+      })
+      .expect(400);
+    const planned = await post(`${route}/plan`).send({ fence: claim.body.fence, plan }).expect(200);
+    expect(planned.body.plan.parts).toEqual(plan.parts);
+    allowed = false;
+    amount = '999';
+    const replay = await post(`${route}/advance`).send({ fence: claim.body.fence }).expect(200);
+    expect(JSON.stringify(replay.body)).not.toContain(traceUrl);
+    expect(replay.body.plan.parts).toEqual([answer]);
+    expect(replay.body.snapshot.summary.costUSD).toEqual(first.body.snapshot.summary.costUSD);
+    fakeNow = Date.now() + 60001;
+    const retry = await post('runs/claim').send({ owner: 'replacement' }).expect(200);
+    expect(JSON.stringify(retry.body)).not.toContain(traceUrl);
+    await post(`${route}/begin`)
+      .send({ fence: retry.body.fence, operationId: 'trace' })
+      .expect(409, { error: 'trace_unavailable' });
+    expect(
+      (await storage.read(tenantId, 'channel', admitted.body.runId))?.receipts.find(
+        (receipt) => receipt.operationId === 'trace',
+      ),
+    ).toMatchObject({ attempts: 0, outcome: 'planned' });
+    await post(`${route}/begin`)
+      .send({ fence: retry.body.fence, operationId: 'answer' })
+      .expect(200);
+    allowed = true;
+    currentUrl = 'https://cloud.langfuse.com/project/changed/sessions/conversation';
+    const changed = await post(`${route}/advance`).send({ fence: retry.body.fence }).expect(200);
+    expect(changed.body.snapshot.summary.session.url).toBe(currentUrl);
+    expect(changed.body.plan.parts).toEqual([answer]);
+    expect(JSON.stringify(changed.body)).not.toContain(traceUrl);
+    const retained = (await storage.read(tenantId, 'channel', admitted.body.runId))!;
+    expect(retained.plan).toEqual(plan);
+    expect(retained.snapshot!.summary!.costUSD).toEqual(first.body.snapshot.summary.costUSD);
+  }),
+);
+
+it.each(['revoked', 'expired', 'foreign-binding'] as const)(
+  'rejects %s keys in both source and request authorization',
+  (change) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+      const credentials = responseCredentials();
+      await credentials.provision(run);
+      const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+      const binding = { kind: 'channel_run' as const, id: `channel/${run.runId}` };
+      const keyId = saved.execution!.apiKeyId!;
+      const owner = { tenantId, userId: users[0].id };
+      const probe = express();
+      probe.use(express.json());
+      probe.post('/probe', async (req, res) => {
+        req.originalUrl = '/api/agents/v1/responses';
+        res.json({
+          allowed: await credentials.authorizeRequest({
+            keyId,
+            binding,
+            user: users[0],
+            request: req,
+          }),
+        });
+      });
+      const requestAllowed = async () =>
+        (
+          await request(probe)
+            .post('/probe')
+            .set('Idempotency-Key', `channel:${run.runId}`)
+            .send({ model: 'agent', input: run.admission.input, background: true, store: true })
+            .expect(200)
+        ).body.allowed;
+      expect(await credentials.authorizeSource(binding, keyId, owner, 'agent')).toBe(true);
+      expect(await requestAllowed()).toBe(true);
+      if (change === 'revoked') await db.deleteAgentApiKey(keyId, users[0].id);
+      else
+        await models.AgentApiKey.collection.updateOne(
+          { _id: new mongoose.Types.ObjectId(keyId) },
+          {
+            $set:
+              change === 'expired'
+                ? { expiresAt: new Date(0) }
+                : { binding: { kind: 'channel_run', id: 'other/run' } },
+          },
+        );
+      expect(await credentials.authorizeSource(binding, keyId, owner, 'agent')).toBe(false);
+      expect(await requestAllowed()).toBe(false);
+    })(),
+);
+
+it(
+  'requires persisted cancellation intent for a run-key cancel capability',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    const credentials = responseCredentials();
+    await credentials.provision(run);
+    const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+    await bindFixtureResponse(saved, 'resp_cancel');
+    const probe = express();
+    probe.post('/probe', async (req, res) => {
+      req.originalUrl = '/api/agents/v1/responses/resp_cancel/cancel';
+      res.json({
+        allowed: await credentials.authorizeRequest({
+          keyId: saved.execution!.apiKeyId!,
+          binding: { kind: 'channel_run', id: `channel/${run.runId}` },
+          user: users[0],
+          request: req,
+        }),
+      });
+    });
+    expect((await request(probe).post('/probe').expect(200)).body.allowed).toBe(false);
+    await storage.requestCancel(saved, saved.runId);
+    expect((await request(probe).post('/probe').expect(200)).body.allowed).toBe(true);
+  }),
+);
+
+it.each([false, true])(
+  'starts independent authorization reads together and evaluates final expiry: %s',
+  (expires) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+      await responseCredentials().provision(run);
+      const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+      const key = (await db.getAgentApiKeyById(saved.execution!.apiKeyId!, users[0].id))!;
+      let clock = Date.now();
+      key.expiresAt = new Date(clock + 10);
+      let entered!: () => void;
+      let release!: () => void;
+      const policyEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const policyGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const readKey = jest.fn(async () => key);
+      const credentials = responseCredentials({
+        now: () => clock,
+        getKey: readKey,
+        resolvePrincipal: async () => {
+          entered();
+          await policyGate;
+          return saved.principal;
+        },
+      });
+      const result = credentials.authorizeSource(
+        { kind: 'channel_run', id: `channel/${run.runId}` },
+        saved.execution!.apiKeyId!,
+        { tenantId, userId: users[0].id },
+        'agent',
+      );
+      try {
+        await policyEntered;
+        expect(readKey).toHaveBeenCalledTimes(1);
+        if (expires) clock += 20;
+        release();
+        expect(await result).toBe(!expires);
+      } finally {
+        release();
+        await result.catch(() => undefined);
+      }
+    })(),
+);
+
+it(
+  'reconciles verified unknown delivery once and releases the actor lane without reexecution',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const first = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const next = await post('runs').send(event('U1', 'next')).expect(201);
+    const route = `runs/${admitted.body.runId}`;
+    nextSnapshot = { status: 'completed', text: 'Answer', elapsedMs: 1 };
+    await post(`${route}/advance`).send({ fence: first.body.fence }).expect(200);
+    await post(`${route}/plan`)
+      .send({
+        fence: first.body.fence,
+        plan: {
+          revision: 'plan',
+          rendererVersion: 'test',
+          parts: [{ operationId: 'answer', kind: 'message', required: true, text: 'Answer' }],
+        },
+      })
+      .expect(200);
+    await post(`${route}/begin`)
+      .send({ fence: first.body.fence, operationId: 'answer' })
+      .expect(200);
+    const receipt = { operationId: 'answer', outcome: 'unknown', attempts: 1 };
+    await post(`${route}/settle`).send({ fence: first.body.fence, receipt }).expect(200);
+    await post(`${route}/commit`)
+      .send({ fence: first.body.fence })
+      .expect(409, { error: 'delivery_incomplete' });
+    await post(`${route}/begin`)
+      .send({ fence: first.body.fence, operationId: 'answer' })
+      .expect(409);
+    fakeNow = (await storage.read(tenantId, 'channel', admitted.body.runId))!.leaseExpiresAt + 1;
+    const replacement = await post('runs/claim').send({ owner: 'reconciler' }).expect(200);
+    const fence = replacement.body.fence;
+    const verified = { ...receipt, outcome: 'confirmed', externalMessageKey: 'C1:verified' };
+    await post(`${route}/delivery/reconcile`)
+      .send({ fence: first.body.fence, receipt: verified })
+      .expect(409);
+    await post(`${route}/delivery/reconcile`)
+      .send({ fence, receipt: { ...verified, attempts: 2 } })
+      .expect(409);
+    await post(`${route}/delivery/reconcile`)
+      .send({ fence, receipt: { ...verified, externalMessageKey: 'C2:foreign' } })
+      .expect(400);
+    await post(`${route}/delivery/reconcile`)
+      .send({ fence, receipt: { ...receipt, outcome: 'confirmed' } })
+      .expect(409);
+    await post(`${route}/delivery/reconcile`).send({ fence, receipt: verified }).expect(200);
+    await post(`${route}/delivery/reconcile`).send({ fence, receipt: verified }).expect(200);
+    await post(`${route}/delivery/reconcile`)
+      .send({ fence, receipt: { ...verified, externalMessageKey: 'C1:changed' } })
+      .expect(409);
+    const delivered = await post(`${route}/commit`).send({ fence }).expect(200);
+    expect(delivered.body.state).toBe('delivered');
+    expect(delivered.body.receipts[0]).toMatchObject({
+      outcome: 'confirmed',
+      attempts: 1,
+      externalMessageKey: 'C1:verified',
+    });
+    expect(invoked).toHaveLength(1);
+    const nextClaim = await post('runs/claim').send({ owner: 'next-worker' }).expect(200);
+    expect(nextClaim.body.run.runId).toBe(next.body.runId);
+  }),
+);
+
+it(
+  'reconciles verified unknown progress with the same revision and provider identity',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const fence = claimed.body.fence;
+    const route = `runs/${admitted.body.runId}/progress`;
+    await post(`${route}/plan`)
+      .send({ fence, revision: 1, rendererVersion: 'test', text: 'Working' })
+      .expect(200);
+    await post(`${route}/begin`).send({ fence, revision: 1 }).expect(200);
+    await post(`${route}/settle`)
+      .send({ fence, revision: 1, receipt: { outcome: 'unknown', attempts: 1 } })
+      .expect(200);
+    const receipt = { outcome: 'confirmed', attempts: 1, externalMessageKey: 'C1:progress' };
+    await post(`${route}/reconcile`).send({ fence, revision: 2, receipt }).expect(409);
+    await post(`${route}/reconcile`)
+      .send({ fence, revision: 1, receipt: { ...receipt, externalMessageKey: 'C2:foreign' } })
+      .expect(400);
+    await post(`${route}/reconcile`).send({ fence, revision: 1, receipt }).expect(200);
+    await post(`${route}/reconcile`).send({ fence, revision: 1, receipt }).expect(200);
+    await post(`${route}/reconcile`)
+      .send({ fence, revision: 1, receipt: { ...receipt, externalMessageKey: 'C1:changed' } })
+      .expect(409);
+    const updated = await post(`${route}/plan`)
+      .send({ fence, revision: 2, rendererVersion: 'test', text: 'Updated' })
+      .expect(200);
+    expect(updated.body.progress).toMatchObject({
+      revision: 2,
+      text: 'Updated',
+      externalMessageKey: 'C1:progress',
+    });
+  }),
+);
+
+it(
+  'propagates key lookup outages without converting them to revocation',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    await responseCredentials().provision(run);
+    const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+    const credentials = responseCredentials({
+      getKey: async () => {
+        throw new Error('key store unavailable');
+      },
+    });
+    await expect(
+      credentials.authorizeSource(
+        { kind: 'channel_run', id: `channel/${run.runId}` },
+        saved.execution!.apiKeyId!,
+        { tenantId, userId: users[0].id },
+        'agent',
+      ),
+    ).rejects.toThrow('key store unavailable');
+    expect((await storage.read(tenantId, 'channel', run.runId))?.cancellationRequested).toBe(false);
+  }),
+);
