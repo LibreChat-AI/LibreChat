@@ -81,23 +81,38 @@ const resetPassword = async () => {
      * logged in after an administrator believes the account has been recovered.
      */
     let deletedCount;
-    try {
-      ({ deletedCount } = await Passkey.deleteMany({ user: user._id }));
+    let failure;
+    /**
+     * The password is already changed, so every step runs and the first failure exits non-zero.
+     * The cache settles last: an eviction before the re-stamp could leave a document carrying the
+     * earlier cutoff, which keeps accepting a credential minted during the password write.
+     */
+    for (const step of [
+      async () => {
+        ({ deletedCount } = await Passkey.deleteMany({ user: user._id }));
+      },
       /** A refresh session outlives the stamp: refreshing mints a token issued after it. */
-      await Session.deleteMany({ user: user._id });
-    } finally {
-      /** The password is already changed, so the cache settles even when a revocation fails. */
-      await methods.awaitAuthUserDocEviction(user._id.toString());
+      () => Session.deleteMany({ user: user._id }),
+      () =>
+        restampRetirementCutoff(
+          'credentialsChangedAt',
+          userId,
+          update.credentialsChangedAt,
+          (cutoff, expectedState) =>
+            methods.updateUser(userId, cutoff, expectedState, { preserveExpiresAt: true }),
+        ),
+      () => methods.awaitAuthUserDocEviction(userId),
+    ]) {
+      try {
+        await step();
+      } catch (err) {
+        console.error('Password reset step failed:', err);
+        failure ??= err;
+      }
     }
-
-    /** After the revocations, so a failure here still leaves them done and exits non-zero. */
-    await restampRetirementCutoff(
-      'credentialsChangedAt',
-      userId,
-      update.credentialsChangedAt,
-      (cutoff, expectedState) =>
-        methods.updateUser(userId, cutoff, expectedState, { preserveExpiresAt: true }),
-    );
+    if (failure) {
+      throw failure;
+    }
 
     console.log('Password successfully reset!');
     if (deletedCount > 0) {
