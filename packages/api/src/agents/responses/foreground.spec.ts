@@ -7,7 +7,7 @@ import { ToolMessage } from '@librechat/agents/langchain/messages';
 import { createModels, createMethods, tenantStorage, runAsSystem } from '@librechat/data-schemas';
 import type { Response } from './types';
 import {
-  createForegroundResponseTerminal,
+  createResponseTerminal,
   projectStoredResponseMessage,
   saveForegroundResponseInputs,
   requireResponseStorageWrite,
@@ -331,7 +331,7 @@ it.each([null, undefined, { message: 'database unavailable' }, { conversationId:
 
 async function settleTerminal(
   terminal: Pick<
-    ReturnType<typeof createForegroundResponseTerminal>,
+    ReturnType<typeof createResponseTerminal>,
     'beforeSettle' | 'afterSettle' | 'onSettlementError'
   >,
   outcome: 'complete' | 'error' | 'aborted' = 'complete',
@@ -381,7 +381,7 @@ it.each([true, false])(
   async (requestedStore) => {
     const response = result();
     const context = createResponseContext({ model: 'agent', input: '' }, response.id);
-    const terminal = createForegroundResponseTerminal({ context, requestedStore, logger });
+    const terminal = createResponseTerminal({ context, requestedStore, logger });
     const publish = jest.fn();
     const saveResult = jest.fn(async () => ({ conversationId, messageId: response.id }));
     terminal.stage({
@@ -404,7 +404,7 @@ it.each([true, false])(
 it('retains provider output but reports store false on a failed optional save', async () => {
   const response = result();
   const context = createResponseContext({ model: 'agent', input: '' }, response.id);
-  const terminal = createForegroundResponseTerminal({ context, requestedStore: true, logger });
+  const terminal = createResponseTerminal({ context, requestedStore: true, logger });
   const publish = jest.fn();
   terminal.stage({
     fail: jest.fn(),
@@ -422,7 +422,7 @@ it.each(['error', 'cancelled'])(
   'does not save or publish a staged success after %s',
   async (outcome) => {
     const response = result();
-    const terminal = createForegroundResponseTerminal({
+    const terminal = createResponseTerminal({
       context: createResponseContext({ model: 'agent', input: '' }, response.id),
       requestedStore: true,
       logger,
@@ -438,7 +438,7 @@ it.each(['error', 'cancelled'])(
 
 it('cannot restage a completed foreground result and repeat persistence', async () => {
   const response = result();
-  const terminal = createForegroundResponseTerminal({
+  const terminal = createResponseTerminal({
     context: createResponseContext({ model: 'agent', input: '' }, response.id),
     requestedStore: true,
     logger,
@@ -455,7 +455,7 @@ it('cannot restage a completed foreground result and repeat persistence', async 
 
 it('fails closed if a caller skips the tracked-write phase', async () => {
   const response = result();
-  const terminal = createForegroundResponseTerminal({
+  const terminal = createResponseTerminal({
     context: createResponseContext({ model: 'agent', input: '' }, response.id),
     requestedStore: true,
     logger,
@@ -489,7 +489,7 @@ it('keeps foreground storage inside the account-erasure cleanup barrier', () =>
       releaseSave = resolve;
     });
     const response = result();
-    const terminal = createForegroundResponseTerminal({
+    const terminal = createResponseTerminal({
       context: createResponseContext({ model: 'agent', input: '' }, response.id),
       requestedStore: true,
       logger,

@@ -11,7 +11,7 @@ export type StoredResponseStatus =
   | 'queued'
   | 'in_progress'
   | 'requires_action'
-  /** Private terminal protocol phase; legacy active-only writers cannot finalize it. */
+  /** Private preparation/publication phase; output is not yet materialized. */
   | 'materializing'
   | 'completed'
   | 'failed'

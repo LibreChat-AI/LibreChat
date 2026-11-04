@@ -182,7 +182,6 @@ beforeEach(async () => {
     serviceToken: () => serviceToken,
     config: async () => ({ enabled: true }),
     getAgent: async () => ({ id: 'agent-a' }),
-    deleteApiKey: async () => false,
     verifySlackToken: async () => null,
     logError: () => {},
   });
@@ -473,33 +472,6 @@ test('durable worker enumerates only metadata in system context then exports wit
   expect(observed).toEqual([SYSTEM_TENANT_ID, tenantId]);
 });
 
-it('exports valid feedback even when independent receipt maintenance fails', async () => {
-  await post().expect(200);
-  const onError = jest.fn();
-  const worker = createChannelFeedbackWorker({
-    feedback: {
-      ...feedback,
-      compact: async () => {
-        throw new Error('maintenance unavailable');
-      },
-    },
-    batchSize: 10,
-    intervalMs: 60000,
-    maxIdleIntervalMs: 60000,
-    onError,
-    listChannels: async () => ({ channels: [{ tenantId }] }),
-  });
-  await worker.start();
-  await worker.stop();
-  expect(deps.sendScore).toHaveBeenCalledTimes(1);
-  expect(onError).toHaveBeenCalledWith(
-    expect.objectContaining({ message: 'maintenance unavailable' }),
-  );
-  expect(await scope(() => mongoose.models.ChannelFeedback.findOne({}).lean())).toMatchObject({
-    exportStatus: 'sent',
-  });
-});
-
 it('refuses to move a frozen feedback mapping to a changed source trace', async () => {
   await post().expect(200);
   await scope(async () =>
@@ -718,7 +690,6 @@ it('starts recovery and admits scoped feedback with a disabled deployment defaul
     serviceToken: () => serviceToken,
     config: async (req, channel) => policy.requestConfig(req, channel),
     getAgent: async () => ({ id: 'agent-a' }),
-    deleteApiKey: async () => false,
     verifySlackToken: async () => null,
     logError: () => {},
   }).service;

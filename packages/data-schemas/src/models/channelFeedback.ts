@@ -10,7 +10,6 @@ import { applyTenantIsolation } from './plugins/tenantIsolation';
 
 export interface ChannelFeedbackRetention {
   expiredAt?: Date | null;
-  retentionVersion?: number;
 }
 
 export type ChannelReplyRecord = ChannelReplyMapping & ChannelFeedbackRetention;
@@ -25,10 +24,7 @@ export interface ChannelFeedbackEventRecord extends ChannelFeedbackRetention {
   mapping: ChannelReplyMapping;
   rating: ChannelRating;
   processed: boolean;
-  receiptCompacted?: boolean;
   receiptExpiresAt?: Date;
-  receiptCheckpointRevision?: number;
-  compactionRetryAtMs?: number;
   retryAtMs?: number;
 }
 
@@ -38,8 +34,7 @@ export interface ChannelFeedbackLedger extends ChannelFeedbackRetention {
   mapping: ChannelReplyMapping;
   externalUserId: string;
   scoreId: string;
-  receiptCompactionEpoch?: number;
-  receiptCheckpointRevision?: number;
+  receiptEpoch?: number;
   scoreTimestamp?: Date;
   createdAt?: Date;
   votes: ChannelFeedbackVote[];
@@ -71,7 +66,6 @@ function mappingSchema(): Schema<ChannelReplyRecord> {
       destinationIds: { type: [String], default: undefined },
       centralTraceExportEnabled: { type: Boolean, required: true },
       expiredAt: Date,
-      retentionVersion: Number,
     },
     { _id: false },
   );
@@ -84,7 +78,6 @@ export function createChannelReplyModel(
   schema.index({ tenantId: 1, channelId: 1, teamId: 1, externalMessageKey: 1 }, { unique: true });
   schema.index({ tenantId: 1, principalId: 1, conversationId: 1 });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
-  schema.index({ tenantId: 1, retentionVersion: 1, _id: 1 });
   applyTenantIsolation(schema);
   return mongoose.models.ChannelReply ?? mongoose.model<ChannelReplyRecord>('ChannelReply', schema);
 }
@@ -114,31 +107,24 @@ export function createChannelFeedbackEventModel(
       mapping: { type: mappingSchema(), required: true },
       rating: { type: String, enum: ['thumbsUp', 'thumbsDown'], required: true },
       processed: { type: Boolean, required: true },
-      receiptCompacted: Boolean,
       receiptExpiresAt: Date,
-      receiptCheckpointRevision: Number,
-      compactionRetryAtMs: { type: Number, default: 0 },
       retryAtMs: { type: Number, default: 0 },
       expiredAt: Date,
-      retentionVersion: Number,
     },
     { timestamps: true },
   );
   schema.index({ tenantId: 1, channelId: 1, eventId: 1 }, { unique: true });
   schema.index({ tenantId: 1, processed: 1, updatedAt: 1, _id: 1 });
   schema.index({ receiptExpiresAt: 1 }, { expireAfterSeconds: 0 });
-  schema.index({ tenantId: 1, processed: 1, receiptCompacted: 1, updatedAt: 1, _id: 1 });
   schema.index({
     tenantId: 1,
     ledgerKey: 1,
     processed: 1,
-    receiptCompacted: 1,
     receiptExpiresAt: 1,
   });
   schema.index({ tenantId: 1, ledgerKey: 1, 'event.eventTimestampUs': -1, 'event.eventId': -1 });
   schema.index({ tenantId: 1, 'mapping.principalId': 1, 'mapping.conversationId': 1 });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
-  schema.index({ tenantId: 1, retentionVersion: 1, _id: 1 });
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelFeedbackEvent ??
@@ -151,7 +137,7 @@ export function createChannelFeedbackModel(
 ): Model<ChannelFeedbackLedger> {
   const vote = new Schema<ChannelFeedbackVote>(
     {
-      reaction: String,
+      reaction: { type: String, required: true },
       externalMessageKey: { type: String, required: true },
       rating: { type: String, enum: ['thumbsUp', 'thumbsDown'], required: true },
       active: { type: Boolean, required: true },
@@ -167,11 +153,9 @@ export function createChannelFeedbackModel(
       mapping: { type: mappingSchema(), required: true },
       externalUserId: { type: String, required: true },
       scoreId: { type: String, required: true },
-      receiptCompactionEpoch: Number,
-      receiptCheckpointRevision: Number,
-      scoreTimestamp: Date,
+      receiptEpoch: Number,
+      scoreTimestamp: { type: Date, required: true, default: Date.now },
       expiredAt: Date,
-      retentionVersion: Number,
       votes: { type: [vote], default: [] },
       revision: { type: Number, required: true },
       rating: { type: String, enum: ['thumbsUp', 'thumbsDown', null], default: null },
@@ -187,7 +171,6 @@ export function createChannelFeedbackModel(
   schema.index({ tenantId: 1, 'mapping.principalId': 1, 'mapping.conversationId': 1 });
   schema.index({ tenantId: 1, 'mapping.channelId': 1 });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
-  schema.index({ tenantId: 1, retentionVersion: 1, _id: 1 });
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelFeedback ??

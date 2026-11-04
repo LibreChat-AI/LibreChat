@@ -185,7 +185,7 @@ it('retires denied or cancelled work and never executes expired or closed scopes
   expect(f.onError).not.toHaveBeenCalled();
 });
 
-it('leaves unready publication untouched and repairs legacy background reservations only', async () => {
+it('leaves unready publication untouched and ignores records without a dispatch token', async () => {
   await reserve('legacy', owner, false);
   await reserve('foreground', owner, false, false);
   const f = fixture();
@@ -194,7 +194,7 @@ it('leaves unready publication untouched and repairs legacy background reservati
   expect(f.contexts).toEqual([]);
   f.setReady(true);
   await f.outbox.recoverPending(5, { found: false });
-  expect([...f.published.values()]).toEqual(['legacy']);
+  expect([...f.published.values()]).toEqual([]);
   expect(
     (await scoped(owner, () => storage.read(owner, 'foreground')))?.dispatchOutbox,
   ).toBeUndefined();
@@ -214,4 +214,120 @@ it('fails closed on unknown future dispatch formats', async () => {
       storage.settleDispatch(owner, 'future', { kind: 'create', id: 'future' }),
     ),
   ).toBe(false);
+});
+
+it('settles a consumed resume after another pause without enqueueing it again', async () => {
+  await scoped(owner, async () => {
+    const record = await reserve('pause-before-ack');
+    const started = await storage.publish(owner, record.responseId, record.revision, {
+      status: 'in_progress',
+      generationCreatedAt: 10,
+      responseJSON: '{}',
+    });
+    if (!started.ok) throw new Error('Fixture start failed');
+    const review = {
+      actionId: 'first',
+      providerExecutionId: 'provider-one',
+      expiresAt: 1000,
+      partialResponseJSON: '{}',
+    };
+    const paused = await storage.publishReview(
+      owner,
+      record.responseId,
+      { execution: started.record },
+      10,
+      review,
+      '{}',
+    );
+    expect(paused.ok).toBe(true);
+    expect(
+      (
+        await storage.reserveResume(
+          owner,
+          record.responseId,
+          {
+            generationCreatedAt: 10,
+            intentId: 'resume-one',
+            actionId: 'first',
+            previousProviderExecutionId: 'provider-one',
+            providerExecutionId: 'provider-two',
+            fingerprint: 'approved',
+            resolutionJSON: '{}',
+          },
+          100,
+        )
+      ).ok,
+    ).toBe(true);
+    const admitted = await storage.admitResume(
+      owner,
+      record.responseId,
+      'resume-one',
+      10,
+      'provider-two',
+      '{}',
+      101,
+    );
+    if (!admitted.ok) throw new Error('Fixture resume admission failed');
+    const nextReview = { ...review, actionId: 'second', providerExecutionId: 'provider-two' };
+    const pausedAgain = await storage.publishReview(
+      owner,
+      record.responseId,
+      { execution: admitted.record },
+      10,
+      nextReview,
+      '{}',
+    );
+    if (!pausedAgain.ok) throw new Error('Fixture second pause failed');
+    expect(pausedAgain.record.resume).toBeUndefined();
+    expect(pausedAgain.record.dispatchOutbox).toEqual({
+      kind: 'resume',
+      id: 'resume-one',
+      state: 'pending',
+    });
+    const f = fixture();
+    const resumeEnqueue = jest.fn();
+    const outbox = createResponseDispatchOutbox({ ...f.deps, resume: { enqueue: resumeEnqueue } });
+    expect(await outbox.recoverPending(10, { found: false })).toBe(1);
+    expect(resumeEnqueue).not.toHaveBeenCalled();
+    expect(f.enqueue).not.toHaveBeenCalled();
+    const settled = (await storage.read(owner, record.responseId))!;
+    expect(settled).toMatchObject({
+      revision: pausedAgain.record.revision,
+      status: 'requires_action',
+      review: nextReview,
+      dispatchOutbox: { kind: 'resume', id: 'resume-one', state: 'settled' },
+    });
+    expect(
+      await storage.settleDispatch(owner, record.responseId, { kind: 'resume', id: 'resume-one' }),
+    ).toBe(true);
+    const activity = { found: false };
+    expect(await outbox.recoverPending(10, activity)).toBe(0);
+    expect(activity.found).toBe(false);
+    expect(
+      (
+        await storage.reserveResume(
+          owner,
+          record.responseId,
+          {
+            generationCreatedAt: 10,
+            intentId: 'resume-two',
+            actionId: 'second',
+            previousProviderExecutionId: 'provider-two',
+            providerExecutionId: 'provider-three',
+            fingerprint: 'approved-two',
+            resolutionJSON: '{}',
+          },
+          102,
+        )
+      ).ok,
+    ).toBe(true);
+    expect(
+      await storage.settleDispatch(owner, record.responseId, { kind: 'resume', id: 'resume-one' }),
+    ).toBe(false);
+    expect((await storage.read(owner, record.responseId))?.dispatchOutbox).toEqual({
+      kind: 'resume',
+      id: 'resume-two',
+      state: 'pending',
+    });
+  });
 });
