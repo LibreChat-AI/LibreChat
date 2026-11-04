@@ -158,6 +158,7 @@ const SetKeyDialog = ({
   userProvideSecretAccessKey,
   userProvideSessionToken,
   userProvideBearerToken,
+  userProvideRegion,
 }: Pick<TDialogProps, 'open' | 'onOpenChange'> & {
   endpoint: EModelEndpoint | string;
   endpointType?: EModelEndpoint;
@@ -166,6 +167,7 @@ const SetKeyDialog = ({
   userProvideSecretAccessKey?: boolean;
   userProvideSessionToken?: boolean;
   userProvideBearerToken?: boolean;
+  userProvideRegion?: boolean;
 }) => {
   const methods = useForm({
     defaultValues: {
@@ -179,6 +181,7 @@ const SetKeyDialog = ({
       bedrockSecretAccessKey: '',
       bedrockSessionToken: '',
       bedrockBearerToken: '',
+      bedrockRegion: '',
       // TODO: allow endpoint definitions from user
       // name: '',
       // TODO: add custom endpoint models defined by user
@@ -262,10 +265,12 @@ const SetKeyDialog = ({
             ? data.bedrockSecretAccessKey?.trim()
             : '';
           const sessionToken = userProvideSessionToken ? data.bedrockSessionToken?.trim() : '';
+          const region = userProvideRegion ? data.bedrockRegion?.trim() : '';
           const accessKeyIdLabel = localize('com_endpoint_config_bedrock_access_key_id');
           const secretAccessKeyLabel = localize('com_endpoint_config_bedrock_secret_access_key');
           const sessionTokenLabel = localize('com_endpoint_config_bedrock_session_token');
           const bearerTokenLabel = localize('com_endpoint_config_bedrock_bearer_token');
+          const regionLabel = localize('com_endpoint_config_bedrock_region');
           const canSubmitBearerToken = !!bearerToken;
           const hasUserProvidedAccessKeyAuth =
             !!userProvideAccessKeyId || !!userProvideSecretAccessKey || !!userProvideSessionToken;
@@ -280,6 +285,7 @@ const SetKeyDialog = ({
             !canSubmitBearerToken && userProvideSessionToken && !sessionToken
               ? sessionTokenLabel
               : '',
+            userProvideRegion && !region ? regionLabel : '',
           ].filter(Boolean);
 
           if (!canSubmitBearerToken && missingFields.length > 0) {
@@ -291,7 +297,7 @@ const SetKeyDialog = ({
             return;
           }
 
-          if (!canSubmitBearerToken && !hasUserProvidedAccessKeyAuth) {
+          if (!canSubmitBearerToken && !hasUserProvidedAccessKeyAuth && !userProvideRegion) {
             showToast({
               message: localize('com_endpoint_config_bedrock_credentials_required'),
               status: NotificationSeverity.ERROR,
@@ -315,6 +321,7 @@ const SetKeyDialog = ({
           bedrockSecretAccessKey,
           bedrockSessionToken,
           bedrockBearerToken,
+          bedrockRegion,
           ...azureOptions
         } = data;
         const userProvidedData = { apiKey, baseURL };
@@ -330,16 +337,19 @@ const SetKeyDialog = ({
           const accessKeyId = userProvideAccessKeyId ? bedrockAccessKeyId.trim() : '';
           const secretAccessKey = userProvideSecretAccessKey ? bedrockSecretAccessKey.trim() : '';
           const sessionToken = userProvideSessionToken ? bedrockSessionToken.trim() : '';
+          const region = userProvideRegion ? bedrockRegion.trim() : '';
 
           if (bearerToken) {
             userProvidedData.apiKey = JSON.stringify({
               bearerToken,
+              ...(region && { region }),
             });
           } else {
             userProvidedData.apiKey = JSON.stringify({
               ...(accessKeyId && { accessKeyId }),
               ...(secretAccessKey && { secretAccessKey }),
               ...(sessionToken && { sessionToken }),
+              ...(region && { region }),
             });
           }
         }

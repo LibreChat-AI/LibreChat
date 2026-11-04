@@ -23,7 +23,12 @@ import { checkUserKeyExpiry } from '~/utils';
 
 const BEDROCK_CREDENTIALS_ERROR = 'Bedrock credentials not provided. Please provide them again.';
 
-type UserCredentialKey = 'accessKeyId' | 'secretAccessKey' | 'sessionToken' | 'bearerToken';
+type UserCredentialKey =
+  | 'accessKeyId'
+  | 'secretAccessKey'
+  | 'sessionToken'
+  | 'bearerToken'
+  | 'region';
 type UserCredentialValue = string | number | boolean | object | null;
 type ParsedBedrockUserCredentials = Partial<Record<UserCredentialKey, UserCredentialValue>> & {
   apiKey?: string;
@@ -133,7 +138,14 @@ export async function initializeBedrock(
   const userProvidesSecretAccessKey = BEDROCK_AWS_SECRET_ACCESS_KEY === AuthType.USER_PROVIDED;
   const userProvidesSessionToken = BEDROCK_AWS_SESSION_TOKEN === AuthType.USER_PROVIDED;
   const userProvidesBearerToken = BEDROCK_AWS_BEARER_TOKEN === AuthType.USER_PROVIDED;
+  const userProvidesRegion = BEDROCK_AWS_DEFAULT_REGION === AuthType.USER_PROVIDED;
   const isUserProvided =
+    userProvidesAccessKeyId ||
+    userProvidesSecretAccessKey ||
+    userProvidesSessionToken ||
+    userProvidesBearerToken ||
+    userProvidesRegion;
+  const userProvidesAuth =
     userProvidesAccessKeyId ||
     userProvidesSecretAccessKey ||
     userProvidesSessionToken ||
@@ -144,12 +156,14 @@ export async function initializeBedrock(
     : BEDROCK_AWS_SECRET_ACCESS_KEY;
   const staticSessionToken = userProvidesSessionToken ? undefined : BEDROCK_AWS_SESSION_TOKEN;
   const staticBearerToken = userProvidesBearerToken ? undefined : BEDROCK_AWS_BEARER_TOKEN;
+  const staticRegion = userProvidesRegion ? undefined : BEDROCK_AWS_DEFAULT_REGION;
 
   const hasAccessKey = staticAccessKeyId != null && staticAccessKeyId !== '';
   const hasSecretKey = staticSecretAccessKey != null && staticSecretAccessKey !== '';
 
   let credentials: BedrockCredentials | undefined;
   let bearerToken: string | undefined;
+  let userRegion: string | undefined;
 
   if (isUserProvided) {
     const userKey = await db.getUserKey({
@@ -157,67 +171,79 @@ export async function initializeBedrock(
       name: EModelEndpoint.bedrock,
     });
 
-    if (!userKey) {
+    if (!userKey && userProvidesAuth) {
       throw new Error(BEDROCK_CREDENTIALS_ERROR);
     }
 
-    let userCredentials: ParsedBedrockUserCredentials;
-    try {
-      userCredentials = parseBedrockUserCredentials(userKey);
-    } catch {
-      throw new Error(BEDROCK_CREDENTIALS_ERROR);
-    }
-
-    const userBearerToken = userProvidesBearerToken
-      ? getUserCredentialValue(userCredentials, 'bearerToken')
-      : undefined;
-
-    if (userBearerToken) {
-      bearerToken = userBearerToken;
-    } else {
-      const canUseAccessKeys =
-        userProvidesAccessKeyId || userProvidesSecretAccessKey || userProvidesSessionToken;
-      const accessKeyId = userProvidesAccessKeyId
-        ? getUserCredentialValue(userCredentials, 'accessKeyId')
-        : staticAccessKeyId;
-      const secretAccessKey = userProvidesSecretAccessKey
-        ? getUserCredentialValue(userCredentials, 'secretAccessKey')
-        : staticSecretAccessKey;
-      const sessionToken = userProvidesSessionToken
-        ? getUserCredentialValue(userCredentials, 'sessionToken')
-        : staticSessionToken;
-
-      if (!canUseAccessKeys || !accessKeyId || !secretAccessKey) {
+    let userCredentials: ParsedBedrockUserCredentials | undefined;
+    if (userKey) {
+      try {
+        userCredentials = parseBedrockUserCredentials(userKey);
+      } catch {
         throw new Error(BEDROCK_CREDENTIALS_ERROR);
       }
 
-      credentials = {
-        accessKeyId,
-        secretAccessKey,
-        ...(sessionToken && { sessionToken }),
-      };
+      if (userProvidesRegion) {
+        userRegion = getUserCredentialValue(userCredentials, 'region');
+      }
+
+      if (expiresAt) {
+        checkUserKeyExpiry(expiresAt, EModelEndpoint.bedrock);
+      }
     }
 
-    if (expiresAt) {
-      checkUserKeyExpiry(expiresAt, EModelEndpoint.bedrock);
+    if (userProvidesAuth && userCredentials) {
+      const userBearerToken = userProvidesBearerToken
+        ? getUserCredentialValue(userCredentials, 'bearerToken')
+        : undefined;
+
+      if (userBearerToken) {
+        bearerToken = userBearerToken;
+      } else {
+        const canUseAccessKeys =
+          userProvidesAccessKeyId || userProvidesSecretAccessKey || userProvidesSessionToken;
+        const accessKeyId = userProvidesAccessKeyId
+          ? getUserCredentialValue(userCredentials, 'accessKeyId')
+          : staticAccessKeyId;
+        const secretAccessKey = userProvidesSecretAccessKey
+          ? getUserCredentialValue(userCredentials, 'secretAccessKey')
+          : staticSecretAccessKey;
+        const sessionToken = userProvidesSessionToken
+          ? getUserCredentialValue(userCredentials, 'sessionToken')
+          : staticSessionToken;
+
+        if (!canUseAccessKeys || !accessKeyId || !secretAccessKey) {
+          throw new Error(BEDROCK_CREDENTIALS_ERROR);
+        }
+
+        credentials = {
+          accessKeyId,
+          secretAccessKey,
+          ...(sessionToken && { sessionToken }),
+        };
+      }
     }
-  } else if (staticBearerToken) {
-    bearerToken = staticBearerToken;
-  } else if (hasAccessKey !== hasSecretKey) {
-    throw new Error(
-      'Both BEDROCK_AWS_ACCESS_KEY_ID and BEDROCK_AWS_SECRET_ACCESS_KEY must be provided together.',
-    );
-  } else if (hasAccessKey && hasSecretKey) {
-    credentials = {
-      accessKeyId: staticAccessKeyId,
-      secretAccessKey: staticSecretAccessKey,
-      ...(staticSessionToken && { sessionToken: staticSessionToken }),
-    };
+  }
+
+  if (!userProvidesAuth) {
+    if (staticBearerToken) {
+      bearerToken = staticBearerToken;
+    } else if (hasAccessKey !== hasSecretKey) {
+      throw new Error(
+        'Both BEDROCK_AWS_ACCESS_KEY_ID and BEDROCK_AWS_SECRET_ACCESS_KEY must be provided together.',
+      );
+    } else if (hasAccessKey && hasSecretKey) {
+      credentials = {
+        accessKeyId: staticAccessKeyId,
+        secretAccessKey: staticSecretAccessKey,
+        ...(staticSessionToken && { sessionToken: staticSessionToken }),
+      };
+    }
   }
 
   const requestOptions: Record<string, unknown> = {
     model: model_parameters?.model as string | undefined,
-    region: BEDROCK_AWS_DEFAULT_REGION,
+    region: userRegion ?? staticRegion,
   };
 
   const configOptions: Record<string, unknown> = {};
@@ -279,7 +305,7 @@ export async function initializeBedrock(
     // the AWS SDK's default credential provider chain is used (instance profiles,
     // AWS profiles, environment variables, etc.)
     const customClientConfig: BedrockRuntimeClientConfig = {
-      region: (llmConfig.region as string) ?? BEDROCK_AWS_DEFAULT_REGION,
+      region: (llmConfig.region as string) ?? staticRegion,
     };
 
     if (hasBearerToken && bearerToken) {
