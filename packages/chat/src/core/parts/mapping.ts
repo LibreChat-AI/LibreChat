@@ -1,8 +1,8 @@
 import { ContentTypes } from 'librechat-data-provider';
-import { isMemoryFailureOutput, getToolMeta } from '@librechat/chat';
 import type { TMessage, TAttachment, UIMappingOptions } from 'librechat-data-provider';
-import { mergeAttachments } from '~/utils/attachments';
-import { mapAttachments } from '~/utils/map';
+import { mapAttachments, mergeAttachments } from './attachments';
+import { isMemoryFailureOutput } from './memory';
+import { getToolMeta } from './outcome';
 
 type ToolContext = {
   content: TMessage['content'];
@@ -77,7 +77,7 @@ const getFailureProse = (toolCall: StoredToolCall, background: boolean) => {
 };
 
 /**
- * The client's own tool outcome rules (`getToolMeta`: memory failure prose, background task
+ * The tool outcome rules (`getToolMeta`: memory failure prose, background task
  * status attachments), handed to the parts mapping, which reads only markers stored on the call.
  * A call with no step yet is scoped away from attachments its repeated provider id's other
  * steps own, as `summarizeSpan` does.

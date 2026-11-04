@@ -74,11 +74,45 @@ let mockServerQueuedTurns: unknown[] | undefined;
 let mockFileMap: Record<string, Pick<TFile, 'llmDeliveryPath'>> = {};
 const mockUseAgentQueuedTurns = jest.fn((..._args: unknown[]) => ({ data: mockServerQueuedTurns }));
 
-const mockCodeApprovalMode = jest.fn((..._args: unknown[]) => ({ selected: mockApprovalMode }));
+/** Raw inputs under which the package selects `mockApprovalMode`; `undefined` turns approvals off. */
+const mockCodeApprovalMode = jest.fn((conversation?: unknown, _added?: unknown) => ({
+  readInputs: () => ({
+    conversation,
+    preferred: mockApprovalMode,
+    statefulCodeSessions: {
+      approvalsEnabled: mockApprovalMode != null,
+      approvalModes: ['ask', 'acceptEdits', 'fullAccess'],
+      environments: [
+        {
+          id: 'personal-vm',
+          name: 'Personal VM',
+          type: 'attached',
+          configSchema: {
+            permissions: {
+              fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+              commandExecution: { allowed: ['ask', 'allow'], default: 'ask' },
+            },
+          },
+        },
+      ],
+    },
+    reachable: {
+      agents: [
+        {
+          id: 'agent_primary',
+          stateful_code_sessions: true,
+          tools: ['execute_code'],
+          code_environment_id: 'personal-vm',
+        },
+      ],
+      complete: true,
+    },
+  }),
+}));
 
 jest.mock('~/hooks/Agents/useCodeApprovalMode', () => ({
   __esModule: true,
-  default: (...args: unknown[]) => mockCodeApprovalMode(...args),
+  default: (conversation?: unknown, added?: unknown) => mockCodeApprovalMode(conversation, added),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -756,21 +790,18 @@ describe('useSteering', () => {
         result.current.steering.queueFromComposer('run later');
         await Promise.resolve();
       });
-      expect(mockCodeApprovalMode).toHaveBeenLastCalledWith(
-        agentsConversation,
-        addedConversation,
-        undefined,
-      );
+      expect(mockCodeApprovalMode).toHaveBeenLastCalledWith(agentsConversation, addedConversation);
       expect(mockEnqueueQueuedTurn.mock.calls[0]?.[0].codeApprovalMode).toBe('ask');
     });
 
-    it('gates the queued mode on the workspace mode the composer resolved', () => {
-      setupServerQueue(withActiveGeneration(), undefined, 'without_attached');
-      expect(mockCodeApprovalMode).toHaveBeenLastCalledWith(
-        agentsConversation,
-        undefined,
-        'without_attached',
-      );
+    it('gates the queued mode on the workspace mode the composer resolved', async () => {
+      mockApprovalMode = 'acceptEdits';
+      const { result } = setupServerQueue(withActiveGeneration(), undefined, 'without_attached');
+      await act(async () => {
+        result.current.steering.queueFromComposer('run later');
+        await Promise.resolve();
+      });
+      expect(mockEnqueueQueuedTurn.mock.calls[0]?.[0].codeApprovalMode).toBe('ask');
     });
 
     it('keeps startup turns local until the server generation epoch exists', async () => {

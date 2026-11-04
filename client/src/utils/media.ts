@@ -1,5 +1,8 @@
+import { attachmentIdentity } from '@librechat/chat';
 import { imageExtRegex } from 'librechat-data-provider';
 import type { TAttachment, TFile } from 'librechat-data-provider';
+
+export { attachmentIdentity };
 
 /** Sources the browser already resolves on its own. */
 const ABSOLUTE_SOURCE_PATTERN = /^(?:[a-z][a-z\d+\-.]*:|\/\/)/i;
@@ -35,43 +38,6 @@ function mediaNameKey(name: string): string {
 function fileKeyOf(attachment: TAttachment): string | undefined {
   const { file_id, filepath } = attachment as Partial<TFile>;
   return file_id ?? filepath;
-}
-
-function ownerOf(attachment: TAttachment): {
-  toolCallId?: string;
-  agentId?: string;
-} {
-  const owned = attachment as { toolCallId?: string; agentId?: string };
-  return { toolCallId: owned.toolCallId, agentId: owned.agentId };
-}
-
-/**
- * Stable identity for an attachment: `file_id ?? filepath` scoped by
- * `toolCallId` and `agentId`, else `type:toolCallId` with the same optional agent scope for unkeyed tool
- * artifacts like file_search citations. `undefined` means the row has no
- * stable identity and must never be compared to another — two entries that
- * cannot be told apart are two entries, not one.
- *
- * The ownership dimensions are not decoration. Sibling code calls can share a
- * claimed `file_id` for the same filename and handoff agents can repeat
- * provider tool ids, so `file_id` alone collapses attachments the merge in
- * `useAttachments` deliberately keeps as separate cards — which is why that
- * merge is the caller this lives next to, rather than a second definition.
- */
-export function attachmentIdentity(attachment: TAttachment): string | undefined {
-  const { type } = attachment as { type?: string };
-  const { toolCallId, agentId } = ownerOf(attachment);
-  const fileKey = fileKeyOf(attachment);
-  if (fileKey) {
-    if (toolCallId == null) {
-      return fileKey;
-    }
-    return agentId ? `${fileKey}::${toolCallId}::${agentId}` : `${fileKey}::${toolCallId}`;
-  }
-  if (type != null && toolCallId != null) {
-    return agentId ? `${type}:${toolCallId}::${agentId}` : `${type}:${toolCallId}`;
-  }
-  return undefined;
 }
 
 /**

@@ -1,9 +1,45 @@
 import type { TAttachment, TFile } from 'librechat-data-provider';
-import { attachmentIdentity } from '~/utils/media';
 
 function fileKeyOf(attachment: TAttachment): string | undefined {
   const { file_id, filepath } = attachment as Partial<TFile>;
   return file_id ?? filepath;
+}
+
+function ownerOf(attachment: TAttachment): {
+  toolCallId?: string;
+  agentId?: string;
+} {
+  const owned = attachment as { toolCallId?: string; agentId?: string };
+  return { toolCallId: owned.toolCallId, agentId: owned.agentId };
+}
+
+/**
+ * Stable identity for an attachment: `file_id ?? filepath` scoped by
+ * `toolCallId` and `agentId`, else `type:toolCallId` with the same optional agent scope for unkeyed tool
+ * artifacts like file_search citations. `undefined` means the row has no
+ * stable identity and must never be compared to another: two entries that
+ * cannot be told apart are two entries, not one.
+ *
+ * The ownership dimensions are not decoration. Sibling code calls can share a
+ * claimed `file_id` for the same filename and handoff agents can repeat
+ * provider tool ids, so `file_id` alone collapses attachments the merge in
+ * `useAttachments` deliberately keeps as separate cards, which is why that
+ * merge is the caller this lives next to, rather than a second definition.
+ */
+export function attachmentIdentity(attachment: TAttachment): string | undefined {
+  const { type } = attachment as { type?: string };
+  const { toolCallId, agentId } = ownerOf(attachment);
+  const fileKey = fileKeyOf(attachment);
+  if (fileKey) {
+    if (toolCallId == null) {
+      return fileKey;
+    }
+    return agentId ? `${fileKey}::${toolCallId}::${agentId}` : `${fileKey}::${toolCallId}`;
+  }
+  if (type != null && toolCallId != null) {
+    return agentId ? `${type}:${toolCallId}::${agentId}` : `${type}:${toolCallId}`;
+  }
+  return undefined;
 }
 
 function toolCallIdOf(attachment: TAttachment): string | undefined {
@@ -140,4 +176,29 @@ export function mergeAttachments(
     return !nonFileBuckets.get(bucketKey)?.some((db) => nonFileOwnersCompatible(db, a));
   });
   return liveOnly.length > 0 ? [...merged, ...liveOnly] : merged;
+}
+
+/** Maps Attachments by `toolCallId` for quick lookup */
+export function mapAttachments(
+  attachments: Array<TAttachment | null | undefined>,
+): Record<string, TAttachment[] | undefined> {
+  const attachmentMap: Record<string, TAttachment[] | undefined> = {};
+
+  for (const attachment of attachments) {
+    if (attachment === null || attachment === undefined) {
+      continue;
+    }
+    const key = attachment.toolCallId || '';
+    if (key.length === 0) {
+      continue;
+    }
+
+    if (!attachmentMap[key]) {
+      attachmentMap[key] = [];
+    }
+
+    attachmentMap[key]?.push(attachment);
+  }
+
+  return attachmentMap;
 }

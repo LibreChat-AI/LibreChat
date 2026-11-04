@@ -114,8 +114,8 @@ export const appSteerHost: SteerHost = {
       .data,
   useFetchStreamStatus: () => fetchStreamStatus,
   useLatestMessage: (index, conversationId) => useLatestMessage(index, conversationId),
-  useCodeApprovalMode: (conversation, addedConversation, codeEnvironmentMode) =>
-    useCodeApprovalMode(conversation, addedConversation, codeEnvironmentMode).selected,
+  useCodeApprovalInputs: (conversation, addedConversation) =>
+    useCodeApprovalMode(conversation, addedConversation).readInputs(),
   useLocalize,
   useNotify,
   useFileMap: useFileMapContext,

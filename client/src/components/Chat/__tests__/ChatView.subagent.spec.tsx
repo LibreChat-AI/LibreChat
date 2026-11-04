@@ -51,10 +51,6 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks/Chat/outcomes', () => ({
-  getMappingOptions: () => ({}),
-}));
-
 jest.mock('~/Providers', () => {
   const Passthrough = ({ children }: { children: React.ReactNode }) => <>{children}</>;
   const Context = { Provider: Passthrough };

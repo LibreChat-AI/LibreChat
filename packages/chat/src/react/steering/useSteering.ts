@@ -27,7 +27,12 @@ import {
   activeGenerationCreatedAtByConvoId,
   activeGenerationProtocolVersionByConvoId,
 } from '../steer/atoms';
-import { hasLiveRunPause, selectLiveMessageState, carriedSteerContext } from '../../core';
+import {
+  hasLiveRunPause,
+  carriedSteerContext,
+  selectLiveMessageState,
+  resolveCodeApprovalModes,
+} from '../../core';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../composer';
 import useQueuedTurnReceipts from './receipts';
 import { useSteerHost } from '../steer/host';
@@ -152,11 +157,11 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
     setDuringRunDefaultAction: setDefaultAction,
   } = host.useSettings();
 
-  const codeApprovalMode = host.useCodeApprovalMode(
-    conversation,
-    addedConversation,
+  const codeApprovalInputs = host.useCodeApprovalInputs(conversation, addedConversation);
+  const codeApprovalMode = resolveCodeApprovalModes({
+    ...codeApprovalInputs,
     codeEnvironmentMode,
-  );
+  }).selected;
   const endpoint = conversation?.endpointType ?? conversation?.endpoint;
   const steerable = !isAssistantsEndpoint(endpoint);
   const hasRealConvoId =
