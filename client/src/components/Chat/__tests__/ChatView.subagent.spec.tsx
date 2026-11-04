@@ -26,6 +26,7 @@ jest.mock('@librechat/client', () => ({
   Spinner: () => <div data-testid="spinner" />,
   cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
   useLocalize: () => (key: string) => key,
+  useRemScale: () => 1,
 }));
 
 jest.mock('librechat-data-provider', () => ({
