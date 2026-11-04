@@ -125,6 +125,7 @@ export interface SerializableJobData {
    * `checkpoint_ns`, which the saver adapter maps to this storage scope.
    * Legacy paused jobs omit it and use the historical unscoped storage. */
   checkpointNamespace?: string;
+  responseCheckpointConfigJSON?: string;
   completedAt?: number;
   conversationId?: string;
   error?: string;
@@ -508,6 +509,7 @@ export type JobMetadataPatch = Partial<
     | 'agent_id'
     | 'isTemporary'
     | 'retentionExpiresAt'
+    | 'responseCheckpointConfigJSON'
     | 'agentEventDeliveryKey'
     | 'agentEventInvocationKey'
     | 'agentEventInvocationGenerationCreatedAt'

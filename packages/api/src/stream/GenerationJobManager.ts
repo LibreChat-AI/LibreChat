@@ -3129,6 +3129,7 @@ class GenerationJobManagerClass {
         tenantId: jobData.tenantId,
         conversationId: jobData.conversationId,
         checkpointNamespace: jobData.checkpointNamespace,
+        responseCheckpointConfigJSON: jobData.responseCheckpointConfigJSON,
         generationProtocolVersion: jobData.generationProtocolVersion,
         earlyBufferOverflow: jobData.earlyBufferOverflow,
         userMessage: jobData.userMessage,
