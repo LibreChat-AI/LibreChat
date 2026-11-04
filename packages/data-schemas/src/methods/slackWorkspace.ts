@@ -334,7 +334,7 @@ export function createSlackWorkspaceStorage(
         .lean();
       const page = records.slice(0, limit);
       return {
-        workspaces: page.map(slackWorkspaceMetadata),
+        workspaces: page.map(metadata),
         ...(records.length > limit ? { next: page[page.length - 1].workspaceId } : {}),
       };
     },
