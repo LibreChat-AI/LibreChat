@@ -5,7 +5,9 @@ export interface ChannelMessage {
   user: string;
   tenantId?: string;
   isCreatedByUser?: boolean;
+  isUserSubmitted?: boolean;
   isTemporary?: boolean;
+  expiredAt?: Date | string | null;
   langfuseRunId?: string | null;
   langfuseSampled?: boolean | null;
   langfuseDestinationIds?: string[] | null;

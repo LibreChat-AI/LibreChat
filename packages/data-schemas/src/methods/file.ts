@@ -11,6 +11,8 @@ import type { FilterQuery, SortOrder, Model } from 'mongoose';
 import type {
   IMongoFile,
   RunArtifactFile,
+  ResponseArtifactFile,
+  ResponseArtifactQuery,
   RunArtifactClaim,
   RunArtifactScope,
   CodeFileCommitData,
@@ -23,6 +25,7 @@ import type {
 } from '~/types/file';
 import type { IChatProjectDocument } from '~/types';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { readResponseArtifactCatalog } from './artifacts';
 import { fileContentUpdate } from './fileContent';
 import { escapeRegExp } from '~/utils/string';
 import logger from '../config/winston';
@@ -408,6 +411,10 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
   publishRunArtifactFile: (input: PublishRunArtifactInput) => Promise<RunArtifactFile>;
   findRunArtifactFile: (scope: RunArtifactScope) => Promise<RunArtifactFile | null>;
   listRunArtifacts: (scope: RunArtifactRunScope) => Promise<RunArtifactFile[]>;
+  readResponseArtifacts: (
+    scope: RunArtifactRunScope,
+    query: ResponseArtifactQuery,
+  ) => Promise<ResponseArtifactFile[] | null>;
   findFileById: (file_id: string, options?: Record<string, unknown>) => Promise<IMongoFile | null>;
   getFiles: (
     filter: FilterQuery<IMongoFile>,
@@ -2003,6 +2010,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     publishRunArtifactFile,
     findRunArtifactFile,
     listRunArtifacts,
+    readResponseArtifacts: (scope, query) => readResponseArtifactCatalog(mongoose, scope, query),
     findFileById,
     getFiles,
     getProjectFiles,
