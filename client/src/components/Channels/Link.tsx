@@ -156,7 +156,7 @@ function OwnedLink({
     >
       <div className="w-full max-w-lg">
         <div className="mb-6 flex items-center justify-center gap-2.5">
-          <img src="/assets/logo.svg" alt="" className="size-7 object-contain" />
+          <img src="assets/logo.svg" alt="" className="size-7 object-contain" />
           <span className="text-lg font-semibold">{appTitle}</span>
         </div>
         <section className="border-border-light bg-surface-secondary overflow-hidden rounded-2xl border shadow-sm">
