@@ -75,11 +75,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Input/ConversationStarters.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Input/Files/MyFilesModal.tsx": {
     "shadcn/no-restyle": {
       "count": 2

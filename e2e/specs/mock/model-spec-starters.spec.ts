@@ -15,7 +15,9 @@ const STARTER_BEYOND_CAP = 'Fifth starter beyond the cap';
 const PLAIN_SPEC_LABEL = 'E2E Soft Default';
 
 test.describe('model spec conversation starters', () => {
-  test('starter prompts render on the landing for a spec that defines them', async ({ page }) => {
+  test('starter prompts render on the landing for a spec that defines them @scenario:spec-starters-render-up-to-the-cap', async ({
+    page,
+  }) => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectModelSpec(page, STARTER_SPEC_LABEL);
 
@@ -34,7 +36,9 @@ test.describe('model spec conversation starters', () => {
     }
   });
 
-  test('clicking a starter submits it as the first message', async ({ page }) => {
+  test('clicking a starter submits it as the first message @scenario:clicking-a-starter-sends-it', async ({
+    page,
+  }) => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectModelSpec(page, STARTER_SPEC_LABEL);
 
