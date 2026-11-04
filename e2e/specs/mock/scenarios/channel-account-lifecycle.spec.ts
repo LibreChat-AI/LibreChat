@@ -51,8 +51,8 @@ for (const mode of ['light', 'dark']) {
     await page.waitForTimeout(400);
     expect(new URL(page.url()).pathname).toBe('/channels/link');
     expect(page.url()).not.toContain(ticket);
-    await page.getByRole('button', { name: 'Accept this account link', exact: true }).click();
-    await expect(page.getByRole('status')).toContainText('Return to Slack and confirm');
+    await page.getByRole('button', { name: 'Link account', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('Back in Slack, confirm this account');
     state = 'active';
     // A real focus transition refetches the active query without remounting the route.
     await page.evaluate(() => window.dispatchEvent(new Event('blur')));
