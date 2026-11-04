@@ -679,7 +679,6 @@ export default function AgentPanel() {
               modelsQuery.isFetchedAfterMount && modelsQuery.isSuccess
                 ? modelsQuery.data
                 : undefined,
-              endpointsConfig,
             ),
         )
         .map((provider) => createProviderOption(provider)),

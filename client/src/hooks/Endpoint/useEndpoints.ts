@@ -112,7 +112,6 @@ export const useEndpoints = ({
         !isProviderAvailable(
           endpoints[i],
           modelsQuery.isFetched && modelsQuery.isSuccess ? modelsQuery.data : undefined,
-          endpointsConfig,
         )
       ) {
         continue;
@@ -129,7 +128,6 @@ export const useEndpoints = ({
     modelsQuery.data,
     modelsQuery.isFetched,
     modelsQuery.isSuccess,
-    endpointsConfig,
   ]);
 
   const endpointRequiresUserKey = useCallback(

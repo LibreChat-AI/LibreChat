@@ -30,7 +30,7 @@ it('hides empty providers only after discovery and restores them without losing 
   mockModels = { gateway: [], personal: [] };
   rerender();
   expect(result.current.mappedEndpoints.map((endpoint) => endpoint.value)).toEqual(
-    mockEndpoints.filter((endpoint) => endpoint !== 'gateway'),
+    mockEndpoints.filter((endpoint) => endpoint !== 'gateway' && endpoint !== 'personal'),
   );
   expect(result.current.endpointRequiresUserKey('personal')).toBe(true);
   expect(endpointsConfig.gateway).toEqual({ userProvide: false, order: 0 });

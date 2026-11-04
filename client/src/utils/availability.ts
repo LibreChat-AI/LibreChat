@@ -12,34 +12,19 @@ import type {
   TConversation,
 } from 'librechat-data-provider';
 
-/** Keep key setup and agent groups reachable. Apply discovery only after a response arrives. */
-export function isProviderAvailable(
-  endpoint: string,
-  models: TModelsConfig | undefined,
-  endpoints: TEndpointsConfig | null | undefined,
-): boolean {
+/** Keep agent groups reachable. Apply discovery only after a response arrives. */
+export function isProviderAvailable(endpoint: string, models: TModelsConfig | undefined): boolean {
   return (
     models == null ||
     isAgentsEndpoint(endpoint) ||
     isAssistantsEndpoint(endpoint) ||
-    endpoints?.[endpoint]?.userProvide === true ||
     (models[resolveModelCatalogKey(endpoint, models)]?.length ?? 0) > 0
   );
 }
 
-export function isModelSpecAvailable(
-  spec: TModelSpec,
-  models: TModelsConfig | undefined,
-  endpoints: TEndpointsConfig | null | undefined,
-): boolean {
+export function isModelSpecAvailable(spec: TModelSpec, models: TModelsConfig | undefined): boolean {
   const endpoint = spec.preset.endpoint;
-  if (
-    models == null ||
-    !endpoint ||
-    isAgentsEndpoint(endpoint) ||
-    isAssistantsEndpoint(endpoint) ||
-    endpoints?.[endpoint]?.userProvide === true
-  ) {
+  if (models == null || !endpoint || isAgentsEndpoint(endpoint) || isAssistantsEndpoint(endpoint)) {
     return true;
   }
   const available = models[resolveModelCatalogKey(endpoint, models)] ?? [];

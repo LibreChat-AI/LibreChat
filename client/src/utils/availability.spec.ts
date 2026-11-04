@@ -8,46 +8,28 @@ import {
 
 describe('provider visibility', () => {
   it('waits for discovery, hides an empty provider, and restores it on the next response', () => {
-    expect(isProviderAvailable('gateway', undefined, {})).toBe(true);
-    expect(isProviderAvailable('gateway', { gateway: [] }, {})).toBe(false);
-    expect(isProviderAvailable('gateway', { gateway: ['model'] }, {})).toBe(true);
+    expect(isProviderAvailable('gateway', undefined)).toBe(true);
+    expect(isProviderAvailable('gateway', { gateway: [] })).toBe(false);
+    expect(isProviderAvailable('gateway', { gateway: ['model'] })).toBe(true);
   });
-  it('keeps personal-key setup and agent and Assistant groups reachable', () => {
-    expect(
-      isProviderAvailable('gateway', { gateway: [] }, { gateway: { userProvide: true, order: 1 } }),
-    ).toBe(true);
+  it('keeps agent and Assistant groups reachable', () => {
     for (const endpoint of [
       EModelEndpoint.agents,
       EModelEndpoint.assistants,
       EModelEndpoint.azureAssistants,
     ]) {
-      expect(isProviderAvailable(endpoint, {}, {})).toBe(true);
+      expect(isProviderAvailable(endpoint, {})).toBe(true);
     }
-  });
-  it('keeps personal-key specs reachable before key setup without keeping ordinary specs', () => {
-    const spec = {
-      name: 'personal',
-      preset: { endpoint: 'gateway', model: 'saved-model' },
-    } as TModelSpec;
-    const models = { gateway: [] };
-    expect(isModelSpecAvailable(spec, models, undefined)).toBe(false);
-    expect(isModelSpecAvailable(spec, models, { gateway: { userProvide: true, order: 0 } })).toBe(
-      true,
-    );
-    expect(isModelSpecAvailable(spec, models, { gateway: { userProvide: false, order: 0 } })).toBe(
-      false,
-    );
-    expect(spec.preset.model).toBe('saved-model');
   });
   it('filters unavailable model specs without changing their saved preset', () => {
     const spec = {
       name: 'saved',
       preset: { endpoint: 'gateway', model: 'saved-model' },
     } as TModelSpec;
-    expect(isModelSpecAvailable(spec, undefined, {})).toBe(true);
-    expect(isModelSpecAvailable(spec, { gateway: [] }, {})).toBe(false);
-    expect(isModelSpecAvailable(spec, { gateway: ['other'] }, {})).toBe(false);
-    expect(isModelSpecAvailable(spec, { gateway: ['saved-model'] }, {})).toBe(true);
+    expect(isModelSpecAvailable(spec, undefined)).toBe(true);
+    expect(isModelSpecAvailable(spec, { gateway: [] })).toBe(false);
+    expect(isModelSpecAvailable(spec, { gateway: ['other'] })).toBe(false);
+    expect(isModelSpecAvailable(spec, { gateway: ['saved-model'] })).toBe(true);
     expect(spec.preset.model).toBe('saved-model');
   });
 });

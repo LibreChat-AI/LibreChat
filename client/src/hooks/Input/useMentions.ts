@@ -99,15 +99,8 @@ export default function useMentions({
         includedEndpoints,
         includeAssistants,
         hasAgentAccess,
-      }).filter((endpoint) => isProviderAvailable(endpoint, modelsConfig, endpointsConfig)),
-    [
-      endpoints,
-      includedEndpoints,
-      includeAssistants,
-      hasAgentAccess,
-      modelsConfig,
-      endpointsConfig,
-    ],
+      }).filter((endpoint) => isProviderAvailable(endpoint, modelsConfig)),
+    [endpoints, includedEndpoints, includeAssistants, hasAgentAccess, modelsConfig],
   );
   const validEndpointSet = useMemo(() => new Set(validEndpoints), [validEndpoints]);
   const agentQueryEnabled =
@@ -165,7 +158,7 @@ export default function useMentions({
 
   const modelSpecs = useMemo(() => {
     const specs = (startupConfig?.modelSpecs?.list ?? []).filter((spec) =>
-      isModelSpecAvailable(spec, modelsConfig, endpointsConfig),
+      isModelSpecAvailable(spec, modelsConfig),
     );
     if (!agentsMap) {
       return specs;
@@ -182,7 +175,7 @@ export default function useMentions({
       /** Keep non-agent modelSpecs */
       return true;
     });
-  }, [startupConfig, agentsMap, modelsConfig, endpointsConfig]);
+  }, [startupConfig, agentsMap, modelsConfig]);
 
   const options: MentionOption[] = useMemo(() => {
     const modelOptions = validEndpoints.flatMap((endpoint) => {
