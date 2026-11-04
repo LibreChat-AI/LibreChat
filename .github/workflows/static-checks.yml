@@ -44,8 +44,12 @@ jobs:
         with:
           # Full history is load-bearing: changed-file steps diff against the
           # PR base and the ESLint regression gate reads the base ref's
-          # config via git show — a shallow checkout breaks both.
+          # config via git show, so a shallow checkout breaks both. Blobless
+          # keeps every commit and tree (merge-base, three-dot diffs) and
+          # fetches only the base-side file contents a step actually reads,
+          # instead of every blob on every branch.
           fetch-depth: 0
+          filter: blob:none
 
       # scripts/static-checks.mts mirrors these filters to run the same checks
       # locally on a commit's diff — keep the two in sync.
@@ -156,10 +160,47 @@ jobs:
           node-version: '24.22.1'
           cache: npm
 
+      # Same key and path list as the E2E workflows, so one installed tree per
+      # lockfile serves both. Exact key only: a tree installed from another
+      # lockfile is never restored. Saved separately, and only after a
+      # successful install, because that step is continue-on-error and a
+      # partial tree must never become the cache every later job restores.
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+
       - name: Install dependencies
         id: install_dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         continue-on-error: true
         run: npm ci
+
+      - name: Save node_modules cache
+        if: steps.install_dependencies.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
 
       # The @shadcn/lint design rules read each primitive's `cva` variants through
       # the @librechat/client entry point, which resolves to packages/client/dist.
@@ -798,9 +839,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          # fetch-depth: 0 is load-bearing — the gate reads the base ref's
+          # fetch-depth: 0 is load-bearing: the gate reads the base ref's
           # config via `git show`, which a shallow checkout cannot resolve.
+          # Blobless still has every commit and tree; `git show` fetches the
+          # one base blob it needs on demand.
           fetch-depth: 0
+          filter: blob:none
 
       - name: Detect config changes
         id: paths
