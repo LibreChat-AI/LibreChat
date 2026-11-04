@@ -17,7 +17,11 @@ export type {
   SlackWorkspaceMetadata,
   SlackWorkspaceInstallResult,
 } from './methods/slackWorkspace';
-export type { SlackWorkspaceRecord, SlackInstallRecord } from './models/slackWorkspace';
+export type {
+  SlackWorkspaceRecord,
+  SlackInstallRecord,
+  SlackClaimedInstall,
+} from './models/slackWorkspace';
 export { createResponseStorage, sameResponseTerminalReceipt } from './methods/response';
 export type {
   ResponseOwner,

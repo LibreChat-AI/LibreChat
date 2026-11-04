@@ -54,7 +54,6 @@ import { TokenCredits, AutoRefill } from './BillingControls';
 import AdminPanel from '../SettingsTabs/General/AdminPanel';
 import SharedLinks from '../SettingsTabs/Data/SharedLinks';
 import ImageResize from '../SettingsTabs/Chat/ImageResize';
-import Workspaces from '~/components/Channels/Workspaces';
 import Passkeys from '../SettingsTabs/Account/Passkeys';
 import { showThinkingAtom } from '~/store/showThinking';
 import ProviderKeys from '../SettingsTabs/ProviderKeys';
@@ -833,14 +832,6 @@ export const registry: SettingEntry[] = [
     Component: Passkeys,
   },
   // Account · Connected accounts
-  {
-    id: 'slackWorkspaces',
-    tab: ACCOUNT,
-    section: 'connections',
-    labelKey: 'com_ui_slack_workspaces_title',
-    keywords: ['slack', 'workspace', 'organization', 'connect', 'disconnect'],
-    Component: Workspaces,
-  },
   {
     id: 'channelLinks',
     tab: ACCOUNT,

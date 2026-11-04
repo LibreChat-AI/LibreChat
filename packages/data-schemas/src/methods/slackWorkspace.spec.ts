@@ -32,9 +32,16 @@ describe('organization-owned Slack workspaces', () => {
       expiresAt: new Date(Date.now() + 60_000),
       ...extra,
     });
-  const finish = (hash: string, teamId = 'T123', encryptedBotToken = 'ciphertext-not-plaintext') =>
-    store.completeInstall(
+  const finish = async (
+    hash: string,
+    teamId = 'T123',
+    encryptedBotToken = 'ciphertext-not-plaintext',
+  ) => {
+    const claim = await store.claimInstall(hash, userId, new Date());
+    if (!claim) return { ok: false, code: 'invalid_install' } as const;
+    return store.completeInstall(
       hash,
+      claim.callbackId,
       {
         appId: 'A123',
         teamId,
@@ -45,6 +52,7 @@ describe('organization-owned Slack workspaces', () => {
       },
       new Date(),
     );
+  };
 
   beforeAll(async () => {
     mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
@@ -89,6 +97,44 @@ describe('organization-owned Slack workspaces', () => {
     expect(await scoped('org-a', () => finish('one-use'))).toEqual({
       ok: false,
       code: 'invalid_install',
+    });
+  });
+
+  it('requires an exclusive callback claim and does not let a wrong claim consume it', async () => {
+    await scoped('org-a', async () => {
+      await start('exclusive');
+      const claims = await Promise.all([
+        store.claimInstall('exclusive', userId, new Date()),
+        store.claimInstall('exclusive', userId, new Date()),
+      ]);
+      expect(claims.filter(Boolean)).toHaveLength(1);
+      const claimed = claims.find((claim) => claim !== null)!;
+      const grant = {
+        appId: 'A123',
+        teamId: 'T123',
+        teamName: 'Sandbox',
+        botUserId: 'U123',
+        scopes,
+        encryptedBotToken: 'ciphertext',
+      };
+      expect(await store.completeInstall('exclusive', '', grant, new Date())).toEqual({
+        ok: false,
+        code: 'invalid_install',
+      });
+      expect(await store.completeInstall('exclusive', 'wrong-claim', grant, new Date())).toEqual({
+        ok: false,
+        code: 'invalid_install',
+      });
+      await store.retireInstall('exclusive', 'wrong-claim');
+      expect(
+        (await store.completeInstall('exclusive', claimed.callbackId, grant, new Date())).ok,
+      ).toBe(true);
+      await start('cancel-claimed');
+      const cancelled = await store.claimInstall('cancel-claimed', userId, new Date());
+      await store.cancelInstall('cancel-claimed', userId);
+      expect(
+        await store.completeInstall('cancel-claimed', cancelled!.callbackId, grant, new Date()),
+      ).toEqual({ ok: false, code: 'invalid_install' });
     });
   });
 
