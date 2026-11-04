@@ -176,12 +176,18 @@ describe('conversation import cleanup methods', () => {
     const findProjects = jest.fn().mockResolvedValue([]);
     const deleteConversations = jest.fn().mockResolvedValue(undefined);
     const responseScopes = { bulkWrite: jest.fn().mockResolvedValue(undefined) };
+    const deleteReplies = jest.fn().mockResolvedValue(undefined);
+    const deleteFeedbackEvents = jest.fn().mockResolvedValue(undefined);
+    const deleteFeedback = jest.fn().mockResolvedValue(undefined);
     const cleanupMongoose = {
       model: jest.fn().mockReturnValue(responseScopes),
       models: {
         Message: { deleteMany: deleteMessages },
         Conversation: { distinct: findProjects, deleteMany: deleteConversations },
         ResponseScope: responseScopes,
+        ChannelReply: { deleteMany: deleteReplies },
+        ChannelFeedbackEvent: { deleteMany: deleteFeedbackEvents },
+        ChannelFeedback: { deleteMany: deleteFeedback },
         StoredResponse: {
           updateMany: jest.fn().mockResolvedValue(undefined),
           deleteMany: jest.fn().mockResolvedValue(undefined),
@@ -197,6 +203,24 @@ describe('conversation import cleanup methods', () => {
 
     await methods.deleteImportedMessages(scope);
     await methods.deleteImportedConversations(scope);
+
+    for (const [cleanupMock, ownerField, conversationField] of [
+      [deleteReplies, 'principalId', 'conversationId'],
+      [deleteFeedbackEvents, 'mapping.principalId', 'mapping.conversationId'],
+      [deleteFeedback, 'mapping.principalId', 'mapping.conversationId'],
+    ] as const) {
+      expect(cleanupMock).toHaveBeenCalledTimes(3);
+      const filters = cleanupMock.mock.calls.map((call) => call[0]);
+      expect(filters.flatMap((filter) => filter[conversationField].$in)).toEqual(conversationIds);
+      expect(filters.every((filter) => filter[ownerField] === scope.user)).toBe(true);
+      expect(filters.every((filter) => filter.tenantId === scope.tenantId)).toBe(true);
+      expect(
+        filters.every(
+          (filter) =>
+            filter[conversationField].$in.length <= CONVERSATION_IMPORT_CLEANUP_CHUNK_SIZE,
+        ),
+      ).toBe(true);
+    }
 
     for (const cleanupMock of [deleteMessages, findProjects, deleteConversations]) {
       expect(cleanupMock).toHaveBeenCalledTimes(3);
