@@ -17,13 +17,16 @@ jest.mock('~/hooks/Files/useSetFilesToDelete', () => () => jest.fn());
 jest.mock('~/hooks/Input/useUserKey', () => () => ({ getExpiry: jest.fn() }));
 jest.mock('~/Providers/AgentsMapContext', () => ({ useAgentsMapContext: () => ({}) }));
 jest.mock('~/hooks/Conversations/useGetConversation', () => () => mockGetLatestConversation);
-jest.mock('~/hooks/Agents/useCodeWorkspace', () => () => ({
-  mode: undefined,
-  readInputs: mockReadWorkspaceInputs,
-}));
-jest.mock('~/hooks/Agents/useCodeApprovalMode', () => () => ({
-  readInputs: mockReadApprovalInputs,
-}));
+/** Each render's reader closes over that render's values, as the real hooks' readers do, so an
+ *  adapter holding a reader from an earlier render keeps returning the earlier values. */
+jest.mock('~/hooks/Agents/useCodeWorkspace', () => () => {
+  const rendered = mockReadWorkspaceInputs();
+  return { mode: undefined, readInputs: () => rendered };
+});
+jest.mock('~/hooks/Agents/useCodeApprovalMode', () => () => {
+  const rendered = mockReadApprovalInputs();
+  return { readInputs: () => rendered };
+});
 
 const wrapper = ({ children }: { children: ReactNode }) => (
   <ChatSettingsContext.Provider value={defaultChatSettings}>
