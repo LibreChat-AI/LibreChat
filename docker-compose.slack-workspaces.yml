@@ -1,5 +1,6 @@
 # Add after docker-compose.channels.yml for UI-managed workspace installations.
-# Requires explicit DOMAIN_SERVER and transaction-capable MongoDB. For bundled
+# Requires public HTTPS DOMAIN_SERVER/DOMAIN_CLIENT, not the localhost defaults,
+# and transaction-capable MongoDB. For bundled
 # MongoDB, also add docker-compose.mongo-replica.yml; read the existing-data
 # conversion instructions before applying it to an existing database.
 # Setup: https://www.librechat.ai/docs/features/agent_channels
