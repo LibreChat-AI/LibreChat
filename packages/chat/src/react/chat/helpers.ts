@@ -5,6 +5,7 @@ import type { MouseEvent } from 'react';
 import type { ChatContract } from './contract';
 import { isSubmittingFamily, submissionByIndex, useIsSubmitting } from '../submission';
 import { presetFamily, filesFamily, optionSettingsFamily } from '../pane';
+import { useBranchTail, useBranchTailId } from '../latest';
 import { siblingIdxFamily, siblingKey } from '../thread';
 import { useLiveAttachments } from '../stream/atoms';
 import { abortScrollFamily } from '../generation';
@@ -35,9 +36,11 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
 
   const isSubmitting = useIsSubmitting(index);
   const setIsSubmitting = useSetAtom(isSubmittingFamily(index));
-  const latestMessage = host.useLatestMessage(index, queryParam);
+  const tailRootKey = conversationId ?? null;
+  const tailQueryId = conversationId ? queryParam : null;
+  const latestMessage = useBranchTail(tailRootKey, tailQueryId);
 
-  const latestMessageId = host.useLatestMessageId(index, queryParam) ?? undefined;
+  const latestMessageId = useBranchTailId(tailRootKey, tailQueryId) ?? undefined;
   const latestMessageDepth = latestMessage?.depth;
   const latestMessageRef = useRef(latestMessage);
   latestMessageRef.current = latestMessage;

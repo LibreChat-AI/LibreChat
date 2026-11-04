@@ -70,6 +70,8 @@ const mockShowToast = jest.fn();
 const mockMarkUsage = jest.fn();
 let mockMessages: TMessage[] | undefined;
 let mockLatestMessage: TMessage | null | undefined;
+let mockRouteParams: { conversationId?: string } = {};
+const mockTailQueryKeys: unknown[] = [];
 let mockServerQueuedTurns: unknown[] | undefined;
 let mockFileMap: Record<string, Pick<TFile, 'llmDeliveryPath'>> = {};
 const mockUseAgentQueuedTurns = jest.fn((..._args: unknown[]) => ({ data: mockServerQueuedTurns }));
@@ -163,11 +165,24 @@ jest.mock('~/data-provider', () => ({
     (value as { generationProtocolVersion?: unknown }).generationProtocolVersion === 2,
 }));
 
-jest.mock('~/hooks/Messages', () => ({
-  useLatestMessage: () =>
-    mockLatestMessage === undefined
-      ? (mockMessages?.[mockMessages.length - 1] ?? null)
-      : mockLatestMessage,
+/** The package selects the branch tail through the message query; flat fixtures end on it. */
+jest.mock('@tanstack/react-query', () => ({
+  ...jest.requireActual('@tanstack/react-query'),
+  useQueryClient: () => ({ getQueryData: () => undefined }),
+  useQuery: (
+    key: unknown[],
+    _fetch: unknown,
+    { select }: { select: (messages: TMessage[]) => unknown },
+  ) => {
+    mockTailQueryKeys.push(key[1]);
+    const tail = mockLatestMessage == null ? [] : [mockLatestMessage];
+    return { data: select(mockLatestMessage === undefined ? (mockMessages ?? []) : tail) };
+  },
+}));
+
+jest.mock('react-router-dom', () => ({
+  ...jest.requireActual('react-router-dom'),
+  useParams: () => mockRouteParams,
 }));
 
 jest.mock('@librechat/client', () => ({
@@ -280,6 +295,8 @@ describe('useSteering', () => {
     getDefaultStore().set(revealedQueuedTurnFamily(CONVO_ID), null);
     mockMessages = undefined;
     mockLatestMessage = undefined;
+    mockRouteParams = {};
+    mockTailQueryKeys.length = 0;
     mockServerQueuedTurns = undefined;
     mockFileMap = {};
   });
@@ -792,6 +809,12 @@ describe('useSteering', () => {
       });
       expect(mockCodeApprovalMode).toHaveBeenLastCalledWith(agentsConversation, addedConversation);
       expect(mockEnqueueQueuedTurn.mock.calls[0]?.[0].codeApprovalMode).toBe('ask');
+    });
+
+    it('reads the branch tail under the saved conversation, ignoring the route', () => {
+      mockRouteParams = { conversationId: 'route-conversation' };
+      setupServerQueue();
+      expect(mockTailQueryKeys.at(-1)).toBe(CONVO_ID);
     });
 
     it('gates the queued mode on the workspace mode the composer resolved', async () => {

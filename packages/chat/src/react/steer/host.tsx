@@ -1,6 +1,5 @@
 import { createContext, useContext } from 'react';
 import type {
-  TMessage,
   TConversation,
   TAgentQueuedTurnReceipt,
   TEnqueueAgentQueuedTurnRequest,
@@ -118,8 +117,8 @@ export interface SteerHost {
   useQueuedTurnCache(conversationId: string): QueuedTurnCache;
   /** Reads a conversation's generation state, including steers it could not deliver. */
   useFetchStreamStatus(): (conversationId: string) => Promise<ChatStreamStatus>;
-  /** The latest message of the pane, on the branch on screen. */
-  useLatestMessage(index: number, conversationId: string | null): TMessage | null;
+  /** The conversation id in the route, when the route names one. */
+  useRouteConversationId(): string | undefined;
   /** Storage read: the raw values a new turn's code approval mode is computed from, as the app
    *  holds them. The package derives the mode; see `resolveCodeApprovalModes`. */
   useCodeApprovalInputs(

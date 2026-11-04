@@ -24,7 +24,7 @@ const createHost = (label: string): SteerHost => ({
   useQueuedTurns: () => undefined,
   useQueuedTurnCache: () => ({ read: () => ({}), subscribe: () => () => undefined }),
   useFetchStreamStatus: () => async () => ({ active: false }),
-  useLatestMessage: () => null,
+  useRouteConversationId: () => undefined,
   useCodeApprovalInputs: () => ({ conversation: null, reachable: { agents: [], complete: true } }),
   useLocalize: () => (key) => `${label}:${key}`,
   useNotify: () => () => undefined,

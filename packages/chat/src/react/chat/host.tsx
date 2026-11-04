@@ -152,10 +152,6 @@ export interface ChatHost {
   useNewConversation(index: number): ChatContract['newConversation'];
   /** What the pane's turns need from the app; see {@link TurnServices}. */
   useTurnServices(params: ChatTurnsParams): TurnServices;
-  /** The tail of the branch on screen for the pane, read from the messages cached under `key`. */
-  useLatestMessage(index: number, key: string): TMessage | null;
-  /** The id of {@link ChatHost.useLatestMessage}, subscribed on its own. */
-  useLatestMessageId(index: number, key: string): string | null;
   /** Stops a resumable generation. */
   useAbortStream(): (params: AbortStreamParams) => Promise<AbortStreamResponse>;
   useMessageCache(): ChatMessageCache;

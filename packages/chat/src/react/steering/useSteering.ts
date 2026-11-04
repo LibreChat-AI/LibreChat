@@ -38,6 +38,7 @@ import useQueuedTurnReceipts from './receipts';
 import { useSteerHost } from '../steer/host';
 import useDuringRunActions from './actions';
 import useQueuedRecovery from './recovery';
+import { useBranchTail } from '../latest';
 import useComposerTake from './composer';
 import useQueueEnqueue from './enqueue';
 import useSubmitSteer from './submit';
@@ -217,7 +218,13 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
   /** Capture a durable branch anchor into a server queued turn. Optimistic
    * assistant placeholders are siblings of their eventual persisted response,
    * so they anchor through their stable user parent. */
-  const latestMessage = host.useLatestMessage(index, hasRealConvoId ? conversationId : null);
+  const paneConversationId = conversation?.conversationId ?? null;
+  const routeConversationId = host.useRouteConversationId();
+  const unsavedQueryId = (index === 0 ? routeConversationId : undefined) ?? paneConversationId;
+  const latestMessage = useBranchTail(
+    paneConversationId,
+    paneConversationId && (hasRealConvoId ? conversationId : unsavedQueryId),
+  );
   const liveMessageState = useMemo(() => selectLiveMessageState(latestMessage), [latestMessage]);
   /** Both approval cards and `ask_user_question` suspend the current
    * generation while keeping its submission slot occupied. Answer mode hides
