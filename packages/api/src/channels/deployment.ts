@@ -30,6 +30,8 @@ export function applySlackWorkspaceEnvironment(
   const agents = config.endpoints?.agents;
   const previous = agents?.channels;
   try {
+    const publicServer = env.DOMAIN_SERVER?.trim();
+    if (!publicServer) throw new Error('Missing DOMAIN_SERVER');
     const channels = channelConfigSchema.parse({
       ...previous,
       enabled: true,
@@ -47,10 +49,7 @@ export function applySlackWorkspaceEnvironment(
     if (channels.gatewayUrl) slackPublicURL(channels.gatewayUrl);
     resolveSlackWorkspaceApp(
       channels,
-      getOAuthCallbackUrl(
-        env.DOMAIN_SERVER || 'http://localhost:3080',
-        SLACK_WORKSPACE_CALLBACK_PATH,
-      ),
+      getOAuthCallbackUrl(publicServer, SLACK_WORKSPACE_CALLBACK_PATH),
     );
     return {
       ...config,

@@ -72,7 +72,10 @@ describe('shared Slack deployment setup', () => {
 
   it('uses YAML credentials when no environment replacement is supplied', () => {
     const first = applySlackWorkspaceEnvironment({}, environment);
-    const second = applySlackWorkspaceEnvironment(first, { SLACK_WORKSPACES_ENABLED: 'true' });
+    const second = applySlackWorkspaceEnvironment(first, {
+      SLACK_WORKSPACES_ENABLED: 'true',
+      DOMAIN_SERVER: environment.DOMAIN_SERVER,
+    });
     expect(second.endpoints?.agents?.channels?.slackApp).toEqual(
       first.endpoints?.agents?.channels?.slackApp,
     );
@@ -81,6 +84,9 @@ describe('shared Slack deployment setup', () => {
 
   it.each([
     { SLACK_APP_ID: 'invalid-app' },
+    { DOMAIN_SERVER: undefined },
+    { DOMAIN_SERVER: '' },
+    { DOMAIN_SERVER: '   ' },
     { SLACK_CLIENT_SECRET: '' },
     { SLACK_SIGNING_SECRET: 'sensitive-secret'.repeat(100) },
     { DOMAIN_SERVER: 'https://user:sensitive-secret@chat.example.com' },
