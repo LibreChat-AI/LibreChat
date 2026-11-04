@@ -1,0 +1,7 @@
+#!/bin/sh
+[ -n "$CI" ] && exit 0
+
+# The static checks, slow tier included, against the exact commits being
+# pushed. Refuses a push it cannot verify (a commit other than HEAD, or a
+# worktree with uncommitted changes) instead of checking the wrong content.
+node scripts/pre-push.mts "$@" || exit 1
