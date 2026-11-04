@@ -50,23 +50,19 @@ export function createSlackWorkspaceSettingsReader(deps: {
   };
 }
 
-export function createSlackWorkspaceRuntime(deps: {
-  storage: SlackWorkspaceStorage;
-  readAppConfig: (options?: GetAppConfigOptions) => Promise<AppConfig>;
+export interface SlackWorkspaceAdminDependencies {
   findUser: (id: string) => Promise<WorkspaceAdmin | null>;
   isPrincipalActive: (id: string) => Promise<boolean>;
   hasCapability: (
     user: { id: string; role: string; tenantId?: string; idOnTheSource: string | null },
     capability: typeof SystemCapabilities.ACCESS_ADMIN | typeof SystemCapabilities.MANAGE_AGENTS,
   ) => Promise<boolean>;
-  publicBaseUrl: string;
-  clientBaseUrl: string;
-  fetch: SlackWorkspaceFetch;
-  logError: (metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
-}): SlackWorkspaceHandlers {
-  const readSettings = createSlackWorkspaceSettingsReader(deps);
-  const config = async (appId?: string) => (await readSettings(appId)).app;
-  const canManage = async (principal: SlackWorkspacePrincipal) => {
+}
+
+export function createSlackWorkspaceAdminGuard(
+  deps: SlackWorkspaceAdminDependencies,
+): (principal: SlackWorkspacePrincipal) => Promise<boolean> {
+  return async (principal: SlackWorkspacePrincipal) => {
     const [user, active] = await Promise.all([
       deps.findUser(principal.id),
       deps.isPrincipalActive(principal.id),
@@ -88,6 +84,21 @@ export function createSlackWorkspaceRuntime(deps: {
     );
     return permissions.every(Boolean);
   };
+}
+
+export function createSlackWorkspaceRuntime(
+  deps: SlackWorkspaceAdminDependencies & {
+    storage: SlackWorkspaceStorage;
+    readAppConfig: (options?: GetAppConfigOptions) => Promise<AppConfig>;
+    publicBaseUrl: string;
+    clientBaseUrl: string;
+    fetch: SlackWorkspaceFetch;
+    logError: (metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
+  },
+): SlackWorkspaceHandlers {
+  const readSettings = createSlackWorkspaceSettingsReader(deps);
+  const config = async (appId?: string) => (await readSettings(appId)).app;
+  const canManage = createSlackWorkspaceAdminGuard(deps);
   const service = createSlackWorkspaceService({
     ...deps,
     config,
@@ -101,7 +112,12 @@ export function createSlackWorkspaceRuntime(deps: {
     settings: async () => {
       const { channels } = await readSettings();
       return {
-        configured: Boolean(app),
+        configured: channels.enabled && channels.transport === 'webhook' && channels.slackApp?.enabled === true,
+        setup: {
+          redirectUri: getOAuthCallbackUrl(deps.publicBaseUrl, SLACK_WORKSPACE_CALLBACK_PATH),
+          eventsBaseUrl: getOAuthCallbackUrl(channels.gatewayUrl || deps.publicBaseUrl, '/slack/events'),
+          interactionsBaseUrl: getOAuthCallbackUrl(channels.gatewayUrl || deps.publicBaseUrl, '/slack/interactions'),
+        },
         pageSize: channels.maxMetadataPageSize,
       };
     },

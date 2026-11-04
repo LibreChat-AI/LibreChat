@@ -13,6 +13,7 @@ import {
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
+import { createSlackWorkspaceBindingHandlers } from './workspaceBindings';
 import { createSlackDispatchHandlers } from './slackDispatch';
 import { encryptCredential } from '~/crypto/credentials';
 import { resolveSlackWorkspaceApp } from './workspaces';
@@ -28,6 +29,7 @@ describe('shared Slack service routing', () => {
   const provider = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>();
   const serviceToken = 'shared-test-service-token-at-least-32';
   let enabled = true;
+  let manageAllowed = true;
   let sequence = 0;
   const config = channelConfigSchema.parse({
     enabled: true,
@@ -93,7 +95,12 @@ describe('shared Slack service routing', () => {
       credentialMode: 'per_user',
       revision: 'consent',
     });
-    const result = await routes.assign({ workspaceId, channelId, userId: 'admin' });
+    const result = await routes.assign({
+      workspaceId,
+      channelId,
+      userId: 'admin',
+      channelRevision: 'consent',
+    });
     if (!result.ok) throw new Error(result.code);
   }
   beforeAll(async () => {
@@ -105,15 +112,16 @@ describe('shared Slack service routing', () => {
     routes = createSlackRouteStorage(db);
     const dispatch = createSlackDispatchStorage(db, async () => config);
     await runAsSystem(() => dispatch.ready());
+    const readSettings = async () => ({
+      channels: config,
+      app: enabled ? resolveSlackWorkspaceApp(config, 'https://api.example/callback') : undefined,
+    });
     const handlers = createSlackDispatchHandlers({
       workspaces: storage,
       routes,
       channels,
       dispatch,
-      readSettings: async () => ({
-        channels: config,
-        app: enabled ? resolveSlackWorkspaceApp(config, 'https://api.example/callback') : undefined,
-      }),
+      readSettings,
       serviceToken: () => serviceToken,
       fetch: provider,
       logError: jest.fn(),
@@ -133,10 +141,32 @@ describe('shared Slack service routing', () => {
     app.post('/discover', handlers.discover);
     app.post('/lifecycle', handlers.lifecycle);
     app.get('/bundle/:tenantId/:channelId', bound.bundle);
+    const bindings = createSlackWorkspaceBindingHandlers({
+      channels,
+      workspaces: storage,
+      routes,
+      readSettings,
+      canManage: async () => manageAllowed,
+      logError: jest.fn(),
+    });
+    app.use('/ui', (req, _res, next) => {
+      if (req.get('x-test-user'))
+        Object.assign(req, {
+          user: { id: req.get('x-test-user'), tenantId: req.get('x-test-user-tenant') || 'org-a' },
+        });
+      tenantStorage.run({ tenantId: req.get('x-test-tenant') || 'org-a' }, () => next());
+    });
+    app.post('/ui/:agentId/connections', bindings.create);
+    app.get('/ui/:agentId/:channelId/routes', bindings.read);
+    app.post('/ui/:agentId/:channelId/routes', bindings.assign);
+    app.delete('/ui/:agentId/:channelId/routes', bindings.remove);
+    app.patch('/ui/:agentId/:channelId/manual', bound.update);
+    app.get('/ui/:agentId/:channelId/manual-manifest', bound.manifest);
     request = supertest(app);
   }, 60000);
   beforeEach(async () => {
     enabled = true;
+    manageAllowed = true;
     provider
       .mockReset()
       .mockImplementation(
@@ -162,6 +192,219 @@ describe('shared Slack service routing', () => {
   afterAll(async () => {
     await db.disconnect();
     await mongo?.stop();
+  });
+
+  const browserPost = (path: string, body: object) =>
+    request
+      .post('/ui/' + path)
+      .set('x-test-user', 'admin')
+      .send(body);
+  async function pending(workspaceId: string, agentId = 'agent') {
+    return (await browserPost(agentId + '/connections', { workspaceId }).expect(201)).body;
+  }
+
+  it('creates a usable workspace binding through the browser API without accepting credentials', async () => {
+    const workspace = await scoped(() => install());
+    const channel = await pending(workspace.workspaceId);
+    expect(channel).toMatchObject({
+      workspaceId: workspace.workspaceId,
+      status: 'pending_install',
+      credentialMode: 'per_user',
+    });
+    const active = (
+      await browserPost(`agent/${channel.channelId}/routes`, {
+        channelRevision: channel.revision,
+      }).expect(200)
+    ).body;
+    expect(active.status).toBe('active');
+    expect(active.revision).not.toBe(channel.revision);
+    expect(JSON.stringify(active)).not.toMatch(/xoxb|encrypted|signing/);
+    await request
+      .patch(`/ui/agent/${channel.channelId}/manual`)
+      .set('x-test-user', 'admin')
+      .send({ credentialMode: 'shared', revision: active.revision })
+      .expect(409, { error: 'workspace_managed_connection' });
+    await request
+      .get(`/ui/agent/${channel.channelId}/manual-manifest`)
+      .set('x-test-user', 'admin')
+      .expect(409, { error: 'workspace_managed_connection' });
+    const resolved = await post('/resolve', query()).expect(200);
+    expect(resolved.body.channelId).toBe(channel.channelId);
+    expect(
+      (
+        await request
+          .get(`/bundle/org-a/${channel.channelId}`)
+          .set('Authorization', `Bearer ${serviceToken}`)
+          .expect(200)
+      ).body.credentials.botToken,
+    ).toBe('xoxb-first');
+    await browserPost('agent/connections', {
+      workspaceId: workspace.workspaceId,
+      botToken: 'xoxb-copy',
+    }).expect(400);
+  });
+
+  it('leaves a conflicting connection pending until an explicit route revision is supplied', async () => {
+    const workspace = await scoped(() => install());
+    const first = await pending(workspace.workspaceId);
+    await browserPost(`agent/${first.channelId}/routes`, {
+      channelRevision: first.revision,
+    }).expect(200);
+    const second = await pending(workspace.workspaceId, 'second-agent');
+    await browserPost(`second-agent/${second.channelId}/routes`, {
+      channelRevision: second.revision,
+    }).expect(409);
+    expect((await scoped(() => channels.getAgentChannel(second.channelId)))?.status).toBe(
+      'pending_install',
+    );
+    const observed = (
+      await request
+        .get(`/ui/second-agent/${second.channelId}/routes?target=default`)
+        .set('x-test-user', 'admin')
+        .expect(200)
+    ).body;
+    expect(observed).toEqual({
+      occupied: true,
+      assignedToThisChannel: false,
+      revision: expect.any(String),
+    });
+    expect(JSON.stringify(observed)).not.toContain(first.channelId);
+    await browserPost(`second-agent/${second.channelId}/routes`, {
+      channelRevision: second.revision,
+      expectedRevision: observed.revision,
+    }).expect(200);
+    expect((await post('/resolve', query()).expect(200)).body.channelId).toBe(second.channelId);
+  });
+
+  it('checks current administration, creator, tenant and binding revision at management boundaries', async () => {
+    const workspace = await scoped(() => install());
+    await request
+      .post('/ui/agent/connections')
+      .send({ workspaceId: workspace.workspaceId })
+      .expect(401);
+    const channel = await pending(workspace.workspaceId);
+    manageAllowed = false;
+    await browserPost(`agent/${channel.channelId}/routes`, {
+      channelRevision: channel.revision,
+    }).expect(403);
+    manageAllowed = true;
+    await request
+      .get(`/ui/agent/${channel.channelId}/routes`)
+      .set('x-test-user', 'other-admin')
+      .expect(404);
+    await request
+      .get(`/ui/other-agent/${channel.channelId}/routes`)
+      .set('x-test-user', 'admin')
+      .expect(404);
+    await request
+      .get(`/ui/agent/${channel.channelId}/routes`)
+      .set('x-test-user', 'admin')
+      .set('x-test-tenant', 'org-b')
+      .expect(403);
+    await browserPost(`agent/${channel.channelId}/routes`, { channelRevision: 'stale' }).expect(
+      409,
+    );
+    await scoped(() => storage.disconnect(workspace.workspaceId));
+    await browserPost(`agent/${channel.channelId}/routes`, {
+      channelRevision: channel.revision,
+    }).expect(409);
+    expect((await scoped(() => channels.getAgentChannel(channel.channelId)))?.status).toBe(
+      'pending_install',
+    );
+  });
+
+  it('pages only this binding’s routes and prevents removing a route belonging to another binding', async () => {
+    const workspace = await scoped(() => install());
+    const first = await pending(workspace.workspaceId);
+    const active = (
+      await browserPost(`agent/${first.channelId}/routes`, {
+        channelRevision: first.revision,
+      }).expect(200)
+    ).body;
+    for (const externalChannelId of ['C123', 'C456'])
+      await browserPost(`agent/${first.channelId}/routes`, {
+        channelRevision: active.revision,
+        externalChannelId,
+      }).expect(200);
+    const page = (
+      await request
+        .get(`/ui/agent/${first.channelId}/routes`)
+        .set('x-test-user', 'admin')
+        .expect(200)
+    ).body;
+    expect(page.routes).toHaveLength(2);
+    expect(page.next).toEqual(expect.any(String));
+    const last = (
+      await request
+        .get(`/ui/agent/${first.channelId}/routes?cursor=${page.next}`)
+        .set('x-test-user', 'admin')
+        .expect(200)
+    ).body;
+    expect(last.routes).toHaveLength(1);
+    expect(last.next).toBeUndefined();
+    const second = await pending(workspace.workspaceId, 'second-agent');
+    const target = (
+      await request
+        .get(`/ui/second-agent/${second.channelId}/routes?target=C456`)
+        .set('x-test-user', 'admin')
+        .expect(200)
+    ).body;
+    await request
+      .delete(`/ui/second-agent/${second.channelId}/routes`)
+      .set('x-test-user', 'admin')
+      .send({ externalChannelId: 'C456', expectedRevision: target.revision })
+      .expect(409);
+    await scoped(() => storage.disconnect(workspace.workspaceId));
+    await request
+      .delete(`/ui/agent/${first.channelId}/routes`)
+      .set('x-test-user', 'admin')
+      .send({ externalChannelId: 'C456', expectedRevision: target.revision })
+      .expect(204);
+    await request
+      .get(`/ui/agent/${first.channelId}/routes?cursor=invalid`)
+      .set('x-test-user', 'admin')
+      .expect(400);
+  });
+
+  it('atomically admits only one competing first route and accepts dotted browser tenants', async () => {
+    const workspace = await scoped(() => install());
+    const first = await pending(workspace.workspaceId);
+    const second = await pending(workspace.workspaceId, 'other-agent');
+    const results = await Promise.all([
+      browserPost(`agent/${first.channelId}/routes`, { channelRevision: first.revision }),
+      browserPost(`other-agent/${second.channelId}/routes`, { channelRevision: second.revision }),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+    expect(
+      (
+        await scoped(() =>
+          Promise.all([
+            channels.getAgentChannel(first.channelId),
+            channels.getAgentChannel(second.channelId),
+          ]),
+        )
+      )
+        .map((channel) => channel?.status)
+        .sort(),
+    ).toEqual(['active', 'pending_install']);
+    const dotted = await scoped(() => install('TDOT'), 'org.with.periods');
+    const created = await request
+      .post('/ui/dotted-agent/connections')
+      .set('x-test-user', 'admin')
+      .set('x-test-user-tenant', 'org.with.periods')
+      .set('x-test-tenant', 'org.with.periods')
+      .send({ workspaceId: dotted.workspaceId })
+      .expect(201);
+    await request
+      .post(`/ui/dotted-agent/${created.body.channelId}/routes`)
+      .set('x-test-user', 'admin')
+      .set('x-test-user-tenant', 'org.with.periods')
+      .set('x-test-tenant', 'org.with.periods')
+      .send({ channelRevision: created.body.revision })
+      .expect(200);
+    expect((await post('/resolve', query('TDOT')).expect(200)).body.tenantId).toBe(
+      'org.with.periods',
+    );
   });
 
   it('requires the service token before returning app secrets and fails closed when disabled', async () => {

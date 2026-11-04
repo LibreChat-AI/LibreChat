@@ -70,6 +70,7 @@ export interface SlackWorkspaceStorage {
     next?: string;
   }>;
   read(workspaceId: string): Promise<SlackWorkspaceRecord | null>;
+  metadata(workspaceId: string): Promise<SlackWorkspaceMetadata | null>;
   disconnect(workspaceId: string, expectedRevision?: string): Promise<boolean>;
   /** Trusted routing metadata, read only after authenticating the Slack request. */
   route(appId: string, teamId: string): Promise<SlackWorkspaceMetadata | null>;
@@ -331,6 +332,7 @@ export function createSlackWorkspaceStorage(
         .find({ tenantId: tenantId ?? null, ...(cursor ? { workspaceId: { $gt: cursor } } : {}) })
         .sort({ workspaceId: 1 })
         .limit(limit + 1)
+        .read('primary')
         .lean();
       const page = records.slice(0, limit);
       return {
@@ -338,10 +340,18 @@ export function createSlackWorkspaceStorage(
         ...(records.length > limit ? { next: page[page.length - 1].workspaceId } : {}),
       };
     },
+    async metadata(workspaceId) {
+      const record = await workspaces
+        .findOne({ workspaceId, tenantId: tenant() ?? null })
+        .read('primary')
+        .lean();
+      return record ? metadata(record) : null;
+    },
     async read(workspaceId) {
       return workspaces
         .findOne({ workspaceId, tenantId: tenant() ?? null })
         .select('+encryptedBotToken')
+        .read('primary')
         .lean();
     },
     async disconnect(workspaceId, expectedRevision) {
@@ -379,7 +389,10 @@ export function createSlackWorkspaceStorage(
     },
     async route(appId, teamId) {
       return runAsSystem(async () => {
-        const record = await workspaces.findOne({ appId, teamId, status: 'active' }).lean();
+        const record = await workspaces
+          .findOne({ appId, teamId, status: 'active' })
+          .read('primary')
+          .lean();
         return record ? metadata(record) : null;
       });
     },

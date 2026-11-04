@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { channelGatewayPolicySchema } from 'librechat-data-provider';
+import { channelGatewayPolicySchema, tenantIdSchema } from 'librechat-data-provider';
 import type { ChannelGatewayPolicy } from 'librechat-data-provider';
 
 const identifier = z
@@ -17,7 +17,7 @@ const environment = z.object({
     .default('0.0.0.0'),
   LIBRECHAT_INTERNAL_URL: z.url().default('http://localhost:3080'),
   CHANNEL_SERVICE_TOKEN: z.string().min(1),
-  CHANNEL_TENANT_ID: identifier,
+  CHANNEL_TENANT_ID: tenantIdSchema,
   CHANNEL_ID: identifier,
   APP_TITLE: z
     .string()

@@ -18,11 +18,12 @@ export function slackRouteLookup(
     const event = envelope.event;
     if (!event.user || event.bot_id || event.subtype) return;
     if (['reaction_added', 'reaction_removed'].includes(event.type)) {
-      const item = messageItem.parse(event.item);
+      const item = messageItem.safeParse(event.item);
+      if (!item.success) return;
       return {
         appId,
         teamId: envelope.team_id,
-        target: { kind: 'message', externalMessageKey: `${item.channel}:${item.ts}` },
+        target: { kind: 'message', externalMessageKey: `${item.data.channel}:${item.data.ts}` },
       };
     }
     if (

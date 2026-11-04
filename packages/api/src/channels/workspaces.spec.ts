@@ -283,13 +283,14 @@ describe('Slack workspace installation', () => {
         storage,
         canManage,
         clientBaseUrl: 'https://client.example/librechat',
-        settings: async () => ({ configured: Boolean(app), pageSize: 50 }),
+        settings: async () => ({ configured: Boolean(app), appId: app?.appId, pageSize: 50 }),
         logError: jest.fn(),
       });
     server.get('/workspaces', handlers.list);
     server.get('/workspaces/apps', handlers.apps);
     server.put('/workspaces/apps', handlers.configureApp);
     server.post('/workspaces/apps/:appId/remove', handlers.removeApp);
+    server.get('/workspaces/:workspaceId', handlers.get);
     server.post('/workspaces/connect', setOAuthSession, handlers.connect);
     server.delete('/workspaces/attempts/:flowId', handlers.cancel);
     server.get('/api/channels/workspaces/oauth/callback', handlers.callback);
@@ -346,6 +347,30 @@ describe('Slack workspace installation', () => {
       .send({ revision: saved.body.revision })
       .expect(204);
     expect(await scoped(() => storage.app('A123'))).toBeNull();
+  });
+
+  it('returns one saved workspace as credential-free tenant metadata', async () => {
+    const { flow } = await start();
+    const installed = await scoped(() => service.finish(flow, 'test-code'));
+    if (!installed.ok) throw new Error(installed.error.code);
+    const response = await http()
+      .get(`/workspaces/${installed.value.workspaceId}`)
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-a')
+      .expect(200);
+    expect(response.body).toMatchObject({
+      configured: true,
+      appId: 'A123',
+      canManage: true,
+      workspace: { workspaceId: installed.value.workspaceId, teamName: 'Test workspace' },
+    });
+    expect(JSON.stringify(response.body)).not.toMatch(/xoxb|encrypted|clientSecret|signingSecret/);
+    await http()
+      .get(`/workspaces/${installed.value.workspaceId}`)
+      .set('x-test-user', 'yes')
+      .set('x-test-user-tenant', 'org-b')
+      .set('x-test-tenant', 'org-b')
+      .expect(404);
   });
 
   it('requires a signed-in same-tenant principal on browser management routes', async () => {

@@ -10,6 +10,27 @@ import { ChannelWorker } from '../worker';
 
 afterEach(() => jest.restoreAllMocks());
 
+it('accepts dotted tenant discovery rows and enforces the canonical tenant boundary', async () => {
+  const bootstrap = loadBootstrap({
+    CHANNEL_SERVICE_TOKEN: 'test-service-token-at-least-32-characters',
+  });
+  if (bootstrap.mode !== 'shared') throw new Error('Expected shared config');
+  const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(
+    async () =>
+      new Response(JSON.stringify([{ tenantId: 'org.with.periods', channelId: 'binding' }])),
+  );
+  const client = new WorkspaceClient(bootstrap.config, transport);
+  expect(await client.discover(1)).toEqual([
+    { tenantId: 'org.with.periods', channelId: 'binding' },
+  ]);
+  for (const tenantId of ['org/scope', 'x'.repeat(129), '__SYSTEM__']) {
+    transport.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ tenantId, channelId: 'binding' }])),
+    );
+    await expect(client.discover(1)).rejects.toThrow();
+  }
+});
+
 it('bounds simultaneous durable turns while allowing several turns for the same binding', async () => {
   const bootstrap = loadBootstrap({
     CHANNEL_SERVICE_TOKEN: 'test-service-token-at-least-32-characters',

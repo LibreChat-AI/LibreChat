@@ -61,6 +61,7 @@ export function createSlackDispatchStorage(
         .hint('channel_run_shared_discovery')
         .select({ tenantId: 1, channelId: 1 })
         .limit(limit)
+        .read('primary')
         .lean();
       return records.map(({ tenantId, channelId }) => ({ tenantId, channelId }));
     },
@@ -68,6 +69,7 @@ export function createSlackDispatchStorage(
       const route = await threads
         .findOne({ tenantId: tenant() ?? null, workspaceId, externalUserId, externalThreadKey })
         .select({ channelId: 1 })
+        .read('primary')
         .lean();
       return route?.channelId ?? null;
     },
@@ -75,6 +77,7 @@ export function createSlackDispatchStorage(
       const run = await runs
         .findOne({ tenantId: tenant() || '_', workspaceId, runId })
         .select({ channelId: 1 })
+        .read('primary')
         .lean();
       return run?.channelId ?? null;
     },
@@ -82,6 +85,7 @@ export function createSlackDispatchStorage(
       const link = await createChannelIdentityModel(mongoose)
         .findOne({ tenantId: tenant() || '_', linkId })
         .select({ 'identity.channelId': 1 })
+        .read('primary')
         .lean();
       return link?.identity.channelId ?? null;
     },
@@ -97,6 +101,7 @@ export function createSlackDispatchStorage(
         })
         .select({ channelId: 1 })
         .limit(2)
+        .read('primary')
         .lean();
       if (records.length > 1) throw new Error('Ambiguous Slack delivery route');
       return records[0]?.channelId ?? null;

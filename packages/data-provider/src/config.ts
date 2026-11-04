@@ -41,6 +41,13 @@ import {
 } from './types/scheduleConsent';
 import { partialWithoutDefaults } from './zod';
 
+export const tenantIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[-a-zA-Z0-9_.]+$/, 'must be a valid tenant id without whitespace')
+  .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed');
+
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
 /** Coalesces a conversation's ready background results into one wake-up turn. */
@@ -2459,13 +2466,7 @@ export const endpointSchema = baseEndpointSchema.merge(
       ).join(', ')}`,
     }),
     /** Limit this YAML custom endpoint to one tenant. Omit for deployment-wide endpoints. */
-    tenantId: z
-      .string()
-      .min(1)
-      .max(128)
-      .regex(/^[-a-zA-Z0-9_.]+$/, 'must be a valid tenant id without whitespace')
-      .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed')
-      .optional(),
+    tenantId: tenantIdSchema.optional(),
     apiKey: z.string(),
     /** Masked preview of the API key, stored at write time so admin
      * reads can show which key is configured without returning the secret. */

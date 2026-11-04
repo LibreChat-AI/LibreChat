@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { runAsSystem, tenantStorage } from '@librechat/data-schemas';
+import { runAsSystem, tenantStorage, TransactionUnavailableError } from '@librechat/data-schemas';
 import {
   sharedSlackRouteLookupSchema,
   channelGatewayWirePolicySchema,
@@ -74,7 +74,12 @@ export function createSlackDispatchHandlers(deps: {
         await action(req, res, { ...settings, app: settings.app });
       } catch (error) {
         deps.logError(getSafeErrorMetadata(error));
-        res.status(503).json({ error: 'slack_dispatch_unavailable' });
+        res.status(503).json({
+          error:
+            error instanceof TransactionUnavailableError
+              ? error.code
+              : 'slack_dispatch_unavailable',
+        });
       }
     };
   return {
@@ -132,9 +137,10 @@ export function createSlackDispatchHandlers(deps: {
         else
           channelId = await deps.dispatch.message(workspace.workspaceId, target.externalMessageKey);
         if (channelId) {
-          const channel = await deps.channels.getActiveAgentChannel(channelId);
+          const channel = await deps.channels.getAgentChannelMetadata(channelId);
           if (
-            channel?.workspaceId === workspace.workspaceId &&
+            channel?.status === 'active' &&
+            channel.workspaceId === workspace.workspaceId &&
             channel.credentialMode === 'per_user'
           ) {
             res.json({

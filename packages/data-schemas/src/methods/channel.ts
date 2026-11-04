@@ -95,11 +95,13 @@ export function createAgentChannelMethods(
     includeCredentials: boolean,
   ): Promise<AgentChannelRecord | null> {
     if (!record?.workspaceId || record.status !== 'active') return record;
-    const query = createSlackWorkspaceModel(mongoose).findOne({
-      workspaceId: record.workspaceId,
-      tenantId: record.tenantId ?? null,
-      status: 'active',
-    });
+    const query = createSlackWorkspaceModel(mongoose)
+      .findOne({
+        workspaceId: record.workspaceId,
+        tenantId: record.tenantId ?? null,
+        status: 'active',
+      })
+      .read('primary');
     const workspace = await (
       includeCredentials ? query.select('+encryptedBotToken') : query
     ).lean();
@@ -185,7 +187,11 @@ export function createAgentChannelMethods(
       });
     },
     async listAgentChannels(agentId: string): Promise<AgentChannelRecord[]> {
-      const records = await channel().find({ agentId }).sort({ createdAt: 1 }).lean();
+      const records = await channel()
+        .find({ agentId })
+        .sort({ createdAt: 1 })
+        .read('primary')
+        .lean();
       const workspaceIds = [
         ...new Set(
           records
@@ -196,6 +202,7 @@ export function createAgentChannelMethods(
       if (!workspaceIds.length) return records;
       const workspaces = await createSlackWorkspaceModel(mongoose)
         .find({ workspaceId: { $in: workspaceIds }, status: 'active' })
+        .read('primary')
         .lean();
       const byId = new Map(workspaces.map((workspace) => [workspace.workspaceId, workspace]));
       return records.map((record) =>
@@ -223,7 +230,7 @@ export function createAgentChannelMethods(
     },
     async getActiveAgentChannel(channelId) {
       const record = await installed(
-        await channel().findOne({ channelId }).select(secrets).lean(),
+        await channel().findOne({ channelId }).select(secrets).read('primary').lean(),
         true,
       );
       return record?.status === 'active' ? record : null;
@@ -246,6 +253,7 @@ export function createAgentChannelMethods(
           'slack.appId': 1,
           'slack.botUserId': 1,
         })
+        .read('primary')
         .lean();
       return installed(record, false);
     },

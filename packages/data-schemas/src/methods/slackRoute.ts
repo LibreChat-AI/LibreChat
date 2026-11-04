@@ -1,4 +1,6 @@
 import { nanoid } from 'nanoid';
+import { channelStorageConfigSchema } from 'librechat-data-provider';
+import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { SlackRouteRecord } from '~/models/slackRoute';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
@@ -23,6 +25,14 @@ type RouteResult =
     };
 
 export interface SlackRouteStorage {
+  listForChannel(
+    channelId: string,
+    cursor?: string,
+    limit?: number,
+  ): Promise<{
+    routes: Array<Pick<SlackRouteRecord, 'externalChannelId' | 'revision'>>;
+    next?: string;
+  }>;
   read(workspaceId: string, externalChannelId?: string): Promise<SlackRouteRecord | null>;
   resolve(workspaceId: string, externalChannelId: string): Promise<SlackRouteRecord | null>;
   assign(input: {
@@ -30,17 +40,24 @@ export interface SlackRouteStorage {
     workspaceId: string;
     externalChannelId?: string;
     channelId: string;
+    channelRevision: string;
     expectedRevision?: string;
+    /** Activate an existing pending/disabled binding in the same route transaction. */
+    activate?: boolean;
   }): Promise<RouteResult>;
   remove(input: {
     userId: string;
     workspaceId: string;
     externalChannelId?: string;
     expectedRevision: string;
+    channelId?: string;
   }): Promise<RouteResult>;
 }
 
-export function createSlackRouteStorage(mongoose: typeof import('mongoose')): SlackRouteStorage {
+export function createSlackRouteStorage(
+  mongoose: typeof import('mongoose'),
+  getLimits: () => Promise<Partial<ChannelStorageConfig>> = async () => ({}),
+): SlackRouteStorage {
   const routes = createSlackRouteModel(mongoose);
   const workspaces = createSlackWorkspaceModel(mongoose);
   const channels = createAgentChannelModel(mongoose);
@@ -56,7 +73,7 @@ export function createSlackRouteStorage(mongoose: typeof import('mongoose')): Sl
     externalChannelId: externalChannelId ?? null,
   });
   const read = async (workspaceId: string, externalChannelId?: string) =>
-    routes.findOne(scope(workspaceId, externalChannelId)).lean();
+    routes.findOne(scope(workspaceId, externalChannelId)).read('primary').lean();
 
   async function change(
     userId: string,
@@ -74,9 +91,43 @@ export function createSlackRouteStorage(mongoose: typeof import('mongoose')): Sl
   }
 
   return {
+    async listForChannel(channelId, cursor, limit = 50) {
+      const limits = channelStorageConfigSchema.parse(await getLimits());
+      if (
+        !Number.isSafeInteger(limit) ||
+        limit < 1 ||
+        limit > limits.maxMetadataPageSize ||
+        (cursor !== undefined && !mongoose.isValidObjectId(cursor))
+      )
+        throw new TypeError('Invalid Slack route page');
+      const records = await routes
+        .find({
+          tenantId: tenant() ?? null,
+          channelId,
+          ...(cursor ? { _id: { $gt: cursor } } : {}),
+        })
+        .sort({ _id: 1 })
+        .limit(limit + 1)
+        .select({ externalChannelId: 1, revision: 1 })
+        .read('primary')
+        .lean();
+      const page = records.slice(0, limit);
+      return {
+        routes: page.map(({ externalChannelId, revision }) => ({ externalChannelId, revision })),
+        ...(records.length > limit ? { next: String(page[page.length - 1]._id) } : {}),
+      };
+    },
     read,
     async resolve(workspaceId, externalChannelId) {
-      return (await read(workspaceId, externalChannelId)) ?? read(workspaceId);
+      return routes
+        .findOne({
+          tenantId: tenant() ?? null,
+          workspaceId,
+          externalChannelId: { $in: [externalChannelId, null] },
+        })
+        .sort({ externalChannelId: -1 })
+        .read('primary')
+        .lean();
     },
     async assign(input) {
       return change(input.userId, async (session) => {
@@ -90,13 +141,19 @@ export function createSlackRouteStorage(mongoose: typeof import('mongoose')): Sl
           .session(session)
           .lean();
         if (!workspace) return { ok: false, code: 'workspace_unavailable' };
+        const filter = scope(input.workspaceId, input.externalChannelId);
+        const previous = await routes.findOne(filter).session(session).lean();
+        if ((previous?.revision ?? undefined) !== input.expectedRevision)
+          return { ok: false, code: 'route_changed' };
         const channel = await channels
           .findOne({
             channelId: input.channelId,
             tenantId: tenantId ?? null,
-            status: 'active',
+            status: input.activate ? { $in: ['pending_install', 'disabled'] } : 'active',
             workspaceId: input.workspaceId,
             credentialMode: 'per_user',
+            revision: input.channelRevision,
+            ...(input.activate ? { createdBy: input.userId } : {}),
           })
           .session(session)
           .lean();
@@ -111,10 +168,29 @@ export function createSlackRouteStorage(mongoose: typeof import('mongoose')): Sl
           ))
         )
           return { ok: false, code: 'workspace_unavailable' };
-        const filter = scope(input.workspaceId, input.externalChannelId);
-        const previous = await routes.findOne(filter).session(session).lean();
-        if ((previous?.revision ?? undefined) !== input.expectedRevision)
-          return { ok: false, code: 'route_changed' };
+        if (input.activate) {
+          const activated = await channels.updateOne(
+            {
+              channelId: channel.channelId,
+              tenantId: tenantId ?? null,
+              revision: input.channelRevision,
+              status: channel.status,
+            },
+            {
+              $set: {
+                status: 'active',
+                revision: nanoid(),
+                slack: {
+                  appId: workspace.appId,
+                  teamId: workspace.teamId,
+                  botUserId: workspace.botUserId,
+                },
+              },
+            },
+            { session },
+          );
+          if (!activated.matchedCount) throw new Error('Slack binding changed during activation');
+        }
         const route: SlackRouteRecord = {
           tenantId,
           workspaceId: input.workspaceId,
@@ -140,6 +216,7 @@ export function createSlackRouteStorage(mongoose: typeof import('mongoose')): Sl
             {
               ...scope(input.workspaceId, input.externalChannelId),
               revision: input.expectedRevision,
+              ...(input.channelId ? { channelId: input.channelId } : {}),
             },
             { session },
           )

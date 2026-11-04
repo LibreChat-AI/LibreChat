@@ -245,6 +245,10 @@ export function createChannelHandlers(deps: ChannelDependencies): {
       res.json(publicChannel(disabled));
       return;
     }
+    if (channel.workspaceId) {
+      res.status(409).json({ error: 'workspace_managed_connection' });
+      return;
+    }
     const mode = modeInput.safeParse(req.body);
     if (mode.success) {
       if (channel.status !== 'disabled' || mode.data.revision !== channel.revision) {
@@ -329,6 +333,10 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     const channel = await ownedChannel(req);
     if (!channel) {
       res.status(404).json({ error: 'channel_not_found' });
+      return;
+    }
+    if (channel.workspaceId) {
+      res.status(409).json({ error: 'workspace_managed_connection' });
       return;
     }
     const agent = await deps.getAgent(channel.agentId);

@@ -73,7 +73,7 @@ function fixture() {
           });
         return json({
           kind: 'bound',
-          tenantId: `org-${suffix}`,
+          tenantId: `org.${suffix}`,
           workspaceId: `workspace-${suffix}`,
           channelId: `binding-${suffix}`,
         });
@@ -84,7 +84,7 @@ function fixture() {
         return json({
           channel: {
             channelId: `binding-${suffix}`,
-            tenantId: `org-${suffix}`,
+            tenantId: `org.${suffix}`,
             workspaceId: `workspace-${suffix}`,
             agentId: 'agent',
             createdBy: 'owner',
@@ -169,8 +169,8 @@ describe('shared signed Slack HTTP ingress', () => {
     expect((await send(envelope('T2'))).status).toBe(200);
     const admissions = current.calls.filter(({ path }) => path.endsWith('/runs'));
     expect(admissions.map(({ path, tenant }) => ({ path, tenant }))).toEqual([
-      { path: '/api/channels/service/binding-a/runs', tenant: 'org-a' },
-      { path: '/api/channels/service/binding-b/runs', tenant: 'org-b' },
+      { path: '/api/channels/service/binding-a/runs', tenant: 'org.a' },
+      { path: '/api/channels/service/binding-b/runs', tenant: 'org.b' },
     ]);
     expect(
       current.calls
@@ -210,6 +210,28 @@ describe('shared signed Slack HTTP ingress', () => {
     );
     expect(current.calls.some(({ path }) => path.endsWith('/runs'))).toBe(false);
   });
+  it.each(['file', 'file_comment', 'invalid'])(
+    'acknowledges unsupported %s reactions without routing or admission',
+    async (type) => {
+      for (const eventType of ['reaction_added', 'reaction_removed']) {
+        const result = await send({
+          ...envelope(),
+          event: {
+            type: eventType,
+            user: 'UACTOR',
+            reaction: 'thumbsup',
+            event_ts: '1.000001',
+            item: { type, id: 'file-a' },
+          },
+        });
+        expect(result.status).toBe(200);
+      }
+      expect(
+        current.calls.some(({ path }) => path.endsWith('/resolve') || path.endsWith('/runs')),
+      ).toBe(false);
+    },
+  );
+
   it('checks lifecycle notifications with the service instead of disconnecting from event timestamps', async () => {
     expect((await send({ ...envelope(), event: { type: 'app_uninstalled' } })).status).toBe(200);
     expect(current.calls.find(({ path }) => path.endsWith('/lifecycle'))?.body).toEqual({
