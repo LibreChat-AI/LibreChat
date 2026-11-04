@@ -25,6 +25,10 @@ for (const theme of ['light', 'dark']) {
     let cancelled = 0;
     let disconnected = 0;
     await page.addInitScript((mode) => localStorage.setItem('color-theme', mode), theme);
+    if (theme === 'light')
+      await context.addInitScript(() =>
+        Object.defineProperty(window, 'BroadcastChannel', { value: undefined, configurable: true }),
+      );
     await context.route('https://slack.com/oauth/v2/authorize**', (route) =>
       route.fulfill({ contentType: 'text/html', body: '<title>Slack OAuth test boundary</title>' }),
     );

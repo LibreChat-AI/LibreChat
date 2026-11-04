@@ -3,7 +3,7 @@ import { Button, Spinner } from '@librechat/client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { MutationKeys, QueryKeys, dataService } from 'librechat-data-provider';
 import type { SlackWorkspace } from 'librechat-data-provider';
-import { OAUTH_SETTLED_CHANNEL } from '~/data-provider/PullRequest/signIn';
+import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
 import { useSlackWorkspaces } from './useSlackWorkspaces';
 import { channelErrorLabel } from '~/utils/channelErrors';
 import { useAuthContext, useLocalize } from '~/hooks';
@@ -68,29 +68,18 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
 
   useEffect(() => {
     mounted.current = true;
-    const channel =
-      typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(OAUTH_SETTLED_CHANNEL);
-    if (channel)
-      channel.onmessage = ({ data }: MessageEvent<unknown>) => {
-        if (
-          typeof data !== 'object' ||
-          data === null ||
-          !('flowId' in data) ||
-          data.flowId !== flow.current ||
-          !('outcome' in data) ||
-          !['succeeded', 'failed'].includes(String(data.outcome))
-        )
-          return;
-        flow.current = null;
-        clearTimeout(deadline.current);
-        setPending(false);
-        setFailed(data.outcome === 'failed');
-        void client.cancelQueries([QueryKeys.slackWorkspaces, principalKey]).then(() => refresh());
-      };
+    const stopSettlements = watchOAuthSettlements((data) => {
+      if (!flow.current || data.flowId !== flow.current) return;
+      flow.current = null;
+      clearTimeout(deadline.current);
+      setPending(false);
+      setFailed(data.outcome === 'failed');
+      void client.cancelQueries([QueryKeys.slackWorkspaces, principalKey]).then(() => refresh());
+    });
     return () => {
       mounted.current = false;
       clearTimeout(deadline.current);
-      channel?.close();
+      stopSettlements();
       const pendingFlow = flow.current;
       flow.current = null;
       if (pendingFlow) void dataService.cancelSlackWorkspaceInstall(pendingFlow).catch(() => {});

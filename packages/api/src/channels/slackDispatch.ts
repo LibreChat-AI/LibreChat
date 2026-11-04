@@ -57,6 +57,14 @@ export function createSlackDispatchHandlers(deps: {
   type Settings = Awaited<ReturnType<typeof deps.readSettings>> & {
     app: NonNullable<Awaited<ReturnType<typeof deps.readSettings>>['app']>;
   };
+  let readiness: Promise<void> | undefined;
+  const prepare = () => {
+    readiness ??= runAsSystem(() => deps.dispatch.ready()).catch((error) => {
+      readiness = undefined;
+      throw error;
+    });
+    return readiness;
+  };
   const protect =
     (action: (req: Request, res: Response, settings: Settings) => Promise<void>): RequestHandler =>
     async (req, res) => {
@@ -84,7 +92,7 @@ export function createSlackDispatchHandlers(deps: {
     };
   return {
     bootstrap: protect(async (_req, res, { app, channels }) => {
-      await runAsSystem(() => deps.dispatch.ready());
+      await prepare();
       res.json({
         appId: app.appId,
         signingSecret: app.signingSecret,
