@@ -1363,11 +1363,6 @@
       "count": 1
     }
   },
-  "packages/chat/src/components/messages/ScrollToBottom.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
   "packages/chat/src/components/messages/SiblingSwitch.tsx": {
     "shadcn/no-restyle": {
       "count": 2

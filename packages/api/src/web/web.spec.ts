@@ -2793,6 +2793,40 @@ describe('web.ts', () => {
       expect(mockIsSSRFTarget).toHaveBeenCalledWith('localhost', undefined, '8080');
     });
 
+    it('should block user-provided cohereApiUrl targeting localhost', async () => {
+      mockIsSSRFTarget.mockImplementation((hostname: string) => hostname === 'localhost');
+
+      const webSearchConfig: TCustomConfig['webSearch'] = {
+        serperApiKey: '${SERPER_API_KEY}',
+        firecrawlApiKey: '${FIRECRAWL_API_KEY}',
+        cohereApiKey: '${COHERE_API_KEY}',
+        cohereApiUrl: '${COHERE_API_URL}',
+        safeSearch: SafeSearchTypes.MODERATE,
+        rerankerType: 'cohere' as RerankerTypes,
+      };
+
+      mockLoadAuthValues.mockImplementation(({ authFields }) => {
+        const result: Record<string, string> = {};
+        authFields.forEach((field: string) => {
+          if (field === 'COHERE_API_URL') {
+            result[field] = 'http://localhost:8080/v2/rerank';
+          } else {
+            result[field] = 'test-api-key';
+          }
+        });
+        return Promise.resolve(result);
+      });
+
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig,
+        loadAuthValues: mockLoadAuthValues,
+      });
+
+      expect(result.authResult.cohereApiUrl).toBeUndefined();
+      expect(mockIsSSRFTarget).toHaveBeenCalledWith('localhost', undefined, '8080');
+    });
+
     it('should block user-provided firecrawlApiUrl resolving to private IP', async () => {
       mockResolveHostnameSSRF.mockImplementation((hostname: string) =>
         Promise.resolve(hostname === 'evil.internal-service.com'),
@@ -3188,6 +3222,38 @@ describe('web.ts', () => {
       expect(result.authenticated).toBe(true);
     });
 
+    it('should allow a self-hosted cohereApiUrl (e.g. a LiteLLM proxy)', async () => {
+      const webSearchConfig: TCustomConfig['webSearch'] = {
+        serperApiKey: '${SERPER_API_KEY}',
+        firecrawlApiKey: '${FIRECRAWL_API_KEY}',
+        cohereApiKey: '${COHERE_API_KEY}',
+        cohereApiUrl: '${COHERE_API_URL}',
+        safeSearch: SafeSearchTypes.MODERATE,
+        rerankerType: 'cohere' as RerankerTypes,
+      };
+
+      mockLoadAuthValues.mockImplementation(({ authFields }) => {
+        const result: Record<string, string> = {};
+        authFields.forEach((field: string) => {
+          if (field === 'COHERE_API_URL') {
+            result[field] = 'https://litellm.internal/v2/rerank';
+          } else {
+            result[field] = 'test-api-key';
+          }
+        });
+        return Promise.resolve(result);
+      });
+
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig,
+        loadAuthValues: mockLoadAuthValues,
+      });
+
+      expect(result.authResult.cohereApiUrl).toBe('https://litellm.internal/v2/rerank');
+      expect(result.authenticated).toBe(true);
+    });
+
     it('should fail required URL field and mark category unauthenticated', async () => {
       mockIsSSRFTarget.mockImplementation((hostname: string) => hostname === '127.0.0.1');
 
@@ -3415,7 +3481,10 @@ describe('web.ts', () => {
         [SearchCategories.SCRAPERS, AuthType.SYSTEM_DEFINED],
         [SearchCategories.RERANKERS, AuthType.SYSTEM_DEFINED],
       ]);
-      expect(loadAuthValues).not.toHaveBeenCalled();
+      // The optional Cohere URL defaults to the `COHERE_API_URL` environment
+      // placeholder. Its optional lookup is expected; literal credential values
+      // above must not be fetched from the user's saved auth store.
+      expect(requestedFields(loadAuthValues)).toEqual(['COHERE_API_URL']);
     });
 
     it('keeps an environment-resolved value on its own key beside a literal sibling', async () => {

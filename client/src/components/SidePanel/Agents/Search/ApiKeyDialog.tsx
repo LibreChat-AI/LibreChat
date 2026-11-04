@@ -186,6 +186,14 @@ export default function ApiKeyDialog({
             text: localize('com_ui_web_search_reranker_cohere_key'),
           },
         },
+        cohereApiUrl: {
+          placeholder: localize('com_ui_web_search_cohere_url'),
+          type: 'text' as const,
+          link: {
+            url: 'https://docs.cohere.com/reference/rerank',
+            text: localize('com_ui_web_search_reranker_cohere_url_help'),
+          },
+        },
       },
     },
   ];

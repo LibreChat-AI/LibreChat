@@ -67,6 +67,7 @@ describe('ApiKeyDialog', () => {
     // Switch to Cohere
     fireEvent.click(screen.getByText('com_ui_web_search_reranker_cohere'));
     expect(screen.getByPlaceholderText('com_ui_web_search_cohere_key')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('com_ui_web_search_cohere_url')).toBeInTheDocument();
   });
 
   it('restores per-user provider and scraper selections', () => {
@@ -100,6 +101,7 @@ describe('ApiKeyDialog', () => {
     expect(screen.getByPlaceholderText('com_ui_web_search_keenable_url')).toBeInTheDocument();
     expect(screen.queryByPlaceholderText('com_ui_web_search_jina_key')).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText('com_ui_web_search_cohere_key')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('com_ui_web_search_cohere_url')).not.toBeInTheDocument();
   });
 
   it('shows static text for provider and only provider input if provider is set', () => {
@@ -126,6 +128,7 @@ describe('ApiKeyDialog', () => {
     render(<ApiKeyDialog {...defaultProps} />);
     expect(screen.getByPlaceholderText('com_ui_web_search_jina_key')).toBeInTheDocument();
     expect(screen.queryByPlaceholderText('com_ui_web_search_cohere_key')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('com_ui_web_search_cohere_url')).not.toBeInTheDocument();
   });
 
   it('shows only Cohere reranker field if rerankerType is set to cohere', () => {
@@ -134,7 +137,9 @@ describe('ApiKeyDialog', () => {
     });
     render(<ApiKeyDialog {...defaultProps} />);
     expect(screen.getByPlaceholderText('com_ui_web_search_cohere_key')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('com_ui_web_search_cohere_url')).toBeInTheDocument();
     expect(screen.queryByPlaceholderText('com_ui_web_search_jina_key')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('com_ui_web_search_jina_url')).not.toBeInTheDocument();
   });
 
   it('shows documentation link for the visible reranker', () => {
@@ -153,6 +158,9 @@ describe('ApiKeyDialog', () => {
       'underline',
       'hover:text-link-hover',
     );
+    expect(
+      screen.getByRole('link', { name: 'com_ui_web_search_reranker_cohere_url_help' }),
+    ).toHaveClass('text-link', 'underline', 'hover:text-link-hover');
   });
 
   it('does not render provider section if SYSTEM_DEFINED', () => {

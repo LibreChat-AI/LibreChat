@@ -89,6 +89,16 @@ describe('resolveWebSearchSSRFAgents', () => {
     expect(() => connect(httpAgent, '10.11.12.13', 3128)).not.toThrow();
   });
 
+  it('derives proxy exemptions from a custom Cohere API URL', () => {
+    process.env.HTTP_PROXY = 'http://10.11.12.16:3128';
+
+    const { httpAgent } = resolveWebSearchSSRFAgents({
+      cohereApiUrl: 'http://cohere.internal:8080',
+    });
+
+    expect(() => connect(httpAgent, '10.11.12.16', 3128)).not.toThrow();
+  });
+
   it('derives proxy exemptions from the Keenable fetch URL environment override', () => {
     process.env.HTTP_PROXY = 'http://10.11.12.14:3128';
     process.env.KEENABLE_FETCH_URL = 'http://keenable-fetch.internal:8080';

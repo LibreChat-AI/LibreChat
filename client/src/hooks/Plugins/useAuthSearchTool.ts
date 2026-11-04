@@ -27,6 +27,7 @@ export type SearchApiKeyFormData = {
   jinaApiKey: string;
   jinaApiUrl: string;
   cohereApiKey: string;
+  cohereApiUrl: string;
 };
 
 export type SearchApiKeyDirtyFields = Partial<Record<keyof SearchApiKeyFormData, boolean>>;
@@ -82,6 +83,7 @@ const useAuthSearchTool = (options?: { isEntityTool: boolean }) => {
         jinaApiKey: data.jinaApiKey,
         jinaApiUrl: data.jinaApiUrl,
         cohereApiKey: data.cohereApiKey,
+        cohereApiUrl: data.cohereApiUrl,
       }).reduce(
         (acc, [key, value]) => {
           const wasExplicitlyCleared =

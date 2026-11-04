@@ -17,9 +17,8 @@ type Props = {
    * and stays inert so it never swallows clicks meant for the thread, which
    * leaves the button to opt back in; gate that opt-in, because a descendant
    * that opts in is hit-testable even while its parent fades, so a fading or
-   * not-yet-visible button would still take the click. Pointers are only half
-   * of it: until this is true the control is also disabled, since an enabled
-   * button stays in the tab order and answers Enter however it paints.
+   * not-yet-visible button would still take the click. Until this is true, the
+   * button is aria-disabled, out of the tab order and has no click handler.
    */
   interactive?: boolean;
 };
@@ -51,14 +50,12 @@ const ScrollToBottom: ForwardRefExoticComponent<Props & RefAttributes<HTMLDivEle
           variant="floating"
           size="icon-theme"
           shape="round"
-          onClick={scrollHandler}
-          disabled={!interactive}
+          onClick={interactive ? scrollHandler : undefined}
+          aria-disabled={!interactive}
+          tabIndex={interactive ? undefined : -1}
           aria-label={localize('com_ui_scroll_to_bottom')}
           className={cn(
             'me-2 active:scale-[0.96] motion-reduce:active:scale-100',
-            /* The wrapper owns the fade, so being briefly unreachable must not
-                 dim the control on its way in on top of it. */
-            'disabled:opacity-100',
             interactive ? 'pointer-events-auto' : 'pointer-events-none',
           )}
         >

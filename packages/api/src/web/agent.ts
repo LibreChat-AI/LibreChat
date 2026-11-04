@@ -15,6 +15,7 @@ const WEB_SEARCH_URL_KEYS = [
   'searxngInstanceUrl',
   'firecrawlApiUrl',
   'jinaApiUrl',
+  'cohereApiUrl',
   'tavilySearchUrl',
   'tavilyExtractUrl',
   'keenableApiUrl',
