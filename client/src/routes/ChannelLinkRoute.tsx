@@ -4,6 +4,7 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { buildLoginRedirectUrl, channelConfigSchema, dataService } from 'librechat-data-provider';
 import type { ChannelIdentityResult, ChannelLinkView } from 'librechat-data-provider';
 import { useOwnerActionPolicy, OwnerTermsModal } from '~/hooks/useOwnerActionPolicy';
+import { useGetAgentByIdQuery } from '~/data-provider/Agents';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { useAuthContext, useLocalize } from '~/hooks';
 import Link from '~/components/Channels/Link';
@@ -93,6 +94,15 @@ function OwnedLink({
 }) {
   const localize = useLocalize();
   const policy = useOwnerActionPolicy();
+  const [agentId, setAgentId] = useState<string>();
+  const agent = useGetAgentByIdQuery(agentId, { enabled: Boolean(agentId), retry: false });
+  const onTicketResult = useCallback(
+    (result: ChannelIdentityResult<ChannelLinkView>) => {
+      setAgentId(result.ok ? result.value.identity.agentId : undefined);
+      onResult(result);
+    },
+    [onResult],
+  );
   const { config, terms, requiresTerms, termsReady, policyError } = policy;
   return (
     <>
@@ -116,9 +126,11 @@ function OwnedLink({
       <Link
         api={dataService.channelIdentityClient}
         accountLabel={accountLabel}
+        agentLabel={agent.data?.name ?? undefined}
+        appTitle={config.data?.appTitle}
         principalKey={principalKey}
         ticket={ticket}
-        onTicketResult={onResult}
+        onTicketResult={onTicketResult}
         enabled={termsReady && !policyError}
       />
       <OwnerTermsModal policy={policy} />
