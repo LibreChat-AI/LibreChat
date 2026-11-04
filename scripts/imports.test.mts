@@ -9,6 +9,11 @@ import { importedPackages, packageName, packagesInSource } from './imports.mts';
 
 const SCRIPT = fileURLToPath(new URL('./imports.mts', import.meta.url));
 
+// Hooks inherit GIT_DIR and friends, which would point every fixture below at the real repository.
+for (const name of Object.keys(process.env)) {
+  if (name.startsWith('GIT_')) delete process.env[name];
+}
+
 function git(cwd: string, ...args: string[]) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);

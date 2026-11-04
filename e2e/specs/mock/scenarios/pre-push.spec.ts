@@ -76,6 +76,16 @@ test.describe('the pre-push gate', () => {
     hookCase('a ref git cannot resolve refuses the push instead of being skipped as a deletion');
   });
 
+  test('a push from a linked worktree leaves its branch, index and config alone @scenario:pre-push-leaves-the-pushing-repository-alone', () => {
+    hookCase(
+      'a check that creates a scratch repository cannot reach the linked worktree being pushed',
+    );
+  });
+
+  test('the imports suite builds its fixtures outside a repository named by GIT_DIR @scenario:imports-suite-ignores-inherited-git-dir', () => {
+    hookCase('the imports suite keeps its fixtures out of a repository named by GIT_DIR');
+  });
+
   test('a chat change typechecks the chat consumer specs, as the chat workspace does in CI @scenario:static-checks-typecheck-chat-consumer-specs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'lc-pre-push-bun-'));
     try {
