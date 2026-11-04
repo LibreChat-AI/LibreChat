@@ -213,7 +213,8 @@ export function createStoredResponseModel(
         required: false,
       },
     },
-    { timestamps: true, minimize: false },
+    // This journal drives admission and recovery; stale replica reads are not authoritative.
+    { timestamps: true, minimize: false, read: 'primary' },
   );
   schema.index({ tenantId: 1, userId: 1, responseId: 1 }, { unique: true });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });

@@ -4,17 +4,20 @@ export const CANCEL_RATE = 1.15;
 const TRANSACTION_PROBE_COLLECTION = '__transaction_test__';
 
 function unsupportedTransaction(error: unknown, mongoose: typeof import('mongoose')): boolean {
+  if (!(error instanceof mongoose.mongo.MongoServerError)) return false;
   return (
-    error instanceof mongoose.mongo.MongoServerError &&
-    error.code === 20 &&
-    /Transaction numbers are only allowed on a replica set member or mongos/i.test(error.message)
+    (error.code === 20 &&
+      /Transaction numbers are only allowed on a replica set member or mongos/i.test(
+        error.message,
+      )) ||
+    (error.code === 59 && /^no such command: ['"]commitTransaction['"]$/i.test(error.message))
   );
 }
 
 async function probeTransaction(mongoose: typeof import('mongoose')): Promise<boolean> {
   const session = await mongoose.startSession();
   try {
-    session.startTransaction();
+    session.startTransaction({ readPreference: 'primary' });
     const db = mongoose.connection.db;
     if (!db) throw new Error('Transaction capability probe requires a connected database');
     await db.collection(TRANSACTION_PROBE_COLLECTION).findOne({}, { session });
@@ -33,7 +36,7 @@ async function probeTransaction(mongoose: typeof import('mongoose')): Promise<bo
   }
 }
 
-/** Only confirmed standalone incompatibility is false; operational failures stay retryable. */
+/** Only confirmed transaction incompatibility is false; operational failures stay retryable. */
 export const supportsTransactions = async (
   mongoose: typeof import('mongoose'),
 ): Promise<boolean> => {
