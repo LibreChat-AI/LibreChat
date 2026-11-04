@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const {
   createSlackDispatchHandlers,
   createSlackWorkspaceSettingsReader,
+  createProxyAwareFetch,
 } = require('@librechat/api');
 const {
   logger,
@@ -25,6 +26,6 @@ module.exports = createSlackDispatchHandlers({
   dispatch: createSlackDispatchStorage(mongoose, async () => (await readSettings()).channels),
   channels: db,
   serviceToken: () => process.env.CHANNEL_SERVICE_TOKEN,
-  fetch,
+  fetch: createProxyAwareFetch(),
   logError: (metadata) => logger.error('[SlackDispatch] Operation failed', metadata),
 });
