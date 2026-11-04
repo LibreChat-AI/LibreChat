@@ -6,6 +6,7 @@ const {
   continueAfterOptionalAuth,
   tenantContextMiddleware,
   isTwoFactorEnrollmentRequired,
+  respondOpenIDSessionAuthorizationUnavailable,
 } = require('@librechat/api');
 
 const hasPassportStrategy = (strategy) =>
@@ -23,6 +24,9 @@ const optionalJwtAuth = (req, res, next) => {
     hasPassportStrategy('openidJwt');
   const callback = (err, user) => {
     if (err) {
+      if (respondOpenIDSessionAuthorizationUnavailable(err, res)) {
+        return;
+      }
       return next(err);
     }
     if (user) {

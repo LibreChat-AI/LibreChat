@@ -383,6 +383,27 @@ describe('setOpenIDAuthTokens', () => {
       );
     });
 
+    it('should carry the authorized openidSessionId onto the session and the marker cookie', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(tokenset, req, res, {
+        userId: 'user-123',
+        openidSessionId: 'session-ref-1',
+      });
+
+      expect(req.session.openidTokens.openidSessionId).toBe('session-ref-1');
+      expect(setOpenIDMarkerCookies).toHaveBeenCalledWith(
+        res,
+        expect.objectContaining({ openidSessionId: 'session-ref-1' }),
+      );
+    });
+
     /**
      * Codex Finding 5: persist the access-token's expiry (unix seconds) so the
      * first OBO call after login or SPA refresh can reuse a still-valid OPAQUE
@@ -1784,6 +1805,46 @@ describe('CloudFront cookie integration', () => {
         userId: 'user-123',
         tenantId: 'tenantA',
       });
+    });
+
+    it('forwards caller-supplied token claims to generateToken', async () => {
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res, null, null, {
+        openidSessionId: 'sid-1',
+        tenantId: 'tenantA',
+      });
+
+      expect(generateToken).toHaveBeenCalledWith(
+        expect.objectContaining({ _id: 'user-123' }),
+        expect.any(Number),
+        { openidSessionId: 'sid-1', tenantId: 'tenantA' },
+      );
+    });
+
+    it('carries the openidSessionId claim onto the session it creates at login', async () => {
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res, null, null, {
+        openidSessionId: 'sid-1',
+        tenantId: 'tenantA',
+      });
+
+      expect(createSession).toHaveBeenCalledWith(
+        'user-123',
+        expect.objectContaining({ openidSessionId: 'sid-1' }),
+      );
+    });
+
+    it('omits openidSessionId from session creation for a non-OpenID login', async () => {
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res);
+
+      expect(createSession).toHaveBeenCalledWith(
+        'user-123',
+        expect.not.objectContaining({ openidSessionId: expect.anything() }),
+      );
     });
 
     it('re-stamps the expiry of the session a refresh keeps', async () => {

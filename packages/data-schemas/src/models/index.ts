@@ -186,3 +186,9 @@ export function createModels(mongoose: typeof import('mongoose')): {
   }
   return models;
 }
+
+export {
+  createOpenIDAuthorizationModels,
+  type OpenIDAuthorizationModels,
+} from './openidAuthorization';
+export { createResourceLockModel } from './resourceLock';

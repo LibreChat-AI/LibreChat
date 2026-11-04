@@ -2,7 +2,7 @@
 const express = require('express');
 const passport = require('passport');
 const { randomState } = require('openid-client');
-const { logger } = require('@librechat/data-schemas');
+const { logger, getTenantId } = require('@librechat/data-schemas');
 const { ErrorTypes } = require('librechat-data-provider');
 const {
   buildOAuthFailureLog,
@@ -13,6 +13,8 @@ const {
   createSetBalanceConfig,
   getOAuthFailureMessage,
   redirectToAuthFailure,
+  resolveOpenIDLoginInitiation,
+  restoreOpenIDRetryTenantContext,
 } = require('@librechat/api');
 const {
   checkDomainAllowed,
@@ -23,6 +25,7 @@ const {
 const { createOAuthHandler } = require('~/server/controllers/auth/oauth');
 const { findBalanceByUser, upsertBalanceFields } = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
+const openIdSessions = require('~/server/services/OpenIDSessions');
 
 const setBalanceConfig = createSetBalanceConfig({
   getAppConfig,
@@ -44,6 +47,9 @@ const authFailureRedirectOptions = {
 
 router.use(logHeaders);
 router.use(markOAuthNavigation);
+
+/** `/openid/backchannel-logout` is mounted on `app` in index.js, ahead of the global body
+ *  parsers and session middleware, and never reaches this router. */
 router.use(loginLimiter);
 
 const requireCallbackTenant = createPreAuthTenantGuard({
@@ -127,12 +133,29 @@ router.get(
 /**
  * OpenID Routes
  */
-router.get('/openid', requirePreAuthTenantContext, (req, res, next) => {
-  return passport.authenticate('openid', {
-    session: false,
-    state: randomState(),
-  })(req, res, next);
-});
+router.get(
+  '/openid',
+  (req, res, next) =>
+    restoreOpenIDRetryTenantContext(
+      req,
+      res,
+      next,
+      openIdSessions.sessionAuthorizationRef.enforcement,
+    ),
+  requirePreAuthTenantContext,
+  (req, res, next) => {
+    const authenticateOptions = resolveOpenIDLoginInitiation(
+      req,
+      openIdSessions.sessionAuthorizationRef.enforcement,
+      getTenantId(),
+    );
+    return passport.authenticate('openid', {
+      session: false,
+      state: randomState(),
+      ...authenticateOptions,
+    })(req, res, next);
+  },
+);
 
 router.get(
   '/openid/callback',

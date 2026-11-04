@@ -14,9 +14,12 @@ jest.mock('passport-jwt', () => ({
   },
 }));
 
+const mockGetTenantId = jest.fn(() => undefined);
 jest.mock('@librechat/data-schemas', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
   runAsSystem: mockRunAsSystem,
+  getTenantId: mockGetTenantId,
+  isOpenIDSessionDenied: jest.requireActual('@librechat/data-schemas').isOpenIDSessionDenied,
 }));
 
 jest.mock('@librechat/api', () => ({
@@ -25,6 +28,12 @@ jest.mock('@librechat/api', () => ({
   getAuthUserDocCacheMode: () => 'off',
   isTokenRetired: jest.requireActual('@librechat/api').isTokenRetired,
   continueAfterBearerRetirement: jest.requireActual('@librechat/api').continueAfterBearerRetirement,
+  applyOpenIDSessionIdClaim: jest.requireActual('@librechat/api').applyOpenIDSessionIdClaim,
+  prefetchOpenIDBearerContext: jest.requireActual('@librechat/api').prefetchOpenIDBearerContext,
+  resolveOpenIDLibreChatBearerVerdict:
+    jest.requireActual('@librechat/api').resolveOpenIDLibreChatBearerVerdict,
+  toOpenIDBearerPassportResult: jest.requireActual('@librechat/api').toOpenIDBearerPassportResult,
+  createOpenIDSessionsRuntime: jest.requireActual('@librechat/api').createOpenIDSessionsRuntime,
 }));
 
 jest.mock('~/models', () => ({
@@ -36,6 +45,15 @@ jest.mock('~/cache/getLogStores', () => jest.fn());
 
 const jwtLogin = require('./jwtStrategy');
 const { getUserById, updateUser } = require('~/models');
+const openIdSessions = require('~/server/services/OpenIDSessions');
+
+/** `sessionAuthorizationRef` is the live object the strategy reads per request; tests that turn
+ *  enforcement on must not leak it into the rest of the suite, which otherwise assumes it off. */
+afterEach(() => {
+  for (const key of Object.keys(openIdSessions.sessionAuthorizationRef)) {
+    delete openIdSessions.sessionAuthorizationRef[key];
+  }
+});
 
 function request(overrides = {}) {
   return {
@@ -354,6 +372,246 @@ describe('jwtStrategy', () => {
       const { user } = await invokeVerify({ id: 'user-4', iat: 0 });
 
       expect(user.id).toBe('user-4');
+    });
+  });
+
+  describe('OpenID session authorization for LibreChat-signed bearers', () => {
+    const openidUser = {
+      _id: { toString: () => 'user-openid' },
+      role: SystemRoles.USER,
+      provider: 'openid',
+      openidId: 'oidc-123',
+      openidIssuer: 'https://issuer.example.com',
+      tenantId: 'tenant-1',
+    };
+    const liveSession = {
+      subject: 'oidc-123',
+      issuer: openidUser.openidIssuer,
+      clientId: 'test-client',
+      revokedAt: null,
+      firstLoginIat: null,
+    };
+    const originalClientId = process.env.OPENID_CLIENT_ID;
+
+    beforeEach(() => {
+      process.env.OPENID_CLIENT_ID = 'test-client';
+    });
+
+    afterAll(() => {
+      process.env.OPENID_CLIENT_ID = originalClientId;
+    });
+
+    /** Turns on the live enforcement switch the strategy reads per request; the outer
+     *  `afterEach` clears it after every test so the rest of the suite stays unenforced. */
+    function enforceWith(authorization) {
+      Object.assign(openIdSessions.sessionAuthorizationRef, {
+        enforcement: true,
+        timeoutMs: 50,
+        cache: { get: () => undefined, set: () => {} },
+        authorization,
+      });
+    }
+
+    it('skips the check entirely for a bearer with no openidSessionId claim (local user)', async () => {
+      getUserById.mockResolvedValue({
+        _id: { toString: () => 'user-local' },
+        role: SystemRoles.USER,
+      });
+      enforceWith({
+        findOpenIDSessionById: jest.fn(),
+        findOpenIDSubject: jest.fn(),
+        findOpenIDBinding: jest.fn(),
+      });
+
+      const { user } = await invokeVerify({ id: 'user-local' });
+
+      expect(user.id).toBe('user-local');
+    });
+
+    it('denies an OpenID-backed bearer with no openidSessionId claim once enforcement is on', async () => {
+      getUserById.mockResolvedValue(openidUser);
+      enforceWith({
+        findOpenIDSessionById: jest.fn(),
+        findOpenIDSubject: jest.fn(),
+        findOpenIDBinding: jest.fn(),
+      });
+
+      const { user, info } = await invokeVerify({ id: 'user-openid' });
+
+      expect(user).toBe(false);
+      expect(info).toEqual(
+        expect.objectContaining({
+          message: 'OpenID session authorization denied',
+          code: 'unknown_session',
+        }),
+      );
+    });
+
+    it('authorizes a bearer whose openidSessionId resolves to a live, bound session', async () => {
+      getUserById.mockResolvedValue(openidUser);
+      enforceWith({
+        findOpenIDSessionById: jest.fn().mockResolvedValue(liveSession),
+        findOpenIDSubject: jest.fn().mockResolvedValue(null),
+        findOpenIDBinding: jest.fn().mockResolvedValue({ _id: 'binding-1' }),
+      });
+
+      const { user } = await invokeVerify({ id: 'user-openid', openidSessionId: 'session-1' });
+
+      expect(user.id).toBe('user-openid');
+      expect(user.openidSessionId).toBe('session-1');
+    });
+
+    it('does not set openidSessionId on the user object when the bearer carries none', async () => {
+      getUserById.mockResolvedValue({
+        _id: { toString: () => 'user-local' },
+        role: SystemRoles.USER,
+      });
+      enforceWith({
+        findOpenIDSessionById: jest.fn(),
+        findOpenIDSubject: jest.fn(),
+        findOpenIDBinding: jest.fn(),
+      });
+
+      const { user } = await invokeVerify({ id: 'user-local' });
+
+      expect(user.openidSessionId).toBeUndefined();
+    });
+
+    it('denies a bearer whose openidSessionId was revoked', async () => {
+      getUserById.mockResolvedValue(openidUser);
+      enforceWith({
+        findOpenIDSessionById: jest
+          .fn()
+          .mockResolvedValue({ ...liveSession, revokedAt: new Date() }),
+        findOpenIDSubject: jest.fn().mockResolvedValue(null),
+        findOpenIDBinding: jest.fn().mockResolvedValue({ _id: 'binding-1' }),
+      });
+
+      const { user, info } = await invokeVerify({
+        id: 'user-openid',
+        openidSessionId: 'session-1',
+      });
+
+      expect(user).toBe(false);
+      expect(info).toEqual(
+        expect.objectContaining({ message: 'OpenID session authorization denied', code: 'denied' }),
+      );
+    });
+
+    it('denies a bearer with no live binding for this user and tenant', async () => {
+      getUserById.mockResolvedValue(openidUser);
+      enforceWith({
+        findOpenIDSessionById: jest.fn().mockResolvedValue(liveSession),
+        findOpenIDSubject: jest.fn().mockResolvedValue(null),
+        findOpenIDBinding: jest.fn().mockResolvedValue(null),
+      });
+
+      const { info } = await invokeVerify({ id: 'user-openid', openidSessionId: 'session-1' });
+
+      expect(info.code).toBe('no_binding');
+    });
+
+    it('denies on an issuer mismatch between the stored session and the user record', async () => {
+      getUserById.mockResolvedValue(openidUser);
+      enforceWith({
+        findOpenIDSessionById: jest
+          .fn()
+          .mockResolvedValue({ ...liveSession, issuer: 'https://attacker.example/' }),
+        findOpenIDSubject: jest.fn().mockResolvedValue(null),
+        findOpenIDBinding: jest.fn().mockResolvedValue({ _id: 'binding-1' }),
+      });
+
+      const { info } = await invokeVerify({ id: 'user-openid', openidSessionId: 'session-1' });
+
+      expect(info.code).toBe('identity_mismatch');
+    });
+
+    it('surfaces an unavailable error when the authorization store cannot be read', async () => {
+      getUserById.mockResolvedValue(openidUser);
+      enforceWith({
+        findOpenIDSessionById: jest.fn().mockRejectedValue(new Error('timeout')),
+        findOpenIDSubject: jest.fn().mockResolvedValue(null),
+        findOpenIDBinding: jest.fn(),
+      });
+
+      await expect(
+        invokeVerify({ id: 'user-openid', openidSessionId: 'session-1' }),
+      ).rejects.toEqual(
+        expect.objectContaining({ code: 'OPENID_SESSION_AUTHORIZATION_UNAVAILABLE' }),
+      );
+    });
+
+    it('uses the user record tenantId, not a global tenant context, to authorize the binding', async () => {
+      getUserById.mockResolvedValue({ ...openidUser, tenantId: 'tenant-from-user' });
+      let seenTenantId;
+      enforceWith({
+        findOpenIDSessionById: jest.fn().mockResolvedValue(liveSession),
+        findOpenIDSubject: jest.fn().mockResolvedValue(null),
+        findOpenIDBinding: jest.fn().mockImplementation(({ tenantId }) => {
+          seenTenantId = tenantId;
+          return Promise.resolve({ _id: 'binding-1' });
+        }),
+      });
+
+      const { user } = await invokeVerify({ id: 'user-openid', openidSessionId: 'session-1' });
+
+      expect(user.id).toBe('user-openid');
+      expect(seenTenantId).toBe('tenant-from-user');
+    });
+
+    it('denies when a signed tenantId claim does not match the loaded user', async () => {
+      getUserById.mockResolvedValue(openidUser);
+      enforceWith({
+        findOpenIDSessionById: jest.fn(),
+        findOpenIDSubject: jest.fn(),
+        findOpenIDBinding: jest.fn(),
+      });
+
+      const { user, info } = await invokeVerify({
+        id: 'user-openid',
+        openidSessionId: 'session-1',
+        tenantId: 'tenant-other',
+      });
+
+      expect(user).toBe(false);
+      expect(info).toEqual(
+        expect.objectContaining({
+          message: 'OpenID session authorization denied',
+          code: 'identity_mismatch',
+        }),
+      );
+    });
+
+    it('does not reject a mismatched tenantId claim while enforcement is off', async () => {
+      getUserById.mockResolvedValue(openidUser);
+
+      const { user } = await invokeVerify({
+        id: 'user-openid',
+        openidSessionId: 'session-1',
+        tenantId: 'tenant-other',
+      });
+
+      expect(user.id).toBe('user-openid');
+    });
+
+    it('accepts a signed tenantId claim that matches the loaded user, and prefetches the session read', async () => {
+      getUserById.mockResolvedValue(openidUser);
+      const findOpenIDSessionById = jest.fn().mockResolvedValue(liveSession);
+      enforceWith({
+        findOpenIDSessionById,
+        findOpenIDSubject: jest.fn().mockResolvedValue(null),
+        findOpenIDBinding: jest.fn().mockResolvedValue({ _id: 'binding-1' }),
+      });
+
+      const { user } = await invokeVerify({
+        id: 'user-openid',
+        openidSessionId: 'session-1',
+        tenantId: 'tenant-1',
+      });
+
+      expect(user.id).toBe('user-openid');
+      // Prefetched once alongside the user load, then reused by authorizeOpenIDSession.
+      expect(findOpenIDSessionById).toHaveBeenCalledTimes(1);
     });
   });
 });

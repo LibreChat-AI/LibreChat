@@ -28,6 +28,12 @@ export const USER_DELETION_FENCE_STALE_MS: number = 15 * 60_000;
 /** Bounds concurrent bulk deletions held for one owner at any moment. */
 const MAX_SUBAGENT_ADMISSION_FENCES = 32;
 
+/** Extra claims a LibreChat-signed token carries for an OpenID-backed user. */
+export interface GenerateTokenClaims {
+  openidSessionId?: string;
+  tenantId?: string;
+}
+
 /** Providers whose credentials LibreChat owns, and therefore the only ones it can enroll in 2FA. */
 const TWO_FACTOR_ENROLLMENT_PROVIDERS = [null, 'local', 'ldap'];
 const TWO_FACTOR_ENROLLMENT_PROJECTION =
@@ -169,7 +175,7 @@ export function createUserMethods(
     }[]
   >;
   getUserById: (userId: string, fieldsToSelect?: string | string[] | null) => Promise<IUser | null>;
-  generateToken: (user: IUser, expiresIn?: number) => Promise<string>;
+  generateToken: (user: IUser, expiresIn?: number, claims?: GenerateTokenClaims) => Promise<string>;
   beginAgentTriggerUserDeletion: (
     userId: string,
     startedAt: Date,
@@ -805,8 +811,13 @@ export function createUserMethods(
    * Generates a JWT token for a given user.
    * @param user - The user object
    * @param expiresIn - Optional expiry time in milliseconds. Default: 15 minutes
+   * @param claims - Optional extra claims for an OpenID-backed login.
    */
-  async function generateToken(user: IUser, expiresIn?: number): Promise<string> {
+  async function generateToken(
+    user: IUser,
+    expiresIn?: number,
+    claims?: GenerateTokenClaims,
+  ): Promise<string> {
     if (!user) {
       throw new Error('No user provided');
     }
@@ -822,6 +833,8 @@ export function createUserMethods(
         /** `iat` is whole seconds, too coarse to order this token against a password reset that
          * lands in the same second. `isTokenRetired` reads this claim to settle that exactly. */
         issuedAtMs: Date.now(),
+        ...(claims?.openidSessionId ? { openidSessionId: claims.openidSessionId } : {}),
+        ...(claims?.tenantId ? { tenantId: claims.tenantId } : {}),
       },
       secret: process.env.JWT_SECRET,
       expirationTime: expires / 1000,

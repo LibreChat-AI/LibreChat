@@ -178,6 +178,12 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   filteredTools: 'operator',
   'registration.openidDiscovery': 'startup',
   'registration.oauthStateTtlMs': 'startup',
+  'registration.openidSessionEnforcement': 'startup',
+  'registration.openidBackchannelLogout': 'startup',
+  'registration.openidBackchannelLogoutMaxAgeMs': 'startup',
+  'registration.openidBackchannelLogoutDeadlineMs': 'startup',
+  'registration.openidAuthorizationTimeoutMs': 'startup',
+  'registration.openidAuthorizationEngine': 'startup',
   'endpoints.agents.subagentActivity': 'startup',
   'endpoints.agents.eventDriven': 'startup',
   'endpoints.agents.backgroundTasks.shutdownInterruptGraceMs': 'startup',
@@ -2827,6 +2833,13 @@ export const rateLimitSchema = z.object({
       userWindowInMinutes: z.number().optional(),
     })
     .optional(),
+  /** Only the source address is bounded. */
+  openidBackchannelLogout: z
+    .object({
+      ipMax: z.number().optional(),
+      ipWindowInMinutes: z.number().optional(),
+    })
+    .optional(),
 });
 
 export function resolveMCPAppRateLimits(
@@ -4357,6 +4370,13 @@ export const langfuseConfigSchema = z.object({
 
 export type LangfuseConfig = z.infer<typeof langfuseConfigSchema>;
 
+export const DEFAULT_OPENID_BACKCHANNEL_LOGOUT_MAX_AGE_MS = 120_000;
+export const DEFAULT_OPENID_BACKCHANNEL_LOGOUT_DEADLINE_MS = 3_000;
+export const DEFAULT_OPENID_AUTHORIZATION_TIMEOUT_MS = 3_000;
+export const DEFAULT_OPENID_AUTHORIZATION_ENGINE = 'auto' as const;
+export const DEFAULT_OPENID_BACKCHANNEL_LOGOUT_RATE_LIMIT_IP_MAX = 600;
+export const DEFAULT_OPENID_BACKCHANNEL_LOGOUT_RATE_LIMIT_IP_WINDOW_MINUTES = 1;
+
 export const openIdDiscoverySchema = z.object({
   /** Discovery attempts made before startup continues; `0` retries only in the background. */
   startupAttempts: z.number().int().min(0).max(100).default(1),
@@ -4672,7 +4692,34 @@ export const configSchema = z.object({
       oauthStateTtlMs: z.number().int().min(60_000).max(3_600_000).optional(),
       /** OpenID discovery retries; an unset field falls back to its `OPENID_DISCOVERY_RETRY_*` env var, then the schema default. */
       openidDiscovery: partialWithoutDefaults(openIdDiscoverySchema).optional(),
+      /** Denies a bearer or refresh whose OpenID session is revoked or predates a subject-wide
+       *  logout. An unset field falls back to `false`, so an existing deployment keeps enforcing nothing. */
+      openidSessionEnforcement: z.boolean().optional(),
+      /** Accepts Auth0 back-channel logout tokens at `POST /oauth/openid/backchannel-logout`.
+       *  Requires `openidSessionEnforcement`. An unset field falls back to `false`. */
+      openidBackchannelLogout: z.boolean().optional(),
+      /** Oldest `iat` a back-channel logout token may carry, in ms. An unset field falls back
+       *  to `DEFAULT_OPENID_BACKCHANNEL_LOGOUT_MAX_AGE_MS`. */
+      openidBackchannelLogoutMaxAgeMs: z.number().int().positive().max(600_000).optional(),
+      /** Must stay under Auth0's 5-second delivery timeout. An unset field falls back to
+       *  `DEFAULT_OPENID_BACKCHANNEL_LOGOUT_DEADLINE_MS`. */
+      openidBackchannelLogoutDeadlineMs: z.number().int().positive().max(4_999).optional(),
+      /** Timeout for the authoritative session/subject/binding reads an authorization check
+       *  runs, in ms. An unset field falls back to `DEFAULT_OPENID_AUTHORIZATION_TIMEOUT_MS`. */
+      openidAuthorizationTimeoutMs: z.number().int().positive().max(30_000).optional(),
+      /** DocumentDB reports `setName` like a replica set, so `auto` cannot always tell them apart. */
+      openidAuthorizationEngine: z
+        .enum(['auto', 'replicaSet', 'standalone', 'documentdb'])
+        .optional(),
     })
+    .refine(
+      (data) => data.openidBackchannelLogout !== true || data.openidSessionEnforcement === true,
+      {
+        message:
+          'registration.openidBackchannelLogout requires registration.openidSessionEnforcement',
+        path: ['openidBackchannelLogout'],
+      },
+    )
     .default({ socialLogins: defaultSocialLogins }),
   /** Changing the registered email address. An unset field falls back to its env var, then the
    *  documented default, so an existing deployment keeps the behavior it has today. */
@@ -5259,6 +5306,10 @@ export enum CacheKeys {
    * Key for pending WebAuthn (passkey) ceremony challenges (one-time-use, short TTL).
    */
   PASSKEY_CHALLENGE = 'PASSKEY_CHALLENGE',
+  /**
+   * Key for the admin panel's OpenID session reference, keyed by a hash of its refresh token.
+   */
+  ADMIN_OPENID_SESSION_REF = 'ADMIN_OPENID_SESSION_REF',
 }
 
 export const AUTH_USER_DOC_BY_ID_PREFIX = 'auth-user-doc-byid';

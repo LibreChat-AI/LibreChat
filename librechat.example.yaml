@@ -490,6 +490,18 @@ registration:
   # openidDiscovery:
   #   startupAttempts: 1   # attempts before startup continues; 0 = background retries only
   #   retryDelayMs: 5000   # delay between startup and background attempts
+  # Denies a bearer or refresh whose OpenID session was revoked, or predates a subject-wide logout (default false)
+  # openidSessionEnforcement: false
+  # Accepts Auth0 back-channel logout tokens at POST /oauth/openid/backchannel-logout; requires openidSessionEnforcement (default false)
+  # openidBackchannelLogout: false
+  # Oldest `iat` a back-channel logout token may carry, in ms (default 120000)
+  # openidBackchannelLogoutMaxAgeMs: 120000
+  # Deadline for handling a back-channel logout token, in ms; must stay under Auth0's 5000ms delivery timeout (default 3000)
+  # openidBackchannelLogoutDeadlineMs: 3000
+  # Timeout for the authoritative session/subject/binding reads an authorization check runs, in ms (default 3000)
+  # openidAuthorizationTimeoutMs: 3000
+  # Mongo deployment behind the dedicated authorization connection: auto, replicaSet, standalone, or documentdb (default auto)
+  # openidAuthorizationEngine: auto
 
 # Example Balance settings
 # balance:
@@ -627,6 +639,11 @@ registration:
 #     ipWindowInMinutes: 2
 #     userMax: 2
 #     userWindowInMinutes: 2
+#   # Auth0 back-channel logout delivery. The endpoint is unauthenticated, so only the source
+#   # address is bounded; set `trust proxy` correctly, since Auth0 delivers from a shared pool.
+#   openidBackchannelLogout:
+#     ipMax: 600
+#     ipWindowInMinutes: 1
 
 # Agent Actions domain restrictions (OpenAPI spec validation)
 # SECURITY: If not configured, SSRF targets are blocked (localhost, private IPs, .internal/.local TLDs).

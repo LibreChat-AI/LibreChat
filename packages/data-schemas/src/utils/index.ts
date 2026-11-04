@@ -5,6 +5,8 @@ export * from './tempChatRetention';
 export * from './retention';
 export { tenantSafeBulkWrite } from './tenantBulkWrite';
 export * from './transactions';
+export * from './mongoEngine';
+export * from './openidIssuer';
 export * from './objectId';
 export * from './yaml';
 export * from './stripUIResourceMarkers';

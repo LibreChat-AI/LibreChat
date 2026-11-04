@@ -88,6 +88,7 @@ const initializeMCPs = require('./services/initializeMCPs');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
 const { getAppConfig } = require('./services/Config');
+const { startOpenIDAuthorization } = require('./services/startOpenIDAuthorization');
 const staticCache = require('./utils/staticCache');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
 const noIndex = require('./middleware/noIndex');
@@ -597,6 +598,9 @@ if (cluster.isMaster) {
     /** Middleware */
     app.use(requestContextMiddleware);
     app.use(noIndex);
+
+    await startOpenIDAuthorization(app, appConfig);
+
     app.use(express.json({ limit: '3mb' }));
     app.use(express.urlencoded({ extended: true, limit: '3mb' }));
 

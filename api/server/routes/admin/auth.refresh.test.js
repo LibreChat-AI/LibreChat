@@ -52,6 +52,9 @@ jest.mock('@librechat/api', () => {
     preAuthTenantMiddleware: jest.fn((req, res, next) => next()),
     applyAdminRefresh: jest.fn(),
     applyGoogleAdminRefresh: jest.fn(),
+    mintAdminOpenIDRefreshToken: jest.fn(),
+    resolveAdminOpenIDRefreshSession: jest.fn(),
+    rotateAdminOpenIDRefreshSession: jest.fn().mockResolvedValue(undefined),
     AdminRefreshError,
     buildOpenIDRefreshParams: jest.fn(() => {
       const params = {};
@@ -103,6 +106,19 @@ jest.mock('~/strategies', () => ({
   getOpenIdConfig: jest.fn(),
 }));
 
+const mockGetOpenIdClientId = jest.fn();
+jest.mock('~/server/services/OpenIDSessions', () => ({
+  getOpenIdClientId: (...args) => mockGetOpenIdClientId(...args),
+  sessionAuthorizationRef: {},
+}));
+
+const mockRecallAdminOpenIDSessionRef = jest.fn();
+const mockRotateAdminOpenIDSessionRef = jest.fn();
+jest.mock('~/server/services/AdminOpenIDSessionRef', () => ({
+  recallAdminOpenIDSessionRef: (...args) => mockRecallAdminOpenIDSessionRef(...args),
+  rotateAdminOpenIDSessionRef: (...args) => mockRotateAdminOpenIDSessionRef(...args),
+}));
+
 jest.mock('~/server/middleware', () => ({
   logHeaders: jest.fn((req, res, next) => next()),
   requireSameOrigin: jest.fn((req, res, next) => next()),
@@ -121,12 +137,24 @@ const {
   isEnabled,
   applyAdminRefresh,
   applyGoogleAdminRefresh,
+  mintAdminOpenIDRefreshToken,
+  resolveAdminOpenIDRefreshSession,
+  rotateAdminOpenIDRefreshSession,
   storeAndStripChallenge,
   buildOpenIDRefreshParams,
+  AdminRefreshError,
 } = require('@librechat/api');
 const { getOpenIdConfig } = require('~/strategies');
+const { generateToken } = require('~/models');
 const middleware = require('~/server/middleware');
+const openIdSessions = require('~/server/services/OpenIDSessions');
 const adminAuthRouter = require('./auth');
+
+function resetSessionAuthorizationRef() {
+  for (const key of Object.keys(openIdSessions.sessionAuthorizationRef)) {
+    delete openIdSessions.sessionAuthorizationRef[key];
+  }
+}
 
 const ORIGINAL_OPENID_SCOPE = process.env.OPENID_SCOPE;
 const ORIGINAL_OPENID_REFRESH_AUDIENCE = process.env.OPENID_REFRESH_AUDIENCE;
@@ -148,6 +176,7 @@ describe('admin auth OpenID refresh route', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    resetSessionAuthorizationRef();
     delete process.env.OPENID_SCOPE;
     delete process.env.OPENID_REFRESH_AUDIENCE;
     delete process.env.SESSION_EXPIRY;
@@ -266,6 +295,182 @@ describe('admin auth OpenID refresh route', () => {
     expect(debugOutput).not.toContain('new-admin-id');
     expect(debugOutput).not.toContain('new-admin-refresh');
     expect(debugOutput).not.toContain('https://api.example.com');
+  });
+});
+
+describe('admin auth OpenID refresh session-reference authorization', () => {
+  const openIdConfig = {
+    serverMetadata: jest.fn(() => ({ issuer: 'https://issuer.example.com' })),
+  };
+  const tokenset = {
+    access_token: 'new-admin-access',
+    id_token: 'new-admin-id',
+    refresh_token: 'new-admin-refresh',
+    expires_in: 3600,
+    claims: jest.fn(() => ({ sub: 'admin-openid-id', iss: 'https://issuer.example.com' })),
+  };
+  const user = { id: 'user-id', _id: 'user-id', tenantId: 'tenant-1' };
+
+  let app;
+
+  /** Calls through to `deps.mintToken` to exercise admin/auth.js's real closures, instead of
+   *  stubbing `applyAdminRefresh`'s logic as the sibling describe block above does. */
+  function mintThroughRealClosure() {
+    applyAdminRefresh.mockImplementation(async (ts, deps) => {
+      const minted = await deps.mintToken(user, ts);
+      return {
+        token: minted.token,
+        refreshToken: 'new-admin-refresh',
+        user,
+        expiresAt: minted.expiresAt,
+      };
+    });
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetSessionAuthorizationRef();
+    delete process.env.OPENID_SCOPE;
+    delete process.env.OPENID_REFRESH_AUDIENCE;
+    delete process.env.SESSION_EXPIRY;
+
+    app = express();
+    app.use(express.json());
+    app.use('/api/admin', adminAuthRouter);
+
+    isEnabled.mockReturnValue(true);
+    getOpenIdConfig.mockReturnValue(openIdConfig);
+    openIdClient.refreshTokenGrant.mockResolvedValue(tokenset);
+    generateToken.mockResolvedValue('minted-token');
+    mockGetOpenIdClientId.mockReturnValue('admin-client-id');
+  });
+
+  it('resolves the session reference before the grant and carries it into minting and rotation', async () => {
+    resolveAdminOpenIDRefreshSession.mockResolvedValue('openid-session-abc');
+    mintAdminOpenIDRefreshToken.mockResolvedValue({
+      token: 'minted-token',
+      expiresAt: 1234567890,
+    });
+    mintThroughRealClosure();
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-refresh-token' });
+
+    expect(response.status).toBe(200);
+    expect(resolveAdminOpenIDRefreshSession).toHaveBeenCalledWith('incoming-refresh-token', {
+      recallAdminOpenIDSessionRef: expect.any(Function),
+      authorizationDeps: openIdSessions.sessionAuthorizationRef,
+    });
+    expect(mintAdminOpenIDRefreshToken).toHaveBeenCalledWith(
+      {
+        user,
+        tokenset,
+        openidSessionId: 'openid-session-abc',
+        expectedIssuer: 'https://issuer.example.com',
+        clientId: 'admin-client-id',
+        sessionExpiry: expect.any(Number),
+      },
+      {
+        authorizationDeps: openIdSessions.sessionAuthorizationRef,
+        generateToken,
+      },
+    );
+    expect(rotateAdminOpenIDRefreshSession).toHaveBeenCalledWith(
+      'incoming-refresh-token',
+      'new-admin-refresh',
+      'openid-session-abc',
+      {
+        rotateAdminOpenIDSessionRef: expect.any(Function),
+        authorizationDeps: openIdSessions.sessionAuthorizationRef,
+      },
+    );
+  });
+
+  it('mints a token with no session reference to carry', async () => {
+    resolveAdminOpenIDRefreshSession.mockResolvedValue(undefined);
+    mintAdminOpenIDRefreshToken.mockResolvedValue({
+      token: 'minted-token',
+      expiresAt: 1234567890,
+    });
+    mintThroughRealClosure();
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-refresh-token' });
+
+    expect(response.status).toBe(200);
+    expect(mintAdminOpenIDRefreshToken).toHaveBeenCalledWith(
+      expect.objectContaining({ openidSessionId: undefined }),
+      expect.any(Object),
+    );
+    expect(rotateAdminOpenIDRefreshSession).toHaveBeenCalledWith(
+      'incoming-refresh-token',
+      'new-admin-refresh',
+      undefined,
+      expect.any(Object),
+    );
+  });
+
+  it('maps a rejection from resolving the session reference to its status and code, never reaching the grant', async () => {
+    resolveAdminOpenIDRefreshSession.mockRejectedValue(
+      new AdminRefreshError('OPENID_SESSION_REQUIRED', 401, 'OpenID re-authentication is required'),
+    );
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-refresh-token' });
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({
+      error: 'OpenID re-authentication is required',
+      error_code: 'OPENID_SESSION_REQUIRED',
+    });
+    expect(openIdClient.refreshTokenGrant).not.toHaveBeenCalled();
+    expect(applyAdminRefresh).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 when the post-grant session authorization layer denies the refresh', async () => {
+    resolveAdminOpenIDRefreshSession.mockResolvedValue('openid-session-abc');
+    mintAdminOpenIDRefreshToken.mockRejectedValue(
+      new AdminRefreshError('OPENID_SESSION_DENIED', 403, 'OpenID session denied'),
+    );
+    mintThroughRealClosure();
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-refresh-token' });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({
+      error: 'OpenID session denied',
+      error_code: 'OPENID_SESSION_DENIED',
+    });
+    expect(rotateAdminOpenIDRefreshSession).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 when the post-grant session authorization layer is unavailable', async () => {
+    resolveAdminOpenIDRefreshSession.mockResolvedValue('openid-session-abc');
+    mintAdminOpenIDRefreshToken.mockRejectedValue(
+      new AdminRefreshError(
+        'OPENID_SESSION_UNAVAILABLE',
+        503,
+        'OpenID session authorization is unavailable',
+      ),
+    );
+    mintThroughRealClosure();
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-refresh-token' });
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({
+      error: 'OpenID session authorization is unavailable',
+      error_code: 'OPENID_SESSION_UNAVAILABLE',
+    });
+    expect(openIdClient.refreshTokenGrant).toHaveBeenCalled();
+    expect(rotateAdminOpenIDRefreshSession).not.toHaveBeenCalled();
   });
 });
 

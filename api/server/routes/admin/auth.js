@@ -26,6 +26,11 @@ const {
   AdminRefreshError,
   buildOpenIDRefreshParams,
   isEmailDomainAllowed,
+  mintAdminOpenIDRefreshToken,
+  restoreOpenIDRetryTenantContext,
+  prepareAdminOpenIDLoginRequest,
+  resolveAdminOpenIDRefreshSession,
+  rotateAdminOpenIDRefreshSession,
 } = require('@librechat/api');
 const { loginController } = require('~/server/controllers/auth/LoginController');
 const { hasCapability, requireCapability } = require('~/server/middleware/roles/capabilities');
@@ -40,6 +45,11 @@ const {
 const { getAppConfig } = require('~/server/services/Config');
 const getLogStores = require('~/cache/getLogStores');
 const { getOpenIdConfig } = require('~/strategies');
+const openIdSessions = require('~/server/services/OpenIDSessions');
+const {
+  recallAdminOpenIDSessionRef,
+  rotateAdminOpenIDSessionRef,
+} = require('~/server/services/AdminOpenIDSessionRef');
 const middleware = require('~/server/middleware');
 
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
@@ -123,7 +133,7 @@ async function isEmailAllowedForUser(user) {
   }
 }
 
-function buildAdminRefreshClosures(sessionExpiry) {
+function buildAdminRefreshClosures(sessionExpiry, openidRefreshContext) {
   return {
     canAccessAdmin: async (user) => {
       try {
@@ -141,10 +151,21 @@ function buildAdminRefreshClosures(sessionExpiry) {
       }
     },
     isEmailAllowed: isEmailAllowedForUser,
-    mintToken: async (user) => ({
-      token: await generateToken(user, sessionExpiry),
-      expiresAt: Date.now() + sessionExpiry,
-    }),
+    mintToken: async (user, tokenset) =>
+      mintAdminOpenIDRefreshToken(
+        {
+          user,
+          tokenset,
+          openidSessionId: openidRefreshContext?.openidSessionId,
+          expectedIssuer: openidRefreshContext?.expectedIssuer,
+          clientId: openIdSessions.getOpenIdClientId(),
+          sessionExpiry,
+        },
+        {
+          authorizationDeps: openIdSessions.sessionAuthorizationRef,
+          generateToken,
+        },
+      ),
   };
 }
 
@@ -239,11 +260,25 @@ function retrievePkceChallenge(provider) {
 router.get(
   '/oauth/openid',
   preAuthTenantMiddleware,
+  (req, res, next) =>
+    restoreOpenIDRetryTenantContext(
+      req,
+      res,
+      next,
+      openIdSessions.sessionAuthorizationRef.enforcement,
+    ),
   requirePreAuthTenantContext,
   requireOpenIdConfig,
   async (req, res, next) => {
     const state = generateState();
     const cache = getLogStores(CacheKeys.ADMIN_OAUTH_EXCHANGE);
+
+    const { promptLogin } = prepareAdminOpenIDLoginRequest(
+      req,
+      openIdSessions.sessionAuthorizationRef.enforcement === true,
+      getTenantId(),
+    );
+
     const stored = await storeAndStripChallenge(cache, req, state, 'openid');
     if (!stored) {
       return res.redirect(
@@ -254,6 +289,7 @@ router.get(
     return passport.authenticate('openidAdmin', {
       session: false,
       state,
+      ...(promptLogin ? { prompt: 'login' } : {}),
     })(req, res, next);
   },
 );
@@ -279,7 +315,7 @@ router.get(
   requireAdminAccess,
   setBalanceConfig,
   middleware.checkDomainAllowed,
-  createOAuthHandler(`${getAdminPanelUrl()}/auth/openid/callback`),
+  createOAuthHandler(`${getAdminPanelUrl()}/auth/openid/callback`, '/api/admin/oauth/openid'),
 );
 
 /* ──────────────────────────────────────────────
@@ -751,6 +787,21 @@ router.post(
         });
       }
 
+      const expectedIssuer = openIdConfig.serverMetadata?.()?.issuer;
+      const authorizationDeps = openIdSessions.sessionAuthorizationRef;
+      let openidSessionId;
+      try {
+        openidSessionId = await resolveAdminOpenIDRefreshSession(refreshToken, {
+          recallAdminOpenIDSessionRef,
+          authorizationDeps,
+        });
+      } catch (err) {
+        if (err instanceof AdminRefreshError) {
+          return res.status(err.status).json({ error: err.message, error_code: err.code });
+        }
+        throw err;
+      }
+
       const refreshParams = buildOpenIDRefreshParams();
       logger.debug('[admin/oauth/refresh] OpenID refresh params', {
         has_scope: Boolean(process.env.OPENID_SCOPE),
@@ -776,15 +827,13 @@ router.post(
         });
       }
 
-      const expectedIssuer = openIdConfig.serverMetadata?.()?.issuer;
-
       try {
         const result = await applyAdminRefresh(
           tokenset,
           {
             findUsers,
             getUserById,
-            ...buildAdminRefreshClosures(sessionExpiry),
+            ...buildAdminRefreshClosures(sessionExpiry, { openidSessionId, expectedIssuer }),
           },
           {
             userId: normalizedUserId,
@@ -793,6 +842,10 @@ router.post(
             tenantId,
           },
         );
+        await rotateAdminOpenIDRefreshSession(refreshToken, result.refreshToken, openidSessionId, {
+          rotateAdminOpenIDSessionRef,
+          authorizationDeps,
+        });
         req.user = { id: result.user._id };
         await middleware.checkBan(req, res, () => {});
         if (req.banned || res.headersSent) return;

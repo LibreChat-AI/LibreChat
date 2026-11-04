@@ -21,10 +21,15 @@ const {
   timeAuthUserLookup,
   getHttpsProxyAgent,
   isAccessTokenJwt,
+  authorizeOpenIDProviderBearer,
+  toOpenIDBearerAuthorizationVerdict,
+  toOpenIDBearerPassportResult,
+  applyOpenIDSessionIdClaim,
   math,
 } = require('@librechat/api');
 const { updateUser, findUser, isAgentTriggerPrincipalActive } = require('~/models');
 const getLogStores = require('~/cache/getLogStores');
+const openIdSessions = require('~/server/services/OpenIDSessions');
 
 function decodeJwtExpiry(token) {
   try {
@@ -228,6 +233,29 @@ const openIdJwtLogin = (openIdConfig) => {
                 });
                 return;
               }
+
+              const openIdClientId = openIdSessions.getOpenIdClientId();
+              const sessionAuthorization = await authorizeOpenIDProviderBearer(
+                {
+                  issuer: openidIssuer,
+                  clientId: openIdClientId,
+                  subject: payload?.sub,
+                  sid: payload?.sid,
+                  user: user.id,
+                  tenantId: user.tenantId,
+                  payload,
+                },
+                openIdSessions.sessionAuthorizationRef,
+              );
+              const verdict = toOpenIDBearerAuthorizationVerdict(sessionAuthorization);
+              const bearerResult = toOpenIDBearerPassportResult(verdict, {
+                userId: user.id,
+                logger,
+                label: 'openIdJwtLogin',
+              });
+              if (!bearerResult.ok) {
+                return done(...bearerResult.args);
+              }
               /** Absent on the full doc means local user; null skips getUserPrincipals' fallback lookup */
               user.idOnTheSource ??= null;
 
@@ -308,6 +336,7 @@ const openIdJwtLogin = (openIdConfig) => {
                     : decodeJwtExpiry(resolvedAccessToken),
               };
 
+              applyOpenIDSessionIdClaim(user, bearerResult.sessionId);
               done(null, user);
             },
             isTokenRetired,

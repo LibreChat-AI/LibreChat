@@ -179,6 +179,7 @@
     "croner": "^10.0.1",
     "express-rate-limit": "^8.5.1",
     "helmet": "^8.3.0",
+    "jose": "^4.15.5",
     "protobufjs": "^7.6.5",
     "proxy-from-env": "^2.1.0",
     "re2js": "^2.9.1",

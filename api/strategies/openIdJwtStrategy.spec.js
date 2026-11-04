@@ -31,6 +31,7 @@ jest.mock('@librechat/data-schemas', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
   getTenantId: mockGetTenantId,
   runAsSystem: mockRunAsSystem,
+  isOpenIDSessionDenied: jest.requireActual('@librechat/data-schemas').isOpenIDSessionDenied,
 }));
 jest.mock('@librechat/api', () => ({
   isEnabled: jest.fn(() => false),
@@ -51,6 +52,13 @@ jest.mock('@librechat/api', () => ({
   timeAuthUserLookup: jest.requireActual('@librechat/api').timeAuthUserLookup,
   getHttpsProxyAgent: jest.fn(() => undefined),
   isAccessTokenJwt: jest.requireActual('@librechat/api').isAccessTokenJwt,
+  authorizeOpenIDProviderBearer: jest.requireActual('@librechat/api').authorizeOpenIDProviderBearer,
+  isOpenIDBearerIssuedToClient: jest.requireActual('@librechat/api').isOpenIDBearerIssuedToClient,
+  toOpenIDBearerAuthorizationVerdict:
+    jest.requireActual('@librechat/api').toOpenIDBearerAuthorizationVerdict,
+  toOpenIDBearerPassportResult: jest.requireActual('@librechat/api').toOpenIDBearerPassportResult,
+  applyOpenIDSessionIdClaim: jest.requireActual('@librechat/api').applyOpenIDSessionIdClaim,
+  createOpenIDSessionsRuntime: jest.requireActual('@librechat/api').createOpenIDSessionsRuntime,
   math: jest.fn((val, fallback) => fallback),
 }));
 jest.mock('~/models', () => ({
@@ -79,6 +87,7 @@ const {
 } = require('@librechat/api');
 const openIdJwtLogin = require('./openIdJwtStrategy');
 const { findUser, updateUser, isAgentTriggerPrincipalActive } = require('~/models');
+const openIdSessions = require('~/server/services/OpenIDSessions');
 
 function resetAuthUserDocCacheMocks() {
   mockGetTenantId.mockReturnValue(undefined);
@@ -98,6 +107,14 @@ beforeEach(() => {
   resetAuthUserDocCacheMocks();
   mockRunAsSystem.mockClear();
   isAgentTriggerPrincipalActive.mockResolvedValue(true);
+});
+
+/** `sessionAuthorizationRef` is the live object the strategy reads per request; tests that turn
+ *  enforcement on must not leak it into the rest of the suite, which otherwise assumes it off. */
+afterEach(() => {
+  for (const key of Object.keys(openIdSessions.sessionAuthorizationRef)) {
+    delete openIdSessions.sessionAuthorizationRef[key];
+  }
 });
 
 function withEnv(env, callback) {
@@ -1160,5 +1177,242 @@ describe('openIdJwtStrategy – OPENID_EMAIL_CLAIM', () => {
         openidIssuer: 'https://issuer.example.com',
       }),
     );
+  });
+});
+
+describe('openIdJwtStrategy – OpenID session authorization enforcement', () => {
+  const payload = {
+    sub: 'oidc-123',
+    sid: 'sid-abc',
+    aud: 'test-client',
+    email: 'test@example.com',
+    iss: 'https://issuer.example.com',
+    exp: 9999999999,
+  };
+  const req = { headers: { authorization: 'Bearer tok' }, session: {} };
+  const originalClientId = process.env.OPENID_CLIENT_ID;
+
+  beforeEach(() => {
+    process.env.OPENID_CLIENT_ID = 'test-client';
+    findOpenIDUser.mockResolvedValue({
+      user: {
+        _id: { toString: () => 'user-abc' },
+        role: SystemRoles.USER,
+        provider: 'openid',
+        tenantId: 'tenant-1',
+      },
+      error: null,
+      migration: false,
+    });
+    openIdJwtLogin(mockOpenIdConfig);
+  });
+
+  afterAll(() => {
+    process.env.OPENID_CLIENT_ID = originalClientId;
+  });
+
+  /** Turns on the live enforcement switch the strategy reads per request, with a stub
+   *  authorization store; `afterEach` in the outer scope clears it after every test. */
+  function enforceWith(authorization) {
+    Object.assign(openIdSessions.sessionAuthorizationRef, {
+      enforcement: true,
+      timeoutMs: 50,
+      cache: { get: () => undefined, set: () => {} },
+      authorization,
+    });
+  }
+
+  it('denies a bearer whose session was revoked', async () => {
+    enforceWith({
+      findOpenIDSession: jest.fn().mockResolvedValue({
+        _id: { toString: () => 'session-1' },
+        subject: 'oidc-123',
+        issuer: 'https://issuer.example.com',
+        clientId: 'test-client',
+        revokedAt: new Date(),
+        firstLoginIat: null,
+      }),
+      findOpenIDSessionById: jest.fn(),
+      findOpenIDSubject: jest.fn().mockResolvedValue(null),
+      findOpenIDBindingBySid: jest.fn().mockResolvedValue({ _id: 'binding-1' }),
+    });
+
+    const { user, info } = await invokeVerify(req, payload);
+
+    expect(user).toBe(false);
+    expect(info).toEqual(
+      expect.objectContaining({ message: 'OpenID session authorization denied', code: 'denied' }),
+    );
+  });
+
+  it('denies a bearer with no live binding for this user and tenant', async () => {
+    enforceWith({
+      findOpenIDSession: jest.fn().mockResolvedValue({
+        _id: { toString: () => 'session-1' },
+        subject: 'oidc-123',
+        issuer: 'https://issuer.example.com',
+        clientId: 'test-client',
+        revokedAt: null,
+        firstLoginIat: null,
+      }),
+      findOpenIDSessionById: jest.fn(),
+      findOpenIDSubject: jest.fn().mockResolvedValue(null),
+      findOpenIDBindingBySid: jest.fn().mockResolvedValue(null),
+    });
+
+    const { info } = await invokeVerify(req, payload);
+
+    expect(info.code).toBe('no_binding');
+  });
+
+  it('denies a bearer carrying no sid without a round trip to the authorization store', async () => {
+    const findOpenIDSession = jest.fn();
+    enforceWith({
+      findOpenIDSession,
+      findOpenIDSessionById: jest.fn(),
+      findOpenIDSubject: jest.fn(),
+      findOpenIDBindingBySid: jest.fn(),
+    });
+
+    const { info } = await invokeVerify(req, { ...payload, sid: undefined });
+
+    expect(info.code).toBe('unknown_session');
+    expect(findOpenIDSession).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an unavailable error when the authorization store cannot be read', async () => {
+    enforceWith({
+      findOpenIDSession: jest.fn().mockRejectedValue(new Error('timeout')),
+      findOpenIDSessionById: jest.fn(),
+      findOpenIDSubject: jest.fn().mockResolvedValue(null),
+      findOpenIDBindingBySid: jest.fn(),
+    });
+
+    await expect(invokeVerify(req, payload)).rejects.toEqual(
+      expect.objectContaining({ code: 'OPENID_SESSION_AUTHORIZATION_UNAVAILABLE' }),
+    );
+  });
+
+  it('authorizes a bearer whose session and binding are both live', async () => {
+    enforceWith({
+      findOpenIDSession: jest.fn().mockResolvedValue({
+        _id: { toString: () => 'session-1' },
+        subject: 'oidc-123',
+        issuer: 'https://issuer.example.com',
+        clientId: 'test-client',
+        revokedAt: null,
+        firstLoginIat: null,
+      }),
+      findOpenIDSessionById: jest.fn(),
+      findOpenIDSubject: jest.fn().mockResolvedValue(null),
+      findOpenIDBindingBySid: jest.fn().mockResolvedValue({ _id: 'binding-1' }),
+    });
+
+    const { user } = await invokeVerify(req, payload);
+
+    expect(user).toBeTruthy();
+  });
+
+  it('sets user.openidSessionId from the resolved session, after the cached doc is written', async () => {
+    mockGetTenantId.mockReturnValue('tenant-1');
+    getAuthUserDocCacheMode.mockReturnValue('on');
+    getCurrentCachedAuthUserDoc.mockResolvedValue(undefined);
+    let cachedSnapshot;
+    setCachedAuthUserDoc.mockImplementation(async (_store, _key, doc) => {
+      cachedSnapshot = { ...doc };
+    });
+    enforceWith({
+      findOpenIDSession: jest.fn().mockResolvedValue({
+        _id: { toString: () => 'session-known' },
+        subject: 'oidc-123',
+        issuer: 'https://issuer.example.com',
+        clientId: 'test-client',
+        revokedAt: null,
+        firstLoginIat: null,
+      }),
+      findOpenIDSessionById: jest.fn(),
+      findOpenIDSubject: jest.fn().mockResolvedValue(null),
+      findOpenIDBindingBySid: jest.fn().mockResolvedValue({ _id: 'binding-1' }),
+    });
+
+    const { user } = await invokeVerify(req, payload);
+
+    expect(user.openidSessionId).toBe('session-known');
+    expect(setCachedAuthUserDoc).toHaveBeenCalled();
+    expect(cachedSnapshot).not.toHaveProperty('openidSessionId');
+  });
+
+  it('authorizes an ID token issued to another audience (e.g. a service caller) even when its session is unknown', async () => {
+    const findOpenIDSession = jest.fn();
+    enforceWith({
+      findOpenIDSession,
+      findOpenIDSessionById: jest.fn(),
+      findOpenIDSubject: jest.fn(),
+      findOpenIDBindingBySid: jest.fn(),
+    });
+
+    const { user } = await invokeVerify(req, { ...payload, aud: 'other-resource-app' });
+
+    expect(user).toBeTruthy();
+  });
+
+  it('enforces when azp equals the configured client even though aud lists another resource', async () => {
+    enforceWith({
+      findOpenIDSession: jest.fn().mockResolvedValue({
+        _id: { toString: () => 'session-1' },
+        subject: 'oidc-123',
+        issuer: 'https://issuer.example.com',
+        clientId: 'test-client',
+        revokedAt: new Date(),
+        firstLoginIat: null,
+      }),
+      findOpenIDSessionById: jest.fn(),
+      findOpenIDSubject: jest.fn().mockResolvedValue(null),
+      findOpenIDBindingBySid: jest.fn(),
+    });
+
+    const { info } = await invokeVerify(req, {
+      ...payload,
+      aud: ['other-resource-app'],
+      azp: 'test-client',
+    });
+
+    expect(info.code).toBe('denied');
+  });
+
+  it('authorizes the binding against the stored user tenantId, not a global tenant context', async () => {
+    findOpenIDUser.mockResolvedValue({
+      user: {
+        _id: { toString: () => 'user-abc' },
+        role: SystemRoles.USER,
+        provider: 'openid',
+        tenantId: 'tenant-from-user',
+      },
+      error: null,
+      migration: false,
+    });
+    mockGetTenantId.mockReturnValue('tenant-from-als');
+    let seenTenantId;
+    enforceWith({
+      findOpenIDSession: jest.fn().mockResolvedValue({
+        _id: { toString: () => 'session-1' },
+        subject: 'oidc-123',
+        issuer: 'https://issuer.example.com',
+        clientId: 'test-client',
+        revokedAt: null,
+        firstLoginIat: null,
+      }),
+      findOpenIDSessionById: jest.fn(),
+      findOpenIDSubject: jest.fn().mockResolvedValue(null),
+      findOpenIDBindingBySid: jest.fn().mockImplementation(({ tenantId }) => {
+        seenTenantId = tenantId;
+        return Promise.resolve({ _id: 'binding-1' });
+      }),
+    });
+
+    const { user } = await invokeVerify(req, payload);
+
+    expect(user).toBeTruthy();
+    expect(seenTenantId).toBe('tenant-from-user');
   });
 });

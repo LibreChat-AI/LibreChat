@@ -7,13 +7,25 @@ const mockGetOpenIdConfig = jest.fn();
 const mockClearCloudFrontCookies = jest.fn();
 const mockDeleteAllRefreshTokenBridges = jest.fn();
 const mockRevokeOpenIDRefreshTokenChain = jest.fn();
+const mockRevokeOpenIDSessionOnLogout = jest.fn();
+const mockGetRevokeDeps = jest.fn();
+const mockGetAuthorizationDeps = jest.fn();
+const mockFindSession = jest.fn();
 
 jest.mock('cookie');
+jest.mock('~/models', () => ({ findSession: (...args) => mockFindSession(...args) }));
 jest.mock('@librechat/api', () => ({
   clearSessionHintCookie: (res) => res.clearCookie('session_hint'),
   isEnabled: (...args) => mockIsEnabled(...args),
   math: (_value, fallback) => fallback,
   clearCloudFrontCookies: (...args) => mockClearCloudFrontCookies(...args),
+  revokeOpenIDSessionOnLogout: (...args) => mockRevokeOpenIDSessionOnLogout(...args),
+}));
+const mockSessionAuthorizationRef = { enforcement: true };
+jest.mock('~/server/services/OpenIDSessions', () => ({
+  getRevokeDeps: (...args) => mockGetRevokeDeps(...args),
+  getAuthorizationDeps: (...args) => mockGetAuthorizationDeps(...args),
+  sessionAuthorizationRef: mockSessionAuthorizationRef,
 }));
 jest.mock('@librechat/data-schemas', () => ({
   logger: mockLogger,
@@ -70,9 +82,14 @@ beforeEach(() => {
     DOMAIN_CLIENT: 'https://app.example.com',
   };
   cookies.parse.mockReturnValue({ refreshToken: 'cookie-rt' });
+  mockFindSession.mockResolvedValue(null);
   mockLogoutUser.mockResolvedValue({ status: 200, message: 'Logout successful' });
   mockDeleteAllRefreshTokenBridges.mockResolvedValue({ acknowledged: true, deletedCount: 1 });
   mockRevokeOpenIDRefreshTokenChain.mockResolvedValue(['cookie-rt', 'srt']);
+  mockRevokeOpenIDSessionOnLogout.mockResolvedValue(undefined);
+  mockGetRevokeDeps.mockReturnValue({ authorization: {}, now: () => new Date() });
+  mockGetAuthorizationDeps.mockReturnValue({ timeoutMs: 3_000 });
+  mockSessionAuthorizationRef.enforcement = true;
   mockIsEnabled.mockReturnValue(true);
   mockGetOpenIdConfig.mockReturnValue({
     serverMetadata: () => ({
@@ -347,6 +364,101 @@ describe('LogoutController', () => {
       expect(mockLogoutUser).not.toHaveBeenCalled();
       expect(req.session.openidTokens).toBeDefined();
       expect(res.status).toHaveBeenCalledWith(500);
+    });
+  });
+
+  describe('current OpenID session revocation wiring', () => {
+    it('builds the input and deps from req and the parsed cookies', async () => {
+      const req = buildReq({
+        user: { _id: 'user1', openidId: 'oid1', provider: 'openid', tenantId: 'tenantA' },
+        session: {
+          openidTokens: {
+            refreshToken: 'srt',
+            openidSessionId: 'session-abc',
+            appUserId: 'user1',
+          },
+          destroy: jest.fn(),
+        },
+      });
+      const res = buildRes();
+      const sessionTokens = req.session.openidTokens;
+      const revokeDeps = { authorization: {}, now: () => new Date() };
+      mockGetRevokeDeps.mockReturnValue(revokeDeps);
+      mockGetAuthorizationDeps.mockReturnValue({ timeoutMs: 1_500 });
+      mockSessionAuthorizationRef.enforcement = true;
+
+      await logoutController(req, res);
+
+      expect(mockRevokeOpenIDSessionOnLogout).toHaveBeenCalledWith(
+        {
+          userId: 'user1',
+          sessionTokens,
+          refreshToken: 'cookie-rt',
+          bearerSessionId: undefined,
+        },
+        {
+          findSession: require('~/models').findSession,
+          revoke: revokeDeps,
+          enforcement: true,
+          timeoutMs: 1_500,
+          logger: mockLogger,
+        },
+      );
+    });
+
+    it('passes an undefined revoke connection through when there are no revoke deps', async () => {
+      mockGetRevokeDeps.mockReturnValue(undefined);
+      const req = buildReq({ session: { destroy: jest.fn() } });
+      const res = buildRes();
+
+      await logoutController(req, res);
+
+      expect(mockRevokeOpenIDSessionOnLogout).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ revoke: undefined }),
+      );
+    });
+
+    it('passes undefined timeoutMs when the authorization connection has no deps', async () => {
+      mockGetAuthorizationDeps.mockReturnValue(undefined);
+      const req = buildReq({ session: { destroy: jest.fn() } });
+      const res = buildRes();
+
+      await logoutController(req, res);
+
+      expect(mockRevokeOpenIDSessionOnLogout).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ timeoutMs: undefined }),
+      );
+    });
+
+    it('passes enforcement: false through when the session authorization ref has it off', async () => {
+      mockSessionAuthorizationRef.enforcement = false;
+      const req = buildReq({ session: { destroy: jest.fn() } });
+      const res = buildRes();
+
+      await logoutController(req, res);
+
+      expect(mockRevokeOpenIDSessionOnLogout).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ enforcement: false }),
+      );
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('does not revoke a session for a non-OpenID user', async () => {
+      const req = buildReq({
+        user: { _id: 'user1', provider: 'local' },
+        session: {
+          openidTokens: { openidSessionId: 'session-abc' },
+          destroy: jest.fn(),
+        },
+      });
+      const res = buildRes();
+
+      await logoutController(req, res);
+
+      expect(mockRevokeOpenIDSessionOnLogout).not.toHaveBeenCalled();
     });
   });
 

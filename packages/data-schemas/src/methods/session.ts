@@ -68,6 +68,7 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
       const currentSession = new Session({
         user: userId,
         expiration: options.expiration || new Date(Date.now() + expiresIn),
+        ...(options.openidSessionId ? { openidSessionId: options.openidSessionId } : {}),
       });
       const refreshToken = await generateRefreshToken(currentSession);
 
@@ -99,6 +100,9 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
       };
       if (options.tenantId) {
         update.tenantId = options.tenantId;
+      }
+      if (options.openidSessionId) {
+        update.openidSessionId = options.openidSessionId;
       }
       const session = await Session.findOneAndUpdate(
         { user: userId, refreshTokenHash },

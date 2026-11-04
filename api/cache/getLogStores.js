@@ -80,6 +80,12 @@ const namespaces = {
     Time.THIRTY_SECONDS,
   ),
   [CacheKeys.PASSKEY_CHALLENGE]: standardCache(CacheKeys.PASSKEY_CHALLENGE, Time.FIVE_MINUTES),
+  [CacheKeys.ADMIN_OPENID_SESSION_REF]: standardCache(
+    CacheKeys.ADMIN_OPENID_SESSION_REF,
+    undefined,
+    undefined,
+    { throwOnErrors: true },
+  ),
   [CacheKeys.AGENT_LINKED_INSTRUCTIONS]: standardCache(
     CacheKeys.AGENT_LINKED_INSTRUCTIONS,
     Time.FIVE_MINUTES,

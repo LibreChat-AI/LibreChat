@@ -4,6 +4,8 @@ import type { TokenIssuance } from '../twoFactor';
 
 export interface OpenIDReuseCredential extends TokenIssuance {
   userId: string;
+  /** `OpenIDSession._id` this credential was signed with; absent for a legacy marker. */
+  openidSessionId?: string;
 }
 
 /** Verify the identity cookie and, when supplied, bind it to the source refresh token. */
@@ -34,6 +36,8 @@ export function getValidOpenIDReuseCredential(
       userId: payload.id,
       issuedAt: payload.iat,
       issuedAtMs: typeof payload.issuedAtMs === 'number' ? payload.issuedAtMs : undefined,
+      openidSessionId:
+        typeof payload.openidSessionId === 'string' ? payload.openidSessionId : undefined,
     };
   } catch {
     return null;

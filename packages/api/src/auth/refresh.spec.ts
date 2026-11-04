@@ -1,10 +1,21 @@
 import { Types } from 'mongoose';
 import { logger } from '@librechat/data-schemas';
-
 import type { IUser } from '@librechat/data-schemas';
+import type { OpenIDSessionAuthorizationDeps } from '~/auth/openid/sessions';
 import type { AdminRefreshDeps, RefreshTokenset } from './refresh';
-
-import { applyAdminRefresh, AdminRefreshError, buildOpenIDRefreshParams } from './refresh';
+import {
+  applyAdminRefresh,
+  authorizeAdminOpenIDRefresh,
+  AdminRefreshError,
+  buildOpenIDRefreshParams,
+  mintAdminOpenIDRefreshToken,
+  resolveAdminOpenIDRefreshSession,
+  rotateAdminOpenIDRefreshSession,
+} from './refresh';
+import {
+  createOpenIDSessionCache,
+  createOpenIDSessionAuthorizationUnavailableError,
+} from '~/auth/openid/sessions';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -12,6 +23,7 @@ jest.mock('@librechat/data-schemas', () => ({
     debug: jest.fn(),
     info: jest.fn(),
     warn: jest.fn(),
+    error: jest.fn(),
   },
 }));
 
@@ -652,5 +664,448 @@ describe('AdminRefreshError', () => {
     expect(err.status).toBe(418);
     expect(err.message).toBe('teapot');
     expect(err).toBeInstanceOf(Error);
+  });
+});
+
+describe('authorizeAdminOpenIDRefresh', () => {
+  const user = { id: 'user-id', tenantId: 'tenant-1' } as unknown as IUser;
+  const tokenset: RefreshTokenset = {
+    access_token: 'admin-access',
+    claims: () => ({ sub: 'admin-sub', iss: 'https://issuer.example.com' }),
+  };
+
+  function buildAuthorizationDeps(): OpenIDSessionAuthorizationDeps & {
+    authorization: {
+      findOpenIDSession: jest.Mock;
+      findOpenIDSessionById: jest.Mock;
+      findOpenIDSubject: jest.Mock;
+      findOpenIDBinding: jest.Mock;
+      findOpenIDBindingBySid: jest.Mock;
+    };
+  } {
+    const authorization = {
+      findOpenIDSession: jest.fn(),
+      findOpenIDSessionById: jest.fn(),
+      findOpenIDSubject: jest.fn(),
+      findOpenIDBinding: jest.fn(),
+      findOpenIDBindingBySid: jest.fn(),
+    };
+    return {
+      authorization,
+      enforcement: true,
+      timeoutMs: 200,
+      cache: createOpenIDSessionCache(),
+    };
+  }
+
+  it('resolves without throwing when the session authorizes', async () => {
+    const deps = buildAuthorizationDeps();
+    deps.authorization.findOpenIDSessionById.mockResolvedValue({
+      issuer: 'https://issuer.example.com',
+      clientId: 'admin-client-id',
+      subject: 'admin-sub',
+      revokedAt: null,
+    });
+    deps.authorization.findOpenIDSubject.mockResolvedValue(null);
+    deps.authorization.findOpenIDBinding.mockResolvedValue({ _id: 'binding-1' });
+
+    await expect(
+      authorizeAdminOpenIDRefresh(
+        {
+          openidSessionId: 'session-1',
+          expectedIssuer: 'https://issuer.example.com',
+          user,
+          tokenset,
+          clientId: 'admin-client-id',
+        },
+        deps,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('falls back to the string form of _id for a lean user with no id virtual', async () => {
+    const leanUserId = new Types.ObjectId();
+    const leanUser = { _id: leanUserId, tenantId: 'tenant-1' } as unknown as IUser;
+    const deps = buildAuthorizationDeps();
+    deps.authorization.findOpenIDSessionById.mockResolvedValue({
+      issuer: 'https://issuer.example.com',
+      clientId: 'admin-client-id',
+      subject: 'admin-sub',
+      revokedAt: null,
+    });
+    deps.authorization.findOpenIDSubject.mockResolvedValue(null);
+    deps.authorization.findOpenIDBinding.mockResolvedValue({ _id: 'binding-1' });
+
+    await authorizeAdminOpenIDRefresh(
+      {
+        openidSessionId: 'session-1',
+        expectedIssuer: 'https://issuer.example.com',
+        user: leanUser,
+        tokenset,
+        clientId: 'admin-client-id',
+      },
+      deps,
+    );
+
+    expect(deps.authorization.findOpenIDBinding).toHaveBeenCalledWith(
+      expect.objectContaining({ user: leanUserId.toString() }),
+    );
+  });
+
+  it('throws a 503 AdminRefreshError when the authorization layer is unavailable', async () => {
+    const deps = buildAuthorizationDeps();
+    deps.authorization.findOpenIDSessionById.mockRejectedValue(new Error('connection lost'));
+    deps.authorization.findOpenIDSubject.mockResolvedValue(null);
+
+    await expect(
+      authorizeAdminOpenIDRefresh(
+        {
+          openidSessionId: 'session-1',
+          expectedIssuer: 'https://issuer.example.com',
+          user,
+          tokenset,
+          clientId: 'admin-client-id',
+        },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      name: 'AdminRefreshError',
+      code: 'OPENID_SESSION_UNAVAILABLE',
+      status: 503,
+    });
+  });
+
+  it('throws a 403 AdminRefreshError when the session is denied', async () => {
+    const deps = buildAuthorizationDeps();
+    deps.authorization.findOpenIDSessionById.mockResolvedValue({
+      issuer: 'https://issuer.example.com',
+      clientId: 'admin-client-id',
+      subject: 'admin-sub',
+      revokedAt: new Date(),
+    });
+    deps.authorization.findOpenIDSubject.mockResolvedValue(null);
+
+    await expect(
+      authorizeAdminOpenIDRefresh(
+        {
+          openidSessionId: 'session-1',
+          expectedIssuer: 'https://issuer.example.com',
+          user,
+          tokenset,
+          clientId: 'admin-client-id',
+        },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      name: 'AdminRefreshError',
+      code: 'OPENID_SESSION_DENIED',
+      status: 403,
+    });
+  });
+});
+
+describe('mintAdminOpenIDRefreshToken', () => {
+  const user = { id: 'user-id', tenantId: 'tenant-1' } as unknown as IUser;
+  const tokenset: RefreshTokenset = {
+    access_token: 'admin-access',
+    claims: () => ({ sub: 'admin-sub', iss: 'https://issuer.example.com' }),
+  };
+
+  function buildDeps(enforcement: boolean) {
+    const authorization = {
+      findOpenIDSession: jest.fn(),
+      findOpenIDSessionById: jest.fn(),
+      findOpenIDSubject: jest.fn(),
+      findOpenIDBinding: jest.fn(),
+      findOpenIDBindingBySid: jest.fn(),
+    };
+    return {
+      authorizationDeps: {
+        authorization,
+        enforcement,
+        timeoutMs: 200,
+        cache: createOpenIDSessionCache(),
+      } as OpenIDSessionAuthorizationDeps & { authorization: typeof authorization },
+      generateToken: jest.fn().mockResolvedValue('minted-token'),
+    };
+  }
+
+  it('mints with no embedded claims and skips authorization when there is no session reference', async () => {
+    const deps = buildDeps(true);
+
+    const result = await mintAdminOpenIDRefreshToken(
+      {
+        user,
+        tokenset,
+        openidSessionId: undefined,
+        expectedIssuer: 'https://issuer.example.com',
+        clientId: 'admin-client-id',
+        sessionExpiry: 60_000,
+      },
+      deps,
+    );
+
+    expect(result.token).toBe('minted-token');
+    expect(deps.generateToken).toHaveBeenCalledWith(user, 60_000, undefined);
+  });
+
+  it('authorizes the session and embeds its claims when there is a session reference', async () => {
+    const deps = buildDeps(true);
+    deps.authorizationDeps.authorization.findOpenIDSessionById.mockResolvedValue({
+      issuer: 'https://issuer.example.com',
+      clientId: 'admin-client-id',
+      subject: 'admin-sub',
+      revokedAt: null,
+    });
+    deps.authorizationDeps.authorization.findOpenIDSubject.mockResolvedValue(null);
+    deps.authorizationDeps.authorization.findOpenIDBinding.mockResolvedValue({ _id: 'binding-1' });
+
+    const result = await mintAdminOpenIDRefreshToken(
+      {
+        user,
+        tokenset,
+        openidSessionId: 'session-1',
+        expectedIssuer: 'https://issuer.example.com',
+        clientId: 'admin-client-id',
+        sessionExpiry: 60_000,
+      },
+      deps,
+    );
+
+    expect(result.token).toBe('minted-token');
+    expect(deps.generateToken).toHaveBeenCalledWith(user, 60_000, {
+      openidSessionId: 'session-1',
+      tenantId: 'tenant-1',
+    });
+  });
+
+  it('rejects without minting when the session authorization denies the refresh', async () => {
+    const deps = buildDeps(true);
+    deps.authorizationDeps.authorization.findOpenIDSessionById.mockResolvedValue(null);
+
+    await expect(
+      mintAdminOpenIDRefreshToken(
+        {
+          user,
+          tokenset,
+          openidSessionId: 'session-1',
+          expectedIssuer: 'https://issuer.example.com',
+          clientId: 'admin-client-id',
+          sessionExpiry: 60_000,
+        },
+        deps,
+      ),
+    ).rejects.toMatchObject({ code: 'OPENID_SESSION_DENIED' });
+    expect(deps.generateToken).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveAdminOpenIDRefreshSession', () => {
+  function buildAuthorizationDeps(
+    overrides: Partial<OpenIDSessionAuthorizationDeps> = {},
+  ): Pick<OpenIDSessionAuthorizationDeps, 'authorization' | 'enforcement' | 'timeoutMs'> {
+    return {
+      authorization: {
+        findOpenIDSession: jest.fn(),
+        findOpenIDSessionById: jest.fn(),
+        findOpenIDSubject: jest.fn(),
+        findOpenIDBinding: jest.fn(),
+        findOpenIDBindingBySid: jest.fn(),
+      } as unknown as OpenIDSessionAuthorizationDeps['authorization'],
+      enforcement: false,
+      timeoutMs: 200,
+      ...overrides,
+    };
+  }
+
+  it('mints no session id and skips authorization when the recall finds nothing, enforcement off', async () => {
+    const recallAdminOpenIDSessionRef = jest.fn().mockResolvedValue(undefined);
+
+    const result = await resolveAdminOpenIDRefreshSession('rt-1', {
+      recallAdminOpenIDSessionRef,
+      authorizationDeps: buildAuthorizationDeps(),
+    });
+
+    expect(result).toBeUndefined();
+  });
+
+  it('carries on without a session reference when the recall times out, enforcement off', async () => {
+    const recallAdminOpenIDSessionRef = jest.fn(() => new Promise<string>(() => {}));
+
+    const result = await resolveAdminOpenIDRefreshSession('rt-1', {
+      recallAdminOpenIDSessionRef,
+      authorizationDeps: buildAuthorizationDeps({ timeoutMs: 10 }),
+    });
+
+    expect(result).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[admin/oauth/refresh] Timed out recalling the OpenID session reference',
+      expect.anything(),
+    );
+  });
+
+  it('succeeds without reading the authorization connection when enforcement is off', async () => {
+    const recallAdminOpenIDSessionRef = jest.fn().mockResolvedValue('session-abc');
+    const authorizationDeps = buildAuthorizationDeps({
+      authorization: new Proxy(
+        {},
+        { get: () => () => Promise.reject(new Error('connection is not ready')) },
+      ) as unknown as OpenIDSessionAuthorizationDeps['authorization'],
+    });
+
+    const result = await resolveAdminOpenIDRefreshSession('rt-1', {
+      recallAdminOpenIDSessionRef,
+      authorizationDeps,
+    });
+
+    expect(result).toBe('session-abc');
+  });
+
+  it('requires re-authentication before any grant when enforcement is on and nothing is on file', async () => {
+    const recallAdminOpenIDSessionRef = jest.fn().mockResolvedValue(undefined);
+
+    await expect(
+      resolveAdminOpenIDRefreshSession('rt-1', {
+        recallAdminOpenIDSessionRef,
+        authorizationDeps: buildAuthorizationDeps({ enforcement: true }),
+      }),
+    ).rejects.toMatchObject({
+      name: 'AdminRefreshError',
+      code: 'OPENID_SESSION_REQUIRED',
+      status: 401,
+    });
+  });
+
+  it('returns 503, not 401, when recalling the reference hits a cache outage with enforcement on', async () => {
+    const recallAdminOpenIDSessionRef = jest
+      .fn()
+      .mockRejectedValue(createOpenIDSessionAuthorizationUnavailableError());
+
+    await expect(
+      resolveAdminOpenIDRefreshSession('rt-1', {
+        recallAdminOpenIDSessionRef,
+        authorizationDeps: buildAuthorizationDeps({ enforcement: true }),
+      }),
+    ).rejects.toMatchObject({ code: 'OPENID_SESSION_UNAVAILABLE', status: 503 });
+  });
+
+  it('rethrows an unrecognized recall failure with enforcement on', async () => {
+    const boom = new Error('unexpected');
+    const recallAdminOpenIDSessionRef = jest.fn().mockRejectedValue(boom);
+
+    await expect(
+      resolveAdminOpenIDRefreshSession('rt-1', {
+        recallAdminOpenIDSessionRef,
+        authorizationDeps: buildAuthorizationDeps({ enforcement: true }),
+      }),
+    ).rejects.toBe(boom);
+  });
+
+  it('denies a revoked session reference before the grant is attempted', async () => {
+    const authorizationDeps = buildAuthorizationDeps({ enforcement: true });
+    (authorizationDeps.authorization.findOpenIDSessionById as jest.Mock).mockResolvedValue({
+      issuer: 'https://issuer.example.com',
+      clientId: 'admin-client-id',
+      subject: 'admin-openid-id',
+      revokedAt: new Date(),
+    });
+    (authorizationDeps.authorization.findOpenIDSubject as jest.Mock).mockResolvedValue(null);
+    const recallAdminOpenIDSessionRef = jest.fn().mockResolvedValue('session-abc');
+
+    await expect(
+      resolveAdminOpenIDRefreshSession('rt-1', { recallAdminOpenIDSessionRef, authorizationDeps }),
+    ).rejects.toMatchObject({ code: 'OPENID_SESSION_DENIED', status: 403 });
+  });
+
+  it('returns 503 before the grant when the pre-grant authorization read is unavailable', async () => {
+    const authorizationDeps = buildAuthorizationDeps({ enforcement: true });
+    (authorizationDeps.authorization.findOpenIDSessionById as jest.Mock).mockRejectedValue(
+      new Error('read failed'),
+    );
+    const recallAdminOpenIDSessionRef = jest.fn().mockResolvedValue('session-abc');
+
+    await expect(
+      resolveAdminOpenIDRefreshSession('rt-1', { recallAdminOpenIDSessionRef, authorizationDeps }),
+    ).rejects.toMatchObject({ code: 'OPENID_SESSION_UNAVAILABLE', status: 503 });
+  });
+
+  it('returns the session id once authorization confirms it', async () => {
+    const authorizationDeps = buildAuthorizationDeps({ enforcement: true });
+    (authorizationDeps.authorization.findOpenIDSessionById as jest.Mock).mockResolvedValue({
+      issuer: 'https://issuer.example.com',
+      clientId: 'admin-client-id',
+      subject: 'admin-openid-id',
+      revokedAt: null,
+    });
+    (authorizationDeps.authorization.findOpenIDSubject as jest.Mock).mockResolvedValue(null);
+    const recallAdminOpenIDSessionRef = jest.fn().mockResolvedValue('session-abc');
+
+    await expect(
+      resolveAdminOpenIDRefreshSession('rt-1', { recallAdminOpenIDSessionRef, authorizationDeps }),
+    ).resolves.toBe('session-abc');
+  });
+});
+
+describe('rotateAdminOpenIDRefreshSession', () => {
+  it('is a no-op when there is no session id to carry forward', async () => {
+    const rotateAdminOpenIDSessionRef = jest.fn();
+
+    await rotateAdminOpenIDRefreshSession('rt-old', 'rt-new', undefined, {
+      rotateAdminOpenIDSessionRef,
+      authorizationDeps: { enforcement: false, timeoutMs: 200 },
+    });
+
+    expect(rotateAdminOpenIDSessionRef).not.toHaveBeenCalled();
+  });
+
+  it('rotates the reference with enforcement on', async () => {
+    const rotateAdminOpenIDSessionRef = jest.fn().mockResolvedValue(undefined);
+
+    await rotateAdminOpenIDRefreshSession('rt-old', 'rt-new', 'session-abc', {
+      rotateAdminOpenIDSessionRef,
+      authorizationDeps: { enforcement: true, timeoutMs: 200 },
+    });
+
+    expect(rotateAdminOpenIDSessionRef).toHaveBeenCalledWith('rt-old', 'rt-new', 'session-abc');
+  });
+
+  it('logs and swallows a rotation failure with enforcement off, never dropping the tokens', async () => {
+    const rotateAdminOpenIDSessionRef = jest.fn().mockRejectedValue(new Error('cache unreachable'));
+
+    await expect(
+      rotateAdminOpenIDRefreshSession('rt-old', 'rt-new', 'session-abc', {
+        rotateAdminOpenIDSessionRef,
+        authorizationDeps: { enforcement: false, timeoutMs: 200 },
+      }),
+    ).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[admin/oauth/refresh] Failed to rotate the OpenID session reference',
+      { message: 'cache unreachable' },
+    );
+  });
+
+  it('logs at error level when enforcement is on, never dropping the tokens', async () => {
+    const rotateAdminOpenIDSessionRef = jest.fn().mockRejectedValue(new Error('cache unreachable'));
+
+    await rotateAdminOpenIDRefreshSession('rt-old', 'rt-new', 'session-abc', {
+      rotateAdminOpenIDSessionRef,
+      authorizationDeps: { enforcement: true, timeoutMs: 200 },
+    });
+
+    expect(logger.error).toHaveBeenCalledWith(
+      '[admin/oauth/refresh] Failed to rotate the OpenID session reference',
+      { message: 'cache unreachable' },
+    );
+  });
+
+  it('does not wait for a rotation that times out with enforcement off', async () => {
+    const rotateAdminOpenIDSessionRef = jest.fn(() => new Promise<void>(() => {}));
+
+    await expect(
+      rotateAdminOpenIDRefreshSession('rt-old', 'rt-new', 'session-abc', {
+        rotateAdminOpenIDSessionRef,
+        authorizationDeps: { enforcement: false, timeoutMs: 10 },
+      }),
+    ).resolves.toBeUndefined();
   });
 });

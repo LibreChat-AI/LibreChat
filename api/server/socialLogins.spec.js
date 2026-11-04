@@ -8,6 +8,7 @@ const mockOpenIdJwtLogin = jest.fn(() => 'openid-jwt-strategy');
 const mockSetupOpenId = jest.fn();
 const mockSetupSaml = jest.fn();
 const mockIsEnabled = jest.fn();
+const mockIsOpenIdConfigured = jest.fn(() => false);
 const mockShouldUseSecureCookie = jest.fn(() => true);
 const mockRegisterOpenIdWithRetry = jest.fn(
   async ({ setupOpenId, registerJwtStrategy, reuseTokens }) => {
@@ -51,6 +52,7 @@ jest.mock('@librechat/api', () => ({
   isEnabled: (...args) => mockIsEnabled(...args),
   shouldUseSecureCookie: (...args) => mockShouldUseSecureCookie(...args),
   registerOpenIdWithRetry: (...args) => mockRegisterOpenIdWithRetry(...args),
+  isOpenIdConfigured: (...args) => mockIsOpenIdConfigured(...args),
 }));
 jest.mock('@librechat/data-schemas', () => ({
   DEFAULT_SESSION_EXPIRY: 900000,
@@ -93,6 +95,7 @@ describe('configureSocialLogins OpenID session expiry', () => {
     setupOpenIdEnv();
     mockSetupOpenId.mockResolvedValue({ issuer: 'https://issuer.example.com' });
     mockIsEnabled.mockImplementation((value) => value === 'true');
+    mockIsOpenIdConfigured.mockReturnValue(true);
   });
 
   afterAll(() => {

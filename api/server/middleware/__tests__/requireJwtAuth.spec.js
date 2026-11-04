@@ -87,6 +87,10 @@ jest.mock('@librechat/api', () => {
     clearCloudFrontCookies: jest.fn(),
     generateTwoFactorSetupToken: jest.fn(() => 'setup-token'),
     isTwoFactorEnrollmentRequired: jest.fn(() => false),
+    respondOpenIDSessionAuthorizationUnavailable:
+      actualApi.respondOpenIDSessionAuthorizationUnavailable,
+    createOpenIDSessionAuthorizationUnavailableError:
+      actualApi.createOpenIDSessionAuthorizationUnavailableError,
     /** Real dating logic: the ordering these tests exercise is the whole point. */
     isTokenRetired: actualApi.isTokenRetired,
     TOKEN_RETIREMENT_FIELDS: actualApi.TOKEN_RETIREMENT_FIELDS,
@@ -210,6 +214,20 @@ describe('requireJwtAuth tenant context chaining', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toBe('JWT signature invalid');
     expect(getTenantId()).toBeUndefined();
+  });
+
+  it('answers 503 instead of a generic 500 when OpenID session authorization is unavailable', () => {
+    const { createOpenIDSessionAuthorizationUnavailableError } = require('@librechat/api');
+    mockPassportError = createOpenIDSessionAuthorizationUnavailableError();
+    const req = mockReq(undefined);
+    const res = mockRes();
+    const next = jest.fn();
+
+    requireJwtAuth(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ message: expect.any(String) }));
   });
 
   it('sets ALS tenant context after passport auth succeeds', async () => {

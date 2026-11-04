@@ -1,4 +1,4 @@
-import type { Document } from 'mongoose';
+import type { Document, Types } from 'mongoose';
 
 export interface IRefreshTokenBridge extends Document {
   oldRefreshTokenHash: string;
@@ -6,6 +6,7 @@ export interface IRefreshTokenBridge extends Document {
   userId: string;
   tenantId?: string;
   openidIssuer?: string;
+  openidSessionId?: Types.ObjectId;
   version?: string;
   createdAt: Date;
   expiresAt: Date;
@@ -17,6 +18,7 @@ export interface RefreshTokenBridgeCreateData {
   userId: string;
   tenantId?: string;
   openidIssuer?: string;
+  openidSessionId?: Types.ObjectId;
   version?: string;
   expiresAt: Date;
 }

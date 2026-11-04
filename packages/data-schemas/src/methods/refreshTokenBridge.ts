@@ -63,6 +63,9 @@ export function createRefreshTokenBridgeMethods(mongoose: typeof import('mongoos
           version: bridgeData.version,
           expiresAt: bridgeData.expiresAt,
           ...(bridgeData.openidIssuer != null && { openidIssuer: bridgeData.openidIssuer }),
+          ...(bridgeData.openidSessionId != null && {
+            openidSessionId: bridgeData.openidSessionId,
+          }),
         },
         $setOnInsert: {
           oldRefreshTokenHash: bridgeData.oldRefreshTokenHash,
@@ -70,7 +73,12 @@ export function createRefreshTokenBridgeMethods(mongoose: typeof import('mongoos
           ...(bridgeData.tenantId != null && { tenantId: bridgeData.tenantId }),
           createdAt: new Date(),
         },
-        ...(bridgeData.openidIssuer == null && { $unset: { openidIssuer: '' } }),
+        ...((bridgeData.openidIssuer == null || bridgeData.openidSessionId == null) && {
+          $unset: {
+            ...(bridgeData.openidIssuer == null && { openidIssuer: '' }),
+            ...(bridgeData.openidSessionId == null && { openidSessionId: '' }),
+          },
+        }),
       };
       return await RefreshTokenBridge.findOneAndUpdate(filter, update, {
         upsert: true,

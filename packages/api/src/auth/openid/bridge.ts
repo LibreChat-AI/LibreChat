@@ -11,6 +11,7 @@ interface StoredRefreshTokenBridge {
   userId: string;
   tenantId?: string;
   openidIssuer?: string;
+  openidSessionId?: string;
   version?: string;
   createdAt: Date | string;
 }
@@ -22,11 +23,18 @@ interface BridgeQuery {
   userId: string;
   tenantId?: string;
   openidIssuer?: string;
+  openidSessionId?: string;
   version?: string;
   expiresAt?: Date;
 }
 
 type IdentityInput = Partial<RefreshTokenBridgeIdentity>;
+
+export interface RefreshTokenBridgeRecord {
+  refreshToken: string;
+  /** `OpenIDSession._id` authorized for the token this bridge carries forward. */
+  openidSessionId?: string;
+}
 
 export interface RefreshTokenBridgeService {
   OPENID_REFRESH_BRIDGE_GRACE_MS: number;
@@ -47,7 +55,7 @@ export interface RefreshTokenBridgeService {
     userId?: string;
     tenantId?: string;
     openidIssuer?: string;
-  }) => Promise<string | null>;
+  }) => Promise<RefreshTokenBridgeRecord | null>;
   __internals: {
     hashRefreshToken: (refreshToken: string) => string;
     getBridgeTtlMs: () => number;
@@ -113,6 +121,7 @@ export function createRefreshTokenBridgeService(
     userId,
     tenantId,
     openidIssuer,
+    openidSessionId,
     ttl,
   }: RefreshTokenBridgeInput): Promise<string | null> {
     const identity = resolveBridgeIdentity({ userId, tenantId, openidIssuer });
@@ -129,6 +138,7 @@ export function createRefreshTokenBridgeService(
       userId: identity.userId,
       tenantId: identity.tenantId,
       openidIssuer: identity.openidIssuer,
+      openidSessionId,
       version,
       expiresAt: new Date(Date.now() + bridgeTtl),
     });
@@ -150,7 +160,7 @@ export function createRefreshTokenBridgeService(
     userId?: string;
     tenantId?: string;
     openidIssuer?: string;
-  }): Promise<string | null> {
+  }): Promise<RefreshTokenBridgeRecord | null> {
     const identity = resolveBridgeIdentity({ userId, tenantId, openidIssuer });
     if (!oldRefreshToken || !identity) return null;
     const oldRefreshTokenHash = hashRefreshToken(oldRefreshToken);
@@ -176,7 +186,10 @@ export function createRefreshTokenBridgeService(
       userId: identity.userId,
       age: Date.now() - new Date(bridge.createdAt).getTime(),
     });
-    return decrypt(bridge.encryptedNewRefreshToken);
+    return {
+      refreshToken: await decrypt(bridge.encryptedNewRefreshToken),
+      openidSessionId: bridge.openidSessionId ? String(bridge.openidSessionId) : undefined,
+    };
   }
 
   async function deleteRefreshTokenBridges({
