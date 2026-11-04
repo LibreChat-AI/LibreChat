@@ -13,6 +13,7 @@ import {
   AgentCapabilities,
   hasActivePiiPatterns,
   stripAgentIdSuffix,
+  omitsSamplingParameters,
 } from 'librechat-data-provider';
 import type {
   OpenAIClientOptions,
@@ -928,6 +929,19 @@ ${memory ?? 'No existing memories'}`;
       anthropicConfig.temperature != null
     ) {
       delete (finalLLMConfig as Record<string, unknown>).temperature;
+    }
+
+    /** Claude models that reject sampling parameters answer 400 to the default temperature. */
+    const memoryModel = (finalLLMConfig as { model?: unknown }).model;
+    if (
+      (llmConfig?.provider === Providers.ANTHROPIC || llmConfig?.provider === Providers.BEDROCK) &&
+      typeof memoryModel === 'string' &&
+      omitsSamplingParameters(memoryModel)
+    ) {
+      const sampling = finalLLMConfig as Record<string, unknown>;
+      delete sampling.temperature;
+      delete sampling.topP;
+      delete sampling.topK;
     }
 
     /**
