@@ -16,6 +16,7 @@ let mockModelsQuery: {
   isFetchedAfterMount: boolean;
   isSuccess: boolean;
   isFetching?: boolean;
+  hasFetchedCatalog?: boolean;
 } = { data: {}, isFetchedAfterMount: true, isSuccess: true };
 let mockModelPanelProps: Pick<
   AgentModelPanelProps,
@@ -97,7 +98,8 @@ jest.mock('@librechat/client', () => ({
 jest.mock('~/hooks/Endpoint/useModelCatalog', () => () => ({
   ...mockModelsQuery,
   data:
-    mockModelsQuery.isFetchedAfterMount && mockModelsQuery.isSuccess
+    (mockModelsQuery.hasFetchedCatalog ??
+    (mockModelsQuery.isFetchedAfterMount && mockModelsQuery.isSuccess))
       ? mockModelsQuery.data
       : undefined,
 }));
@@ -394,6 +396,41 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         expect(capturedFormMethods?.getValues('model')).toBe('current-model');
       });
     });
+
+    it.each([{ models: [] }, { models: ['old-model'] }])(
+      'preserves saved defaults after a failed refresh with stale models $models',
+      async ({ models }) => {
+        const { mockUseGetAgentByIdQuery } = setupMocks();
+        mockAgentQuery(mockUseGetAgentByIdQuery, {});
+        mockAgentPanelContext = {
+          ...mockAgentPanelContext,
+          endpointsConfig: { custom: {} },
+          agent_id: undefined,
+        };
+        mockModelsQuery = {
+          data: { custom: models },
+          isFetchedAfterMount: true,
+          hasFetchedCatalog: true,
+          isSuccess: true,
+          isFetching: true,
+        };
+        localStorage.setItem('lastAgentProvider', 'custom');
+        localStorage.setItem('lastAgentModel', 'new-model');
+        const { rerender } = render(<AgentPanel />, { wrapper: createWrapper() });
+        mockModelsQuery = { ...mockModelsQuery, isSuccess: false, isFetching: false };
+        rerender(<AgentPanel />);
+        expect(localStorage.getItem('lastAgentProvider')).toBe('custom');
+        expect(localStorage.getItem('lastAgentModel')).toBe('new-model');
+        mockModelsQuery = {
+          ...mockModelsQuery,
+          isSuccess: true,
+          data: { custom: ['new-model'] },
+        };
+        rerender(<AgentPanel />);
+        await waitFor(() => expect(capturedFormMethods?.getValues('model')).toBe('new-model'));
+        expect(localStorage.getItem('lastAgentModel')).toBe('new-model');
+      },
+    );
 
     it('clears unavailable saved defaults', async () => {
       const { mockUseGetAgentByIdQuery } = setupMocks();

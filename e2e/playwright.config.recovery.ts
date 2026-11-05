@@ -9,7 +9,7 @@ const servers = (Array.isArray(mockConfig.webServer) ? mockConfig.webServer : []
 export default defineConfig({
   ...mockConfig,
   testDir: 'recovery',
-  outputDir: '../workspace/private-docs/recovery-browser-artifacts',
+  outputDir: 'recovery/.test-results',
   timeout: 120_000,
   retries: 0,
   reporter: [['line']],

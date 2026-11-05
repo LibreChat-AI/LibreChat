@@ -32,6 +32,13 @@ const discoveryErrors = {
   missing_api_key: 'Model discovery requires an API key',
   invalid_response: 'Invalid model discovery response',
 };
+export class ModelDiscoveryError extends Error {
+  constructor(public readonly code: keyof typeof discoveryErrors) {
+    super(discoveryErrors[code]);
+    this.name = 'ModelDiscoveryError';
+  }
+}
+
 const connectionErrorCodes = new Set([
   'ECONNREFUSED',
   'ECONNRESET',
@@ -45,10 +52,7 @@ const connectionErrorCodes = new Set([
 export function getModelDiscoveryErrorMetadata(
   error: unknown,
 ): ReturnType<typeof getSafeErrorMetadata> & { reason?: string; code?: string } {
-  const reason =
-    error instanceof Error
-      ? Object.entries(discoveryErrors).find(([, message]) => message === error.message)?.[0]
-      : undefined;
+  const reason = error instanceof ModelDiscoveryError ? error.code : undefined;
   const code =
     axios.isAxiosError(error) &&
     typeof error.code === 'string' &&
@@ -154,7 +158,7 @@ async function fetchOllamaModels(
 
   const result = ollamaListSchema.safeParse(response.data);
   if (!result.success) {
-    throw new Error(discoveryErrors.invalid_response);
+    throw new ModelDiscoveryError('invalid_response');
   }
   return result.data.models.map((tag) => tag.name);
 }
@@ -216,11 +220,11 @@ export async function fetchModels({
   const baseURL = direct ? extractBaseURL(_baseURL ?? '') : _baseURL;
 
   if (!baseURL && !azure) {
-    throw new Error(discoveryErrors.missing_base_url);
+    throw new ModelDiscoveryError('missing_base_url');
   }
 
   if (!apiKey) {
-    throw new Error(discoveryErrors.missing_api_key);
+    throw new ModelDiscoveryError('missing_api_key');
   }
 
   const ssrfAgents = baseURLIsUserProvided ? createSSRFSafeAgents(allowedAddresses) : undefined;
@@ -345,7 +349,15 @@ export async function fetchModels({
 
   const result = modelListSchema.safeParse(res.data);
   if (!result.success) {
-    throw new Error(discoveryErrors.invalid_response);
+    const error = new ModelDiscoveryError('invalid_response');
+    if (!hasCachedModels) {
+      throw error;
+    }
+    logger.warn(
+      'Model token metadata refresh failed; retaining cached models',
+      getModelDiscoveryErrorMetadata(error),
+    );
+    return models;
   }
   const input = res.data;
 

@@ -1,6 +1,7 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { TModelSpec, TModelsConfig, TConversation } from 'librechat-data-provider';
 import {
+  isModelUnavailable,
   isProviderAvailable,
   isModelSpecAvailable,
   isConversationModelAvailable,
@@ -138,5 +139,22 @@ describe('conversation model availability', () => {
         models: { openAI: ['saved'] },
       }),
     ).toBe(true);
+  });
+});
+
+describe('unavailable model notices', () => {
+  it('requires a known catalog and a selected provider and model', () => {
+    expect(isModelUnavailable('custom', 'saved', undefined)).toBe(false);
+    expect(isModelUnavailable('custom', '', {})).toBe(false);
+    expect(isModelUnavailable('', 'saved', {})).toBe(false);
+    expect(isModelUnavailable('custom', 'saved', {})).toBe(true);
+    expect(isModelUnavailable('custom', 'saved', { custom: [] })).toBe(true);
+    expect(isModelUnavailable('custom', 'saved', { custom: ['saved'] })).toBe(false);
+  });
+  it('resolves catalog aliases and honors an explicit provider catalog', () => {
+    expect(isModelUnavailable('vertexai', 'gemini', { google: ['gemini'] })).toBe(false);
+    expect(isModelUnavailable('vertexai', 'gemini', { google: ['gemini'], vertexai: [] })).toBe(
+      true,
+    );
   });
 });

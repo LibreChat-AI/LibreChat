@@ -137,6 +137,9 @@ describe('useTurns', () => {
     chat.store.set(pendingQuotesByConvoId(conversationId), ['staged-quote']);
     expect(chat.turns.ask({ text: 'Next' })).toBe(false);
     expect(chat.turns.ask({ text: '' }, { isRegenerate: true })).toBe(false);
+    expect(chat.services.logger.warn).toHaveBeenCalledWith(
+      '[useTurns] Refusing to send without an available model',
+    );
     expect(chat.submission()).toBeNull();
     expect(chat.written).toEqual([]);
     expect(chat.store.get(pendingManualSkillsByConvoId(conversationId))).toEqual(['staged-skill']);

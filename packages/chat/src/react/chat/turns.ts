@@ -159,6 +159,7 @@ export function useTurns(
       services.canSubmitModel?.(conversation) === false ||
       (addedConvo != null && services.canSubmitModel?.(addedConvo) === false)
     ) {
+      logger.warn('[useTurns] Refusing to send without an available model');
       return false;
     }
     const codeDecision = services.resolveCode(conversation);

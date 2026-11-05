@@ -1,11 +1,6 @@
 import React, { useMemo } from 'react';
 import { TooltipAnchor } from '@librechat/client';
-import {
-  getConfigDefaults,
-  isAgentsEndpoint,
-  isAssistantsEndpoint,
-  resolveModelCatalogKey,
-} from 'librechat-data-provider';
+import { getConfigDefaults, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { ModelSelectorProps } from '~/common';
 import {
   renderModelSpecs,
@@ -18,6 +13,7 @@ import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcut
 import { ModelSelectorChatProvider } from './ModelSelectorChatContext';
 import useModelCatalog from '~/hooks/Endpoint/useModelCatalog';
 import { getSelectedIcon, getDisplayValue } from './utils';
+import { isModelUnavailable } from '~/utils/availability';
 import { CustomMenu as Menu } from './CustomMenu';
 import DialogManager from './DialogManager';
 import { useLocalize } from '~/hooks';
@@ -74,14 +70,9 @@ function ModelSelectorContent() {
   );
 
   const unavailable =
-    modelsConfig != null &&
-    selectedValues.endpoint &&
-    selectedValues.model &&
     !isAgentsEndpoint(selectedValues.endpoint) &&
     !isAssistantsEndpoint(selectedValues.endpoint) &&
-    !(modelsConfig[resolveModelCatalogKey(selectedValues.endpoint, modelsConfig)] ?? []).includes(
-      selectedValues.model,
-    );
+    isModelUnavailable(selectedValues.endpoint, selectedValues.model, modelsConfig);
 
   const trigger = (
     <TooltipAnchor

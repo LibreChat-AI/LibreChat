@@ -676,7 +676,12 @@ export default function AgentPanel() {
     [endpointsConfig, allowedProviders, modelsQuery.data],
   );
   useEffect(() => {
-    if (endpointsConfig == null || modelsQuery.data == null || modelsQuery.isFetching) {
+    if (
+      endpointsConfig == null ||
+      modelsQuery.data == null ||
+      modelsQuery.isFetching ||
+      !modelsQuery.isSuccess
+    ) {
       return;
     }
 
@@ -722,6 +727,7 @@ export default function AgentPanel() {
     models,
     modelsQuery.data,
     modelsQuery.isFetching,
+    modelsQuery.isSuccess,
     providers,
     setValue,
   ]);

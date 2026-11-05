@@ -3,6 +3,7 @@ import { Keyv } from 'keyv';
 import { logger } from '@librechat/data-schemas';
 import { Time, EModelEndpoint, defaultModels, AuthType } from 'librechat-data-provider';
 import {
+  ModelDiscoveryError,
   getModelDiscoveryErrorMetadata,
   fetchModels,
   splitAndTrim,
@@ -1249,6 +1250,50 @@ describe('discovery recovery', () => {
     },
   );
 
+  it.each([{ models: [] }, { models: ['cached-model'] }])(
+    'retains cached models $models when metadata refresh returns a malformed body',
+    async ({ models }) => {
+      mockCacheGet.mockResolvedValue(models);
+      mockTokenConfigGet.mockResolvedValue(undefined);
+      mockedAxios.get.mockResolvedValue({ data: '<html>private provider error</html>' });
+      expect(
+        await fetchModels({
+          apiKey: 'test',
+          baseURL: 'https://gateway.test',
+          tokenKey: `${SCOPED_TOKEN_CONFIG_KEY_PREFIX}tenant\u0000test`,
+        }),
+      ).toEqual(models);
+      expect(mockCacheSet).not.toHaveBeenCalled();
+      expect(mockTokenConfigSet).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Model token metadata refresh failed; retaining cached models',
+        { type: 'Error', reason: 'invalid_response' },
+      );
+    },
+  );
+
+  it('rejects a malformed body when no cached catalog exists', async () => {
+    mockedAxios.get.mockResolvedValue({ data: '<html>private provider error</html>' });
+    await expect(
+      fetchModels({ apiKey: 'test', baseURL: 'https://gateway.test' }),
+    ).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(mockCacheSet).not.toHaveBeenCalled();
+  });
+
+  it('replaces cached models with a successful empty response', async () => {
+    mockCacheGet.mockResolvedValue(['cached-model']);
+    mockTokenConfigGet.mockResolvedValue(undefined);
+    mockedAxios.get.mockResolvedValue({ data: { data: [] } });
+    expect(
+      await fetchModels({
+        apiKey: 'test',
+        baseURL: 'https://gateway.test',
+        tokenKey: `${SCOPED_TOKEN_CONFIG_KEY_PREFIX}tenant\u0000test`,
+      }),
+    ).toEqual([]);
+    expect(mockCacheSet).toHaveBeenCalledWith(expect.any(String), [], Time.TWO_MINUTES);
+  });
+
   it('uses a cached empty catalog without another provider request', async () => {
     mockCacheGet.mockResolvedValue([]);
     mockedAxios.get.mockClear();
@@ -1273,12 +1318,19 @@ describe('discovery recovery', () => {
     }
   });
 
-  it.each([
-    ['Model discovery requires an API key', 'missing_api_key'],
-    ['Model discovery requires a base URL', 'missing_base_url'],
-    ['Invalid model discovery response', 'invalid_response'],
-  ])('classifies %s without exposing error text', (message, reason) => {
-    expect(getModelDiscoveryErrorMetadata(new Error(message))).toEqual({ type: 'Error', reason });
+  it.each(['missing_api_key', 'missing_base_url', 'invalid_response'] as const)(
+    'classifies %s by code without exposing error text',
+    (reason) => {
+      const error = new ModelDiscoveryError(reason);
+      error.message = 'provider response with credentials';
+      expect(getModelDiscoveryErrorMetadata(error)).toEqual({ type: 'Error', reason });
+    },
+  );
+
+  it('does not classify arbitrary error text as a discovery reason', () => {
+    expect(getModelDiscoveryErrorMetadata(new Error('Invalid model discovery response'))).toEqual({
+      type: 'Error',
+    });
   });
 
   it.each(['ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT'])(

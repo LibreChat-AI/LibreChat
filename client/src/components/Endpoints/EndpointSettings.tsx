@@ -1,6 +1,6 @@
 import { useRecoilValue } from 'recoil';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
+  resolveModelCatalogKey,
   getEndpointField,
   SettingsViews,
   isAgentsEndpoint,
@@ -8,6 +8,8 @@ import {
 } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { TSettingsProps } from '~/common';
+import useModelCatalog from '~/hooks/Endpoint/useModelCatalog';
+import { isModelUnavailable } from '~/utils/availability';
 import { useGetEndpointsQuery } from '~/data-provider';
 import { getSettings } from './Settings';
 import { useLocalize } from '~/hooks';
@@ -20,7 +22,7 @@ export default function Settings({
   isPreset = false,
   className = '',
 }: TSettingsProps) {
-  const modelsQuery = useGetModelsQuery();
+  const modelsQuery = useModelCatalog();
   const localize = useLocalize();
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const currentSettingsView = useRecoilValue(store.currentSettingsView);
@@ -32,18 +34,15 @@ export default function Settings({
 
   const { settings, multiViewSettings } = getSettings();
   const { endpoint: _endpoint } = conversation as TConversation;
-  const models = modelsQuery.data?.[_endpoint ?? ''] ?? [];
+  const models =
+    modelsQuery.data?.[resolveModelCatalogKey(_endpoint ?? '', modelsQuery.data)] ?? [];
   const unavailable =
-    modelsQuery.isFetched &&
-    modelsQuery.isSuccess &&
-    modelsQuery.data != null &&
-    conversation?.model &&
     !isAgentsEndpoint(_endpoint) &&
     !isAssistantsEndpoint(_endpoint) &&
-    !models.includes(conversation.model);
+    isModelUnavailable(_endpoint, conversation?.model, modelsQuery.data);
   const unavailableChoice = unavailable ? (
     <p role="status" className="text-text-secondary">
-      {localize('com_ui_model_unavailable', { 0: conversation.model })}
+      {localize('com_ui_model_unavailable', { 0: conversation?.model ?? '' })}
     </p>
   ) : null;
   const OptionComponent = settings[endpoint];

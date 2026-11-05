@@ -718,7 +718,7 @@ const ChatForm = memo(function ChatForm({
         onClose={pastedTextEdit.closeEditor}
         onSave={pastedTextEdit.saveEdit}
       />
-      {modelAvailability.ready && !modelAvailability.canSubmit && !answerMode.composerAnswers && (
+      {modelAvailability.showSelectionHint && !answerMode.composerAnswers && (
         <div role="status" className="text-text-secondary px-5 py-2 text-sm">
           {localize('com_ui_select_model_to_continue')}
           {!modelAvailability.hasModels && <> {localize('com_ui_models_unavailable_wait')}</>}

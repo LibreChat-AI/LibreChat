@@ -1,6 +1,5 @@
 import { useId, useState, useMemo, useEffect } from 'react';
 import { Spinner, Dropdown, useToastContext } from '@librechat/client';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import { useForm, FormProvider, Controller, useWatch } from 'react-hook-form';
 import {
   Tools,
@@ -8,6 +7,7 @@ import {
   isActionTool,
   ImageVisionTool,
   LocalStorageKeys,
+  resolveModelCatalogKey,
   defaultAssistantFormValues,
 } from 'librechat-data-provider';
 import type { FunctionTool, TConfig } from 'librechat-data-provider';
@@ -21,6 +21,8 @@ import { cn, defaultTextProps, getAvailableModelSelection, removeFocusOutlines }
 import AssistantConversationStarters from './AssistantConversationStarters';
 import AssistantToolsDialog from '~/components/Tools/AssistantToolsDialog';
 import { useSelectAssistant, useLocalize, useLocalStorage } from '~/hooks';
+import useModelCatalog from '~/hooks/Endpoint/useModelCatalog';
+import { isModelUnavailable } from '~/utils/availability';
 import { useAssistantsMapContext } from '~/Providers';
 import AppendDateCheckbox from './AppendDateCheckbox';
 import CapabilitiesForm from './CapabilitiesForm';
@@ -51,9 +53,12 @@ export default function AssistantPanel({
   assistantsConfig,
   version,
 }: AssistantPanelProps & { assistantsConfig?: TConfig | null }) {
-  const modelsQuery = useGetModelsQuery({ refetchOnMount: 'always' });
-  const models = useMemo(() => modelsQuery.data?.[endpoint] ?? [], [endpoint, modelsQuery.data]);
-  const modelsReady = modelsQuery.isFetchedAfterMount && !modelsQuery.isFetching;
+  const modelsQuery = useModelCatalog({ refetchOnMount: 'always' });
+  const models = useMemo(
+    () => modelsQuery.data?.[resolveModelCatalogKey(endpoint, modelsQuery.data)] ?? [],
+    [endpoint, modelsQuery.data],
+  );
+  const modelsReady = modelsQuery.data != null;
   const [lastSelectedModels] = useLocalStorage<LastSelectedModels | undefined>(
     LocalStorageKeys.LAST_MODEL,
     {} as LastSelectedModels,
@@ -86,7 +91,13 @@ export default function AssistantPanel({
   const model = useWatch({ control, name: 'model' });
 
   useEffect(() => {
-    if (!modelsReady || !modelsQuery.isSuccess || current_assistant_id || assistant_id) {
+    if (
+      !modelsReady ||
+      modelsQuery.isFetching ||
+      !modelsQuery.isSuccess ||
+      current_assistant_id ||
+      assistant_id
+    ) {
       return;
     }
 
@@ -104,6 +115,7 @@ export default function AssistantPanel({
     model,
     models,
     modelsQuery.isSuccess,
+    modelsQuery.isFetching,
     modelsReady,
     setValue,
   ]);
@@ -289,7 +301,7 @@ export default function AssistantPanel({
           )}
         </div>
         <div className="bg-surface-primary h-auto px-4 pt-3 pb-8">
-          {modelsReady && model && !models.includes(model) && (
+          {isModelUnavailable(endpoint, model, modelsQuery.data) && (
             <p role="status" className="text-text-secondary">
               {localize('com_ui_model_unavailable', { 0: model })}
             </p>

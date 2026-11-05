@@ -41,6 +41,20 @@ export function isModelSpecAvailable(spec: TModelSpec, models: TModelsConfig | u
   return spec.preset.model ? available.includes(spec.preset.model) : available.length > 0;
 }
 
+/** Unknown catalogs and missing selections are not evidence that a model is unavailable. */
+export function isModelUnavailable(
+  endpoint: string | null | undefined,
+  model: string | null | undefined,
+  models: Partial<TModelsConfig> | undefined,
+): boolean {
+  return (
+    models != null &&
+    !!endpoint &&
+    !!model &&
+    !(models[resolveModelCatalogKey(endpoint, models)] ?? []).includes(model)
+  );
+}
+
 /** Match the existing model checks. The server still owns authorization. */
 export function isConversationModelAvailable({
   conversation,
@@ -76,5 +90,5 @@ export function isConversationModelAvailable({
   ) {
     return true;
   }
-  return models == null || (models[resolveModelCatalogKey(endpoint, models)] ?? []).includes(model);
+  return !isModelUnavailable(endpoint, model, models);
 }

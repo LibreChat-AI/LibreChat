@@ -17,10 +17,12 @@ export default function useModelAvailability(
       models,
       endpoints,
     });
+  const canSubmit =
+    available(conversation) && (addedConversation == null || available(addedConversation));
   return {
     ready,
-    canSubmit:
-      available(conversation) && (addedConversation == null || available(addedConversation)),
+    canSubmit,
+    showSelectionHint: endpoints != null && !canSubmit,
     hasModels:
       !ready ||
       Object.entries(models ?? {}).some(

@@ -1,5 +1,7 @@
+import { logger } from '@librechat/data-schemas';
 import { AuthType, ErrorTypes } from 'librechat-data-provider';
 import type { BaseInitializeParams } from '~/types';
+import { ModelDiscoveryError } from '~/endpoints/models';
 
 const mockValidateEndpointURL = jest.fn();
 const mockCreateSSRFSafeUndiciConnect = jest.fn(
@@ -23,6 +25,7 @@ jest.mock('~/endpoints/openai/config', () => ({
 }));
 
 jest.mock('~/endpoints/models', () => ({
+  ...jest.requireActual('~/endpoints/models'),
   fetchModels: jest.fn(),
 }));
 
@@ -32,6 +35,7 @@ jest.mock('~/cache', () => ({
 }));
 
 jest.mock('~/utils', () => ({
+  ...jest.requireActual('~/utils'),
   isUserProvided: (val: string) => val === 'user_provided',
   checkUserKeyExpiry: jest.fn(),
   resolveHeaders: ({ headers }: { headers?: Record<string, string> }) => ({ ...headers }),
@@ -447,6 +451,27 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
     });
     fetchModels.mockRejectedValueOnce(new Error('provider response with credentials'));
     await expect(initializeCustom(params)).resolves.toBeDefined();
+  });
+
+  it('logs the safe discovery reason when token metadata is malformed', async () => {
+    const warning = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    try {
+      fetchModels.mockRejectedValueOnce(new ModelDiscoveryError('invalid_response'));
+      await expect(
+        initializeCustom(
+          createTokenConfigParams({
+            apiKey: 'test',
+            baseURL: 'https://openrouter.ai/api/v1',
+          }),
+        ),
+      ).resolves.toBeDefined();
+      expect(warning).toHaveBeenCalledWith('Token metadata discovery failed', {
+        type: 'Error',
+        reason: 'invalid_response',
+      });
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it('uses the unscoped endpoint tokenKey when no user-bound headers are configured', async () => {

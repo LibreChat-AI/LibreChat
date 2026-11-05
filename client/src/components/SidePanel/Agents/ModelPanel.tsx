@@ -17,6 +17,7 @@ import { componentMapping } from '~/components/SidePanel/Parameters/components';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import Sections from '~/components/SidePanel/Parameters/Sections';
+import { isModelUnavailable } from '~/utils/availability';
 import { useLocalize, useHasAccess } from '~/hooks';
 import { useLiveAnnouncer } from '~/Providers';
 import { Panel } from '~/common';
@@ -257,7 +258,11 @@ export default function ModelPanel({
                     selectId="model"
                     selectedValue={field.value || ''}
                     displayValue={
-                      modelsReady && field.value && !models.includes(field.value)
+                      isModelUnavailable(
+                        provider,
+                        field.value,
+                        modelsReady && !modelsError ? modelsData : undefined,
+                      )
                         ? localize('com_ui_model_unavailable', { 0: field.value })
                         : field.value || ''
                     }
