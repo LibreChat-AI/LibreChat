@@ -105,7 +105,7 @@ describe('ChatScreen', () => {
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New chat');
     expect(screen.getByText('Welcome')).toBeInTheDocument();
     expect(composer()).toHaveAttribute('data-landing', 'true');
-    expect(composer()).toHaveAttribute('data-footer-below', 'true');
+    expect(composer()).toHaveAttribute('data-footer-below', 'false');
     expect(container.querySelectorAll('footer')).toHaveLength(1);
     expect(container.querySelector('footer')).toHaveAttribute('data-placement', 'full');
   });

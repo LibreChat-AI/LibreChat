@@ -138,10 +138,14 @@ function ChatViewPane({
                         />
                       )}
                       /* The generic disclaimer and the policy links are the welcome
-                         screen's; a deployment's own footer stays with the
-                         conversation that always showed it. */
+                         screen's, read directly under the composer; a deployment's own
+                         footer stays with the conversation that always showed it. */
                       renderFooter={(placement) =>
-                        placement === 'band' ? <Footer configuredOnly /> : <Footer />
+                        placement === 'band' ? (
+                          <Footer configuredOnly />
+                        ) : (
+                          <Footer className="text-text-muted hidden flex-wrap items-center justify-center gap-2 px-2 pb-2 text-center text-xs sm:flex" />
+                        )
                       }
                       renderMascot={(bandRef, landing) => (
                         <Lia bandRef={bandRef} landing={landing} submission={rootSubmission} />

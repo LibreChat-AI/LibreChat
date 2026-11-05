@@ -23,7 +23,7 @@ function inlineChatView({
   const chatProjectId = activeConversation?.chatProjectId || undefined;
   const { isLanding: isLandingPage } = view;
   const fullFooter = isLandingPage && landingFooter;
-  const footerBelow = fullFooter || configuredFooter;
+  const bandFooter = !fullFooter && configuredFooter;
   const isProjectLandingPage = isLandingPage && project != null;
   const conversationTitle = activeConversation?.title?.trim();
   const newChat = isLandingPage || !conversationTitle;
@@ -32,8 +32,8 @@ function inlineChatView({
   return {
     title: newChat ? null : (conversationTitle ?? null),
     fullFooter,
-    bandFooter: !fullFooter && configuredFooter,
-    footerBelow,
+    bandFooter,
+    footerBelow: bandFooter,
     landingProject: isProjectLandingPage ? project : undefined,
     projectId: chatProjectId,
     readOnly: isSubagentThreadReadOnly,
@@ -133,8 +133,8 @@ describe('getChatPaneChrome', () => {
   });
 
   it.each([
-    [landingView, true, false, { fullFooter: true, bandFooter: false, footerBelow: true }],
-    [landingView, true, true, { fullFooter: true, bandFooter: false, footerBelow: true }],
+    [landingView, true, false, { fullFooter: true, bandFooter: false, footerBelow: false }],
+    [landingView, true, true, { fullFooter: true, bandFooter: false, footerBelow: false }],
     [landingView, false, true, { fullFooter: false, bandFooter: true, footerBelow: true }],
     [landingView, false, false, { fullFooter: false, bandFooter: false, footerBelow: false }],
     [conversationView, true, false, { fullFooter: false, bandFooter: false, footerBelow: false }],

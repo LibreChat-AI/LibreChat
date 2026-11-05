@@ -5,11 +5,11 @@ import type { ChatPaneView } from './view';
 export type ChatPaneChrome = {
   /** The conversation's title for the page heading, or `null` for the new-chat label. */
   title: string | null;
-  /** The full footer below the column: the welcome screen, with the landing footer on. */
+  /** The full footer, directly under the composer: the welcome screen, with the landing footer on. */
   fullFooter: boolean;
-  /** The configured footer inside the composer band, wherever the full one is not shown. */
+  /** The configured footer bar inside the composer band, wherever the full one is not shown. */
   bandFooter: boolean;
-  /** Whether a footer sits below the composer, which the composer's clearance accounts for. */
+  /** Whether a footer bar sits in the composer's clearance. The full footer takes its own room. */
   footerBelow: boolean;
   /** The project a new chat starts in, on a project's welcome screen. */
   landingProject?: TChatProject;
@@ -48,12 +48,13 @@ export function getChatPaneChrome({
   const active = conversation?.conversationId === conversationId ? conversation : undefined;
   const subagentThread = active?.subagentThread;
   const fullFooter = view.isLanding && landingFooter;
+  const bandFooter = !fullFooter && configuredFooter;
   const title = active?.title?.trim();
   return {
     title: view.isLanding || !title ? null : title,
     fullFooter,
-    bandFooter: !fullFooter && configuredFooter,
-    footerBelow: fullFooter || configuredFooter,
+    bandFooter,
+    footerBelow: bandFooter,
     landingProject: view.isLanding && project != null ? project : undefined,
     projectId: active?.chatProjectId || undefined,
     readOnly: subagentThread != null,

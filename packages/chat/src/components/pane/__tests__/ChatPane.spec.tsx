@@ -138,14 +138,17 @@ describe('ChatPane', () => {
     expect(paneColumn(container).style.transform).toBe('');
   });
 
-  it('seats the band footer inside the band and the footer below the column', () => {
+  it('seats both footers inside the band, after the composer', () => {
     const { container } = renderPane({
+      composer: <p>Composer</p>,
       bandFooter: <p>Configured footer</p>,
-      footer: <p>Full footer</p>,
+      fullFooter: <p>Full footer</p>,
     });
 
+    const fullFooter = screen.getByText('Full footer');
     expect(composerBand(container)).toContainElement(screen.getByText('Configured footer'));
-    expect(paneColumn(container)).not.toContainElement(screen.getByText('Full footer'));
+    expect(composerBand(container)).toContainElement(fullFooter);
+    expect(screen.getByText('Composer').nextElementSibling).toBe(fullFooter);
   });
 
   it('hands the mascot the composer band to stand on', () => {
