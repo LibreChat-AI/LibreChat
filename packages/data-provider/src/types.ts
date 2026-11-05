@@ -1354,6 +1354,8 @@ export type TBalanceResponse = {
   lastRefill?: Date | string;
   refillAmount?: number;
   refillMode?: BalanceRefillMode;
+  /** Credits granted at the start of the current period; absent on records not yet granted one. */
+  allotment?: number;
 };
 
 /* -------------------------------------------------------------------------- */

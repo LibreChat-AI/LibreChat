@@ -39,6 +39,17 @@ describe('summarizeBalance', () => {
     expect(summary.tone).toBe('normal');
   });
 
+  it('measures against the stored allotment after the configured amount changes', () => {
+    const summary = summarizeBalance(refilling({ allotment: 40_000, refillAmount: 20_000 }));
+    expect(summary.allotment).toBe(40_000);
+    expect(summary.usedPercent).toBe(69);
+    expect(summary.refillAmount).toBe(20_000);
+  });
+
+  it('falls back to the configured amount when no allotment is stored', () => {
+    expect(summarizeBalance(refilling({ allotment: 0 })).allotment).toBe(20_000);
+  });
+
   it('reads 0% used when saved-up credits exceed the allotment', () => {
     const summary = summarizeBalance(refilling({ tokenCredits: 45_000 }));
     expect(summary.usedPercent).toBe(0);
