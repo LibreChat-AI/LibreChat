@@ -247,9 +247,19 @@ export default function WorkspaceChannel({
         )}
         {mayRoute && (
           <section className="space-y-3" aria-labelledby={`${id}-target`}>
-            <h4 id={`${id}-target`} className="font-medium">
-              {localize('com_ui_channels_workspace_target')}
-            </h4>
+            <div className="flex items-center justify-between gap-2">
+              <h4 id={`${id}-target`} className="min-w-0 font-medium">
+                {localize('com_ui_channels_workspace_target')}
+              </h4>
+              {alreadyAssigned && (
+                <Tag
+                  role="status"
+                  className="shrink-0"
+                  variant="success"
+                  label={localize('com_ui_channels_workspace_assigned')}
+                />
+              )}
+            </div>
             <div
               role="group"
               aria-label={localize('com_ui_channels_workspace_target')}
@@ -337,14 +347,7 @@ export default function WorkspaceChannel({
                 </div>
               </div>
             )}
-            {alreadyAssigned ? (
-              <Tag
-                role="status"
-                className="w-fit"
-                variant="success"
-                label={localize('com_ui_channels_workspace_assigned')}
-              />
-            ) : (
+            {!alreadyAssigned && (
               <Button
                 type="button"
                 disabled={
