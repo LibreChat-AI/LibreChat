@@ -120,6 +120,24 @@ describe('useAskAnswerMode', () => {
     expect(result.current.answerText).toBe('edited in the card');
   });
 
+  it('keeps a restored answer when draft saving is turned off', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockSaveDrafts = true;
+    mockGetDraft.mockImplementation((id) => (id === 'draft-a1' ? 'typed before reload' : null));
+    mockUseGetMessages.mockReturnValue({ data: liveAsk });
+
+    const { result, rerender } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+    expect(result.current.answerText).toBe('typed before reload');
+
+    mockSaveDrafts = false;
+    rerender();
+
+    expect(result.current.answerText).toBe('typed before reload');
+    expect(jotaiStore.get(askAnswerTextAtom)).toEqual({ a1: 'typed before reload' });
+  });
+
   it('leaves the saved answer alone while drafts are off', () => {
     jotaiStore.set(expandedAskActionsAtom, []);
     mockGetDraft.mockImplementation(() => 'should not load');

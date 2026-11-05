@@ -212,7 +212,9 @@ export default function useAskAnswerMode(conversationId?: string | null) {
    * The answer saved under the question's own draft key. Autosave restores it
    * only into the composer, which answers a question moved there; the chat
    * card, where a question starts, reads it from here so a reload or a return
-   * to a still-pending question shows what was typed.
+   * to a still-pending question shows what was typed. Once restored it is
+   * held in memory like any typed answer, so turning draft saving off later
+   * leaves the visible answer in place, as it does for the composer.
    */
   const savedAnswerActionId = liveAsk != null && !batchMode ? liveAsk.actionId : null;
   const savedAnswer = useMemo(
@@ -222,6 +224,16 @@ export default function useAskAnswerMode(conversationId?: string | null) {
         : '',
     [saveDrafts, savedAnswerActionId],
   );
+  useEffect(() => {
+    if (savedAnswerActionId == null || savedAnswer.length === 0) {
+      return;
+    }
+    setAnswerDrafts((current) =>
+      current[savedAnswerActionId] != null
+        ? current
+        : { ...current, [savedAnswerActionId]: savedAnswer },
+    );
+  }, [savedAnswerActionId, savedAnswer, setAnswerDrafts]);
   const answerText = liveAsk != null ? (answerDrafts[liveAsk.actionId] ?? savedAnswer) : '';
   const setAnswerText = useCallback(
     (text: string) => {
