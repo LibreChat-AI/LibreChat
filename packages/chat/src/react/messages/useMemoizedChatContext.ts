@@ -1,7 +1,7 @@
 import { useRef, useMemo } from 'react';
 import type { TMessage } from 'librechat-data-provider';
-import type { TMessageChatContext } from '~/common/types';
-import { useChatContext } from '~/Providers';
+import type { TMessageChatContext } from './types';
+import { useChatContext } from '../chat/context';
 
 type LiveChatValues = {
   isSubmitting: boolean;
@@ -27,10 +27,17 @@ type LiveChatValues = {
  * context object on those values re-rendered every row of the thread several
  * times per send, when only the rows entering or leaving the tail change.
  */
+export type MemoizedChatContext = {
+  chatContext: TMessageChatContext;
+  effectiveIsSubmitting: boolean;
+  latestMessageId: string | undefined;
+  latestMessageDepth: number | undefined;
+};
+
 export default function useMemoizedChatContext(
   message: TMessage | null | undefined,
   isSubmitting: boolean,
-) {
+): MemoizedChatContext {
   const chatCtx = useChatContext();
   const { latestMessageId, latestMessageDepth } = chatCtx;
 

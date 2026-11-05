@@ -1,18 +1,23 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { useAttachments } from '@librechat/chat/components';
 import { FOLD_GLYPH_CLASS } from '@librechat/chat/components';
 import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { setDefaultMessagesHost, useStreamedAttachments } from '@librechat/chat/react';
 import type { EventSubmission, TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { MessagesHost } from '@librechat/chat/react';
 import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
-import useAttachments from '~/hooks/Messages/useAttachments';
 import { ParallelColumns } from '../ParallelContent';
 import ContentParts from '../ContentParts';
 import { litFoldPath } from '../rail';
 import { Text } from '../Parts';
 
 /** No previewed subagent run here leaves a file in doubt, so no owner is ever asked for. */
+/** The one host member `useAttachments` reads: the SSE atom this spec drives. */
+setDefaultMessagesHost({ useStreamedAttachments } as unknown as MessagesHost);
+
 jest.mock('~/data-provider', () => ({
   useSubagentAttachmentCallsQueries: () => [],
 }));
@@ -132,6 +137,7 @@ jest.mock('lucide-react', () => ({
 
 jest.mock('@librechat/client', () => ({
   useMediaQuery: () => false,
+  useLocalize: () => (key: string) => key,
   Button: ({
     children,
     variant: _variant,

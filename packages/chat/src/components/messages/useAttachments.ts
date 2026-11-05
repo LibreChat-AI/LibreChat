@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
-import { useAtomValue } from 'jotai';
+import type { SearchResultData } from 'librechat-data-provider';
 import type { TAttachment } from 'librechat-data-provider';
 import { useSearchResultsByTurn } from './useSearchResultsByTurn';
-import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
-import { mergeAttachments } from '~/utils/attachments';
+import { useMessagesHost } from '../../react/messages/host';
+import { mergeAttachments } from '../../core/attachments';
 
 export default function useAttachments({
   messageId,
@@ -11,11 +11,11 @@ export default function useAttachments({
 }: {
   messageId?: string;
   attachments?: TAttachment[];
-}) {
-  const messageAttachmentsMap = useAtomValue(messageAttachmentsMapAtom);
+}): { attachments: TAttachment[]; searchResults: { [key: string]: SearchResultData } } {
+  const streamed = useMessagesHost().useStreamedAttachments(messageId ?? '');
   const messageAttachments = useMemo<TAttachment[]>(
-    () => mergeAttachments(attachments, messageAttachmentsMap[messageId ?? '']),
-    [attachments, messageAttachmentsMap, messageId],
+    () => mergeAttachments(attachments, streamed),
+    [attachments, streamed],
   );
 
   const searchResults = useSearchResultsByTurn(messageAttachments);

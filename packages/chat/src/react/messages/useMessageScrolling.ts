@@ -2,7 +2,7 @@ import { useRef, useCallback, useEffect } from 'react';
 import { Constants } from 'librechat-data-provider';
 import type { Dispatch, MouseEvent, RefObject, SetStateAction } from 'react';
 import type { TMessage } from 'librechat-data-provider';
-import type { ThrottledFunction } from './useScrollToRef';
+import type { ThrottledFunction } from './throttle';
 import { reconcileMessageContentLayout } from './messageLayout';
 import useScrollToRef from './useScrollToRef';
 

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
-import { hasParallelLanes } from '@librechat/chat';
 import type { TMessage } from 'librechat-data-provider';
+import { hasParallelLanes } from '../../core';
 
 export type ContentMetadataResult = {
   /** Whether the message renders agent columns side by side */
@@ -8,7 +8,7 @@ export type ContentMetadataResult = {
 };
 
 /**
- * Hook to check if a message has parallel content — content the renderer lays
+ * Hook to check if a message has parallel content, content the renderer lays
  * out as columns. Widens the message row, so it asks the same question the
  * renderer does: a group id backed by a single agent is not parallel content.
  *

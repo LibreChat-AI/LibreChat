@@ -270,45 +270,8 @@ export type TGenButtonProps = {
   onClick: TOnClick;
 };
 
-/**
- * Stable context object passed from non-memo'd wrapper components (Message, MessageContent)
- * to memo'd inner components (MessageRender, ContentRender) via props.
- *
- * This avoids subscribing to ChatContext inside memo'd components, which would bypass React.memo
- * and cause unnecessary re-renders when `isSubmitting` changes during streaming.
- *
- * The `isSubmitting` property should use a getter backed by a ref so it returns the current
- * value at call-time (for callback guards) without being a reactive dependency.
- */
-export type TMessageChatContext = {
-  ask: TAskFunction;
-  index: number;
-  regenerate: (message: t.TMessage, options?: { addedConvo?: t.TConversation | null }) => void;
-  conversation: t.TConversation | null;
-  /** Getter backed by a ref, for reads at call time. Rendering reads the row's
-   *  `latestMessageId` prop, which its comparator gates on the row's relation. */
-  readonly latestMessageId: string | undefined;
-  /** Getter backed by a ref, for reads at call time (see `latestMessageId`). */
-  readonly latestMessageDepth: number | undefined;
-  handleContinue: (e: React.MouseEvent<HTMLButtonElement>) => void;
-  /** Resolved once per chat from `interface.feedback`; false until the config loads */
-  feedbackEnabled: boolean;
-  /** Should be a getter backed by a ref — reads current value without triggering re-renders */
-  readonly isSubmitting: boolean;
-};
-
-export type TMessageProps = {
-  conversation?: t.TConversation | null;
-  messageId?: string | null;
-  message?: t.TMessage;
-  messagesTree?: t.TMessage[];
-  currentEditId: string | number | null;
-  isSearchView?: boolean;
-  siblingIdx?: number;
-  siblingCount?: number;
-  setCurrentEditId?: React.Dispatch<React.SetStateAction<string | number | null>> | null;
-  setSiblingIdx?: ((value: number) => void | React.Dispatch<React.SetStateAction<number>>) | null;
-};
+export type { TMessageChatContext } from '@librechat/chat/react';
+export type { TMessageProps } from '@librechat/chat/react';
 
 export type TMessageIcon = MessageIconData;
 
