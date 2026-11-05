@@ -6,8 +6,6 @@ export const SPREADSHEET_LIMITS = {
   outputBytes: 8 * 1024 * 1024,
   cells: 250_000,
   sheets: 100,
-  timeoutMs: 5_000,
-  concurrent: 2,
   heapMb: 128,
 } as const;
 
