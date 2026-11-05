@@ -32,6 +32,8 @@ export type ContentRowProps = {
   assistant?: Assistant;
   /** Whether the sender's name comes from configuration rather than the model. */
   hasConfiguredSender: boolean;
+  /** Whether the pane's header shows a model selector, which names the conversation's agent. */
+  modelSelectorShown?: boolean;
   isLast: boolean;
   isLatestMessage: boolean;
   isSubmitting: boolean;
@@ -74,6 +76,7 @@ export default function ContentRow({
   agent,
   assistant,
   hasConfiguredSender,
+  modelSelectorShown = false,
   isLast,
   isLatestMessage,
   isSubmitting,
@@ -98,6 +101,14 @@ export default function ContentRow({
   const showThinking = host.useShowThinking();
   const autoExpandTools = host.useAutoExpandTools();
   const isCreatedByUser = message.isCreatedByUser === true;
+  /** The selector already names this agent. A turn by another agent keeps its name, and so does
+   *  a subagent's read-only thread, whose header has no selector. */
+  const selectorNamesAuthor =
+    modelSelectorShown &&
+    !isCreatedByUser &&
+    agent != null &&
+    agent.id === conversation?.agent_id &&
+    conversation.subagentThread == null;
 
   const author = useMemo(
     () => ({
@@ -120,6 +131,7 @@ export default function ContentRow({
         message.model,
         conversation?.model,
       )}
+      labelHidden={selectorNamesAuthor}
       timestamp={message.createdAt ?? message.clientTimestamp}
       ariaLabel={getMessageAriaLabel(message, localize)}
       headerPrefix={getHeaderPrefixForScreenReader(message, localize)}
