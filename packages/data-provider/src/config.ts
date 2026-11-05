@@ -3862,6 +3862,7 @@ export enum RerankerTypes {
   JINA = 'jina',
   COHERE = 'cohere',
   NONE = 'none',
+  CUSTOM = 'custom',
 }
 
 export enum SafeSearchTypes {
@@ -3909,6 +3910,10 @@ export const webSearchSchema = z.object({
   jinaApiUrl: z.string().optional().default('${JINA_API_URL}'),
   cohereApiKey: z.string().optional().default('${COHERE_API_KEY}'),
   cohereApiKeyPreview: apiKeyPreviewSchema,
+  customRerankerApiUrl: z.string().optional().default('${CUSTOM_RERANKER_API_URL}'),
+  customRerankerApiKey: z.string().optional().default('${CUSTOM_RERANKER_API_KEY}'),
+  customRerankerApiKeyPreview: apiKeyPreviewSchema,
+  customRerankerModel: z.string().optional().default('${CUSTOM_RERANKER_MODEL}'),
   searchProvider: z.nativeEnum(SearchProviders).optional(),
   scraperProvider: z.nativeEnum(ScraperProviders).optional(),
   rerankerType: z.nativeEnum(RerankerTypes).optional(),
