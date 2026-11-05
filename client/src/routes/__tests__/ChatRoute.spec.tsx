@@ -270,3 +270,30 @@ it('does not hide a restored chat behind unrelated catalog loading', () => {
   expect(screen.getByTestId('composer')).toBeVisible();
   expect(mockNewConversation).not.toHaveBeenCalled();
 });
+
+it('mounts the history subscriber on a cold route before configuration and the record settle', async () => {
+  mockConversation = null;
+  mockHasSetConversation.current = false;
+  mockStartupQuery = { data: undefined };
+  mockEndpointsQuery = { data: undefined, isLoading: true };
+  let resolveRecord!: (value: Partial<TConversation>) => void;
+  mockFetchConversation.mockReturnValue(
+    new Promise((resolve) => {
+      resolveRecord = resolve;
+    }),
+  );
+  setup(['/c/cold-history']);
+  const pane = screen.getByTestId('composer');
+  expect(pane).not.toBeVisible();
+  expect(mockFetchConversation).toHaveBeenCalledWith('cold-history');
+  await act(async () => resolveRecord({ conversationId: 'cold-history', model: 'saved-model' }));
+  expect(mockNewConversation).not.toHaveBeenCalled();
+  act(() => {
+    mockStartupQuery = { data: mockConfig };
+    mockEndpointsQuery = { data: mockConfig, isLoading: false };
+    mockSetConversation();
+  });
+  await waitFor(() => expect(pane).toBeVisible());
+  expect(screen.getByTestId('composer')).toBe(pane);
+  expect(mockConversation).toMatchObject({ conversationId: 'cold-history', model: 'saved-model' });
+});
