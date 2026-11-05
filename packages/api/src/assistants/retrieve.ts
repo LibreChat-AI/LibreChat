@@ -128,6 +128,7 @@ export function createAssistantRetriever({
         targets.map(async ({ model, group }) => {
           const clientReq = {
             ...req,
+            query: req.query,
             body: { ...req.body, ...(model === undefined ? {} : { model }) },
           };
           let assistant: Assistant;

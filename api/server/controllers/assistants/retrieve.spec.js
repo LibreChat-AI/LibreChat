@@ -86,6 +86,34 @@ describe('selected assistant retrieval', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
+  it.each(['assistants', 'azureAssistants'])(
+    'preserves the non-enumerable Express query when retrieving %s',
+    async (endpoint) => {
+      const req =
+        endpoint === 'azureAssistants' ? makeAzureRequest('public-second') : makeRequest();
+      req.baseUrl = `/api/${endpoint}/v2`;
+      const query = { ...req.query, version: 'test-version' };
+      Object.defineProperty(req, 'query', { value: query, writable: true, enumerable: false });
+      const { getOpenAIClient: routeClient } = require('./helpers');
+      const { initializeClient } = require(`~/server/services/Endpoints/${endpoint}`);
+      initializeClient.mockResolvedValue({ openai: { beta: { assistants: { retrieve } } } });
+      getOpenAIClient.mockImplementation(routeClient);
+
+      await handler(req, res);
+
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ id: assistant.id }));
+      expect(initializeClient).toHaveBeenCalledWith(
+        expect.objectContaining({
+          req: expect.objectContaining({ query }),
+          res,
+        }),
+      );
+      expect(Object.getOwnPropertyDescriptor(req, 'query').enumerable).toBe(false);
+      expect(req.body).toBeUndefined();
+    },
+  );
+
   it.each([
     { privateAssistants: true },
     { supportedIds: ['asst-other'] },
