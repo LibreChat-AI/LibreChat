@@ -1,12 +1,12 @@
 import { memo, useId } from 'react';
 import { ScrollText } from 'lucide-react';
-import { Button, Spinner, TooltipAnchor } from '@librechat/client';
-import { useLocalize } from '~/hooks';
+import { Button, Spinner, TooltipAnchor, useLocalize } from '@librechat/client';
+import type { NamedExoticComponent } from 'react';
 
 /** The usage popover sits at z-200, above the tooltip default (150). */
 const TOOLTIP_Z_INDEX = 250;
 
-interface CompactActionProps {
+export interface CompactActionProps {
   compact: () => void;
   canCompact: boolean;
   isCompacting: boolean;
@@ -17,7 +17,11 @@ interface CompactActionProps {
  * Presentational on purpose: the popover unmounts on hide, so the hook that
  * drives the submission lives in the always-mounted indicator above.
  */
-function CompactAction({ compact, canCompact, isCompacting }: CompactActionProps) {
+function CompactAction({
+  compact,
+  canCompact,
+  isCompacting,
+}: CompactActionProps): React.JSX.Element {
   const localize = useLocalize();
   const descriptionId = useId();
   const description = localize('com_ui_context_compact_info');
@@ -58,4 +62,6 @@ function CompactAction({ compact, canCompact, isCompacting }: CompactActionProps
   );
 }
 
-export default memo(CompactAction);
+const MemoCompactAction: NamedExoticComponent<CompactActionProps> = memo(CompactAction);
+
+export default MemoCompactAction;

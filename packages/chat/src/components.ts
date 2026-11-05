@@ -184,6 +184,16 @@ export { default as ReasoningControl } from './components/composer/bar/Reasoning
 export type { ReasoningControlProps } from './components/composer/bar/Reasoning';
 export { default as ThinkingControl } from './components/composer/bar/Thinking';
 export type { ThinkingControlProps } from './components/composer/bar/Thinking';
+export { default as ContextUsage } from './components/composer/usage/Usage';
+export type { UsageProps as ContextUsageProps } from './components/composer/usage/Usage';
+export { default as ContextGauge } from './components/composer/usage/Gauge';
+export type { GaugeProps as ContextGaugeProps, GaugeTone } from './components/composer/usage/Gauge';
+export { default as ContextUsagePopover } from './components/composer/usage/Popover';
+export type { UsagePopoverProps as ContextUsagePopoverProps } from './components/composer/usage/Popover';
+export { default as CompactAction } from './components/composer/usage/CompactAction';
+export type { CompactActionProps } from './components/composer/usage/CompactAction';
+export { default as ContextBreakdown } from './components/composer/usage/Breakdown';
+export type { BreakdownProps as ContextBreakdownProps } from './components/composer/usage/Breakdown';
 export { default as EscalateNowButton } from './components/composer/EscalateNowButton';
 export { default as DuringRunSendButton } from './components/composer/DuringRunSendButton';
 export { composerHintId } from './components/composer/bar/Hints';

@@ -1,12 +1,16 @@
 import { useId, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@librechat/client';
-import type { BranchUsage } from '~/utils/tokens';
-import type { CurrencyConfig } from '~/utils';
-import { formatTokens, formatCost, normalizeTokenCount, cn } from '~/utils';
-import { useLocalize } from '~/hooks';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  useLocalize,
+  cn,
+} from '@librechat/client';
+import type { BranchUsage, CurrencyConfig } from '../../../core/usage';
+import { formatTokens, formatCost, normalizeTokenCount } from '../../../core/usage';
 
-interface UsageProps {
+export interface UsageProps {
   title: string;
   subtitle?: string;
   usage?: BranchUsage;
@@ -28,7 +32,7 @@ export default function Usage({
   currency,
   subagentTokens = 0,
   testId,
-}: UsageProps) {
+}: UsageProps): React.JSX.Element {
   const localize = useLocalize();
   const headingId = useId();
   const [expanded, setExpanded] = useState(false);

@@ -116,11 +116,6 @@
       "count": 3
     }
   },
-  "client/src/components/Chat/Input/TokenUsage/Breakdown.tsx": {
-    "shadcn/no-restyle": {
-      "count": 10
-    }
-  },
   "client/src/components/Chat/Input/chip.ts": {
     "design/disabled-recipe": {
       "count": 1

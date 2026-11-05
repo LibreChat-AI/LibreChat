@@ -1,14 +1,18 @@
+/**
+ * @jest-environment jsdom
+ */
 import '@testing-library/jest-dom/extend-expect';
-import { Provider } from 'jotai';
+import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { Constants, Tools } from 'librechat-data-provider';
 import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
-import type { TokenUsageView } from '~/hooks/Chat/useTokenUsage';
-import Breakdown from './Breakdown';
+import type { TokenUsageView } from '../../../../core/usage';
+import { initEnglish } from '../../../../__fixtures__/i18n';
+import Breakdown from '../Breakdown';
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(async () => {
+  await initEnglish();
+});
 
 const view = {
   usedTokens: 10,
@@ -87,18 +91,31 @@ toolSplitView.snapshot!.breakdown.toolMessageTokens = 150;
 toolSplitView.snapshot!.breakdown.toolMessageTokenCounts = { read_file: 100 };
 toolSplitView.toolMessageTokenCounts = toolSplitView.snapshot!.breakdown.toolMessageTokenCounts;
 
-const renderBreakdown = (props: Partial<React.ComponentProps<typeof Breakdown>> = {}) =>
-  render(
-    <Provider>
-      <Breakdown view={view} showCost={false} {...props} />
-    </Provider>,
+type BreakdownProps = React.ComponentProps<typeof Breakdown>;
+type HostProps = Omit<BreakdownProps, 'expanded' | 'onExpandedChange'> & {
+  initialExpanded?: boolean;
+  onExpandedChange?: BreakdownProps['onExpandedChange'];
+};
+
+/** Stands in for the app container, which owns the expanded state. */
+function Host({ initialExpanded = false, onExpandedChange, ...props }: HostProps) {
+  const [expanded, setExpanded] = useState(initialExpanded);
+  return (
+    <Breakdown
+      {...props}
+      expanded={expanded}
+      onExpandedChange={(next) => {
+        setExpanded(next);
+        onExpandedChange?.(next);
+      }}
+    />
   );
+}
+
+const renderBreakdown = (props: Partial<HostProps> = {}) =>
+  render(<Host view={view} showCost={false} {...props} />);
 
 const toggle = () => screen.getByTestId('context-breakdown-toggle');
-
-beforeEach(() => {
-  localStorage.clear();
-});
 
 describe('TokenUsage Breakdown', () => {
   describe('collapse', () => {
@@ -119,12 +136,19 @@ describe('TokenUsage Breakdown', () => {
       expect(screen.getByTestId('token-usage-totals')).toBeInTheDocument();
     });
 
-    it('persists the expanded choice across mounts', async () => {
-      const { unmount } = renderBreakdown();
-      await userEvent.click(toggle());
-      unmount();
+    it('reports the expanded choice to the host', async () => {
+      const onExpandedChange = jest.fn();
+      renderBreakdown({ onExpandedChange });
 
-      renderBreakdown();
+      await userEvent.click(toggle());
+      expect(onExpandedChange).toHaveBeenLastCalledWith(true);
+
+      await userEvent.click(toggle());
+      expect(onExpandedChange).toHaveBeenLastCalledWith(false);
+    });
+
+    it('renders expanded when the host starts it expanded', () => {
+      renderBreakdown({ initialExpanded: true });
 
       expect(toggle()).toHaveAttribute('aria-expanded', 'true');
       expect(screen.getByTestId('token-usage-totals')).toBeInTheDocument();
@@ -178,9 +202,8 @@ describe('TokenUsage Breakdown', () => {
       const rowFor = (label: string) =>
         within(breakdown).getByText(label).parentElement as HTMLElement;
 
-      const system = rowFor('com_ui_context_tools_system').firstElementChild as HTMLElement;
-      const deferred = rowFor('com_ui_context_tools_system_deferred')
-        .firstElementChild as HTMLElement;
+      const system = rowFor('System tools').firstElementChild as HTMLElement;
+      const deferred = rowFor('System tools (deferred)').firstElementChild as HTMLElement;
 
       expect(system).toHaveClass('bg-series-4');
       expect(deferred).toHaveClass('bg-series-4');
@@ -191,9 +214,8 @@ describe('TokenUsage Breakdown', () => {
       renderBreakdown({ view: snapshotView });
       await userEvent.click(toggle());
 
-      const messages = within(screen.getByTestId('context-breakdown')).getByText(
-        'com_ui_context_messages',
-      ).parentElement?.firstElementChild as HTMLElement;
+      const messages = within(screen.getByTestId('context-breakdown')).getByText('Messages')
+        .parentElement?.firstElementChild as HTMLElement;
 
       expect(messages).toHaveClass('bg-series-1');
       expect(messages.className).not.toContain('ring-series-1');
@@ -209,12 +231,12 @@ describe('TokenUsage Breakdown', () => {
           .getByText(label)
           .closest('div') as HTMLElement;
 
-      fireEvent.pointerEnter(rowFor('com_ui_context_messages'));
+      fireEvent.pointerEnter(rowFor('Messages'));
 
       expect(segments[0].className).not.toContain('opacity-40');
       segments.slice(1).forEach((segment) => expect(segment).toHaveClass('opacity-40'));
 
-      fireEvent.pointerLeave(rowFor('com_ui_context_messages'));
+      fireEvent.pointerLeave(rowFor('Messages'));
 
       segments.forEach((segment) => expect(segment.className).not.toContain('opacity-40'));
     });
@@ -229,7 +251,7 @@ describe('TokenUsage Breakdown', () => {
           .getByText(label)
           .closest('div') as HTMLElement;
 
-      fireEvent.pointerEnter(rowFor('com_ui_context_free'));
+      fireEvent.pointerEnter(rowFor('Free space'));
 
       segments.forEach((segment) => expect(segment).toHaveClass('opacity-40'));
     });
@@ -247,26 +269,18 @@ describe('TokenUsage Breakdown', () => {
           .getByText(label)
           .closest('div') as HTMLElement;
 
-      fireEvent.pointerEnter(rowFor('com_ui_context_subagents'));
+      fireEvent.pointerEnter(rowFor('Subagents'));
       segments().forEach((segment, index) =>
         expect(segment.classList.contains('opacity-40')).toBe(index !== 7),
       );
 
-      rerender(
-        <Provider>
-          <Breakdown view={noSubagents} showCost={false} />
-        </Provider>,
-      );
+      rerender(<Host view={noSubagents} showCost={false} />);
 
       segments().forEach((segment) => expect(segment.className).not.toContain('opacity-40'));
 
       /** The hover state is cleared, not masked: the row reappearing on a later
        *  live update must not bring the stale dimming back. */
-      rerender(
-        <Provider>
-          <Breakdown view={snapshotView} showCost={false} />
-        </Provider>,
-      );
+      rerender(<Host view={snapshotView} showCost={false} />);
 
       segments().forEach((segment) => expect(segment.className).not.toContain('opacity-40'));
     });
@@ -301,11 +315,11 @@ describe('TokenUsage Breakdown', () => {
         .reduce((sum, child) => sum + Number(child.lastElementChild?.textContent ?? 0), 0);
 
       /** 300 input + 200 output + 100 estimated = 600 used. The tool share is a
-       *  subset of those rows, so it may only appear as an indented subtotal —
+       *  subset of those rows, so it may only appear as an indented subtotal:
        *  as a peer row the visible rows would claim 750 of a 600-token window. */
       expect(peerTotal).toBe(600);
 
-      const toolRow = within(estimate).getByText('com_ui_context_tool_calls').parentElement
+      const toolRow = within(estimate).getByText('Tool calls').parentElement
         ?.parentElement as HTMLElement;
       expect(toolRow.parentElement?.className).toContain('ps-6');
       expect(toolRow.textContent).toContain('150');
@@ -319,8 +333,8 @@ describe('TokenUsage Breakdown', () => {
         within(breakdown).getByText(label).parentElement?.parentElement as HTMLElement;
 
       /** 1000 used − 400 instructions − 50 summary − 150 tool calls = 400 */
-      expect(rowFor('com_ui_context_messages').textContent).toContain('400');
-      expect(rowFor('com_ui_context_tool_calls').textContent).toContain('150');
+      expect(rowFor('Messages').textContent).toContain('400');
+      expect(rowFor('Tool calls').textContent).toContain('150');
     });
 
     it('widens the tool-call row for retained results without exceeding used tokens', async () => {
@@ -338,16 +352,15 @@ describe('TokenUsage Breakdown', () => {
 
       /** 1075 used − 400 instructions − 50 summary − 225 tool calls = 400
        *  messages: the 75 retained tokens sit outside the pre-invoke 550 total. */
-      expect(rowFor('com_ui_context_messages').textContent).toContain('400');
-      expect(rowFor('com_ui_context_tool_calls').textContent).toContain('225');
+      expect(rowFor('Messages').textContent).toContain('400');
+      expect(rowFor('Tool calls').textContent).toContain('225');
 
       /** The free track is the only visible peer outside the used context; all
        *  other peer rows must still add up exactly to the meter total. */
       const peerTotal = Array.from(breakdown.children)
         .filter(
           (child) =>
-            !child.className.includes('ps-6') &&
-            !child.textContent?.includes('com_ui_context_free'),
+            !child.className.includes('ps-6') && !child.textContent?.includes('Free space'),
         )
         .reduce(
           (sum, child) => sum + Number.parseInt(child.lastElementChild?.textContent ?? '0', 10),
@@ -371,10 +384,9 @@ describe('TokenUsage Breakdown', () => {
 
       renderBreakdown({ view: manyTools });
       await userEvent.click(toggle());
-      await userEvent.click(screen.getByRole('button', { name: /com_ui_context_tool_calls/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Tool calls/ }));
 
-      const details = screen.getByText('com_ui_context_tool_breakdown')
-        .parentElement as HTMLElement;
+      const details = screen.getByText('By tool').parentElement as HTMLElement;
       for (const name of [
         'alpha',
         'beta',
@@ -399,10 +411,9 @@ describe('TokenUsage Breakdown', () => {
       renderBreakdown({ view: knownZero });
       await userEvent.click(toggle());
       const breakdown = screen.getByTestId('context-breakdown');
-      expect(within(breakdown).getByText('com_ui_context_tool_calls')).toBeInTheDocument();
+      expect(within(breakdown).getByText('Tool calls')).toBeInTheDocument();
       expect(
-        within(breakdown).getByText('com_ui_context_tool_calls').parentElement?.parentElement
-          ?.textContent,
+        within(breakdown).getByText('Tool calls').parentElement?.parentElement?.textContent,
       ).toContain('0');
     });
 
@@ -410,16 +421,16 @@ describe('TokenUsage Breakdown', () => {
       renderBreakdown({ view: toolSplitView });
       await userEvent.click(toggle());
 
-      const toolButton = screen.getByRole('button', { name: /com_ui_context_tool_calls/ });
+      const toolButton = screen.getByRole('button', { name: /Tool calls/ });
       expect(toolButton).toHaveAttribute('aria-expanded', 'false');
 
       toolButton.focus();
       await userEvent.keyboard('{Enter}');
 
       expect(toolButton).toHaveAttribute('aria-expanded', 'true');
-      expect(screen.getByText('com_ui_context_tool_breakdown')).toBeInTheDocument();
+      expect(screen.getByText('By tool')).toBeInTheDocument();
       expect(document.getElementById(toolButton.getAttribute('aria-controls')!)).toContainElement(
-        screen.getByText('com_ui_context_tool_breakdown'),
+        screen.getByText('By tool'),
       );
       await userEvent.keyboard(' ');
       expect(toolButton).toHaveAttribute('aria-expanded', 'false');
@@ -430,10 +441,9 @@ describe('TokenUsage Breakdown', () => {
       await userEvent.click(toggle());
 
       const breakdown = screen.getByTestId('context-breakdown');
-      expect(within(breakdown).queryByText('com_ui_context_tool_calls')).toBeNull();
+      expect(within(breakdown).queryByText('Tool calls')).toBeNull();
       expect(
-        within(breakdown).getByText('com_ui_context_messages').parentElement?.parentElement
-          ?.textContent,
+        within(breakdown).getByText('Messages').parentElement?.parentElement?.textContent,
       ).toContain('550');
     });
 
@@ -447,14 +457,16 @@ describe('TokenUsage Breakdown', () => {
       await userEvent.click(toggle());
 
       const breakdown = screen.getByTestId('context-breakdown');
-      const cachedRow = within(breakdown).getByText('com_ui_context_cached').parentElement
+      const cachedRow = within(breakdown).getByText('Cached').parentElement
         ?.parentElement as HTMLElement;
 
       /** Reconciliation already counted the cached prompt inside the segments
-       *  above, so these may only appear indented — as peer rows a fully cached
+       *  above, so these may only appear indented: as peer rows a fully cached
        *  prompt would show its tokens twice and the visible rows would sum past
        *  the meter. */
-      expect(within(breakdown).getByText('com_ui_context_cache_last_call')).toBeInTheDocument();
+      expect(
+        within(breakdown).getByText('Cached input in the context snapshot'),
+      ).toBeInTheDocument();
       expect(cachedRow.parentElement?.className).toContain('ps-6');
       expect(cachedRow.textContent).toContain('30');
       /** The share column is keyed to the window, like every row above: without
@@ -464,9 +476,7 @@ describe('TokenUsage Breakdown', () => {
       const peers = Array.from(breakdown.children).filter(
         (child) => !child.className.includes('ps-6'),
       );
-      expect(peers.some((peer) => peer.textContent?.includes('com_ui_context_cache_write'))).toBe(
-        false,
-      );
+      expect(peers.some((peer) => peer.textContent?.includes('Cache write'))).toBe(false);
       expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50');
     });
 
@@ -478,8 +488,8 @@ describe('TokenUsage Breakdown', () => {
       await userEvent.click(toggle());
       await userEvent.click(screen.getByTestId('context-insights-toggle'));
       const hints = await screen.findByTestId('context-hints');
-      expect(hints.textContent).toContain('com_ui_context_runway');
-      expect(hints.textContent).not.toContain('com_ui_context_compaction');
+      expect(hints.textContent).toContain('≈2 more turns at this growth');
+      expect(hints.textContent).not.toContain('Summarizing now could reclaim');
     });
 
     it('warns under pressure inline, with insights behind the ⓘ button', async () => {
@@ -497,15 +507,15 @@ describe('TokenUsage Breakdown', () => {
       await userEvent.click(toggle());
 
       /** Pressure warns inline; insights stay hidden until the ⓘ is hovered */
-      expect(screen.getByText('com_ui_context_pressure_warn')).toBeInTheDocument();
+      expect(screen.getByText('Context window is filling up')).toBeInTheDocument();
       expect(screen.queryByTestId('context-hints')).toBeNull();
 
       const info = screen.getByTestId('context-insights-toggle');
       await userEvent.click(info);
       const hints = await screen.findByTestId('context-hints');
-      expect(hints.textContent).toContain('com_ui_context_largest_tool');
-      expect(hints.textContent).toContain('com_ui_context_runway');
-      expect(hints.textContent).toContain('com_ui_context_compaction');
+      expect(hints.textContent).toContain('Largest tool: grep (150)');
+      expect(hints.textContent).toContain('≈2 more turns at this growth');
+      expect(hints.textContent).toContain('Summarizing now could reclaim ≈90K tokens');
 
       await userEvent.keyboard('{Escape}');
       await waitFor(() => expect(screen.queryByTestId('context-hints')).toBeNull());
@@ -518,7 +528,7 @@ describe('TokenUsage Breakdown', () => {
       renderBreakdown({ view: critical });
       await userEvent.click(toggle());
 
-      expect(screen.getByText('com_ui_context_pressure_danger')).toBeInTheDocument();
+      expect(screen.getByText('Context window is almost full')).toBeInTheDocument();
     });
   });
 
@@ -529,7 +539,7 @@ describe('TokenUsage Breakdown', () => {
 
       expect(
         within(screen.getByTestId('token-usage-totals')).getByRole('heading', {
-          name: 'com_ui_context_totals',
+          name: 'Totals',
         }),
       ).toBeInTheDocument();
     });
@@ -555,7 +565,7 @@ describe('TokenUsage Breakdown', () => {
       await userEvent.click(toggle());
 
       const totals = within(screen.getByTestId('token-usage-totals'));
-      expect(totals.getByText('com_ui_context_subagents_all').nextElementSibling).toHaveTextContent(
+      expect(totals.getByText('Subagents (all branches)').nextElementSibling).toHaveTextContent(
         '1K',
       );
     });
@@ -596,7 +606,7 @@ describe('TokenUsage Breakdown', () => {
         if (showCost) {
           expect(
             within(screen.getByTestId('token-usage-all-branches')).getByTestId('usage-cost'),
-          ).toHaveTextContent('com_ui_context_cost_total');
+          ).toHaveTextContent('All branches');
         } else {
           expect(screen.queryByTestId('usage-cost')).not.toBeInTheDocument();
         }
@@ -639,25 +649,17 @@ describe('TokenUsage Breakdown', () => {
       await userEvent.click(toggle());
 
       const last = within(screen.getByTestId('token-usage-last-turn'));
-      expect(last.getByRole('heading', { name: 'com_ui_context_last_turn' })).toBeInTheDocument();
-      expect(last.getByText('com_ui_cache_read').parentElement?.parentElement).toHaveTextContent(
-        '700',
-      );
-      expect(last.getByText('com_ui_cache_write').parentElement?.parentElement).toHaveTextContent(
-        '90',
-      );
+      expect(last.getByRole('heading', { name: 'Last turn' })).toBeInTheDocument();
+      expect(last.getByText('Cache read').parentElement?.parentElement).toHaveTextContent('700');
+      expect(last.getByText('Cache write').parentElement?.parentElement).toHaveTextContent('90');
       const totals = within(screen.getByTestId('token-usage-totals'));
-      expect(totals.getByText('com_ui_context_this_branch')).toBeInTheDocument();
-      expect(totals.getByText('com_ui_cache_read').parentElement?.parentElement).toHaveTextContent(
-        '800',
-      );
+      expect(totals.getByText('This branch')).toBeInTheDocument();
+      expect(totals.getByText('Cache read').parentElement?.parentElement).toHaveTextContent('800');
       const all = within(screen.getByTestId('token-usage-all-branches'));
-      expect(all.getByText('com_ui_cache_read').parentElement?.parentElement).toHaveTextContent(
-        '900',
-      );
-      expect(last.getByTestId('usage-cost')).toHaveTextContent('com_ui_context_cost_last_turn');
-      expect(totals.getByTestId('usage-cost')).toHaveTextContent('com_ui_context_cost_branch');
-      expect(all.getByTestId('usage-cost')).toHaveTextContent('com_ui_context_cost_total');
+      expect(all.getByText('Cache read').parentElement?.parentElement).toHaveTextContent('900');
+      expect(last.getByTestId('usage-cost')).toHaveTextContent('Cost (last turn)');
+      expect(totals.getByTestId('usage-cost')).toHaveTextContent('Cost (this branch)');
+      expect(all.getByTestId('usage-cost')).toHaveTextContent('All branches');
     });
 
     it('exposes all-branches token differences without requiring cost coverage', async () => {
@@ -681,7 +683,7 @@ describe('TokenUsage Breakdown', () => {
       expect(screen.getByTestId('token-usage-all-branches')).toHaveTextContent('25');
       expect(
         within(screen.getByTestId('token-usage-last-turn')).getByTestId('usage-cost'),
-      ).toHaveTextContent('com_ui_context_cost_last_turn');
+      ).toHaveTextContent('Cost (last turn)');
       expect(
         within(screen.getByTestId('token-usage-totals')).queryByTestId('usage-cost'),
       ).not.toBeInTheDocument();
@@ -689,21 +691,17 @@ describe('TokenUsage Breakdown', () => {
 
     it('shows waiting and unavailable states without presenting old totals as the current turn', async () => {
       const { rerender } = render(
-        <Provider>
-          <Breakdown view={{ ...view, lastTurnUsage: undefined, turnInProgress: true }} showCost />
-        </Provider>,
+        <Host view={{ ...view, lastTurnUsage: undefined, turnInProgress: true }} showCost />,
       );
       await userEvent.click(toggle());
       expect(screen.getByTestId('token-usage-last-turn')).toHaveTextContent(
-        'com_ui_context_waiting_usage',
+        'Waiting for model usage...',
       );
       rerender(
-        <Provider>
-          <Breakdown view={{ ...view, lastTurnUsage: undefined, turnInProgress: false }} showCost />
-        </Provider>,
+        <Host view={{ ...view, lastTurnUsage: undefined, turnInProgress: false }} showCost />,
       );
       expect(screen.getByTestId('token-usage-last-turn')).toHaveTextContent(
-        'com_ui_context_unavailable_usage',
+        'Usage not available for this turn',
       );
     });
 
@@ -725,11 +723,11 @@ describe('TokenUsage Breakdown', () => {
       });
       await userEvent.click(toggle());
       expect(screen.getByTestId('token-usage-last-turn')).toHaveTextContent(
-        'com_ui_context_current_turn',
+        'Current turn (so far)',
       );
       expect(
         within(screen.getByTestId('token-usage-last-turn')).getByTestId('usage-cost'),
-      ).toHaveTextContent('com_ui_context_cost_current_turn');
+      ).toHaveTextContent('Cost (current turn so far)');
     });
 
     it('keeps a known zero cost and hides a missing cost', async () => {
@@ -749,12 +747,10 @@ describe('TokenUsage Breakdown', () => {
         showCost: true,
       });
       await userEvent.click(toggle());
-      expect(screen.getByTestId('token-usage-last-turn')).toHaveTextContent(
-        'com_ui_context_last_turn',
-      );
+      expect(screen.getByTestId('token-usage-last-turn')).toHaveTextContent('Last turn');
       expect(
         within(screen.getByTestId('token-usage-last-turn')).getByTestId('usage-cost'),
-      ).toHaveTextContent('com_ui_context_cost_last_turn');
+      ).toHaveTextContent('Cost (last turn)');
       expect(
         within(screen.getByTestId('token-usage-totals')).queryByTestId('usage-cost'),
       ).not.toBeInTheDocument();
@@ -768,7 +764,7 @@ describe('TokenUsage Breakdown', () => {
       renderBreakdown({ langfuseSessionUrl: url });
       await userEvent.click(toggle());
 
-      expect(screen.getByRole('link', { name: 'com_ui_langfuse_view_session' })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: 'View session in Langfuse' })).toHaveAttribute(
         'href',
         url,
       );
