@@ -1323,14 +1323,11 @@ endpoints:
       baseURL: 'https://api.groq.com/openai/v1/'
       models:
         default:
-          - 'llama3-70b-8192'
-          - 'llama3-8b-8192'
-          - 'llama2-70b-4096'
-          - 'mixtral-8x7b-32768'
-          - 'gemma-7b-it'
+          - 'openai/gpt-oss-120b'
+          - 'openai/gpt-oss-20b'
         fetch: false
       titleConvo: true
-      titleModel: 'mixtral-8x7b-32768'
+      titleModel: 'openai/gpt-oss-120b'
       modelDisplayLabel: 'groq'
 
     # Mistral AI Example
@@ -1455,13 +1452,13 @@ endpoints:
 #       #   agent_ids: []
 #
 #     # Example 2: Nested under a custom endpoint (grouped with groq endpoint)
-#     - name: "llama3-70b-8192"
-#       label: "Llama 3 70B"
+#     - name: "gpt-oss-120b"
+#       label: "GPT-OSS 120B"
 #       description: "Fastest inference available - great for quick responses"
 #       group: "groq"  # String value matching your custom endpoint name from endpoints.custom
 #       preset:
 #         endpoint: "groq"
-#         model: "llama3-70b-8192"
+#         model: "openai/gpt-oss-120b"
 #
 #     # Example 3: Custom group with icon (creates a separate collapsible section)
 #     - name: "coding-assistant"
@@ -1492,7 +1489,7 @@ endpoints:
 #       groupIcon: "groq"  # Uses the built-in Groq icon
 #       preset:
 #         endpoint: "groq"
-#         model: "llama3-8b-8192"
+#         model: "openai/gpt-oss-20b"
 #
 #     # Example 5: Standalone (no group - appears at top level)
 #     - name: "general-assistant"
