@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { cleanupAgent } from './agents.helpers';
-import { withMongo } from './db';
+import { withMongo, seedConversations, seedMessages } from './db';
 import { getPrimaryE2EUser } from '../../setup/users.mock';
 import {
   NEW_CHAT_PATH,
@@ -182,5 +182,60 @@ test('selecting a model waits for its catalog and closes the picker before compo
     await expect(page.getByRole('dialog', { name: 'Attach and tools' })).toBeVisible();
   } finally {
     await catalogs.dispose();
+  }
+});
+
+test('the endpoint selection helper commits model specs without looking for a submenu', async ({
+  page,
+}) => {
+  await page.goto(`${NEW_CHAT_PATH}?spec=e2e-soft-default`);
+  for (const endpoint of [
+    { label: 'Mock Provider A', model: 'mock-model-a' },
+    { label: 'Mock Provider B', model: 'mock-model-b' },
+  ]) {
+    await selectMockEndpoint(page, endpoint);
+    await expect(trigger(page)).toContainText(endpoint.label);
+    await expect(trigger(page)).toHaveAttribute('aria-expanded', 'false');
+  }
+});
+
+test('cold history fetch starts while configuration is pending, without exposing the composer', async ({
+  page,
+}) => {
+  const conversationId = '17692000-0000-4000-8000-000000000010';
+  const marker = 'History started before configuration';
+  await seedConversations(getPrimaryE2EUser().email, [
+    { conversationId, title: marker, updatedAt: new Date() },
+  ]);
+  await seedMessages(getPrimaryE2EUser().email, conversationId, [
+    {
+      messageId: '17692000-0000-4000-8000-000000000011',
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: marker,
+      isCreatedByUser: false,
+      sender: 'Assistant',
+    },
+  ]);
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/api/config', async (route) => {
+    await pending;
+    await route.continue();
+  });
+  try {
+    const history = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === `/api/messages/${conversationId}`,
+    );
+    await page.goto(`/c/${conversationId}`, { waitUntil: 'domcontentloaded' });
+    expect((await history).ok()).toBeTruthy();
+    await expect(page.getByRole('textbox', { name: 'Message input' })).toBeHidden();
+    release();
+    await expect(page.getByText(marker, { exact: true }).last()).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
   }
 });

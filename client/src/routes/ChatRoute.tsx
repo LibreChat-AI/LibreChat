@@ -61,7 +61,8 @@ export default function ChatRoute() {
   const { hasSetConversation, conversation } = store.useCreateConversationAtom(index);
   const [routeState, setRouteState] = useState({
     conversationId,
-    pending: conversation != null && conversation.conversationId !== conversationId,
+    pending:
+      conversationId !== Constants.NEW_CONVO && conversation?.conversationId !== conversationId,
   });
   /** History navigation changes the route without running the sidebar's conversation setter.
    * Only a route change may request reconciliation: a newly submitted conversation can acquire
@@ -319,10 +320,6 @@ export default function ChatRoute() {
 
   // if not a conversation
   if (conversation?.conversationId === Constants.SEARCH) {
-    return null;
-  }
-  // if conversationId not match
-  if (conversationId !== Constants.NEW_CONVO && !conversation) {
     return null;
   }
   // if conversationId is null
