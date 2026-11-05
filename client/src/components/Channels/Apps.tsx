@@ -6,6 +6,7 @@ import {
   MutationKeys,
   QueryKeys,
   SLACK_CHANNEL_BOT_EVENTS,
+  SLACK_CHANNEL_LIFECYCLE_EVENTS,
   SLACK_CHANNEL_BOT_SCOPES,
 } from 'librechat-data-provider';
 import type { ConfigureSlackApp, SlackAppRegistration } from 'librechat-data-provider';
@@ -195,7 +196,10 @@ export default function Apps({
           },
           settings: {
             socket_mode_enabled: false,
-            event_subscriptions: { bot_events: [...SLACK_CHANNEL_BOT_EVENTS], request_url: events },
+            event_subscriptions: {
+              bot_events: [...SLACK_CHANNEL_BOT_EVENTS, ...SLACK_CHANNEL_LIFECYCLE_EVENTS],
+              request_url: events,
+            },
             interactivity: { is_enabled: true, request_url: interactions },
             org_deploy_enabled: false,
             token_rotation_enabled: false,

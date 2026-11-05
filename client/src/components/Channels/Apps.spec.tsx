@@ -1,6 +1,6 @@
 import React from 'react';
 import userEvent from '@testing-library/user-event';
-import { dataService } from 'librechat-data-provider';
+import { dataService, request } from 'librechat-data-provider';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Apps from './Apps';
@@ -65,6 +65,10 @@ test('shows organization-specific callback URLs and installs the selected app', 
   expect(screen.getByLabelText('com_ui_slack_apps_interactions')).toHaveValue(
     'https://gateway.example/slack/interactions/org.a/A123',
   );
+  const manifest = screen.getByLabelText('com_ui_channels_manifest') as HTMLTextAreaElement;
+  expect(JSON.parse(manifest.value).settings.event_subscriptions.bot_events).toEqual(
+    expect.arrayContaining(['app_uninstalled', 'tokens_revoked']),
+  );
   await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
   expect(install).toHaveBeenCalledWith('A123');
 });
@@ -108,4 +112,40 @@ test('requires confirmation and handles an in-use app without exposing remote de
   await screen.findByRole('alert');
   await waitFor(() => expect(dataService.removeSlackApp).toHaveBeenCalledWith('A123', 'r1'));
   expect(screen.queryByText('secret-detail')).not.toBeInTheDocument();
+});
+
+test('failed registration retains no submitted secrets in mutation variables or errors', async () => {
+  jest
+    .spyOn(dataService, 'configureSlackApp')
+    .mockImplementation(
+      jest.requireActual('librechat-data-provider').dataService.configureSlackApp,
+    );
+  jest.spyOn(request, 'put').mockRejectedValue(
+    Object.assign(new Error('private-provider-error'), {
+      isAxiosError: true,
+      config: {
+        data: JSON.stringify({ clientSecret: 'private-client', signingSecret: 'private-signing' }),
+      },
+      response: { data: { error: { code: 'transactions_unavailable' } } },
+    }),
+  );
+  const user = userEvent.setup();
+  const { client } = page();
+  await user.click(await screen.findByRole('button', { name: 'com_ui_slack_apps_update' }));
+  await user.type(screen.getByLabelText('com_ui_slack_apps_client_secret'), 'private-client');
+  await user.type(screen.getByLabelText('com_ui_slack_apps_signing_secret'), 'private-signing');
+  await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+  await screen.findByRole('alert');
+  const mutations = client.getMutationCache().getAll();
+  expect(mutations).toHaveLength(1);
+  const error = mutations[0].state.error as Error;
+  expect(error).toMatchObject({ code: 'transactions_unavailable' });
+  expect(
+    JSON.stringify({
+      state: mutations[0].state,
+      error: Object.fromEntries(
+        Object.getOwnPropertyNames(error).map((key) => [key, error[key as keyof Error]]),
+      ),
+    }),
+  ).not.toContain('private-');
 });

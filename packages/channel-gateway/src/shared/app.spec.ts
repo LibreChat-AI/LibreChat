@@ -7,11 +7,11 @@ import {
 } from 'librechat-data-provider';
 import type { SharedSlackGatewayBootstrap, ChannelServiceBundle } from 'librechat-data-provider';
 import type { AddressInfo } from 'node:net';
+import { SlackClient, SlackWriteError } from '../slack';
 import { WorkspaceClient } from './client';
 import { slackRouteLookup } from './route';
 import { loadBootstrap } from '../config';
 import { SharedGatewayApp } from './app';
-import { SlackClient } from '../slack';
 
 const settings: SharedSlackGatewayBootstrap = {
   gateway: channelGatewayWirePolicySchema.parse({
@@ -42,7 +42,7 @@ function fixture() {
   });
   if (bootstrap.mode !== 'shared') throw new Error('Expected shared config');
   const calls: Array<{ path: string; tenant: string | null; body: Record<string, unknown> }> = [];
-  let unmapped = false;
+  let unmapped: 'unmapped' | 'retired_thread' | undefined;
   let routingGate: Promise<void> | undefined;
   const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(
     async (input, init) => {
@@ -62,7 +62,7 @@ function fixture() {
         const suffix = body.teamId === 'T1' ? 'a' : 'b';
         if (unmapped)
           return json({
-            kind: 'unmapped',
+            kind: unmapped,
             workspace: {
               tenantId: 'org.a',
               workspaceId: 'workspace-a',
@@ -118,8 +118,8 @@ function fixture() {
     calls,
     transport,
     log,
-    setUnmapped: () => {
-      unmapped = true;
+    setUnmapped: (kind: 'unmapped' | 'retired_thread' = 'unmapped') => {
+      unmapped = kind;
     },
     setGate: (gate: Promise<void>) => {
       routingGate = gate;
@@ -230,6 +230,18 @@ describe('shared signed Slack HTTP ingress', () => {
     );
     expect(current.calls.some(({ path }) => path.endsWith('/runs'))).toBe(false);
   });
+  it.each(['unmapped', 'retired_thread'] as const)(
+    'acknowledges permanently rejected %s notices but retries uncertain or temporary failures',
+    async (kind) => {
+      current.setUnmapped(kind);
+      const notice = jest.spyOn(SlackClient.prototype, 'ephemeral');
+      for (const outcome of ['permanent', 'retryable', 'unknown'] as const) {
+        notice.mockRejectedValueOnce(new SlackWriteError(outcome));
+        expect((await send(envelope())).status).toBe(outcome === 'permanent' ? 200 : 503);
+      }
+      expect(current.calls.some(({ path }) => path.endsWith('/runs'))).toBe(false);
+    },
+  );
   it.each(['file', 'file_comment', 'invalid'])(
     'acknowledges unsupported %s reactions without routing or admission',
     async (type) => {

@@ -308,9 +308,12 @@ export function createSlackWorkspaceService(deps: {
     async disconnect(
       principal: SlackWorkspacePrincipal,
       workspaceId: string,
+      expectedRevision: string,
     ): Promise<Result<boolean>> {
       if (!inScope(principal) || !(await deps.canManage(principal))) return failure('forbidden');
-      return { ok: true, value: await deps.storage.disconnect(workspaceId) };
+      return (await deps.storage.disconnect(workspaceId, expectedRevision))
+        ? { ok: true, value: true }
+        : failure('workspace_changed');
     },
   };
 }

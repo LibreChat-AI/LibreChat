@@ -75,6 +75,7 @@ for (const theme of ['light', 'dark']) {
       if (route.request().method() === 'DELETE') {
         if (url.pathname.includes('/attempts/')) cancelled++;
         else {
+          expect(route.request().postDataJSON()).toEqual({ revision: 'installed' });
           disconnected++;
           workspaces = workspaces.map((workspace) => ({ ...workspace, status: 'disconnected' }));
         }

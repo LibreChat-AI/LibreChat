@@ -27,6 +27,12 @@ describe('workspace routing and live channel authority', () => {
   let sequence = 0;
   const scoped = <T>(fn: () => Promise<T>, tenantId = 'org-a') =>
     tenantStorage.run({ tenantId }, fn);
+  const appCredentials = {
+    appId: 'A123',
+    clientId: '123.456',
+    encryptedClientSecret: 'encrypted-client-secret',
+    encryptedSigningSecret: 'encrypted-signing-secret',
+  };
 
   async function install(token = 'encrypted-bot-token') {
     const stateHash = `attempt-${++sequence}`;
@@ -95,8 +101,8 @@ describe('workspace routing and live channel authority', () => {
     dispatch = createSlackDispatchStorage(db);
     await dispatch.ready();
   }, 60_000);
-  beforeEach(async () =>
-    runAsSystem(async () => {
+  beforeEach(async () => {
+    await runAsSystem(async () => {
       for (const name of [
         'AgentChannel',
         'SlackWorkspace',
@@ -111,8 +117,12 @@ describe('workspace routing and live channel authority', () => {
         'ChannelLane',
       ])
         await db.models[name]?.deleteMany({});
-    }),
-  );
+    });
+    await scoped(async () => {
+      if (!(await installations.configureApp(appCredentials, 'admin')))
+        throw new Error('Could not register fixture app');
+    });
+  });
   afterAll(async () => {
     await db.disconnect();
     await mongo?.stop();
@@ -157,6 +167,9 @@ describe('workspace routing and live channel authority', () => {
       expect((await channels.getActiveAgentChannel('binding-a'))?.encryptedBotToken).toBe(
         'encrypted-bot-token',
       );
+      expect((await channels.getActiveAgentChannel('binding-a'))?.encryptedSigningSecret).toBe(
+        'encrypted-signing-secret',
+      );
       expect(await install('replacement-token')).toBe(workspaceId);
       expect((await channels.getActiveAgentChannel('binding-a'))?.encryptedBotToken).toBe(
         'replacement-token',
@@ -164,6 +177,32 @@ describe('workspace routing and live channel authority', () => {
       expect((await channels.getAgentChannelMetadata('binding-a'))?.revision).toBe(
         'consent-binding-a',
       );
+    }));
+
+  it('uses current organization signing credentials and refuses execution when they are missing', async () =>
+    scoped(async () => {
+      const workspaceId = await install();
+      await binding(workspaceId);
+      const app = await installations.app('A123');
+      expect(
+        await installations.configureApp(
+          { ...appCredentials, encryptedSigningSecret: 'replacement-signing-secret' },
+          'admin',
+          app?.revision,
+        ),
+      ).not.toBeNull();
+      expect(await channels.getActiveAgentChannel('binding-a')).toMatchObject({
+        encryptedBotToken: 'encrypted-bot-token',
+        encryptedSigningSecret: 'replacement-signing-secret',
+      });
+      expect(await channels.getAgentChannel('binding-a')).not.toHaveProperty(
+        'encryptedSigningSecret',
+      );
+      await db.models.SlackInstallGeneration.updateOne(
+        { partition: 'org-a', appId: 'A123' },
+        { $unset: { encryptedSigningSecret: 1 } },
+      );
+      expect(await channels.getActiveAgentChannel('binding-a')).toBeNull();
     }));
 
   it('disconnect immediately removes live authority and reconnect cannot reactivate old bindings', async () =>
@@ -645,6 +684,64 @@ describe('workspace routing and live channel authority', () => {
       expect(await runAsSystem(() => dispatch.discover(10, now))).toEqual([]);
       expect(await scoped(() => dispatch.run(workspaceId, admitted.run.runId), 'org-b')).toBeNull();
     }));
+
+  it.each(['disable', 'disconnect'] as const)(
+    'advances past a saturated page of unclaimable runs after %s without granting execution',
+    async (retirement) =>
+      scoped(async () => {
+        const workspaceId = await install();
+        const runs = createChannelRunStorage(db);
+        const now = Date.now();
+        for (const [index, channelId] of ['stale-a', 'stale-b'].entries()) {
+          await binding(workspaceId, channelId);
+          await runs.admit(
+            {
+              tenantId: 'org-a',
+              workspaceId,
+              channelId,
+              agentId: `agent-${channelId}`,
+              principal: await linked(channelId),
+              admission: { ...event(channelId), externalThreadKey: `C123:1.00000${index}` },
+            },
+            now,
+          );
+          if (retirement === 'disable')
+            await channels.updateAgentChannel(
+              channelId,
+              'agent-manager',
+              { status: 'disabled' },
+              'active',
+              `consent-${channelId}`,
+            );
+        }
+        if (retirement === 'disconnect') await installations.disconnect(workspaceId);
+        expect(await channels.getActiveAgentChannel('stale-a')).toBeNull();
+        const healthyWorkspace = retirement === 'disconnect' ? await install() : workspaceId;
+        await binding(healthyWorkspace, 'healthy');
+        await runs.admit(
+          {
+            tenantId: 'org-a',
+            workspaceId: healthyWorkspace,
+            channelId: 'healthy',
+            agentId: 'agent-healthy',
+            principal: await linked('healthy'),
+            admission: { ...event('healthy'), externalThreadKey: 'C123:1.000003' },
+          },
+          now + 1,
+        );
+        expect(await runAsSystem(() => dispatch.discover(2, now + 2))).toEqual([
+          { tenantId: 'org-a', channelId: 'stale-a' },
+          { tenantId: 'org-a', channelId: 'stale-b' },
+        ]);
+        expect(await runAsSystem(() => dispatch.discover(2, now + 3))).toContainEqual({
+          tenantId: 'org-a',
+          channelId: 'healthy',
+        });
+        expect(await db.models.ChannelRun.countDocuments({ state: 'queued', leaseEpoch: 0 })).toBe(
+          3,
+        );
+      }),
+  );
 
   it('account erasure cannot remove a thread adopted by its currently linked principal', async () =>
     scoped(async () => {

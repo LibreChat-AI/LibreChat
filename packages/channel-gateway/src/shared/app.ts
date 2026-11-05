@@ -1,18 +1,20 @@
+import { SLACK_CHANNEL_LIFECYCLE_EVENTS } from 'librechat-data-provider';
 import type { SharedSlackGatewayBootstrap } from 'librechat-data-provider';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { SharedGatewayConfig } from '../config';
 import type { Logger } from '../types';
 import { parseSignedWebhook, normalizeEvent } from '../events';
+import { SlackClient, SlackWriteError } from '../slack';
 import { resolveGatewayConfig } from '../config';
 import { ServiceError } from '../transport';
 import { WorkspaceClient } from './client';
 import { slackRouteLookup } from './route';
 import { SlackHTTPServer } from '../http';
 import { ChannelClient } from '../client';
-import { SlackClient } from '../slack';
 import { GatewayApp } from '../app';
 
 const callback = /^\/slack\/(events|interactions)\/([-\w.]{1,128})\/(A[A-Z0-9]{1,255})$/;
+const lifecycleEvents = new Set<string>(SLACK_CHANNEL_LIFECYCLE_EVENTS);
 
 export class SharedGatewayApp {
   ready = false;
@@ -59,10 +61,7 @@ export class SharedGatewayApp {
         const request = parsed.request;
         if (request.kind === 'challenge')
           return { status: 200, body: { challenge: request.challenge } };
-        if (
-          request.kind === 'event' &&
-          ['app_uninstalled', 'tokens_revoked'].includes(request.envelope.event.type)
-        ) {
+        if (request.kind === 'event' && lifecycleEvents.has(request.envelope.event.type)) {
           if (request.envelope.api_app_id !== appId)
             return { status: 400, body: { error: 'invalid_payload' } };
           await client.lifecycle(tenantId, appId, request.envelope.team_id, signal);
@@ -88,19 +87,26 @@ export class SharedGatewayApp {
             throw new Error('Slack workspace scope changed');
           if (request.kind === 'event') {
             const event = normalizeEvent(request.envelope, { channel: { slack: route.workspace } });
-            if (event?.kind === 'message')
-              await slack.ephemeral(
-                route.botToken,
-                {
-                  channel: event.admission.externalChannelId,
-                  user: event.admission.actor.externalUserId,
-                  text:
-                    route.kind === 'retired_thread'
-                      ? 'This thread’s agent connection is no longer available. Start a new thread after an administrator updates the connection.'
-                      : 'No agent is configured for this Slack conversation. Ask your LibreChat administrator to connect an agent.',
-                },
-                signal,
-              );
+            if (event?.kind === 'message') {
+              try {
+                await slack.ephemeral(
+                  route.botToken,
+                  {
+                    channel: event.admission.externalChannelId,
+                    user: event.admission.actor.externalUserId,
+                    text:
+                      route.kind === 'retired_thread'
+                        ? 'This thread’s agent connection is no longer available. Start a new thread after an administrator updates the connection.'
+                        : 'No agent is configured for this Slack conversation. Ask your LibreChat administrator to connect an agent.',
+                  },
+                  signal,
+                );
+              } catch (error) {
+                if (!(error instanceof SlackWriteError) || error.outcome !== 'permanent')
+                  throw error;
+                log.warn('slack_routing_notice_rejected');
+              }
+            }
           }
           return { status: 200, body: {} };
         }

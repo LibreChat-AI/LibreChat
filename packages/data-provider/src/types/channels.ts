@@ -20,6 +20,7 @@ export const SLACK_CHANNEL_BOT_EVENTS = [
   'reaction_added',
   'reaction_removed',
 ] as const;
+export const SLACK_CHANNEL_LIFECYCLE_EVENTS = ['app_uninstalled', 'tokens_revoked'] as const;
 
 /** Organization-owned app metadata. Submitted secrets are write-only. */
 export interface SlackAppRegistration {

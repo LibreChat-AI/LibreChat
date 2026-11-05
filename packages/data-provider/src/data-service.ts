@@ -107,6 +107,19 @@ export function getAgentChannelManifest(
   return request.get(`${endpoints.agentChannels(agentId, channelId)}/manifest`);
 }
 
+function channelCredentialFailure(error: unknown): never {
+  const failure = isAxiosError<{ error?: unknown }>(error)
+    ? error.response?.data?.error
+    : undefined;
+  const code =
+    typeof failure === 'object' && failure !== null && 'code' in failure ? failure.code : failure;
+  // Axios failures retain serialized secrets. Only this supported setup code may escape.
+  throw Object.assign(
+    new Error('Channel credential update failed'),
+    code === 'transactions_unavailable' ? { code } : {},
+  );
+}
+
 export function activateAgentChannel(
   agentId: string,
   channelId: string,
@@ -114,16 +127,7 @@ export function activateAgentChannel(
 ): Promise<AgentChannel> {
   return request
     .patch(endpoints.agentChannels(agentId, channelId), input)
-    .catch((error: unknown) => {
-      // Axios failures carry serialized credentials; copy only the approved setup code.
-      const unavailable =
-        isAxiosError<{ error?: unknown }>(error) &&
-        error.response?.data?.error === 'transactions_unavailable';
-      throw Object.assign(
-        new Error('Channel activation failed'),
-        unavailable ? { code: 'transactions_unavailable' } : {},
-      );
-    });
+    .catch(channelCredentialFailure);
 }
 
 export function disableAgentChannel(agentId: string, channelId: string): Promise<AgentChannel> {
@@ -206,7 +210,7 @@ export function getSlackApps(cursor?: string): Promise<SlackAppPage> {
 }
 
 export function configureSlackApp(input: ConfigureSlackApp): Promise<SlackAppRegistration> {
-  return request.put(`${endpoints.slackWorkspaces()}/apps`, input);
+  return request.put(`${endpoints.slackWorkspaces()}/apps`, input).catch(channelCredentialFailure);
 }
 
 export function removeSlackApp(appId: string, revision: string): Promise<void> {
@@ -222,8 +226,8 @@ export function connectSlackWorkspace(
   return request.post(`${endpoints.slackWorkspaces()}/connect`, { workspaceId, appId });
 }
 
-export function disconnectSlackWorkspace(workspaceId: string): Promise<void> {
-  return request.delete(endpoints.slackWorkspaces(workspaceId));
+export function disconnectSlackWorkspace(workspaceId: string, revision: string): Promise<void> {
+  return request.deleteWithOptions(endpoints.slackWorkspaces(workspaceId), { data: { revision } });
 }
 
 export function cancelSlackWorkspaceInstall(flowId: string): Promise<void> {

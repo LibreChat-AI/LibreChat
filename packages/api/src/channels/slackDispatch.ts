@@ -28,7 +28,7 @@ import { readSlackJSON } from './workspaces';
 
 const installation = sharedSlackRouteLookupSchema.shape;
 const scopeInput = z.object({ tenantId: tenantIdSchema, appId: installation.appId });
-const routeInput = sharedSlackRouteLookupSchema.extend({ tenantId: tenantIdSchema });
+const routeInput = sharedSlackRouteLookupSchema.safeExtend({ tenantId: tenantIdSchema });
 const lifecycleInput = z
   .object({ tenantId: tenantIdSchema, appId: installation.appId, teamId: installation.teamId })
   .strict();

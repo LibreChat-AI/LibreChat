@@ -634,7 +634,7 @@ test('the actual activation adapter prevents credential-bearing failures reachin
       .getAll()
       .map((mutation) => mutation.state.error);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toEqual(new Error('Channel activation failed'));
+    expect(errors[0]).toEqual(new Error('Channel credential update failed'));
     expect(errors[0]).not.toBe(unsafe);
     const cache = JSON.stringify(
       client
@@ -886,6 +886,29 @@ describe('organization workspace connections', () => {
     expect(dataService.activateAgentChannel).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
   });
+  test('refreshes a committed channel revision when an assignment response is lost', async () => {
+    jest.mocked(dataService.setAgentChannelWorkspaceRoute).mockImplementationOnce(async () => {
+      rows = [{ ...configured, status: 'active', revision: 'committed-revision' }];
+      throw new Error('Response lost after commit');
+    });
+    const user = userEvent.setup();
+    renderChannels();
+    await openAdd(user);
+    await user.click(await screen.findByRole('button', { name: 'Engineering' }));
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    await user.click(await screen.findByRole('button', { name: 'com_ui_channels_activate' }));
+    await screen.findByRole('alert');
+    await screen.findAllByText('com_ui_channels_active');
+    await user.click(screen.getByRole('button', { name: 'com_ui_channels_workspace_assign' }));
+    await waitFor(() =>
+      expect(dataService.setAgentChannelWorkspaceRoute).toHaveBeenLastCalledWith(
+        'agent-1',
+        'channel-1',
+        expect.objectContaining({ channelRevision: 'committed-revision' }),
+      ),
+    );
+  });
+
   test('waits for the current channel target instead of submitting a previous lookup while typing', async () => {
     rows = [{ ...configured, status: 'active' }];
     const user = userEvent.setup();
