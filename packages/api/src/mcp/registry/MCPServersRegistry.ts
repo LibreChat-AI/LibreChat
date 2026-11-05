@@ -21,7 +21,7 @@ import {
 } from '~/mcp/errors';
 import { normalizeLegacyHeaderMaps, normalizeLegacyHeaderMapsIn } from './compat';
 import { canBackfillSharedServerInstructions, isUserSourced } from '~/mcp/utils';
-import { hasBlankHeaderValue, retainStoredHeaderValues } from './customHeaders';
+import { hasBlankHeaderValue, retainStoredHeaderValues } from './headers';
 import { ReadThroughAllCache } from './cache/ReadThroughAllCache';
 import { isPluginSourced, MCP_PLUGIN_SOURCE } from '~/utils/env';
 import { requireApiKeyReentryForRebinding } from './reentry';
@@ -1296,7 +1296,7 @@ export class MCPServersRegistry {
       }
     }
 
-    // Blank custom header values keep their stored values, so inspect with them too.
+    /** Blank custom header values keep their stored values, so inspect with them too. */
     if (storageLocation === 'DB' && hasBlankHeaderValue(configForInspection)) {
       const existingConfig = await configRepo.get(serverName, userId);
       configForInspection = retainStoredHeaderValues(

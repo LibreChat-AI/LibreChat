@@ -1,5 +1,5 @@
 import type { ParsedServerConfig } from '~/mcp/types';
-import { mergeRetainedHeaderValues, retainStoredHeaderValues } from '../customHeaders';
+import { mergeRetainedHeaderValues, retainStoredHeaderValues } from '../headers';
 
 const remote = (headers: Record<string, string>, extra: Record<string, unknown> = {}) =>
   ({

@@ -46,7 +46,7 @@ export async function decryptHeaderValues(headers: HeaderMap): Promise<HeaderMap
         return [name, await decryptV2(value.slice(ENCRYPTED_HEADER_PREFIX.length))];
       } catch (error) {
         logger.warn(
-          `[MCP customHeaders] Failed to decrypt header "${name}", dropping it from the config`,
+          `[MCP registry/headers] Failed to decrypt header "${name}", dropping it from the config`,
           error,
         );
         return null;

@@ -45,7 +45,7 @@ export interface AuthConfig {
   server_id?: string;
 }
 
-// Custom header row; `stored` marks a header loaded from the server, whose value is kept when blank
+/** Custom header row; `stored` marks a header loaded from the server, whose value is kept when blank. */
 export interface HeaderRow {
   name: string;
   value: string;

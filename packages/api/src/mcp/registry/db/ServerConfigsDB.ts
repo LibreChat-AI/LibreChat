@@ -11,16 +11,16 @@ import type { IServerConfigsRepositoryInterface } from '~/mcp/registry/ServerCon
 import type { ParsedServerConfig, AddServerResult } from '~/mcp/types';
 import type { ResolvedPrincipal } from '~/types/principal';
 import {
-  encryptHeaderValues,
-  decryptHeaderValues,
-  hasBlankHeaderValue,
-  retainStoredHeaderValues,
-} from '~/mcp/registry/customHeaders';
-import {
   getUserApiKeyVariable,
   preserveOmittedOAuthBindingFields,
   getChangedOAuthSecretBindingFields,
 } from '~/mcp/registry/binding';
+import {
+  encryptHeaderValues,
+  decryptHeaderValues,
+  hasBlankHeaderValue,
+  retainStoredHeaderValues,
+} from '~/mcp/registry/headers';
 import { MCPCommittedWriteError, MCPOAuthSecretReentryRequiredError } from '~/mcp/errors';
 import { getConfigHeaders, isGeneratedUserApiKeyVariable } from '~/mcp/headers';
 import { requireApiKeyReentryForRebinding } from '~/mcp/registry/reentry';
