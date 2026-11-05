@@ -27,6 +27,8 @@ export interface IBalance extends Document {
   refillMode?: BalanceRefillMode;
   /** Credits granted at the start of the current period, kept when the configured amount changes */
   allotment?: number;
+  /** When `allotment` was granted; stale once `lastRefill` is later */
+  allottedAt?: Date;
   tenantId?: string;
   /** Reservation state is excluded from reads unless explicitly selected */
   reservations?: IBalanceReservation[];
@@ -46,6 +48,7 @@ export interface IBalanceUpdate {
   refillMode?: BalanceRefillMode;
   lastRefill?: Date;
   allotment?: number;
+  allottedAt?: Date;
 }
 
 /** Holds credits against a user's balance for the lifetime of one in-flight request */

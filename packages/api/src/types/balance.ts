@@ -11,4 +11,5 @@ export interface BalanceUpdateFields {
   lastRefill?: Date;
   /** Written only together with `tokenCredits`: the credits that grant starts the period with */
   allotment?: number;
+  allottedAt?: Date;
 }

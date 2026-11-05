@@ -81,7 +81,12 @@ export function buildBalanceUpdateFields(
   }
 
   if (updateFields.tokenCredits != null) {
+    const grantedAt = userRecord?.lastRefill ?? new Date();
     updateFields.allotment = updateFields.tokenCredits;
+    updateFields.allottedAt = grantedAt;
+    if (!userRecord?.lastRefill) {
+      updateFields.lastRefill = grantedAt;
+    }
   }
 
   const isAutoRefillConfigValid =
@@ -122,7 +127,7 @@ export function buildBalanceUpdateFields(
 
   // Initialize lastRefill if it's missing when auto-refill is enabled
   if (config.autoRefillEnabled && !userRecord?.lastRefill) {
-    updateFields.lastRefill = new Date();
+    updateFields.lastRefill ??= new Date();
   }
 
   return updateFields;
@@ -181,10 +186,11 @@ export function createSetBalanceConfig({
         }
 
         if (userBalanceRecord == null) {
-          const { tokenCredits, allotment, ...syncFields } = updateFields;
+          const { tokenCredits, allotment, allottedAt, ...syncFields } = updateFields;
           balanceLocals.balanceData = await upsertBalanceFields(userId, syncFields, {
             tokenCredits,
             allotment,
+            allottedAt,
           });
           return;
         }

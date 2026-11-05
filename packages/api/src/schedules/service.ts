@@ -722,7 +722,13 @@ export function createSchedulesService(
           // record in between must never be handed back its starting balance. Each case
           // fences the credit write so it can only create, never restore, credits. The
           // refill-config fields are a genuine sync and never carry a credit.
-          const { user: initUser, tokenCredits, allotment, ...syncFields } = updateFields;
+          const {
+            user: initUser,
+            tokenCredits,
+            allotment,
+            allottedAt,
+            ...syncFields
+          } = updateFields;
           if (record == null) {
             // ABSENT record: upsert. The credit rides `$setOnInsert` so a document created
             // by a concurrent charge keeps its charged balance; the refill-config sync is
@@ -731,7 +737,7 @@ export function createSchedulesService(
               set: syncFields,
               setOnInsert: {
                 ...(initUser != null ? { user: initUser } : {}),
-                ...(tokenCredits != null ? { tokenCredits, allotment } : {}),
+                ...(tokenCredits != null ? { tokenCredits, allotment, allottedAt } : {}),
               },
             });
           } else if (tokenCredits != null) {
@@ -742,7 +748,7 @@ export function createSchedulesService(
             // The allotment rides the CAS so it is written only with the credit it describes.
             const initialized = await deps.initializeNullBalance(user.id, {
               tokenCredits,
-              sync: { ...syncFields, allotment },
+              sync: { ...syncFields, allotment, allottedAt },
             });
             record =
               initialized ?? (await deps.findBalance(user.id, { applyReset: false })) ?? record;

@@ -385,6 +385,7 @@ export function createTransactionMethods(
           tokenCredits: credits,
           lastRefill: now,
           allotment: record.refillAmount,
+          allottedAt: now,
           pendingRefill,
         },
       },

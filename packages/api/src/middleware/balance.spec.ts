@@ -102,7 +102,9 @@ describe('createSetBalanceConfig', () => {
         createMockResponse() as ServerResponse,
         mockNext,
       );
-      expect((await Balance.findOne({ user: userId }).lean())?.allotment).toBe(1000);
+      const created = await Balance.findOne({ user: userId }).lean();
+      expect(created?.allotment).toBe(1000);
+      expect(created?.allottedAt).toEqual(created?.lastRefill);
 
       getAppConfig.mockResolvedValue({ balance: { ...config, startBalance: 5000 } });
       await middleware(

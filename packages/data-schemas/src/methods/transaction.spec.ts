@@ -1684,7 +1684,9 @@ describe('Balance Reservations', () => {
         const user = new mongoose.Types.ObjectId();
         await Balance.create({ user, ...resettable, tokenCredits: 500 });
 
-        expect((await findBalanceByUser(user.toString()))?.allotment).toBe(1000);
+        const granted = await findBalanceByUser(user.toString());
+        expect(granted?.allotment).toBe(1000);
+        expect(granted?.allottedAt).toEqual(granted?.lastRefill);
         await reserve(user.toString(), 100);
         const changed = await upsertBalanceFields(user.toString(), { refillAmount: 3000 });
 

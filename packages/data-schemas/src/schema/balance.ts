@@ -46,6 +46,10 @@ const balanceSchema: Schema<t.IBalance> = new Schema<t.IBalance>({
   allotment: {
     type: Number,
   },
+  /** When `allotment` was granted; a later `lastRefill` marks it stale */
+  allottedAt: {
+    type: Date,
+  },
   tenantId: {
     type: String,
     index: true,
