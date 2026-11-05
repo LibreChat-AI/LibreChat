@@ -54,6 +54,7 @@ export interface SharedOpenIDRefreshResult {
 }
 
 export interface SessionOpenIDTokens {
+  authGenerationId?: string;
   accessToken?: string;
   idToken?: string;
   refreshToken?: string;
@@ -79,6 +80,8 @@ export interface OpenIDSession {
 }
 
 export interface OpenIDRequest {
+  cookies?: { openid_user_id?: string; refreshToken?: string; token_provider?: string };
+  openidLoginGeneration?: string;
   headers?: { authorization?: string; cookie?: string };
   session?: OpenIDSession;
   sessionID?: string;

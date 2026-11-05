@@ -64,7 +64,7 @@ if (import.meta.hot) {
  * its identity across an in-app account switch, so the account on the way out is the only place
  * that reliably sees the transition. Both are cleared together so neither can be added to an exit
  * path the other was wired into. */
-const endSessionClientState = (): void => {
+export const endSessionClientState = (): void => {
   getDefaultStore().set(resetChatFilterSessionAtom);
   getDefaultStore().set(resetFacetsAtom);
   clearRetainedFileDeletions();

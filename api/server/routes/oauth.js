@@ -31,6 +31,7 @@ const setBalanceConfig = createSetBalanceConfig({
 });
 
 const router = express.Router();
+const openIDSessionCheck = require('~/server/services/OpenIDSessionCheck');
 
 const domains = {
   client: process.env.DOMAIN_CLIENT,
@@ -44,6 +45,7 @@ const authFailureRedirectOptions = {
 
 router.use(logHeaders);
 router.use(markOAuthNavigation);
+router.get('/openid/callback', openIDSessionCheck.callback);
 router.use(loginLimiter);
 
 const requireCallbackTenant = createPreAuthTenantGuard({
@@ -138,6 +140,7 @@ router.get(
   '/openid/callback',
   requireCallbackTenant,
   authenticateOpenIDCallback,
+  openIDSessionCheck.prepareLogin,
   setBalanceConfig,
   checkDomainAllowed,
   oauthHandler,

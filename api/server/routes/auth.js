@@ -52,6 +52,13 @@ const setBalanceConfig = createSetBalanceConfig({
 });
 
 const router = express.Router();
+const openIDSessionCheck = require('~/server/services/OpenIDSessionCheck');
+router.post('/openid/session-check', middleware.requireSameOrigin, openIDSessionCheck.start);
+router.post(
+  '/openid/session-check/complete',
+  middleware.requireSameOrigin,
+  openIDSessionCheck.complete,
+);
 const twoFactorManagementLimiter = createTwoFactorManagementLimiter({
   getAppConfig: () => getAppConfig({ baseOnly: true }),
   store: limiterCache('two_factor_management_user_limiter'),

@@ -373,6 +373,34 @@ describe('setOpenIDMarkerCookies', () => {
     });
   });
 
+  it('signs the recovery identity without provider access or ID tokens', () => {
+    const res = { cookie: jest.fn() } as unknown as Response;
+    setOpenIDMarkerCookies(res, {
+      userId: 'user-A',
+      tenantId: 'tenant-A',
+      openidIssuer: 'https://issuer.test',
+      openidSubject: 'A',
+      authGenerationId: 'generation-A',
+      refreshToken: 'refresh-A',
+      expires: new Date(Date.now() + 60000),
+      refreshExpiryMs: 60000,
+    });
+    const signed = (res.cookie as jest.Mock).mock.calls.find(
+      ([name]) => name === OPENID_USER_ID_COOKIE,
+    )?.[1];
+    expect(jwt.verify(signed, 'marker-secret')).toEqual({
+      id: 'user-A',
+      tenantId: 'tenant-A',
+      openidIssuer: 'https://issuer.test',
+      openidSubject: 'A',
+      authGenerationId: 'generation-A',
+      refreshTokenHash: crypto.createHash('sha256').update('refresh-A').digest('base64url'),
+      issuedAtMs: expect.any(Number),
+      iat: expect.any(Number),
+      exp: expect.any(Number),
+    });
+  });
+
   it('names the session owner and expiry in a readable cookie beside the provider marker', () => {
     process.env.NODE_ENV = 'production';
     process.env.DOMAIN_SERVER = 'https://myapp.example.com';

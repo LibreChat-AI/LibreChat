@@ -2759,6 +2759,12 @@ export const lookupConcurrencySchema = z.object({
 export type TLookupConcurrency = z.infer<typeof lookupConcurrencySchema>;
 
 export const rateLimitSchema = z.object({
+  openidSessionCheck: z
+    .object({
+      /** One reload uses a start, callback, and completion request. */
+      requestsPerFiveMinutes: z.number().int().min(3).default(60),
+    })
+    .optional(),
   twoFactorManagement: z
     .object({
       /** Shared budget; setup needs enable, verify, and confirm within five minutes. */
@@ -3666,6 +3672,7 @@ export function supportsConversationTitleOwnership(config?: {
 }
 
 export type TStartupConfig = {
+  openidSessionCheckEnabled?: boolean;
   conversationTitleOwnershipVersion?: typeof CONVERSATION_TITLE_OWNERSHIP_VERSION;
   appTitle: string;
   socialLogins?: string[];
@@ -4672,8 +4679,10 @@ export const configSchema = z.object({
       oauthStateTtlMs: z.number().int().min(60_000).max(3_600_000).optional(),
       /** OpenID discovery retries; an unset field falls back to its `OPENID_DISCOVERY_RETRY_*` env var, then the schema default. */
       openidDiscovery: partialWithoutDefaults(openIdDiscoverySchema).optional(),
+      /** Verify the browser SSO identity before restoring an OpenID token-reuse session. */
+      openidSessionCheck: z.boolean().default(false),
     })
-    .default({ socialLogins: defaultSocialLogins }),
+    .prefault({ socialLogins: defaultSocialLogins }),
   /** Changing the registered email address. An unset field falls back to its env var, then the
    *  documented default, so an existing deployment keeps the behavior it has today. */
   emailChange: z

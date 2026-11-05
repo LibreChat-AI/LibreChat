@@ -128,6 +128,9 @@ export function clearSessionHintCookie(res: Response): void {
 }
 
 export interface OpenIDMarkerCookieOptions {
+  openidIssuer?: string;
+  openidSubject?: string;
+  authGenerationId?: string;
   userId?: string | null;
   /** Names the session's owner in the readable session hint alongside `userId`. */
   tenantId?: string | null;
@@ -145,6 +148,9 @@ export function setOpenIDMarkerCookies(
     tenantId,
     expires,
     refreshExpiryMs,
+    openidIssuer,
+    openidSubject,
+    authGenerationId,
     reuseTokens = isEnabled(process.env.OPENID_REUSE_TOKENS),
     refreshToken,
   }: OpenIDMarkerCookieOptions,
@@ -179,7 +185,15 @@ export function setOpenIDMarkerCookies(
     ? crypto.createHash('sha256').update(refreshToken).digest('base64url')
     : undefined;
   const signedUserId = jwt.sign(
-    { id: userId, issuedAtMs: Date.now(), ...(refreshTokenHash ? { refreshTokenHash } : {}) },
+    {
+      id: userId,
+      issuedAtMs: Date.now(),
+      ...(refreshTokenHash ? { refreshTokenHash } : {}),
+      ...(authGenerationId ? { authGenerationId } : {}),
+      ...(openidIssuer ? { openidIssuer } : {}),
+      ...(openidSubject ? { openidSubject } : {}),
+      ...(tenantId ? { tenantId } : {}),
+    },
     secret,
     { expiresIn: refreshExpirySeconds },
   );
