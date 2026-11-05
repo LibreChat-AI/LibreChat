@@ -231,6 +231,7 @@ export async function checkBalance(
     const {
       user: _user,
       tokenCredits: _credits,
+      allotment: _allotment,
       lastRefill: _lastRefill,
       ...policy
     } = buildBalanceUpdateFields(deps.balanceConfig, null, user);

@@ -298,7 +298,8 @@ export function createUserMethods(
       refillIntervalUnit?: RefillIntervalUnit;
       refillAmount?: number;
       refillMode?: BalanceRefillMode;
-    } = { tokenCredits: balanceConfig.startBalance };
+      allotment: number;
+    } = { tokenCredits: balanceConfig.startBalance, allotment: balanceConfig.startBalance };
 
     if (
       balanceConfig.autoRefillEnabled &&

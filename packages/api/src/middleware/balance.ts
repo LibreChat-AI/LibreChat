@@ -80,6 +80,10 @@ export function buildBalanceUpdateFields(
     updateFields.tokenCredits = config.startBalance;
   }
 
+  if (updateFields.tokenCredits != null) {
+    updateFields.allotment = updateFields.tokenCredits;
+  }
+
   const isAutoRefillConfigValid =
     config.autoRefillEnabled &&
     config.refillIntervalValue != null &&
@@ -175,9 +179,10 @@ export function createSetBalanceConfig({
         }
 
         if (userBalanceRecord == null) {
-          const { tokenCredits, ...syncFields } = updateFields;
+          const { tokenCredits, allotment, ...syncFields } = updateFields;
           balanceLocals.balanceData = await upsertBalanceFields(userId, syncFields, {
             tokenCredits,
+            allotment,
           });
           return;
         }

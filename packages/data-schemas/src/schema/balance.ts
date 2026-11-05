@@ -42,6 +42,10 @@ const balanceSchema: Schema<t.IBalance> = new Schema<t.IBalance>({
     enum: BALANCE_REFILL_MODES,
     default: 'add',
   },
+  /** Credits granted at the start of the current period; usage percent is measured against it */
+  allotment: {
+    type: Number,
+  },
   tenantId: {
     type: String,
     index: true,

@@ -87,6 +87,34 @@ describe('createSetBalanceConfig', () => {
       expect((res.locals as { balanceData?: IBalance }).balanceData?.tokenCredits).toBe(50);
     });
 
+    test('stores the start balance as the allotment only when it grants credits', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const config = { enabled: true, startBalance: 1000 };
+      const getAppConfig = jest.fn().mockResolvedValue({ balance: config });
+      const middleware = createSetBalanceConfig({
+        getAppConfig,
+        findBalanceByUser,
+        upsertBalanceFields,
+      });
+
+      await middleware(
+        createMockRequest(userId) as ServerRequest,
+        createMockResponse() as ServerResponse,
+        mockNext,
+      );
+      expect((await Balance.findOne({ user: userId }).lean())?.allotment).toBe(1000);
+
+      getAppConfig.mockResolvedValue({ balance: { ...config, startBalance: 5000 } });
+      await middleware(
+        createMockRequest(userId) as ServerRequest,
+        createMockResponse() as ServerResponse,
+        mockNext,
+      );
+      const record = await Balance.findOne({ user: userId }).lean();
+      expect(record?.tokenCredits).toBe(1000);
+      expect(record?.allotment).toBe(1000);
+    });
+
     test('should create balance record for new user with start balance', async () => {
       const userId = new mongoose.Types.ObjectId();
       const getAppConfig = jest.fn().mockResolvedValue({
