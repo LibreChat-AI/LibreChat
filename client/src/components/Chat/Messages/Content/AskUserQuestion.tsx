@@ -138,11 +138,11 @@ function AskUserQuestionSingle({
   const { shortcutsEnabled, submitOverride, yieldedChords } =
     surface?.composerBindings ?? NO_HOST_BINDINGS;
   /**
-   * The composer popover is the primary answer surface — while it's VISIBLE
-   * for this pause, rendering the card too duplicates the question. The card
-   * takes over once the question is moved to the chat (the popover's chevron,
-   * which also releases the composer; this card's chevron moves it back), and
-   * in contexts without a ChatContext, where the popover can't exist.
+   * This card is the question's default surface, in thread order and at the
+   * thread's width, so it reads the same on a phone as on a desktop. Its
+   * chevron moves a live question into the composer popover; while the
+   * popover is VISIBLE, rendering the card too would duplicate the question,
+   * so the card holds its footprint hidden until the question comes back.
    */
   const { popoverVisible, collapsed, expand, liveAsk } = answerMode;
   const isLivePause = liveAsk?.actionId === actionId;

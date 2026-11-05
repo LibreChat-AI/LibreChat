@@ -6,7 +6,7 @@ import {
   splitOtherOption,
 } from '@librechat/chat';
 import {
-  collapsedAskActionsAtom,
+  expandedAskActionsAtom,
   askAnswerSelectionAtom,
   askAnswerCheckedAtom,
   askAnswerTextAtom,
@@ -22,7 +22,9 @@ import { useGetMessagesByConvoId } from '~/data-provider';
 import { useOptionalChatFormContext } from '~/Providers';
 
 /**
- * First-class "answer mode" for a live `ask_user_question` pause. Clicking an
+ * First-class "answer mode" for a live `ask_user_question` pause. A question
+ * starts in the chat card; answer mode is the opt-in composer popover the
+ * card's chevron (`expand`) moves it into. Clicking an
  * option submits it immediately (multi-select clicks toggle instead, confirmed
  * by an explicit Submit); arrows/digits from the EMPTY composer steer a
  * keyboard highlight that Enter fires — but only while the popover is visible,
@@ -51,7 +53,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     select: findLiveAskUserQuestion,
   });
   const liveAsk = enabled ? (liveAskData ?? null) : null;
-  const [collapsedIds, setCollapsedIds] = useAtom(collapsedAskActionsAtom);
+  const [expandedIds, setExpandedIds] = useAtom(expandedAskActionsAtom);
   const [selected, setSelected] = useAtom(askAnswerSelectionAtom);
   const [checked, setChecked] = useAtom(askAnswerCheckedAtom);
   const [answerDrafts, setAnswerDrafts] = useAtom(askAnswerTextAtom);
@@ -110,14 +112,16 @@ export default function useAskAnswerMode(conversationId?: string | null) {
    * answered question with every option greyed out.
    */
   const answerable = liveAsk != null && status !== 'expired' && status !== 'submitted';
-  /** Moved to the chat: the card owns the question and the composer is free. */
-  const collapsed = answerable && collapsedIds.includes(liveAsk.actionId);
+  /** Moved to the composer: the popover owns the question. */
+  const expanded = answerable && expandedIds.includes(liveAsk.actionId);
+  /** In the chat, the default: the card owns the question and the composer is free. */
+  const collapsed = answerable && !expanded;
   /**
    * Answer mode: the popover is up AND the composer is the free-form answer
    * box. The two are deliberately the same condition because the composer's answer
    * role is only discoverable while the popover explains it.
    */
-  const active = answerable && !collapsed;
+  const active = expanded;
   const popoverVisible = active;
   const batchMode = (liveAsk?.questions?.length ?? 0) > 0;
   const composerAnswers = active && !batchMode;
@@ -261,9 +265,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
             formContext?.reset();
           }
         }
-        setCollapsedIds((prev) =>
-          prev.includes(liveAsk.actionId) ? prev : [...prev, liveAsk.actionId],
-        );
+        setExpandedIds((prev) => prev.filter((id) => id !== liveAsk.actionId));
       });
     }
   }, [
@@ -275,7 +277,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     releasedComposerText,
     setReleasedComposerText,
     setAnswerDrafts,
-    setCollapsedIds,
+    setExpandedIds,
     runHandoff,
   ]);
 
@@ -305,7 +307,9 @@ export default function useAskAnswerMode(conversationId?: string | null) {
            *  `setAnswerText` writes both while saving is on. */
           setDraft({ id: getAskAnswerDraftId(liveAsk.actionId), value: answerText });
         }
-        setCollapsedIds((prev) => prev.filter((id) => id !== liveAsk.actionId));
+        setExpandedIds((prev) =>
+          prev.includes(liveAsk.actionId) ? prev : [...prev, liveAsk.actionId],
+        );
       });
     }
   }, [
@@ -316,7 +320,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     formContext,
     answerText,
     setReleasedComposerText,
-    setCollapsedIds,
+    setExpandedIds,
     runHandoff,
   ]);
 

@@ -3,7 +3,7 @@ import { Provider, createStore } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
 import {
   AskAnswerHostProvider,
-  collapsedAskActionsAtom,
+  expandedAskActionsAtom,
   askAnswerSelectionAtom,
   askAnswerCheckedAtom,
   askAnswerTextAtom,
@@ -69,12 +69,49 @@ describe('useAskAnswerMode', () => {
     mockSaveDrafts = false;
     mockAskStatus = 'idle';
     jotaiStore = createStore();
+    /** Most cases exercise answer mode, which the card's chevron opts into. */
+    jotaiStore.set(expandedAskActionsAtom, ['a1']);
     mockGetComposerText.mockReturnValue('answer from A');
     mockSetComposerText.mockReset();
     mockSubmitAskAnswer.mockReset();
   });
 
-  it('is active when a live ask is available', () => {
+  it('starts a live ask in the chat card and leaves the composer alone', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockUseGetMessages.mockReturnValue({ data: liveAsk });
+
+    const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+
+    expect(result.current.liveAsk).toBe(liveAsk);
+    expect(result.current.collapsed).toBe(true);
+    expect(result.current.active).toBe(false);
+    expect(result.current.popoverVisible).toBe(false);
+    expect(result.current.composerAnswers).toBe(false);
+    expect(result.current.draftId).toBeNull();
+
+    act(() => result.current.expand());
+
+    expect(result.current.collapsed).toBe(false);
+    expect(result.current.popoverVisible).toBe(true);
+    expect(result.current.composerAnswers).toBe(true);
+  });
+
+  it('starts a live batch in the chat card without locking the composer', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockUseGetMessages.mockReturnValue({ data: batchAsk });
+
+    const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+
+    expect(result.current.collapsed).toBe(true);
+    expect(result.current.popoverVisible).toBe(false);
+    expect(result.current.composerLocked).toBe(false);
+  });
+
+  it('is active once a live ask is moved to the composer', () => {
     mockUseGetMessages.mockReturnValue({ data: liveAsk });
 
     const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
@@ -140,7 +177,7 @@ describe('useAskAnswerMode', () => {
   });
 
   it('does not overwrite normal composer text when expanding a batch', () => {
-    jotaiStore.set(collapsedAskActionsAtom, ['a1']);
+    jotaiStore.set(expandedAskActionsAtom, []);
     jotaiStore.set(askAnswerTextAtom, { a1: 'stale batch handoff' });
     mockUseGetMessages.mockReturnValue({ data: batchAsk });
     const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
@@ -216,7 +253,7 @@ describe('useAskAnswerMode', () => {
   });
 
   it('restores the card answer into the composer when drafts are disabled', () => {
-    jotaiStore.set(collapsedAskActionsAtom, ['a1']);
+    jotaiStore.set(expandedAskActionsAtom, []);
     jotaiStore.set(askAnswerTextAtom, { a1: 'answer edited in the card' });
     mockUseGetMessages.mockReturnValue({ data: liveAsk });
     const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {

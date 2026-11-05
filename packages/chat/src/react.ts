@@ -217,7 +217,7 @@ export {
   askAnswerCheckedAtom,
   AskAnswerHostProvider,
   askAnswerSelectionAtom,
-  collapsedAskActionsAtom,
+  expandedAskActionsAtom,
   releasedComposerTextAtom,
 } from './react/parts/ask';
 export type { AskAnswerStatus, ReleasedComposerStash } from './react/parts/ask';
