@@ -36,6 +36,7 @@ export default function AskUserQuestions({
   className,
   headerAction,
   focusOnArrival = false,
+  focusOnHandoff = false,
   onEscape,
 }: {
   actionId: string;
@@ -44,6 +45,9 @@ export default function AskUserQuestions({
   /** This surface is the live pause's visible one, so the batch arriving may
    *  take focus. A Share view or a hidden footprint copy leaves it alone. */
   focusOnArrival?: boolean;
+  /** The batch was just moved onto this surface, which is on screen: it takes
+   *  focus whenever focus is idle, even after an earlier arrival did. */
+  focusOnHandoff?: boolean;
   /** The surface's own control (move to chat, move back), set in the
    *  question's header row so it shares the form's inset. */
   headerAction?: ReactNode;
@@ -145,6 +149,13 @@ export default function AskUserQuestions({
   const latestFormRef = useRef(form);
   latestFormRef.current = form;
   useEffect(() => {
+    if (focusOnHandoff) {
+      if (!form.locked && isFocusIdle()) {
+        focusStep({ firstOption: true, preventScroll: true });
+        form.markArrivalFocused();
+      }
+      return;
+    }
     if (!focusOnArrival || form.locked || form.arrivalFocused) {
       return;
     }

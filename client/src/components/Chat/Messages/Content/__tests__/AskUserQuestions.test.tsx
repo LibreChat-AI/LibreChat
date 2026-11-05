@@ -409,6 +409,23 @@ describe('AskUserQuestions', () => {
       expect(composer).toHaveFocus();
     });
 
+    test('takes focus again when the batch is moved onto a new surface', () => {
+      const view = render(
+        <RecoilRoot>
+          <AskUserQuestions actionId="ask-focus-handoff" questions={questions} focusOnArrival />
+        </RecoilRoot>,
+      );
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+      view.unmount();
+
+      render(
+        <RecoilRoot>
+          <AskUserQuestions actionId="ask-focus-handoff" questions={questions} focusOnHandoff />
+        </RecoilRoot>,
+      );
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+    });
+
     describe('below a reader who has scrolled up', () => {
       const originalObserver = global.IntersectionObserver;
       let notify: () => void = () => undefined;

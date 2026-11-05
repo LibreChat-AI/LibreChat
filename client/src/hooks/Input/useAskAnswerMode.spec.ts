@@ -150,6 +150,45 @@ describe('useAskAnswerMode', () => {
     expect(result.current.answerText).toBe('');
   });
 
+  it('clears the saved answer once an answer from the card is accepted', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockSaveDrafts = true;
+    mockUseGetMessages.mockReturnValue({
+      data: {
+        ...liveAsk,
+        question: { question: 'Pick one', options: [{ label: 'Yes', value: 'yes' }] },
+      },
+    });
+    mockSubmitAskAnswer.mockImplementation((_id, _answer, callbacks) => callbacks?.onSuccess?.());
+
+    const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+    act(() => result.current.setAnswerText('typed in the card'));
+    mockSetDraft.mockClear();
+
+    act(() => {
+      result.current.submitAnswer(['typed in the card']);
+    });
+
+    expect(mockSubmitAskAnswer).toHaveBeenCalledWith(
+      'a1',
+      'typed in the card',
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'draft-a1', value: '' });
+  });
+
+  it('clears the saved answer of a question that expires', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockAskStatus = 'expired';
+    mockUseGetMessages.mockReturnValue({ data: liveAsk });
+
+    renderHook(() => useAskAnswerMode('conversation-1'), { wrapper: JotaiWrapper });
+
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'draft-a1', value: '' });
+  });
+
   it('starts a live batch in the chat card without locking the composer', () => {
     jotaiStore.set(expandedAskActionsAtom, []);
     mockUseGetMessages.mockReturnValue({ data: batchAsk });

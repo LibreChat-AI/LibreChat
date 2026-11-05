@@ -250,6 +250,16 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     [batchMode, liveAsk, saveDrafts, setAnswerDrafts],
   );
 
+  /** An expired question can never be answered, so its saved answer has
+   *  nothing left to restore into. */
+  const expiredActionId =
+    liveAsk != null && !batchMode && status === 'expired' ? liveAsk.actionId : null;
+  useEffect(() => {
+    if (expiredActionId != null) {
+      setDraft({ id: getAskAnswerDraftId(expiredActionId), value: '' });
+    }
+  }, [expiredActionId]);
+
   /** Selection state is per-question: a new pause must never inherit a stale
    *  highlight (or checks) whose Enter would submit the previous question's
    *  choice. */
@@ -390,9 +400,17 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       const wasActive = active;
       const submittedConversationId = conversationId;
       const submittedActionId = liveAsk.actionId;
+      const submittedSingle = !batchMode;
       const submittedComposerText = formContext?.getValues('text') ?? '';
       submitAskAnswer(liveAsk.actionId, values.join(', '), {
         onSuccess: () => {
+          /** The question is answered wherever the user went meanwhile, so its
+           *  saved answer goes now. Answered from the composer, autosave would
+           *  clear it with the composer; answered from the card, nothing else
+           *  ever reads that key again. */
+          if (submittedSingle) {
+            setDraft({ id: getAskAnswerDraftId(submittedActionId), value: '' });
+          }
           const currentScope = currentScopeRef.current;
           if (
             !mountedRef.current ||
@@ -448,6 +466,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       liveAsk,
       locked,
       active,
+      batchMode,
       saveDrafts,
       conversationId,
       setReleasedComposerText,

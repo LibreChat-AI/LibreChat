@@ -177,7 +177,8 @@ test.describe('ask question keyboard control', () => {
         }
       });
 
-      await optionRow(popover, 'Staging').focus();
+      /* Moving the batch in from the card hands focus to its first option. */
+      await expect(optionRow(popover, 'Staging')).toBeFocused();
       await page.keyboard.press('Escape');
 
       await expect(popover).toBeHidden();

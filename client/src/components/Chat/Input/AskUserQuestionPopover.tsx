@@ -23,7 +23,7 @@ const renderQuestions: AskPopoverProps['renderQuestions'] = ({
     actionId={liveAsk.actionId}
     questions={questions}
     className="shrink-0"
-    focusOnArrival
+    focusOnHandoff
     onEscape={onEscape}
     headerAction={headerAction}
   />
