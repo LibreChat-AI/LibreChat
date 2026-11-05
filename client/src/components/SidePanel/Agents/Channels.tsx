@@ -528,7 +528,12 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
         <div key={channel.channelId} className="flex items-center justify-between gap-2 text-sm">
           <div className="flex min-w-0 items-center gap-2">
             {localize('com_ui_channels_slack')}
-            <ChannelStatus status={channel.status} />
+            <ChannelStatus
+              status={channel.status}
+              pendingLabel={
+                channel.workspaceId ? 'com_ui_channels_workspace_not_assigned' : undefined
+              }
+            />
           </div>
           <Button
             type="button"

@@ -871,6 +871,11 @@ describe('organization workspace connections', () => {
     const activate = await screen.findByRole('button', {
       name: 'com_ui_channels_workspace_replace_assignment',
     });
+    expect(
+      screen.getByRole('link', { name: 'com_ui_channels_workspace_open_bot' }),
+    ).toHaveAttribute('href', 'https://slack.com/app_redirect?app=A123&team=T123');
+    expect(screen.getAllByText('com_ui_channels_workspace_not_assigned').length).toBeGreaterThan(0);
+    expect(screen.queryByText('com_ui_channels_pending')).not.toBeInTheDocument();
     expect(activate).toBeDisabled();
     await user.click(
       await screen.findByRole('checkbox', { name: 'com_ui_channels_workspace_replace' }),

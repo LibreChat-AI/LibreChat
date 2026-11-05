@@ -347,10 +347,13 @@ for (const theme of ['light', 'dark']) {
       await picker.getByRole('button', { name: 'Continue', exact: true }).click();
       const setup = page.getByRole('dialog', { name: 'Connect to Slack', exact: true });
       await expect(
-        setup.getByRole('checkbox', { name: 'Use this agent instead', exact: true }),
+        setup.getByRole('checkbox', {
+          name: 'Replace this bot’s current default agent',
+          exact: true,
+        }),
       ).toBeVisible();
       await expect(
-        setup.getByRole('button', { name: 'Replace assignment', exact: true }),
+        setup.getByRole('button', { name: 'Replace default agent', exact: true }),
       ).toBeDisabled();
       await expect(setup.getByLabel('Bot token', { exact: true })).toHaveCount(0);
       if (process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX)
@@ -358,15 +361,17 @@ for (const theme of ['light', 'dark']) {
           animations: 'disabled',
           path: `${process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX}-target-${theme}.png`,
         });
-      await setup.getByRole('checkbox', { name: 'Use this agent instead', exact: true }).check();
-      await setup.getByRole('button', { name: 'Replace assignment', exact: true }).click();
+      await setup
+        .getByRole('checkbox', { name: 'Replace this bot’s current default agent', exact: true })
+        .check();
+      await setup.getByRole('button', { name: 'Replace default agent', exact: true }).click();
       await expect(setup).toHaveCount(0);
       expect(activations).toBe(1);
       await expect(form.getByText('Active', { exact: true })).toBeVisible();
       await form.getByRole('button', { name: 'Manage connection', exact: true }).click();
       const manage = page.getByRole('dialog', { name: 'Manage connection', exact: true });
       await expect(manage.getByRole('button', { name: 'Remove', exact: true })).toBeVisible();
-      await expect(manage.getByText('Assigned', { exact: true })).toBeVisible();
+      await expect(manage.getByText('Assigned to this agent', { exact: true })).toBeVisible();
       await expect(manage.getByRole('button', { name: 'Assign agent', exact: true })).toHaveCount(
         0,
       );
@@ -382,7 +387,9 @@ for (const theme of ['light', 'dark']) {
         .getByRole('button', { name: 'Confirm', exact: true })
         .click();
       await expect(
-        manage.getByText('This agent is not assigned to new conversations.', { exact: true }),
+        manage.getByText('This agent isn’t assigned to this bot for new conversations.', {
+          exact: true,
+        }),
       ).toBeVisible();
       expect(removed).toBe(1);
       await manage.getByRole('button', { name: 'Disable', exact: true }).click();
