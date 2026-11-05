@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
 import type { SlackWorkspace, SlackAppRegistration } from 'librechat-data-provider';
+import type { SlackBotManager } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type {
   SlackInstallRecord,
@@ -7,6 +8,7 @@ import type {
   SlackClaimedInstall,
   SlackInstallGeneration,
 } from '~/models/slackWorkspace';
+import type { BotManagerWriteResult, BotManagerUpdate } from './slackBotAccess';
 import {
   createSlackInstallModel,
   createSlackWorkspaceModel,
@@ -16,6 +18,8 @@ import { prepareChannelOwnerAdmission, touchChannelOwnerAdmission } from './chan
 import { getTenantId, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { withRequiredTransaction } from '~/utils/transactions';
 import { createChannelIndexGate } from './channelIndexes';
+import { createAclEntryModel } from '~/models/aclEntry';
+import { createSlackBotAccess } from './slackBotAccess';
 
 export type SlackWorkspaceMetadata = SlackWorkspace;
 export type SlackWorkspaceInstallResult =
@@ -65,12 +69,17 @@ export interface SlackWorkspaceStorage {
   list(
     cursor?: string,
     limit?: number,
+    userId?: string,
   ): Promise<{
     workspaces: SlackWorkspaceMetadata[];
     next?: string;
   }>;
   read(workspaceId: string): Promise<SlackWorkspaceRecord | null>;
-  metadata(workspaceId: string): Promise<SlackWorkspaceMetadata | null>;
+  metadata(workspaceId: string, userId?: string): Promise<SlackWorkspaceMetadata | null>;
+  botManagers(
+    workspaceId: string,
+  ): Promise<{ revision: string; managers: SlackBotManager[] } | null>;
+  setBotManagers(input: BotManagerUpdate): Promise<BotManagerWriteResult>;
   disconnect(workspaceId: string, expectedRevision?: string): Promise<boolean>;
   /** Hide a retired installation while retaining its callback and ownership fences. */
   remove(workspaceId: string, expectedRevision: string): Promise<boolean>;
@@ -97,9 +106,15 @@ export function createSlackWorkspaceStorage(
   mongoose: typeof import('mongoose'),
 ): SlackWorkspaceStorage {
   const workspaces = createSlackWorkspaceModel(mongoose);
+  const botAccess = createSlackBotAccess(mongoose);
   const flows = createSlackInstallModel(mongoose);
   const generations = createSlackInstallGenerationModel(mongoose);
-  const ensureIndexes = createChannelIndexGate(() => [workspaces, flows, generations]);
+  const ensureIndexes = createChannelIndexGate(() => [
+    workspaces,
+    flows,
+    generations,
+    createAclEntryModel(mongoose),
+  ]);
 
   function tenant(): string | undefined {
     const id = getTenantId();
@@ -121,6 +136,8 @@ export function createSlackWorkspaceStorage(
   }
 
   return {
+    botManagers: botAccess.read,
+    setBotManagers: botAccess.set,
     async app(appId) {
       return generations
         .findOne({
@@ -321,6 +338,8 @@ export function createSlackWorkspaceStorage(
             installOrder: flow.installOrder,
           };
           if (current) {
+            if (current.workspaceId !== workspace.workspaceId)
+              await botAccess.clear(current, session);
             const updated = await workspaces.replaceOne(
               { workspaceId: current.workspaceId, revision: current.revision },
               workspace,
@@ -332,14 +351,16 @@ export function createSlackWorkspaceStorage(
         });
       });
     },
-    async list(cursor, limit = 50) {
+    async list(cursor, limit = 50, userId) {
       const tenantId = tenant();
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
         throw new TypeError('Invalid Slack workspace page size');
+      const allowed = userId ? await botAccess.allowedResources(undefined, userId) : undefined;
       const records = await workspaces
         .find({
           tenantId: tenantId ?? null,
           removedAt: { $exists: false },
+          ...(allowed ? { _id: { $in: [...allowed] } } : {}),
           ...(cursor ? { workspaceId: { $gt: cursor } } : {}),
         })
         .sort({ workspaceId: 1 })
@@ -348,16 +369,24 @@ export function createSlackWorkspaceStorage(
         .lean();
       const page = records.slice(0, limit);
       return {
-        workspaces: page.map(metadata),
+        workspaces: page.map((record) => ({
+          ...metadata(record),
+          ...(userId ? { canManageBot: true } : {}),
+        })),
         ...(records.length > limit ? { next: page[page.length - 1].workspaceId } : {}),
       };
     },
-    async metadata(workspaceId) {
+    async metadata(workspaceId, userId) {
       const record = await workspaces
         .findOne({ workspaceId, tenantId: tenant() ?? null })
         .read('primary')
         .lean();
-      return record ? metadata(record) : null;
+      return record
+        ? {
+            ...metadata(record),
+            ...(userId ? { canManageBot: await botAccess.allows(record, userId) } : {}),
+          }
+        : null;
     },
     async read(workspaceId) {
       return workspaces
@@ -396,6 +425,7 @@ export function createSlackWorkspaceStorage(
           { session },
         );
         if (!disconnected.matchedCount) throw new Error('Slack workspace ownership changed');
+        await botAccess.clear(current, session);
         return true;
       });
     },

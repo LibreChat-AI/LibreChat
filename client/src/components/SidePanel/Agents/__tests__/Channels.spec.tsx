@@ -800,6 +800,7 @@ test('the activation adapter preserves only the approved setup code and clears c
 
 describe('organization workspace connections', () => {
   const workspace: SlackWorkspace = {
+    canManageBot: true,
     workspaceId: 'workspace-1',
     tenantId: 'tenant-a',
     appId: 'A123',
@@ -992,6 +993,20 @@ describe('organization workspace connections', () => {
         expect.objectContaining({ expectedRevision: 'newer-route' }),
       ),
     );
+  });
+
+  test('ungranted bots are not offered for a new connection', async () => {
+    jest.mocked(dataService.getSlackWorkspaces).mockResolvedValue({
+      configured: true,
+      canManage: false,
+      workspaces: [{ ...workspace, canManageBot: false }],
+    });
+    const user = userEvent.setup();
+    renderChannels();
+    await openAdd(user);
+    await screen.findByText('com_ui_channels_workspace_connect_first');
+    expect(screen.queryByRole('button', { name: 'Engineering' })).not.toBeInTheDocument();
+    expect(dataService.createWorkspaceAgentChannel).not.toHaveBeenCalled();
   });
 
   test('members can choose an installed workspace while another user’s route stays protected', async () => {

@@ -46,6 +46,8 @@ export interface SlackWorkspaceHandlers {
   remove: RequestHandler;
   cancel: RequestHandler;
   callback: RequestHandler;
+  managers: RequestHandler;
+  updateManagers: RequestHandler;
 }
 
 /** Browser routes additionally require JWT auth and same-origin protection on writes. */
@@ -55,6 +57,7 @@ export function createSlackWorkspaceHandlers(deps: {
   settings: () => Promise<{
     configured: boolean;
     pageSize: number;
+    maxBotManagers: number;
     setup?: { redirectUri: string; eventsBaseUrl: string; interactionsBaseUrl: string };
   }>;
   canManage: (principal: SlackWorkspacePrincipal) => Promise<boolean>;
@@ -104,6 +107,62 @@ export function createSlackWorkspaceHandlers(deps: {
     });
 
   return {
+    managers: browser(async (req, res, principal) => {
+      if (!(await deps.canManage(principal))) {
+        res.sendStatus(403);
+        return;
+      }
+      const id = identifier.safeParse(req.params.workspaceId);
+      if (!id.success) {
+        res.sendStatus(400);
+        return;
+      }
+      const [settings, current] = await Promise.all([
+        deps.settings(),
+        deps.storage.botManagers(id.data),
+      ]);
+      if (!settings.configured || !current) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json({ ...current, maxManagers: settings.maxBotManagers });
+    }),
+    updateManagers: browser(async (req, res, principal) => {
+      if (!(await deps.canManage(principal))) {
+        res.sendStatus(403);
+        return;
+      }
+      const id = identifier.safeParse(req.params.workspaceId);
+      const input = z
+        .object({ revision: identifier, userIds: z.array(z.string().regex(/^[a-f\d]{24}$/i)) })
+        .strict()
+        .safeParse(req.body);
+      if (!id.success || !input.success) {
+        res.sendStatus(400);
+        return;
+      }
+      const settings = await deps.settings();
+      if (!settings.configured) {
+        res.sendStatus(404);
+        return;
+      }
+      if (new Set(input.data.userIds).size > settings.maxBotManagers) {
+        res.status(400).json({ error: 'too_many_managers' });
+        return;
+      }
+      const result = await deps.storage.setBotManagers({
+        workspaceId: id.data,
+        revision: input.data.revision,
+        userIds: input.data.userIds,
+        actorId: principal.id,
+        maxManagers: settings.maxBotManagers,
+      });
+      if (!result.ok) {
+        res.status(409).json({ error: result.code });
+        return;
+      }
+      res.json({ revision: result.revision });
+    }),
     apps: browser(async (req, res, principal) => {
       const page = pageQuery.safeParse(req.query);
       if (!page.success) {
@@ -155,7 +214,7 @@ export function createSlackWorkspaceHandlers(deps: {
         return;
       }
       const [workspace, settings, canManage] = await Promise.all([
-        deps.storage.metadata(id.data),
+        deps.storage.metadata(id.data, principal.id),
         deps.settings(),
         deps.canManage(principal),
       ]);
@@ -163,7 +222,11 @@ export function createSlackWorkspaceHandlers(deps: {
         res.sendStatus(404);
         return;
       }
-      res.json({ configured: settings.configured, canManage, workspace });
+      res.json({
+        configured: settings.configured,
+        canManage,
+        workspace: { ...workspace, canManageBot: canManage || workspace.canManageBot === true },
+      });
     }),
     list: browser(async (req, res, principal) => {
       const page = pageQuery.safeParse(req.query);
@@ -171,15 +234,20 @@ export function createSlackWorkspaceHandlers(deps: {
         res.status(400).json({ ok: false, error: { code: 'invalid_page' } });
         return;
       }
-      const settings = await deps.settings();
-      const [workspaces, canManage] = await Promise.all([
-        deps.storage.list(page.data.cursor, settings.pageSize),
-        deps.canManage(principal),
-      ]);
+      const [settings, canManage] = await Promise.all([deps.settings(), deps.canManage(principal)]);
+      const workspaces = await deps.storage.list(
+        page.data.cursor,
+        settings.pageSize,
+        canManage ? undefined : principal.id,
+      );
       res.json({
         configured: settings.configured,
         canManage,
         ...workspaces,
+        workspaces: workspaces.workspaces.map((workspace) => ({
+          ...workspace,
+          canManageBot: canManage || workspace.canManageBot === true,
+        })),
       });
     }),
     connect: browser(async (req, res, principal) => {

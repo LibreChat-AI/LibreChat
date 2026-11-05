@@ -133,9 +133,13 @@ export function createSlackWorkspaceBindingHandlers(deps: {
         res.sendStatus(400);
         return;
       }
-      const workspace = await deps.workspaces.read(input.data.workspaceId);
+      const workspace = await deps.workspaces.metadata(input.data.workspaceId, principal.id);
       if (workspace?.status !== 'active' || !(await deps.readSettings(workspace.appId)).app) {
         res.sendStatus(404);
+        return;
+      }
+      if (!workspace.canManageBot && !(await deps.canManage(principal))) {
+        res.status(403).json({ error: 'bot_access_required' });
         return;
       }
       const channel = await deps.channels.createAgentChannel({
@@ -171,9 +175,12 @@ export function createSlackWorkspaceBindingHandlers(deps: {
             ? await deps.channels.getAgentChannelMetadata(route.channelId)
             : null;
         const [canReplace, assignedAgentName] = await Promise.all([
-          !route || route.channelId === channel.channelId || previous?.createdBy === principal.id
-            ? true
-            : deps.canManage(principal),
+          deps.workspaces
+            .metadata(channel.workspaceId, principal.id)
+            .then(
+              async (workspace) =>
+                workspace?.canManageBot === true || (await deps.canManage(principal)),
+            ),
           previous
             ? deps.getAgentName(previous.agentId, principal.tenantId, { userId: principal.id })
             : undefined,
@@ -210,9 +217,14 @@ export function createSlackWorkspaceBindingHandlers(deps: {
         res.status(409).json({ error: 'channel_changed' });
         return;
       }
-      const workspace = await deps.workspaces.metadata(channel.workspaceId);
+      const workspace = await deps.workspaces.metadata(channel.workspaceId, principal.id);
       if (workspace?.status !== 'active' || !(await deps.readSettings(workspace.appId)).app) {
         res.status(409).json({ error: 'workspace_unavailable' });
+        return;
+      }
+      const isBotAdmin = !workspace.canManageBot && (await deps.canManage(principal));
+      if (!workspace.canManageBot && !isBotAdmin) {
+        res.status(403).json({ error: 'bot_access_required' });
         return;
       }
       const result = await deps.routes.assign({
@@ -222,7 +234,7 @@ export function createSlackWorkspaceBindingHandlers(deps: {
         channelRevision: input.data.channelRevision,
         externalChannelId: input.data.externalChannelId,
         expectedRevision: input.data.expectedRevision,
-        allowReplaceOthers: input.data.expectedRevision ? await deps.canManage(principal) : false,
+        isBotAdmin,
         activate: channel.status !== 'active',
       });
       if (!result.ok) {
