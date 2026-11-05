@@ -137,7 +137,7 @@ test('disconnect requires confirmation and refreshes the org workspace state', a
   const appReads = jest.mocked(dataService.getSlackApps).mock.calls.length;
   await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_disconnect' }));
   expect(disconnect).not.toHaveBeenCalled();
-  const confirmation = screen.getByRole('group', { name: 'com_ui_slack_workspaces_confirm' });
+  const confirmation = screen.getByRole('dialog', { name: 'com_ui_slack_workspaces_disconnect' });
   await user.click(
     within(confirmation).getByRole('button', { name: 'com_ui_slack_workspaces_disconnect' }),
   );
@@ -149,7 +149,7 @@ test('disconnect requires confirmation and refreshes the org workspace state', a
   expect(
     screen.queryByRole('button', { name: 'com_ui_slack_workspaces_reconnect' }),
   ).not.toBeInTheDocument();
-  expect(screen.queryByRole('group')).not.toBeInTheDocument();
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 });
 
 test('only admins can confirm removal of a disconnected workspace', async () => {
@@ -158,12 +158,16 @@ test('only admins can confirm removal of a disconnected workspace', async () => 
   const { client } = page();
   await user.click(await screen.findByRole('button', { name: 'com_ui_slack_workspaces_remove' }));
   expect(dataService.removeSlackWorkspace).not.toHaveBeenCalled();
+  expect(
+    screen.getByRole('dialog', { name: 'com_ui_slack_workspaces_remove' }),
+  ).toBeInTheDocument();
   expect(screen.getAllByRole('button', { name: 'com_ui_slack_workspaces_remove' })).toHaveLength(1);
-  await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
-  expect(screen.queryByRole('group')).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(screen.getByRole('button', { name: 'com_ui_slack_workspaces_remove' })).toHaveFocus();
   await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_remove' }));
   await user.click(
-    within(screen.getByRole('group')).getByRole('button', {
+    within(screen.getByRole('dialog')).getByRole('button', {
       name: 'com_ui_slack_workspaces_remove',
     }),
   );
@@ -171,6 +175,9 @@ test('only admins can confirm removal of a disconnected workspace', async () => 
     expect(dataService.removeSlackWorkspace).toHaveBeenCalledWith('workspace-1', 'revision-1'),
   );
   await waitFor(() => expect(screen.queryByText('Engineering')).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: 'com_ui_slack_workspaces_title' })).toHaveFocus(),
+  );
   response = {
     ...response,
     canManage: false,
@@ -197,15 +204,15 @@ test('keeps the confirmed revision when workspace metadata changes before discon
   });
   disconnect.mockRejectedValueOnce(new Error('Workspace changed'));
   await user.click(
-    within(screen.getByRole('group')).getByRole('button', {
+    within(screen.getByRole('dialog')).getByRole('button', {
       name: 'com_ui_slack_workspaces_disconnect',
     }),
   );
   await waitFor(() => expect(disconnect).toHaveBeenLastCalledWith('workspace-1', 'revision-1'));
-  await waitFor(() => expect(screen.queryByRole('group')).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_disconnect' }));
   await user.click(
-    within(screen.getByRole('group')).getByRole('button', {
+    within(screen.getByRole('dialog')).getByRole('button', {
       name: 'com_ui_slack_workspaces_disconnect',
     }),
   );

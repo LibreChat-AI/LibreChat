@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Button, Chip, Spinner } from '@librechat/client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { MutationKeys, QueryKeys, dataService } from 'librechat-data-provider';
+import { Button, Chip, OGDialog, OGDialogTemplate, Spinner } from '@librechat/client';
 import type { SlackWorkspace } from 'librechat-data-provider';
 import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
 import { useSlackWorkspaces } from './useSlackWorkspaces';
@@ -30,6 +30,9 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
   const [confirm, setConfirm] = useState<SlackWorkspace | null>(null);
+  const actionRef = useRef<HTMLButtonElement | null>(null);
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const settingsRef = useRef<HTMLElement | null>(null);
   const flow = useRef<string | null>(null);
   const deadline = useRef<ReturnType<typeof setTimeout>>();
   const mounted = useRef(true);
@@ -55,8 +58,11 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
         ? dataService.removeSlackWorkspace(workspace.workspaceId, workspace.revision)
         : dataService.disconnectSlackWorkspace(workspace.workspaceId, workspace.revision),
     onSettled: async () => {
-      setConfirm(null);
-      await refresh();
+      try {
+        await refresh();
+      } finally {
+        setConfirm(null);
+      }
     },
   });
   const cancel = useMutation({
@@ -157,7 +163,7 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
   const busy = pending || connect.isLoading || retire.isLoading || cancel.isLoading;
   return (
     <section className="space-y-4" aria-labelledby={`${id}-title`}>
-      <h2 id={`${id}-title`} className="font-medium">
+      <h2 ref={headingRef} tabIndex={-1} id={`${id}-title`} className="font-medium">
         {localize('com_ui_slack_workspaces_title')}
       </h2>
       <p className="text-text-secondary">{localize('com_ui_slack_workspaces_description')}</p>
@@ -223,7 +229,7 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
               {localize(workspaceStatusLabel(workspace, first?.configured))}
             </Chip>
           </div>
-          {first?.canManage && confirm?.workspaceId !== workspace.workspaceId && (
+          {first?.canManage && (
             <div className="flex flex-wrap gap-2">
               {first.configured && workspace.status === 'active' && (
                 <Button
@@ -234,33 +240,21 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
                   {localize('com_ui_slack_workspaces_reconnect')}
                 </Button>
               )}
-              {workspace.status === 'active' && (
-                <Button variant="outline" disabled={busy} onClick={() => setConfirm(workspace)}>
-                  {localize('com_ui_slack_workspaces_disconnect')}
-                </Button>
-              )}
-              {workspace.status === 'disconnected' && (
-                <Button variant="outline" disabled={busy} onClick={() => setConfirm(workspace)}>
-                  {localize('com_ui_slack_workspaces_remove')}
-                </Button>
-              )}
-            </div>
-          )}
-          {first?.canManage && confirm?.workspaceId === workspace.workspaceId && (
-            <div role="group" aria-label={localize(confirmLabel)} className="space-y-2">
-              <p>{localize(confirmLabel)}</p>
-              <div className="flex gap-2">
-                <Button
-                  variant="destructive"
-                  disabled={busy}
-                  onClick={() => retire.mutate(confirm)}
-                >
-                  {localize(confirmAction)}
-                </Button>
-                <Button variant="outline" disabled={busy} onClick={() => setConfirm(null)}>
-                  {localize('com_ui_cancel')}
-                </Button>
-              </div>
+              <Button
+                variant="outline"
+                disabled={busy}
+                onClick={(event) => {
+                  actionRef.current = event.currentTarget;
+                  settingsRef.current = event.currentTarget.closest<HTMLElement>('[role="dialog"]');
+                  setConfirm(workspace);
+                }}
+              >
+                {localize(
+                  workspace.status === 'disconnected'
+                    ? 'com_ui_slack_workspaces_remove'
+                    : 'com_ui_slack_workspaces_disconnect',
+                )}
+              </Button>
             </div>
           )}
         </div>
@@ -274,6 +268,40 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
           {localize('com_ui_slack_workspaces_more')}
         </Button>
       )}
+      <OGDialog
+        open={confirm !== null && first?.canManage === true}
+        onOpenChange={(open) => {
+          if (!open && !retire.isLoading) setConfirm(null);
+        }}
+      >
+        <OGDialogTemplate
+          className="max-w-md"
+          title={localize(confirmAction)}
+          description={confirm?.teamName}
+          main={<p className="text-text-secondary text-sm">{localize(confirmLabel)}</p>}
+          cancelDisabled={retire.isLoading}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            if (actionRef.current?.isConnected) actionRef.current.focus();
+            else if (headingRef.current?.isConnected) headingRef.current.focus();
+            else settingsRef.current?.focus();
+          }}
+          selection={
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={busy || !confirm || first?.canManage !== true}
+              aria-busy={retire.isLoading}
+              onClick={() => {
+                if (confirm) retire.mutate(confirm);
+              }}
+            >
+              {retire.isLoading && <Spinner className="size-4" aria-hidden="true" />}
+              {localize(confirmAction)}
+            </Button>
+          }
+        />
+      </OGDialog>
     </section>
   );
 }
