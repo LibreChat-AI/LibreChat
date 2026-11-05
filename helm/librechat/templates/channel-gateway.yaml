@@ -7,6 +7,10 @@
 {{- if and (eq $mode "shared") (or $gateway.channelId (ne $gateway.tenantId "_")) }}
 {{- fail "Shared gateway mode requires an empty channelId and the default tenantId _" }}
 {{- end }}
+{{- $externalMongo := or (get (default dict .Values.librechat.configEnv) "MONGO_URI") (include "librechat.userEnvHas" (dict "root" . "name" "MONGO_URI")) (eq (toString (default dict .Values.librechat.injectBundledCredentials).mongodb) "false") }}
+{{- if and (eq $mode "shared") .Values.mongodb.enabled (not $externalMongo) (ne (.Values.mongodb.architecture | default "standalone") "replicaset") }}
+{{- fail "Shared Slack workspaces require transaction-capable MongoDB: set mongodb.architecture=replicaset, or configure an external transaction-capable MONGO_URI" }}
+{{- end }}
 {{- $replicas := $gateway.replicaCount | toString }}
 {{- if not (regexMatch "^[1-9][0-9]*$" $replicas) }}
 {{- fail "channelGateway.replicaCount must be a positive integer" }}
