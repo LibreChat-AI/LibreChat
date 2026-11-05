@@ -158,6 +158,10 @@ test('only admins can confirm removal of a disconnected workspace', async () => 
   const { client } = page();
   await user.click(await screen.findByRole('button', { name: 'com_ui_slack_workspaces_remove' }));
   expect(dataService.removeSlackWorkspace).not.toHaveBeenCalled();
+  expect(screen.getAllByRole('button', { name: 'com_ui_slack_workspaces_remove' })).toHaveLength(1);
+  await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
+  expect(screen.queryByRole('group')).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_remove' }));
   await user.click(
     within(screen.getByRole('group')).getByRole('button', {
       name: 'com_ui_slack_workspaces_remove',
