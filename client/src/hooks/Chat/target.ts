@@ -56,14 +56,14 @@ export default function useTarget(
     isAssistant && !!(endpointConfig?.userProvide || endpointConfig?.userProvideURL);
   const checkUserKey = useUserKeyQuery(endpoint, {
     enabled: userProvidesCredentials,
-    staleTime: Infinity,
+    refetchOnMount: true,
     notifyOnChangeProps: 'all',
   });
   const expiresAt = checkUserKey.data?.expiresAt;
   const credentialsReady =
     !userProvidesCredentials ||
     (checkUserKey.isSuccess &&
-      !checkUserKey.isStale &&
+      queryClient.getQueryState([QueryKeys.name, endpoint])?.isInvalidated !== true &&
       !!expiresAt &&
       (expiresAt === 'never' || new Date(expiresAt).getTime() > Date.now()));
   const assistantEnabled = isAssistant && !!endpointConfig && credentialsReady;
