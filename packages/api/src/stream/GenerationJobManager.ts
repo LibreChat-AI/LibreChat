@@ -5221,8 +5221,15 @@ class GenerationJobManagerClass {
       setImmediate(() => {
         if (terminal) {
           terminalEventQueued = false;
-          if (terminal.type === 'done') deliverDone(terminal.event);
-          else deliverError(terminal.error);
+          try {
+            if (terminal.type === 'done') deliverDone(terminal.event);
+            else deliverError(terminal.error);
+          } catch (error) {
+            logger.warn(
+              '[GenerationJobManager] Failed to deliver attached terminal callback',
+              getSafeErrorMetadata(error),
+            );
+          }
         }
         afterAttachment?.();
       });
