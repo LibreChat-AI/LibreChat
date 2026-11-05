@@ -240,13 +240,13 @@ describe('ChatView landing footer', () => {
     mockChatFormProps.mockClear();
   });
 
-  test('renders the full footer beneath the welcome screen by default', () => {
+  test('renders the full footer under the composer by default, in its own room', () => {
     render(<ChatView />);
 
     expect(screen.getByTestId('landing-footer')).toBeInTheDocument();
     expect(screen.queryByTestId('configured-footer')).not.toBeInTheDocument();
     expect(mockChatFormProps).toHaveBeenLastCalledWith(
-      expect.objectContaining({ footerBelow: true }),
+      expect.objectContaining({ footerBelow: false }),
     );
   });
 

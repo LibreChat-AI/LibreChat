@@ -135,8 +135,8 @@ export default function ChatScreen({
             ? localize('com_ui_new_chat_in_project', { name: landingProject.name })
             : undefined,
       })}
+      fullFooter={chrome.fullFooter ? renderFooter?.('full') : null}
       bandFooter={chrome.bandFooter ? renderFooter?.('band') : null}
-      footer={chrome.fullFooter ? renderFooter?.('full') : null}
       renderMascot={renderMascot ? (bandRef) => renderMascot(bandRef, view.isLanding) : undefined}
     />
   );

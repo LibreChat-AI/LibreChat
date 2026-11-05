@@ -74,8 +74,13 @@ test.describe('welcome screen heading and footer', () => {
       const main = await openAgentLanding(page, agentId);
 
       await expect(main.getByText(name, { exact: true }).last()).toBeVisible();
-      await expect(page.getByText(DISCLAIMER)).toBeVisible();
-      await expect.poll(() => composerClearance(page)).toBeGreaterThan(16);
+      const disclaimer = page.getByText(DISCLAIMER);
+      await expect(disclaimer).toBeVisible();
+      /** The footer sits directly under the composer, not at the bottom of the page. */
+      await expect.poll(() => composerClearance(page)).toBe(16);
+      const composerBox = await page.locator('form:has(#prompt-textarea)').boundingBox();
+      const disclaimerBox = await disclaimer.boundingBox();
+      expect(disclaimerBox!.y - (composerBox!.y + composerBox!.height)).toBeLessThanOrEqual(24);
     } finally {
       await cleanupAgent(page, agentId);
     }
