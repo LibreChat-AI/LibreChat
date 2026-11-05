@@ -102,6 +102,24 @@ describe('resolveThreadRows', () => {
   });
 });
 
+describe('resolveThreadRows on a 12,000-message chain', () => {
+  const chain = Array.from({ length: 12_000 }, (_, i) =>
+    message(`large-${i}`, i === 0 ? ROOT : `large-${i - 1}`),
+  );
+
+  it('walks the whole branch without recursing, and reuses rows only when handed them', () => {
+    const index = buildThreadIndex(chain);
+    const rows = resolveThreadRows(index, 'c', () => 0, null);
+    expect(rows).toHaveLength(12_000);
+    expect(rows[11_999].source.messageId).toBe('large-11999');
+
+    expect(resolveThreadRows(index, 'c', () => 0, rows)).toBe(rows);
+    const fresh = resolveThreadRows(index, 'other', () => 0, null);
+    expect(fresh).not.toBe(rows);
+    expect(fresh[0]).not.toBe(rows[0]);
+  });
+});
+
 describe('resolveThreadRows with a file map', () => {
   it('hydrates files on the row while reusing the raw cache identity', () => {
     const withFile = { ...message('u1', ROOT), files: [{ file_id: 'f1' }] } as TMessage;
