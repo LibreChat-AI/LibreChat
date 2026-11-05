@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/extend-expect';
@@ -5,8 +8,9 @@ import type { MemoryArtifact } from 'librechat-data-provider';
 import MemoryInfo from '../MemoryInfo';
 
 // Mock the localize hook
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string, params?: Record<string, any>) => {
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string, params?: Record<string, unknown>) => {
     const translations: Record<string, string> = {
       com_ui_memory_already_exceeded: `Memory storage already full - exceeded by ${params?.tokens || 0} tokens. Delete existing memories before adding new ones.`,
       com_ui_memory_would_exceed: `Cannot save - would exceed limit by ${params?.tokens || 0} tokens. Delete existing memories to make space.`,
@@ -201,7 +205,7 @@ describe('MemoryInfo', () => {
     });
 
     test('returns null when no memories of any type exist', () => {
-      const memoryArtifacts: MemoryArtifact[] = [{ type: 'unknown' as any, key: 'test' }];
+      const memoryArtifacts: MemoryArtifact[] = JSON.parse('[{"type":"unknown","key":"test"}]');
 
       const { container } = render(<MemoryInfo memoryArtifacts={memoryArtifacts} />);
       expect(container.firstChild).toBeNull();

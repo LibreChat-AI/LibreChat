@@ -1,8 +1,9 @@
 import { createContext, useContext } from 'react';
+import { useLocalize } from '@librechat/client';
 import { Constants, actionDelimiter } from 'librechat-data-provider';
-import { getToolDisplayLabel, isToolCallPreparing } from '@librechat/chat';
-import type { ToolPreparationInput } from '@librechat/chat';
-import { useLocalize } from '~/hooks';
+import type { ToolPreparationInput } from '../../core/parts/preparation';
+import { isToolCallPreparing } from '../../core/parts/preparation';
+import { getToolDisplayLabel } from '../../core/parts/toolLabels';
 
 const ToolPreparationContext = createContext<string | undefined>(undefined);
 
@@ -19,7 +20,7 @@ export function ToolPreparation({
   call: ToolPreparationInput & { name?: string };
   isSubmitting: boolean;
   children: React.ReactNode;
-}) {
+}): React.ReactElement | null {
   const localize = useLocalize();
   const name = call.name ?? '';
   let text: string | undefined;

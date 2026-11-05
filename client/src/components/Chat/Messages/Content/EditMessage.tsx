@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { findRerunParent } from '@librechat/chat';
+import { Container } from '@librechat/chat/components';
 import { Alert, Button, TextareaAutosize } from '@librechat/client';
 import { useUpdateMessageMutation } from 'librechat-data-provider/react-query';
 import type { TEditProps } from '~/common';
@@ -8,7 +9,6 @@ import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { cn, isSubmittableMessage } from '~/utils';
 import { useLocalize } from '~/hooks';
-import Container from './Container';
 import EditFiles from './EditFiles';
 
 const EditMessage = ({

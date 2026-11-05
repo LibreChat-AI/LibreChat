@@ -1,15 +1,14 @@
 import { useMemo } from 'react';
 import { Brain } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
-import { BareStatus } from '@librechat/chat/components';
 import { toolPanelSpacingClassName } from '@librechat/chat/react';
+import { BareStatus, MemoryInfo } from '@librechat/chat/components';
 import { parseJsonField, isMemoryFailureOutput } from '@librechat/chat';
 import type { PartMetadata, TAttachment, MemoryArtifact } from 'librechat-data-provider';
 import type { MemoryToolName } from '@librechat/chat';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
-import MemoryInfo from '../MemoryInfo';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

@@ -3,6 +3,7 @@ import { Tools } from 'librechat-data-provider';
 import { TooltipAnchor } from '@librechat/client';
 import { useRowHandoff } from '@librechat/chat/react';
 import { resolveToolCallPhase } from '@librechat/chat';
+import { useToolPreparation } from '@librechat/chat/components';
 import { FileText, FileSpreadsheet, FileCode, FileImage, File } from 'lucide-react';
 import {
   toolPanelSpacingClassName,
@@ -16,7 +17,6 @@ import { useLocalize, useProgress, useExpandCollapse } from '~/hooks';
 import { ToolIcon, OutputRenderer, isError } from './ToolOutput';
 import FilePreviewDialog from './FilePreviewDialog';
 import { sortPagesByRelevance, cn } from '~/utils';
-import { useToolPreparation } from './preparation';
 import { useGetFiles } from '~/data-provider';
 import ProgressText from './ProgressText';
 

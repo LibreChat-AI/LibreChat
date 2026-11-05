@@ -1,7 +1,6 @@
 import { ScrollText } from 'lucide-react';
-import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '@librechat/chat/components';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import { cn, useLocalize } from '@librechat/client';
+import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 
 /**
  * Minimal variant of `SkillCall` used for the interim window between
@@ -27,7 +26,7 @@ export default function PendingSkillCall({
 }: {
   skillName: string;
   loaded: boolean;
-}) {
+}): React.ReactElement | null {
   const localize = useLocalize();
   const text = loaded
     ? localize('com_ui_skill_finished', { 0: skillName })

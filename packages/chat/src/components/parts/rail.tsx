@@ -6,10 +6,10 @@ import {
   useLayoutEffect,
   useSyncExternalStore,
 } from 'react';
+import { cn } from '@librechat/client';
 import { CircleMinus } from 'lucide-react';
-import { ROW_GLYPH_SLOT, FOLD_GLYPH_SELECTOR } from '@librechat/chat/components';
 import type { ReactNode, RefObject } from 'react';
-import { cn } from '~/utils';
+import { ROW_GLYPH_SLOT, FOLD_GLYPH_SELECTOR } from './rows';
 
 /**
  * Whether a fold's rail is under the pointer. The rail lives in the panel and
@@ -22,10 +22,13 @@ export type RailHover = {
   subscribe: (listener: () => void) => () => void;
 };
 
-export const FoldHeaderContext = createContext<{
+type FoldHeaderValue = {
   header: RefObject<HTMLDivElement>;
   expanded: boolean;
-} | null>(null);
+};
+
+export const FoldHeaderContext: React.Context<FoldHeaderValue | null> =
+  createContext<FoldHeaderValue | null>(null);
 
 function createRailHover(): RailHover {
   let hovered = false;
@@ -55,7 +58,13 @@ export function useRailHover(): RailHover {
 
 /** The header's glyph, swapped for a collapse knob while the fold's rail is
  *  hovered, so the reader sees which fold the rail closes before clicking. */
-export function RailGlyph({ hover, children }: { hover: RailHover; children: ReactNode }) {
+export function RailGlyph({
+  hover,
+  children,
+}: {
+  hover: RailHover;
+  children: ReactNode;
+}): React.ReactElement | null {
   const hovered = useSyncExternalStore(hover.subscribe, hover.get, hover.get);
   return (
     <span className={cn(ROW_GLYPH_SLOT, 'relative')} aria-hidden="true">
@@ -178,7 +187,7 @@ export function FoldRail({
   hover: RailHover;
   expanded: boolean;
   onCollapse: () => void;
-}) {
+}): React.ReactElement | null {
   const railRef = useRef<HTMLButtonElement>(null);
   const centers = useBranchCenters(railRef);
   /** Collapsed approval bodies stay mounted without a pointer leave. */
@@ -282,7 +291,7 @@ export function litFoldPath(
   root: Element,
   target: Element,
   y: number,
-  glyphsByPanel = new WeakMap<Element, Element[]>(),
+  glyphsByPanel: WeakMap<Element, Element[]> = new WeakMap(),
 ): LitRail[] {
   if (target.closest(FOLD_RAIL) != null) {
     return [];
@@ -519,7 +528,7 @@ function paintFoldPath(previous: LitRail[], next: LitRail[]) {
  * nested in another leaves the work to that one. `hasBody` re-arms it once the fold's
  * panel, and with it the root, has rendered.
  */
-export function useFoldPath(rootRef: RefObject<HTMLElement>, hasBody: boolean) {
+export function useFoldPath(rootRef: RefObject<HTMLElement>, hasBody: boolean): void {
   useEffect(() => {
     const root = rootRef.current;
     if (!hasBody || root == null || root.parentElement?.closest(FOLD_ROOT) != null) {
@@ -659,7 +668,7 @@ export function revealFoldHeader(
   root: HTMLElement | null,
   header: HTMLElement | null,
   stickyHeader?: HTMLElement | null,
-) {
+): void {
   if (root == null || header == null || typeof root.scrollIntoView !== 'function') {
     return;
   }

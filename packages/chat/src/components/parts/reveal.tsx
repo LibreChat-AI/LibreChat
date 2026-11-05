@@ -8,10 +8,8 @@ import {
   useState,
 } from 'react';
 import { CircleX } from 'lucide-react';
-import { Button } from '@librechat/client';
-import type { TranslationKeys } from '~/hooks';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import { Button, cn, useLocalize } from '@librechat/client';
+import type { TranslationKeys } from '@librechat/client';
 
 /**
  * A request to show the failed calls under a header, travelling DOWN the fold
@@ -29,7 +27,10 @@ export type FailedReveal = {
   claimFocus: (() => boolean) | null;
 };
 
-export const FailedRevealContext = createContext<FailedReveal>({ tick: 0, claimFocus: null });
+export const FailedRevealContext: React.Context<FailedReveal> = createContext<FailedReveal>({
+  tick: 0,
+  claimFocus: null,
+});
 
 /**
  * Issues requests to the consumers below. A request made while the body is
@@ -113,7 +114,7 @@ export function FailedRevealPill({
   total: number;
   onReveal: () => void;
   className?: string;
-}) {
+}): React.ReactElement | null {
   const severe = count > 0 && count >= total;
   const localize = useLocalize();
   if (count === 0) {
