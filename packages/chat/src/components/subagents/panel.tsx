@@ -1647,8 +1647,9 @@ export default function SubagentThreadPanel({
                   behind it. */
               portal={false}
               onOpenChange={setActorPickerOpen}
-              containerClassName="min-w-0 flex-1 px-0"
-              className="hover:bg-surface-hover h-9 w-full border-transparent bg-transparent font-semibold"
+              variant="field"
+              containerClassName="min-w-0 flex-1"
+              className="h-9 w-full"
               showCarat
             />
           </div>
@@ -1706,8 +1707,8 @@ export default function SubagentThreadPanel({
            two end on one line when the panel is open beside the thread. */
         <div className={cn('shrink-0 px-3 pt-2', clearsFooter ? 'pb-10' : 'pb-4')}>
           {transientControl?.status === 'failed' && (
-            <Alert variant="error" className="mb-2 flex items-center gap-2">
-              <span className="min-w-0 flex-1">
+            <Alert variant="error" className="mb-2 flex items-center">
+              <span className="me-2 min-w-0 flex-1">
                 {localize(failedControlLocaleKey(transientControl.reason))}
               </span>
               {retryControl != null && (
@@ -1757,11 +1758,11 @@ export default function SubagentThreadPanel({
                           key={action.key}
                           type="button"
                           size="icon"
+                          shape="round"
                           variant="quiet"
                           aria-label={action.label}
                           disabled={action.disabled}
                           onClick={action.onClick}
-                          className="size-9 rounded-full"
                         >
                           {action.icon}
                         </Button>
