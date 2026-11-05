@@ -48,10 +48,12 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
     mutationFn: (input: { workspaceId?: string; appId?: string }) =>
       dataService.connectSlackWorkspace(input.workspaceId, input.appId),
   });
-  const disconnect = useMutation({
-    mutationKey: [MutationKeys.slackWorkspaces, principalKey, 'disconnect'],
+  const retire = useMutation({
+    mutationKey: [MutationKeys.slackWorkspaces, principalKey, 'retire'],
     mutationFn: (workspace: SlackWorkspace) =>
-      dataService.disconnectSlackWorkspace(workspace.workspaceId, workspace.revision),
+      workspace.status === 'disconnected'
+        ? dataService.removeSlackWorkspace(workspace.workspaceId, workspace.revision)
+        : dataService.disconnectSlackWorkspace(workspace.workspaceId, workspace.revision),
     onSettled: async () => {
       setConfirm(null);
       await refresh();
@@ -143,7 +145,15 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
   const first = status.data?.pages[0];
   const workspaces = status.data?.pages.flatMap((page) => page.workspaces) ?? [];
   if (first && !first.configured && workspaces.length === 0) return null;
-  const busy = pending || connect.isLoading || disconnect.isLoading || cancel.isLoading;
+  const confirmLabel =
+    confirm?.status === 'disconnected'
+      ? 'com_ui_slack_workspaces_remove_confirm'
+      : 'com_ui_slack_workspaces_confirm';
+  const confirmAction =
+    confirm?.status === 'disconnected'
+      ? 'com_ui_slack_workspaces_remove'
+      : 'com_ui_slack_workspaces_disconnect';
+  const busy = pending || connect.isLoading || retire.isLoading || cancel.isLoading;
   return (
     <section className="space-y-4" aria-labelledby={`${id}-title`}>
       <h2 id={`${id}-title`} className="font-medium">
@@ -151,12 +161,12 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
       </h2>
       <p className="text-text-secondary">{localize('com_ui_slack_workspaces_description')}</p>
       {status.isLoading && <Spinner />}
-      {(status.isError || failed || disconnect.isError || cancel.isError) && (
+      {(status.isError || failed || retire.isError || cancel.isError) && (
         <div role="alert" className="space-y-2">
           <p>
             {localize(
               channelErrorLabel(
-                connect.error ?? disconnect.error ?? cancel.error ?? status.error,
+                connect.error ?? retire.error ?? cancel.error ?? status.error,
                 'com_ui_slack_workspaces_error',
               ),
             )}
@@ -166,7 +176,7 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
             onClick={() => {
               setFailed(false);
               connect.reset();
-              disconnect.reset();
+              retire.reset();
               cancel.reset();
               void status.refetch();
             }}
@@ -221,22 +231,23 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
                   {localize('com_ui_slack_workspaces_disconnect')}
                 </Button>
               )}
+              {workspace.status === 'disconnected' && (
+                <Button variant="outline" disabled={busy} onClick={() => setConfirm(workspace)}>
+                  {localize('com_ui_slack_workspaces_remove')}
+                </Button>
+              )}
             </div>
           )}
-          {confirm?.workspaceId === workspace.workspaceId && (
-            <div
-              role="group"
-              aria-label={localize('com_ui_slack_workspaces_confirm')}
-              className="space-y-2"
-            >
-              <p>{localize('com_ui_slack_workspaces_confirm')}</p>
+          {first?.canManage && confirm?.workspaceId === workspace.workspaceId && (
+            <div role="group" aria-label={localize(confirmLabel)} className="space-y-2">
+              <p>{localize(confirmLabel)}</p>
               <div className="flex gap-2">
                 <Button
                   variant="destructive"
                   disabled={busy}
-                  onClick={() => disconnect.mutate(confirm)}
+                  onClick={() => retire.mutate(confirm)}
                 >
-                  {localize('com_ui_slack_workspaces_disconnect')}
+                  {localize(confirmAction)}
                 </Button>
                 <Button variant="outline" disabled={busy} onClick={() => setConfirm(null)}>
                   {localize('com_ui_cancel')}

@@ -7,6 +7,7 @@ import { applyTenantIsolation } from './plugins/tenantIsolation';
 export interface SlackWorkspaceRecord extends SlackWorkspace {
   encryptedBotToken?: string;
   installOrder: number;
+  removedAt?: Date;
   authorityWrites?: number;
 }
 
@@ -54,6 +55,7 @@ export function createSlackWorkspaceModel(
       encryptedBotToken: { type: String, select: false },
       installOrder: { type: Number, required: true },
       authorityWrites: { type: Number, default: 0 },
+      removedAt: Date,
     },
     { timestamps: true },
   );
