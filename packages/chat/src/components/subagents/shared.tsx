@@ -129,19 +129,21 @@ export default function SharedSubagentActivityDialog({
         className="flex h-[min(90vh,48rem)] w-11/12 max-w-3xl flex-col gap-0 overflow-hidden p-0"
         onCloseAutoFocus={restoreTriggerFocus}
       >
-        <OGDialogHeader className="border-border-light shrink-0 border-b px-5 py-4 pe-14">
-          <div className="flex min-w-0 items-center gap-2">
-            <span
-              aria-hidden="true"
-              className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full"
-            >
-              {childAuthor.icon}
-            </span>
-            <OGDialogTitle className="truncate text-start text-base" title={title}>
-              {title}
-            </OGDialogTitle>
-          </div>
-        </OGDialogHeader>
+        <div className="border-border-light shrink-0 border-b">
+          <OGDialogHeader className="px-5 py-4 pe-14">
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                aria-hidden="true"
+                className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full"
+              >
+                {childAuthor.icon}
+              </span>
+              <OGDialogTitle className="truncate text-start text-base" title={title}>
+                {title}
+              </OGDialogTitle>
+            </div>
+          </OGDialogHeader>
+        </div>
         <MessageSurfaceContext.Provider value="bg-surface-dialog">
           <SubagentActivityScrollSurface padded={false}>
             <SubagentConversation

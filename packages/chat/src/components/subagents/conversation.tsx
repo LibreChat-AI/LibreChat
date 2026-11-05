@@ -16,13 +16,11 @@ import type { ChildConversationTurn } from '../../react/subagents/adapters';
 import type { ToolContentQuery } from '../../react/parts/disclosure';
 import type { TaskContentScope } from '../../react/subagents/scope';
 import type { TurnAuthor } from '../../react/subagents/author';
-import SystemEventHeader, {
-  SystemEventIcon,
-  systemEventHeaderClasses,
-} from '../messages/SystemEvent';
 import { isAbnormalTerminalStatus, isLiveSubagentStatus } from '../../react/subagents/status';
 import { SubagentActivityContent, SubagentStatus, getActivityContent } from './transcript';
 import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host';
+import SystemEventHeader, { SystemEventIcon } from '../messages/SystemEvent';
+import { useSearchResultsByTurn } from '../messages/useSearchResultsByTurn';
 import { TaskContentScopeContext } from '../../react/subagents/scope';
 import { hasTerminalOutcome } from '../../react/subagents/outcome';
 import MinimalHoverButtons from '../messages/MinimalHoverButtons';
@@ -33,7 +31,6 @@ import { useSubagentsHost } from '../../react/subagents/host';
 import ResumeAuthorHeader from '../parts/ResumeAuthorHeader';
 import { AuthorContext } from '../../react/messages/author';
 import { messageFooterClasses } from '../messages/styles';
-import { useSearchResultsByTurn } from '../messages/useSearchResultsByTurn';
 import { isEmptyContentPart } from '../../core/content';
 import { ChatContext } from '../../react/chat/context';
 import { ElapsedTimer } from '../messages/Elapsed';
@@ -81,7 +78,7 @@ function ExternalEventTrigger({
     body = (
       <Collapsible open={expanded} onOpenChange={setExpanded}>
         <CollapsibleTrigger asChild>
-          <Button type="button" variant="disclosure" className={systemEventHeaderClasses}>
+          <Button type="button" variant="disclosure" size="bare">
             <SystemEventHeader
               icon={<ExternalEventIcon />}
               label={label}
