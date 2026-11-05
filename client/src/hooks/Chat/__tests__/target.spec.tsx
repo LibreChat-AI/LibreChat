@@ -55,11 +55,18 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-function setup(initial: TConversation | null, endpoints?: TEndpointsConfig, cacheTime = 0) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, cacheTime } },
-    logger: { log: console.log, warn: console.warn, error: () => {} },
-  });
+function setup(
+  initial: TConversation | null,
+  endpoints?: TEndpointsConfig,
+  cacheTime = 0,
+  existingClient?: QueryClient,
+) {
+  const client =
+    existingClient ??
+    new QueryClient({
+      defaultOptions: { queries: { retry: false, cacheTime } },
+      logger: { log: console.log, warn: console.warn, error: () => {} },
+    });
   client.setQueryData(
     [QueryKeys.endpoints],
     endpoints ?? {
@@ -461,6 +468,80 @@ describe('selected assistant credentials', () => {
     expect([keyRequests, otherRequests]).toEqual([2, 1]);
     other.unmount();
   });
+
+  it.each([EModelEndpoint.assistants, EModelEndpoint.azureAssistants])(
+    'refreshes inactive invalidated %s key metadata when the target mounts',
+    async (endpoint) => {
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false, cacheTime: 0 } },
+      });
+      const key = [QueryKeys.name, endpoint];
+      client.setQueryData(key, { expiresAt: 'never' });
+      client.setQueryData(assistantKey(endpoint, 'same-id', '2', 'model-one'), {
+        id: 'same-id',
+        model: 'model-one',
+      });
+      expect(client.getQueryCache().find(key)?.getObserversCount()).toBe(0);
+      await client.invalidateQueries(key, { refetchType: 'none' });
+      expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+      const refresh = deferred<{ data: { expiresAt: string } }>();
+      const get = jest.spyOn(axios, 'get');
+      const transport = get.getMockImplementation()!;
+      get.mockImplementation((url, options) =>
+        String(url).includes(`/api/keys?name=${endpoint}`)
+          ? refresh.promise
+          : transport(url, options),
+      );
+      const { result } = setup(selected(endpoint), configured, 0, client);
+      expect(result.current.target.ready).toBe(false);
+      await waitFor(() => expect(get).toHaveBeenCalledWith(`/api/keys?name=${endpoint}`, {}));
+      expect(result.current.target.ready).toBe(false);
+      expect(details()).toHaveLength(0);
+      await act(async () => {
+        refresh.resolve({ data: { expiresAt: 'never' } });
+      });
+      await waitFor(() => expect(result.current.target.ready).toBe(true));
+      expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+      expect(isTargetReady(client, result.current.value)).toBe(true);
+      expect(details()).toHaveLength(1);
+    },
+  );
+
+  it.each([EModelEndpoint.assistants, EModelEndpoint.azureAssistants])(
+    'keeps usable ordinary-stale %s key metadata ready during background freshness',
+    async (endpoint) => {
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false, cacheTime: 0 } },
+      });
+      const key = [QueryKeys.name, endpoint];
+      client.setQueryData(key, { expiresAt: 'never' }, { updatedAt: Date.now() - 60_000 });
+      client.setQueryData(assistantKey(endpoint, 'same-id', '2', 'model-one'), {
+        id: 'same-id',
+        model: 'model-one',
+      });
+      expect(client.getQueryCache().find(key)?.isStaleByTime(0)).toBe(true);
+      expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+      const refresh = deferred<{ data: { expiresAt: string } }>();
+      const get = jest.spyOn(axios, 'get');
+      const transport = get.getMockImplementation()!;
+      get.mockImplementation((url, options) =>
+        String(url).includes(`/api/keys?name=${endpoint}`)
+          ? refresh.promise
+          : transport(url, options),
+      );
+      const { result } = setup(selected(endpoint), configured, 0, client);
+      expect(result.current.target.ready).toBe(true);
+      await waitFor(() => expect(client.getQueryState(key)?.fetchStatus).toBe('fetching'));
+      expect(client.getQueryCache().find(key)?.isStale()).toBe(true);
+      expect(result.current.target.ready).toBe(true);
+      expect(isTargetReady(client, result.current.value)).toBe(true);
+      await act(async () => {
+        refresh.resolve({ data: { expiresAt: 'never' } });
+      });
+      await waitFor(() => expect(client.getQueryState(key)?.fetchStatus).toBe('idle'));
+      expect(result.current.target.ready).toBe(true);
+    },
+  );
 
   it('accepts an unexpired finite key', async () => {
     expiry = new Date(Date.now() + 60_000).toISOString();
