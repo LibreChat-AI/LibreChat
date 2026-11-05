@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Button, Spinner } from '@librechat/client';
+import { Button, Chip, Spinner } from '@librechat/client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { MutationKeys, QueryKeys, dataService } from 'librechat-data-provider';
 import type { SlackWorkspace } from 'librechat-data-provider';
@@ -144,6 +144,7 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
 
   const first = status.data?.pages[0];
   const workspaces = status.data?.pages.flatMap((page) => page.workspaces) ?? [];
+  const activeTone = first?.configured ? 'success' : 'warning';
   if (first && !first.configured && workspaces.length === 0) return null;
   const confirmLabel =
     confirm?.status === 'disconnected'
@@ -213,9 +214,16 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
           key={workspace.workspaceId}
           className="border-border-light space-y-2 rounded-lg border p-3"
         >
-          <p className="font-medium break-words">{workspace.teamName}</p>
-          <p>{localize(workspaceStatusLabel(workspace, first?.configured))}</p>
-          {first?.canManage && (
+          <div className="flex items-start justify-between gap-3">
+            <p className="min-w-0 font-medium break-words">{workspace.teamName}</p>
+            <Chip
+              tone={workspace.status === 'disconnected' ? 'neutral' : activeTone}
+              className="shrink-0"
+            >
+              {localize(workspaceStatusLabel(workspace, first?.configured))}
+            </Chip>
+          </div>
+          {first?.canManage && confirm?.workspaceId !== workspace.workspaceId && (
             <div className="flex flex-wrap gap-2">
               {first.configured && workspace.status === 'active' && (
                 <Button

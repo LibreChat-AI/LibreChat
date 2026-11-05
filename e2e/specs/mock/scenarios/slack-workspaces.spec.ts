@@ -168,6 +168,9 @@ for (const theme of ['light', 'dark']) {
       name: /^Remove this disconnected workspace/,
     });
     await expect(removal).toContainText('This does not uninstall the app from Slack.');
+    await expect(
+      workspacesPanel.getByRole('button', { name: 'Remove workspace', exact: true }),
+    ).toHaveCount(1);
     if (process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX) {
       await removal.scrollIntoViewIfNeeded();
       await page.screenshot({
