@@ -609,6 +609,7 @@ export function getOpenAILLMConfig({
   defaultParams,
   inferenceParameters,
   useOpenRouter,
+  vision,
   reasoningFormat = ReasoningParameterFormat.reasoningEffort,
   modelOptions: _modelOptions,
 }: {
@@ -622,6 +623,7 @@ export function getOpenAILLMConfig({
   defaultParams?: Record<string, unknown>;
   inferenceParameters?: Record<string, unknown>;
   useOpenRouter?: boolean;
+  vision?: boolean;
   reasoningFormat?: ReasoningParameterFormat;
   azure?: false | t.AzureOptions;
 }): Pick<t.LLMConfigResult, 'llmConfig' | 'tools'> & {
@@ -666,6 +668,10 @@ export function getOpenAILLMConfig({
   if (top_p != null) {
     llmConfig.topP = top_p;
   }
+  if (vision != null) {
+    llmConfig.vision = vision;
+  }
+
   if (frequency_penalty != null) {
     llmConfig.frequencyPenalty = frequency_penalty;
   }

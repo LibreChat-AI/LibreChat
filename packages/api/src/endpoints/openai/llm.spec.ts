@@ -27,6 +27,38 @@ describe('getOpenAILLMConfig', () => {
       expect(result.tools).toEqual([]);
     });
 
+    it('should forward vision=false to llmConfig', () => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        vision: false,
+        modelOptions: { model: 'gpt-4' },
+      });
+
+      expect(result.llmConfig).toHaveProperty('vision', false);
+    });
+
+    it('should forward vision=true to llmConfig', () => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        vision: true,
+        modelOptions: { model: 'gpt-4' },
+      });
+
+      expect(result.llmConfig).toHaveProperty('vision', true);
+    });
+
+    it('should omit vision from llmConfig when not provided', () => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        modelOptions: { model: 'gpt-4' },
+      });
+
+      expect(result.llmConfig).not.toHaveProperty('vision');
+    });
+
     it('should handle model options including temperature and penalties', () => {
       const result = getOpenAILLMConfig({
         apiKey: 'test-api-key',
