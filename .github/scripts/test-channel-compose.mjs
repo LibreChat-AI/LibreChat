@@ -50,6 +50,7 @@ function configuration(tag, source = false, shared = false, gatewayPort) {
           ...process.env,
           UID: '1000',
           GID: '1000',
+          PORT: '3080',
           LIBRECHAT_IMAGE_TAG: tag,
           SLACK_APP_ID: 'A123',
           SLACK_CLIENT_ID: '123.456',
