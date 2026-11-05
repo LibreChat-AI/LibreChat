@@ -166,18 +166,21 @@ export function createSlackWorkspaceBindingHandlers(deps: {
           channel.workspaceId,
           input.data.target === 'default' ? undefined : input.data.target,
         );
-        const previous = route
-          ? await deps.channels.getAgentChannelMetadata(route.channelId)
-          : null;
-        const canReplace =
-          !route || previous?.createdBy === principal.id || (await deps.canManage(principal));
+        const previous =
+          route && route.channelId !== channel.channelId
+            ? await deps.channels.getAgentChannelMetadata(route.channelId)
+            : null;
+        const [canReplace, assignedAgentName] = await Promise.all([
+          !route || route.channelId === channel.channelId || previous?.createdBy === principal.id
+            ? true
+            : deps.canManage(principal),
+          previous
+            ? deps.getAgentName(previous.agentId, principal.tenantId, { userId: principal.id })
+            : undefined,
+        ]);
         res.json({
           canReplace,
-          assignedAgentName: previous
-            ? await deps.getAgentName(previous.agentId, principal.tenantId, {
-                userId: principal.id,
-              })
-            : undefined,
+          assignedAgentName,
           occupied: Boolean(route),
           assignedToThisChannel: route?.channelId === channel.channelId,
           revision: route?.revision,
