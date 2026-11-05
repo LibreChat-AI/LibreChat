@@ -1,4 +1,4 @@
-import { useContext, useMemo, useState } from 'react';
+import { useContext, useMemo, useRef, useState } from 'react';
 import { AskOptions } from '@librechat/chat/components';
 import { useOptionalChatSurface } from '@librechat/chat/react';
 import { Button, TextareaAutosize, TooltipAnchor } from '@librechat/client';
@@ -13,12 +13,21 @@ import {
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent } from 'react';
 import { useApprovalContext, useAskSubmitStatus, useResumeSubmit } from './ApprovalContext';
+import useArrivalFocus, { isFocusIdle } from '~/hooks/Input/useArrivalFocus';
 import { NO_HOST_BINDINGS } from '~/hooks/Input/useComposerBindings';
 import { cn, forceResize, insertTextAtCursor } from '~/utils';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import { ChatContext } from '~/Providers/ChatContext';
 import AskUserQuestions from './AskUserQuestions';
 import { useLocalize } from '~/hooks';
+
+/**
+ * Single questions whose card has already had its arrival. A card remounts when
+ * its row scrolls back into view or the question moves between the chat and the
+ * composer, and none of those is a new arrival. Holds only action ids, one per
+ * question asked in this tab.
+ */
+const arrivedSingleQuestions = new Set<string>();
 
 /** Stock preferences for a card rendered outside a chat surface. */
 /**
@@ -158,6 +167,31 @@ function AskUserQuestionSingle({
   const locked = status === 'submitting' || status === 'submitted' || status === 'expired';
   const showPlaceholder = popoverVisible && isLivePause;
 
+  /**
+   * The question arriving in the chat puts the user on its first option, or on
+   * its answer field when it has none, so keys typed next answer it rather than
+   * going out as an ordinary message. Only once it is on screen, and only when
+   * focus is idle then (nowhere, or the empty composer that sent the turn).
+   */
+  const cardRef = useRef<HTMLDivElement>(null);
+  const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const answerRef = useRef<HTMLTextAreaElement>(null);
+  useArrivalFocus(
+    isLivePause && !showPlaceholder && !locked && !arrivedSingleQuestions.has(actionId),
+    cardRef,
+    () => {
+      if (arrivedSingleQuestions.has(actionId)) {
+        return;
+      }
+      arrivedSingleQuestions.add(actionId);
+      if (!isFocusIdle()) {
+        return;
+      }
+      const target = optionRefs.current.find((option) => option != null && !option.disabled);
+      (target ?? answerRef.current)?.focus({ preventScroll: true });
+    },
+  );
+
   if (status === 'submitted') {
     return null;
   }
@@ -295,6 +329,7 @@ function AskUserQuestionSingle({
    */
   const card = (
     <div
+      ref={cardRef}
       className={cn(
         'border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2.5 rounded-2xl border p-3',
         showPlaceholder && 'invisible',
@@ -342,10 +377,12 @@ function AskUserQuestionSingle({
           checked={checkedIndices}
           locked={locked}
           onActivate={(index) => (multiSelect ? toggleIndex(index) : submitSingle(index))}
+          optionRefs={optionRefs}
         />
       )}
 
       <TextareaAutosize
+        ref={answerRef}
         focusOutline="hidden"
         value={answerValue}
         disabled={locked}

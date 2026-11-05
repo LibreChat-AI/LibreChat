@@ -426,6 +426,22 @@ describe('AskUserQuestions', () => {
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
     });
 
+    test('takes focus on a handoff even when focus stayed in the card it left', () => {
+      /* Safari leaves focus where it was when a button is clicked, which can be
+         the answer field of the now-hidden chat card. */
+      const leftBehind = document.createElement('input');
+      document.body.appendChild(leftBehind);
+      leftBehind.focus();
+
+      render(
+        <RecoilRoot>
+          <AskUserQuestions actionId="ask-focus-left-behind" questions={questions} focusOnHandoff />
+        </RecoilRoot>,
+      );
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+      leftBehind.remove();
+    });
+
     describe('below a reader who has scrolled up', () => {
       const originalObserver = global.IntersectionObserver;
       let notify: () => void = () => undefined;

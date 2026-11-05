@@ -6,23 +6,11 @@ import { useOptionalChatSurface } from '@librechat/chat/react';
 import { isCancelKey, isReboundSubmitChord, splitOtherOption } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent, ReactNode } from 'react';
+import useArrivalFocus, { isFocusIdle } from '~/hooks/Input/useArrivalFocus';
 import useAskQuestionsForm from '~/hooks/Input/useAskQuestionsForm';
 import { AutoHeight } from '~/components/ui';
-import { cn, isRectVisible } from '~/utils';
-import { mainTextareaId } from '~/common';
 import { useLocalize } from '~/hooks';
-
-/** Focus is nowhere, or in the empty composer that just sent the turn. */
-function isFocusIdle(): boolean {
-  const active = document.activeElement;
-  return (
-    active == null ||
-    active === document.body ||
-    (active instanceof HTMLTextAreaElement &&
-      active.id === mainTextareaId &&
-      active.value.trim().length === 0)
-  );
-}
+import { cn } from '~/utils';
 
 /**
  * One bounded batch of `ask_user_question` items, presented a single question at
@@ -135,31 +123,32 @@ export default function AskUserQuestions({
   }, [activeIndex, focusStep]);
 
   /**
-   * An arriving batch puts the user on the first question's controls, but
-   * only when focus is idle (nowhere, or the empty composer that just sent
-   * the turn), so a draft or any other control the user is in keeps focus.
-   * It happens once per batch: moving it between the popover and the chat
-   * remounts it, and that is not a new arrival.
-   *
-   * The chat card can arrive below a reader who has scrolled up, where focus
-   * would land on a control they cannot see. So arrival is the first moment
-   * the step is actually on screen: the thread following its tail brings it
-   * there at once, a reader scrolled away brings it there by scrolling back.
+   * A batch moved onto this surface by the user's own handoff always takes
+   * focus: the control that did it is gone or hidden (Safari keeps focus on a
+   * clicked button's previous owner, which may be the now-inert card), so
+   * there is nothing of the user's to protect.
+   */
+  useEffect(() => {
+    if (!focusOnHandoff || form.locked) {
+      return;
+    }
+    focusStep({ firstOption: true, preventScroll: true });
+    form.markArrivalFocused();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handoff happens on mount
+  }, []);
+
+  /**
+   * An arriving batch puts the user on the first question's controls once it
+   * is on screen, but only when focus is idle then, so a draft or any other
+   * control the user is in keeps focus. It happens once per batch: moving it
+   * between the popover and the chat is not a new arrival.
    */
   const latestFormRef = useRef(form);
   latestFormRef.current = form;
-  useEffect(() => {
-    if (focusOnHandoff) {
-      if (!form.locked && isFocusIdle()) {
-        focusStep({ firstOption: true, preventScroll: true });
-        form.markArrivalFocused();
-      }
-      return;
-    }
-    if (!focusOnArrival || form.locked || form.arrivalFocused) {
-      return;
-    }
-    const arrive = () => {
+  useArrivalFocus(
+    focusOnArrival && !focusOnHandoff && !form.locked && !form.arrivalFocused,
+    stepRef,
+    () => {
       const current = latestFormRef.current;
       if (current.locked || current.arrivalFocused || !isFocusIdle()) {
         return;
@@ -168,25 +157,8 @@ export default function AskUserQuestions({
       if (stepRef.current?.contains(document.activeElement) === true) {
         current.markArrivalFocused();
       }
-    };
-    const step = stepRef.current;
-    if (step == null || typeof IntersectionObserver === 'undefined') {
-      arrive();
-      return;
-    }
-    /** Entries can be stale while the thread is still settling, so each one
-     *  re-measures the step against the viewport and its scroll containers. */
-    const observer = new IntersectionObserver(() => {
-      if (!isRectVisible(step)) {
-        return;
-      }
-      observer.disconnect();
-      arrive();
-    });
-    observer.observe(step);
-    return () => observer.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- arrival only
-  }, []);
+    },
+  );
 
   if (form.status === 'submitted') {
     return null;
