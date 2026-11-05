@@ -68,9 +68,16 @@ describe('createSetBalanceConfig', () => {
       const getAppConfig = jest.fn().mockResolvedValue({
         balance: { enabled: true, startBalance: 1000 },
       });
+      const winnerGrant = new Date('2026-07-01T00:00:00.000Z');
       const findThenCharge = async (id: string) => {
         const record = await findBalanceByUser(id);
-        await Balance.create({ user: id, tokenCredits: 50 });
+        await Balance.create({
+          user: id,
+          tokenCredits: 50,
+          allotment: 1000,
+          allottedAt: winnerGrant,
+          lastRefill: winnerGrant,
+        });
         return record;
       };
 
@@ -83,7 +90,13 @@ describe('createSetBalanceConfig', () => {
 
       await middleware(createMockRequest(userId) as ServerRequest, res as ServerResponse, mockNext);
 
-      expect((await Balance.findOne({ user: userId }).lean())?.tokenCredits).toBe(50);
+      const stored = await Balance.findOne({ user: userId }).lean();
+      expect(stored).toMatchObject({
+        tokenCredits: 50,
+        allotment: 1000,
+        allottedAt: winnerGrant,
+        lastRefill: winnerGrant,
+      });
       expect((res.locals as { balanceData?: IBalance }).balanceData?.tokenCredits).toBe(50);
     });
 
