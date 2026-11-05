@@ -1620,6 +1620,16 @@ export const DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS = 300_000;
 export const DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS = 25_000;
 export const DEFAULT_CACHE_CLEAR_TIMEOUT_MS = 1000;
 
+/** Deployment tuning cannot remove the parser's deadline or process admission ceiling. */
+export const spreadsheetParsingSchema = z
+  .object({
+    timeoutMs: z.number().int().min(100).max(60_000).default(5000),
+    maxConcurrent: z.number().int().min(1).max(8).default(2),
+  })
+  .strict();
+
+export type SpreadsheetParsing = z.infer<typeof spreadsheetParsingSchema>;
+
 export const HOST_FILE_EDIT_HARD_MAX_COUNT = 100;
 
 /** Host-side skill/sandbox edit budgets. Attached workers retain their own limits. */
@@ -4726,6 +4736,7 @@ export const configSchema = z.object({
     })
     .optional(),
   concurrency: lookupConcurrencySchema.optional(),
+  spreadsheetParsing: spreadsheetParsingSchema.optional(),
   fileConfig: fileConfigSchema.optional(),
   modelSpecs: specsConfigSchema.optional(),
   filters: filtersConfigSchema.optional(),

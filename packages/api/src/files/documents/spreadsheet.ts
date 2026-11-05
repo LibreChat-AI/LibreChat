@@ -1,20 +1,28 @@
 import path from 'node:path';
 import { fork } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { spreadsheetParsingSchema } from 'librechat-data-provider';
+import type { SpreadsheetParsing } from 'librechat-data-provider';
 import type { ChildProcess } from 'node:child_process';
 import type { SpreadsheetReply } from './spreadsheet-worker';
 import { SPREADSHEET_LIMITS, SpreadsheetLimitError } from './workbook';
+import { SpreadsheetBusyError } from '../upload/errors';
 
 /** No queue or in-process fallback: read() shares neither the API heap nor its event loop. */
-export function createSpreadsheetParser(workerPath: string): (filePath: string) => Promise<string> {
+export function createSpreadsheetParser(
+  workerPath: string,
+): (filePath: string, configured?: Partial<SpreadsheetParsing>) => Promise<string> {
   let active = 0;
-  return async (filePath): Promise<string> => {
-    if (active >= SPREADSHEET_LIMITS.concurrent) {
-      throw new Error('Spreadsheet processing is busy; retry later.');
+  return async (filePath, configured): Promise<string> => {
+    const parsed = spreadsheetParsingSchema.safeParse(configured ?? {});
+    if (!parsed.success) throw new Error('Spreadsheet processing configuration is invalid.');
+    const limits = parsed.data;
+    if (active >= limits.maxConcurrent) {
+      throw new SpreadsheetBusyError();
     }
     active++;
     try {
-      const deadline = performance.now() + SPREADSHEET_LIMITS.timeoutMs;
+      const deadline = performance.now() + limits.timeoutMs;
       let worker: ChildProcess;
       try {
         worker = fork(workerPath, [filePath], {
@@ -83,12 +91,15 @@ export function createSpreadsheetParser(workerPath: string): (filePath: string) 
 
 let parser: ReturnType<typeof createSpreadsheetParser> | undefined;
 
-export function spreadsheetToText(file: Express.Multer.File): Promise<string> {
+export function spreadsheetToText(
+  file: Express.Multer.File,
+  configured?: Partial<SpreadsheetParsing>,
+): Promise<string> {
   parser ??= createSpreadsheetParser(
     path.join(
       path.dirname(require.resolve('@librechat/api')),
       'files/documents/spreadsheet-worker.cjs',
     ),
   );
-  return parser(file.path);
+  return parser(file.path, configured);
 }

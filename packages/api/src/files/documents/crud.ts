@@ -1,8 +1,9 @@
 import * as fs from 'fs';
 import yauzl from 'yauzl';
 import { megabyte, excelMimeTypes, FileSources } from 'librechat-data-provider';
+import type { SpreadsheetParsing } from 'librechat-data-provider';
 import type { TextItem } from 'pdfjs-dist/types/src/display/api';
-import type { MistralOCRUploadResult } from '~/types';
+import type { MistralOCRUploadResult, ServerRequest } from '~/types';
 import { spreadsheetToText } from './spreadsheet';
 import { assertSafeZipSize } from './zipSafety';
 
@@ -19,10 +20,12 @@ const ODT_MAX_DECOMPRESSED_SIZE = 50 * megabyte;
  */
 export async function parseDocument({
   file,
+  req,
 }: {
   file: Express.Multer.File;
+  req?: Pick<ServerRequest, 'config'>;
 }): Promise<MistralOCRUploadResult> {
-  const parseFn = getParserForMimeType(file.mimetype);
+  const parseFn = getParserForMimeType(file.mimetype, req?.config?.spreadsheetParsing);
   if (!parseFn) {
     throw new Error(`Unsupported file type in document parser: ${file.mimetype}`);
   }
@@ -52,7 +55,10 @@ export async function parseDocument({
 }
 
 /** Maps a MIME type to its document parser function, or `undefined` if unsupported. */
-function getParserForMimeType(mimetype: string): FileParseFn | undefined {
+function getParserForMimeType(
+  mimetype: string,
+  configured?: Partial<SpreadsheetParsing>,
+): FileParseFn | undefined {
   if (mimetype === 'application/pdf') {
     return pdfToText;
   }
@@ -63,7 +69,7 @@ function getParserForMimeType(mimetype: string): FileParseFn | undefined {
     excelMimeTypes.test(mimetype) ||
     mimetype === 'application/vnd.oasis.opendocument.spreadsheet'
   ) {
-    return spreadsheetToText;
+    return (file) => spreadsheetToText(file, configured);
   }
   if (mimetype === 'application/vnd.oasis.opendocument.text') {
     return odtToText;

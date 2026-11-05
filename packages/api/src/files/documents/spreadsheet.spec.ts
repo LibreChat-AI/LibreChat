@@ -3,7 +3,10 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { utils, write } from 'xlsx';
 import { performance } from 'node:perf_hooks';
+import { spreadsheetParsingSchema } from 'librechat-data-provider';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import type { ServerRequest } from '~/types';
+import { SpreadsheetBusyError } from '../upload/errors';
 import { createSpreadsheetParser } from './spreadsheet';
 import { SPREADSHEET_LIMITS } from './workbook';
 import { parseDocument } from './crud';
@@ -107,6 +110,18 @@ describe('spreadsheet parser regressions', () => {
     ).resolves.toBe(expected);
   });
 
+  it('passes the request policy to spreadsheet parsing', async () => {
+    const file = {
+      path: path.join(__dirname, 'sample.xlsx'),
+      mimetype: mime,
+    } as Express.Multer.File;
+    const req = { config: { spreadsheetParsing: { maxConcurrent: 0 } } } as Pick<
+      ServerRequest,
+      'config'
+    >;
+    await expect(parseDocument({ file, req })).rejects.toThrow('configuration is invalid');
+  });
+
   it('does not trust upload size metadata in the parser process', async () => {
     const buffer = Buffer.alloc(SPREADSHEET_LIMITS.inputBytes + 1);
     await expect(parse(buffer, 'oversize.xlsx')).rejects.toThrow('document parser limit');
@@ -129,7 +144,9 @@ describe('spreadsheet process lifecycle', () => {
     const parser = createSpreadsheetParser(fixture);
     let ticks = 0;
     const timer = setInterval(() => ticks++, 5);
-    const jobs = Array.from({ length: SPREADSHEET_LIMITS.concurrent }, () => parser('stall'));
+    const jobs = Array.from({ length: spreadsheetParsingSchema.parse({}).maxConcurrent }, () =>
+      parser('stall'),
+    );
     const results = Promise.allSettled(jobs);
     try {
       await expect(parser('extra')).rejects.toThrow('busy');
@@ -143,6 +160,51 @@ describe('spreadsheet process lifecycle', () => {
     }
   });
 
+  it.each([1, 3])(
+    'applies configured concurrency %i without a queue and recovers capacity',
+    async (maxConcurrent) => {
+      const parser = createSpreadsheetParser(fixture);
+      const jobs = Promise.allSettled(
+        Array.from({ length: maxConcurrent }, () =>
+          parser('stall', { maxConcurrent, timeoutMs: 500 }),
+        ),
+      );
+      await expect(parser('extra', { maxConcurrent })).rejects.toBeInstanceOf(SpreadsheetBusyError);
+      await expect(parser('extra', { maxConcurrent })).rejects.toMatchObject({
+        code: 'SPREADSHEET_BUSY',
+        userErrorStatusCode: 503,
+      });
+      for (const result of await jobs) {
+        expect(result).toMatchObject({ status: 'rejected', reason: { code: 'SPREADSHEET_LIMIT' } });
+      }
+      await expect(parser('normal', { maxConcurrent })).resolves.toBe('recovered');
+    },
+  );
+
+  it('honors a configured deadline longer than the default', async () => {
+    const clock = jest
+      .spyOn(performance, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(5000);
+    try {
+      await expect(createSpreadsheetParser(fixture)('normal', { timeoutMs: 6000 })).resolves.toBe(
+        'recovered',
+      );
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each([{ maxConcurrent: 9 }, { timeoutMs: 60_001 }, { timeoutMs: Infinity }])(
+    'fails closed on unsafe parser policy %p before starting work',
+    async (configured) => {
+      await expect(createSpreadsheetParser(fixture)('normal', configured)).rejects.toThrow(
+        'configuration is invalid',
+      );
+    },
+  );
+
   it.each(['crash', 'exit'])('sanitizes a process %s and releases admission', async (operation) => {
     const parser = createSpreadsheetParser(fixture);
     await expect(parser(operation)).rejects.toThrow(/^Spreadsheet processing failed\.$/);
@@ -154,7 +216,7 @@ describe('spreadsheet process lifecycle', () => {
       .spyOn(performance, 'now')
       .mockReturnValueOnce(0)
       .mockReturnValueOnce(0)
-      .mockReturnValue(SPREADSHEET_LIMITS.timeoutMs);
+      .mockReturnValue(spreadsheetParsingSchema.parse({}).timeoutMs);
     try {
       await expect(createSpreadsheetParser(fixture)('normal')).rejects.toThrow(
         'safe processing limits',
