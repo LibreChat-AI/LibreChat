@@ -392,7 +392,9 @@ jest.mock('@librechat/client', () => ({
     displayValue,
     onOpenChange,
     disabled,
+    variant,
   }: {
+    variant?: string;
     items: { value: string; label: string }[];
     setValue: (value: string) => void;
     ariaLabel: string;
@@ -407,6 +409,7 @@ jest.mock('@librechat/client', () => ({
         aria-controls="mock-combobox-options"
         aria-expanded="true"
         aria-label={ariaLabel}
+        data-variant={variant}
         disabled={disabled}
         onClick={() => onOpenChange?.(true)}
       >
@@ -2046,6 +2049,9 @@ describe('SubagentThreadPanel', () => {
     fireEvent.change(screen.getByLabelText('com_ui_message_input'), {
       target: { value: 'Check the primary source.' },
     });
+    /** The inline actions sit beside the send control, so they take its corner: the shared
+     *  round shape, not a hand-set radius. */
+    expect(screen.getByRole('button', { name: 'com_ui_queue' })).toHaveAttribute('shape', 'round');
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_queue' }));
 
     expect(mockControlMutate).toHaveBeenCalledTimes(1);
@@ -2911,6 +2917,10 @@ describe('SubagentThreadPanel', () => {
       </Root>,
     );
 
+    expect(screen.getByRole('combobox', { name: 'com_ui_subagent_actor' })).toHaveAttribute(
+      'data-variant',
+      'field',
+    );
     expect(screen.getByRole('combobox', { name: 'com_ui_subagent_actor' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_continue_new_chat' }));
     expect(screen.getByRole('combobox', { name: 'com_ui_subagent_actor' })).toBeDisabled();
