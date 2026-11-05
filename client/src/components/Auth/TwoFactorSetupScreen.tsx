@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Button } from '@librechat/client';
+import { Button, useToastContext } from '@librechat/client';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   readTwoFactorSetupToken,
@@ -58,6 +58,7 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const localize = useLocalize();
+  const { showToast } = useToastContext();
   const { completeAuthentication } = useAuthContext();
   const phaseRef = useRef<HTMLDivElement>(null);
   /**
@@ -198,6 +199,11 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
           onError: (mutationError) => {
             /** Enrollment committed but handed back no session: sign in with the new factor. */
             if (isCredentialRetirementIncomplete(mutationError)) {
+              /** The toast outlives the navigation, so the login screen still says what happened. */
+              showToast({
+                message: localize('com_auth_two_factor_setup_sessions_incomplete'),
+                status: 'warning',
+              });
               restartLogin();
               return;
             }
@@ -208,7 +214,14 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
         },
       );
     },
-    [completeAuthentication, finalizeSetup, localize, restartLogin, restartLoginWhenSpent],
+    [
+      completeAuthentication,
+      finalizeSetup,
+      localize,
+      restartLogin,
+      restartLoginWhenSpent,
+      showToast,
+    ],
   );
 
   const handleComplete = useCallback(() => {

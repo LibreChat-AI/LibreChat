@@ -19,6 +19,7 @@ const mockConfirmMutate = jest.fn();
 const mockAcknowledgeMutate = jest.fn();
 const mockFinalizeMutate = jest.fn();
 const mockCompleteAuthentication = jest.fn();
+const mockShowToast = jest.fn();
 let mockCompleteAuthenticationImpl: (token: string, user: TUser) => void =
   mockCompleteAuthentication;
 
@@ -31,6 +32,11 @@ jest.mock('~/data-provider', () => ({
   }),
   useFinalizeTwoFactorSetupMutation: () => ({ mutate: mockFinalizeMutate, isLoading: false }),
   useGetStartupConfig: () => ({ data: null, isFetching: false, error: null }),
+}));
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -518,6 +524,30 @@ describe('TwoFactorSetupScreen', () => {
 
     act(() => mockFinalizeMutate.mock.calls[0][1].onError(retiredFlowError));
 
+    expect(readTwoFactorSetupToken()).toBe('');
+    expect(mockCompleteAuthentication).not.toHaveBeenCalled();
+  });
+
+  it('tells the user sessions may remain, then restarts sign-in, when finalization retires none', () => {
+    renderScreen();
+    reachBackupPhase();
+    fireEvent.click(screen.getByTestId('download'));
+    fireEvent.click(screen.getByTestId('complete'));
+    act(() => {
+      mockAcknowledgeMutate.mock.calls[0][1].onSuccess({ finalizationToken: 'finalization-token' });
+    });
+
+    act(() =>
+      mockFinalizeMutate.mock.calls[0][1].onError({
+        isAxiosError: true,
+        response: { status: 500, data: { code: 'CREDENTIAL_RETIREMENT_INCOMPLETE' } },
+      }),
+    );
+
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_auth_two_factor_setup_sessions_incomplete',
+      status: 'warning',
+    });
     expect(readTwoFactorSetupToken()).toBe('');
     expect(mockCompleteAuthentication).not.toHaveBeenCalled();
   });
