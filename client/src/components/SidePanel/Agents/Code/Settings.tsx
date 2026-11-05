@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId } from 'react';
+import { useCallback, useEffect, useId, useMemo } from 'react';
 import { useFormContext } from 'react-hook-form';
 import {
   Switch,
@@ -53,8 +53,11 @@ export default function CodeSettings() {
     formState: { errors },
   } = methods;
 
-  const enabled = watch(AgentCapabilities.stateful_code_sessions) ?? false;
   const codeEnabled = watch(AgentCapabilities.execute_code);
+  const statefulByDeployment = agentsConfig?.codeDefaultProfile === 'stateful';
+  const statefulHeadingId = useId();
+  const enabled =
+    (watch(AgentCapabilities.stateful_code_sessions) ?? false) || statefulByDeployment;
   const environment = watch('stateful_code_environment') ?? 'user';
   const codeEnvironmentId = watch('code_environment_id');
   const additionalMachines = watch('code_environment_ids') ?? [];
@@ -66,7 +69,10 @@ export default function CodeSettings() {
   const executionEnvironments = agentsConfig?.statefulCodeSessions?.environments ?? [];
   const statefulSessionsAvailable =
     agentsConfig?.capabilities.includes(AgentCapabilities.stateful_code_sessions) ?? false;
-  const allowedEnvironments = resolveAllowedStatefulCodeEnvironments(configuredEnvironments);
+  const allowedEnvironments = useMemo(
+    () => resolveAllowedStatefulCodeEnvironments(configuredEnvironments),
+    [configuredEnvironments],
+  );
   const effectiveExecutionEnvironment = codeEnvironmentId
     ? executionEnvironments.find((candidate) => candidate.id === codeEnvironmentId)
     : executionEnvironments.find((candidate) => candidate.default === true);
@@ -121,20 +127,40 @@ export default function CodeSettings() {
     );
   };
 
-  const handleChange = (value: boolean) => {
-    setValue(AgentCapabilities.stateful_code_sessions, value, { shouldDirty: true });
-    const currentEnvironment = watch('stateful_code_environment');
-    if (value && (!currentEnvironment || !allowedEnvironments.includes(currentEnvironment))) {
+  const defaultEnvironment = useCallback(() => {
+    const currentEnvironment = getValues('stateful_code_environment');
+    if (!currentEnvironment || !allowedEnvironments.includes(currentEnvironment)) {
       setValue(
         'stateful_code_environment',
         resolveStatefulCodeEnvironment(
           user?.personalization?.statefulCodeEnvironment ?? 'user',
           configuredEnvironments,
         ) ?? 'user',
-        { shouldDirty: true },
+        { shouldDirty: !statefulByDeployment },
       );
     }
+  }, [
+    allowedEnvironments,
+    configuredEnvironments,
+    getValues,
+    setValue,
+    statefulByDeployment,
+    user?.personalization?.statefulCodeEnvironment,
+  ]);
+
+  const handleChange = (value: boolean) => {
+    setValue(AgentCapabilities.stateful_code_sessions, value, { shouldDirty: true });
+    if (value) defaultEnvironment();
   };
+
+  const forceStateful = statefulByDeployment && codeEnabled === true;
+  useEffect(() => {
+    if (!forceStateful || !statefulSessionsAvailable) return;
+    if (getValues(AgentCapabilities.stateful_code_sessions) !== true) {
+      setValue(AgentCapabilities.stateful_code_sessions, true, { shouldDirty: false });
+    }
+    defaultEnvironment();
+  }, [forceStateful, statefulSessionsAvailable, getValues, setValue, defaultEnvironment]);
 
   if (!statefulSessionsAvailable) {
     return null;
@@ -142,38 +168,40 @@ export default function CodeSettings() {
 
   return (
     <div className="space-y-3">
-      <HoverCard openDelay={50}>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <div className={codeEnabled ? 'text-sm' : 'text-text-tertiary text-sm'}>
-              {localize('com_ui_stateful_sessions')}
-            </div>
-            <HoverCardTrigger>
-              <span className="text-text-tertiary">
-                <CircleHelpIcon className="h-4 w-4" />
-              </span>
-            </HoverCardTrigger>
-          </div>
-          <HoverCardPortal>
-            <HoverCardContent side={ESide.Top} className="w-80">
-              <div className="space-y-2">
-                <p className="text-text-secondary text-sm">
-                  {localize('com_nav_info_stateful_sessions')}
-                </p>
+      {!statefulByDeployment && (
+        <HoverCard openDelay={50}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <div className={codeEnabled ? 'text-sm' : 'text-text-tertiary text-sm'}>
+                {localize('com_ui_stateful_sessions')}
               </div>
-            </HoverCardContent>
-          </HoverCardPortal>
-          <Switch
-            id="stateful-code-sessions"
-            checked={enabled && codeEnabled === true}
-            onCheckedChange={handleChange}
-            className="ms-4"
-            data-testid="stateful-code-sessions"
-            disabled={codeEnabled !== true}
-            aria-label={localize('com_ui_stateful_sessions')}
-          />
-        </div>
-      </HoverCard>
+              <HoverCardTrigger>
+                <span className="text-text-tertiary">
+                  <CircleHelpIcon className="h-4 w-4" />
+                </span>
+              </HoverCardTrigger>
+            </div>
+            <HoverCardPortal>
+              <HoverCardContent side={ESide.Top} className="w-80">
+                <div className="space-y-2">
+                  <p className="text-text-secondary text-sm">
+                    {localize('com_nav_info_stateful_sessions')}
+                  </p>
+                </div>
+              </HoverCardContent>
+            </HoverCardPortal>
+            <Switch
+              id="stateful-code-sessions"
+              checked={enabled && codeEnabled === true}
+              onCheckedChange={handleChange}
+              className="ms-4"
+              data-testid="stateful-code-sessions"
+              disabled={codeEnabled !== true}
+              aria-label={localize('com_ui_stateful_sessions')}
+            />
+          </div>
+        </HoverCard>
+      )}
       {additionalMachines
         .filter((id) => !executionEnvironments.some((candidate) => candidate.id === id))
         .map((machineId) => (
@@ -199,7 +227,19 @@ export default function CodeSettings() {
           </div>
         ))}
       {enabled && codeEnabled === true && (
-        <div className="space-y-2 ps-1">
+        <div
+          className={statefulByDeployment ? 'space-y-2' : 'space-y-2 ps-1'}
+          role={statefulByDeployment ? 'group' : undefined}
+          aria-labelledby={statefulByDeployment ? statefulHeadingId : undefined}
+        >
+          {statefulByDeployment && (
+            <span
+              id={statefulHeadingId}
+              className="text-text-primary block pb-1 text-sm font-medium"
+            >
+              {localize('com_ui_stateful_sessions')}
+            </span>
+          )}
           {executionEnvironments.length > 0 && (
             <>
               <span

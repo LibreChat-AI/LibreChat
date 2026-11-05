@@ -1,7 +1,11 @@
+import { logger } from '@librechat/data-schemas';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
+  getCodeDefaultProfile,
   isImplicitStatefulCodeRouteAvailable,
+  isStatefulCodeDefaultProfile,
+  resolveCodeDefaultProfile,
   isCodeEnvironmentSelectionEnabled,
   mergeAccessibleCodeEnvironments,
   resolveCodeEnvironmentDecisionVersion,
@@ -529,5 +533,77 @@ describe('mergeAccessibleCodeEnvironments', () => {
         process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = originalStatefulURL;
       }
     }
+  });
+});
+
+describe('code default profile setting', () => {
+  const originalValue = process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+    if (originalValue === undefined) delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+    else process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = originalValue;
+  });
+
+  it.each(['stateful', '  stateful  ', 'stateful\n'])(
+    'resolves %p to stateful (catches a missing trim)',
+    (value) => {
+      expect(resolveCodeDefaultProfile(value)).toBe('stateful');
+    },
+  );
+
+  it.each([undefined, '', '   ', 'default', ' default '])(
+    'resolves %p to default without warning (catches warning on unset or default)',
+    (value) => {
+      expect(resolveCodeDefaultProfile(value)).toBe('default');
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['Stateful', 'STATEFUL', 'Default'])(
+    'is case-sensitive: %p resolves to default and warns (catches toLowerCase)',
+    (value) => {
+      expect(resolveCodeDefaultProfile(value)).toBe('default');
+      expect(warn).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['statefull', 'stateful-v2', 'true', 'stateful x'])(
+    'resolves unknown %p to default (catches startsWith or includes matching)',
+    (value) => {
+      expect(resolveCodeDefaultProfile(value)).toBe('default');
+    },
+  );
+
+  it('warns once per distinct unknown value, naming the value', () => {
+    resolveCodeDefaultProfile('bogus-once');
+    resolveCodeDefaultProfile('bogus-once');
+    resolveCodeDefaultProfile(' bogus-once ');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('bogus-once');
+    resolveCodeDefaultProfile('bogus-twice');
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads the environment when no argument is passed', () => {
+    process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+    expect(getCodeDefaultProfile()).toBe('stateful');
+    expect(isStatefulCodeDefaultProfile()).toBe(true);
+    delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+    expect(getCodeDefaultProfile()).toBe('default');
+    expect(isStatefulCodeDefaultProfile()).toBe(false);
+  });
+
+  it('an explicit argument wins over the environment, including explicit undefined', () => {
+    process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+    expect(getCodeDefaultProfile('default')).toBe('default');
+    expect(isStatefulCodeDefaultProfile('default')).toBe(false);
+    expect(isStatefulCodeDefaultProfile(' stateful ')).toBe(true);
+    expect(isStatefulCodeDefaultProfile(undefined)).toBe(true);
   });
 });
