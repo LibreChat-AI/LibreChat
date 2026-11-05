@@ -1,7 +1,15 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { dataService, QueryKeys, MutationKeys } from 'librechat-data-provider';
-import { Button, Checkbox, Input, Label, OGDialogFooter, Separator } from '@librechat/client';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  Alert,
+  Button,
+  Checkbox,
+  Input,
+  Label,
+  OGDialogFooter,
+  Separator,
+} from '@librechat/client';
 import type { AgentChannel, SlackWorkspaceRouteTarget } from 'librechat-data-provider';
 import { channelErrorLabel } from '~/utils/channelErrors';
 import { useLocalize, useDebounce } from '~/hooks';
@@ -56,17 +64,17 @@ export default function WorkspaceChannel({
     () => dataService.getSlackWorkspace(channel.workspaceId!),
     { retry: false },
   );
-  const canManage = Boolean(workspace.data?.canManage);
+  const ownsChannel = channel.createdBy === userId;
   const available = Boolean(
     workspace.data?.configured && workspace.data.workspace.status === 'active',
   );
-  const mayRoute = enabled && canManage && available && channel.status !== 'deleting';
+  const mayRoute = enabled && ownsChannel && available && channel.status !== 'deleting';
   const routes = useInfiniteQuery(
     routesKey,
     ({ pageParam }: { pageParam?: string }) =>
       dataService.getAgentChannelWorkspaceRoutes(agentId, channel.channelId, pageParam),
     {
-      enabled: enabled && canManage,
+      enabled: enabled && ownsChannel,
       retry: false,
       getNextPageParam: (page) => page.next,
     },
@@ -102,7 +110,6 @@ export default function WorkspaceChannel({
         return dataService.disableAgentChannel(agentId, channel.channelId);
       if (action.kind === 'delete')
         return dataService.deleteAgentChannel(agentId, channel.channelId);
-      if (!canManage) throw new Error('Workspace administration required');
       if (action.kind === 'remove')
         return dataService.removeAgentChannelWorkspaceRoute(agentId, channel.channelId, {
           externalChannelId: action.target.externalChannelId,
@@ -114,7 +121,9 @@ export default function WorkspaceChannel({
         !settledInput ||
         !target.isSuccess ||
         target.isFetching ||
-        (target.data.occupied && !target.data.assignedToThisChannel && !replace)
+        (target.data.occupied &&
+          !target.data.assignedToThisChannel &&
+          (!target.data.canReplace || !replace))
       )
         throw new Error('Route changed');
       return dataService.setAgentChannelWorkspaceRoute(agentId, channel.channelId, {
@@ -150,6 +159,7 @@ export default function WorkspaceChannel({
   const busy = !enabled || mutation.isLoading || channel.status === 'deleting';
   const entries = routes.data?.pages.flatMap((page) => page.routes) ?? [];
   const replacesOther = settledInput && target.data?.occupied && !target.data.assignedToThisChannel;
+  const blocked = replacesOther && target.data?.canReplace !== true;
   const alreadyAssigned = target.data?.assignedToThisChannel && channel.status === 'active';
   return (
     <>
@@ -173,13 +183,13 @@ export default function WorkspaceChannel({
         {workspace.data && !available && (
           <p role="status">{localize('com_ui_channels_workspace_unavailable')}</p>
         )}
-        {workspace.data && !canManage && <p>{localize('com_ui_slack_workspaces_admin')}</p>}
+        {!ownsChannel && <p>{localize('com_ui_channels_read_only')}</p>}
         {mutation.isError && (
           <p role="alert">
             {localize(channelErrorLabel(mutation.error, 'com_ui_channels_workspace_route_error'))}
           </p>
         )}
-        {canManage && (
+        {ownsChannel && (
           <section className="space-y-2" aria-labelledby={`${id}-routes`}>
             <h4 id={`${id}-routes`} className="font-medium">
               {localize('com_ui_channels_workspace_routes')}
@@ -301,7 +311,10 @@ export default function WorkspaceChannel({
                 </Button>
               </div>
             )}
-            {replacesOther && (
+            {blocked && (
+              <Alert variant="warning">{localize('com_ui_channels_workspace_route_owned')}</Alert>
+            )}
+            {replacesOther && !blocked && (
               <div className="border-border-medium space-y-2 rounded-lg border p-3">
                 <p>{localize('com_ui_channels_workspace_replace_help')}</p>
                 <div className="flex items-center gap-2">
@@ -327,7 +340,7 @@ export default function WorkspaceChannel({
                 !target.isSuccess ||
                 target.isFetching ||
                 Boolean(alreadyAssigned) ||
-                Boolean(replacesOther && !replace)
+                Boolean(replacesOther && (blocked || !replace))
               }
               onClick={() => mutation.mutate({ kind: 'assign' })}
             >

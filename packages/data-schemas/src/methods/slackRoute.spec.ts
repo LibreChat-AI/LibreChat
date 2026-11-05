@@ -83,6 +83,7 @@ describe('workspace routing and live channel authority', () => {
     const channel = await channels.getAgentChannel(channelId);
     return routes.assign({
       userId: 'admin',
+      allowReplaceOthers: true,
       workspaceId,
       channelId,
       externalChannelId,
@@ -236,6 +237,25 @@ describe('workspace routing and live channel authority', () => {
         'consent-binding-a',
       );
       expect((await channels.getAgentChannelMetadata('binding-a'))?.status).toBe('active');
+    }));
+
+  it('enforces creator ownership inside replacement transactions even with a valid observed revision', async () =>
+    scoped(async () => {
+      const workspaceId = await install();
+      await binding(workspaceId);
+      await binding(workspaceId, 'binding-b');
+      const initial = await assign(workspaceId, 'binding-a');
+      if (!initial.ok || !initial.route) throw new Error('Missing route');
+      const change = {
+        userId: 'member',
+        workspaceId,
+        channelId: 'binding-b',
+        channelRevision: 'consent-binding-b',
+        expectedRevision: initial.route.revision,
+      };
+      expect(await routes.assign(change)).toEqual({ ok: false, code: 'route_in_use' });
+      expect((await routes.read(workspaceId))?.channelId).toBe('binding-a');
+      expect((await routes.assign({ ...change, userId: 'agent-manager' })).ok).toBe(true);
     }));
 
   it('serializes competing initial assignments rather than letting two agents own a default', async () =>

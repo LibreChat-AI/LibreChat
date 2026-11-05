@@ -21,7 +21,8 @@ type RouteResult =
         | 'principal_unavailable'
         | 'workspace_unavailable'
         | 'channel_unavailable'
-        | 'route_changed';
+        | 'route_changed'
+        | 'route_in_use';
     };
 
 export interface SlackRouteStorage {
@@ -42,6 +43,8 @@ export interface SlackRouteStorage {
     channelId: string;
     channelRevision: string;
     expectedRevision?: string;
+    /** Trusted current administrator authority; never supplied by a browser. */
+    allowReplaceOthers?: boolean;
     /** Activate an existing pending/disabled binding in the same route transaction. */
     activate?: boolean;
   }): Promise<RouteResult>;
@@ -145,6 +148,14 @@ export function createSlackRouteStorage(
         const previous = await routes.findOne(filter).session(session).lean();
         if ((previous?.revision ?? undefined) !== input.expectedRevision)
           return { ok: false, code: 'route_changed' };
+        if (previous && previous.channelId !== input.channelId && !input.allowReplaceOthers) {
+          const previousChannel = await channels
+            .findOne({ channelId: previous.channelId, tenantId: tenantId ?? null })
+            .session(session)
+            .lean();
+          if (previousChannel?.createdBy !== input.userId)
+            return { ok: false, code: 'route_in_use' };
+        }
         const channel = await channels
           .findOne({
             channelId: input.channelId,

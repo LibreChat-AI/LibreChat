@@ -32,6 +32,7 @@ describe('shared Slack service routing', () => {
   const serviceToken = 'shared-test-service-token-at-least-32';
   let enabled = true;
   let manageAllowed = true;
+  let principalActive = true;
   let sequence = 0;
   const config = channelConfigSchema.parse({
     enabled: true,
@@ -110,6 +111,7 @@ describe('shared Slack service routing', () => {
       workspaceId,
       channelId,
       userId: 'admin',
+      allowReplaceOthers: true,
       channelRevision: 'consent',
     });
     if (!result.ok) throw new Error(result.code);
@@ -166,6 +168,7 @@ describe('shared Slack service routing', () => {
       routes,
       readSettings,
       canManage: async () => manageAllowed,
+      isPrincipalActive: async () => principalActive,
       logError: jest.fn(),
     });
     app.use('/ui', (req, _res, next) => {
@@ -187,6 +190,7 @@ describe('shared Slack service routing', () => {
   beforeEach(async () => {
     enabled = true;
     manageAllowed = true;
+    principalActive = true;
     provider
       .mockReset()
       .mockImplementation(
@@ -280,6 +284,91 @@ describe('shared Slack service routing', () => {
     }).expect(400);
   });
 
+  it('lets an ordinary member connect, route and remove their own agent without installation credentials', async () => {
+    const workspace = await scoped(() => install());
+    manageAllowed = false;
+    const member = 'member';
+    const channel = (
+      await request
+        .post('/ui/member-agent/connections')
+        .set('x-test-user', member)
+        .send({ workspaceId: workspace.workspaceId })
+        .expect(201)
+    ).body;
+    const active = (
+      await request
+        .post(`/ui/member-agent/${channel.channelId}/routes`)
+        .set('x-test-user', member)
+        .send({ channelRevision: channel.revision, externalChannelId: 'CMEMBER' })
+        .expect(200)
+    ).body;
+    expect(active.status).toBe('active');
+    expect(JSON.stringify(active)).not.toMatch(/xoxb|encrypted|signing/);
+    const target = (
+      await request
+        .get(`/ui/member-agent/${channel.channelId}/routes?target=CMEMBER`)
+        .set('x-test-user', member)
+        .expect(200)
+    ).body;
+    expect(target).toMatchObject({ assignedToThisChannel: true, canReplace: true });
+    await request
+      .delete(`/ui/member-agent/${channel.channelId}/routes`)
+      .set('x-test-user', member)
+      .send({ externalChannelId: 'CMEMBER', expectedRevision: target.revision })
+      .expect(204);
+    expect(await scoped(() => routes.read(workspace.workspaceId, 'CMEMBER'))).toBeNull();
+  });
+
+  it('prevents a member from replacing another creator while permitting a current administrator override', async () => {
+    const workspace = await scoped(() => install());
+    const original = await pending(workspace.workspaceId);
+    await browserPost(`agent/${original.channelId}/routes`, {
+      channelRevision: original.revision,
+    }).expect(200);
+    manageAllowed = false;
+    const member = 'member';
+    const channel = (
+      await request
+        .post('/ui/member-agent/connections')
+        .set('x-test-user', member)
+        .send({ workspaceId: workspace.workspaceId })
+        .expect(201)
+    ).body;
+    const target = (
+      await request
+        .get(`/ui/member-agent/${channel.channelId}/routes?target=default`)
+        .set('x-test-user', member)
+        .expect(200)
+    ).body;
+    expect(target).toMatchObject({ occupied: true, canReplace: false });
+    const change = () =>
+      request
+        .post(`/ui/member-agent/${channel.channelId}/routes`)
+        .set('x-test-user', member)
+        .send({ channelRevision: channel.revision, expectedRevision: target.revision });
+    await change().expect(409, { error: 'route_in_use' });
+    expect((await scoped(() => channels.getAgentChannel(channel.channelId)))?.status).toBe(
+      'pending_install',
+    );
+    expect((await scoped(() => routes.read(workspace.workspaceId)))?.channelId).toBe(
+      original.channelId,
+    );
+    await request
+      .post(`/ui/member-agent/${channel.channelId}/routes`)
+      .set('x-test-user', member)
+      .send({
+        channelRevision: channel.revision,
+        expectedRevision: target.revision,
+        allowReplaceOthers: true,
+      })
+      .expect(400);
+    manageAllowed = true;
+    await change().expect(200);
+    expect((await scoped(() => routes.read(workspace.workspaceId)))?.channelId).toBe(
+      channel.channelId,
+    );
+  });
+
   it('leaves a conflicting connection pending until an explicit route revision is supplied', async () => {
     const workspace = await scoped(() => install());
     const first = await pending(workspace.workspaceId);
@@ -300,6 +389,7 @@ describe('shared Slack service routing', () => {
         .expect(200)
     ).body;
     expect(observed).toEqual({
+      canReplace: true,
       occupied: true,
       assignedToThisChannel: false,
       revision: expect.any(String),
@@ -312,18 +402,18 @@ describe('shared Slack service routing', () => {
     expect((await post('/resolve', query()).expect(200)).body.channelId).toBe(second.channelId);
   });
 
-  it('checks current administration, creator, tenant and binding revision at management boundaries', async () => {
+  it('checks current activity, creator, tenant and binding revision at management boundaries', async () => {
     const workspace = await scoped(() => install());
     await request
       .post('/ui/agent/connections')
       .send({ workspaceId: workspace.workspaceId })
       .expect(401);
     const channel = await pending(workspace.workspaceId);
-    manageAllowed = false;
+    principalActive = false;
     await browserPost(`agent/${channel.channelId}/routes`, {
       channelRevision: channel.revision,
     }).expect(403);
-    manageAllowed = true;
+    principalActive = true;
     await request
       .get(`/ui/agent/${channel.channelId}/routes`)
       .set('x-test-user', 'other-admin')

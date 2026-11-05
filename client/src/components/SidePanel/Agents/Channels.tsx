@@ -442,10 +442,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
     mutationFn: () => {
       if (!agentId || !userId || !channels.isSuccess) throw new Error('Channel owner unavailable');
       if (useWorkspace) {
-        if (
-          !workspaceStatus?.canManage ||
-          !availableWorkspaces.some((workspace) => workspace.workspaceId === workspaceId)
-        )
+        if (!availableWorkspaces.some((workspace) => workspace.workspaceId === workspaceId))
           throw new Error('Workspace unavailable');
         return dataService.createWorkspaceAgentChannel(agentId, workspaceId);
       }
@@ -629,47 +626,40 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                       <p className="text-text-secondary text-sm">
                         {localize('com_ui_channels_workspace_identity')}
                       </p>
-                      {!workspaceStatus?.canManage && (
-                        <p>{localize('com_ui_slack_workspaces_admin')}</p>
+                      <h4 className="text-sm font-medium">
+                        {localize('com_ui_channels_workspace_choose')}
+                      </h4>
+                      {availableWorkspaces.length === 0 && (
+                        <p>{localize('com_ui_channels_workspace_connect_first')}</p>
                       )}
-                      {workspaceStatus?.canManage && (
-                        <>
-                          <h4 className="text-sm font-medium">
-                            {localize('com_ui_channels_workspace_choose')}
-                          </h4>
-                          {availableWorkspaces.length === 0 && (
-                            <p>{localize('com_ui_channels_workspace_connect_first')}</p>
-                          )}
-                          <div
-                            role="group"
-                            aria-label={localize('com_ui_channels_workspace_choose')}
-                            className="flex max-h-52 flex-col gap-2 overflow-y-auto"
+                      <div
+                        role="group"
+                        aria-label={localize('com_ui_channels_workspace_choose')}
+                        className="flex max-h-52 flex-col gap-2 overflow-y-auto"
+                      >
+                        {availableWorkspaces.map((workspace) => (
+                          <Button
+                            key={workspace.workspaceId}
+                            type="button"
+                            variant="outline-toggle"
+                            className="justify-start text-left break-words whitespace-normal"
+                            aria-pressed={workspaceId === workspace.workspaceId}
+                            disabled={create.isLoading}
+                            onClick={() => setWorkspaceId(workspace.workspaceId)}
                           >
-                            {availableWorkspaces.map((workspace) => (
-                              <Button
-                                key={workspace.workspaceId}
-                                type="button"
-                                variant="outline-toggle"
-                                className="justify-start text-left break-words whitespace-normal"
-                                aria-pressed={workspaceId === workspace.workspaceId}
-                                disabled={create.isLoading}
-                                onClick={() => setWorkspaceId(workspace.workspaceId)}
-                              >
-                                {workspace.teamName}
-                              </Button>
-                            ))}
-                          </div>
-                          {workspaces.hasNextPage && (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              disabled={workspaces.isFetchingNextPage}
-                              onClick={() => void workspaces.fetchNextPage()}
-                            >
-                              {localize('com_ui_slack_workspaces_more')}
-                            </Button>
-                          )}
-                        </>
+                            {workspace.teamName}
+                          </Button>
+                        ))}
+                      </div>
+                      {workspaces.hasNextPage && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={workspaces.isFetchingNextPage}
+                          onClick={() => void workspaces.fetchNextPage()}
+                        >
+                          {localize('com_ui_slack_workspaces_more')}
+                        </Button>
                       )}
                     </div>
                   )}
@@ -735,10 +725,9 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                         workspaces.isLoading ||
                         !channels.isSuccess ||
                         (useWorkspace &&
-                          (!workspaceStatus?.canManage ||
-                            !availableWorkspaces.some(
-                              (workspace) => workspace.workspaceId === workspaceId,
-                            )))
+                          !availableWorkspaces.some(
+                            (workspace) => workspace.workspaceId === workspaceId,
+                          ))
                       }
                       onClick={() => create.mutate()}
                     >
