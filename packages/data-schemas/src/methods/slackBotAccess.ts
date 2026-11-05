@@ -132,13 +132,7 @@ export function createSlackBotAccess(mongoose: typeof import('mongoose')): Slack
         ensureIndexes,
       );
     },
-    async set(input: {
-      workspaceId: string;
-      revision: string;
-      userIds: string[];
-      actorId: string;
-      maxManagers: number;
-    }): Promise<BotManagerWriteResult> {
+    async set(input: BotManagerUpdate): Promise<BotManagerWriteResult> {
       const tenantId = scope();
       const ids = [...new Set(input.userIds.map((id) => id.toLowerCase()))].sort();
       if (

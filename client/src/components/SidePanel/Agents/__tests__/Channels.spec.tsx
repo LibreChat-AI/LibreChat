@@ -1009,7 +1009,7 @@ describe('organization workspace connections', () => {
     expect(dataService.createWorkspaceAgentChannel).not.toHaveBeenCalled();
   });
 
-  test('members can choose an installed workspace while another user’s route stays protected', async () => {
+  test('a stale setup page cannot replace an assignment after bot management is revoked', async () => {
     jest
       .mocked(dataService.getSlackWorkspaces)
       .mockResolvedValue({ configured: true, canManage: false, workspaces: [workspace] });
@@ -1027,7 +1027,7 @@ describe('organization workspace connections', () => {
     await openAdd(user);
     await user.click(await screen.findByRole('button', { name: 'Engineering' }));
     await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
-    await screen.findByText('com_ui_channels_workspace_route_owned');
+    await screen.findByText('com_ui_channels_bot_access_required');
     expect(
       screen.getByRole('button', { name: 'com_ui_channels_workspace_replace_assignment' }),
     ).toBeDisabled();

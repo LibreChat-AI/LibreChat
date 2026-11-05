@@ -3965,7 +3965,6 @@
   "com_ui_channels_workspace_identity": "Slack users link their LibreChat account and keep their existing permissions.",
   "com_ui_channels_workspace_more_routes": "Show more assignments",
   "com_ui_channels_workspace_remove_confirm": "Remove this bot’s assignment to this agent for new conversations? A channel-specific assignment may fall back to this bot’s default agent. Existing conversations and other Slack bots won’t change.",
-  "com_ui_channels_workspace_route_owned": "Another user’s agent is assigned to this bot here. Choose another Slack channel, or ask an administrator to change the assignment.",
   "com_ui_channels_workspace_replace_help": "This agent will replace this bot’s default for new direct messages and mentions without a channel-specific assignment. Existing conversations and other bots won’t change.",
   "com_ui_channels_workspace_route_error": "Could not update the connection. Check its current settings and your permissions, then try again.",
   "com_ui_channels_workspace_remove_route": "Remove",

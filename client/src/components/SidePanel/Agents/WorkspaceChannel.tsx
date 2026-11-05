@@ -404,7 +404,7 @@ export default function WorkspaceChannel({
               </div>
             )}
             {blocked && (
-              <Alert variant="warning">{localize('com_ui_channels_workspace_route_owned')}</Alert>
+              <Alert variant="warning">{localize('com_ui_channels_bot_access_required')}</Alert>
             )}
             {replacesOther && !blocked && (
               <Alert variant="warning">

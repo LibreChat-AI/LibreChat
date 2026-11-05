@@ -23,7 +23,6 @@ type RouteResult =
         | 'workspace_unavailable'
         | 'channel_unavailable'
         | 'route_changed'
-        | 'route_in_use'
         | 'bot_access_required';
     };
 
