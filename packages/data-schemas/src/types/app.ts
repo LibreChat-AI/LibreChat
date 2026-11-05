@@ -95,6 +95,8 @@ export interface AppConfig {
   fileStrategy: FileStorage;
   /** File strategies configuration */
   fileStrategies?: TCustomConfig['fileStrategies'];
+  /** Maximum rows an explicitly limited GET /files request may return */
+  fileListLimit?: TCustomConfig['fileListLimit'];
   /** CloudFront CDN configuration */
   cloudfront?: CloudFrontConfig;
   /** Chat Projects limits resolved from the deployment configuration */
