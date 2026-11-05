@@ -14,6 +14,10 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
   default: () => null,
 }));
 
+jest.mock('~/components/Chat/Menus/Endpoints/shown', () => ({
+  useModelSelectorShown: () => true,
+}));
+
 jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   __esModule: true,
   default: () => null,

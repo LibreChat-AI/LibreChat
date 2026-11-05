@@ -9,6 +9,7 @@ import {
 } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
+import { useModelSelectorShown } from '~/components/Chat/Menus/Endpoints/shown';
 import { useAttachments, useMessageActions, useContentMetadata } from '~/hooks';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import { areMessageFieldsEqual, isSameTailRelation } from '~/utils';
@@ -106,6 +107,7 @@ const ContentRender = memo(function ContentRender({
     chatContext,
   });
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
+  const modelSelectorShown = useModelSelectorShown();
 
   const handleRegenerateMessage = useCallback(() => regenerateMessage(), [regenerateMessage]);
   const getLatestMessageId = useCallback(() => chatContext.latestMessageId, [chatContext]);
@@ -150,6 +152,7 @@ const ContentRender = memo(function ContentRender({
       agent={agent}
       assistant={assistant}
       hasConfiguredSender={hasConfiguredSender}
+      modelSelectorShown={modelSelectorShown}
       isLast={isLast}
       isLatestMessage={isLatestMessage}
       isSubmitting={isSubmitting}

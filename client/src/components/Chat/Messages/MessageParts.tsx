@@ -3,6 +3,7 @@ import { useRecoilValue } from 'recoil';
 import { ContentRow, HoverButtons, ResumeAuthorHeader } from '@librechat/chat/components';
 import type { TMessageProps, TMessageIcon } from '~/common';
 import { useLocalize, useAttachments, useMessageHelpers, useContentMetadata } from '~/hooks';
+import { useModelSelectorShown } from '~/components/Chat/Menus/Endpoints/shown';
 import { areMessageRowPropsEqual } from '~/utils';
 import store from '~/store';
 
@@ -38,6 +39,7 @@ function MessageParts(props: TMessageProps) {
   } = useMessageHelpers(props, searchResults);
 
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
+  const modelSelectorShown = useModelSelectorShown();
   const { messageId = null, isCreatedByUser } = message ?? {};
 
   const name = useMemo(() => {
@@ -95,6 +97,7 @@ function MessageParts(props: TMessageProps) {
           agent={agent}
           assistant={assistant}
           hasConfiguredSender={hasConfiguredSender}
+          modelSelectorShown={modelSelectorShown}
           isLast={isLast}
           isLatestMessage={messageId === latestMessageId}
           isSubmitting={isSubmitting}

@@ -13,6 +13,9 @@ type MessageRowProps = {
   message?: TMessage;
   label: string;
   hoverLabel?: string | null;
+  /** Keeps the author's name for assistive technology only, for a thread whose header already
+   *  shows it. */
+  labelHidden?: boolean;
   icon: ReactNode;
   children: ReactNode;
   footer: ReactNode;
@@ -53,12 +56,17 @@ function renderAuthorHeader({
   icon,
   label,
   hoverLabel,
+  labelHidden,
   headerPrefix,
   timestamp,
   align,
-}: Pick<MessageRowProps, 'icon' | 'label' | 'hoverLabel' | 'headerPrefix' | 'timestamp'> & {
+}: Pick<
+  MessageRowProps,
+  'icon' | 'label' | 'hoverLabel' | 'labelHidden' | 'headerPrefix' | 'timestamp'
+> & {
   align: 'start' | 'end';
 }) {
+  const name = <HeaderLabel label={label} hoverLabel={hoverLabel} />;
   return (
     <h2 className={authorHeaderClasses[align]}>
       {align === 'end' && (
@@ -71,7 +79,7 @@ function renderAuthorHeader({
         {icon}
       </span>
       <span className="sr-only">{headerPrefix}</span>
-      <HeaderLabel label={label} hoverLabel={hoverLabel} />
+      {labelHidden ? <span className="sr-only">{name}</span> : name}
       {align === 'start' && (
         <MessageTimestamp value={timestamp} className="ms-auto shrink-0 font-normal" />
       )}
@@ -85,6 +93,7 @@ export default function MessageRow({
   icon,
   label,
   hoverLabel,
+  labelHidden = false,
   footer,
   children,
   timestamp,
@@ -173,6 +182,7 @@ export default function MessageRow({
             icon,
             label,
             hoverLabel,
+            labelHidden,
             headerPrefix,
             timestamp,
             align: isCreatedByUser ? 'end' : 'start',
