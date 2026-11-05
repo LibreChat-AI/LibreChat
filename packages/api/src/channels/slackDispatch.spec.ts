@@ -442,11 +442,14 @@ describe('shared Slack service routing', () => {
       .set('x-test-user', managerId)
       .send({ ...body, isBotAdmin: true })
       .expect(400);
-    await request
+    const assigned = await request
       .post(`/ui/member-agent/${channel.channelId}/routes`)
       .set('x-test-user', managerId)
-      .send(body)
-      .expect(200);
+      .send(body);
+    expect({ status: assigned.status, body: assigned.body }).toMatchObject({
+      status: 200,
+      body: { status: 'active' },
+    });
     expect((await scoped(() => routes.read(workspace.workspaceId)))?.channelId).toBe(
       channel.channelId,
     );

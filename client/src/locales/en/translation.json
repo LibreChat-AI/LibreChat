@@ -3933,6 +3933,7 @@
   "com_ui_slack_bot_managers_limit": "You can add up to {{0}} bot managers.",
   "com_ui_slack_bot_managers_error": "Could not save bot access. Reload the current managers and try again. Check that everyone belongs to your organization.",
   "com_ui_slack_bot_managers_revocation": "Removing access prevents future changes. Existing assignments keep running.",
+  "com_ui_slack_bot_managers_search_error": "Could not search your organization’s users. Try again.",
   "com_ui_slack_bot_managers_reload": "Reload managers",
   "com_ui_channels_bot_access_required": "An administrator must give you management access to this bot before you can assign agents. You can still stop or delete your own connection.",
   "com_ui_channels_workspace_assign": "Assign agent",

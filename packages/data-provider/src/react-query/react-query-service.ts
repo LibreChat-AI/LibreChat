@@ -355,12 +355,9 @@ export const useUpdateFeedbackMutation = (
 export const useSearchPrincipalsQuery = (
   params: q.PrincipalSearchParams,
   config?: UseQueryOptions<q.PrincipalSearchResponse>,
-  principalKey?: string,
 ): QueryObserverResult<q.PrincipalSearchResponse> => {
   return useQuery<q.PrincipalSearchResponse>(
-    principalKey
-      ? [QueryKeys.principalSearch, principalKey, params]
-      : [QueryKeys.principalSearch, params],
+    [QueryKeys.principalSearch, params],
     () => dataService.searchPrincipals(params),
     {
       enabled: !!params.q && params.q.length >= 2,

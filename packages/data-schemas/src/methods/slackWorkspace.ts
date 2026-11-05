@@ -79,6 +79,11 @@ export interface SlackWorkspaceStorage {
   botManagers(
     workspaceId: string,
   ): Promise<{ revision: string; managers: SlackBotManager[] } | null>;
+  searchBotManagers(
+    workspaceId: string,
+    query: string,
+    limit: number,
+  ): Promise<SlackBotManager[] | null>;
   setBotManagers(input: BotManagerUpdate): Promise<BotManagerWriteResult>;
   disconnect(workspaceId: string, expectedRevision?: string): Promise<boolean>;
   /** Hide a retired installation while retaining its callback and ownership fences. */
@@ -137,6 +142,7 @@ export function createSlackWorkspaceStorage(
 
   return {
     botManagers: botAccess.read,
+    searchBotManagers: botAccess.search,
     setBotManagers: botAccess.set,
     async app(appId) {
       return generations

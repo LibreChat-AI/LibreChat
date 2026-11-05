@@ -1,5 +1,4 @@
 import React from 'react';
-import axios from 'axios';
 import userEvent from '@testing-library/user-event';
 import { dataService, PrincipalType } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -13,6 +12,7 @@ jest.mock('librechat-data-provider', () => {
     dataService: {
       ...actual.dataService,
       getSlackBotManagers: jest.fn(),
+      searchSlackBotManagers: jest.fn(),
       setSlackBotManagers: jest.fn(),
     },
   };
@@ -57,22 +57,7 @@ beforeEach(() => {
     .spyOn(dataService, 'getSlackBotManagers')
     .mockResolvedValue({ revision: 'r1', managers: [manager], maxManagers: 50 });
   save = jest.spyOn(dataService, 'setSlackBotManagers').mockResolvedValue({ revision: 'r2' });
-  jest.spyOn(axios, 'get').mockResolvedValue({
-    data: {
-      query: 'bo',
-      results: [
-        bob,
-        {
-          ...bob,
-          id: undefined,
-          source: 'entra',
-          idOnTheSource: 'directory-only',
-          name: 'Directory Only',
-        },
-      ],
-      count: 2,
-    },
-  });
+  jest.spyOn(dataService, 'searchSlackBotManagers').mockResolvedValue([bob]);
 });
 afterEach(() => jest.restoreAllMocks());
 async function open(user: ReturnType<typeof userEvent.setup>) {
@@ -80,7 +65,7 @@ async function open(user: ReturnType<typeof userEvent.setup>) {
   return screen.findByRole('dialog', { name: 'com_ui_slack_bot_managers' });
 }
 
-test('loads current managers, limits the picker to existing users and saves with the observed revision', async () => {
+test('loads managers, uses the bot-admin search and saves with the observed revision', async () => {
   const user = userEvent.setup();
   page();
   const dialog = await open(user);
@@ -88,7 +73,7 @@ test('loads current managers, limits the picker to existing users and saves with
   expect(within(dialog).getByRole('button', { name: 'com_ui_save' })).toBeDisabled();
   await user.type(within(dialog).getByRole('combobox'), 'bo');
   await user.click(await screen.findByRole('option', { name: /Bob/ }));
-  expect(screen.queryByText('Directory Only')).not.toBeInTheDocument();
+  expect(dataService.searchSlackBotManagers).toHaveBeenCalledWith('workspace-1', 'bo');
   await user.click(within(dialog).getByRole('button', { name: 'com_ui_save' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith('workspace-1', 'r1', [manager.id, bob.id]));
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -142,4 +127,20 @@ test('an unavailable read cannot expose the picker or save control', async () =>
   await within(dialog).findByText('com_ui_slack_bot_managers_error');
   expect(within(dialog).queryByRole('combobox')).not.toBeInTheDocument();
   expect(within(dialog).getByRole('button', { name: 'com_ui_save' })).toBeDisabled();
+});
+
+test('search failures are visible and retryable without closing the manager dialog', async () => {
+  const user = userEvent.setup();
+  jest
+    .mocked(dataService.searchSlackBotManagers)
+    .mockRejectedValueOnce(new Error('private directory diagnostic'));
+  page();
+  const dialog = await open(user);
+  await within(dialog).findByText('Alice');
+  await user.type(within(dialog).getByRole('combobox'), 'bo');
+  await within(dialog).findByText('com_ui_slack_bot_managers_search_error');
+  expect(screen.queryByText('private directory diagnostic')).not.toBeInTheDocument();
+  await user.click(within(dialog).getByRole('button', { name: 'com_ui_retry' }));
+  await user.click(await screen.findByRole('option', { name: /Bob/ }));
+  expect(within(dialog).getByRole('button', { name: 'com_ui_save' })).toBeEnabled();
 });

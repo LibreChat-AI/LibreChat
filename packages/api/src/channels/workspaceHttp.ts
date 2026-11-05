@@ -47,6 +47,7 @@ export interface SlackWorkspaceHandlers {
   cancel: RequestHandler;
   callback: RequestHandler;
   managers: RequestHandler;
+  searchManagers: RequestHandler;
   updateManagers: RequestHandler;
 }
 
@@ -107,6 +108,36 @@ export function createSlackWorkspaceHandlers(deps: {
     });
 
   return {
+    searchManagers: browser(async (req, res, principal) => {
+      if (!(await deps.canManage(principal))) {
+        res.sendStatus(403);
+        return;
+      }
+      const id = identifier.safeParse(req.params.workspaceId);
+      const query = z
+        .object({ q: z.string().trim().min(2) })
+        .strict()
+        .safeParse(req.query);
+      if (!id.success || !query.success) {
+        res.sendStatus(400);
+        return;
+      }
+      const settings = await deps.settings();
+      if (!settings.configured) {
+        res.sendStatus(404);
+        return;
+      }
+      const managers = await deps.storage.searchBotManagers(
+        id.data,
+        query.data.q,
+        settings.pageSize,
+      );
+      if (!managers) {
+        res.sendStatus(404);
+        return;
+      }
+      res.json(managers);
+    }),
     managers: browser(async (req, res, principal) => {
       if (!(await deps.canManage(principal))) {
         res.sendStatus(403);
