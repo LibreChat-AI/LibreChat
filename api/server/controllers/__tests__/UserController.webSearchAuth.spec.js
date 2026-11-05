@@ -9,14 +9,16 @@ jest.mock('@librechat/data-schemas', () => ({
   webSearchKeys: ['serperApiKey', 'firecrawlApiKey', 'jinaApiKey'],
 }));
 
-jest.mock('librechat-data-provider', () => ({
-  Tools: { web_search: 'web_search' },
-  CacheKeys: { FLOWS: 'flows' },
-  Constants: { mcp_delimiter: '_mcp_', mcp_prefix: 'mcp_' },
-  FileSources: {},
-}));
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return {
+    ...actual,
+    Tools: { ...actual.Tools, web_search: 'web_search' },
+  };
+});
 
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
   MCPOAuthHandler: {
     generateFlowId: jest.fn(),
     generateTokenFlowId: jest.fn(),
@@ -30,24 +32,6 @@ jest.mock('@librechat/api', () => ({
     deleteUserTokens: jest.fn().mockResolvedValue(undefined),
   },
   normalizeHttpError: jest.fn((error) => error),
-  /**
-   * Mirrors the real implementation in packages/api/src/web/web.ts: keep only the
-   * fields the webSearch config defines, and map each to the environment variable
-   * named in its `${VAR}` placeholder.
-   */
-  extractWebSearchEnvVars: jest.fn(({ keys, config }) => {
-    if (!config) {
-      return [];
-    }
-    return keys
-      .filter((key) => key in config)
-      .map((key) => {
-        const value = config[key];
-        const match = typeof value === 'string' ? value.match(/^\$\{(.+)\}$/) : null;
-        return match ? match[1] : null;
-      })
-      .filter(Boolean);
-  }),
   getAppConfigOptionsFromUser: jest.fn((user) => ({ role: user?.role, userId: user?.id })),
   needsRefresh: jest.fn(),
   getNewS3URL: jest.fn(),

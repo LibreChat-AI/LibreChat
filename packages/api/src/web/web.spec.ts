@@ -7,7 +7,7 @@ import type {
   TCustomConfig,
   RerankerTypes,
 } from 'librechat-data-provider';
-import { loadWebSearchAuth, extractWebSearchEnvVars } from './web';
+import { loadWebSearchAuth, extractWebSearchEnvVars, pairWebSearchInstallAuth } from './web';
 
 // Mock the extractVariableName function
 jest.mock('../utils', () => ({
@@ -72,6 +72,61 @@ describe('web.ts', () => {
       });
 
       expect(result).toEqual(['SERPER_API_KEY']);
+    });
+  });
+
+  describe('pairWebSearchInstallAuth', () => {
+    it('stores each submitted value under its own environment variable', () => {
+      const config: Partial<TWebSearchConfig> = {
+        serperApiKey: '${SERPER_API_KEY}',
+        firecrawlApiKey: '${FIRECRAWL_API_KEY}',
+      };
+
+      const result = pairWebSearchInstallAuth({
+        keys: ['serperApiKey', 'firecrawlApiKey'],
+        values: ['serper-secret', 'firecrawl-secret'],
+        config: config as TWebSearchConfig,
+      });
+
+      expect(result).toEqual({
+        keys: ['SERPER_API_KEY', 'FIRECRAWL_API_KEY'],
+        values: ['serper-secret', 'firecrawl-secret'],
+      });
+    });
+
+    it('does not shift values when a submitted field is not configured', () => {
+      const config: Partial<TWebSearchConfig> = {
+        serperApiKey: '${SERPER_API_KEY}',
+      };
+
+      const result = pairWebSearchInstallAuth({
+        keys: ['firecrawlApiKey', 'serperApiKey'],
+        values: ['firecrawl-secret', 'serper-secret'],
+        config: config as TWebSearchConfig,
+      });
+
+      expect(result).toEqual({
+        keys: ['SERPER_API_KEY'],
+        values: ['serper-secret'],
+      });
+    });
+
+    it('skips a configured field whose value is not an environment variable placeholder', () => {
+      const config: Partial<TWebSearchConfig> = {
+        jinaApiKey: 'literal-value',
+        serperApiKey: '${SERPER_API_KEY}',
+      };
+
+      const result = pairWebSearchInstallAuth({
+        keys: ['jinaApiKey', 'serperApiKey'],
+        values: ['jina-secret', 'serper-secret'],
+        config: config as TWebSearchConfig,
+      });
+
+      expect(result).toEqual({
+        keys: ['SERPER_API_KEY'],
+        values: ['serper-secret'],
+      });
     });
   });
 

@@ -83,6 +83,36 @@ export function extractWebSearchEnvVars({
 }
 
 /**
+ * Maps submitted web-search auth fields to environment-variable keys while keeping each
+ * value paired with the key it was submitted under.
+ */
+export function pairWebSearchInstallAuth({
+  keys,
+  values,
+  config,
+}: {
+  keys: string[];
+  values: string[];
+  config: TCustomConfig['webSearch'] | undefined;
+}): { keys: string[]; values: string[] } {
+  const mappedKeys: string[] = [];
+  const mappedValues: string[] = [];
+
+  for (let i = 0; i < keys.length; i++) {
+    const [envVar] = extractWebSearchEnvVars({
+      keys: [keys[i] as TWebSearchKeys],
+      config,
+    });
+    if (envVar) {
+      mappedKeys.push(envVar);
+      mappedValues.push(values[i]);
+    }
+  }
+
+  return { keys: mappedKeys, values: mappedValues };
+}
+
+/**
  * Type for web search authentication result
  */
 export interface WebSearchAuthResult {
