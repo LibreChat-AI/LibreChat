@@ -93,7 +93,9 @@ describe('spreadsheet parser regressions', () => {
   );
 
   it('preserves offset ranges, numeric formats, Unicode, and blank rows', async () => {
-    const sheet = utils.aoa_to_sheet(
+    const sheet = utils.aoa_to_sheet([]);
+    utils.sheet_add_aoa(
+      sheet,
       [['ID', 'comma,quote"', 'é😀'], [], [42, true, { t: 'n', v: 0.25, z: '0%' }]],
       { origin: 'B3' },
     );
@@ -105,7 +107,7 @@ describe('spreadsheet parser regressions', () => {
     ).resolves.toBe(expected);
   });
 
-  it('does not trust upload size metadata in the worker', async () => {
+  it('does not trust upload size metadata in the parser process', async () => {
     const buffer = Buffer.alloc(SPREADSHEET_LIMITS.inputBytes + 1);
     await expect(parse(buffer, 'oversize.xlsx')).rejects.toThrow('document parser limit');
     const parser = createSpreadsheetParser(
@@ -120,7 +122,7 @@ describe('spreadsheet parser regressions', () => {
   });
 });
 
-describe('spreadsheet worker lifecycle', () => {
+describe('spreadsheet process lifecycle', () => {
   const fixture = path.join(__dirname, '__fixtures__', 'spreadsheet-worker.cjs');
 
   it('limits concurrency without a queue, terminates synchronous stalls, and recovers admission', async () => {
@@ -141,7 +143,7 @@ describe('spreadsheet worker lifecycle', () => {
     }
   });
 
-  it.each(['crash', 'exit'])('sanitizes a worker %s and releases admission', async (operation) => {
+  it.each(['crash', 'exit'])('sanitizes a process %s and releases admission', async (operation) => {
     const parser = createSpreadsheetParser(fixture);
     await expect(parser(operation)).rejects.toThrow(/^Spreadsheet processing failed\.$/);
     await expect(parser('normal')).resolves.toBe('recovered');
@@ -162,12 +164,31 @@ describe('spreadsheet worker lifecycle', () => {
     }
   });
 
+  it('enforces its own effective heap ceiling despite inherited Node heap flags', async () => {
+    const original = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = '--max-old-space-size=6144';
+    try {
+      const parser = createSpreadsheetParser(fixture);
+      const heapLimit = Number(await parser('heap'));
+      expect(heapLimit).toBeGreaterThan(SPREADSHEET_LIMITS.heapMb);
+      expect(heapLimit).toBeLessThan(200);
+      await expect(parser('allocate')).rejects.toThrow(/^Spreadsheet processing failed\.$/);
+      await expect(parser('normal')).resolves.toBe('recovered');
+    } finally {
+      if (original === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = original;
+    }
+  });
+
+  it('sanitizes asynchronous startup failures and releases admission', async () => {
+    const parser = createSpreadsheetParser(path.join(__dirname, 'missing-worker.cjs'));
+    await expect(parser('normal')).rejects.toThrow(/^Spreadsheet processing failed\.$/);
+    await expect(parser('normal')).rejects.toThrow(/^Spreadsheet processing failed\.$/);
+  });
+
   it('sanitizes startup failures without consuming capacity', async () => {
     const startup = jest
-      .spyOn(
-        jest.requireActual<typeof import('node:worker_threads')>('node:worker_threads'),
-        'Worker',
-      )
+      .spyOn(jest.requireActual<typeof import('node:child_process')>('node:child_process'), 'fork')
       .mockImplementationOnce(() => {
         throw new Error('PRIVATE-STARTUP');
       });
