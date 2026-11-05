@@ -998,16 +998,19 @@ describe('MCP Tool Authorization', () => {
       expect(result.tools).toContain(`tool${d}authorizedServer`);
     });
 
-    test('should preserve version MCP tools when registry is unavailable on revert', async () => {
+    test('should keep only MCP tools already on the agent when registry is unavailable on revert', async () => {
       await Agent.updateOne(
         { id: existingAgentId },
         {
           $set: {
+            tools: ['web_search', `validTool${d}authorizedServer`],
+            mcpServerNames: ['authorizedServer'],
             'versions.0.tools': [
               'web_search',
               `validTool${d}authorizedServer`,
               `otherTool${d}anotherServer`,
             ],
+            'versions.0.mcpServerNames': ['authorizedServer', 'anotherServer'],
           },
         },
       );
@@ -1026,11 +1029,11 @@ describe('MCP Tool Authorization', () => {
       const result = mockRes.json.mock.calls[0][0];
       expect(result.tools).toContain('web_search');
       expect(result.tools).toContain(`validTool${d}authorizedServer`);
-      expect(result.tools).toContain(`otherTool${d}anotherServer`);
+      expect(result.tools).not.toContain(`otherTool${d}anotherServer`);
 
       const agentInDb = await Agent.findOne({ id: existingAgentId });
-      expect(agentInDb.tools).toContain(`validTool${d}authorizedServer`);
-      expect(agentInDb.tools).toContain(`otherTool${d}anotherServer`);
+      expect(agentInDb.tools).toEqual(['web_search', `validTool${d}authorizedServer`]);
+      expect(agentInDb.mcpServerNames).toEqual(['authorizedServer']);
     });
   });
 });

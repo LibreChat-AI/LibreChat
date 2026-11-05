@@ -253,6 +253,24 @@ export class AgentSortCursorError extends Error {
   }
 }
 
+/** Options a caller passes after authorizing a restore against the agent it read. */
+export interface RevertAgentVersionOptions {
+  /** Authorized tools; replace the snapshot's, which were never checked for this user. */
+  tools?: string[];
+  /** Index resolved for `tools`. Derived from the restored tools when omitted. */
+  mcpServerNames?: string[];
+  /** The revision the caller authorized against; the restore is refused once it moves. */
+  expectedUpdatedAt?: Date;
+}
+
+export class AgentRevisionConflictError extends Error {
+  readonly statusCode = 409;
+  constructor() {
+    super('Agent was modified while reverting; reload and try again');
+    this.name = 'AgentRevisionConflictError';
+  }
+}
+
 type AgentSortCursorDecodeResult =
   | { kind: 'usable'; cursor: AgentSortCursor }
   | { kind: 'ordering-mismatch' }
@@ -1101,6 +1119,7 @@ export function createAgentMethods(
   revertAgentVersion: (
     searchParameter: FilterQuery<IAgent>,
     versionIndex: number,
+    options?: RevertAgentVersionOptions,
   ) => Promise<IAgent>;
   countPromotedAgents: () => Promise<number>;
   addAgentResourceFile: ({
@@ -2658,10 +2677,15 @@ export function createAgentMethods(
 
   /**
    * Reverts an agent to a specific version in its version history.
+   *
+   * The MCP server index is always rewritten for the restored tools rather than taken from
+   * the snapshot: a snapshot may predate the index or name servers its tools no longer use,
+   * and agent-scoped MCP access is granted from this index.
    */
   async function revertAgentVersion(
     searchParameter: FilterQuery<IAgent>,
     versionIndex: number,
+    options: RevertAgentVersionOptions = {},
   ): Promise<IAgent> {
     const Agent = mongoose.models.Agent as Model<IAgent>;
     const agent = await Agent.findOne(searchParameter);
@@ -2675,6 +2699,12 @@ export function createAgentMethods(
 
     const revertToVersion = { ...(agent.versions[versionIndex] as Record<string, unknown>) };
     const originalRevision = (agent as unknown as IAgent & { updatedAt: Date }).updatedAt;
+    if (
+      options.expectedUpdatedAt != null &&
+      new Date(options.expectedUpdatedAt).getTime() !== new Date(originalRevision).getTime()
+    ) {
+      throw new AgentRevisionConflictError();
+    }
     delete revertToVersion._id;
     delete revertToVersion.id;
     delete revertToVersion.versions;
@@ -2699,6 +2729,21 @@ export function createAgentMethods(
         revertToVersion.skills_enabled = false;
       }
     }
+
+    if (options.tools) {
+      revertToVersion.tools = options.tools;
+    }
+    const restoredTools = Array.isArray(revertToVersion.tools)
+      ? (revertToVersion.tools as string[])
+      : (agent.tools ?? []);
+    revertToVersion.mcpServerNames =
+      options.mcpServerNames ??
+      rebuildMCPServerNames(
+        restoredTools,
+        Array.isArray(revertToVersion.mcpServerNames)
+          ? (revertToVersion.mcpServerNames as string[])
+          : (agent.mcpServerNames ?? []),
+      );
 
     const unsetOnRestore: Record<string, 1> = {};
     for (const field of [

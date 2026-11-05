@@ -3228,6 +3228,70 @@ describe('Agent Methods', () => {
       expect(revertedAgent.code_environment_id).toBeUndefined();
     });
 
+    test('should rebuild the MCP index when the restored version predates it', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      await createAgent({
+        id: agentId,
+        name: 'No MCP Yet',
+        provider: 'test',
+        model: 'test-model',
+        author: new mongoose.Types.ObjectId(),
+        tools: [],
+      });
+      await updateAgent(
+        { id: agentId },
+        { tools: [`search${Constants.mcp_delimiter}private`], mcpServerNames: ['private'] },
+      );
+
+      const revertedAgent = await revertAgentVersion({ id: agentId }, 0);
+
+      expect(revertedAgent.tools).toEqual([]);
+      expect(revertedAgent.mcpServerNames).toEqual([]);
+    });
+
+    test('should persist caller-authorized tools and index in place of the snapshot', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      const kept = `search${Constants.mcp_delimiter}shared`;
+      const dropped = `search${Constants.mcp_delimiter}private`;
+      await createAgent({
+        id: agentId,
+        name: 'Two Servers',
+        provider: 'test',
+        model: 'test-model',
+        author: new mongoose.Types.ObjectId(),
+        tools: [kept, dropped],
+        mcpServerNames: ['shared', 'private'],
+      });
+      await updateAgent({ id: agentId }, { tools: [] });
+
+      const revertedAgent = await revertAgentVersion({ id: agentId }, 0, {
+        tools: [kept],
+        mcpServerNames: ['shared'],
+      });
+
+      expect(revertedAgent.tools).toEqual([kept]);
+      expect(revertedAgent.mcpServerNames).toEqual(['shared']);
+    });
+
+    test('should refuse a restore authorized against an older revision', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      const created = await createAgent({
+        id: agentId,
+        name: 'Original',
+        provider: 'test',
+        model: 'test-model',
+        author: new mongoose.Types.ObjectId(),
+      });
+      const staleRevision = (created as IAgent & { updatedAt: Date }).updatedAt;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await updateAgent({ id: agentId }, { name: 'Edited' });
+
+      await expect(
+        revertAgentVersion({ id: agentId }, 0, { expectedUpdatedAt: staleRevision }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      expect((await getAgent({ id: agentId }))?.name).toBe('Edited');
+    });
+
     test('should unset a linked prompt-group instructions selection absent from the restored version', async () => {
       const agentId = `agent_${uuidv4()}`;
       const authorId = new mongoose.Types.ObjectId();

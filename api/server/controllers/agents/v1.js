@@ -52,6 +52,7 @@ const {
   checkInstructionsPromptWrite,
   applyInstructionsPromptUnset,
   instructionsContentForScan,
+  resolveRestoredMCPServerNames,
 } = require('@librechat/api');
 const {
   Time,
@@ -2134,7 +2135,38 @@ const revertAgentVersionHandler = async (req, res) => {
       return;
     }
 
-    let updatedAgent = await db.revertAgentVersion({ id }, version_index);
+    /** Authorize the restored tools against the agent as it stands, before the restore
+     *  writes the snapshot's MCP index: agent-scoped MCP access is granted from that
+     *  index, so checking afterwards would let the restored servers vouch for themselves. */
+    const restoredTools = Array.isArray(revertVersion.tools)
+      ? revertVersion.tools
+      : (existingAgent.tools ?? []);
+    const revertOptions = { expectedUpdatedAt: existingAgent.updatedAt };
+    if (restoredTools.length > 0) {
+      const [availableTools, configServers] = await Promise.all([
+        getCachedTools().then((t) => t ?? {}),
+        resolveConfigServers(req),
+      ]);
+      const resolvedServerNames = new Set();
+      revertOptions.tools = await filterAuthorizedTools({
+        tools: restoredTools,
+        userId: req.user.id,
+        role: req.user.role,
+        user: req.user,
+        mcpPermissionContext: createMCPPermissionContext(req),
+        availableTools,
+        existingTools: existingAgent.tools ?? [],
+        configServers,
+        resolvedServerNames,
+      });
+      revertOptions.mcpServerNames = resolveRestoredMCPServerNames({
+        tools: revertOptions.tools,
+        resolvedServerNames,
+        priorNames: existingAgent.mcpServerNames ?? [],
+      });
+    }
+
+    let updatedAgent = await db.revertAgentVersion({ id }, version_index, revertOptions);
     const revertUpdates = {};
     if (
       hasLegacyEdgeSource ||
@@ -2143,28 +2175,7 @@ const revertAgentVersionHandler = async (req, res) => {
       revertUpdates.edges = revertEdges;
     }
 
-    if (updatedAgent.tools?.length) {
-      const [availableTools, configServers] = await Promise.all([
-        getCachedTools().then((t) => t ?? {}),
-        resolveConfigServers(req),
-      ]);
-      const mcpPermissionContext = createMCPPermissionContext(req);
-      const filteredTools = await filterAuthorizedTools({
-        tools: updatedAgent.tools,
-        userId: req.user.id,
-        role: req.user.role,
-        user: req.user,
-        mcpPermissionContext,
-        availableTools,
-        existingTools: updatedAgent.tools,
-        configServers,
-      });
-      if (filteredTools.length !== updatedAgent.tools.length) {
-        revertUpdates.tools = filteredTools;
-      }
-    }
-
-    const effectiveRevertTools = revertUpdates.tools ?? updatedAgent.tools;
+    const effectiveRevertTools = updatedAgent.tools;
     const hasCodeExecutionCaller = Object.values(updatedAgent.tool_options ?? {}).some((options) =>
       options.allowed_callers?.includes('code_execution'),
     );
