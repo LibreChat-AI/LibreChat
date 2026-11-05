@@ -39,7 +39,8 @@ const isValidChatProjectId = (projectId: string | null): projectId is string =>
   projectId != null && /^[a-f\d]{24}$/i.test(projectId);
 
 export default function ChatRoute() {
-  const { data: startupConfig } = useGetStartupConfig();
+  const startupQuery = useGetStartupConfig();
+  const startupConfig = startupQuery.data;
   const { isAuthenticated, user, roles } = useAuthRedirect();
   const queryClient = useQueryClient();
 
@@ -327,16 +328,24 @@ export default function ChatRoute() {
     return null;
   }
 
+  const routeFailure =
+    (initialConvoQuery.isError && !initialConvoQuery.isFetching) ||
+    startupQuery.isError ||
+    endpointsQuery.isError;
+  const retryRoute = () => {
+    if (initialConvoQuery.isError) void initialConvoQuery.refetch();
+    if (startupQuery.isError) void startupQuery.refetch();
+    if (endpointsQuery.isError) void endpointsQuery.refetch();
+  };
+
   return (
     <ToolCallsMapProvider conversationId={conversation?.conversationId ?? ''}>
       {routeState.pending && (
         <div className="flex h-screen items-center justify-center" aria-live="polite" role="status">
-          {initialConvoQuery.isError && !initialConvoQuery.isFetching ? (
+          {routeFailure ? (
             <div className="flex flex-col items-center gap-3" role="alert">
               <p>{localize('com_ui_conversation_load_error')}</p>
-              <Button onClick={() => initialConvoQuery.refetch()}>
-                {localize('com_ui_retry')}
-              </Button>
+              <Button onClick={retryRoute}>{localize('com_ui_retry')}</Button>
             </div>
           ) : (
             <Spinner tone="primary" />
@@ -348,6 +357,11 @@ export default function ChatRoute() {
           index={index}
           project={verifiedChatProjectId ? projectQuery.data : undefined}
           routePending={routeState.pending || conversation == null}
+          historyReady={
+            conversationId === Constants.NEW_CONVO ||
+            conversation?.conversationId === conversationId ||
+            initialConvoQuery.data != null
+          }
         />
       </div>
     </ToolCallsMapProvider>

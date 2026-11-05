@@ -50,7 +50,10 @@ async function serveSlowConfiguredFooter(page: Page) {
  *  served with the HTML so it is in place before the app's own scripts. */
 async function installSampler(page: Page, serveShell: (html: string) => string = (html) => html) {
   await page.route('**/*', async (route) => {
-    if (route.request().resourceType() !== 'document') {
+    if (
+      route.request().resourceType() !== 'document' ||
+      route.request().frame() !== page.mainFrame()
+    ) {
       return route.fallback();
     }
     const response = await route.fetch();
@@ -58,7 +61,7 @@ async function installSampler(page: Page, serveShell: (html: string) => string =
   window.__composerBottomSamples = [];
   (function sample() {
     var node = document.querySelector('[data-testid="composer-surface"]');
-    if (node) {
+    if (node && node.getClientRects().length > 0 && getComputedStyle(node).visibility !== 'hidden') {
       var bottom = Math.round(node.getBoundingClientRect().bottom * 100) / 100;
       var samples = window.__composerBottomSamples;
       if (samples.length === 0 || samples[samples.length - 1] !== bottom) {

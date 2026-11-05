@@ -446,3 +446,9 @@ export function refetchMessagesOnMount(query: Query<t.TMessage[], unknown>): boo
     Date.now() - dataUpdatedAt < PREFETCH_FRESH_MS
   );
 }
+
+/** Secondary readers follow the session's history query without starting another fetch on key changes. */
+export const useCachedMessages = <TData = t.TMessage[]>(
+  id: string,
+  select?: (messages: t.TMessage[]) => TData,
+): QueryObserverResult<TData> => useGetMessagesByConvoId(id, { enabled: false, select });

@@ -91,7 +91,7 @@ function useMessageCache(): ChatMessageCache {
  *  prefetched counts as this mount's own load. */
 function useMessages(
   conversationId: string | undefined,
-  { isStreaming }: { isStreaming: boolean },
+  { isStreaming, enabled = true }: { isStreaming: boolean; enabled?: boolean },
 ): ChatMessagesQuery {
   const {
     data = null,
@@ -100,7 +100,7 @@ function useMessages(
   } = useGetMessagesByConvoId(
     conversationId ?? '',
     {
-      enabled: !!conversationId && conversationId !== Constants.SEARCH,
+      enabled: enabled && !!conversationId && conversationId !== Constants.SEARCH,
       refetchOnMount: refetchMessagesOnMount,
     },
     { isStreaming },

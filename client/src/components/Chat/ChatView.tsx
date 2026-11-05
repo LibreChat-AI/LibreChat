@@ -51,6 +51,7 @@ type ChatViewProps = {
   project?: TChatProject;
   /** The route is loading another conversation, or failed to. */
   routePending?: boolean;
+  historyReady?: boolean;
 };
 
 /**
@@ -213,11 +214,11 @@ function ChatViewPane({
 }
 
 function ChatView(props: ChatViewProps) {
-  const { index = 0 } = props;
+  const { index = 0, historyReady = true } = props;
   const { conversationId } = useParams();
 
   return (
-    <ChatSessionProvider index={index} conversationId={conversationId}>
+    <ChatSessionProvider index={index} conversationId={conversationId} historyReady={historyReady}>
       {({ messages, isLoading }) => (
         <ChatViewPane
           {...props}

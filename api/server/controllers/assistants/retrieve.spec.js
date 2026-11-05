@@ -17,7 +17,8 @@ const assistant = {
 
 const azureConfig = {
   assistants: true,
-  assistantModels: ['public-first'],
+  assistantModels: ['public-first', 'public-second', 'public-second-extra'],
+  assistantGroups: ['first', 'second'],
   modelGroupMap: {
     'public-first': { group: 'first' },
     'public-second': { group: 'second' },
@@ -72,8 +73,8 @@ describe('selected assistant retrieval', () => {
   it('returns an allowed assistant using the request configuration and authenticated user', async () => {
     const req = makeRequest({ supportedIds: [assistant.id] });
     await handler(req, res);
-    expect(getOpenAIClient).toHaveBeenCalledWith({ req, res });
-    expect(req.body).toEqual({});
+    expect(getOpenAIClient).toHaveBeenCalledWith({ req: { ...req, body: {} }, res });
+    expect(req.body).toBeUndefined();
     expect(retrieve).toHaveBeenCalledWith(assistant.id);
     expect(hasCapability).toHaveBeenCalledWith(req.user, SystemCapabilities.MANAGE_ASSISTANTS);
     expect(filter).toHaveBeenCalledWith({
@@ -153,14 +154,208 @@ describe('selected assistant retrieval', () => {
     ['public-second', 'deployment-second-extra', 'public-second-extra'],
     ['public-second-extra', 'deployment-second', 'public-second'],
     ['public-second', 'unknown-deployment', 'public-second'],
-    [undefined, 'deployment-first', 'public-first'],
   ])('maps requested model %s and deployment %s to %s', async (model, deployment, expected) => {
     const req = makeAzureRequest(model);
     retrieve.mockResolvedValue({ ...assistant, model: deployment });
     await handler(req, res);
-    expect(getOpenAIClient).toHaveBeenCalledWith({ req, res });
+    expect(getOpenAIClient).toHaveBeenCalledTimes(1);
+    expect(getOpenAIClient).toHaveBeenCalledWith({ req: { ...req, body: { model } }, res });
     expect(res.json).toHaveBeenCalledWith({ ...assistant, model: expected });
     expect(res.status).not.toHaveBeenCalled();
+  });
+
+  describe('Azure selection without a model', () => {
+    const missing = () => Object.assign(new Error('PRIVATE-UPSTREAM-CONTENT'), { status: 404 });
+    const firstRetrieve = jest.fn();
+    const secondRetrieve = jest.fn();
+
+    beforeEach(() => {
+      firstRetrieve.mockReset().mockRejectedValue(missing());
+      secondRetrieve.mockReset().mockResolvedValue({ ...assistant, model: 'deployment-second' });
+      getOpenAIClient.mockImplementation(async ({ req }) => {
+        await Promise.resolve();
+        const retrieve = req.body.model === 'public-first' ? firstRetrieve : secondRetrieve;
+        return { openai: { beta: { assistants: { retrieve } } } };
+      });
+    });
+
+    it('finds an ID in the later group with isolated request-local routing', async () => {
+      const req = makeAzureRequest();
+      req.body = { endpoint: 'azureAssistants' };
+      Object.freeze(req.body);
+      await handler(req, res);
+      expect(firstRetrieve).toHaveBeenCalledWith(assistant.id);
+      expect(secondRetrieve).toHaveBeenCalledWith(assistant.id);
+      expect(getOpenAIClient.mock.calls.map(([{ req }]) => req.body.model)).toEqual([
+        'public-first',
+        'public-second',
+      ]);
+      for (const [{ req: clientReq }] of getOpenAIClient.mock.calls) {
+        expect(clientReq).not.toBe(req);
+        expect(clientReq.body).not.toBe(req.body);
+        expect(clientReq.config).toBe(req.config);
+        expect(clientReq.user).toBe(req.user);
+      }
+      expect(getOpenAIClient.mock.calls[0][0].req.body).not.toBe(
+        getOpenAIClient.mock.calls[1][0].req.body,
+      );
+      expect(req.body).toEqual({ endpoint: 'azureAssistants' });
+      expect(res.json).toHaveBeenCalledWith({ ...assistant, model: 'public-second' });
+      expect(res.status).not.toHaveBeenCalled();
+    });
+
+    it('starts independent group lookups before either provider finishes', async () => {
+      let finishFirst;
+      secondRetrieve.mockImplementation(async () => {
+        finishFirst();
+        return { ...assistant, model: 'deployment-second' };
+      });
+      // A missing first group must finish only after the second lookup has started.
+      firstRetrieve.mockImplementation(
+        () =>
+          new Promise((_, reject) => {
+            finishFirst = () => reject(missing());
+          }),
+      );
+      await handler(makeAzureRequest(), res);
+      expect(firstRetrieve).toHaveBeenCalledTimes(1);
+      expect(secondRetrieve).toHaveBeenCalledTimes(1);
+      expect(res.json).toHaveBeenCalledWith({ ...assistant, model: 'public-second' });
+    });
+
+    it('responds with an authorized later-group assistant while the first lookup is unsettled', async () => {
+      let rejectFirst;
+      firstRetrieve.mockReturnValue(
+        new Promise((_, reject) => {
+          rejectFirst = reject;
+        }),
+      );
+      await handler(makeAzureRequest(), res);
+      expect(firstRetrieve).toHaveBeenCalledTimes(1);
+      expect(secondRetrieve).toHaveBeenCalledTimes(1);
+      expect(res.json).toHaveBeenCalledTimes(1);
+      expect(res.json).toHaveBeenCalledWith({ ...assistant, model: 'public-second' });
+      expect(res.status).not.toHaveBeenCalled();
+
+      rejectFirst(Object.assign(new Error('PRIVATE-UPSTREAM-CONTENT'), { status: 503 }));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(res.json).toHaveBeenCalledTimes(1);
+      expect(res.status).not.toHaveBeenCalled();
+    });
+
+    it.each(['first', 'second'])(
+      'returns an authorized assistant despite a 503 in the unrelated %s group',
+      async (failedGroup) => {
+        const failed = failedGroup === 'first' ? firstRetrieve : secondRetrieve;
+        const allowed = failedGroup === 'first' ? secondRetrieve : firstRetrieve;
+        const allowedGroup = failedGroup === 'first' ? 'second' : 'first';
+        failed.mockRejectedValue(
+          Object.assign(new Error('PRIVATE-UPSTREAM-CONTENT'), { status: 503 }),
+        );
+        allowed.mockResolvedValue({ ...assistant, model: `deployment-${allowedGroup}` });
+        await handler(makeAzureRequest(), res);
+        expect(res.json).toHaveBeenCalledTimes(1);
+        expect(res.json).toHaveBeenCalledWith({ ...assistant, model: `public-${allowedGroup}` });
+        expect(res.status).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns a safe 500 when the only retrieved assistant is denied and another group fails', async () => {
+      const req = makeAzureRequest();
+      req.config.endpoints.azureAssistants = { privateAssistants: true };
+      firstRetrieve.mockRejectedValue(
+        Object.assign(new Error('PRIVATE-UPSTREAM-CONTENT'), { status: 503 }),
+      );
+      await handler(req, res);
+      expect(filter).toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledTimes(1);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Failed to load assistant' });
+    });
+
+    it('maps a later group’s alternate deployment to its public alias once per group', async () => {
+      secondRetrieve.mockResolvedValue({ ...assistant, model: 'deployment-second-extra' });
+      await handler(makeAzureRequest(), res);
+      expect(getOpenAIClient).toHaveBeenCalledTimes(2);
+      expect(secondRetrieve).toHaveBeenCalledTimes(1);
+      expect(res.json).toHaveBeenCalledWith({ ...assistant, model: 'public-second-extra' });
+    });
+
+    it.each([403, 404])(
+      'returns an opaque 404 when every group is missing or denied (%s)',
+      async (status) => {
+        secondRetrieve.mockRejectedValue(Object.assign(missing(), { status }));
+        await handler(makeAzureRequest(), res);
+        expect(getOpenAIClient).toHaveBeenCalledTimes(2);
+        expect(res.status).toHaveBeenCalledWith(404);
+        expect(res.json).toHaveBeenCalledTimes(1);
+        expect(res.json).toHaveBeenCalledWith(denial);
+      },
+    );
+
+    it.each(['client', 'provider'])(
+      'returns safe 500, not 404, for a transient %s error in one group',
+      async (source) => {
+        const error = Object.assign(new Error('PRIVATE-UPSTREAM-CONTENT'), { status: 500 });
+        secondRetrieve.mockRejectedValue(missing());
+        if (source === 'client') {
+          getOpenAIClient.mockImplementation(async ({ req }) => {
+            if (req.body.model === 'public-first') {
+              throw error;
+            }
+            return { openai: { beta: { assistants: { retrieve: secondRetrieve } } } };
+          });
+        } else {
+          firstRetrieve.mockRejectedValue(error);
+        }
+        await handler(makeAzureRequest(), res);
+        expect(res.status).toHaveBeenCalledWith(500);
+        expect(res.json).toHaveBeenCalledTimes(1);
+        expect(res.json).toHaveBeenCalledWith({ error: 'Failed to load assistant' });
+      },
+    );
+
+    it.each([
+      { privateAssistants: true },
+      { supportedIds: ['asst-other'] },
+      { excludedIds: [assistant.id] },
+    ])('does not disclose a later group’s assistant denied by %j', async (policy) => {
+      const req = makeAzureRequest();
+      req.config.endpoints.azureAssistants = policy;
+      await handler(req, res);
+      expect(hasCapability).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith(denial);
+      expect(JSON.stringify(res.json.mock.calls)).not.toContain('PRIVATE-UPSTREAM-CONTENT');
+    });
+
+    it('preserves the management bypass for a private later-group assistant', async () => {
+      const req = makeAzureRequest();
+      req.config.endpoints.azureAssistants = { privateAssistants: true };
+      hasCapability.mockResolvedValue(true);
+      await handler(req, res);
+      expect(hasCapability).toHaveBeenCalledTimes(1);
+      expect(filter).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({ ...assistant, model: 'public-second' });
+    });
+
+    it('keeps an explicit model pinned to its group even when the ID exists elsewhere', async () => {
+      await handler(makeAzureRequest('public-first'), res);
+      expect(getOpenAIClient).toHaveBeenCalledTimes(1);
+      expect(firstRetrieve).toHaveBeenCalledWith(assistant.id);
+      expect(secondRetrieve).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith(denial);
+    });
+
+    it('searches only configured assistant groups', async () => {
+      const req = makeAzureRequest();
+      req.config.endpoints.azureOpenAI = { ...azureConfig, assistantGroups: ['first'] };
+      await handler(req, res);
+      expect(getOpenAIClient).toHaveBeenCalledTimes(1);
+      expect(secondRetrieve).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(404);
+    });
   });
 
   it('maps a group-wide deployment to that configured group’s first public model', async () => {

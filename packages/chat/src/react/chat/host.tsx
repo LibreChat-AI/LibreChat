@@ -161,7 +161,7 @@ export interface ChatHost {
    *  live stream. An absent id loads nothing. */
   useMessages(
     conversationId: string | undefined,
-    options: { isStreaming: boolean },
+    options: { isStreaming: boolean; enabled?: boolean },
   ): ChatMessagesQuery;
 }
 

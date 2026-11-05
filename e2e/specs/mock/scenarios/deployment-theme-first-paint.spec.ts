@@ -474,7 +474,11 @@ async function serveThemedShell(page: Page, source: ThemeSource) {
   await page.route(
     () => true,
     async (route) => {
-      if (route.request().resourceType() !== 'document') {
+      // The hidden audio iframe is a binary document, not an app shell.
+      if (
+        route.request().resourceType() !== 'document' ||
+        route.request().frame() !== page.mainFrame()
+      ) {
         return route.fallback();
       }
       const response = await route.fetch();
