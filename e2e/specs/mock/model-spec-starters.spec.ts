@@ -26,6 +26,12 @@ test.describe('model spec conversation starters', () => {
       await expect(page.getByRole('button', { name: text })).toBeVisible();
     }
     await expect(page.getByRole('button', { name: STARTER_BEYOND_CAP })).toBeHidden();
+
+    /** The entrance is staggered by position: the unlayered `.fade-in` rule sets the animation
+     *  shorthand, so a delay or fill mode that loses to it leaves every chip animating at once. */
+    const second = page.getByRole('button', { name: STARTER_PROMPTS[1], exact: true });
+    await expect(second).toHaveCSS('animation-delay', '0.075s');
+    await expect(second).toHaveCSS('animation-fill-mode', 'backwards');
   });
 
   test('a spec without starters shows none', async ({ page }) => {
