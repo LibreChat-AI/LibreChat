@@ -298,13 +298,10 @@ updateStrategy:
 channelGateway:
   enabled: false
   # single binds a manually configured connection; shared serves installed workspaces.
-  # Shared mode enables webhook transport and reads app credentials from the API Secret.
+  # Shared mode enables webhook transport; organization admins register apps in the UI.
   mode: single
   # Shared workers use durable leases and may run across replicas; single mode requires 1.
   replicaCount: 1
-  # API-only app credentials: SLACK_APP_ID, SLACK_CLIENT_ID, SLACK_CLIENT_SECRET,
-  # SLACK_SIGNING_SECRET. Empty uses global.librechat.existingSecretName.
-  slackAppSecretName: ""
   image:
     repository: ghcr.io/librechat-ai/librechat-channel-gateway
     # Defaults to image.tag, which must explicitly select a release containing Channels.

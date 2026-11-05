@@ -94,18 +94,14 @@ spec:
           {{- end }}
           {{- if $sharedSlack }}
           {{- $configEnv := default dict .Values.librechat.configEnv }}
-          {{- range $key := list "CHANNEL_SERVICE_TOKEN" "SLACK_APP_ID" "SLACK_CLIENT_ID" "SLACK_CLIENT_SECRET" "SLACK_SIGNING_SECRET" }}
+          {{- $key := "CHANNEL_SERVICE_TOKEN" }}
           {{- if not (or (include "librechat.userEnvHas" (dict "root" $ "name" $key)) (hasKey $configEnv $key)) }}
-          {{- $secret := $.Values.channelGateway.slackAppSecretName | default $.Values.global.librechat.existingSecretName }}
-          {{- if eq $key "CHANNEL_SERVICE_TOKEN" }}
-          {{- $secret = $.Values.channelGateway.existingSecretName | default $.Values.global.librechat.existingSecretName }}
-          {{- end }}
+          {{- $secret := .Values.channelGateway.existingSecretName | default .Values.global.librechat.existingSecretName }}
             - name: {{ $key }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "Shared Slack setup requires an app credential Secret or explicit API environment" $secret | quote }}
+                  name: {{ required "Shared Slack setup requires a service token Secret or explicit API environment" $secret | quote }}
                   key: {{ $key }}
-          {{- end }}
           {{- end }}
           {{- end }}
           {{- if include "librechat.bundledMongoAuth" . }}

@@ -3,15 +3,12 @@
 # and transaction-capable MongoDB. For bundled
 # MongoDB, also add docker-compose.mongo-replica.yml; read the existing-data
 # conversion instructions before applying it to an existing database.
+# Slack app credentials are registered by organization admins in LibreChat, not in .env.
 # Setup: https://www.librechat.ai/docs/features/agent_channels
 services:
   api:
     environment:
       SLACK_WORKSPACES_ENABLED: 'true'
-      SLACK_APP_ID: ${SLACK_APP_ID:-}
-      SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
-      SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
-      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
       SLACK_GATEWAY_URL: ${SLACK_GATEWAY_URL:-}
   channel-gateway:
     environment:
