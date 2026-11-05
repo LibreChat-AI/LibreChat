@@ -236,7 +236,17 @@ export const resolveSandboxFilename = (filename: string, mimeType?: string | nul
 export const resolveUseResponsesApi = (
   agentValue?: boolean | null,
   conversationValue?: boolean | null,
-): boolean | undefined => agentValue ?? conversationValue ?? undefined;
+  model?: string | null,
+): boolean | undefined => {
+  const explicit = agentValue ?? conversationValue;
+  if (explicit != null) {
+    return explicit;
+  }
+  if (prefersResponsesApiByModel(model)) {
+    return true;
+  }
+  return undefined;
+};
 
 /** Models whose native OpenAI and Azure execution defaults to Responses. Keep
  * this shared with client upload routing so documents follow the API that the

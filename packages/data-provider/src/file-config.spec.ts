@@ -5,6 +5,7 @@ import {
   fileConfig as baseFileConfig,
   fileConfigSchema,
   resolveEffectiveUseResponsesApi,
+  resolveUseResponsesApi,
   prefersResponsesApiByModel,
   isAnthropicTextDocumentType,
   getConfiguredMimeAccept,
@@ -2327,5 +2328,29 @@ describe('file deletion retry limit', () => {
 
   it.each([0, -1, 1.5, '5'])('rejects invalid retry limit %s', (deletionRetryLimit) => {
     expect(fileConfigSchema.safeParse({ deletionRetryLimit }).success).toBe(false);
+  });
+});
+
+describe('resolveUseResponsesApi', () => {
+  it('defaults to true for GPT-6 Sol and Luna when unset', () => {
+    expect(resolveUseResponsesApi(undefined, undefined, 'gpt-6-luna')).toBe(true);
+    expect(resolveUseResponsesApi(undefined, undefined, 'gpt-6-sol')).toBe(true);
+    expect(resolveUseResponsesApi(undefined, undefined, 'gpt-6.1-sol')).toBe(true);
+  });
+
+  it('respects explicit false over model default', () => {
+    expect(resolveUseResponsesApi(false, undefined, 'gpt-6-luna')).toBe(false);
+    expect(resolveUseResponsesApi(undefined, false, 'gpt-6-luna')).toBe(false);
+    expect(resolveUseResponsesApi(false, true, 'gpt-6-luna')).toBe(false);
+  });
+
+  it('returns undefined when unset for models without native Responses preference', () => {
+    expect(resolveUseResponsesApi(undefined, undefined, 'gpt-4o')).toBeUndefined();
+    expect(resolveUseResponsesApi(undefined, undefined, undefined)).toBeUndefined();
+  });
+
+  it('preserves explicit true', () => {
+    expect(resolveUseResponsesApi(true, undefined, 'gpt-4o')).toBe(true);
+    expect(resolveUseResponsesApi(undefined, true, 'gpt-4o')).toBe(true);
   });
 });
