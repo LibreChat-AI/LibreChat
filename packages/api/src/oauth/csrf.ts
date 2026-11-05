@@ -136,6 +136,8 @@ export interface OpenIDMarkerCookieOptions {
   reuseTokens?: boolean;
   /** Binds the marker to the refresh token it was issued alongside. */
   refreshToken?: string | null;
+  /** `OpenIDSession._id`; carries the session reference when the express session loses it. */
+  openidSessionId?: string | null;
 }
 
 export function setOpenIDMarkerCookies(
@@ -147,6 +149,7 @@ export function setOpenIDMarkerCookies(
     refreshExpiryMs,
     reuseTokens = isEnabled(process.env.OPENID_REUSE_TOKENS),
     refreshToken,
+    openidSessionId,
   }: OpenIDMarkerCookieOptions,
 ): void {
   const cookieOptions = {
@@ -179,7 +182,12 @@ export function setOpenIDMarkerCookies(
     ? crypto.createHash('sha256').update(refreshToken).digest('base64url')
     : undefined;
   const signedUserId = jwt.sign(
-    { id: userId, issuedAtMs: Date.now(), ...(refreshTokenHash ? { refreshTokenHash } : {}) },
+    {
+      id: userId,
+      issuedAtMs: Date.now(),
+      ...(refreshTokenHash ? { refreshTokenHash } : {}),
+      ...(openidSessionId ? { openidSessionId } : {}),
+    },
     secret,
     { expiresIn: refreshExpirySeconds },
   );

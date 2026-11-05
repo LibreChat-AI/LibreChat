@@ -1,10 +1,16 @@
 import { Types } from 'mongoose';
 import { logger } from '@librechat/data-schemas';
-
+import { DEFAULT_OPENID_AUTHORIZATION_TIMEOUT_MS } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { FilterQuery } from 'mongoose';
+import type { OpenIDSessionAuthorizationDeps } from '~/auth/openid/sessions';
 import type { AdminExchangeResponse } from '~/auth/exchange';
-
+import {
+  authorizeOpenIDSession,
+  authorizeOpenIDSessionReference,
+  isOpenIDSessionAuthorizationUnavailableError,
+  withAuthorizationTimeout,
+} from '~/auth/openid/sessions';
 import {
   isUserIssuerAllowed,
   normalizeOpenIdIssuer,
@@ -310,4 +316,207 @@ export async function applyAdminRefresh(
     user: responseUser,
     expiresAt: minted.expiresAt,
   };
+}
+
+export interface AdminOpenIDRefreshAuthorizationInput {
+  openidSessionId: string;
+  expectedIssuer: string | undefined;
+  user: IUser;
+  tokenset: RefreshTokenset;
+  clientId: string | undefined;
+}
+
+/** A denial maps to `AdminRefreshError` 403; the authorization layer being unreachable maps to 503. */
+export async function authorizeAdminOpenIDRefresh(
+  input: AdminOpenIDRefreshAuthorizationInput,
+  authorizationDeps: OpenIDSessionAuthorizationDeps,
+): Promise<void> {
+  const claims = input.tokenset.claims();
+  const result = await authorizeOpenIDSession(
+    {
+      issuer: input.expectedIssuer ?? claims.iss,
+      clientId: input.clientId ?? '',
+      subject: claims.sub ?? '',
+      sessionId: input.openidSessionId,
+      user: input.user.id ?? input.user._id?.toString(),
+      tenantId: input.user.tenantId,
+    },
+    authorizationDeps,
+  );
+  if (result.ok) {
+    return;
+  }
+  if (result.code === 'unavailable') {
+    throw new AdminRefreshError(
+      'OPENID_SESSION_UNAVAILABLE',
+      503,
+      'OpenID session authorization is unavailable',
+    );
+  }
+  throw new AdminRefreshError('OPENID_SESSION_DENIED', 403, 'OpenID session denied');
+}
+
+export interface MintAdminOpenIDRefreshTokenInput {
+  user: IUser;
+  tokenset: RefreshTokenset;
+  openidSessionId: string | undefined;
+  expectedIssuer: string | undefined;
+  clientId: string | undefined;
+  sessionExpiry: number;
+}
+
+export interface MintAdminOpenIDRefreshTokenDeps {
+  authorizationDeps: OpenIDSessionAuthorizationDeps;
+  generateToken: (
+    user: IUser,
+    sessionExpiry: number,
+    openidClaims?: { openidSessionId: string; tenantId?: string },
+  ) => Promise<string>;
+}
+
+export interface MintedAdminToken {
+  token: string;
+  expiresAt: number;
+}
+
+/** Authorizes the bearer's OpenID session, if any, then mints the admin token with matching claims. */
+export async function mintAdminOpenIDRefreshToken(
+  input: MintAdminOpenIDRefreshTokenInput,
+  deps: MintAdminOpenIDRefreshTokenDeps,
+): Promise<MintedAdminToken> {
+  let openidClaims: { openidSessionId: string; tenantId?: string } | undefined;
+  if (input.openidSessionId) {
+    await authorizeAdminOpenIDRefresh(
+      {
+        openidSessionId: input.openidSessionId,
+        expectedIssuer: input.expectedIssuer,
+        user: input.user,
+        tokenset: input.tokenset,
+        clientId: input.clientId,
+      },
+      deps.authorizationDeps,
+    );
+    openidClaims = { openidSessionId: input.openidSessionId, tenantId: input.user.tenantId };
+  }
+  return {
+    token: await deps.generateToken(input.user, input.sessionExpiry, openidClaims),
+    expiresAt: Date.now() + input.sessionExpiry,
+  };
+}
+
+export interface AdminOpenIDRefreshSessionDeps {
+  recallAdminOpenIDSessionRef: (refreshToken: string) => Promise<string | undefined>;
+  authorizationDeps: Pick<
+    OpenIDSessionAuthorizationDeps,
+    'authorization' | 'enforcement' | 'timeoutMs'
+  >;
+}
+
+/** Recalls and authorizes the refresh token's OpenID session before the IdP grant; with
+ *  enforcement off the recall is time-bounded and advisory, never blocking the refresh. */
+export async function resolveAdminOpenIDRefreshSession(
+  refreshToken: string,
+  deps: AdminOpenIDRefreshSessionDeps,
+): Promise<string | undefined> {
+  const { authorizationDeps } = deps;
+  const enforcement = authorizationDeps.enforcement === true;
+
+  let openidSessionId: string | undefined;
+  if (enforcement) {
+    try {
+      openidSessionId = await deps.recallAdminOpenIDSessionRef(refreshToken);
+    } catch (err) {
+      if (isOpenIDSessionAuthorizationUnavailableError(err)) {
+        throw new AdminRefreshError(
+          'OPENID_SESSION_UNAVAILABLE',
+          503,
+          'OpenID session authorization is unavailable',
+        );
+      }
+      throw err;
+    }
+  } else {
+    try {
+      openidSessionId = await withAuthorizationTimeout(
+        deps.recallAdminOpenIDSessionRef(refreshToken),
+        authorizationDeps.timeoutMs ?? DEFAULT_OPENID_AUTHORIZATION_TIMEOUT_MS,
+      );
+    } catch (err) {
+      logger.warn(
+        '[admin/oauth/refresh] Timed out recalling the OpenID session reference',
+        err as Error,
+      );
+    }
+  }
+
+  if (enforcement && !openidSessionId) {
+    throw new AdminRefreshError(
+      'OPENID_SESSION_REQUIRED',
+      401,
+      'OpenID re-authentication is required',
+    );
+  }
+
+  if (openidSessionId) {
+    const reference = await authorizeOpenIDSessionReference(openidSessionId, authorizationDeps);
+    if (!reference.ok) {
+      if (reference.code === 'unavailable') {
+        throw new AdminRefreshError(
+          'OPENID_SESSION_UNAVAILABLE',
+          503,
+          'OpenID session authorization is unavailable',
+        );
+      }
+      throw new AdminRefreshError('OPENID_SESSION_DENIED', 403, 'OpenID session denied');
+    }
+  }
+
+  return openidSessionId;
+}
+
+export interface AdminOpenIDRefreshRotateDeps {
+  rotateAdminOpenIDSessionRef: (
+    oldRefreshToken: string,
+    newRefreshToken: string | undefined,
+    openidSessionId: string,
+  ) => Promise<void>;
+  authorizationDeps: Pick<OpenIDSessionAuthorizationDeps, 'enforcement' | 'timeoutMs'>;
+}
+
+/** Carries the session reference forward to the rotated refresh token; never throws, since the
+ *  IdP has already rotated the token by the time this runs. */
+export async function rotateAdminOpenIDRefreshSession(
+  oldRefreshToken: string,
+  newRefreshToken: string | undefined,
+  openidSessionId: string | undefined,
+  deps: AdminOpenIDRefreshRotateDeps,
+): Promise<void> {
+  if (!openidSessionId) {
+    return;
+  }
+
+  const { authorizationDeps } = deps;
+  const enforcement = authorizationDeps.enforcement === true;
+
+  try {
+    if (enforcement) {
+      await deps.rotateAdminOpenIDSessionRef(oldRefreshToken, newRefreshToken, openidSessionId);
+    } else {
+      await withAuthorizationTimeout(
+        deps.rotateAdminOpenIDSessionRef(oldRefreshToken, newRefreshToken, openidSessionId),
+        authorizationDeps.timeoutMs ?? DEFAULT_OPENID_AUTHORIZATION_TIMEOUT_MS,
+      );
+    }
+  } catch (err) {
+    const message = (err as Error)?.message;
+    if (enforcement) {
+      logger.error('[admin/oauth/refresh] Failed to rotate the OpenID session reference', {
+        message,
+      });
+    } else {
+      logger.warn('[admin/oauth/refresh] Failed to rotate the OpenID session reference', {
+        message,
+      });
+    }
+  }
 }

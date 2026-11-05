@@ -181,6 +181,7 @@ describe('RefreshTokenBridge', () => {
         userId: 'user-123',
         tenantId: 'tenant-1',
         openidIssuer: 'https://issuer.example.com',
+        openidSessionId: 'session-1',
         createdAt: new Date(Date.now() - 100),
       });
 
@@ -197,7 +198,7 @@ describe('RefreshTokenBridge', () => {
         tenantId: 'tenant-1',
       });
       expect(decryptV2).toHaveBeenCalledWith('encrypted:rt-new');
-      expect(result).toBe('rt-new');
+      expect(result).toEqual({ refreshToken: 'rt-new', openidSessionId: 'session-1' });
     });
 
     it('returns null when bridge does not exist', async () => {
@@ -276,7 +277,25 @@ describe('RefreshTokenBridge', () => {
       });
 
       expect(decryptV2).toHaveBeenCalledWith('encrypted:rt-new');
-      expect(result).toBe('rt-new');
+      expect(result).toEqual({ refreshToken: 'rt-new', openidSessionId: undefined });
+    });
+
+    it('coerces a stored ObjectId openidSessionId to a string', async () => {
+      db.findRefreshTokenBridge.mockResolvedValue({
+        encryptedNewRefreshToken: 'encrypted:rt-new',
+        userId: 'user-123',
+        openidIssuer: 'https://issuer.example.com',
+        openidSessionId: { toString: () => 'session-object-id' },
+        createdAt: new Date(),
+      });
+
+      const result = await getRefreshTokenBridge({
+        oldRefreshToken: 'rt-old',
+        userId: 'user-123',
+        openidIssuer: 'https://issuer.example.com',
+      });
+
+      expect(result).toEqual({ refreshToken: 'rt-new', openidSessionId: 'session-object-id' });
     });
   });
 });

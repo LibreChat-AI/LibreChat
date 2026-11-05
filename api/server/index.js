@@ -98,6 +98,7 @@ const { configureSubagentTaskRouting } = require('./services/Endpoints/agents/su
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
 const { getAppConfig, rederiveEndpoints } = require('./services/Config');
+const { startOpenIDAuthorization } = require('./services/startOpenIDAuthorization');
 const staticCache = require('./utils/staticCache');
 const noIndex = require('./middleware/noIndex');
 const agentEventMethods = require('~/models');
@@ -371,6 +372,9 @@ const startServer = async () => {
   app.use('/api/agents/chat', agentStartupIngressMiddleware);
   app.use(metricsMiddleware);
   app.use(noIndex);
+
+  await startOpenIDAuthorization(app, appConfig);
+
   app.use(excludeRumBodyParser(express.json({ limit: '3mb' })));
   app.use(excludeRumBodyParser(express.urlencoded({ extended: true, limit: '3mb' })));
   app.use(handleJsonParseError);

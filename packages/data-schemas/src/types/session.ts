@@ -5,17 +5,20 @@ export interface ISession extends Document {
   expiration: Date;
   user: Types.ObjectId;
   tenantId?: string;
+  openidSessionId?: Types.ObjectId;
 }
 
 export interface CreateSessionOptions {
   expiration?: Date;
   /** Duration in milliseconds for session expiry. Default: 7 days */
   expiresIn?: number;
+  openidSessionId?: Types.ObjectId | string;
 }
 
 export interface UpsertSessionOptions {
   expiration: Date;
   tenantId?: string;
+  openidSessionId?: Types.ObjectId | string;
 }
 
 export interface SessionSearchParams {

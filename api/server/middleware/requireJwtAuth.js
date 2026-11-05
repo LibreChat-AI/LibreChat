@@ -16,6 +16,7 @@ const {
   afterTermsGate,
   createTermsAcceptanceGate,
   isTwoFactorEnrollmentRequired,
+  respondOpenIDSessionAuthorizationUnavailable,
 } = require('@librechat/api');
 const { getAppConfig } = require('~/server/services/Config');
 const { getUserById } = require('~/models');
@@ -175,6 +176,9 @@ const requireJwtAuth = (req, res, next) => {
     const strategy = strategies[index];
     passport.authenticate(strategy, { session: false }, (err, user, info, status) => {
       if (err) {
+        if (respondOpenIDSessionAuthorizationUnavailable(err, res)) {
+          return;
+        }
         return next(err);
       }
       if (!user) {

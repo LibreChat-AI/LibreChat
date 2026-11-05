@@ -24,8 +24,10 @@ const {
   setupSaml,
 } = require('~/strategies');
 const { getLogStores } = require('~/cache');
+const { isOpenIdConfigured } = require('~/server/utils/isOpenIdConfigured');
 
 const DEFAULT_OPENID_REUSE_MAX_SESSION_AGE_MS = 15 * 60 * 1000;
+
 const getSessionExpiry = () => math(process.env.SESSION_EXPIRY, DEFAULT_SESSION_EXPIRY);
 
 const getOpenIdSessionExpiry = () => {
@@ -108,13 +110,7 @@ const configureSocialLogins = async (app, appConfig) => {
     passport.use(appleLogin(stateOptions));
     passport.use('appleAdmin', appleAdminLogin());
   }
-  if (
-    process.env.OPENID_CLIENT_ID &&
-    (isEnabled(process.env.OPENID_USE_PKCE) || process.env.OPENID_CLIENT_SECRET?.trim()) &&
-    process.env.OPENID_ISSUER &&
-    process.env.OPENID_SCOPE &&
-    process.env.OPENID_SESSION_SECRET
-  ) {
+  if (isOpenIdConfigured()) {
     await configureOpenId(app, appConfig);
   }
   if (
@@ -144,3 +140,4 @@ const configureSocialLogins = async (app, appConfig) => {
 };
 
 module.exports = configureSocialLogins;
+module.exports.isOpenIdConfigured = isOpenIdConfigured;

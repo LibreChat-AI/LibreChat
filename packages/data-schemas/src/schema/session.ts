@@ -20,6 +20,10 @@ const sessionSchema: Schema<ISession> = new Schema({
     type: String,
     index: true,
   },
+  openidSessionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'OpenIDSession',
+  },
 });
 
 sessionSchema.index({ user: 1, refreshTokenHash: 1 }, { unique: true });

@@ -69,6 +69,8 @@ export interface SessionOpenIDTokens {
   publicationFlightKey?: string;
   publicationFlightOwnerId?: string;
   publicationFlightCreatedAt?: number;
+  /** `OpenIDSession._id` this credential belongs to; authorization re-checks it on every refresh. */
+  openidSessionId?: string;
 }
 
 export interface OpenIDSession {
@@ -148,6 +150,7 @@ export interface RefreshTokenBridgeInput {
   userId: string;
   tenantId?: string;
   openidIssuer?: string;
+  openidSessionId?: string;
   ttl?: number;
 }
 

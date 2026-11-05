@@ -128,5 +128,40 @@ describe('User Methods', () => {
 
       expect(token).toBe(expectedToken);
     });
+
+    it('should include openidSessionId and tenantId when claims are provided', async () => {
+      process.env.JWT_SECRET = 'test-secret';
+      mockSignPayload.mockResolvedValue('mocked-token');
+
+      await userMethods.generateToken(mockUser, undefined, {
+        openidSessionId: 'session-123',
+        tenantId: 'tenant-abc',
+      });
+
+      expect(mockSignPayload).toHaveBeenCalledWith({
+        payload: {
+          id: mockUser._id,
+          username: mockUser.username,
+          provider: mockUser.provider,
+          email: mockUser.email,
+          issuedAtMs: expect.any(Number),
+          openidSessionId: 'session-123',
+          tenantId: 'tenant-abc',
+        },
+        secret: 'test-secret',
+        expirationTime: 900,
+      });
+    });
+
+    it('should omit openidSessionId and tenantId when claims carries neither', async () => {
+      process.env.JWT_SECRET = 'test-secret';
+      mockSignPayload.mockResolvedValue('mocked-token');
+
+      await userMethods.generateToken(mockUser, undefined, {});
+
+      const payload = mockSignPayload.mock.calls[0][0].payload as Record<string, unknown>;
+      expect(payload).not.toHaveProperty('openidSessionId');
+      expect(payload).not.toHaveProperty('tenantId');
+    });
   });
 });

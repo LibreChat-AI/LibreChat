@@ -9,6 +9,7 @@ jest.mock('passport', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
   continueAfterOptionalAuth: jest.requireActual('@librechat/api').continueAfterOptionalAuth,
   isEnabled: jest.fn(() => false),
   clearCloudFrontCookies: (...args) => mockClearCloudFrontCookies(...args),
@@ -24,6 +25,18 @@ const run = (user) => {
   const next = jest.fn();
   optionalJwtAuth(req, res, next);
   return { req, res, next };
+};
+
+const runWithError = (err) => {
+  const req = { headers: {} };
+  const json = jest.fn();
+  const res = { status: jest.fn(() => ({ json })) };
+  const next = jest.fn();
+  mockAuthenticate.mockImplementation((_strategy, _options, callback) => {
+    return () => callback(err);
+  });
+  optionalJwtAuth(req, res, next);
+  return { req, res, next, json };
 };
 
 describe('optionalJwtAuth', () => {
@@ -69,5 +82,25 @@ describe('optionalJwtAuth', () => {
     expect(req.user).toBeUndefined();
     expect(mockTenantContextMiddleware).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps an OpenID session authorization outage to 503 instead of next(err)', () => {
+    const { createOpenIDSessionAuthorizationUnavailableError } =
+      jest.requireActual('@librechat/api');
+    const err = createOpenIDSessionAuthorizationUnavailableError();
+
+    const { res, next, json } = runWithError(err);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(json).toHaveBeenCalledWith({ message: 'OpenID session authorization unavailable' });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('forwards a non-authorization error to next', () => {
+    const err = new Error('boom');
+
+    const { next } = runWithError(err);
+
+    expect(next).toHaveBeenCalledWith(err);
   });
 });

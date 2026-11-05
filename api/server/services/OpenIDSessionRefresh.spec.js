@@ -217,6 +217,14 @@ const makeOpenIdUser = (overrides = {}) => ({
 const { createOpenIDRefreshOwnershipError } = jest.requireActual('@librechat/api');
 const ownershipLost = (message) => createOpenIDRefreshOwnershipError(message);
 
+/** The pre-grant authorization read adds microtask ticks before the grant call, so a bare
+ *  `await Promise.resolve()` no longer reliably lands after it; flush until the mock is called. */
+async function flushUntilCalled(mockFn, maxTicks = 20) {
+  for (let i = 0; i < maxTicks && mockFn.mock.calls.length === 0; i += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('OpenIDSessionRefresh', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -702,6 +710,27 @@ describe('OpenIDSessionRefresh', () => {
         }),
       );
       expect(req.session.openidTokens.browserRefreshToken).toBe('rt-rotated');
+    });
+
+    it('carries the session reference onto the marker cookie so the fallback keeps it', async () => {
+      const refreshedExp = Math.floor(Date.now() / 1000) + 3600;
+      openIdClient.refreshTokenGrant.mockResolvedValueOnce({
+        access_token: makeJwt(refreshedExp),
+        id_token: makeJwt(refreshedExp),
+        refresh_token: 'rt-rotated',
+        expires_in: 3600,
+      });
+      const sessionTokens = buildExpiredSession('rt-old');
+      sessionTokens.openidSessionId = 'session-ref-1';
+      const req = buildReq(sessionTokens);
+      const res = buildRes({ headersSent: false });
+
+      await refreshOpenIDSession(req, res, makeOpenIdUser(), 'access_token');
+
+      expect(setOpenIDMarkerCookies).toHaveBeenCalledWith(
+        res,
+        expect.objectContaining({ openidSessionId: 'session-ref-1' }),
+      );
     });
 
     /** The durable Session record is what authorizes local image access for OpenID users, and it is
@@ -1265,7 +1294,7 @@ describe('OpenIDSessionRefresh', () => {
 
       const p1 = refreshOpenIDSession(reqA, undefined, user, 'access_token');
       const p2 = refreshOpenIDSession(reqB, undefined, user, 'access_token');
-      await Promise.resolve();
+      await flushUntilCalled(openIdClient.refreshTokenGrant);
 
       // Both calls land before the IdP responds
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
@@ -1314,7 +1343,7 @@ describe('OpenIDSessionRefresh', () => {
       const user = makeOpenIdUser();
       const pA = refreshOpenIDSession(reqA, undefined, user, 'access_token');
       const pB = refreshOpenIDSession(reqB, undefined, user, 'access_token');
-      await Promise.resolve();
+      await flushUntilCalled(openIdClient.refreshTokenGrant);
 
       // Two refreshes started, one per session
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(2);
@@ -1372,7 +1401,7 @@ describe('OpenIDSessionRefresh', () => {
       const user = makeOpenIdUser();
       const oldRefresh = refreshOpenIDSession(reqOld, undefined, user, 'access_token');
       const currentRefresh = refreshOpenIDSession(reqCurrent, undefined, user, 'access_token');
-      await Promise.resolve();
+      await flushUntilCalled(openIdClient.refreshTokenGrant);
 
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(2);
 
@@ -1444,7 +1473,7 @@ describe('OpenIDSessionRefresh', () => {
 
       const leaderPromise = refreshOpenIDSession(leaderReq, undefined, user, 'access_token');
       const joinerPromise = refreshOpenIDSession(joinerReq, undefined, user, 'access_token');
-      await Promise.resolve();
+      await flushUntilCalled(openIdClient.refreshTokenGrant);
 
       // Only the leader hit the IdP; the joiner coalesced onto it.
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
@@ -1576,7 +1605,7 @@ describe('OpenIDSessionRefresh', () => {
 
       const leaderPromise = refreshOpenIDSession(leaderReq, leaderRes, user, 'access_token');
       const joinerPromise = refreshOpenIDSession(joinerReq, joinerRes, user, 'access_token');
-      await Promise.resolve();
+      await flushUntilCalled(openIdClient.refreshTokenGrant);
 
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
 
@@ -1627,7 +1656,7 @@ describe('OpenIDSessionRefresh', () => {
 
       const leaderPromise = refreshOpenIDSession(leaderReq, undefined, user, 'access_token');
       const joinerPromise = refreshOpenIDSession(joinerReq, undefined, user, 'access_token');
-      await Promise.resolve();
+      await flushUntilCalled(openIdClient.refreshTokenGrant);
 
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
 
@@ -1687,7 +1716,7 @@ describe('OpenIDSessionRefresh', () => {
       waitForOpenIDRefreshFlight.mockResolvedValueOnce(sharedTokens);
 
       const leaderPromise = refreshOpenIDSession(leaderReq, undefined, user, 'access_token');
-      await Promise.resolve();
+      await flushUntilCalled(openIdClient.refreshTokenGrant);
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
 
       /**
@@ -2394,7 +2423,7 @@ describe('OpenIDSessionRefresh', () => {
         tokenPreference: 'access_token',
       });
       const result = provider({ forceRefresh: true, signal: controller.signal });
-      await Promise.resolve();
+      await flushUntilCalled(openIdClient.refreshTokenGrant);
       expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
       controller.abort(new Error('stopped after admission'));
       finishGrant({ access_token: 'new-access', refresh_token: 'rt-settled', expires_in: 3600 });

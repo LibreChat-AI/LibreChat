@@ -104,6 +104,11 @@ jest.mock('~/server/services/Config', () => ({
   getAppConfig: jest.fn(),
 }));
 
+const mockSessionAuthorizationRef = { enforcement: false };
+jest.mock('~/server/services/OpenIDSessions', () => ({
+  sessionAuthorizationRef: mockSessionAuthorizationRef,
+}));
+
 afterAll(() => {
   if (originalDomainClient === undefined) {
     delete process.env.DOMAIN_CLIENT;
@@ -117,11 +122,11 @@ function getOAuthRouter() {
   return require('./oauth');
 }
 
-function createApp(sessionMessages) {
+function createApp(session) {
   const app = express();
   app.use((req, _res, next) => {
-    if (sessionMessages) {
-      req.session = { messages: [...sessionMessages] };
+    if (session) {
+      req.session = session;
     }
     next();
   });
@@ -148,6 +153,7 @@ describe('OAuth route failure logging', () => {
     mockOpenIDCallbackAuthenticatorOptions = undefined;
     mockPassportAuthenticate.mockImplementation(() => (_req, _res, next) => next());
     mockOpenIDCallbackMiddleware.mockImplementation((_req, _res, next) => next());
+    mockSessionAuthorizationRef.enforcement = false;
   });
 
   it('marks OAuth requests as browser navigations so rejections can redirect', async () => {
@@ -205,5 +211,99 @@ describe('OAuth route failure logging', () => {
       }),
     );
     expect(JSON.stringify(mockLogger.warn.mock.calls[0])).not.toContain('Unknown OAuth error');
+  });
+
+  it('strips `prompt` and forwards it to the strategy on a genuine retry', async () => {
+    // A surviving `prompt` makes the passport adapter misclassify this GET as a callback.
+    mockSessionAuthorizationRef.enforcement = true;
+    const session = { openidLoginRetry: { sid: 'sid-1' } };
+    const app = createApp(session);
+    let capturedReq;
+    mockPassportAuthenticate.mockImplementation(() => (req, _res, next) => {
+      capturedReq = req;
+      next();
+    });
+
+    await request(app).get('/oauth/openid?prompt=login');
+
+    expect(mockPassportAuthenticate).toHaveBeenCalledWith('openid', {
+      session: false,
+      state: 'random-state',
+      prompt: 'login',
+    });
+    expect(capturedReq.query.prompt).toBeUndefined();
+    expect(capturedReq.originalUrl).not.toContain('prompt');
+    expect(capturedReq.url).not.toContain('prompt');
+  });
+
+  it('consumes the stale pending initiation once, then stores a fresh one for the next request', async () => {
+    mockSessionAuthorizationRef.enforcement = true;
+    const staleInitiation = { tenantId: 'tenant-1' };
+    const session = {
+      openidLoginRetry: { sid: 'sid-1' },
+      openidPendingInitiation: staleInitiation,
+    };
+    const app = createApp(session);
+    mockPassportAuthenticate.mockImplementation(() => (_req, _res, next) => next());
+
+    await request(app).get('/oauth/openid?prompt=login');
+
+    expect(session.openidPendingInitiation).not.toBe(staleInitiation);
+    expect(session.openidPendingInitiation).toEqual({ tenantId: 'tenant-1' });
+  });
+
+  it('leaves `prompt=login` untouched and stores nothing when enforcement is off', async () => {
+    mockSessionAuthorizationRef.enforcement = false;
+    const session = {};
+    const app = createApp(session);
+    let capturedReq;
+    mockPassportAuthenticate.mockImplementation(() => (req, _res, next) => {
+      capturedReq = req;
+      next();
+    });
+
+    await request(app).get('/oauth/openid?prompt=login');
+
+    expect(mockPassportAuthenticate).toHaveBeenCalledWith('openid', {
+      session: false,
+      state: 'random-state',
+    });
+    expect(capturedReq.query.prompt).toBe('login');
+    expect(session.openidPendingInitiation).toBeUndefined();
+  });
+
+  it('does not treat `prompt=login` as a retry when enforcement is on but no marker was stored', async () => {
+    mockSessionAuthorizationRef.enforcement = true;
+    const app = createApp({});
+    let capturedReq;
+    mockPassportAuthenticate.mockImplementation(() => (req, _res, next) => {
+      capturedReq = req;
+      next();
+    });
+
+    await request(app).get('/oauth/openid?prompt=login');
+
+    expect(mockPassportAuthenticate).toHaveBeenCalledWith('openid', {
+      session: false,
+      state: 'random-state',
+    });
+    expect(capturedReq.query.prompt).toBe('login');
+  });
+
+  it('does not alter the request URL for a plain (non-retry) OpenID login', async () => {
+    const app = createApp();
+    let capturedReq;
+    mockPassportAuthenticate.mockImplementation(() => (req, _res, next) => {
+      capturedReq = req;
+      next();
+    });
+
+    await request(app).get('/oauth/openid');
+
+    expect(mockPassportAuthenticate).toHaveBeenCalledWith('openid', {
+      session: false,
+      state: 'random-state',
+    });
+    expect(capturedReq.query.prompt).toBeUndefined();
   });
 });

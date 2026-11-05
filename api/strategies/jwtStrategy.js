@@ -7,9 +7,14 @@ const {
   getAuthUserDocCacheMode,
   AGENT_TRIGGER_SCOPE,
   continueAfterBearerRetirement,
+  applyOpenIDSessionIdClaim,
+  prefetchOpenIDBearerContext,
+  resolveOpenIDLibreChatBearerVerdict,
+  toOpenIDBearerPassportResult,
 } = require('@librechat/api');
 const { getUserById, updateUser } = require('~/models');
 const getLogStores = require('~/cache/getLogStores');
+const openIdSessions = require('~/server/services/OpenIDSessions');
 
 const AGENT_TRIGGER_ADMISSION_PATHS = ['/api/agents/chat/agents', '/api/agents/chat/steer/deliver'];
 
@@ -41,6 +46,10 @@ const jwtLogin = () =>
           done(null, false, { message: 'Agent trigger token is not valid for this endpoint' });
           return;
         }
+        // Started alongside the user load below; authorizeOpenIDSession re-verifies identity.
+        const sessionDeps = openIdSessions.sessionAuthorizationRef;
+        const prefetch = prefetchOpenIDBearerContext(payload, sessionDeps);
+
         const { user, deleting, remember } = await loadJwtUser(payload?.id, {
           getUserById,
           cacheMode: getAuthUserDocCacheMode(),
@@ -65,12 +74,33 @@ const jwtLogin = () =>
               user.id = user._id.toString();
               /** Absent on the full doc means local user; null skips getUserPrincipals' fallback lookup */
               user.idOnTheSource ??= null;
+
+              const verdict = await resolveOpenIDLibreChatBearerVerdict(
+                {
+                  payload,
+                  user,
+                  clientId: openIdSessions.getOpenIdClientId(),
+                  prefetch,
+                },
+                sessionDeps,
+              );
+              const bearerResult = toOpenIDBearerPassportResult(verdict, {
+                userId: user.id,
+                logger,
+                label: 'jwtLogin',
+              });
+              if (!bearerResult.ok) {
+                return done(...bearerResult.args);
+              }
+
               const roleMissing = !user.role;
               if (roleMissing) {
                 user.role = SystemRoles.USER;
                 await runAsSystem(() => updateUser(user.id, { role: user.role }));
               }
               await remember(roleMissing);
+              /** Set after `remember` so this per-token value never enters the cached auth-user doc. */
+              applyOpenIDSessionIdClaim(user, payload?.openidSessionId);
               done(null, user);
             },
             isTokenRetired,

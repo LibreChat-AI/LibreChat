@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from 'librechat-data-provider';
-import type { ISession, OIDCTokens } from '@librechat/data-schemas';
+import type { GenerateTokenClaims, ISession, OIDCTokens } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { TokenIssuance, TwoFactorAccount } from './twoFactor';
 import {
@@ -11,6 +11,11 @@ import {
   isTwoFactorEnrollmentRequired,
   TOKEN_RETIREMENT_FIELDS,
 } from './twoFactor';
+import {
+  assertOpenIDRefreshAuthorized,
+  isOpenIDSessionAuthorizationUnavailableError,
+  type OpenIDSessionAuthorizationDeps,
+} from './openid/sessions';
 import { clearSessionHintCookie } from '~/oauth/csrf';
 
 const EXPIRED_REFRESH_MESSAGE = 'Refresh token expired or not found for this user';
@@ -27,9 +32,13 @@ type RefreshUser = Pick<
   | 'twoFactorEnabled'
   | 'twoFactorEnrolledAt'
   | 'credentialsChangedAt'
->;
+> & {
+  /** `OpenIDSession` identity used to re-authorize a session-backed local refresh. */
+  openidId?: string;
+  openidIssuer?: string;
+};
 
-type RefreshSession = Pick<ISession, 'expiration'> & { _id: UserIdentifier };
+type RefreshSession = Pick<ISession, 'expiration' | 'openidSessionId'> & { _id: UserIdentifier };
 type SessionDeletionResult = { deletedCount?: number };
 type AuthResponseSource = TwoFactorAccount & { __v?: number; federatedTokens?: OIDCTokens };
 
@@ -45,6 +54,7 @@ interface LocalRefreshDependencies {
     res: Response,
     session: RefreshSession | null,
     req: Request,
+    tokenClaims?: GenerateTokenClaims,
   ) => Promise<string>;
   deleteSession: (query: { sessionId: string }) => Promise<SessionDeletionResult>;
   deleteAllUserSessions: (query: { userId: string }) => Promise<SessionDeletionResult>;
@@ -52,6 +62,9 @@ interface LocalRefreshDependencies {
     res: Response,
     scope: { userId: string; tenantId?: string; storageRegion?: string },
   ) => void;
+  clearOpenIDAuthTokens: (req: Request, res: Response, userId: string, tenantId?: string) => void;
+  getOpenIdClientId: () => string | undefined;
+  sessionAuthorization: OpenIDSessionAuthorizationDeps;
   generateTwoFactorSetupToken?: typeof generateTwoFactorSetupToken;
   isTwoFactorEnrollmentRequired?: typeof isTwoFactorEnrollmentRequired;
   warn: (message: string) => void;
@@ -177,7 +190,35 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
           });
         }
 
-        const token = await deps.setAuthTokens(userId, res, session, req);
+        let tokenClaims: GenerateTokenClaims | undefined;
+        if (user.provider === 'openid') {
+          const openidSessionId =
+            session.openidSessionId != null ? String(session.openidSessionId) : undefined;
+          try {
+            await assertOpenIDRefreshAuthorized(
+              {
+                issuer: user.openidIssuer ?? '',
+                clientId: deps.getOpenIdClientId() ?? '',
+                subject: user.openidId ?? '',
+                user: userId,
+                tenantId: user.tenantId,
+              },
+              openidSessionId,
+              deps.sessionAuthorization,
+            );
+          } catch (error) {
+            if (isOpenIDSessionAuthorizationUnavailableError(error)) {
+              return res.status(503).send({ code: 'OPENID_SESSION_AUTHORIZATION_UNAVAILABLE' });
+            }
+            deps.clearOpenIDAuthTokens(req, res, userId, user.tenantId);
+            res.clearCookie('refreshToken');
+            clearSessionHintCookie(res);
+            return res.status(403).send('Invalid OpenID refresh token');
+          }
+          tokenClaims = { openidSessionId, tenantId: user.tenantId };
+        }
+
+        const token = await deps.setAuthTokens(userId, res, session, req, tokenClaims);
         const retired = await recheckMintedCredential(
           () => isCredentialRetired(userId, credential),
           () => revokeSession(res, user, userId),

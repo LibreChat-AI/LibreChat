@@ -12,6 +12,11 @@ const {
   isOpenIDSessionMissingError,
   isOpenIDSessionIdentityMatch,
   OPENID_EXPIRY_BUFFER_SECONDS,
+  assertOpenIDRefreshAuthorized,
+  classifyOpenIDRefreshAuthorizationError,
+  handleOpenIDRefreshAuthorizationError,
+  resolveOpenIDRefreshIdentity,
+  resolveOpenIDSessionReference,
   clearCloudFrontCookies,
   createLocalRefreshHandler,
   generateTwoFactorSetupToken,
@@ -48,6 +53,7 @@ const {
   sendOpenIDAuthResponse,
 } = require('~/server/services/OpenIDRefreshRecovery');
 const OpenIDRefreshFlight = require('~/server/services/OpenIDRefreshFlight');
+const openIdSessions = require('~/server/services/OpenIDSessions');
 
 const AUTH_REFRESH_USER_PROJECTION = '-password -__v -totpSecret -backupCodes -federatedTokens';
 /**
@@ -233,6 +239,9 @@ const refreshLocalSession = createLocalRefreshHandler({
   generateTwoFactorSetupToken,
   isTwoFactorEnrollmentRequired,
   clearCloudFrontCookies,
+  clearOpenIDAuthTokens,
+  getOpenIdClientId: openIdSessions.getOpenIdClientId,
+  sessionAuthorization: openIdSessions.sessionAuthorizationRef,
   warn: (message) => logger.warn(message),
   error: (message, cause) => logger.error(message, cause),
 });
@@ -252,11 +261,8 @@ const refreshController = async (req, res) => {
     }
 
     try {
-      /**
-       * Reuse skips an IdP refresh only for recently-refreshed server-side tokens.
-       * Stale, missing, or near-expiry tokens fall through to refreshTokenGrant so
-       * upstream revocations and cookie/session extension are checked regularly.
-       */
+      /** Reuse skips an IdP refresh only for recently-refreshed tokens; stale, missing, or
+       *  near-expiry tokens fall through so revocations and cookie/session extension recur. */
       const reusableSessionToken = cookieDiffersFromSession
         ? null
         : getReusableOpenIDSessionToken(req.session?.openidTokens);
@@ -266,6 +272,10 @@ const refreshController = async (req, res) => {
       const reuseUserId = reuseCredential?.userId;
       if (reuseUserId) {
         const reuseSessionTokens = req.session?.openidTokens;
+        const reuseSessionReference = resolveOpenIDSessionReference({
+          sessionTokens: reuseSessionTokens,
+          reuseCredential,
+        });
         try {
           const response = await withOpenIDResponseDelivery(
             {
@@ -284,6 +294,11 @@ const refreshController = async (req, res) => {
               ) {
                 return undefined;
               }
+              await assertOpenIDRefreshAuthorized(
+                resolveOpenIDRefreshIdentity(user, openIdSessions.getOpenIdClientId()),
+                reuseSessionReference,
+                openIdSessions.sessionAuthorizationRef,
+              );
               return sendAuthorized(() => {
                 const cloudFrontCookiesSet = setCloudFrontAuthCookies(req, res, user);
                 logger.debug('[refreshController] OpenID session token reused', {
@@ -303,7 +318,20 @@ const refreshController = async (req, res) => {
             return response;
           }
         } catch (error) {
-          if (!isOpenIDRefreshOwnershipError(error)) {
+          if (
+            handleOpenIDRefreshAuthorizationError(error, {
+              res,
+              logger,
+              logMessage:
+                '[refreshController] OpenID session authorization unavailable; keeping cookies',
+            }) === 'handled'
+          ) {
+            return;
+          }
+          if (
+            classifyOpenIDRefreshAuthorizationError(error) !== 'denied' &&
+            !isOpenIDRefreshOwnershipError(error)
+          ) {
             throw error;
           }
           clearOpenIDAuthTokens(req, res, reuseUserId, reuseSessionTokens?.tenantId);
@@ -329,6 +357,14 @@ const refreshController = async (req, res) => {
 
       return await runInUserTenant(refreshUser, async () => {
         let successfulRefreshToken = refreshToken;
+        let sessionReference = resolveOpenIDSessionReference({
+          sessionTokens: req.session?.openidTokens,
+          reuseCredential: getValidOpenIDReuseCredential(
+            parsedCookies,
+            process.env.JWT_REFRESH_SECRET,
+            refreshToken,
+          ),
+        });
         let refreshResult;
         try {
           refreshResult = await refreshOpenIDUser({
@@ -339,6 +375,7 @@ const refreshController = async (req, res) => {
             browserRefreshToken: parsedCookies.refreshToken,
             strategyName: 'refreshController',
             deferPublication: true,
+            sessionReference,
           });
         } catch (error) {
           if (!fallbackRefreshToken || !isInvalidGrantError(error)) {
@@ -348,6 +385,14 @@ const refreshController = async (req, res) => {
             '[refreshController] Session refresh token was rejected; retrying the distinct browser token',
           );
           successfulRefreshToken = fallbackRefreshToken;
+          sessionReference = resolveOpenIDSessionReference({
+            sessionTokens: req.session?.openidTokens,
+            reuseCredential: getValidOpenIDReuseCredential(
+              parsedCookies,
+              process.env.JWT_REFRESH_SECRET,
+              fallbackRefreshToken,
+            ),
+          });
           refreshResult = await refreshOpenIDUser({
             req,
             res,
@@ -356,6 +401,7 @@ const refreshController = async (req, res) => {
             browserRefreshToken: parsedCookies.refreshToken,
             strategyName: 'refreshController (browser fallback)',
             deferPublication: true,
+            sessionReference,
           });
         }
         const { tokenset, claims, openidIssuer, user, error, migration } = refreshResult;
@@ -405,6 +451,7 @@ const refreshController = async (req, res) => {
           existingRefreshToken: successfulRefreshToken,
           openidSubject: claims?.sub,
           openidIssuer,
+          openidSessionId: sessionReference,
           predecessorIdentity: {
             userId: refreshUser._id.toString(),
             tenantId: refreshUser.tenantId,
@@ -427,7 +474,24 @@ const refreshController = async (req, res) => {
         );
       });
     } catch (error) {
-      if (isOpenIDRefreshOwnershipError(error) || isOpenIDSessionMissingError(error)) {
+      /** An authorization-infra outage is not evidence the session is invalid; keep cookies
+       *  and ask the client to retry instead of signing out for a transient failure. */
+      if (
+        handleOpenIDRefreshAuthorizationError(error, {
+          res,
+          logger,
+          logMessage:
+            '[refreshController] OpenID session authorization unavailable; keeping cookies',
+        }) === 'handled'
+      ) {
+        return;
+      }
+      const authOutcome = classifyOpenIDRefreshAuthorizationError(error);
+      if (
+        isOpenIDRefreshOwnershipError(error) ||
+        isOpenIDSessionMissingError(error) ||
+        authOutcome === 'denied'
+      ) {
         clearOpenIDAuthTokens(
           req,
           res,
@@ -466,14 +530,14 @@ const refreshController = async (req, res) => {
             }
 
             const bridgeResponse = await runInUserTenant(bridgeUser, async () => {
-              const bridgedRefreshToken = await getRefreshTokenBridge({
+              const bridgeRecord = await getRefreshTokenBridge({
                 oldRefreshToken: bridgeSourceToken,
                 userId,
                 tenantId: bridgeUser.tenantId,
                 openidIssuer: bridgeUser.openidIssuer,
               });
 
-              if (bridgedRefreshToken) {
+              if (bridgeRecord) {
                 logger.info(
                   '[refreshController] Recovered via refresh-token bridge after invalid_grant',
                   {
@@ -486,7 +550,8 @@ const refreshController = async (req, res) => {
                     req,
                     res,
                     refreshToken: bridgeSourceToken,
-                    bridgedRefreshToken,
+                    bridgedRefreshToken: bridgeRecord.refreshToken,
+                    bridgeOpenidSessionId: bridgeRecord.openidSessionId,
                     bridgeUser,
                   });
 
@@ -505,6 +570,19 @@ const refreshController = async (req, res) => {
                       ),
                   );
                 } catch (retryError) {
+                  if (
+                    handleOpenIDRefreshAuthorizationError(retryError, {
+                      res,
+                      logger,
+                      logMessage:
+                        '[refreshController] OpenID session authorization unavailable during bridge recovery; keeping cookies',
+                    }) === 'handled'
+                  ) {
+                    return;
+                  }
+                  if (classifyOpenIDRefreshAuthorizationError(retryError) === 'denied') {
+                    clearOpenIDAuthTokens(req, res, bridgeUser._id, bridgeUser.tenantId);
+                  }
                   logger.error('[refreshController] Bridge recovery retry failed', retryError);
                   // Fall through to generic error response
                 }

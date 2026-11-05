@@ -4,7 +4,12 @@ export * from './common';
 export * from './crypto';
 export * from './schema';
 export * from './utils';
-export { createModels } from './models';
+export {
+  createModels,
+  createOpenIDAuthorizationModels,
+  type OpenIDAuthorizationModels,
+  createResourceLockModel,
+} from './models';
 export {
   createMethods,
   createSkillDeletionPersistenceAdapter,
@@ -58,7 +63,11 @@ export {
   createMCPAuthorityCredentialRevision,
   createMCPAuthorityDatabaseSourceRevision,
   digestMCPAuthorityValue,
+  createOpenIDAuthorizationMethods,
+  isOpenIDSessionDenied,
+  createResourceLockMethods,
 } from './methods';
+export type { OpenIDAuthorizationMethods, OpenIDSessionDenialInput } from './methods';
 export { FAVORITE_ITEM_TYPES } from './types/favorite';
 export {
   AGENT_EVENT_ACTOR_SUMMARY_VERSION,

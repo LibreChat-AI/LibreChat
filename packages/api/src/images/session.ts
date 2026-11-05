@@ -7,13 +7,14 @@ export interface OpenIdSessionParams {
   refreshToken?: string;
   tenantId?: string;
   previousRefreshToken?: string;
+  openidSessionId?: string;
 }
 
 export interface OpenIdSessionDeps {
   upsertSession: (
     userId: string,
     refreshToken: string,
-    options: { expiration: Date; tenantId?: string },
+    options: { expiration: Date; tenantId?: string; openidSessionId?: string },
   ) => Promise<ISession>;
   deleteSession: (params: DeleteSessionParams) => Promise<{ deletedCount?: number }>;
 }
@@ -32,6 +33,7 @@ export async function storeOpenIdSession(
     deps.upsertSession(params.userId, refreshToken, {
       expiration: new Date(Date.now() + expiresIn),
       tenantId: params.tenantId,
+      openidSessionId: params.openidSessionId,
     }),
   );
   const previousRefreshToken = params.previousRefreshToken;

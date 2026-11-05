@@ -4,12 +4,15 @@ const {
   math,
   clearCloudFrontCookies,
   clearSessionHintCookie,
+  revokeOpenIDSessionOnLogout,
 } = require('@librechat/api');
 const { logger, DEFAULT_REFRESH_TOKEN_EXPIRY } = require('@librechat/data-schemas');
 const { logoutUser } = require('~/server/services/AuthService');
 const { deleteAllRefreshTokenBridges } = require('~/server/services/RefreshTokenBridge');
 const { revokeOpenIDRefreshTokenChain } = require('~/server/services/OpenIDRefreshRecovery');
 const { getOpenIdConfig } = require('~/strategies');
+const { findSession } = require('~/models');
+const openIdSessions = require('~/server/services/OpenIDSessions');
 
 /** Parses and validates OPENID_MAX_LOGOUT_URL_LENGTH, returning defaultValue on invalid input */
 function parseMaxLogoutUrlLength(defaultValue = 2000) {
@@ -71,6 +74,23 @@ const logoutController = async (req, res) => {
         userId,
         tenantId: req.user?.tenantId,
       });
+
+      await revokeOpenIDSessionOnLogout(
+        {
+          userId,
+          sessionTokens: req.session?.openidTokens,
+          refreshToken: parsedCookies.refreshToken,
+          bearerSessionId: req.user?.openidSessionId,
+        },
+        {
+          findSession,
+          revoke: openIdSessions.getRevokeDeps(),
+          enforcement: openIdSessions.sessionAuthorizationRef.enforcement,
+          timeoutMs: openIdSessions.getAuthorizationDeps()?.timeoutMs,
+          logger,
+        },
+      );
+
       if (req.session) {
         delete req.session.openidTokens;
         delete req.session.openidLogoutIdToken;

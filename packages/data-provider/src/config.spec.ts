@@ -181,6 +181,91 @@ describe('authenticated 2FA management rate limits', () => {
   });
 });
 
+describe('OpenID back-channel logout registration config', () => {
+  it("leaves enforcement, the receiver and timing unset so today's behavior is unchanged", () => {
+    const result = configSchema.parse({ version: '1.0' });
+    expect(result.registration?.openidSessionEnforcement).toBeUndefined();
+    expect(result.registration?.openidBackchannelLogout).toBeUndefined();
+    expect(result.registration?.openidBackchannelLogoutMaxAgeMs).toBeUndefined();
+    expect(result.registration?.openidBackchannelLogoutDeadlineMs).toBeUndefined();
+    expect(result.registration?.openidAuthorizationTimeoutMs).toBeUndefined();
+    expect(result.registration?.openidAuthorizationEngine).toBeUndefined();
+  });
+
+  it('accepts the receiver once enforcement is also on', () => {
+    const result = configSchema.parse({
+      version: '1.0',
+      registration: { openidSessionEnforcement: true, openidBackchannelLogout: true },
+    });
+    expect(result.registration?.openidBackchannelLogout).toBe(true);
+  });
+
+  it('rejects the receiver without enforcement', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        registration: { openidBackchannelLogout: true },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a delivery deadline at or above Auth0's 5-second timeout", () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        registration: { openidBackchannelLogoutDeadlineMs: 5_000 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each(['auto', 'replicaSet', 'standalone', 'documentdb'])(
+    'accepts the authorization engine override %s',
+    (openidAuthorizationEngine) => {
+      const result = configSchema.parse({
+        version: '1.0',
+        registration: { openidAuthorizationEngine },
+      });
+      expect(result.registration?.openidAuthorizationEngine).toBe(openidAuthorizationEngine);
+    },
+  );
+
+  it('rejects an authorization engine override outside the known set', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        registration: { openidAuthorizationEngine: 'sharded' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('parses a partial override document naming only the authorization engine', () => {
+    const result = configSchema.parse({
+      version: '1.0',
+      registration: { openidAuthorizationEngine: 'documentdb' },
+    });
+    expect(result.registration?.openidAuthorizationEngine).toBe('documentdb');
+    expect(result.registration?.openidBackchannelLogout).toBeUndefined();
+  });
+
+  it('accepts a dedicated receiver rate limit shaped like the other rateLimits entries', () => {
+    const result = configSchema.parse({
+      version: '1.0',
+      rateLimits: { openidBackchannelLogout: { ipMax: 20, ipWindowInMinutes: 1 } },
+    });
+    expect(result.rateLimits?.openidBackchannelLogout).toEqual({ ipMax: 20, ipWindowInMinutes: 1 });
+  });
+
+  it('has no per-user budget, since the receiver never authenticates a caller', () => {
+    const result = configSchema.parse({
+      version: '1.0',
+      rateLimits: {
+        openidBackchannelLogout: { ipMax: 20, ipWindowInMinutes: 1, userMax: 5 },
+      },
+    });
+    expect(result.rateLimits?.openidBackchannelLogout).toEqual({ ipMax: 20, ipWindowInMinutes: 1 });
+  });
+});
+
 describe('tenant-scoped custom endpoints', () => {
   const endpoint = {
     name: 'Private Gateway',

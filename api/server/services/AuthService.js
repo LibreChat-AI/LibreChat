@@ -720,9 +720,11 @@ const setCloudFrontAuthCookies = (req, res, user, options = {}) => {
  * @param {ServerResponse} res
  * @param {ISession | null} [_session=null]
  * @param {ServerRequest | null} [req=null]
+ * @param {import('@librechat/data-schemas').GenerateTokenClaims} [tokenClaims] - extra claims for
+ *   an OpenID-backed login, read back by `jwtStrategy.js` to authorize the bearer by session.
  * @returns
  */
-const setAuthTokens = async (userId, res, _session = null, req = null) => {
+const setAuthTokens = async (userId, res, _session = null, req = null, tokenClaims = undefined) => {
   try {
     let session = _session;
     let refreshToken;
@@ -733,7 +735,10 @@ const setAuthTokens = async (userId, res, _session = null, req = null) => {
       refreshTokenExpires = session.expiration.getTime();
       refreshToken = await generateRefreshToken(session);
     } else {
-      const result = await createSession(userId, { expiresIn });
+      const result = await createSession(userId, {
+        expiresIn,
+        ...(tokenClaims?.openidSessionId ? { openidSessionId: tokenClaims.openidSessionId } : {}),
+      });
       session = result.session;
       refreshToken = result.refreshToken;
       refreshTokenExpires = session.expiration.getTime();
@@ -741,7 +746,7 @@ const setAuthTokens = async (userId, res, _session = null, req = null) => {
 
     const user = await getUserById(userId);
     const sessionExpiry = math(process.env.SESSION_EXPIRY, DEFAULT_SESSION_EXPIRY);
-    const token = await generateToken(user, sessionExpiry);
+    const token = await generateToken(user, sessionExpiry, tokenClaims);
 
     setLocalSessionCookies(res, {
       refreshToken,
@@ -766,7 +771,8 @@ const resolveOpenIDAuthTokenOptions = (optionsOrUserId, existingRefreshToken, te
       'existingRefreshToken' in optionsOrUserId ||
       'tenantId' in optionsOrUserId ||
       'openidSubject' in optionsOrUserId ||
-      'openidIssuer' in optionsOrUserId
+      'openidIssuer' in optionsOrUserId ||
+      'openidSessionId' in optionsOrUserId
     ) {
       return optionsOrUserId;
     }
@@ -830,6 +836,7 @@ const applyOpenIDSessionIdentity = (sessionOpenidTokens, identity) => {
  * @param {string} [options.tenantId] - Optional tenant identifier for CloudFront cookie scoping
  * @param {string} [options.openidSubject] - Optional OpenID subject bound to the session tokens
  * @param {string} [options.openidIssuer] - Optional OpenID issuer bound to the session tokens
+ * @param {string} [options.openidSessionId] - Authorized `OpenIDSession` reference to carry on the session and marker cookie
  * @returns {String} - id_token (preferred) or access_token as the app auth token
  */
 const setOpenIDAuthTokens = (
@@ -841,7 +848,7 @@ const setOpenIDAuthTokens = (
   tenantIdArg,
 ) => {
   try {
-    const { userId, existingRefreshToken, tenantId, openidSubject, openidIssuer } =
+    const { userId, existingRefreshToken, tenantId, openidSubject, openidIssuer, openidSessionId } =
       resolveOpenIDAuthTokenOptions(optionsOrUserId, existingRefreshTokenArg, tenantIdArg);
 
     if (!tokenset) {
@@ -912,6 +919,9 @@ const setOpenIDAuthTokens = (
         lastRefreshedAt: Date.now(),
       };
       applyOpenIDSessionIdentity(sessionOpenidTokens, sessionIdentity);
+      if (openidSessionId) {
+        sessionOpenidTokens.openidSessionId = openidSessionId;
+      }
       /**
        * Capture the access-token's own expiry (unix seconds) when the IdP
        * advertises one. Lets downstream consumers — notably the OBO inline-
@@ -951,6 +961,7 @@ const setOpenIDAuthTokens = (
       expires: expirationDate,
       refreshExpiryMs: expiryInMilliseconds,
       refreshToken,
+      openidSessionId,
     });
 
     setCloudFrontAuthCookies(req, res, req.user, { userId, tenantId });
@@ -963,9 +974,15 @@ const setOpenIDAuthTokens = (
 };
 
 /** Stores OpenID refresh-token state independently of the shorter Express session. */
-const storeOpenIDSession = async (userId, refreshToken, tenantId, previousRefreshToken) => {
+const storeOpenIDSession = async (
+  userId,
+  refreshToken,
+  tenantId,
+  previousRefreshToken,
+  openidSessionId,
+) => {
   return storeOpenIdSession(
-    { userId, refreshToken, tenantId, previousRefreshToken },
+    { userId, refreshToken, tenantId, previousRefreshToken, openidSessionId },
     { upsertSession, deleteSession },
   );
 };

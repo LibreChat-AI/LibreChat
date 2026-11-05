@@ -193,6 +193,39 @@ describe('Startup readiness wiring', () => {
     expect(shutdownRegistrationIndex).toBeLessThan(listenIndex);
   });
 
+  it('runs the shared OpenID authorization startup before the server accepts requests', () => {
+    const startupIndex = source.indexOf('await startOpenIDAuthorization(app, appConfig);');
+    const listenIndex = source.indexOf('const server = app.listen');
+
+    expect(startupIndex).toBeGreaterThan(-1);
+    expect(startupIndex).toBeLessThan(listenIndex);
+  });
+
+  it('calls startOpenIDAuthorization before the body parsers', () => {
+    const startupIndex = source.indexOf('await startOpenIDAuthorization(app, appConfig);');
+    const jsonParserIndex = source.indexOf('express.json(');
+
+    expect(startupIndex).toBeGreaterThan(-1);
+    expect(startupIndex).toBeLessThan(jsonParserIndex);
+  });
+
+  it('runs the shared OpenID authorization startup before body parsers and social logins in both server entries', () => {
+    const experimental = fs.readFileSync(path.join(__dirname, 'experimental.js'), 'utf8');
+
+    for (const [name, contents] of [
+      ['index.js', source],
+      ['experimental.js', experimental],
+    ]) {
+      const startupIndex = contents.indexOf('await startOpenIDAuthorization(app, appConfig);');
+      const jsonParserIndex = contents.indexOf('express.json(');
+      const socialLoginsIndex = contents.indexOf('await configureSocialLogins(app, appConfig);');
+
+      expect([name, startupIndex > -1]).toEqual([name, true]);
+      expect([name, startupIndex < jsonParserIndex]).toEqual([name, true]);
+      expect([name, startupIndex < socialLoginsIndex]).toEqual([name, true]);
+    }
+  });
+
   it('registers background task draining with the graceful shutdown coordinator', () => {
     const registrationIndex = source.indexOf('registerBackgroundTaskShutdown({');
     const listenIndex = source.indexOf('const server = app.listen');

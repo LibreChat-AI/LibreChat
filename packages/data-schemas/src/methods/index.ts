@@ -30,6 +30,7 @@ import {
   type OpenIDRefreshFlightMethods,
 } from './openidRefreshFlight';
 import { createResourceLockMethods, type ResourceLockMethods } from './resourceLock';
+export { createResourceLockMethods } from './resourceLock';
 export {
   createMCPAuthorizationFenceRetryStorage,
   type MCPAuthorizationFenceRetryStorage,
@@ -40,7 +41,12 @@ import {
 } from './refreshTokenBridge';
 import { createSessionMethods, DEFAULT_REFRESH_TOKEN_EXPIRY, type SessionMethods } from './session';
 import { createPasskeyMethods, type PasskeyMethods } from './passkey';
-import { createUserMethods, DEFAULT_SESSION_EXPIRY, type UserMethods } from './user';
+import {
+  createUserMethods,
+  DEFAULT_SESSION_EXPIRY,
+  type UserMethods,
+  type GenerateTokenClaims,
+} from './user';
 import { createTokenMethods, type TokenMethods } from './token';
 import { createTokenListMethods, type TokenListMethods } from './tokenList';
 import { createRoleMethods, RoleConflictError, RoleDeletionError } from './role';
@@ -595,6 +601,7 @@ export {
 
 export type {
   UserMethods,
+  GenerateTokenClaims,
   PasskeyMethods,
   SessionMethods,
   TokenMethods,
@@ -687,3 +694,10 @@ export type {
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };
+
+export {
+  createOpenIDAuthorizationMethods,
+  isOpenIDSessionDenied,
+  type OpenIDAuthorizationMethods,
+  type OpenIDSessionDenialInput,
+} from './openidAuthorization';

@@ -8,11 +8,23 @@ const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
 const getLogStores = require('./getLogStores');
 const appConfigCacheArgs = standardCache.mock.calls.find(([key]) => key === CacheKeys.APP_CONFIG);
+const adminOpenIDSessionRefCacheArgs = standardCache.mock.calls.find(
+  ([key]) => key === CacheKeys.ADMIN_OPENID_SESSION_REF,
+);
 
 describe('auditCache', () => {
   it('requires APP_CONFIG publication errors to propagate', () => {
     expect(appConfigCacheArgs).toEqual([
       CacheKeys.APP_CONFIG,
+      undefined,
+      undefined,
+      { throwOnErrors: true },
+    ]);
+  });
+
+  it('requires ADMIN_OPENID_SESSION_REF publication errors to propagate', () => {
+    expect(adminOpenIDSessionRefCacheArgs).toEqual([
+      CacheKeys.ADMIN_OPENID_SESSION_REF,
       undefined,
       undefined,
       { throwOnErrors: true },

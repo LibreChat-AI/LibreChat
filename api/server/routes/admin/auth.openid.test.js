@@ -107,6 +107,7 @@ const passport = require('passport');
 const { CacheKeys } = require('librechat-data-provider');
 const { logger } = require('@librechat/data-schemas');
 const { setupOpenId } = require('~/strategies/openidStrategy');
+const openIdSessions = require('~/server/services/OpenIDSessions');
 const adminAuthRouter = require('./auth');
 
 const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -144,7 +145,7 @@ const json = (body, status = 200) =>
  * leaves the claim out and a string replaces it.
  */
 function createIdp(metadata) {
-  const idp = { authorization: null, idTokenNonce: undefined };
+  const idp = { authorization: null, idTokenNonce: undefined, sid: undefined };
 
   idp.authorize = (location) => {
     const url = new URL(location);
@@ -191,6 +192,7 @@ function createIdp(metadata) {
         iat: now,
         exp: now + 3600,
         ...(nonce ? { nonce } : {}),
+        ...(idp.sid ? { sid: idp.sid } : {}),
       }),
     });
   });
@@ -202,6 +204,12 @@ function createApp() {
   const app = express();
   app.use(express.json());
   app.use(session({ secret: 'openid-session-secret', resave: false, saveUninitialized: false }));
+  /** Test-only: seeds the retry marker a real denial would leave on the session, so retry tests
+   *  don't have to drive a full denial round trip just to set it up. */
+  app.post('/test/seed-session', (req, res) => {
+    Object.assign(req.session, req.body);
+    res.sendStatus(200);
+  });
   app.get('/oauth/openid', passport.authenticate('openid', { session: false }));
   app.use('/api/admin', adminAuthRouter);
   return app;
@@ -246,6 +254,7 @@ describe('admin OpenID sign-in keeps the admin PKCE challenge', () => {
 
   beforeEach(() => {
     mockCaches.clear();
+    openIdSessions.sessionAuthorizationRef.enforcement = false;
     process.env.OPENID_ISSUER = ISSUER;
     process.env.OPENID_CLIENT_ID = CLIENT_ID;
     process.env.OPENID_CLIENT_SECRET = 'client-secret';
@@ -274,6 +283,10 @@ describe('admin OpenID sign-in keeps the admin PKCE challenge', () => {
   ])('when the IdP %s', (_label, codeChallengeMethods) => {
     let idp;
     let app;
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
 
     beforeEach(async () => {
       idp = createIdp(discovery(codeChallengeMethods));
@@ -318,6 +331,119 @@ describe('admin OpenID sign-in keeps the admin PKCE challenge', () => {
       await signIn(app, idp, codeChallenge);
 
       expect(Boolean(idp.authorization.nonce)).toBe(codeChallengeMethods == null);
+    });
+
+    it('passes prompt=login through to the IdP authorization request when retrying a genuine denial', async () => {
+      openIdSessions.sessionAuthorizationRef.enforcement = true;
+      const agent = request.agent(app);
+      await agent.post('/test/seed-session').send({ openidLoginRetry: { sid: 'sid-1' } });
+
+      const start = await agent.get(
+        `/api/admin/oauth/openid?code_challenge=${codeChallenge}&prompt=login`,
+      );
+      expect(start.status).toBe(302);
+      const params = new URL(start.headers.location).searchParams;
+      expect(params.get('prompt')).toBe('login');
+    });
+
+    it('never reaches the IdP with prompt=login when enforcement is on but no marker was stored', async () => {
+      openIdSessions.sessionAuthorizationRef.enforcement = true;
+      const agent = request.agent(app);
+
+      const start = await agent.get(
+        `/api/admin/oauth/openid?code_challenge=${codeChallenge}&prompt=login`,
+      );
+      /** Leaving an unrecognized `prompt` on the URL (no retry) makes the underlying passport
+       *  strategy misclassify this GET as a callback, same as on `dev`; it never reaches the IdP. */
+      expect(start.status).toBe(401);
+    });
+
+    it('never reaches the IdP with prompt=login when enforcement is off, even with a retry marker stored', async () => {
+      openIdSessions.sessionAuthorizationRef.enforcement = false;
+      const agent = request.agent(app);
+      await agent.post('/test/seed-session').send({ openidLoginRetry: { sid: 'sid-1' } });
+
+      const start = await agent.get(
+        `/api/admin/oauth/openid?code_challenge=${codeChallenge}&prompt=login`,
+      );
+      expect(start.status).toBe(401);
+    });
+
+    it('omits the prompt parameter on an ordinary (non-retry) authorization request', async () => {
+      const agent = request.agent(app);
+      const start = await agent.get(`/api/admin/oauth/openid?code_challenge=${codeChallenge}`);
+      expect(start.status).toBe(302);
+      const params = new URL(start.headers.location).searchParams;
+      expect(params.has('prompt')).toBe(false);
+    });
+
+    it('restores the PKCE challenge on a prompt=login retry a real denial requested, and the exchange still enforces it', async () => {
+      openIdSessions.sessionAuthorizationRef.enforcement = true;
+      idp.sid = 'sid-retry-1';
+      let bindingCalls = 0;
+      const authorization = {
+        findOpenIDSessionById: jest.fn(async (sessionId) => ({
+          _id: { toString: () => sessionId },
+          issuer: ISSUER,
+          clientId: CLIENT_ID,
+          subject: SUBJECT,
+          revokedAt: null,
+          firstLoginIat: Math.floor(Date.now() / 1000),
+        })),
+        findOpenIDSubject: jest.fn(async () => null),
+        /** Denies the first authorization check (no binding yet), then allows the retry. */
+        findOpenIDBinding: jest.fn(async () => {
+          bindingCalls += 1;
+          return bindingCalls > 1 ? { _id: 'binding-1' } : null;
+        }),
+        findOpenIDSession: jest.fn(),
+        findOpenIDBindingBySid: jest.fn(),
+      };
+      jest.spyOn(openIdSessions, 'getLoginDeps').mockReturnValue({
+        authorization: {
+          recordOpenIDLogin: jest.fn(async ({ sid }) => ({
+            ok: true,
+            session: { _id: { toString: () => `openid-session-${sid}` } },
+          })),
+          upsertOpenIDBinding: jest.fn(async () => undefined),
+        },
+        authorizationDeps: {
+          authorization,
+          enforcement: true,
+          timeoutMs: 2000,
+          cache: { get: () => undefined, set: () => {} },
+        },
+        now: () => new Date(),
+        logger: { warn: jest.fn() },
+      });
+
+      const agent = request.agent(app);
+      const first = await agent.get(`/api/admin/oauth/openid?code_challenge=${codeChallenge}`);
+      expect(first.status).toBe(302);
+
+      const { code: deniedCode, state: deniedState } = idp.authorize(first.headers.location);
+      const deniedCallback = await agent.get(
+        `/api/admin/oauth/openid/callback?code=${deniedCode}&state=${encodeURIComponent(deniedState)}`,
+      );
+      expect(deniedCallback.status).toBe(302);
+      expect(deniedCallback.headers.location).toBe('/api/admin/oauth/openid?prompt=login');
+
+      const retry = await agent.get(deniedCallback.headers.location);
+      expect(retry.status).toBe(302);
+
+      const { code, state } = idp.authorize(retry.headers.location);
+      const exchangeCache = mockCaches.get(CacheKeys.ADMIN_OAUTH_EXCHANGE);
+      const storedChallenge = await exchangeCache.get(`pkce:${state}`);
+      expect(storedChallenge).toBe(codeChallenge);
+
+      const callback = await agent.get(
+        `/api/admin/oauth/openid/callback?code=${code}&state=${encodeURIComponent(state)}`,
+      );
+      expect(callback.status).toBe(302);
+      const exchangeCode = new URL(callback.headers.location).searchParams.get('code');
+
+      const rightVerifier = await exchange(agent, exchangeCode, codeVerifier);
+      expect(rightVerifier.status).toBe(200);
     });
 
     it('leaves the chat sign-in request unchanged', async () => {

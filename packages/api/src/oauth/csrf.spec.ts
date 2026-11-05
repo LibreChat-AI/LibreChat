@@ -433,6 +433,38 @@ describe('setOpenIDMarkerCookies', () => {
     expect(jwt.verify(signedUserId, 'marker-secret')).not.toHaveProperty('refreshTokenHash');
   });
 
+  /** Carries the OpenID session reference so a lost express session can still be authorized. */
+  it('signs the OpenID session reference into the marker when supplied', () => {
+    const res = { cookie: jest.fn() } as unknown as import('express').Response;
+    const expires = new Date(Date.now() + 604800000);
+
+    setOpenIDMarkerCookies(res, {
+      userId: 'user-123',
+      expires,
+      refreshExpiryMs: 604800000,
+      openidSessionId: 'session-1',
+    });
+
+    const signedUserId = (res.cookie as jest.Mock).mock.calls.find(
+      ([name]) => name === OPENID_USER_ID_COOKIE,
+    )?.[1];
+    expect(jwt.verify(signedUserId, 'marker-secret')).toMatchObject({
+      openidSessionId: 'session-1',
+    });
+  });
+
+  it('omits the session reference when none is supplied', () => {
+    const res = { cookie: jest.fn() } as unknown as import('express').Response;
+    const expires = new Date(Date.now() + 604800000);
+
+    setOpenIDMarkerCookies(res, { userId: 'user-123', expires, refreshExpiryMs: 604800000 });
+
+    const signedUserId = (res.cookie as jest.Mock).mock.calls.find(
+      ([name]) => name === OPENID_USER_ID_COOKIE,
+    )?.[1];
+    expect(jwt.verify(signedUserId, 'marker-secret')).not.toHaveProperty('openidSessionId');
+  });
+
   it('updates token_provider even when the signed user marker is not applicable', () => {
     const res = { cookie: jest.fn(), clearCookie: jest.fn() } as unknown as Response;
     const expires = new Date(Date.now() + 604800000);

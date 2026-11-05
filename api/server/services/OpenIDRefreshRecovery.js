@@ -12,6 +12,7 @@ const {
 const bridge = require('./RefreshTokenBridge');
 const flight = require('./OpenIDRefreshFlight');
 const { refreshOpenIDSession } = require('./OpenIDSessionRefresh');
+const openIdSessions = require('./OpenIDSessions');
 
 module.exports = api.createOpenIDRefreshRecoveryService({
   jwt,
@@ -42,4 +43,6 @@ module.exports = api.createOpenIDRefreshRecoveryService({
   revokeOpenIDRefreshFlights: flight.revokeOpenIDRefreshFlights,
   withOpenIDRefreshFlightLease: flight.withOpenIDRefreshFlightLease,
   bridgeGraceMs: bridge.OPENID_REFRESH_BRIDGE_GRACE_MS,
+  getOpenIdClientId: openIdSessions.getOpenIdClientId,
+  sessionAuthorization: openIdSessions.sessionAuthorizationRef,
 });

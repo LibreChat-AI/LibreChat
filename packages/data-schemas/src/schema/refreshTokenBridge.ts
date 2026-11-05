@@ -1,4 +1,4 @@
-import { Schema } from 'mongoose';
+import mongoose, { Schema } from 'mongoose';
 import type { IRefreshTokenBridge } from '~/types';
 
 const refreshTokenBridgeSchema: Schema<IRefreshTokenBridge> = new Schema<IRefreshTokenBridge>({
@@ -21,6 +21,10 @@ const refreshTokenBridgeSchema: Schema<IRefreshTokenBridge> = new Schema<IRefres
   },
   openidIssuer: {
     type: String,
+  },
+  openidSessionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'OpenIDSession',
   },
   version: {
     type: String,
