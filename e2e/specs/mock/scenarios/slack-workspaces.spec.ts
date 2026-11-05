@@ -60,6 +60,13 @@ for (const theme of ['light', 'dark']) {
           });
         return;
       }
+      if (url.pathname.endsWith('/workspace-browser/remove')) {
+        expect(route.request().method()).toBe('POST');
+        expect(route.request().postDataJSON()).toEqual({ revision: 'installed' });
+        workspaces = [];
+        await route.fulfill({ status: 204 });
+        return;
+      }
       if (url.pathname.endsWith('/connect')) {
         expect(route.request().postDataJSON()).toMatchObject({ appId: 'A123' });
         attempt++;
@@ -156,6 +163,21 @@ for (const theme of ['light', 'dark']) {
       .click();
     await expect(workspacesPanel.getByText('Disconnected', { exact: true })).toBeVisible();
     expect(disconnected).toBe(1);
+    await workspacesPanel.getByRole('button', { name: 'Remove workspace', exact: true }).click();
+    const removal = workspacesPanel.getByRole('group', {
+      name: /^Remove this disconnected workspace/,
+    });
+    await expect(removal).toContainText('This does not uninstall the app from Slack.');
+    if (process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX) {
+      await removal.scrollIntoViewIfNeeded();
+      await page.screenshot({
+        animations: 'disabled',
+        path: `${process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX}-remove-${theme}.png`,
+      });
+    }
+    await removal.getByRole('button', { name: 'Remove workspace', exact: true }).click();
+    await expect(workspacesPanel.getByText('Example engineering')).toHaveCount(0);
+    await expect(workspacesPanel.getByText('No Slack workspaces are connected.')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.locator('#prompt-textarea')).toBeVisible();
   });

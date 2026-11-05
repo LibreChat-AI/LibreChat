@@ -148,7 +148,42 @@ describe('organization-owned Slack workspaces', () => {
       expect(await store.removeApp('A123', disconnected!.revision)).toBe('removed');
       expect(await store.app('A123')).toBeNull();
       expect((await store.apps()).apps).toEqual([]);
+      expect((await store.list()).workspaces).toEqual([]);
+      expect(await store.read(installed.workspace.workspaceId)).toMatchObject({
+        status: 'disconnected',
+        removedAt: expect.any(Date),
+      });
     });
+  });
+
+  it('removes only a current disconnected workspace and preserves installation fences', async () => {
+    await scoped('org-a', () => start('original'));
+    const installed = await scoped('org-a', () => finish('original'));
+    if (!installed.ok) throw new Error('Test install failed');
+    const { workspaceId, revision } = installed.workspace;
+    expect(await scoped('org-a', () => store.remove(workspaceId, revision))).toBe(false);
+    await scoped('org-a', () => start('delayed-before-disconnect'));
+    await scoped('org-a', () => store.disconnect(workspaceId, revision));
+    const retired = await scoped('org-a', () => store.read(workspaceId));
+    expect(retired?.encryptedBotToken).toBeUndefined();
+    expect(await scoped('org-b', () => store.remove(workspaceId, retired!.revision))).toBe(false);
+    expect(await scoped('org-a', () => store.remove(workspaceId, revision))).toBe(false);
+    expect(await scoped('org-a', () => store.remove(workspaceId, retired!.revision))).toBe(true);
+    expect((await scoped('org-a', () => store.list())).workspaces).toEqual([]);
+    expect(await scoped('org-a', () => store.read(workspaceId))).toMatchObject({
+      status: 'disconnected',
+      removedAt: expect.any(Date),
+    });
+    expect(await scoped('org-a', () => finish('delayed-before-disconnect'))).toEqual({
+      ok: false,
+      code: 'stale_install',
+    });
+    await scoped('org-a', () => start('fresh-install'));
+    const fresh = await scoped('org-a', () => finish('fresh-install'));
+    if (!fresh.ok) throw new Error('Fresh install failed');
+    expect(fresh.workspace.workspaceId).not.toBe(workspaceId);
+    expect((await scoped('org-a', () => store.list())).workspaces).toEqual([fresh.workspace]);
+    expect(await scoped('org-a', () => store.remove(workspaceId, retired!.revision))).toBe(false);
   });
 
   it('allows only one concurrent update of the same organization app revision', async () => {

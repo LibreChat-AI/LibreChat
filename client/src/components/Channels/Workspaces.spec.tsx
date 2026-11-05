@@ -16,6 +16,7 @@ jest.mock('librechat-data-provider', () => {
       getSlackApps: jest.fn(),
       connectSlackWorkspace: jest.fn(),
       disconnectSlackWorkspace: jest.fn(),
+      removeSlackWorkspace: jest.fn(),
       cancelSlackWorkspaceInstall: jest.fn(),
     },
   };
@@ -77,6 +78,9 @@ beforeEach(() => {
     expiresInSeconds: 600,
   });
   cancel = jest.spyOn(dataService, 'cancelSlackWorkspaceInstall').mockResolvedValue(undefined);
+  jest.spyOn(dataService, 'removeSlackWorkspace').mockImplementation(async () => {
+    response = { ...response, workspaces: [] };
+  });
   popup.closed = false;
   popup.location.href = '';
   popup.close.mockClear();
@@ -127,6 +131,9 @@ test('disconnect requires confirmation and refreshes the org workspace state', a
   const user = userEvent.setup();
   page();
   await screen.findByText('Engineering');
+  expect(
+    screen.queryByRole('button', { name: 'com_ui_slack_workspaces_remove' }),
+  ).not.toBeInTheDocument();
   const appReads = jest.mocked(dataService.getSlackApps).mock.calls.length;
   await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_disconnect' }));
   expect(disconnect).not.toHaveBeenCalled();
@@ -143,6 +150,35 @@ test('disconnect requires confirmation and refreshes the org workspace state', a
     screen.queryByRole('button', { name: 'com_ui_slack_workspaces_reconnect' }),
   ).not.toBeInTheDocument();
   expect(screen.queryByRole('group')).not.toBeInTheDocument();
+});
+
+test('only admins can confirm removal of a disconnected workspace', async () => {
+  const user = userEvent.setup();
+  response.workspaces = [{ ...workspace, status: 'disconnected' }];
+  const { client } = page();
+  await user.click(await screen.findByRole('button', { name: 'com_ui_slack_workspaces_remove' }));
+  expect(dataService.removeSlackWorkspace).not.toHaveBeenCalled();
+  await user.click(
+    within(screen.getByRole('group')).getByRole('button', {
+      name: 'com_ui_slack_workspaces_remove',
+    }),
+  );
+  await waitFor(() =>
+    expect(dataService.removeSlackWorkspace).toHaveBeenCalledWith('workspace-1', 'revision-1'),
+  );
+  await waitFor(() => expect(screen.queryByText('Engineering')).not.toBeInTheDocument());
+  response = {
+    ...response,
+    canManage: false,
+    workspaces: [{ ...workspace, status: 'disconnected' }],
+  };
+  await act(async () => {
+    await client.invalidateQueries([QueryKeys.slackWorkspaces]);
+  });
+  await screen.findByText('Engineering');
+  expect(
+    screen.queryByRole('button', { name: 'com_ui_slack_workspaces_remove' }),
+  ).not.toBeInTheDocument();
 });
 
 test('keeps the confirmed revision when workspace metadata changes before disconnect', async () => {

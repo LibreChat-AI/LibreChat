@@ -292,6 +292,7 @@ describe('Slack workspace installation', () => {
     server.post('/workspaces/apps/:appId/remove', handlers.removeApp);
     server.get('/workspaces/:workspaceId', handlers.get);
     server.delete('/workspaces/:workspaceId', handlers.disconnect);
+    server.post('/workspaces/:workspaceId/remove', handlers.remove);
     server.post('/workspaces/connect', setOAuthSession, handlers.connect);
     server.delete('/workspaces/attempts/:flowId', handlers.cancel);
     server.get('/api/channels/workspaces/oauth/callback', handlers.callback);
@@ -374,6 +375,31 @@ describe('Slack workspace installation', () => {
     expect((await scoped(() => storage.metadata(first.value.workspaceId)))?.status).toBe(
       'disconnected',
     );
+  });
+
+  it('requires current tenant-admin authority and a disconnected revision to remove a workspace', async () => {
+    const { flow } = await start();
+    const installed = await scoped(() => service.finish(flow, 'code'));
+    if (!installed.ok) throw new Error(installed.error.code);
+    const { workspaceId, revision } = installed.value;
+    const remove = (body: object, tenant = 'org-a') =>
+      http()
+        .post(`/workspaces/${workspaceId}/remove`)
+        .set('x-test-user', 'yes')
+        .set('x-test-tenant', tenant)
+        .set('x-test-user-tenant', tenant)
+        .send(body);
+    await remove({}).expect(400);
+    await remove({ revision }).expect(409);
+    await scoped(() => storage.disconnect(workspaceId, revision));
+    const retired = await scoped(() => storage.read(workspaceId));
+    await remove({ revision: retired!.revision }, 'org-b').expect(409);
+    canManage.mockResolvedValue(false);
+    await remove({ revision: retired!.revision }).expect(403);
+    canManage.mockResolvedValue(true);
+    await remove({ revision }).expect(409);
+    await remove({ revision: retired!.revision }).expect(204);
+    expect((await scoped(() => storage.list())).workspaces).toEqual([]);
   });
 
   it('returns one saved workspace as credential-free tenant metadata', async () => {

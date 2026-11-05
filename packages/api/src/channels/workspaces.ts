@@ -305,6 +305,16 @@ export function createSlackWorkspaceService(deps: {
       return installed.ok ? { ok: true, value: installed.workspace } : failure(installed.code);
     },
 
+    async remove(
+      principal: SlackWorkspacePrincipal,
+      workspaceId: string,
+      expectedRevision: string,
+    ): Promise<Result<boolean>> {
+      if (!inScope(principal) || !(await deps.canManage(principal))) return failure('forbidden');
+      return (await deps.storage.remove(workspaceId, expectedRevision))
+        ? { ok: true, value: true }
+        : failure('workspace_changed');
+    },
     async disconnect(
       principal: SlackWorkspacePrincipal,
       workspaceId: string,
