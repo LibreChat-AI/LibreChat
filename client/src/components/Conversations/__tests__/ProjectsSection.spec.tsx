@@ -61,6 +61,12 @@ describe('ProjectsSection', () => {
     expect(sectionToggle()).toHaveAttribute('aria-expanded', 'true');
   });
 
+  it("keeps the heading on the section-header variant's padding", () => {
+    renderSection();
+    expect(sectionToggle()).toHaveClass('px-1');
+    expect(sectionToggle()).not.toHaveClass('px-theme-button-x');
+  });
+
   it('remembers a collapse across mounts', async () => {
     const { unmount } = renderSection();
     await userEvent.click(sectionToggle());
