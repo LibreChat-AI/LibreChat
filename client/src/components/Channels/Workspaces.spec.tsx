@@ -1,6 +1,6 @@
 import React from 'react';
 import userEvent from '@testing-library/user-event';
-import { dataService } from 'librechat-data-provider';
+import { dataService, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import type { SlackWorkspaceStatus, SlackWorkspaceConnect } from 'librechat-data-provider';
@@ -51,11 +51,12 @@ function page() {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     logger: { log: () => {}, warn: () => {}, error: () => {} },
   });
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <Workspaces />
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 
 beforeEach(() => {
@@ -134,7 +135,7 @@ test('disconnect requires confirmation and refreshes the org workspace state', a
     within(confirmation).getByRole('button', { name: 'com_ui_slack_workspaces_disconnect' }),
   );
   await screen.findByText('com_ui_slack_workspaces_disconnected');
-  expect(disconnect).toHaveBeenCalledWith('workspace-1');
+  expect(disconnect).toHaveBeenCalledWith('workspace-1', 'revision-1');
   await waitFor(() =>
     expect(jest.mocked(dataService.getSlackApps).mock.calls.length).toBeGreaterThan(appReads),
   );
@@ -142,6 +143,33 @@ test('disconnect requires confirmation and refreshes the org workspace state', a
     screen.queryByRole('button', { name: 'com_ui_slack_workspaces_reconnect' }),
   ).not.toBeInTheDocument();
   expect(screen.queryByRole('group')).not.toBeInTheDocument();
+});
+
+test('keeps the confirmed revision when workspace metadata changes before disconnect', async () => {
+  const user = userEvent.setup();
+  const { client } = page();
+  await user.click(
+    await screen.findByRole('button', { name: 'com_ui_slack_workspaces_disconnect' }),
+  );
+  response = { ...response, workspaces: [{ ...workspace, revision: 'revision-2' }] };
+  await act(async () => {
+    await client.invalidateQueries([QueryKeys.slackWorkspaces]);
+  });
+  disconnect.mockRejectedValueOnce(new Error('Workspace changed'));
+  await user.click(
+    within(screen.getByRole('group')).getByRole('button', {
+      name: 'com_ui_slack_workspaces_disconnect',
+    }),
+  );
+  await waitFor(() => expect(disconnect).toHaveBeenLastCalledWith('workspace-1', 'revision-1'));
+  await waitFor(() => expect(screen.queryByRole('group')).not.toBeInTheDocument());
+  await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_disconnect' }));
+  await user.click(
+    within(screen.getByRole('group')).getByRole('button', {
+      name: 'com_ui_slack_workspaces_disconnect',
+    }),
+  );
+  await waitFor(() => expect(disconnect).toHaveBeenLastCalledWith('workspace-1', 'revision-2'));
 });
 
 test('OAuth completion refreshes the list only for the flow this user started', async () => {

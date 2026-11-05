@@ -123,11 +123,13 @@ export default function WorkspaceChannel({
         expectedRevision: target.data.revision,
       });
     },
-    onSuccess: async (_result, action) => {
+    onSuccess: (_result, action) => {
       if (mounted.current) {
         setConfirm(null);
         if (action.kind !== 'remove') onClose();
       }
+    },
+    onSettled: async () => {
       await Promise.all([
         queryClient.invalidateQueries([QueryKeys.agentChannels, userId, tenantId, agentId]),
         queryClient.invalidateQueries(routesKey),
@@ -137,12 +139,6 @@ export default function WorkspaceChannel({
           agentId,
           channel.channelId,
         ]),
-      ]);
-    },
-    onError: () => {
-      void Promise.all([
-        queryClient.invalidateQueries(targetKey),
-        queryClient.invalidateQueries(routesKey),
         queryClient.invalidateQueries([
           QueryKeys.slackWorkspaces,
           principalKey,

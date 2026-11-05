@@ -63,6 +63,12 @@ export function createSlackDispatchStorage(
         .limit(limit)
         .read('primary')
         .lean();
+      // Unavailable bindings cannot reach claim(), so discovery must advance fairness too.
+      if (records.length)
+        await runs.updateMany(
+          { _id: { $in: records.map(({ _id }) => _id) }, leaseExpiresAt: { $lte: now } },
+          { $max: { claimCheckedAt: now } },
+        );
       return records.map(({ tenantId, channelId }) => ({ tenantId, channelId }));
     },
     async thread(workspaceId, externalUserId, externalThreadKey) {

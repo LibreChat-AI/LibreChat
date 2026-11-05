@@ -189,13 +189,13 @@ export function createSlackWorkspaceHandlers(deps: {
     }),
     disconnect: browser(async (req, res, principal) => {
       const id = identifier.safeParse(req.params.workspaceId);
-      if (!id.success) {
+      const body = z.object({ revision: identifier }).strict().safeParse(req.body);
+      if (!id.success || !body.success) {
         res.status(400).json({ ok: false, error: { code: 'workspace_changed' } });
         return;
       }
-      const result = await deps.service.disconnect(principal, id.data);
-      if (!result.ok) res.status(403).json(result);
-      else if (!result.value) res.sendStatus(404);
+      const result = await deps.service.disconnect(principal, id.data, body.data.revision);
+      if (!result.ok) res.status(result.error.code === 'forbidden' ? 403 : 409).json(result);
       else res.sendStatus(204);
     }),
     cancel: browser(async (req, res, principal) => {

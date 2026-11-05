@@ -223,6 +223,22 @@ describe('shared Slack service routing', () => {
     return (await browserPost(agentId + '/connections', { workspaceId }).expect(201)).body;
   }
 
+  it('preserves thread/channel refinement when adding the service tenant scope', async () => {
+    await scoped(() => install());
+    const invalid = await post('/resolve', {
+      tenantId: 'org-a',
+      appId: 'A123',
+      teamId: 'T123',
+      target: {
+        kind: 'thread',
+        actorId: 'U123',
+        externalChannelId: 'C123',
+        externalThreadKey: 'C999:1.000001',
+      },
+    });
+    expect(invalid.status).toBe(400);
+  });
+
   it('creates a usable workspace binding through the browser API without accepting credentials', async () => {
     const workspace = await scoped(() => install());
     const channel = await pending(workspace.workspaceId);

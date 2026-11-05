@@ -291,6 +291,7 @@ describe('Slack workspace installation', () => {
     server.put('/workspaces/apps', handlers.configureApp);
     server.post('/workspaces/apps/:appId/remove', handlers.removeApp);
     server.get('/workspaces/:workspaceId', handlers.get);
+    server.delete('/workspaces/:workspaceId', handlers.disconnect);
     server.post('/workspaces/connect', setOAuthSession, handlers.connect);
     server.delete('/workspaces/attempts/:flowId', handlers.cancel);
     server.get('/api/channels/workspaces/oauth/callback', handlers.callback);
@@ -347,6 +348,32 @@ describe('Slack workspace installation', () => {
       .send({ revision: saved.body.revision })
       .expect(204);
     expect(await scoped(() => storage.app('A123'))).toBeNull();
+  });
+
+  it('refuses a stale disconnect confirmation after another administrator reconnects', async () => {
+    const { flow } = await start();
+    const first = await scoped(() => service.finish(flow, 'first-code'));
+    if (!first.ok) throw new Error(first.error.code);
+    const secondFlow = await start();
+    const second = await scoped(() => service.finish(secondFlow.flow, 'second-code'));
+    if (!second.ok) throw new Error(second.error.code);
+    expect(second.value.workspaceId).toBe(first.value.workspaceId);
+    const disconnect = (revision?: string) =>
+      http()
+        .delete(`/workspaces/${first.value.workspaceId}`)
+        .set('x-test-user', 'yes')
+        .set('x-test-tenant', 'org-a')
+        .send(revision ? { revision } : {});
+    await disconnect().expect(400);
+    await disconnect(first.value.revision).expect(409);
+    expect((await scoped(() => storage.metadata(first.value.workspaceId)))?.revision).toBe(
+      second.value.revision,
+    );
+    expect((await scoped(() => storage.metadata(first.value.workspaceId)))?.status).toBe('active');
+    await disconnect(second.value.revision).expect(204);
+    expect((await scoped(() => storage.metadata(first.value.workspaceId)))?.status).toBe(
+      'disconnected',
+    );
   });
 
   it('returns one saved workspace as credential-free tenant metadata', async () => {

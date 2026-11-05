@@ -50,8 +50,9 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
   });
   const disconnect = useMutation({
     mutationKey: [MutationKeys.slackWorkspaces, principalKey, 'disconnect'],
-    mutationFn: (workspaceId: string) => dataService.disconnectSlackWorkspace(workspaceId),
-    onSuccess: async () => {
+    mutationFn: (workspace: SlackWorkspace) =>
+      dataService.disconnectSlackWorkspace(workspace.workspaceId, workspace.revision),
+    onSettled: async () => {
       setConfirm(null);
       await refresh();
     },
@@ -233,7 +234,7 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
                 <Button
                   variant="destructive"
                   disabled={busy}
-                  onClick={() => disconnect.mutate(workspace.workspaceId)}
+                  onClick={() => disconnect.mutate(confirm)}
                 >
                   {localize('com_ui_slack_workspaces_disconnect')}
                 </Button>
