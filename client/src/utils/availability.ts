@@ -1,4 +1,5 @@
 import {
+  QueryKeys,
   isAgentsEndpoint,
   isEphemeralAgentId,
   parseEphemeralAgentId,
@@ -11,6 +12,15 @@ import type {
   TModelSpec,
   TConversation,
 } from 'librechat-data-provider';
+import type { QueryClient } from '@tanstack/react-query';
+
+/** Ignore the static seed, but retain a fetched catalog when a later request fails. */
+export function getModelCatalog(queryClient: QueryClient): TModelsConfig | undefined {
+  const state = queryClient.getQueryState<TModelsConfig>([QueryKeys.models]);
+  return state?.dataUpdateCount
+    ? queryClient.getQueryData<TModelsConfig>([QueryKeys.models])
+    : undefined;
+}
 
 /** Keep agent groups reachable. Apply discovery only after a response arrives. */
 export function isProviderAvailable(endpoint: string, models: TModelsConfig | undefined): boolean {
@@ -66,5 +76,5 @@ export function isConversationModelAvailable({
   ) {
     return true;
   }
-  return (models?.[resolveModelCatalogKey(endpoint, models)] ?? []).includes(model);
+  return models == null || (models[resolveModelCatalogKey(endpoint, models)] ?? []).includes(model);
 }

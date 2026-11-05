@@ -20,8 +20,8 @@ const mockContext = {
   onOpenChange: jest.fn(),
   keyDialogEndpoint: '',
 };
-jest.mock('librechat-data-provider/react-query', () => ({
-  useGetModelsQuery: () => ({ data: mockModels, isFetched: mockFetched, isSuccess: true }),
+jest.mock('~/hooks/Endpoint/useModelCatalog', () => () => ({
+  data: mockFetched ? mockModels : undefined,
 }));
 jest.mock('@librechat/client', () => ({
   TooltipAnchor: ({ render }: { render: ReactNode }) => render,

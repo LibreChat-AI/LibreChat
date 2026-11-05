@@ -1,6 +1,5 @@
 import React, { useMemo } from 'react';
 import { TooltipAnchor } from '@librechat/client';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
   getConfigDefaults,
   isAgentsEndpoint,
@@ -17,6 +16,7 @@ import {
 import { ModelSelectorProvider, useModelSelectorContext } from './ModelSelectorContext';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
 import { ModelSelectorChatProvider } from './ModelSelectorChatContext';
+import useModelCatalog from '~/hooks/Endpoint/useModelCatalog';
 import { getSelectedIcon, getDisplayValue } from './utils';
 import { CustomMenu as Menu } from './CustomMenu';
 import DialogManager from './DialogManager';
@@ -26,9 +26,8 @@ const defaultInterface = getConfigDefaults().interface;
 
 function ModelSelectorContent() {
   const localize = useLocalize();
-  const modelsQuery = useGetModelsQuery();
-  const modelsConfig =
-    modelsQuery.isFetched && modelsQuery.isSuccess ? modelsQuery.data : undefined;
+  const modelsQuery = useModelCatalog();
+  const modelsConfig = modelsQuery.data;
   const modelSelectorHint = useShortcutHint('openModelSelector', localize('com_ui_select_model'));
   const modelSelectorAriaKey = useShortcutAriaKey('openModelSelector');
 

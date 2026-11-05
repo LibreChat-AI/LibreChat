@@ -41,6 +41,7 @@ const mockSetFilesToDelete = jest.fn();
 const mockGetSender = jest.fn(() => 'Assistant');
 const mockGetExpiry = jest.fn(() => 'expiry-key');
 const mockAgentQueryData: { current?: Agent } = {};
+let mockModelFetchCount = 1;
 const mockModelsQueryData: { current?: TModelsConfig } = {};
 const mockEndpointsQueryData: { current?: Record<string, unknown> } = {};
 const mockCapabilitiesData: { current?: Record<string, unknown> } = {};
@@ -52,7 +53,7 @@ const mockGetQueryState = jest.fn((queryKey: readonly unknown[]) => {
   if (queryKey[0] === QueryKeys.reasoningCapabilities) {
     return { dataUpdatedAt: Date.now(), ...mockCapabilitiesState.current };
   }
-  return queryKey[0] === QueryKeys.models ? { dataUpdateCount: 1 } : undefined;
+  return queryKey[0] === QueryKeys.models ? { dataUpdateCount: mockModelFetchCount } : undefined;
 });
 const mockGetQueryData = jest.fn((queryKey: readonly unknown[]) => {
   if (queryKey[0] === QueryKeys.reasoningCapabilities) {
@@ -255,6 +256,7 @@ describe('useChatFunctions ask', () => {
   beforeEach(() => {
     mockEndpointsQueryData.current = undefined;
     mockModelsQueryData.current = undefined;
+    mockModelFetchCount = 1;
     mockCapabilitiesData.current = undefined;
     mockCapabilitiesState.current = undefined;
     localStorage.clear();
@@ -612,6 +614,24 @@ describe('useChatFunctions ask', () => {
     expect(askResult!).toBe(false);
     expect(setMessages).not.toHaveBeenCalled();
     expect(setSubmission).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['send', {}],
+    ['regenerate', { isRegenerate: true }],
+    ['edit', { isEdited: true }],
+    ['continue', { isContinued: true, isRegenerate: true }],
+  ])('allows %s when model discovery has never succeeded', (_name, options) => {
+    mockModelFetchCount = 0;
+    const parent = userMessage('user-1');
+    const response = assistantMessage('answer-1', parent.messageId);
+    const { result, setSubmission } = renderAsk([parent, response], 'conversation-1', {
+      endpoint: EModelEndpoint.openAI,
+    });
+    act(() => {
+      expect(result.current.ask({ ...parent, text: 'Try this model' }, options)).not.toBe(false);
+    });
+    expect(setSubmission).toHaveBeenCalled();
   });
 
   it.each(['Personal' as EModelEndpoint, EModelEndpoint.agents])(

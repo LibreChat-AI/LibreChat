@@ -12,8 +12,8 @@ const mockEndpoints = [
   EModelEndpoint.assistants,
   EModelEndpoint.azureAssistants,
 ];
-jest.mock('librechat-data-provider/react-query', () => ({
-  useGetModelsQuery: () => ({ data: mockModels, isFetched: mockFetched, isSuccess: true }),
+jest.mock('~/hooks/Endpoint/useModelCatalog', () => () => ({
+  data: mockFetched ? mockModels : undefined,
 }));
 jest.mock('~/data-provider', () => ({ useGetEndpointsQuery: () => ({ data: mockEndpoints }) }));
 jest.mock('~/hooks', () => ({ useHasAccess: () => true, useShowMarketplace: () => true }));

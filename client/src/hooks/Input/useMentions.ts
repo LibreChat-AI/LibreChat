@@ -1,5 +1,4 @@
 import { useMemo } from 'react';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
   Permissions,
   alternateName,
@@ -22,6 +21,7 @@ import {
 import { isModelSpecAvailable, isProviderAvailable } from '~/utils/availability';
 import useAssistantListMap from '~/hooks/Assistants/useAssistantListMap';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import useModelCatalog from '~/hooks/Endpoint/useModelCatalog';
 import { mapEndpoints, getPresetTitle } from '~/utils';
 import { EndpointIcon } from '~/components/Endpoints';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
@@ -68,10 +68,9 @@ export default function useMentions({
 
   const agentsMap = useAgentsMapContext();
   const { data: presets, isLoading: isLoadingPresets } = useGetPresetsQuery();
-  const modelsQuery = useGetModelsQuery();
+  const modelsQuery = useModelCatalog();
   const { isLoading: isLoadingModels } = modelsQuery;
-  const modelsConfig =
-    modelsQuery.isFetched && modelsQuery.isSuccess ? modelsQuery.data : undefined;
+  const modelsConfig = modelsQuery.data;
   const { data: startupConfig, isLoading: isLoadingStartup } = useGetStartupConfig();
   const { data: endpointsConfig, isLoading: isLoadingEndpoints } = useGetEndpointsQuery();
   const { data: endpoints = [] } = useGetEndpointsQuery({

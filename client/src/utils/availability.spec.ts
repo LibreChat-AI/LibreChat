@@ -47,8 +47,8 @@ describe('conversation model availability', () => {
   const available = (models: Record<string, string[]> | undefined, selection = conversation) =>
     isConversationModelAvailable({ conversation: selection, models, endpoints });
 
-  it('blocks missing, loading, empty and removed models without changing the saved selection', () => {
-    expect(available(undefined)).toBe(false);
+  it('allows unknown availability but blocks missing, empty and removed models', () => {
+    expect(available(undefined)).toBe(true);
     expect(available({ openAI: [] })).toBe(false);
     expect(available({ openAI: ['other'] })).toBe(false);
     expect(available({ openAI: ['saved'] }, { ...conversation, model: '' })).toBe(false);
@@ -88,12 +88,7 @@ describe('conversation model availability', () => {
         agents: { order: 0 },
         personal: { order: 1, userProvide: true },
       };
-      const catalogs: (TModelsConfig | undefined)[] = [
-        undefined,
-        {},
-        { personal: [] },
-        { personal: ['other'] },
-      ];
+      const catalogs: TModelsConfig[] = [{}, { personal: [] }, { personal: ['other'] }];
       for (const models of catalogs) {
         expect(
           isConversationModelAvailable({

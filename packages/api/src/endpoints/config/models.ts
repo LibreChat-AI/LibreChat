@@ -11,7 +11,10 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, GetUserKeyValuesFunction, UserKeyValues } from '~/types';
 import type { FetchModelsParams } from '~/endpoints/models';
 import type { GetAppConfigOptions } from '~/app/service';
-import { fetchModels as defaultFetchModels } from '~/endpoints/models';
+import {
+  fetchModels as defaultFetchModels,
+  getModelDiscoveryErrorMetadata,
+} from '~/endpoints/models';
 import { isServedCustomEndpoint } from '~/endpoints/custom/config';
 import { getTokenConfigKey } from '~/endpoints/custom/initialize';
 import { getAppConfigOptionsFromUser } from '~/app/service';
@@ -51,7 +54,7 @@ export function configuredModelList(
 import { resolveConfigSecret } from '~/admin/secrets';
 import { validateEndpointURL } from '~/auth';
 import { tokenConfigCache } from '~/cache';
-import { isUserProvided, getSafeErrorMetadata } from '~/utils';
+import { isUserProvided } from '~/utils';
 
 /**
  * Stable fingerprint of a headers object, used to disambiguate the
@@ -190,7 +193,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
           } else {
             logger.warn(
               `[loadConfigModels] Failed to retrieve user key for "${userKeyEndpoints[i].name}"`,
-              getSafeErrorMetadata(settled.reason),
+              getModelDiscoveryErrorMetadata(settled.reason),
             );
           }
           userKeyMap.set(userKeyEndpoints[i].name, null);
@@ -308,7 +311,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
           options?.onFetchFailure?.(name);
           logger.warn(
             `[loadConfigModels] Model fetch failed for "${name}"`,
-            getSafeErrorMetadata(settled.reason),
+            getModelDiscoveryErrorMetadata(settled.reason),
           );
         }
         modelsConfig[name] = settled.status === 'fulfilled' ? settled.value : defaults;

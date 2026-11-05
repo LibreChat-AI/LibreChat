@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
 import debounce from 'lodash/debounce';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
   EModelEndpoint,
   PermissionBits,
@@ -19,6 +18,7 @@ import {
 import { useAgentsMapContext, useAssistantsMapContext, useLiveAnnouncer } from '~/Providers';
 import { useGetEndpointsQuery, useListAgentsQuery } from '~/data-provider';
 import { useModelSelectorChatContext } from './ModelSelectorChatContext';
+import useModelCatalog from '~/hooks/Endpoint/useModelCatalog';
 import useSelectMention from '~/hooks/Input/useSelectMention';
 import { isModelSpecAvailable } from '~/utils/availability';
 import { filterItems } from './utils';
@@ -63,9 +63,8 @@ interface ModelSelectorProviderProps {
 
 export function ModelSelectorProvider({ children, startupConfig }: ModelSelectorProviderProps) {
   const agentsMap = useAgentsMapContext();
-  const modelsQuery = useGetModelsQuery();
-  const modelsConfig =
-    modelsQuery.isFetched && modelsQuery.isSuccess ? modelsQuery.data : undefined;
+  const modelsQuery = useModelCatalog();
+  const modelsConfig = modelsQuery.data;
   const assistantsMap = useAssistantsMapContext();
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const { endpoint, model, spec, agent_id, assistant_id, getConversation, newConversation } =

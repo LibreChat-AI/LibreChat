@@ -25,6 +25,43 @@ import { getModelCacheTokenConfigKey, isScopedTokenConfigKey } from '~/endpoints
 import { createSSRFSafeAgents, validateEndpointURL } from '~/auth';
 import { standardCache, tokenConfigCache } from '~/cache';
 
+const modelListSchema = z.object({ data: z.array(z.object({ id: z.string().min(1) })) });
+const ollamaListSchema = z.object({ models: z.array(z.object({ name: z.string().min(1) })) });
+const discoveryErrors = {
+  missing_base_url: 'Model discovery requires a base URL',
+  missing_api_key: 'Model discovery requires an API key',
+  invalid_response: 'Invalid model discovery response',
+};
+const connectionErrorCodes = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+]);
+
+/** Report fixed failure categories without exposing provider messages or request data. */
+export function getModelDiscoveryErrorMetadata(
+  error: unknown,
+): ReturnType<typeof getSafeErrorMetadata> & { reason?: string; code?: string } {
+  const reason =
+    error instanceof Error
+      ? Object.entries(discoveryErrors).find(([, message]) => message === error.message)?.[0]
+      : undefined;
+  const code =
+    axios.isAxiosError(error) &&
+    typeof error.code === 'string' &&
+    connectionErrorCodes.has(error.code)
+      ? error.code
+      : undefined;
+  return {
+    ...getSafeErrorMetadata(error),
+    ...(reason ? { reason } : {}),
+    ...(code ? { code } : {}),
+  };
+}
+
 type SSRFSafeAgents = ReturnType<typeof createSSRFSafeAgents>;
 
 export interface FetchModelsParams {
@@ -115,11 +152,9 @@ async function fetchOllamaModels(
     requestOptions,
   );
 
-  const result = z
-    .object({ models: z.array(z.object({ name: z.string().min(1) })) })
-    .safeParse(response.data);
+  const result = ollamaListSchema.safeParse(response.data);
   if (!result.success) {
-    throw new Error('Invalid model discovery response');
+    throw new Error(discoveryErrors.invalid_response);
   }
   return result.data.models.map((tag) => tag.name);
 }
@@ -177,14 +212,15 @@ export async function fetchModels({
   skipCache = false,
 }: FetchModelsParams): Promise<string[]> {
   let models: string[] = [];
+  let hasCachedModels = false;
   const baseURL = direct ? extractBaseURL(_baseURL ?? '') : _baseURL;
 
   if (!baseURL && !azure) {
-    throw new Error('Model discovery requires a base URL');
+    throw new Error(discoveryErrors.missing_base_url);
   }
 
   if (!apiKey) {
-    throw new Error('Model discovery requires an API key');
+    throw new Error(discoveryErrors.missing_api_key);
   }
 
   const ssrfAgents = baseURLIsUserProvided ? createSSRFSafeAgents(allowedAddresses) : undefined;
@@ -211,6 +247,7 @@ export async function fetchModels({
         const tokenConfigBackfilled = await backfillTokenConfigFromModelCache(cacheKey, tokenKey);
         if (!tokenConfigBackfilled && isScopedTokenConfigKey(tokenKey)) {
           models = cachedModels as string[];
+          hasCachedModels = true;
         } else {
           return cachedModels as string[];
         }
@@ -231,11 +268,11 @@ export async function fetchModels({
     } catch (ollamaError) {
       logger.warn(
         'Ollama discovery failed; trying the OpenAI-compatible endpoint',
-        getSafeErrorMetadata(ollamaError),
+        getModelDiscoveryErrorMetadata(ollamaError),
       );
     }
     if (ollamaModels !== null) {
-      if (modelsCache && cacheKey && ollamaModels.length > 0) {
+      if (modelsCache && cacheKey) {
         await modelsCache.set(cacheKey, ollamaModels, Time.TWO_MINUTES);
       }
       return ollamaModels;
@@ -292,13 +329,23 @@ export async function fetchModels({
   }
   applyAxiosProxyConfig(options, url);
   applyUserProvidedBaseURLProtection(options, ssrfAgents);
-  const res = await axios.get(url.toString(), options);
+  const res = await axios.get(url.toString(), options).catch((error: unknown) => {
+    if (!hasCachedModels) {
+      throw error;
+    }
+    logger.warn(
+      'Model token metadata refresh failed; retaining cached models',
+      getModelDiscoveryErrorMetadata(error),
+    );
+    return undefined;
+  });
+  if (res == null) {
+    return models;
+  }
 
-  const result = z
-    .object({ data: z.array(z.object({ id: z.string().min(1) })) })
-    .safeParse(res.data);
+  const result = modelListSchema.safeParse(res.data);
   if (!result.success) {
-    throw new Error('Invalid model discovery response');
+    throw new Error(discoveryErrors.invalid_response);
   }
   const input = res.data;
 
@@ -313,7 +360,7 @@ export async function fetchModels({
   }
   models = result.data.data.map((item) => item.id);
 
-  if (modelsCache && cacheKey && models.length > 0) {
+  if (modelsCache && cacheKey) {
     await modelsCache.set(cacheKey, models, Time.TWO_MINUTES);
   }
 
@@ -360,6 +407,9 @@ export async function fetchOpenAIModels(
 ): Promise<string[]> {
   let models = _models.slice() ?? [];
   const apiKey = resolveOpenAIApiKey(opts);
+  if (!apiKey) {
+    return models;
+  }
   const openaiBaseURL = 'https://api.openai.com/v1';
   let baseURL = openaiBaseURL;
   let reverseProxyUrl = process.env.OPENAI_REVERSE_PROXY;
@@ -386,7 +436,7 @@ export async function fetchOpenAIModels(
       userObject: opts.userObject,
     });
   } catch (error) {
-    logger.warn('OpenAI model discovery failed', getSafeErrorMetadata(error));
+    logger.warn('OpenAI model discovery failed', getModelDiscoveryErrorMetadata(error));
     return _models;
   }
 
@@ -480,7 +530,7 @@ export async function fetchAnthropicModels(
       userObject: opts.userObject,
     });
   } catch (error) {
-    logger.warn('Anthropic model discovery failed', getSafeErrorMetadata(error));
+    logger.warn('Anthropic model discovery failed', getModelDiscoveryErrorMetadata(error));
     return _models;
   }
 
@@ -523,7 +573,7 @@ export async function getAnthropicModels(
   try {
     return await fetchAnthropicModels(opts, models);
   } catch (error) {
-    logger.warn('Anthropic model discovery failed', getSafeErrorMetadata(error));
+    logger.warn('Anthropic model discovery failed', getModelDiscoveryErrorMetadata(error));
     return models;
   }
 }

@@ -94,6 +94,14 @@ jest.mock('@librechat/client', () => ({
   }),
 }));
 
+jest.mock('~/hooks/Endpoint/useModelCatalog', () => () => ({
+  ...mockModelsQuery,
+  data:
+    mockModelsQuery.isFetchedAfterMount && mockModelsQuery.isSuccess
+      ? mockModelsQuery.data
+      : undefined,
+}));
+
 // Mock other dependencies
 jest.mock('librechat-data-provider/react-query', () => ({
   useGetModelsQuery: () => mockModelsQuery,

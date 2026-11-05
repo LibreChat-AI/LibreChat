@@ -3,6 +3,7 @@ import { Keyv } from 'keyv';
 import { logger } from '@librechat/data-schemas';
 import { Time, EModelEndpoint, defaultModels, AuthType } from 'librechat-data-provider';
 import {
+  getModelDiscoveryErrorMetadata,
   fetchModels,
   splitAndTrim,
   getOpenAIModels,
@@ -1049,7 +1050,7 @@ describe('fetchModels caching behavior', () => {
     expect(mockCacheSet).not.toHaveBeenCalled();
   });
 
-  it('does not write to cache when fetch returns empty models', async () => {
+  it('caches successful empty discovery', async () => {
     mockedAxios.get.mockResolvedValue({ data: { data: [] } });
 
     await fetchModels({
@@ -1058,11 +1059,7 @@ describe('fetchModels caching behavior', () => {
       name: 'TestAPI',
     });
 
-    expect(mockCacheSet).not.toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(Array),
-      expect.any(Number),
-    );
+    expect(mockCacheSet).toHaveBeenCalledWith(expect.any(String), [], Time.TWO_MINUTES);
   });
 
   it('skips MODEL_QUERIES cache when both headers and userObject are supplied (user-scoped response)', async () => {
@@ -1232,4 +1229,70 @@ it('fetches again after the existing two-minute model cache expires', async () =
   } finally {
     jest.useRealTimers();
   }
+});
+
+describe('discovery recovery', () => {
+  it.each([{ models: [] }, { models: ['cached-model'] }])(
+    'retains cached models $models if token metadata refresh fails',
+    async ({ models }) => {
+      mockCacheGet.mockResolvedValue(models);
+      mockTokenConfigGet.mockResolvedValue(undefined);
+      mockedAxios.get.mockRejectedValue(new Error('timeout'));
+      expect(
+        await fetchModels({
+          apiKey: 'test',
+          baseURL: 'https://gateway.test',
+          tokenKey: `${SCOPED_TOKEN_CONFIG_KEY_PREFIX}tenant\u0000test`,
+        }),
+      ).toEqual(models);
+      expect(mockCacheSet).not.toHaveBeenCalled();
+    },
+  );
+
+  it('uses a cached empty catalog without another provider request', async () => {
+    mockCacheGet.mockResolvedValue([]);
+    mockedAxios.get.mockClear();
+    expect(await fetchModels({ apiKey: 'test', baseURL: 'https://gateway.test' })).toEqual([]);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it('does not warn or request OpenAI discovery when no key is configured', async () => {
+    const env = { ...process.env };
+    try {
+      delete process.env.OPENAI_API_KEY;
+      delete process.env.OPENAI_MODELS;
+      delete process.env.ASSISTANTS_MODELS;
+      mockedAxios.get.mockClear();
+      jest.mocked(logger.warn).mockClear();
+      await getOpenAIModels();
+      await getOpenAIModels({ assistants: true });
+      expect(mockedAxios.get).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+    } finally {
+      process.env = env;
+    }
+  });
+
+  it.each([
+    ['Model discovery requires an API key', 'missing_api_key'],
+    ['Model discovery requires a base URL', 'missing_base_url'],
+    ['Invalid model discovery response', 'invalid_response'],
+  ])('classifies %s without exposing error text', (message, reason) => {
+    expect(getModelDiscoveryErrorMetadata(new Error(message))).toEqual({ type: 'Error', reason });
+  });
+
+  it.each(['ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT'])(
+    'logs only the safe connection code %s',
+    (code) => {
+      mockedAxios.isAxiosError.mockImplementation(jest.requireActual('axios').isAxiosError);
+      const error = Object.assign(new Error('secret provider response'), {
+        isAxiosError: true,
+        code,
+      });
+      expect(getModelDiscoveryErrorMetadata(error)).toEqual({ type: 'Error', code });
+      expect(
+        getModelDiscoveryErrorMetadata(Object.assign(error, { code: 'PRIVATE_ACCOUNT_ID' })),
+      ).toEqual({ type: 'Error' });
+    },
+  );
 });

@@ -3,7 +3,6 @@ import { Plus } from 'lucide-react';
 import isEqual from 'lodash/isEqual';
 import { Button, useToastContext } from '@librechat/client';
 import { useWatch, useForm, FormProvider } from 'react-hook-form';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
   MemoryScope,
   SystemRoles,
@@ -45,6 +44,7 @@ import { useSelectAgent, useLocalize, useAuthContext } from '~/hooks';
 import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
 import { resolveCapabilityTools } from './Tools/items/capabilities';
 import ResetApprovals from '~/components/Agents/ResetApprovals';
+import useModelCatalog from '~/hooks/Endpoint/useModelCatalog';
 import { isProviderAvailable } from '~/utils/availability';
 import AgentPanelSkeleton from './AgentPanelSkeleton';
 import AdvancedPanel from './Advanced/AdvancedPanel';
@@ -485,7 +485,7 @@ export default function AgentPanel() {
 
   const { onSelect: onSelectAgent } = useSelectAgent();
 
-  const modelsQuery = useGetModelsQuery({ refetchOnMount: 'always' });
+  const modelsQuery = useModelCatalog({ refetchOnMount: 'always' });
   const basicAgentQuery = useGetAgentByIdQuery(current_agent_id);
 
   const { hasPermission, isLoading: permissionsLoading } = useResourcePermissions(
@@ -517,15 +517,11 @@ export default function AgentPanel() {
     expandedAgentQuery.refetch();
   }, [expandedAgentQuery]);
 
-  const modelsReady = modelsQuery.isFetchedAfterMount && !modelsQuery.isFetching;
-  const modelsError = modelsQuery.isFetchedAfterMount && !modelsQuery.isSuccess;
-  /** The models query is seeded with a static fallback config, so its entries only describe the
-   *  active server once the fetch issued on mount has resolved. Until then there is nothing
-   *  authoritative to offer, and an outright failure must not fall back to the seed either. */
-  const models = useMemo(
-    () => (modelsQuery.isFetchedAfterMount && !modelsError ? (modelsQuery.data ?? {}) : {}),
-    [modelsError, modelsQuery.isFetchedAfterMount, modelsQuery.data],
-  );
+  const modelsReady =
+    modelsQuery.data != null || (modelsQuery.isFetchedAfterMount && !modelsQuery.isFetching);
+  const modelsError =
+    modelsQuery.data == null && modelsQuery.isFetchedAfterMount && !modelsQuery.isSuccess;
+  const models = useMemo(() => modelsQuery.data ?? {}, [modelsQuery.data]);
   const methods = useForm<AgentForm>({
     defaultValues: getDefaultAgentFormValues(defaultStatefulCodeEnvironment),
     mode: 'onChange',
@@ -674,24 +670,13 @@ export default function AgentPanel() {
             !isAssistantsEndpoint(key) &&
             (allowedProviders.size > 0 ? allowedProviders.has(key) : true) &&
             key !== EModelEndpoint.agents &&
-            isProviderAvailable(
-              key,
-              modelsQuery.isFetchedAfterMount && modelsQuery.isSuccess
-                ? modelsQuery.data
-                : undefined,
-            ),
+            isProviderAvailable(key, modelsQuery.data),
         )
         .map((provider) => createProviderOption(provider)),
-    [
-      endpointsConfig,
-      allowedProviders,
-      modelsQuery.data,
-      modelsQuery.isFetchedAfterMount,
-      modelsQuery.isSuccess,
-    ],
+    [endpointsConfig, allowedProviders, modelsQuery.data],
   );
   useEffect(() => {
-    if (endpointsConfig == null || !modelsReady || !modelsQuery.isSuccess) {
+    if (endpointsConfig == null || modelsQuery.data == null || modelsQuery.isFetching) {
       return;
     }
 
@@ -735,8 +720,8 @@ export default function AgentPanel() {
     endpointsConfig,
     getValues,
     models,
-    modelsQuery.isSuccess,
-    modelsReady,
+    modelsQuery.data,
+    modelsQuery.isFetching,
     providers,
     setValue,
   ]);
