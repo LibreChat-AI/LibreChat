@@ -5,6 +5,7 @@ const {
   ensureDirectoryPrincipalUser,
   resolveDirectoryPrincipal,
   validateLocalPrincipalId,
+  refreshDirectoryGroupMembers,
 } = require('@librechat/api');
 const {
   tenantStorage,
@@ -44,11 +45,22 @@ const ensureLocalUserPrincipalExists = async (principalId) => {
   return user._id.toString();
 };
 
-const ensureLocalGroupPrincipalExists = async (principalId) => {
-  const group = await db.findGroupById(validateLocalPrincipalId(principalId), { _id: 1 });
+const ensureLocalGroupPrincipalExists = async (principalId, authContext) => {
+  const group = await db.findGroupById(validateLocalPrincipalId(principalId), {
+    _id: 1,
+    source: 1,
+    idOnTheSource: 1,
+  });
   if (!group) {
     throw new Error('Group principal not found');
   }
+  await refreshDirectoryGroupMembers(group, authContext, {
+    getGroupMembers,
+    getGroupOwners,
+    includeOwners: isEnabled(process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS),
+    updateMembers: (memberIds) => db.updateGroupById(group._id, { memberIds }),
+    logger,
+  });
   return group._id.toString();
 };
 
@@ -377,7 +389,7 @@ const ensurePrincipalExists = async function (
 /**
  * Ensures a group principal exists in the database based on TPrincipal data
  * Creates group if it doesn't exist locally (for Entra ID groups)
- * Resolves persisted groups locally; new Entra ID groups synchronize directory members
+ * Resolves persisted groups locally and refreshes directory members when authenticated
  * @param {Object} principal - TPrincipal object from frontend
  * @param {string} principal.type - Must be PrincipalType.GROUP
  * @param {string} [principal.id] - Local database ID (null for Entra ID principals not yet synced)
@@ -402,7 +414,7 @@ const ensureGroupPrincipalExists = async function (
   }
 
   if (principal.id) {
-    return await ensureLocalGroupPrincipalExists(principal.id);
+    return await ensureLocalGroupPrincipalExists(principal.id, authContext);
   }
 
   if (principal.source === 'entra') {
