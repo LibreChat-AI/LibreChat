@@ -1,6 +1,6 @@
 import { memo } from 'react';
-import { isBashProgrammaticToolCall } from '@librechat/chat';
 import { Part as ChatPart } from '@librechat/chat/components';
+import { isBashProgrammaticToolCall, getAskUserQuestionPart } from '@librechat/chat';
 import {
   Tools,
   Constants,
@@ -44,7 +44,6 @@ import {
   getPartKeyIndex,
 } from '~/utils';
 import BackgroundTaskCall from './Parts/BackgroundTaskCall';
-import { getAskUserQuestionPart } from '~/utils/approval';
 import AskUserQuestionCall from './AskUserQuestionCall';
 import { isError } from './ToolOutput/OutputRenderer';
 import { ToolPreparation } from './preparation';
@@ -157,7 +156,6 @@ const renderFileAuthoring =
       initialProgress={toolCall.progress ?? 0.1}
       isSubmitting={isSubmitting}
       runStepStatus={toolCall.runStepStatus}
-      runStepDurationMs={toolCall.runStepDurationMs}
       attachments={attachments}
       hideAttachments={hideAttachments}
       onExpand={onToolExpand}
@@ -317,7 +315,6 @@ const tools: Record<string, ToolRenderer> = {
       initialProgress={toolCall.progress ?? 0.1}
       isSubmitting={isSubmitting}
       runStepStatus={toolCall.runStepStatus}
-      runStepDurationMs={toolCall.runStepDurationMs}
       attachments={attachments}
       hideAttachments={hideAttachments}
       onExpand={onToolExpand}

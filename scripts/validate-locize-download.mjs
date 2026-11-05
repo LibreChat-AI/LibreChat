@@ -100,7 +100,10 @@ for (const relative of baseFiles) {
 
 const englishRelative = path.join('en', 'translation.json');
 if (currentSet.has(englishRelative)) {
-  const english = await loadJson(path.join(currentDir, englishRelative), `download/${englishRelative}`);
+  const english = await loadJson(
+    path.join(currentDir, englishRelative),
+    `download/${englishRelative}`,
+  );
   if (english !== null) {
     const englishValues = flatten(english);
     for (const relative of currentFiles) {

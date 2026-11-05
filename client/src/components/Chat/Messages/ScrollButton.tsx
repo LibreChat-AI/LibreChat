@@ -1,8 +1,8 @@
 import { memo, useState, useRef, useEffect } from 'react';
 import { useAtomValue } from 'jotai';
 import { CSSTransition } from 'react-transition-group';
+import { ScrollToBottom } from '@librechat/chat/components';
 import { composerOverlayCountFamily } from '@librechat/chat/react';
-import ScrollToBottom from '~/components/Messages/ScrollToBottom';
 
 const intersectionThreshold = 0.85;
 const visibilityDebounceRate = 150;

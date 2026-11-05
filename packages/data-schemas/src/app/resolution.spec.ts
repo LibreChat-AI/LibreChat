@@ -4622,6 +4622,41 @@ describe('deployment-only paths in the merge', () => {
     expect(merged.endpoints?.agents).not.toHaveProperty('recursionLimit');
   });
 
+  it('keeps the values readers take from librechat.yaml or at startup, beside the fields that merge', () => {
+    const managementApi = { auth: { oidc: { enabled: false }, clients: [] } };
+    const base = {
+      config: {},
+      conversationList: { maxEndpointFilters: 50, maxEndpointNameLength: 128 },
+      interfaceConfig: { colorModeFromUrl: false, modelSelect: true },
+      fileConfig: { skills: { deletionCleanupConcurrency: 8 } },
+      endpoints: { agents: { managementApi } },
+    } as unknown as AppConfig;
+    const merged = mergeConfigOverrides(base, [
+      fakeConfig(
+        {
+          conversationList: { maxEndpointFilters: 500 },
+          interface: { colorModeFromUrl: true, modelSelect: false },
+          fileConfig: { skills: { deletionCleanupConcurrency: 1, fileSizeLimit: 5 } },
+          endpoints: { agents: { managementApi: { auth: { oidc: { audience: 'override' } } } } },
+          clientLimits: { refreshMs: 1 },
+          telemetry: { rum: { enabled: true } },
+          passwordHashing: { maxWorkers: 1 },
+        },
+        10,
+      ),
+    ]);
+    expect(merged.conversationList).toEqual({ maxEndpointFilters: 50, maxEndpointNameLength: 128 });
+    expect(merged.interfaceConfig).toMatchObject({ colorModeFromUrl: false, modelSelect: false });
+    expect(merged.fileConfig?.skills).toEqual({ deletionCleanupConcurrency: 8, fileSizeLimit: 5 });
+    expect(merged.endpoints?.agents?.managementApi).toEqual(managementApi);
+    for (const path of ['clientLimits', 'telemetry.rum', 'passwordHashing']) {
+      expect([path, at(merged as unknown as Record<string, unknown>, path)]).toEqual([
+        path,
+        undefined,
+      ]);
+    }
+  });
+
   it('keeps the tool filters librechat.yaml sets, so a profile cannot gate tools', () => {
     const base = { config: {}, filteredTools: ['dalle'] } as unknown as AppConfig;
     const merged = mergeConfigOverrides(base, [
@@ -4689,6 +4724,34 @@ describe('getIgnoredConfigOverrides', () => {
         'override:rateLimits:deployment_only_path',
         'tombstone:cloudfront:deployment_only_path',
         'override:githubCompare.timeoutMs:invalid',
+      ].sort(),
+    );
+  });
+
+  it('reports the stored values of settings read from librechat.yaml or at startup', () => {
+    const layer = fakeConfig(
+      {
+        clientLimits: { refreshMs: 1 },
+        telemetry: { rum: { enabled: true } },
+        conversationList: { maxEndpointFilters: 500 },
+        passwordHashing: { maxWorkers: 1 },
+        interface: { colorModeFromUrl: true, modelSelect: false },
+        fileConfig: { skills: { deletionCleanupConcurrency: 1, fileSizeLimit: 5 } },
+        endpoints: { agents: { managementApi: { auth: { oidc: { audience: 'override' } } } } },
+      },
+      10,
+      undefined,
+      'editor',
+    );
+    expect(reasons(getIgnoredConfigOverrides(yaml, layer))).toEqual(
+      [
+        'override:clientLimits:deployment_only_path',
+        'override:telemetry.rum:deployment_only_path',
+        'override:conversationList:deployment_only_path',
+        'override:passwordHashing:deployment_only_path',
+        'override:interface.colorModeFromUrl:deployment_only_path',
+        'override:fileConfig.skills.deletionCleanupConcurrency:deployment_only_path',
+        'override:endpoints.agents.managementApi:deployment_only_path',
       ].sort(),
     );
   });

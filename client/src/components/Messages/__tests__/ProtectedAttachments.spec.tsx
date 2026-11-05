@@ -8,6 +8,8 @@ import { OwnerTextProvider } from '~/components/Chat/Messages/PrivateText';
 import MessageRender from '~/components/Chat/Messages/ui/MessageRender';
 import ContentRender from '../ContentRender';
 import '~/Providers/MessagesHostContext';
+import '~/components/Chat/Messages/Content/register';
+import '~/Providers/MessagesHostContext';
 
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
@@ -36,12 +38,9 @@ jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   __esModule: true,
   default: () => null,
 }));
-jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
-  __esModule: true,
-  default: () => null,
-}));
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
+  HoverButtons: () => null,
   SiblingSwitch: () => null,
   Elapsed: () => null,
   shouldShowElapsed: () => false,

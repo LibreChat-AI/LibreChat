@@ -67,6 +67,34 @@ const input = (overrides: Partial<BuildTurnInput> = {}): BuildTurnInput => ({
 });
 
 describe('buildTurn', () => {
+  it.each(['response-1', 'response-1_', 'response-1__', 'a'.repeat(256)])(
+    'keeps the compaction placeholder distinct from the saved leaf %s',
+    (messageId) => {
+      const anchor = { ...response, messageId, createdAt: '2026-10-31T19:00:00Z' };
+      const turn = buildTurn(
+        input({
+          text: '',
+          params: { text: '', messageId, parentMessageId: messageId },
+          options: { compact: true },
+          latestMessage: anchor,
+          cachedMessages: [user, anchor],
+        }),
+      );
+
+      expect(turn.initialResponse.messageId).not.toBe(messageId);
+      expect(turn.initialResponse.messageId.replace(/_+$/, '')).not.toBe(
+        messageId.replace(/_+$/, ''),
+      );
+      expect(turn.initialResponse.messageId).toMatch(/_$/);
+      expect(turn.initialResponse.messageId.length).toBeLessThanOrEqual(
+        Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH,
+      );
+      expect(turn.initialResponse.parentMessageId).toBe(messageId);
+      expect(turn.submissionMessages).toEqual([user, anchor]);
+      expect(turn.submission.userMessage.messageId).toBe(messageId);
+    },
+  );
+
   it('appends a user message and a response placeholder to the branch tail', () => {
     const turn = buildTurn(input());
 

@@ -11,8 +11,14 @@ import {
   sendMessage,
   sendMessageAndWaitForCompletion,
 } from './helpers';
-import { cleanupAgent, openAgentBuilder, uniqueAgentName } from './agents.helpers';
+import {
+  cleanupAgent,
+  openAgentBuilder,
+  closeMobileDrawer,
+  uniqueAgentName,
+} from './agents.helpers';
 import history from '../../fixtures/subagent-history.cjs';
+import { openChatHistory } from './scenarios/sidebar';
 
 const DETACHED_ACTIVITY_MARKER = 'E2E_SUBAGENT_ACTIVITY:';
 /** The activity hook's first reconnect is scheduled after 500 ms. */
@@ -43,12 +49,20 @@ async function createAgent(
   });
 }
 
+/** The child panel is a region beside the chat on wide layouts and a modal dialog over it on
+ *  narrow ones, the same element under either role. */
+const childActivityPanel = (page: Page) =>
+  page
+    .getByRole('region', { name: 'Child agent activity' })
+    .or(page.getByRole('dialog', { name: 'Child agent activity' }));
+
 async function selectAgent(page: Page, name: string): Promise<void> {
   const form = await openAgentBuilder(page);
   await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
   await page.getByRole('option', { name }).click();
   await expect(form.getByLabel('Agent name')).toHaveValue(name);
   await form.getByRole('button', { name: 'Select Agent' }).click();
+  await closeMobileDrawer(page);
 }
 
 test.describe('detached subagent activity', () => {
@@ -111,7 +125,7 @@ test.describe('detached subagent activity', () => {
       });
       await cards.first().click();
 
-      const panel = page.getByRole('region', { name: 'Child agent activity' });
+      const panel = childActivityPanel(page);
       const activityResponse = await activityResponsePromise;
       await expect(panel).toBeVisible();
       await expect(panel).toContainText('child-1-phase-10');
@@ -149,7 +163,7 @@ test.describe('detached subagent activity', () => {
       await expect(panel.getByText('Completed', { exact: true })).toHaveCount(0);
 
       await panel.getByRole('button', { name: 'Close' }).click();
-      await page.getByRole('button', { name: 'Chat History' }).click();
+      await openChatHistory(page);
       const conversationRows = page.getByTestId('convo-item');
       await expect(conversationRows.locator('button[aria-current="page"]')).toBeVisible();
       for (const child of children) {
@@ -273,7 +287,7 @@ async function openHistoryChild(page: Page, label: string): Promise<Locator> {
     .toBe(true);
   await expect(card).toHaveCount(1);
   await card.click();
-  const panel = page.getByRole('region', { name: 'Child agent activity' });
+  const panel = childActivityPanel(page);
   await expect(panel).toBeVisible();
   return panel;
 }
@@ -344,8 +358,7 @@ test.describe('subagent chat retained-history parity', () => {
           expect(activityRequests, 'no child stream was opened before the ring overflowed').toBe(0);
         }
         if (mode === 'cold reload') {
-          await page
-            .getByRole('region', { name: 'Child agent activity' })
+          await childActivityPanel(page)
             .getByRole('button', { name: 'Close', exact: true })
             .click();
           const storageState = await page.context().storageState();

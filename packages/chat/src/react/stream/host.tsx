@@ -1,12 +1,13 @@
 import { createContext, useContext } from 'react';
 import type {
-  TSubmission,
   ChatTransport,
   RetentionMode,
   TConversation,
+  ParentSubagentIndex,
   TAgentQueuedTurnReceipt,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import type { EventServices, EventServicesParams, LegacyStreamServices } from './services';
 import type { ResumableHost, ResumableRun, StreamStatusResponse } from '../../core';
 import type { ChatContract } from '../chat/contract';
 
@@ -49,6 +50,13 @@ export type ResumeSettings = {
   conversation: TConversation | null;
 };
 
+/** The parent conversation's durable subagent index, as the host's query cache holds it. */
+export type ParentSubagentIndexQuery = {
+  data?: ParentSubagentIndex;
+  isError: boolean;
+  refetch: () => Promise<{ data?: ParentSubagentIndex }>;
+};
+
 /** Everything a resumable stream runs on except how it re-attaches, which the binding owns. */
 export type ResumableServices = Omit<ResumableHost, 'subscribe'>;
 
@@ -64,13 +72,8 @@ export interface StreamHost {
    * latest render; it changes only when they do.
    */
   useResumableServices(params: ResumableStreamParams): () => ResumableServices;
-  /** Streams a turn that carries its own response (Assistants), for `submission` or none. */
-  useLegacyStream(
-    submission: TSubmission | null,
-    chat: StreamChat,
-    isAddedRequest: boolean,
-    runIndex: number,
-  ): void;
+  /** The transport, balance refresh and terms check the Assistants stream posts its turn with. */
+  useLegacyServices(): LegacyStreamServices;
   /**
    * The signed-in user's stream transport, or `null` before sign-in, for feeds outside a chat
    * turn such as a subagent's activity. Changes when the token does.
@@ -92,6 +95,17 @@ export interface StreamHost {
   useStreamStatus(conversationId: string | undefined, enabled: boolean): ResumeStatusQuery;
   /** The settings a pane's resume check reads. */
   useResumeSettings(runIndex: number): ResumeSettings;
+  /**
+   * The parent conversation's subagent index from the host's query cache, so the host's own
+   * stream handlers and invalidations keep reaching the same entry. Polls while `isSubmitting`.
+   */
+  useParentSubagentIndex(
+    conversationId: string,
+    enabled: boolean,
+    isSubmitting: boolean,
+  ): ParentSubagentIndexQuery;
+  /** The app services a pane's stream event handlers write through. */
+  useEventServices(params: EventServicesParams): EventServices;
 }
 
 const StreamHostContext = createContext<StreamHost | null>(null);

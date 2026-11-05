@@ -49,9 +49,7 @@ export * from './localStorage';
 export * from './promptGroups';
 export * from './previewCache';
 export * from './groupToolCalls';
-export * from './toolLabels';
 export * from './favoritesError';
-export * from './approval';
 export {
   getSteerPart,
   applySteerPart,
@@ -75,7 +73,6 @@ export { getChatPane, getFocusedChatPane, isFocusedChatPane } from '@librechat/c
 export * from './activityLabels';
 export * from './agentModelSelection';
 export * from './runStepDuration';
-export * from './toolCallPhase';
 export * from './documentTitle';
 export * from './reasoningLabels';
 export * from './numbers';

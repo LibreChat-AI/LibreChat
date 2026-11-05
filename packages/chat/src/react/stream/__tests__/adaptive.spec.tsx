@@ -6,18 +6,24 @@ import { renderHook } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { TSubmission } from 'librechat-data-provider';
 import type { StreamHost } from '../host';
+import { createEventServices } from '../__fixtures__/events';
 import { StreamHostProvider } from '../host';
+import { useLegacyStream } from '../legacy';
 import useResumableSSE from '../resumable';
 import useAdaptiveSSE from '../adaptive';
 
 jest.mock('../resumable', () => jest.fn(() => ({ streamId: 'stream' })));
+jest.mock('../legacy', () => ({ useLegacyStream: jest.fn() }));
 
-const useLegacyStream = jest.fn();
+const eventServices = createEventServices();
+
 const host: StreamHost = {
   useResumableServices: () => () => {
     throw new Error('the resumable binding is replaced in this spec');
   },
-  useLegacyStream,
+  useLegacyServices: () => {
+    throw new Error('the legacy stream is replaced in this spec');
+  },
   useTransport: () => null,
   useQueuedTurnReceipts: () => ({ data: undefined, dataUpdatedAt: 0 }),
   useActiveJobs: () => ({ data: undefined, dataUpdatedAt: 0 }),
@@ -29,6 +35,8 @@ const host: StreamHost = {
     isFetching: false,
   }),
   useResumeSettings: () => ({ configLoaded: true, conversation: null }),
+  useParentSubagentIndex: () => ({ isError: false, refetch: async () => ({}) }),
+  useEventServices: () => eventServices,
 };
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (

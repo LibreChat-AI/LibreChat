@@ -34,9 +34,6 @@ export const AssistantAvatar = ({
 
   // Calculate the offset based on the loading progress
   const offset = circumference - progress * circumference;
-  const circleCSSProperties = {
-    transition: 'stroke-dashoffset 0.3s linear',
-  };
 
   return (
     <div>
@@ -48,13 +45,7 @@ export const AssistantAvatar = ({
           width="80"
           height="80"
         />
-        {progress < 1 && (
-          <ProgressCircle
-            circumference={circumference}
-            offset={offset}
-            circleCSSProperties={circleCSSProperties}
-          />
-        )}
+        {progress < 1 && <ProgressCircle circumference={circumference} offset={offset} />}
       </div>
     </div>
   );

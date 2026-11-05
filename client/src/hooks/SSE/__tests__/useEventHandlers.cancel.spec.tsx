@@ -1,16 +1,15 @@
 import { createElement } from 'react';
 import { createStore, Provider } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
+import { useEventHandlers } from '@librechat/chat/react';
 import { dataService, EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { EventSubmission, TConversation, TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { useIsReplacingConversationCodeEnvironment } from '~/data-provider/CodeEnvironments';
-import useEventHandlers from '../useEventHandlers';
+import { StreamHostTestProvider } from 'test/streamHost';
 
 let mockConversationId = 'saved';
-const mockResetSubagentAtoms = jest.fn();
-const mockResetPtcAtoms = jest.fn();
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -33,24 +32,6 @@ jest.mock('~/hooks/AuthContext', () => ({ useAuthContext: () => ({}) }));
 jest.mock('~/Providers', () => ({ useLiveAnnouncer: () => ({ announcePolite: jest.fn() }) }));
 jest.mock('~/hooks/Agents', () => ({ useApplyAgentTemplate: () => jest.fn() }));
 jest.mock('~/hooks/Chat/useFocusRegeneratedResponse', () => () => jest.fn());
-jest.mock('../useContentHandler', () => () => ({
-  contentHandler: jest.fn(),
-  resetContentHandler: jest.fn(),
-}));
-jest.mock('../useAttachmentHandler', () => () => jest.fn());
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useStepHandler: () => ({
-    stepHandler: jest.fn(),
-    clearStepMaps: jest.fn(),
-    resetSubagentAtoms: mockResetSubagentAtoms,
-    resetPtcAtoms: mockResetPtcAtoms,
-    prunePtcTraces: jest.fn(),
-    syncStepMessage: jest.fn(),
-    cancelPendingDeltaFlush: jest.fn(),
-    flushPendingDeltas: jest.fn(),
-  }),
-}));
 jest.mock('~/data-provider', () => ({
   ...jest.requireActual('~/data-provider/CodeEnvironments'),
   startupConfigKey: ['startup'],
@@ -115,39 +96,6 @@ describe('local cancellation decision reconciliation', () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
-  it('preserves the selected task only for navigation, not host teardown', () => {
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const wrapper = ({ children }: { children: ReactNode }) =>
-      createElement(
-        Provider,
-        null,
-        createElement(QueryClientProvider, { client: queryClient }, children),
-      );
-    const { rerender, unmount } = renderHook(
-      () =>
-        useEventHandlers({
-          getMessages: () => [],
-          setMessages: jest.fn(),
-          setCompleted: jest.fn(),
-          setConversation: jest.fn(),
-          setIsSubmitting: jest.fn(),
-          setShowStopButton: jest.fn(),
-          newConversation: jest.fn(),
-        }),
-      { wrapper },
-    );
-    expect(mockResetSubagentAtoms).not.toHaveBeenCalled();
-    mockConversationId = 'other';
-    rerender();
-    expect(mockResetSubagentAtoms).toHaveBeenCalledTimes(1);
-    expect(mockResetSubagentAtoms).toHaveBeenCalledWith({ preserveSelectedTask: true });
-    expect(mockResetPtcAtoms).toHaveBeenCalledTimes(1);
-    unmount();
-    expect(mockResetSubagentAtoms).toHaveBeenCalledTimes(2);
-    expect(mockResetSubagentAtoms).toHaveBeenLastCalledWith();
-    expect(mockResetPtcAtoms).toHaveBeenCalledTimes(2);
-  });
-
   it.each(['streamed', 'minimal', 'navigated'])(
     'does not use a synthetic %s cancel as evidence that the server settled',
     async (kind) => {
@@ -160,7 +108,11 @@ describe('local cancellation decision reconciliation', () => {
         createElement(
           Provider,
           { store },
-          createElement(QueryClientProvider, { client: queryClient }, children),
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(StreamHostTestProvider, null, children),
+          ),
         );
       const messages = kind === 'minimal' ? [] : [user, response];
       let current = { ...submission.conversation, ...attempted } as TConversation;

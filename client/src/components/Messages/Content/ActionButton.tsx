@@ -10,6 +10,8 @@ interface ActionButtonProps {
   label: string;
   activeLabel: string;
   iconOnly?: boolean;
+  /** A smaller icon-only button for controls laid inside a tool panel. */
+  compact?: boolean;
   onClick: () => void;
   tabIndex?: number;
   className?: string;
@@ -25,6 +27,7 @@ const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
       label,
       activeLabel,
       iconOnly = false,
+      compact = false,
       onClick,
       tabIndex,
       className,
@@ -48,15 +51,19 @@ const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
           'hover:bg-surface-hover hover:text-text-primary',
           'disabled:pointer-events-none disabled:opacity-50',
           'focus-visible:outline-focus-subtle focus-visible:outline focus-visible:outline-2',
-          iconOnly ? 'rounded-lg p-1.5' : 'ms-auto gap-2 rounded-md px-2 py-1',
+          iconOnly && (compact ? 'rounded-md p-1' : 'rounded-lg p-1.5'),
+          !iconOnly && 'ms-auto gap-2 rounded-md px-2 py-1',
           className,
         )}
       >
         <span
-          className="relative flex size-[1.125rem] items-center justify-center"
+          className={cn(
+            'relative flex items-center justify-center',
+            compact ? 'size-3.5' : 'size-[1.125rem]',
+          )}
           aria-hidden="true"
         >
-          <MorphIcon icon={isActive ? Check : icon} size="1.125rem" />
+          <MorphIcon icon={isActive ? Check : icon} size={compact ? '0.875rem' : '1.125rem'} />
         </span>
         {!iconOnly && (
           <span className="relative overflow-hidden">

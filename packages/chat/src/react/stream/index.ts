@@ -33,4 +33,27 @@ export type {
   ResumeStatusQuery,
   ResumableServices,
   ResumableStreamParams,
+  ParentSubagentIndexQuery,
 } from './host';
+export type {
+  ReplyStamp,
+  DraftServices,
+  EventServices,
+  FileServices,
+  LegacyStreamServices,
+  TitleServices,
+  FocusServices,
+  AbortRunRequest,
+  TemplateRequest,
+  TemplateServices,
+  ConvoTitleRequest,
+  NavigationServices,
+  EventServicesParams,
+  EventTransportServices,
+  ConversationCacheServices,
+} from './services';
+export { useEventHandlers } from './events/handlers';
+export type { EventHandlers } from './events/handlers';
+export type { EventHandlerParams } from './events/context';
+export type { TSyncData, TTitleEvent } from './events/opening';
+export { useLegacyStream } from './legacy';

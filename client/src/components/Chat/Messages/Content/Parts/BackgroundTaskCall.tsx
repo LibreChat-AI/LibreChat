@@ -73,7 +73,7 @@ export default function BackgroundTaskCall({
     output,
     hasInput: hasParams || (attachments?.length ?? 0) > 0,
     panelReady: display != null,
-    keepRow: intent != null,
+    keepLabelRow: intent != null,
     onExpand,
     runStepStatus,
     extraError: outcome === 'failed',
@@ -137,7 +137,7 @@ export default function BackgroundTaskCall({
         onTransitionEnd={handleTransitionEnd}
         data-tool-call-output-id={toolCallId}
       >
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasContent && shouldRenderBody && (
             <div
               className={cn(
