@@ -217,12 +217,14 @@ export function createSlackWorkspaceBindingHandlers(deps: {
         res.status(409).json({ error: 'channel_changed' });
         return;
       }
-      const workspace = await deps.workspaces.metadata(channel.workspaceId, principal.id);
+      const [workspace, isBotAdmin] = await Promise.all([
+        deps.workspaces.metadata(channel.workspaceId, principal.id),
+        deps.canManage(principal),
+      ]);
       if (workspace?.status !== 'active' || !(await deps.readSettings(workspace.appId)).app) {
         res.status(409).json({ error: 'workspace_unavailable' });
         return;
       }
-      const isBotAdmin = !workspace.canManageBot && (await deps.canManage(principal));
       if (!workspace.canManageBot && !isBotAdmin) {
         res.status(403).json({ error: 'bot_access_required' });
         return;

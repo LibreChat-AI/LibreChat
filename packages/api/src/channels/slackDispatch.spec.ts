@@ -455,6 +455,33 @@ describe('shared Slack service routing', () => {
     );
   });
 
+  it('preserves administrator authority when a direct manager grant is revoked after preflight', async () => {
+    const workspace = await scoped(() => install());
+    await managers(workspace.workspaceId);
+    const channel = (
+      await request
+        .post('/ui/admin-agent/connections')
+        .set('x-test-user', managerId)
+        .send({ workspaceId: workspace.workspaceId })
+        .expect(201)
+    ).body;
+    const assign = routes.assign.bind(routes);
+    const write = jest.spyOn(routes, 'assign').mockImplementationOnce(async (input) => {
+      await managers(workspace.workspaceId, []);
+      return assign(input);
+    });
+    try {
+      await request
+        .post(`/ui/admin-agent/${channel.channelId}/routes`)
+        .set('x-test-user', managerId)
+        .send({ channelRevision: channel.revision })
+        .expect(200);
+      expect(write).toHaveBeenCalledWith(expect.objectContaining({ isBotAdmin: true }));
+    } finally {
+      write.mockRestore();
+    }
+  });
+
   it('leaves a conflicting connection pending until an explicit route revision is supplied', async () => {
     const workspace = await scoped(() => install());
     const first = await pending(workspace.workspaceId);
