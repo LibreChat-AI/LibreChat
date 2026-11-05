@@ -589,6 +589,25 @@ describe('RedisJobStore', () => {
     });
   });
 
+  test('restores the served LiteLLM models captured at a pause from Redis', async () => {
+    const litellmModels = [{ agentId: 'agent.v1____1', modelName: 'bedrock/claude-haiku' }];
+    const redis = {
+      isCluster: true,
+      hgetall: jest.fn().mockResolvedValue({
+        streamId: 'stream-litellm-models',
+        userId: 'user-1',
+        status: 'requires_action',
+        createdAt: '100',
+        litellmModels: JSON.stringify(litellmModels),
+      }),
+    } as unknown as Cluster;
+    const store = new RedisJobStore(redis);
+
+    await expect(store.getJob('stream-litellm-models')).resolves.toMatchObject({
+      litellmModels,
+    });
+  });
+
   test('restores detached terminal outbox evidence from Redis', async () => {
     const evidence = {
       version: 1 as const,

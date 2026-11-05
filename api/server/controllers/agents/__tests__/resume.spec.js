@@ -314,6 +314,7 @@ function makeClient(overrides = {}) {
     buildResponseMetadata: jest.fn(() => null),
     resumeCompletion: jest.fn().mockResolvedValue(undefined),
     seedContextMeta: jest.fn(),
+    litellmModelCapture: { restore: jest.fn() },
     ...overrides,
   };
 }
@@ -3323,6 +3324,22 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
       expect(client.seedContextMeta).toHaveBeenCalledWith(contextMeta);
       expect(client.seedContextMeta.mock.invocationCallOrder[0]).toBeLessThan(
+        client.resumeCompletion.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('restores the served LiteLLM models captured at the pause before resuming', async () => {
+      const litellmModels = [{ agentId: 'agent.v1____1', modelName: 'bedrock/claude-haiku' }];
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({ metadata: { litellmModels } }),
+      );
+      await post(approveBody());
+      await settled;
+      await flush();
+
+      const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
+      expect(client.litellmModelCapture.restore).toHaveBeenCalledWith(litellmModels);
+      expect(client.litellmModelCapture.restore.mock.invocationCallOrder[0]).toBeLessThan(
         client.resumeCompletion.mock.invocationCallOrder[0],
       );
     });

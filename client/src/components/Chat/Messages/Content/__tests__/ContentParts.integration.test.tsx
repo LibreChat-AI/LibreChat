@@ -248,8 +248,18 @@ jest.mock('../Container', () => ({
 
 jest.mock('../SiblingHeader', () => ({
   __esModule: true,
-  default: ({ agentId }: { agentId?: string }) => (
-    <div data-testid="sibling-header" data-agent-id={agentId} />
+  default: ({
+    agentId,
+    metadata,
+  }: {
+    agentId?: string;
+    metadata?: { litellmModelName?: string };
+  }) => (
+    <div
+      data-testid="sibling-header"
+      data-agent-id={agentId}
+      data-model-name={metadata?.litellmModelName}
+    />
   ),
 }));
 
@@ -678,6 +688,23 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
       expect(screen.getByTestId('sources')).toHaveAttribute('data-search-keys', 'search');
     },
   );
+
+  it("hands every parallel column header the message's metadata", () => {
+    renderContentParts({
+      ...baseProps,
+      metadata: { litellmModelName: 'bedrock/claude-haiku', litellmRoutedModelSpec: 'router' },
+      content: [
+        { ...makeTextPart('lane A'), agentId: 'agent_a', groupId: 1 },
+        { ...makeTextPart('lane B'), agentId: 'agent_b', groupId: 1 },
+      ],
+    });
+
+    const headers = screen.getAllByTestId('sibling-header');
+    expect(headers).toHaveLength(2);
+    for (const header of headers) {
+      expect(header).toHaveAttribute('data-model-name', 'bedrock/claude-haiku');
+    }
+  });
 
   it('updates Sources as parallel content streams after an App', () => {
     const frame = (content: TMessageContentParts[]) => (

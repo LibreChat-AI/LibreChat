@@ -12,6 +12,8 @@ jest.mock('@librechat/api', () => ({
   rejectToolCallPreviewWrites: (_req, _res, next) => next(),
   withMessageToolCallPreviews: (_req, message) => message,
   withoutTraceRefs: jest.fn((message) => message),
+  getLiteLLMBranchMetadata: jest.requireActual('../../../../packages/api/src/agents/litellm.ts')
+    .getLiteLLMBranchMetadata,
   createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
   createContentFilter: jest.fn(() => (_req, _res, next) => next()),
   unescapeLaTeX: jest.fn((value) => value),

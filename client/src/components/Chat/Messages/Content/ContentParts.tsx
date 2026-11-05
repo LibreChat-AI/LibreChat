@@ -19,6 +19,7 @@ import type {
   TMessageContentParts,
   SearchResultData,
   TAttachment,
+  TMessage,
   Agents,
 } from 'librechat-data-provider';
 import type { ReasoningDisclosures, ToolDisclosures, NestedCall } from '@librechat/chat/react';
@@ -390,6 +391,8 @@ type ContentPartsProps = {
   manualSkills?: string[];
   /** ISO timestamp of the parent message, surfaced in parallel column headers. */
   createdAt?: string | null;
+  /** The message's metadata, where parallel column headers read each column's routed model. */
+  metadata?: TMessage['metadata'];
   /**
    * Author icon + label node re-rendered before content that resumes after an
    * inline STEER part — the steer renders as a full user turn inside the
@@ -476,6 +479,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
   showThinking,
   isLatestMessage,
   createdAt,
+  metadata,
   foldLiveActivity = true,
   nestedActivityPhase = false,
   continuation = false,
@@ -1106,6 +1110,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           content={segmentContent}
           messageId={messageId}
           createdAt={createdAt}
+          metadata={metadata}
           authorHeader={authorHeader}
           conversationId={conversationId}
           attachments={inlineAttachments}
@@ -1309,6 +1314,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           content={content}
           messageId={messageId}
           createdAt={createdAt}
+          metadata={metadata}
           conversationId={conversationId}
           attachments={attachments}
           searchResults={searchResults}

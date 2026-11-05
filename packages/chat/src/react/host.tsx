@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react';
 import type {
   Agent,
   TFile,
+  TMessage,
   TAttachment,
   SearchResultData,
   TMessageContentParts,
@@ -64,6 +65,8 @@ export type ContentPartsSlotProps = {
   manualSkills?: string[];
   renderOwnerId?: string;
   createdAt?: string | null;
+  /** The message's metadata, where parallel column headers read each column's routed model. */
+  metadata?: TMessage['metadata'];
   foldLiveActivity?: boolean;
 };
 

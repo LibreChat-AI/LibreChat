@@ -214,6 +214,7 @@ const {
   getChatProjectContextKey,
   isTemporaryTurn,
   hasEntityEmbeddings,
+  createLiteLLMModelCapture,
 } = require('@librechat/api');
 const {
   Run,
@@ -666,6 +667,16 @@ class AgentClient extends BaseClient {
      *  persisted on `metadata.usage`.
      *  @type {Array<import('librechat-data-provider').TTokenUsageEvent> | undefined} */
     this.usageEmitSink = usageEmitSink;
+    /** `x-litellm-model-name` of each top-level agent's answer-producing model call,
+     *  for agents whose spec sets `litellmRoutedModel.showOnResponses`; persisted
+     *  with that spec on the response metadata.
+     *  @type {import('@librechat/api').LiteLLMModelCapture} */
+    this.litellmModelCapture = createLiteLLMModelCapture({
+      modelSpecs: options.req?.config?.modelSpecs,
+      primaryAgentId: options.agent?.id,
+      primarySpec: options.spec,
+      addedSpec: options.addedSpec,
+    });
     /** Schema-validation exceptions keyed by tool-call ID. The completion
      *  handler consumes these to distinguish execution failures from tool
      *  output that merely contains similar text.
@@ -3714,6 +3725,9 @@ class AgentClient extends BaseClient {
    *   thoughtSignatures?: Record<string, string>,
    *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
    *   usage?: import('librechat-data-provider').TResponseUsage,
+   *   litellmModelName?: string,
+   *   litellmRoutedModelSpec?: string,
+   *   litellmAgentModels?: Array<import('@librechat/api').LiteLLMAgentModel>,
    * } | undefined}
    */
   buildResponseMetadata() {
@@ -3721,6 +3735,9 @@ class AgentClient extends BaseClient {
      *   thoughtSignatures?: Record<string, string>,
      *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
      *   usage?: import('librechat-data-provider').TResponseUsage,
+     *   litellmModelName?: string,
+     *   litellmRoutedModelSpec?: string,
+     *   litellmAgentModels?: Array<import('@librechat/api').LiteLLMAgentModel>,
      * }} */
     const metadata = {};
     const signatures = this.collectedThoughtSignatures;
@@ -3788,6 +3805,7 @@ class AgentClient extends BaseClient {
     if (usage) {
       metadata.usage = usage;
     }
+    Object.assign(metadata, this.litellmModelCapture?.getMetadata());
     return Object.keys(metadata).length > 0 ? metadata : undefined;
   }
 
@@ -4236,6 +4254,7 @@ class AgentClient extends BaseClient {
         ? {}
         : { compactionSemanticIndex: staged.compactionSemanticIndex }),
       ...(staged.contextMeta == null ? {} : { contextMeta: staged.contextMeta }),
+      ...(staged.litellmModels == null ? {} : { litellmModels: staged.litellmModels }),
       persistencePending: true,
       ...(eventActorSuspension == null
         ? {}
@@ -4540,6 +4559,8 @@ class AgentClient extends BaseClient {
       // its rebuilt pruner from the same tiers and its provider projection of
       // history keeps the same bytes.
       contextMeta: captureRunContextMeta({ run, getEncoding: () => this.getEncoding() }),
+      // Served LiteLLM models so far: a resume does not rerun agents that finished first.
+      litellmModels: this.litellmModelCapture?.getSnapshot(),
     };
     if (this.eventActorInvocationId != null) {
       return;
@@ -5122,6 +5143,7 @@ class AgentClient extends BaseClient {
             this.buildSubagentUsageEmitter(appConfig),
             this.buildDetachedSubagentUsageRecorder(balanceConfig, transactionsConfig),
           ),
+          getLiteLLMModelSink: this.litellmModelCapture?.getSink,
           subagentTasks: this.options.subagentTasks,
           runFiles: this.options.runFiles,
         }).then((createdRun) => {
@@ -5928,6 +5950,7 @@ class AgentClient extends BaseClient {
           this.buildSubagentUsageEmitter(appConfig),
           this.buildDetachedSubagentUsageRecorder(balanceConfig, transactionsConfig),
         ),
+        getLiteLLMModelSink: this.litellmModelCapture?.getSink,
         subagentTasks: this.options.subagentTasks,
         runFiles: this.options.runFiles,
       });

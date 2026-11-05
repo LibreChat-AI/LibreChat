@@ -36,6 +36,7 @@ import {
   getAppContentParts,
   getAppPartRenderers,
 } from '~/components/Chat/Messages/Content/Parts/slots';
+import useRoutedModelLabel from '~/hooks/Messages/useRoutedModelLabel';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
@@ -166,6 +167,7 @@ export const appMessagePartsHost: MessagePartsHost = {
     const { isSharedConvo, shareId } = useShareContext();
     return useMemo(() => ({ isSharedConvo, shareId }), [isSharedConvo, shareId]);
   },
+  useRoutedModelLabel,
 };
 
 setDefaultMessagePartsHost(appMessagePartsHost);
