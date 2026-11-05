@@ -53,6 +53,11 @@ export function createSlackWorkspaceBindingHandlers(deps: {
   routes: SlackRouteStorage;
   canManage: (principal: SlackWorkspacePrincipal) => Promise<boolean>;
   isPrincipalActive: (id: string) => Promise<boolean>;
+  getAgentName: (
+    id: string,
+    tenantId: string | undefined,
+    viewer: { userId: string },
+  ) => Promise<string | undefined>;
   readSettings: ReturnType<typeof createSlackWorkspaceSettingsReader>;
   logError: (metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
 }): {
@@ -168,6 +173,11 @@ export function createSlackWorkspaceBindingHandlers(deps: {
           !route || previous?.createdBy === principal.id || (await deps.canManage(principal));
         res.json({
           canReplace,
+          assignedAgentName: previous
+            ? await deps.getAgentName(previous.agentId, principal.tenantId, {
+                userId: principal.id,
+              })
+            : undefined,
           occupied: Boolean(route),
           assignedToThisChannel: route?.channelId === channel.channelId,
           revision: route?.revision,

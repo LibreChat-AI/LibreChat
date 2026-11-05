@@ -3,7 +3,14 @@ import express from 'express';
 import mongoose from 'mongoose';
 import supertest from 'supertest';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { FileSources, channelConfigSchema } from 'librechat-data-provider';
+import {
+  FileSources,
+  channelConfigSchema,
+  PermissionBits,
+  PrincipalType,
+  PrincipalModel,
+  ResourceType,
+} from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
@@ -169,6 +176,7 @@ describe('shared Slack service routing', () => {
       readSettings,
       canManage: async () => manageAllowed,
       isPrincipalActive: async () => principalActive,
+      getAgentName: channels.getAgentName,
       logError: jest.fn(),
     });
     app.use('/ui', (req, _res, next) => {
@@ -198,6 +206,8 @@ describe('shared Slack service routing', () => {
       );
     await runAsSystem(async () => {
       for (const name of [
+        'Agent',
+        'AclEntry',
         'AgentChannel',
         'SlackWorkspace',
         'SlackInstall',
@@ -317,6 +327,55 @@ describe('shared Slack service routing', () => {
       .send({ externalChannelId: 'CMEMBER', expectedRevision: target.revision })
       .expect(204);
     expect(await scoped(() => routes.read(workspace.workspaceId, 'CMEMBER'))).toBeNull();
+  });
+
+  it('names the assigned agent only with tenant-local VIEW permission, including after permission revocation', async () => {
+    const viewer = '000000000000000000000003';
+    const workspace = await scoped(() => install());
+    const original = await pending(workspace.workspaceId);
+    await browserPost(`agent/${original.channelId}/routes`, {
+      channelRevision: original.revision,
+    }).expect(200);
+    const member = (
+      await request
+        .post('/ui/member-agent/connections')
+        .set('x-test-user', viewer)
+        .send({ workspaceId: workspace.workspaceId })
+        .expect(201)
+    ).body;
+    const agent = await scoped(() =>
+      db.models.Agent.create({
+        id: 'agent',
+        name: 'Research Assistant',
+        author: new mongoose.Types.ObjectId(),
+        provider: 'openAI',
+        model: 'test',
+      }),
+    );
+    const read = () =>
+      request
+        .get(`/ui/member-agent/${member.channelId}/routes?target=default`)
+        .set('x-test-user', viewer)
+        .expect(200);
+    expect((await read()).body).not.toHaveProperty('assignedAgentName');
+    const acl = await scoped(() =>
+      db.models.AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: new mongoose.Types.ObjectId(viewer),
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: agent._id,
+        permBits: PermissionBits.VIEW,
+        grantedBy: new mongoose.Types.ObjectId(viewer),
+        grantedAt: new Date(),
+      }),
+    );
+    expect((await read()).body.assignedAgentName).toBe('Research Assistant');
+    expect(
+      await scoped(() => channels.getAgentName('agent', 'org-b', { userId: viewer })),
+    ).toBeUndefined();
+    await scoped(() => db.models.AclEntry.deleteOne({ _id: acl._id }));
+    expect((await read()).body).not.toHaveProperty('assignedAgentName');
   });
 
   it('prevents a member from replacing another creator while permitting a current administrator override', async () => {
