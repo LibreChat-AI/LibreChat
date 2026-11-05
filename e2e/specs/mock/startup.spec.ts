@@ -10,6 +10,7 @@ import {
   sendMessage,
   mockReply,
   isAgentGenerationStart,
+  selectMockEndpoint,
 } from './helpers';
 
 function holdCatalogs(page: Page, selectedEndpoint?: string) {
@@ -151,6 +152,34 @@ test('URL settings replace an unavailable saved agent before checking send readi
     await expect(mockReply(page)).toBeVisible();
     await expect(trigger(page)).toContainText('mock-model-c');
     expect(admissions).toBe(1);
+  } finally {
+    await catalogs.dispose();
+  }
+});
+
+test('selecting a model waits for its catalog and closes the picker before composer tools', async ({
+  page,
+}) => {
+  const catalogs = holdCatalogs(page);
+  await catalogs.install;
+  try {
+    await page.goto(`${NEW_CHAT_PATH}?spec=e2e-soft-default`);
+    await expect(trigger(page)).toContainText('E2E Soft Default');
+    let selected = false;
+    const selection = selectMockEndpoint(page, {
+      label: 'Mock Provider C',
+      model: 'mock-model-c',
+    }).then(() => {
+      selected = true;
+    });
+    await expect(page.getByRole('status', { name: 'Loading...' })).toBeVisible();
+    expect(selected).toBe(false);
+    catalogs.release();
+    await selection;
+    await expect(trigger(page)).toContainText('mock-model-c');
+    await expect(trigger(page)).toHaveAttribute('aria-expanded', 'false');
+    await page.getByRole('button', { name: 'Attach and tools' }).click();
+    await expect(page.getByRole('dialog', { name: 'Attach and tools' })).toBeVisible();
   } finally {
     await catalogs.dispose();
   }

@@ -56,10 +56,9 @@ export async function selectMockEndpoint(page: Page, endpoint: MockEndpoint) {
   await trigger.click();
   await page.getByRole('option', { name: endpoint.label }).click();
   const modelOption = page.getByRole('option', { name: endpoint.model, exact: true });
-  if (await modelOption.isVisible({ timeout: 1000 }).catch(() => false)) {
-    await modelOption.click();
-  }
-  await expect(trigger).not.toHaveText('Select a model');
+  await modelOption.click();
+  await expect(trigger).toContainText(endpoint.model);
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
 }
 
 /** Open the model selector and choose a configured model spec by label. */
