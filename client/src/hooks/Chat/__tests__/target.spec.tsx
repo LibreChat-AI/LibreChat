@@ -1,9 +1,21 @@
 import React, { useState } from 'react';
+import axios from 'axios';
 import { RecoilRoot } from 'recoil';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { dataService, EModelEndpoint, QueryKeys } from 'librechat-data-provider';
-import type { TConversation, Agent, Assistant, TModelsConfig } from 'librechat-data-provider';
+import { dataService, EModelEndpoint, QueryKeys, defaultOrderQuery } from 'librechat-data-provider';
+import {
+  useUpdateUserKeysMutation,
+  useRevokeUserKeyMutation,
+  useRevokeAllUserKeysMutation,
+} from 'librechat-data-provider/react-query';
+import type {
+  TConversation,
+  Agent,
+  Assistant,
+  TModelsConfig,
+  TEndpointsConfig,
+} from 'librechat-data-provider';
 import { startupConfigKey } from '~/data-provider/Endpoints/queries';
 import { assistantKey, isTargetReady } from '../ask/guards';
 import useTarget from '../target';
@@ -42,16 +54,19 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-function setup(initial: TConversation | null) {
+function setup(initial: TConversation | null, endpoints?: TEndpointsConfig, cacheTime = 0) {
   const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, cacheTime: 0 } },
+    defaultOptions: { queries: { retry: false, cacheTime } },
     logger: { log: console.log, warn: console.warn, error: () => {} },
   });
-  client.setQueryData([QueryKeys.endpoints], {
-    [EModelEndpoint.openAI]: { order: 0 },
-    [EModelEndpoint.agents]: { order: 1 },
-    [EModelEndpoint.assistants]: { order: 2 },
-  });
+  client.setQueryData(
+    [QueryKeys.endpoints],
+    endpoints ?? {
+      [EModelEndpoint.openAI]: { order: 0 },
+      [EModelEndpoint.agents]: { order: 1 },
+      [EModelEndpoint.assistants]: { order: 2 },
+    },
+  );
   client.setQueryData(startupConfigKey(false), { appTitle: 'Test' });
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <RecoilRoot>
@@ -62,7 +77,10 @@ function setup(initial: TConversation | null) {
     () => {
       const [value, setValue] = useState(initial);
       const target = useTarget(value, setValue);
-      return { value, setValue, target };
+      const update = useUpdateUserKeysMutation();
+      const revoke = useRevokeUserKeyMutation(value?.endpoint ?? '');
+      const revokeAll = useRevokeAllUserKeysMutation();
+      return { value, setValue, target, update, revoke, revokeAll };
     },
     { wrapper },
   );
@@ -252,4 +270,342 @@ it('keeps a deleted assistant unsendable even while its previous details remain 
     client.getQueryData(assistantKey(EModelEndpoint.assistants, 'asst-one', 2, 'model')),
   ).toBeDefined();
   expect(result.current.value?.assistant_id).toBe('asst-one');
+});
+
+describe('selected assistant credentials', () => {
+  let expiry: string;
+  let denied: boolean;
+  let requests: string[];
+  let account: string;
+
+  const selected = (endpoint: EModelEndpoint) =>
+    conversation({ endpoint, assistant_id: 'same-id', model: 'model-one' });
+  const configured: NonNullable<TEndpointsConfig> = {
+    [EModelEndpoint.assistants]: { order: 0, userProvide: true, version: '2' },
+    [EModelEndpoint.azureAssistants]: { order: 1, userProvide: true, version: '2' },
+  };
+
+  beforeEach(() => {
+    expiry = 'never';
+    denied = false;
+    requests = [];
+    account = 'current-account';
+    jest.spyOn(axios, 'get').mockImplementation(async (url) => {
+      const path = String(url);
+      requests.push(path);
+      if (path.includes('/api/keys')) return { data: { expiresAt: expiry } };
+      if (path.includes('/api/assistants/')) {
+        if (denied) throw Object.assign(new Error('denied'), { status: 401 });
+        return { data: { id: 'same-id', model: 'model-one', name: account } };
+      }
+      throw new Error(`Unexpected transport: ${path}`);
+    });
+    jest.spyOn(axios, 'put').mockImplementation(async () => {
+      expiry = 'never';
+      denied = false;
+      return { data: {} };
+    });
+    jest.spyOn(axios, 'delete').mockImplementation(async () => {
+      expiry = '';
+      return { data: {} };
+    });
+  });
+
+  const details = () => requests.filter((url) => url.includes('/api/assistants/'));
+
+  it.each([EModelEndpoint.assistants, EModelEndpoint.azureAssistants])(
+    'recovers a failed selected %s automatically after saving a key',
+    async (endpoint) => {
+      denied = true;
+      const { result, client } = setup(selected(endpoint), configured);
+      await waitFor(() => expect(result.current.target.failed).toBe(true));
+      expect(details()).toHaveLength(1);
+      await act(async () => {
+        await result.current.update.mutateAsync({
+          name: endpoint,
+          value: 'replacement',
+          expiresAt: '',
+        });
+      });
+      await waitFor(() => expect(result.current.target.ready).toBe(true));
+      expect(isTargetReady(client, result.current.value)).toBe(true);
+      expect(details()).toHaveLength(2);
+      expect(result.current.value?.assistant_id).toBe('same-id');
+    },
+  );
+
+  it.each([
+    [EModelEndpoint.assistants, ''],
+    [EModelEndpoint.azureAssistants, ''],
+    [EModelEndpoint.assistants, '2000-01-01T00:00:00.000Z'],
+    [EModelEndpoint.azureAssistants, '2000-01-01T00:00:00.000Z'],
+  ])(
+    'does not fetch %s details with missing or expired credentials (%s), even on Retry',
+    async (endpoint, initialExpiry) => {
+      expiry = initialExpiry;
+      const { result, client } = setup(selected(endpoint as EModelEndpoint), configured);
+      await waitFor(() => expect(requests.some((url) => url.includes('/api/keys'))).toBe(true));
+      await act(async () => {
+        result.current.target.retry();
+      });
+      expect(details()).toHaveLength(0);
+      expect(result.current.target.ready).toBe(false);
+      await act(async () => {
+        await result.current.update.mutateAsync({ name: endpoint, value: 'usable', expiresAt: '' });
+      });
+      await waitFor(() => expect(result.current.target.ready).toBe(true));
+      expect(details()).toHaveLength(1);
+      expect(isTargetReady(client, result.current.value)).toBe(true);
+    },
+  );
+
+  it('accepts an unexpired finite key', async () => {
+    expiry = new Date(Date.now() + 60_000).toISOString();
+    const { result } = setup(selected(EModelEndpoint.assistants), configured);
+    await waitFor(() => expect(result.current.target.ready).toBe(true));
+    expect(details()).toHaveLength(1);
+  });
+
+  it.each(['one', 'all'] as const)(
+    'blocks cached details after revoking %s key scope without refetching',
+    async (scope) => {
+      const { result, client } = setup(selected(EModelEndpoint.assistants), configured);
+      await waitFor(() => expect(result.current.target.ready).toBe(true));
+      await act(async () => {
+        if (scope === 'one') await result.current.revoke.mutateAsync({});
+        else await result.current.revokeAll.mutateAsync({});
+      });
+      await waitFor(() => expect(result.current.target.ready).toBe(false));
+      expect(result.current.target.assistant).toBeUndefined();
+      expect(isTargetReady(client, result.current.value)).toBe(false);
+      expect(details()).toHaveLength(1);
+      await act(async () => {
+        result.current.target.retry();
+      });
+      expect(details()).toHaveLength(1);
+    },
+  );
+
+  it('keeps detail readiness invalidated until both credential and detail refresh finish', async () => {
+    const { result, client } = setup(selected(EModelEndpoint.assistants), configured);
+    await waitFor(() => expect(result.current.target.ready).toBe(true));
+    const keyRefresh = deferred<{ data: { expiresAt: string } }>();
+    const detailRefresh = deferred<{ data: Assistant }>();
+    jest
+      .spyOn(axios, 'get')
+      .mockImplementation((url) =>
+        String(url).includes('/api/keys') ? keyRefresh.promise : detailRefresh.promise,
+      );
+    let saved!: Promise<unknown>;
+    await act(async () => {
+      saved = result.current.update.mutateAsync({
+        name: EModelEndpoint.assistants,
+        value: 'new',
+        expiresAt: '',
+      });
+    });
+    await waitFor(() => expect(result.current.target.ready).toBe(false));
+    expect(isTargetReady(client, result.current.value)).toBe(false);
+    await act(async () => {
+      keyRefresh.resolve({ data: { expiresAt: 'never' } });
+    });
+    expect(result.current.target.ready).toBe(false);
+    expect(isTargetReady(client, result.current.value)).toBe(false);
+    await act(async () => {
+      detailRefresh.resolve({ data: { id: 'same-id', model: 'model-one' } as Assistant });
+      await saved;
+    });
+    await waitFor(() => expect(result.current.target.ready).toBe(true));
+  });
+
+  it.each(['save', 'revoke'] as const)(
+    'preserves the original %s scope when selection changes during the mutation',
+    async (operation) => {
+      const { result, client } = setup(selected(EModelEndpoint.assistants), configured, Infinity);
+      await waitFor(() => expect(result.current.target.ready).toBe(true));
+      const response = deferred<{ data: object }>();
+      if (operation === 'save') jest.spyOn(axios, 'put').mockReturnValue(response.promise);
+      else jest.spyOn(axios, 'delete').mockReturnValue(response.promise);
+      let mutation!: Promise<unknown>;
+      await act(async () => {
+        mutation =
+          operation === 'save'
+            ? result.current.update.mutateAsync({
+                name: EModelEndpoint.assistants,
+                value: 'new',
+                expiresAt: '',
+              })
+            : result.current.revoke.mutateAsync({});
+      });
+      act(() => result.current.setValue(selected(EModelEndpoint.azureAssistants)));
+      await waitFor(() => expect(result.current.target.ready).toBe(true));
+      const azureKey = assistantKey(EModelEndpoint.azureAssistants, 'same-id', '2', 'model-one');
+      const azureState = client.getQueryState(azureKey);
+      await act(async () => {
+        response.resolve({ data: {} });
+        await mutation;
+      });
+      expect(client.getQueryState(azureKey)?.dataUpdatedAt).toBe(azureState?.dataUpdatedAt);
+      expect(client.getQueryState(azureKey)?.isInvalidated).toBe(false);
+      expect(
+        client.getQueryState(assistantKey(EModelEndpoint.assistants, 'same-id', '2', 'model-one'))
+          ?.isInvalidated,
+      ).toBe(true);
+      expect(result.current.target.ready).toBe(true);
+      expect(requests.filter((url) => url.includes('name=azureAssistants'))).toHaveLength(1);
+      client.clear();
+    },
+  );
+
+  it('does not reuse Azure details across deployment models or API versions', async () => {
+    const { result, client } = setup(selected(EModelEndpoint.azureAssistants), configured);
+    await waitFor(() => expect(result.current.target.ready).toBe(true));
+    act(() =>
+      result.current.setValue({ ...selected(EModelEndpoint.azureAssistants), model: 'model-two' }),
+    );
+    await waitFor(() => expect(details()).toHaveLength(2));
+    expect(details()[1]).toContain('model=model-two');
+    act(() =>
+      client.setQueryData([QueryKeys.endpoints], {
+        ...configured,
+        [EModelEndpoint.azureAssistants]: {
+          ...configured[EModelEndpoint.azureAssistants],
+          version: '1',
+        },
+      }),
+    );
+    await waitFor(() => expect(details()).toHaveLength(3));
+    expect(details()[2]).toContain('/v1/');
+  });
+
+  it('does not request detail, discovery, or key transports for an unconfigured endpoint, including Retry', async () => {
+    const { result } = setup(selected(EModelEndpoint.azureAssistants), {});
+    await waitFor(() => expect(result.current.target.failed).toBe(true));
+    await act(async () => {
+      result.current.target.retry();
+    });
+    expect(requests).toHaveLength(0);
+    expect(result.current.target.ready).toBe(false);
+  });
+
+  it('waits for credentials before discovering a missing assistant', async () => {
+    expiry = '';
+    const { result } = setup(conversation({ endpoint: EModelEndpoint.assistants }), configured);
+    await waitFor(() => expect(requests.length).toBeGreaterThan(0));
+    await act(async () => {
+      result.current.target.retry();
+    });
+    expect(dataService.listAssistants).not.toHaveBeenCalled();
+    expect(details()).toHaveLength(0);
+  });
+
+  it.each([EModelEndpoint.openAI, EModelEndpoint.azureOpenAI])(
+    'does not confuse the %s key with the separate assistant credential',
+    async (name) => {
+      const { result } = setup(selected(EModelEndpoint.assistants), configured);
+      await waitFor(() => expect(result.current.target.ready).toBe(true));
+      await act(async () => {
+        await result.current.update.mutateAsync({ name, value: 'other-provider', expiresAt: '' });
+      });
+      expect(details()).toHaveLength(1);
+      expect(result.current.target.ready).toBe(true);
+    },
+  );
+
+  it('requires a user-provided assistant URL even with a deployment key', async () => {
+    expiry = '';
+    const { result } = setup(selected(EModelEndpoint.assistants), {
+      [EModelEndpoint.assistants]: { order: 0, userProvide: false, userProvideURL: true },
+    });
+    await waitFor(() => expect(requests.length).toBeGreaterThan(0));
+    expect(details()).toHaveLength(0);
+    expect(result.current.target.ready).toBe(false);
+  });
+
+  it('does not hydrate a missing selection from cached discovery with unusable credentials', async () => {
+    expiry = '';
+    const { result, client } = setup(
+      conversation({ endpoint: EModelEndpoint.assistants }),
+      configured,
+    );
+    act(() =>
+      client.setQueryData([QueryKeys.assistants, EModelEndpoint.assistants, defaultOrderQuery], {
+        data: [{ id: 'old-account', model: 'old-model' }],
+      }),
+    );
+    await waitFor(() => expect(requests.length).toBeGreaterThan(0));
+    expect(result.current.value?.assistant_id).toBeUndefined();
+    expect(result.current.value?.model).toBeUndefined();
+    expect(result.current.target.failed).toBe(false);
+    expect(dataService.listAssistants).not.toHaveBeenCalled();
+  });
+
+  it('invalidates previously loaded details when credentials are found expired', async () => {
+    const { result, client } = setup(selected(EModelEndpoint.assistants), configured);
+    await waitFor(() => expect(result.current.target.ready).toBe(true));
+    expiry = '2000-01-01T00:00:00.000Z';
+    await act(async () => {
+      await client.invalidateQueries([QueryKeys.name, EModelEndpoint.assistants]);
+    });
+    await waitFor(() => expect(result.current.target.ready).toBe(false));
+    expect(isTargetReady(client, result.current.value)).toBe(false);
+    expect(details()).toHaveLength(1);
+  });
+
+  it('retries credential transport failures before requesting assistant details', async () => {
+    jest.spyOn(axios, 'get').mockRejectedValueOnce(new Error('offline'));
+    const { result } = setup(selected(EModelEndpoint.assistants), configured);
+    await waitFor(() => expect(result.current.target.failed).toBe(true));
+    expect(details()).toHaveLength(0);
+    act(() => result.current.target.retry());
+    await waitFor(() => expect(result.current.target.ready).toBe(true));
+    expect(details()).toHaveLength(1);
+  });
+
+  it('does not accept the previous credential response after a key rotation', async () => {
+    const stale = deferred<{ data: Assistant }>();
+    const get = jest.spyOn(axios, 'get');
+    const transport = get.getMockImplementation()!;
+    let first = true;
+    get.mockImplementation((url, config) => {
+      if (String(url).includes('/api/assistants/') && first) {
+        first = false;
+        requests.push(String(url));
+        return stale.promise;
+      }
+      return transport(url, config);
+    });
+    const { result } = setup(selected(EModelEndpoint.assistants), configured);
+    await waitFor(() => expect(details()).toHaveLength(1));
+    await act(async () => {
+      await result.current.update.mutateAsync({
+        name: EModelEndpoint.assistants,
+        value: 'rotated',
+        expiresAt: '',
+      });
+    });
+    await waitFor(() => expect(result.current.target.ready).toBe(true));
+    expect(result.current.target.assistant?.name).toBe('current-account');
+    await act(async () => {
+      stale.resolve({
+        data: { id: 'same-id', model: 'old-model', name: 'previous-account' } as Assistant,
+      });
+    });
+    expect(result.current.target.assistant?.name).toBe('current-account');
+    expect(result.current.value?.model).toBe('model-one');
+    expect(details()).toHaveLength(2);
+  });
+
+  it('does not share assistant detail data between account query clients', async () => {
+    const first = setup(selected(EModelEndpoint.assistants), configured);
+    await waitFor(() => expect(first.result.current.target.ready).toBe(true));
+    first.unmount();
+    first.client.clear();
+    account = 'another-account';
+    const second = setup(selected(EModelEndpoint.assistants), configured);
+    expect(second.result.current.target.assistant).toBeUndefined();
+    await waitFor(() => expect(second.result.current.target.ready).toBe(true));
+    expect(second.result.current.target.assistant?.name).toBe('another-account');
+    expect(details()).toHaveLength(2);
+  });
 });

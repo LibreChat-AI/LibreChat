@@ -1,12 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type {
+  QueryClient,
   UseQueryOptions,
   UseMutationResult,
   QueryObserverResult,
 } from '@tanstack/react-query';
 import type { MCPReinitializeResponse } from '../types/mcpServers';
 import { Constants, initialModelsConfig } from '../config';
-import { defaultOrderQuery } from '../types/assistants';
 import * as permissions from '../accessPermissions';
 import { ResourceType } from '../accessPermissions';
 import * as dataService from '../data-service';
@@ -99,6 +99,52 @@ export const useUpdateMessageContentMutation = (
   );
 };
 
+/** Details from the previous credential cannot authorize a selected assistant while keys refresh. */
+async function invalidateUserKey(queryClient: QueryClient, name?: string): Promise<void> {
+  const assistantScope = name == null || s.isAssistantsEndpoint(name);
+  const detailKey = name == null ? [QueryKeys.assistant] : [QueryKeys.assistant, name];
+  const listKey = name == null ? [QueryKeys.assistants] : [QueryKeys.assistants, name];
+  if (assistantScope) {
+    void queryClient.cancelQueries(detailKey);
+    void queryClient.cancelQueries(listKey);
+    void queryClient.invalidateQueries(detailKey, { refetchType: 'none' });
+    void queryClient.invalidateQueries(listKey, { refetchType: 'none' });
+  }
+  const keys = queryClient.invalidateQueries(
+    name == null ? [QueryKeys.name] : [QueryKeys.name, name],
+  );
+  void queryClient.invalidateQueries([QueryKeys.models]);
+  void queryClient.invalidateQueries([QueryKeys.tokenConfig]);
+  await keys;
+  if (assistantScope) {
+    const endpoints = queryClient.getQueryData<t.TEndpointsConfig>([QueryKeys.endpoints]);
+    const credentialsReady = (endpoint: unknown): boolean => {
+      if (typeof endpoint !== 'string' || !endpoints?.[endpoint]) return false;
+      const config = endpoints[endpoint];
+      if (!config?.userProvide && !config?.userProvideURL) return true;
+      const key = queryClient.getQueryState<t.TCheckUserKeyResponse>([QueryKeys.name, endpoint]);
+      const expiry = key?.data?.expiresAt;
+      return (
+        key?.status === 'success' &&
+        !key.isInvalidated &&
+        !!expiry &&
+        (expiry === 'never' || new Date(expiry).getTime() > Date.now())
+      );
+    };
+    await queryClient.refetchQueries(
+      {
+        type: 'active',
+        predicate: (query) =>
+          (query.queryKey[0] === QueryKeys.assistant ||
+            query.queryKey[0] === QueryKeys.assistants) &&
+          (name == null || query.queryKey[1] === name) &&
+          credentialsReady(query.queryKey[1]),
+      },
+      { cancelRefetch: false },
+    );
+  }
+}
+
 export const useUpdateUserKeysMutation = (): UseMutationResult<
   t.TUser,
   unknown,
@@ -107,12 +153,7 @@ export const useUpdateUserKeysMutation = (): UseMutationResult<
 > => {
   const queryClient = useQueryClient();
   return useMutation((payload: t.TUpdateUserKeyRequest) => dataService.updateUserKey(payload), {
-    onSuccess: (data, variables) => {
-      queryClient.invalidateQueries([QueryKeys.name, variables.name]);
-      queryClient.invalidateQueries([QueryKeys.models]);
-      /** token-config is derived from the same per-user model fetch */
-      queryClient.invalidateQueries([QueryKeys.tokenConfig]);
-    },
+    onSuccess: (_data, variables) => invalidateUserKey(queryClient, variables.name),
   });
 };
 
@@ -127,22 +168,21 @@ export const useClearConversationsMutation = (): UseMutationResult<unknown> => {
   });
 };
 
-export const useRevokeUserKeyMutation = (name: string): UseMutationResult<unknown> => {
+export const useRevokeUserKeyMutation = (
+  name: string,
+): UseMutationResult<unknown, unknown, unknown, string> => {
   const queryClient = useQueryClient();
   return useMutation(() => dataService.revokeUserKey(name), {
-    onSuccess: () => {
-      queryClient.invalidateQueries([QueryKeys.name, name]);
-      queryClient.invalidateQueries([QueryKeys.models]);
-      queryClient.invalidateQueries([QueryKeys.tokenConfig]);
-      if (s.isAssistantsEndpoint(name)) {
-        queryClient.invalidateQueries([QueryKeys.assistants, name, defaultOrderQuery]);
+    onMutate: () => name,
+    onSuccess: (_data, _variables, keyName) => {
+      const invalidated = invalidateUserKey(queryClient, keyName ?? name);
+      if (s.isAssistantsEndpoint(keyName ?? name)) {
         queryClient.invalidateQueries([QueryKeys.assistantDocs]);
-        queryClient.invalidateQueries([QueryKeys.assistants]);
-        queryClient.invalidateQueries([QueryKeys.assistant]);
         queryClient.invalidateQueries([QueryKeys.mcpTools]);
         queryClient.invalidateQueries([QueryKeys.actions]);
         queryClient.invalidateQueries([QueryKeys.tools]);
       }
+      return invalidated;
     },
   });
 };
@@ -151,25 +191,12 @@ export const useRevokeAllUserKeysMutation = (): UseMutationResult<unknown> => {
   const queryClient = useQueryClient();
   return useMutation(() => dataService.revokeAllUserKeys(), {
     onSuccess: () => {
-      queryClient.invalidateQueries([QueryKeys.name]);
-      queryClient.invalidateQueries([QueryKeys.tokenConfig]);
-      queryClient.invalidateQueries([
-        QueryKeys.assistants,
-        s.EModelEndpoint.assistants,
-        defaultOrderQuery,
-      ]);
-      queryClient.invalidateQueries([
-        QueryKeys.assistants,
-        s.EModelEndpoint.azureAssistants,
-        defaultOrderQuery,
-      ]);
+      const invalidated = invalidateUserKey(queryClient);
       queryClient.invalidateQueries([QueryKeys.assistantDocs]);
-      queryClient.invalidateQueries([QueryKeys.assistants]);
-      queryClient.invalidateQueries([QueryKeys.assistant]);
       queryClient.invalidateQueries([QueryKeys.mcpTools]);
       queryClient.invalidateQueries([QueryKeys.actions]);
       queryClient.invalidateQueries([QueryKeys.tools]);
-      queryClient.invalidateQueries([QueryKeys.models]);
+      return invalidated;
     },
   });
 };
