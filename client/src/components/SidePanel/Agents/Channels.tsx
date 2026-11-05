@@ -30,6 +30,12 @@ const actionLabels: Record<AgentChannel['status'], TranslationKeys> = {
   deleting: 'com_ui_channels_manage',
 };
 
+function channelActionLabel(channel: AgentChannel, userId: string): TranslationKeys {
+  if (channel.createdBy !== userId) return 'com_ui_channels_read_only';
+  if (channel.workspaceId) return 'com_ui_channels_manage';
+  return actionLabels[channel.status];
+}
+
 function Channel({
   agentId,
   channel,
@@ -410,6 +416,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
   const id = useId();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const [dialog, setDialog] = useState<string | null>(null);
+  const [newWorkspaceConnection, setNewWorkspaceConnection] = useState<string | null>(null);
   const [credentialMode, setCredentialMode] = useState<AgentChannel['credentialMode']>('per_user');
   const [source, setSource] = useState<'workspace' | 'manual'>('workspace');
   const [workspaceId, setWorkspaceId] = useState('');
@@ -456,13 +463,15 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
           channel,
         ],
       );
+      setNewWorkspaceConnection(channel.workspaceId ? channel.channelId : null);
       setDialog(channel.channelId);
       await queryClient.invalidateQueries([QueryKeys.agentChannels, userId, tenantId, agentId]);
     },
   });
   const selected = channels.data?.find((channel) => channel.channelId === dialog);
   const connectionTitle =
-    selected?.status === 'pending_install'
+    selected?.status === 'pending_install' &&
+    (!selected.workspaceId || newWorkspaceConnection === selected.channelId)
       ? 'com_ui_channels_setup_title'
       : 'com_ui_channels_manage';
   return (
@@ -544,14 +553,11 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
             }
             onClick={(event) => {
               triggerRef.current = event.currentTarget;
+              setNewWorkspaceConnection(null);
               setDialog(channel.channelId);
             }}
           >
-            {localize(
-              channel.createdBy !== userId
-                ? 'com_ui_channels_read_only'
-                : actionLabels[channel.status],
-            )}
+            {localize(channelActionLabel(channel, userId))}
           </Button>
         </div>
       ))}
@@ -748,6 +754,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                   <WorkspaceChannel
                     key={selected.channelId}
                     agentId={agentId}
+                    initialSetup={newWorkspaceConnection === selected.channelId}
                     channel={selected}
                     userId={userId}
                     tenantId={tenantId}
