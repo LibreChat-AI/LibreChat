@@ -3,7 +3,7 @@ import { ErrorTypes, Permissions, PermissionTypes } from 'librechat-data-provide
 import type { FiltersConfig } from 'librechat-data-provider';
 import type { ChatCompletionDependencies } from './service';
 import type { ChatCompletionChunk } from './types';
-import { createAgentChatCompletion } from './service';
+import { createAgentChatCompletion, mergeLeadingSystemMessages } from './service';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -1272,5 +1272,91 @@ describe('createAgentChatCompletion - source-aware content protection', () => {
     expectRawFreeFilterError(res, rawValue, 'message_filter_pii_block');
     expect(getAgent).not.toHaveBeenCalled();
     expect(createRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('mergeLeadingSystemMessages', () => {
+  it('moves the client system prompt behind the agent instructions', () => {
+    const result = mergeLeadingSystemMessages(
+      [
+        { role: 'system', content: 'Answer in German.' },
+        { role: 'user', content: 'Hello' },
+      ],
+      'You are a librarian.',
+    );
+
+    expect(result.instructions).toBe('You are a librarian.\n\nAnswer in German.');
+    expect(result.messages).toEqual([{ role: 'user', content: 'Hello' }]);
+  });
+
+  it('uses the client system prompt alone when the agent has no instructions', () => {
+    const result = mergeLeadingSystemMessages(
+      [
+        { role: 'system', content: 'Answer in German.' },
+        { role: 'user', content: 'Hello' },
+      ],
+      undefined,
+    );
+
+    expect(result.instructions).toBe('Answer in German.');
+    expect(result.messages).toEqual([{ role: 'user', content: 'Hello' }]);
+  });
+
+  it('merges consecutive leading system messages and text parts', () => {
+    const result = mergeLeadingSystemMessages(
+      [
+        { role: 'system', content: 'First.' },
+        {
+          role: 'system',
+          content: [
+            { type: 'text', text: 'Second,' },
+            { type: 'text', text: 'in parts.' },
+          ],
+        },
+        { role: 'user', content: 'Hello' },
+      ],
+      'Agent.',
+    );
+
+    expect(result.instructions).toBe('Agent.\n\nFirst.\n\nSecond,\nin parts.');
+    expect(result.messages).toEqual([{ role: 'user', content: 'Hello' }]);
+  });
+
+  it('leaves system messages after the first non-system message in place', () => {
+    const messages = [
+      { role: 'user', content: 'Hello' },
+      { role: 'system', content: 'Late instruction.' },
+    ];
+    const result = mergeLeadingSystemMessages(messages, 'Agent.');
+
+    expect(result.instructions).toBe('Agent.');
+    expect(result.messages).toBe(messages);
+  });
+
+  it('keeps a leading system message with non-text content in place', () => {
+    const messages = [
+      {
+        role: 'system',
+        content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }],
+      },
+      { role: 'user', content: 'Hello' },
+    ];
+    const result = mergeLeadingSystemMessages(messages, 'Agent.');
+
+    expect(result.instructions).toBe('Agent.');
+    expect(result.messages).toBe(messages);
+  });
+
+  it('drops empty system messages without inventing instructions', () => {
+    const result = mergeLeadingSystemMessages(
+      [
+        { role: 'system', content: '' },
+        { role: 'user', content: 'Hello' },
+      ],
+      undefined,
+    );
+
+    expect(result.instructions).toBeUndefined();
+    expect(result.messages).toEqual([{ role: 'user', content: 'Hello' }]);
   });
 });

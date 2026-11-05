@@ -72,6 +72,7 @@ const {
   emitResponseInProgress,
   convertInputToMessages,
   validateResponseRequest,
+  mergeLeadingSystemMessages,
   buildAggregatedResponse,
   buildResponsesUsage,
   createResponseAggregator,
@@ -1122,7 +1123,11 @@ const executeResponse = async (envelope, { req, res }) => {
       const actuallyStreaming = isStreaming && !streamingDisabled;
 
       // Merge previous messages with new input
-      const allMessages = [...previousMessages, ...inputMessages];
+      const { messages: allMessages, instructions } = mergeLeadingSystemMessages(
+        [...previousMessages, ...inputMessages],
+        primaryConfig.instructions,
+      );
+      primaryConfig.instructions = instructions;
 
       /** The caller's function tools: declared to the model with no server-side
        *  executor, handed back when the model calls one, and reported on the
