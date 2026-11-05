@@ -1,7 +1,13 @@
 import { createContext, useContext } from 'react';
+import type {
+  TSubmission,
+  ChatTransport,
+  RetentionMode,
+  TConversation,
+  TAgentQueuedTurnReceipt,
+} from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import type { TSubmission } from 'librechat-data-provider';
-import type { ResumableHost, ResumableRun } from '../../core';
+import type { ResumableHost, ResumableRun, StreamStatusResponse } from '../../core';
 import type { ChatContract } from '../chat/contract';
 
 /** The chat members a stream writes through: the message cache, the pane's conversation and its
@@ -20,6 +26,27 @@ export type ResumableStreamParams = {
   isAddedRequest: boolean;
   /** Reports the stream the pane is attached to, or `null` once it detaches. */
   setStreamId: Dispatch<SetStateAction<string | null>>;
+};
+
+/** One of the app's queries as a resume reads it: the data and when it was last fetched. */
+export type ResumeQuery<Data> = {
+  data: Data | undefined;
+  dataUpdatedAt: number;
+};
+
+/** The stream status read a resume decides on. */
+export type ResumeStatusQuery = ResumeQuery<StreamStatusResponse> & {
+  isSuccess: boolean;
+  isFetching: boolean;
+};
+
+/** What a pane's resume check reads from the app's settings. */
+export type ResumeSettings = {
+  /** Whether the deployment's startup configuration has loaded. */
+  configLoaded: boolean;
+  retentionMode?: RetentionMode;
+  /** The conversation the pane shows. */
+  conversation: TConversation | null;
 };
 
 /** Everything a resumable stream runs on except how it re-attaches, which the binding owns. */
@@ -44,6 +71,27 @@ export interface StreamHost {
     isAddedRequest: boolean,
     runIndex: number,
   ): void;
+  /**
+   * The signed-in user's stream transport, or `null` before sign-in, for feeds outside a chat
+   * turn such as a subagent's activity. Changes when the token does.
+   */
+  useTransport(): ChatTransport | null;
+  /** A conversation's queued-turn receipts, observed from the app's cache without fetching. */
+  useQueuedTurnReceipts(conversationId: string): ResumeQuery<TAgentQueuedTurnReceipt[]>;
+  /**
+   * The signed-in user's active generations. `expectsSuccessor` keeps listening while the
+   * caller knows the server owes it a run.
+   */
+  useActiveJobs(
+    enabled: boolean,
+    expectsSuccessor: boolean,
+  ): ResumeQuery<{ activeJobIds: string[] }>;
+  /** Restarts the active-job list's handover window after a run was seen live another way. */
+  extendActiveJobsGrace(): void;
+  /** A conversation's generation status, read only while `enabled`. */
+  useStreamStatus(conversationId: string | undefined, enabled: boolean): ResumeStatusQuery;
+  /** The settings a pane's resume check reads. */
+  useResumeSettings(runIndex: number): ResumeSettings;
 }
 
 const StreamHostContext = createContext<StreamHost | null>(null);

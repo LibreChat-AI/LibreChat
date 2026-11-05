@@ -6,6 +6,7 @@ export * from './protection';
 export * from './limits';
 export * from './parse';
 export * from './skillStates';
+export * from './access';
 export * from './deployment';
 export * from './sync';
 export * from './management';

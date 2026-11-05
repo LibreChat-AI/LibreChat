@@ -19,6 +19,8 @@ permissions:
 jobs:
   pack:
     runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -26,12 +28,26 @@ jobs:
           node-version: '24.22.1'
       - run: cd packages/data-provider && npm ci
       - run: cd packages/data-provider && npm run build
+      - name: Check version change
+        id: check
+        working-directory: packages/data-provider
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if npm view "librechat-data-provider@$PACKAGE_VERSION" version 2>/dev/null | grep -q .; then
+            echo "Version $PACKAGE_VERSION is already published, skipping publish"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version $PACKAGE_VERSION is unpublished, proceeding with publish"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
       - name: Pack package
+        if: steps.check.outputs.skip != 'true'
         run: |
           mkdir -p npm-package
           cd packages/data-provider
           npm pack --pack-destination "$GITHUB_WORKSPACE/npm-package"
       - name: Upload package
+        if: steps.check.outputs.skip != 'true'
         uses: actions/upload-artifact@v6
         with:
           name: librechat-data-provider-package
@@ -41,7 +57,7 @@ jobs:
 
   publish-npm:
     needs: pack
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.pack.outputs.skip != 'true'
     runs-on: ubuntu-latest
     environment: publish  # Must match npm trusted publisher config
     permissions:

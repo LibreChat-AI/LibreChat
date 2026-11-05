@@ -1,20 +1,26 @@
-import { isEmptyContentPart } from '@librechat/chat/react';
+import { getBranchSiblingIndexesForTarget } from '@librechat/chat';
 import { QueryKeys, Constants, buildTree, ContentTypes } from 'librechat-data-provider';
 import {
-  hasStreamStartFailed,
-  stripStreamedIndexStamps,
-  createDualMessageContent,
-  STREAM_START_FAILED_METADATA_KEY,
-} from '@librechat/chat';
-import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-provider';
-import type { QueryClient } from '@tanstack/react-query';
-import type { LocalizeFunction, TMessageProps } from '~/common';
-
-export {
+  getPartKeyIndex,
   isEmptyContentPart,
   hasStreamStartFailed,
   stripStreamedIndexStamps,
   createDualMessageContent,
+  preserveStreamedContentIdentity,
+  STREAM_START_FAILED_METADATA_KEY,
+} from '@librechat/chat';
+import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type { BranchSiblingIndex } from '@librechat/chat';
+import type { QueryClient } from '@tanstack/react-query';
+import type { LocalizeFunction, TMessageProps } from '~/common';
+
+export {
+  getPartKeyIndex,
+  isEmptyContentPart,
+  hasStreamStartFailed,
+  stripStreamedIndexStamps,
+  createDualMessageContent,
+  preserveStreamedContentIdentity,
   STREAM_START_FAILED_METADATA_KEY,
 };
 export const TEXT_KEY_DIVIDER = '|||';
@@ -29,12 +35,10 @@ export function isUnacknowledgedUserMessage(message: TMessage): boolean {
   );
 }
 
-type SiblingIndexLookup = (parentMessageId: string | null | undefined) => number;
+export { getBranchSiblingIndexesForTarget };
+export type { BranchSiblingIndex };
 
-export type BranchSiblingIndex = {
-  parentMessageId: string | null | undefined;
-  siblingIdx: number;
-};
+type SiblingIndexLookup = (parentMessageId: string | null | undefined) => number;
 
 export const selectActiveBranchTail = (
   messages: TMessage[] | null | undefined,
@@ -95,54 +99,6 @@ export const getMessageBranchSiblingParentIds = (
   return Array.from(parentIds);
 };
 
-export const getBranchSiblingIndexesForTarget = (
-  messages: TMessage[] | null | undefined,
-  targetMessageId: string | null | undefined,
-  rootSiblingKey: string | null | undefined,
-): BranchSiblingIndex[] => {
-  if (!targetMessageId) {
-    return [];
-  }
-
-  const messagesTree = buildTree({ messages: messages ?? null });
-  if (!messagesTree?.length) {
-    return [];
-  }
-
-  const branchIndexes: BranchSiblingIndex[] = [];
-  const stack = [
-    { siblings: messagesTree, parentMessageId: rootSiblingKey, index: 0, branchCount: 0 },
-  ];
-  while (stack.length > 0) {
-    const frame = stack[stack.length - 1];
-    const index = frame.index++;
-    const message = frame.siblings[index];
-    if (!message) {
-      stack.pop();
-      continue;
-    }
-    branchIndexes.length = frame.branchCount;
-    if (frame.siblings.length > 1) {
-      branchIndexes.push({
-        parentMessageId: frame.parentMessageId,
-        siblingIdx: frame.siblings.length - index - 1,
-      });
-    }
-    if (message.messageId === targetMessageId) {
-      return branchIndexes;
-    }
-    if (message.children?.length) {
-      stack.push({
-        siblings: message.children,
-        parentMessageId: message.messageId,
-        index: 0,
-        branchCount: branchIndexes.length,
-      });
-    }
-  }
-  return [];
-};
-
 export const getLatestText = (message?: TMessage | null, includeIndex?: boolean): string => {
   if (!message) {
     return '';
@@ -196,159 +152,6 @@ export const getAllContentText = (message?: TMessage | null): string => {
 
   return '';
 };
-
-const getPartTextValue = (value?: string | { value?: string }): string =>
-  (typeof value === 'string' ? value : value?.value) ?? '';
-
-const getPartToolCall = (part: TMessageContentParts): Agents.ToolCall | undefined =>
-  part.type === ContentTypes.TOOL_CALL
-    ? (part[ContentTypes.TOOL_CALL] as Agents.ToolCall | undefined)
-    : undefined;
-
-/** One side extending the other is the same part observed at two moments —
- * a flushed tail or a server-side trim — while divergent content is a
- * different part that merely shares the type. */
-const isMutualPrefix = (streamed: string, final: string): boolean =>
-  final.startsWith(streamed) || streamed.startsWith(final);
-
-/** Identity match, not equality: the persisted part may carry richer content
- * (flushed text, tool output) than its streamed counterpart, and updating a
- * kept identity in place is exactly the point. Content still has to agree as
- * an extension of what streamed: a filtered run (`hide_sequential_outputs`)
- * omits intermediate parts from the final array, and a type-only match would
- * hand the retained output an omitted intermediate's identity. */
-const isSameStreamedPart = (
-  streamed: TMessageContentParts,
-  final: TMessageContentParts,
-): boolean => {
-  if (streamed.type !== final.type) {
-    return false;
-  }
-  if (streamed.type === ContentTypes.TOOL_CALL) {
-    const streamedCall = getPartToolCall(streamed);
-    const finalCall = getPartToolCall(final);
-    if (streamedCall?.id != null && finalCall?.id != null) {
-      return streamedCall.id === finalCall.id;
-    }
-    if (streamedCall?.name != null && finalCall?.name != null) {
-      return streamedCall.name === finalCall.name;
-    }
-    return true;
-  }
-  if (streamed.type === ContentTypes.TEXT && final.type === ContentTypes.TEXT) {
-    if ((streamed.phase ?? null) !== (final.phase ?? null)) {
-      return false;
-    }
-    return isMutualPrefix(getPartTextValue(streamed.text), getPartTextValue(final.text));
-  }
-  if (streamed.type === ContentTypes.THINK && final.type === ContentTypes.THINK) {
-    return isMutualPrefix(getPartTextValue(streamed.think), getPartTextValue(final.think));
-  }
-  if (streamed.type === ContentTypes.ACTIVITY_LABEL && final.type === ContentTypes.ACTIVITY_LABEL) {
-    if ((streamed.activity_label_type ?? null) !== (final.activity_label_type ?? null)) {
-      return false;
-    }
-    return isMutualPrefix(
-      getPartTextValue(streamed.activity_label),
-      getPartTextValue(final.activity_label),
-    );
-  }
-  return true;
-};
-
-/**
- * Stamps each part of a final (persisted, compacted) content array with the
- * index it occupied while it streamed, pairing the two arrays in order.
- *
- * The aggregator writes parts at provider-source indexes, so the streamed
- * array is sparse wherever a step produced nothing; persistence compacts the
- * holes away and every later part shifts down. Adopting the compacted array
- * verbatim re-keys every index-derived React identity at the final event —
- * the settled message remounts wholesale, entrance animations replay, and the
- * thread visibly jumps. The stamp (`streamedIndex`) lets renderers keep the
- * streamed key while all coordinate logic uses the compacted positions the
- * server persisted.
- *
- * Pairing is all-or-nothing: a partially stamped array could collide a
- * streamed key with a compacted fallback key. When any final part has no
- * streamed counterpart (server-enriched content), or any substantial streamed
- * part has no final counterpart (a filtered run that dropped intermediate
- * outputs — where in-order pairing could hand a retained part an omitted
- * part's identity), the final array is returned untouched and the message
- * re-keys as before.
- */
-export const preserveStreamedContentIdentity = (
-  streamedContent: Array<TMessageContentParts | undefined> | undefined,
-  finalContent: TMessage['content'],
-): TMessage['content'] => {
-  if (!streamedContent?.length || !finalContent?.length) {
-    return finalContent;
-  }
-
-  let cursor = 0;
-  let stamped: TMessageContentParts[] | null = null;
-  for (let index = 0; index < finalContent.length; index++) {
-    const finalPart = finalContent[index] as TMessageContentParts | undefined;
-    if (finalPart == null) {
-      return finalContent;
-    }
-    let matchedIndex = -1;
-    let matchedPart: TMessageContentParts | null = null;
-    while (cursor < streamedContent.length) {
-      const streamedPart = streamedContent[cursor];
-      if (streamedPart == null) {
-        cursor += 1;
-        continue;
-      }
-      /** An empty streamed slot facing a filled final part was dropped by the
-       *  compaction — never let it steal the match from the filled streamed
-       *  part behind it (an empty THINK ahead of the real one, say). */
-      if (isEmptyContentPart(streamedPart) && !isEmptyContentPart(finalPart)) {
-        cursor += 1;
-        continue;
-      }
-      if (isSameStreamedPart(streamedPart, finalPart)) {
-        matchedIndex = cursor;
-        matchedPart = streamedPart;
-        cursor += 1;
-      }
-      break;
-    }
-    if (matchedIndex === -1 || matchedPart == null) {
-      return finalContent;
-    }
-    /** A settled message can be re-delivered by a LATER final event (e.g. an
-     *  Assistants run resyncing prior turns): both sides arrive compact, but
-     *  the current parts already carry stamps from their own settle. Carrying
-     *  them forward keeps their keys stable forever, instead of silently
-     *  reverting the identity this stamp exists to preserve. */
-    const stampIndex = matchedPart.streamedIndex ?? matchedIndex;
-    if (stampIndex !== index && stamped == null) {
-      stamped = [...finalContent];
-    }
-    if (stamped != null && stampIndex !== index) {
-      stamped[index] = { ...finalPart, streamedIndex: stampIndex };
-    }
-  }
-  /** Leftover substantial streamed parts mean the server REMOVED content
-   *  (`hide_sequential_outputs`), so every pairing above is suspect — an
-   *  omitted intermediate that happens to prefix the retained output would
-   *  have claimed its identity. Only holes and empty slots may remain. */
-  for (let rest = cursor; rest < streamedContent.length; rest++) {
-    const leftover = streamedContent[rest];
-    if (leftover != null && !isEmptyContentPart(leftover)) {
-      return finalContent;
-    }
-  }
-  return stamped ?? finalContent;
-};
-
-/** Render-identity index for content-part keys: the streamed position stamped
- * by the final handler survives the sparse→compact swap; everything else keys
- * by the live index. Coordinate logic (edit indexes, phase bounds, cursor)
- * must keep using the live index. */
-export const getPartKeyIndex = (part: TMessageContentParts | undefined, idx: number): number =>
-  part?.streamedIndex ?? idx;
 
 export { isSubmittableMessage } from '@librechat/chat';
 

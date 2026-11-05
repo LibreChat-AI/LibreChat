@@ -27,9 +27,9 @@ jest.mock('react-i18next', () => ({
   useTranslation: () => ({ i18n: { language: 'en' } }),
 }));
 
-jest.mock('../CancelledIcon', () => ({
-  __esModule: true,
-  default: () => <span data-testid="cancelled-icon" />,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  CancelledIcon: () => <span data-testid="cancelled-icon" />,
 }));
 
 const defaults = {

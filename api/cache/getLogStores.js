@@ -53,7 +53,9 @@ const namespaces = {
   [CacheKeys.USER_PRINCIPALS]: userPrincipalsCache() ?? disabledCache,
   /** Authorization IDs stay uncached because a failed shared invalidation cannot fail closed. */
   [CacheKeys.PROMPT_GROUPS_ACCESS]: disabledCache,
-  [CacheKeys.APP_CONFIG]: standardCache(CacheKeys.APP_CONFIG),
+  [CacheKeys.APP_CONFIG]: standardCache(CacheKeys.APP_CONFIG, undefined, undefined, {
+    throwOnErrors: true,
+  }),
   [CacheKeys.CONFIG_STORE]: standardCache(CacheKeys.CONFIG_STORE),
   [CacheKeys.TOOL_CACHE]: standardCache(CacheKeys.TOOL_CACHE),
   [CacheKeys.PENDING_REQ]: standardCache(CacheKeys.PENDING_REQ),

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useTimeTick } from '@librechat/chat/react';
 import { ContentTypes } from 'librechat-data-provider';
 import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
+import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { CSSProperties, ReactNode } from 'react';
 import type { RailHover } from './rail';
@@ -30,7 +31,6 @@ import {
   FoldHeaderContext,
 } from './rail';
 import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
-import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 import { getOutcomeStatus, isSpanFailed, summarizeSpan } from './outcome';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import useThrottledValue from '~/hooks/Messages/useThrottledValue';

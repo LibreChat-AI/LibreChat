@@ -68,7 +68,7 @@ export type LocalizeFunction = (
 
 export type ChatFormValues = { text: string };
 
-export const mainTextareaId = 'prompt-textarea';
+export { mainTextareaId } from '@librechat/chat';
 export const globalAudioId = 'global-audio';
 
 export type NavLink = {
@@ -462,25 +462,7 @@ export type TLoginLayoutContext = {
 
 export type ConvoGenerator = (params: NewConversationParams) => void | t.TConversation;
 
-export type TBaseResData = {
-  final?: boolean;
-  initial?: boolean;
-  previousMessages?: t.TMessage[];
-  conversation: t.TConversation;
-  conversationId?: string;
-  runMessages?: t.TMessage[];
-};
-
-export type TResData = TBaseResData & {
-  requestMessage: t.TMessage;
-  responseMessage: t.TMessage;
-};
-
-export type TFinalResData = Omit<TBaseResData, 'conversation'> & {
-  conversation: Partial<t.TConversation> & Pick<t.TConversation, 'conversationId'>;
-  requestMessage?: t.TMessage;
-  responseMessage?: t.TMessage;
-};
+export type { TResData, TBaseResData, TFinalResData } from '@librechat/chat';
 
 declare global {
   interface Window {

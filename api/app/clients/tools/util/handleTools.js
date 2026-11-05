@@ -230,7 +230,14 @@ const loadTools = async ({
     uploadImageBuffer: options.uploadImageBuffer,
   };
 
+  const timeoutOptions = { timeouts: options.req?.config?.timeouts };
+
   const toolOptions = {
+    google: timeoutOptions,
+    wolfram: timeoutOptions,
+    open_weather: timeoutOptions,
+    traversaal_search: timeoutOptions,
+    tavily_search_results_json: timeoutOptions,
     flux: imageGenOptions,
     'stable-diffusion': imageGenOptions,
     gemini_image_gen: imageGenOptions,

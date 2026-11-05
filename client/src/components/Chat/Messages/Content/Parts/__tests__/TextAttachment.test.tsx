@@ -33,13 +33,14 @@ jest.mock('../LogLink', () => ({
   useAttachmentLink: () => ({ handleDownload: mockHandleDownload }),
 }));
 
-jest.mock('~/components/Chat/Input/Files/FileContainer', () => ({
-  __esModule: true,
-  default: ({ file, onClick }: { file: { filename?: string }; onClick?: () => void }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  FileContainer: ({ file, onClick }: { file: { filename?: string }; onClick?: () => void }) => (
     <button type="button" data-testid="file-container" onClick={onClick}>
       {file.filename ?? ''}
     </button>
   ),
+  FilePreview: () => <div data-testid="file-preview" />,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/Image', () => ({
@@ -52,11 +53,6 @@ jest.mock('~/components/Messages/Content/Mermaid/Mermaid', () => ({
   default: ({ children }: { children: string }) => (
     <div data-testid="mermaid-render">{children}</div>
   ),
-}));
-
-jest.mock('~/components/Chat/Input/Files/FilePreview', () => ({
-  __esModule: true,
-  default: () => <div data-testid="file-preview" />,
 }));
 
 jest.mock('~/utils', () => ({

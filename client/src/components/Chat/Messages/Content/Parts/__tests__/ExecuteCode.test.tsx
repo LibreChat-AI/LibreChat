@@ -38,9 +38,9 @@ jest.mock('../Attachment', () => ({
   AttachmentGroup: () => <div data-testid="attachment-group" />,
 }));
 
-jest.mock('../Stdout', () => ({
-  __esModule: true,
-  default: () => <div data-testid="stdout" />,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Stdout: () => <div data-testid="stdout" />,
 }));
 
 jest.mock('../useLazyHighlight', () => {

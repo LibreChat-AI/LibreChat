@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useStore, useSetAtom } from 'jotai';
 import { QueryKeys } from 'librechat-data-provider';
-import { buildRecoveryPreset } from '@librechat/chat';
 import { useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { buildRecoveryPreset, shouldResetSubagentAtomsOnConversationChange } from '@librechat/chat';
 import {
+  useStepHandler,
   submissionStartFamily,
   getReasoningStateKey,
   pendingQuotesByConvoId,
@@ -16,10 +17,8 @@ import type { ConvoGenerator } from '~/common';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import { useReconcileConversationCodeEnvironmentMutation } from '~/data-provider';
 import { getFailedCodeDecisionRequest } from '~/hooks/Agents/codeDecision';
-import { shouldResetSubagentAtomsOnConversationChange } from './cleanup';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import useContentHandler from '~/hooks/SSE/useContentHandler';
-import useStepHandler from '~/hooks/SSE/useStepHandler';
 import { useApplyAgentTemplate } from '~/hooks/Agents';
 import { useLiveAnnouncer } from '~/Providers';
 import useTurnHandlers from './opening';

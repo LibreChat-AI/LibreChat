@@ -9,6 +9,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from './helpers';
+import { sendCompactionHistory } from './compaction.helpers';
 
 /**
  * Regression suite for the "folded thread" incident (PR: order-robust message
@@ -205,6 +206,7 @@ test.describe('thread fold regressions', () => {
     const latestReply = replyText(`${label}-latest`);
 
     await openMockChat(page);
+    const olderHistory = await sendCompactionHistory(page, label, 1);
     await sendAndExpectReply(page, setupPrompt, setupReply);
     await sendAndExpectReply(page, latestPrompt, latestReply);
     await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15000 });
@@ -218,13 +220,16 @@ test.describe('thread fold regressions', () => {
     await page.getByRole('button', { name: 'Compact context' }).click();
 
     await expect(messagesView(page).getByText('Summarizing...')).toBeVisible({ timeout: 30000 });
+    for (const text of olderHistory) {
+      await expect(messagesView(page).getByText(text, { exact: true })).toBeVisible();
+    }
     await expect(messagesView(page).getByText(setupPrompt)).toBeVisible();
     await expect(messagesView(page).getByText(setupReply)).toBeVisible();
     await expect(messagesView(page).getByText(latestPrompt)).toBeVisible();
     await expect(messagesView(page).getByText(latestReply)).toBeVisible();
-    await expect(messageTurns(page)).toHaveCount(5);
-    await expect(messageTurns(page).nth(3)).toContainText(latestReply);
-    await expect(messageTurns(page).nth(4)).toContainText('Summarizing...');
+    await expect(messageTurns(page)).toHaveCount(7);
+    await expect(messageTurns(page).nth(5)).toContainText(latestReply);
+    await expect(messageTurns(page).nth(6)).toContainText('Summarizing...');
     await expect(page.getByRole('navigation', { name: 'Sibling message navigation' })).toHaveCount(
       0,
     );
@@ -232,13 +237,16 @@ test.describe('thread fold regressions', () => {
     await expect(messagesView(page).getByText('You compacted the context')).toBeVisible({
       timeout: 60000,
     });
+    for (const text of olderHistory) {
+      await expect(messagesView(page).getByText(text, { exact: true })).toBeVisible();
+    }
     await expect(messagesView(page).getByText(setupPrompt)).toBeVisible();
     await expect(messagesView(page).getByText(setupReply)).toBeVisible();
     await expect(messagesView(page).getByText(latestPrompt)).toBeVisible();
     await expect(messagesView(page).getByText(latestReply)).toBeVisible();
-    await expect(messageTurns(page)).toHaveCount(5);
-    await expect(messageTurns(page).nth(3)).toContainText(latestReply);
-    await expect(messageTurns(page).nth(4)).toContainText('You compacted the context');
+    await expect(messageTurns(page)).toHaveCount(7);
+    await expect(messageTurns(page).nth(5)).toContainText(latestReply);
+    await expect(messageTurns(page).nth(6)).toContainText('You compacted the context');
     await expect(page.getByRole('navigation', { name: 'Sibling message navigation' })).toHaveCount(
       0,
     );
@@ -263,6 +271,7 @@ test.describe('thread fold regressions', () => {
     const setupReply = replyText(label);
 
     await openMockChat(page);
+    const olderHistory = await sendCompactionHistory(page, label);
     await sendAndExpectReply(page, setupPrompt, setupReply);
     await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15000 });
 
@@ -284,6 +293,11 @@ test.describe('thread fold regressions', () => {
     /** The turn under compaction is still the answer it always was, on the one
      *  branch the conversation has — a rewritten anchor would strand both rows
      *  behind a phantom root and offer a sibling switcher to page back to them. */
+    for (const text of olderHistory) {
+      await expect(messagesView(page).getByText(text, { exact: true })).toBeVisible({
+        timeout: 30000,
+      });
+    }
     await expect(messagesView(page).getByText(setupPrompt)).toBeVisible({ timeout: 30000 });
     await expect(messagesView(page).getByText(setupReply)).toBeVisible();
     await expect(page.getByRole('navigation', { name: 'Sibling message navigation' })).toHaveCount(
@@ -294,9 +308,14 @@ test.describe('thread fold regressions', () => {
     await expect(messagesView(page).getByText('You compacted the context')).toBeVisible({
       timeout: 60000,
     });
+    for (const text of olderHistory) {
+      await expect(messagesView(page).getByText(text, { exact: true })).toBeVisible();
+    }
     await expect(messagesView(page).getByText(setupPrompt)).toBeVisible();
     await expect(messagesView(page).getByText(setupReply)).toBeVisible();
-    await expect(messageTurns(page)).toHaveCount(3);
+    await expect(messageTurns(page)).toHaveCount(7);
+    await expect(messageTurns(page).nth(5)).toContainText(setupReply);
+    await expect(messageTurns(page).nth(6)).toContainText('You compacted the context');
     await expect(page.getByRole('navigation', { name: 'Sibling message navigation' })).toHaveCount(
       0,
     );

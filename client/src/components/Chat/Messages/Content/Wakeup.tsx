@@ -1,13 +1,13 @@
 import { memo, useCallback, useMemo, useState } from 'react';
 import { Button } from '@librechat/client';
+import { subagentStatusIcon, subagentStatusLabelKey } from '@librechat/chat/react';
 import {
   SystemEventHeader,
   SystemEventIcon,
   systemEventHeaderClasses,
 } from '@librechat/chat/components';
-import type { WakeupDisplay, WakeupTask } from './Parts/wakeup';
+import type { WakeupDisplay, WakeupTask } from '@librechat/chat';
 import type { TranslationKeys } from '~/hooks';
-import { subagentStatusIcon, subagentStatusLabelKey } from '~/components/Chat/Subagents/status';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useSubagentTaskPanel } from '~/components/Chat/Subagents/task';

@@ -4,8 +4,8 @@ import { createPortal } from 'react-dom';
 import * as Ariakit from '@ariakit/react';
 import { useDrag, useDrop } from 'react-dnd';
 import { queuedMessagesByConvoId } from '@librechat/chat/react';
-import { useQueuedTurnPortal } from '@librechat/chat/components';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { useQueuedTurnPortal, EscalateNowButton } from '@librechat/chat/components';
 import { claimQueuedIntent, releaseQueuedIntent, hasQueuedIntent } from '@librechat/chat';
 import {
   escalatingSteerFamily,
@@ -36,7 +36,6 @@ import type { RestoreToComposer } from '@librechat/chat/react';
 import type { SteeringControls } from '@librechat/chat/react';
 import type { MenuItemProps } from '@librechat/client';
 import type { QueuedMessage } from '@librechat/chat';
-import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

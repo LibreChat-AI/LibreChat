@@ -1584,6 +1584,9 @@ describe('RedisJobStore Integration Tests', () => {
         },
         agentEventLegacyTurnToken: 'legacy-hitl-token',
         discoveredTools: ['deep_tool'],
+        authoredSkills: [
+          { agentId: 'a', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+        ],
         userSubmittedPaths: ['/content/0/tool_call/args'],
         userSubmittedMessageFieldPaths: [{ path: '/content/0/tool_call/output', field: 'answer' }],
       });
@@ -1603,6 +1606,7 @@ describe('RedisJobStore Integration Tests', () => {
       });
       expect(turn1?.agentEventLegacyTurnToken).toBe('legacy-hitl-token');
       expect(turn1?.discoveredTools).toEqual(['deep_tool']);
+      expect(turn1?.authoredSkills).toHaveLength(1);
       expect(turn1?.userSubmittedPaths).toEqual(['/content/0/tool_call/args']);
       expect(turn1?.userSubmittedMessageFieldPaths).toEqual([
         { path: '/content/0/tool_call/output', field: 'answer' },
@@ -1623,6 +1627,7 @@ describe('RedisJobStore Integration Tests', () => {
       expect(turn2?.agentEventSuspension).toBeUndefined();
       expect(turn2?.agentEventLegacyTurnToken).toBeUndefined();
       expect(turn2?.discoveredTools).toBeUndefined();
+      expect(turn2?.authoredSkills).toBeUndefined();
       expect(turn2?.userSubmittedPaths).toBeUndefined();
       expect(turn2?.userSubmittedMessageFieldPaths).toBeUndefined();
 

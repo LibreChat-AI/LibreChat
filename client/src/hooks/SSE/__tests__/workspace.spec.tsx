@@ -38,9 +38,12 @@ jest.mock('~/Providers', () => ({
 }));
 jest.mock('~/hooks/SSE/useContentHandler', () => () => ({}));
 jest.mock('~/hooks/SSE/useAttachmentHandler', () => () => jest.fn());
-jest.mock('~/hooks/SSE/useStepHandler', () => () => ({
-  resetSubagentAtoms: mockReset,
-  resetPtcAtoms: mockReset,
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useStepHandler: () => ({
+    resetSubagentAtoms: mockReset,
+    resetPtcAtoms: mockReset,
+  }),
 }));
 jest.mock('~/hooks/Agents/workspacePreferences', () => ({
   useWorkspacePreferences: () => ({ get: () => undefined }),

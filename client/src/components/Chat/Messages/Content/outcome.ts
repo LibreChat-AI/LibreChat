@@ -1,4 +1,12 @@
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import {
+  backgroundTaskOutcome,
+  parseBackgroundTaskOutput,
+  parseBackgroundHandle,
+  splitBackgroundAttachments,
+  isBashProgrammaticToolCall,
+  parseCommandOutput,
+} from '@librechat/chat';
 import type {
   Agents,
   TAttachment,
@@ -7,13 +15,9 @@ import type {
   TMessageContentParts,
 } from 'librechat-data-provider';
 import type { ToolPreparationInput } from './preparation';
-import { backgroundTaskOutcome, parseBackgroundTaskOutput } from './Parts/background';
-import { parseBackgroundHandle, splitBackgroundAttachments } from './Parts/handle';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { isMemoryFailureOutput } from './Parts/MemoryCall';
 import { filterAttachmentsForPart } from '~/utils/map';
-import { isBashProgrammaticToolCall } from './routing';
-import { parseCommandOutput } from './Parts/command';
 import { isToolCallPreparing } from './preparation';
 import { isError } from './ToolOutput';
 

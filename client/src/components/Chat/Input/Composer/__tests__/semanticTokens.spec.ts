@@ -17,14 +17,17 @@ const collectSourceModules = (directory: string): string[] =>
 const composerModules = [
   ...collectSourceModules(composerRoot),
   ...collectSourceModules(
-    join(__dirname, '../../../../../../../packages/chat/src/components/composer'),
+    join(__dirname, '../../../../../../../packages/chat/src/components/composer/bar'),
   ),
 ];
 
 const protectedModules = [
   ...composerModules,
   join(__dirname, '..', '..', 'Reasoning.tsx'),
-  join(__dirname, '..', '..', 'EscalateNowButton.tsx'),
+  join(
+    __dirname,
+    '../../../../../../../packages/chat/src/components/composer/EscalateNowButton.tsx',
+  ),
   join(__dirname, '..', '..', '..', 'Messages', 'Content', 'Parts', 'PendingSteers.tsx'),
   join(__dirname, '..', '..', '..', '..', '..', 'hooks', 'Input', 'usePaletteEntries.tsx'),
 ];

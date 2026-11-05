@@ -2,7 +2,7 @@ import { useMemo, useState, useCallback } from 'react';
 import { useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { getStreamStartFailureText } from '@librechat/chat';
-import { showStopButtonByIndex } from '@librechat/chat/react';
+import { useUsageHandler, showStopButtonByIndex } from '@librechat/chat/react';
 import type { ResumableRun, ResumableEvents, ResumableUsage } from '@librechat/chat';
 import type { EventSubmission } from 'librechat-data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
@@ -10,7 +10,6 @@ import type { TResData, TFinalResData } from '~/common';
 import { countTrailingOutputChars, markStreamStartFailedMetadata } from '~/utils';
 import { reopenTermsOnRefusal } from '~/utils/terms';
 import useEventHandlers from './useEventHandlers';
-import useUsageHandler from './useUsageHandler';
 import useLocalize from '~/hooks/useLocalize';
 
 const getStreamStartFailureData = (errorData?: unknown, termsRefusalText?: string): TResData =>

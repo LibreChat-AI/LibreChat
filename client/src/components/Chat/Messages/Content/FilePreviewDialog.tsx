@@ -8,14 +8,14 @@ import {
   OGDialogTitle,
   OGDialogDescription,
 } from '@librechat/client';
-import type { TFile } from 'librechat-data-provider';
 import {
   getFileExtension,
   getPreviewKind,
   isExtractedTextPreviewLoading,
   shouldUseExtractedTextPreview,
   shouldUseSharedFileDownload,
-} from './preview';
+} from '@librechat/chat';
+import type { TFile } from 'librechat-data-provider';
 import {
   useFilePreview,
   useFilePreviewBlob,

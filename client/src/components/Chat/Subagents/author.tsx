@@ -1,12 +1,12 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { findSubagentDispatch } from '@librechat/chat';
 import { isDocumentId } from '@librechat/chat/components';
 import { EModelEndpoint, QueryKeys, ContentTypes } from 'librechat-data-provider';
 import type { Agent, TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { useAgentsMapContext } from '~/Providers';
-import { findSubagentDispatch } from './dispatch';
 
 /** Who wrote a turn, in the form main chat's message header shows an author. */
 export type TurnAuthor = { name: string; icon: ReactNode; agent?: Agent; agentId?: string };

@@ -6,10 +6,13 @@ import { AutoSizer, List } from 'react-virtualized';
 import { MentionItem } from '@librechat/chat/components';
 import { Input, Spinner, useCombobox, useRemScale } from '@librechat/client';
 import { SkillsScope, resolveAgentSkillsScope } from 'librechat-data-provider';
-import { pendingManualSkillsByConvoId, showSkillsPopoverFamily } from '@librechat/chat/react';
+import {
+  pendingManualSkillsByConvoId,
+  showSkillsPopoverFamily,
+  useInitPopoverInput,
+} from '@librechat/chat/react';
 import type { TSkillSummary } from 'librechat-data-provider';
 import type { MentionOption } from '~/common';
-import useInitPopoverInput from '~/hooks/Input/useInitPopoverInput';
 import { useLocalize, useSkillActiveState } from '~/hooks';
 import { useSkillsInfiniteQuery } from '~/data-provider';
 import { useAgentsMapContext } from '~/Providers';
