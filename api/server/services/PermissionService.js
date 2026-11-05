@@ -335,7 +335,12 @@ const getAvailableRoles = async ({ resourceType }) => {
  * @param {Object|null} [authContext] - Enabled integration authentication context
  * @returns {Promise<string|null>} Returns the principalId for database operations, null for public
  */
-const ensurePrincipalExists = async function (principal, authContext = null) {
+const ensurePrincipalExists = async function (
+  principal,
+  authContext = null,
+  resolvePrincipal = (identity) =>
+    resolveDirectoryPrincipal(identity, authContext, createGraphClient),
+) {
   if (principal.type === PrincipalType.PUBLIC) {
     return null;
   }
@@ -346,8 +351,7 @@ const ensurePrincipalExists = async function (principal, authContext = null) {
 
   if (principal.type === PrincipalType.USER && principal.source === 'entra') {
     return ensureDirectoryPrincipalUser(principal, {
-      resolvePrincipal: (identity) =>
-        resolveDirectoryPrincipal(identity, authContext, createGraphClient),
+      resolvePrincipal,
       findUserBySourceId: async (idOnTheSource) => {
         const user = await db.findUser({ idOnTheSource });
         return user ? { id: user._id.toString() } : null;
@@ -373,7 +377,7 @@ const ensurePrincipalExists = async function (principal, authContext = null) {
 /**
  * Ensures a group principal exists in the database based on TPrincipal data
  * Creates group if it doesn't exist locally (for Entra ID groups)
- * For Entra ID groups, always synchronizes member IDs when authentication context is provided
+ * Resolves persisted groups locally; new Entra ID groups synchronize directory members
  * @param {Object} principal - TPrincipal object from frontend
  * @param {string} principal.type - Must be PrincipalType.GROUP
  * @param {string} [principal.id] - Local database ID (null for Entra ID principals not yet synced)
@@ -387,17 +391,22 @@ const ensurePrincipalExists = async function (principal, authContext = null) {
  * @param {string} [authContext.sub] - Subject identifier
  * @returns {Promise<string>} Returns the groupId for database operations
  */
-const ensureGroupPrincipalExists = async function (principal, authContext = null) {
+const ensureGroupPrincipalExists = async function (
+  principal,
+  authContext = null,
+  resolvePrincipal = (identity) =>
+    resolveDirectoryPrincipal(identity, authContext, createGraphClient),
+) {
   if (principal.type !== PrincipalType.GROUP) {
     throw new Error(`Invalid principal type: ${principal.type}. Expected '${PrincipalType.GROUP}'`);
   }
 
-  if (principal.id && principal.source !== 'entra') {
+  if (principal.id) {
     return await ensureLocalGroupPrincipalExists(principal.id);
   }
 
   if (principal.source === 'entra') {
-    principal = await resolveDirectoryPrincipal(principal, authContext, createGraphClient);
+    principal = await resolvePrincipal(principal);
     if (!principal?.name || !principal.idOnTheSource) {
       throw new Error('Entra ID group principals must have name and idOnTheSource');
     }

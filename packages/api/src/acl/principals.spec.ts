@@ -1,6 +1,8 @@
 import { PrincipalType } from 'librechat-data-provider';
 import {
   ensureDirectoryPrincipalUser,
+  preparePermissionPrincipals,
+  DirectoryVerificationError,
   resolveDirectoryPrincipal,
   validateLocalPrincipalId,
 } from './principals';
@@ -218,4 +220,108 @@ describe('validateLocalPrincipalId', () => {
     'rejects malformed IDs before database lookup: %j',
     (id) => expect(() => validateLocalPrincipalId(id)).toThrow('Invalid local principal ID'),
   );
+});
+
+describe('preparePermissionPrincipals', () => {
+  const createDeps = () => ({
+    createClient: jest.fn(),
+    ensureUser: jest.fn().mockResolvedValue('user-id'),
+    ensureGroup: jest.fn().mockResolvedValue('group-id'),
+    logger: { error: jest.fn() },
+  });
+  const external = (id: string) => ({ ...principal, source: 'entra' as const, idOnTheSource: id });
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  it('bounds parallel lookups, reuses one client, and verifies all identities before persistence', async () => {
+    const deps = createDeps();
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let peak = 0;
+    const get = jest.fn(
+      (id: string) =>
+        new Promise((resolve) => {
+          active++;
+          peak = Math.max(peak, active);
+          releases.push(() => {
+            active--;
+            resolve({ id, displayName: 'Trusted', mail: `${id}@example.com` });
+          });
+        }),
+    );
+    deps.createClient.mockResolvedValue({
+      api: (path: string) => ({ select: () => ({ get: () => get(path.split('/').pop()!) }) }),
+    });
+    const principals = ['a', 'b', 'c', 'd'].map(external);
+    const work = preparePermissionPrincipals(principals, authContext, deps, {
+      concurrency: { permissionPrincipalLookups: 2 },
+    });
+    await flush();
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(deps.ensureUser).not.toHaveBeenCalled();
+    releases
+      .splice(0)
+      .reverse()
+      .forEach((release) => release());
+    await flush();
+    expect(get).toHaveBeenCalledTimes(4);
+    expect(deps.ensureUser).not.toHaveBeenCalled();
+    releases
+      .splice(0)
+      .reverse()
+      .forEach((release) => release());
+    await expect(work).resolves.toEqual(principals.map((p) => ({ ...p, id: 'user-id' })));
+    expect(peak).toBe(2);
+    expect(deps.createClient).toHaveBeenCalledTimes(1);
+    expect(deps.ensureUser).toHaveBeenCalledTimes(4);
+  });
+
+  it('deduplicates verification and persistence for repeated external identities', async () => {
+    const deps = createDeps();
+    const get = jest
+      .fn()
+      .mockResolvedValue({ id: 'a', displayName: 'Trusted', mail: 'a@example.com' });
+    deps.createClient.mockResolvedValue({ api: () => ({ select: () => ({ get }) }) });
+    await preparePermissionPrincipals([external('a'), external('a')], authContext, deps);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(deps.ensureUser).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['client', 'lookup'])(
+    'fails before persistence when %s verification fails',
+    async (failure) => {
+      const deps = createDeps();
+      const error = new Error('Sensitive provider detail');
+      if (failure === 'client') {
+        deps.createClient.mockRejectedValue(error);
+      } else {
+        deps.createClient.mockResolvedValue({
+          api: () => ({
+            select: () => ({
+              get: async () => {
+                throw error;
+              },
+            }),
+          }),
+        });
+      }
+      await expect(
+        preparePermissionPrincipals([external('a')], authContext, deps),
+      ).rejects.toMatchObject({
+        statusCode: 502,
+        message: 'Directory identity verification failed',
+      });
+      expect(deps.ensureUser).not.toHaveBeenCalled();
+      expect(deps.logger.error).toHaveBeenCalledWith('Directory identity verification failed', {
+        type: 'Error',
+      });
+    },
+  );
+
+  it('propagates verification failures from the persistence boundary', async () => {
+    const deps = createDeps();
+    deps.ensureUser.mockRejectedValue(new DirectoryVerificationError());
+    await expect(
+      preparePermissionPrincipals([{ ...principal, id: 'local-id' }], null, deps),
+    ).rejects.toBeInstanceOf(DirectoryVerificationError);
+  });
 });

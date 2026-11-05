@@ -1,5 +1,9 @@
 import { PrincipalType } from 'librechat-data-provider';
 import type { TPrincipal, TGraphPerson, TGraphGroup } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
+import { getLookupConcurrency } from '~/utils/concurrency';
+import { getSafeErrorMetadata } from '~/utils/errors';
+import { mapWithConcurrency } from '~/utils/promise';
 
 /** Local principal IDs must be scalar ObjectId strings, never query operators. */
 export function validateLocalPrincipalId(id: unknown): string {
@@ -149,3 +153,101 @@ export const ensureDirectoryPrincipalUser = async (
     idOnTheSource: resolved.idOnTheSource,
   });
 };
+
+export class DirectoryVerificationError extends Error {
+  readonly statusCode: number = 502;
+
+  constructor() {
+    super('Directory identity verification failed');
+  }
+}
+
+type PermissionPrincipal = Omit<TPrincipal, 'id'> & { id?: string | null };
+type ResolveDirectoryPrincipal = (principal: DirectoryPrincipal) => Promise<TPrincipal | null>;
+type EnsurePrincipal = (
+  principal: PermissionPrincipal,
+  authContext: DirectoryAuthContext | null,
+  resolvePrincipal: ResolveDirectoryPrincipal,
+) => Promise<string | null>;
+
+interface PermissionPrincipalMethods {
+  createClient: CreateDirectoryClient;
+  ensureUser: EnsurePrincipal;
+  ensureGroup: EnsurePrincipal;
+  logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
+}
+
+/** Verify every external identity before provisioning or ACL writes. Never hide provider outages. */
+export async function preparePermissionPrincipals(
+  principals: readonly PermissionPrincipal[],
+  authContext: DirectoryAuthContext | null,
+  methods: PermissionPrincipalMethods,
+  appConfig?: Pick<AppConfig, 'concurrency'>,
+): Promise<PermissionPrincipal[]> {
+  const concurrency = getLookupConcurrency(appConfig, 'permissionPrincipalLookups');
+  let client: Promise<DirectoryGraphClient> | undefined;
+  const identities = new Map<string, Promise<TPrincipal | null>>();
+  const resolvePrincipal: ResolveDirectoryPrincipal = (principal) => {
+    const key = JSON.stringify([principal.type, principal.idOnTheSource]);
+    let result = identities.get(key);
+    if (!result) {
+      result = resolveDirectoryPrincipal(principal, authContext, (token, sub) => {
+        client ??= methods.createClient(token, sub);
+        return client;
+      }).catch((error) => {
+        methods.logger.error('Directory identity verification failed', getSafeErrorMetadata(error));
+        throw new DirectoryVerificationError();
+      });
+      identities.set(key, result);
+    }
+    return result;
+  };
+
+  await mapWithConcurrency(principals, concurrency, async (principal) => {
+    if (
+      !principal.id &&
+      principal.source === 'entra' &&
+      (principal.type === PrincipalType.USER || principal.type === PrincipalType.GROUP)
+    ) {
+      await resolvePrincipal(principal);
+    }
+  });
+
+  const pending = new Map<string, Promise<string | null>>();
+  const validated = await mapWithConcurrency(principals, concurrency, async (principal) => {
+    try {
+      if (principal.type === PrincipalType.PUBLIC) {
+        return { ...principal, id: null };
+      }
+      if (principal.type === PrincipalType.ROLE) {
+        return principal;
+      }
+      const ensure = {
+        [PrincipalType.USER]: methods.ensureUser,
+        [PrincipalType.GROUP]: methods.ensureGroup,
+      }[principal.type];
+      if (!ensure) {
+        return null;
+      }
+      const key = JSON.stringify([
+        principal.type,
+        principal.id,
+        principal.source,
+        principal.idOnTheSource,
+      ]);
+      let result = pending.get(key);
+      if (!result) {
+        result = ensure(principal, authContext, resolvePrincipal);
+        pending.set(key, result);
+      }
+      return { ...principal, id: await result };
+    } catch (error) {
+      if (error instanceof DirectoryVerificationError) {
+        throw error;
+      }
+      methods.logger.error('Error ensuring principal exists', getSafeErrorMetadata(error));
+      return null;
+    }
+  });
+  return validated.filter((principal): principal is PermissionPrincipal => principal !== null);
+}
