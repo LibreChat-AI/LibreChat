@@ -2,7 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { ASK_USER_DECLINED_ANSWER } from '@librechat/chat';
 import { ChatSurfaceProvider } from '@librechat/chat/react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
 import AskUserQuestions from '../AskUserQuestions';
 
@@ -407,6 +407,56 @@ describe('AskUserQuestions', () => {
 
       renderBatch('ask-focus-draft');
       expect(composer).toHaveFocus();
+    });
+
+    describe('below a reader who has scrolled up', () => {
+      const originalObserver = global.IntersectionObserver;
+      let notify: () => void = () => undefined;
+      let onScreen = false;
+      let rectSpy: jest.SpyInstance;
+
+      beforeEach(() => {
+        onScreen = false;
+        global.IntersectionObserver = jest.fn((callback: IntersectionObserverCallback) => {
+          notify = () => callback([], {} as IntersectionObserver);
+          return { observe: jest.fn(), disconnect: jest.fn() };
+        }) as unknown as typeof IntersectionObserver;
+        rectSpy = jest
+          .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+          .mockImplementation(() =>
+            onScreen
+              ? ({ top: 100, bottom: 300 } as DOMRect)
+              : ({ top: window.innerHeight + 200, bottom: window.innerHeight + 400 } as DOMRect),
+          );
+      });
+
+      afterEach(() => {
+        global.IntersectionObserver = originalObserver;
+        rectSpy.mockRestore();
+      });
+
+      test('waits until the card is on screen before taking focus', () => {
+        renderBatch('ask-focus-offscreen');
+        act(() => notify());
+        expect(document.body).toHaveFocus();
+
+        onScreen = true;
+        act(() => notify());
+        expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+      });
+
+      test('does not take focus once the reader has started typing elsewhere', () => {
+        renderBatch('ask-focus-offscreen-busy');
+        const composer = document.createElement('textarea');
+        composer.id = 'prompt-textarea';
+        composer.value = 'typing while it arrived';
+        document.body.appendChild(composer);
+        composer.focus();
+
+        onScreen = true;
+        act(() => notify());
+        expect(composer).toHaveFocus();
+      });
     });
   });
 

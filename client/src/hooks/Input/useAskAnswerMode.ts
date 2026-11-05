@@ -17,7 +17,7 @@ import {
   useAskSubmitStatus,
   useResumeSubmit,
 } from '~/components/Chat/Messages/Content/ApprovalContext';
-import { getAskAnswerDraftId, morphTransition, setDraft } from '~/utils';
+import { getAskAnswerDraftId, morphTransition, getDraft, setDraft } from '~/utils';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { useOptionalChatFormContext } from '~/Providers';
 
@@ -208,7 +208,21 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     releasedComposerText,
     setReleasedComposerText,
   ]);
-  const answerText = liveAsk != null ? (answerDrafts[liveAsk.actionId] ?? '') : '';
+  /**
+   * The answer saved under the question's own draft key. Autosave restores it
+   * only into the composer, which answers a question moved there; the chat
+   * card, where a question starts, reads it from here so a reload or a return
+   * to a still-pending question shows what was typed.
+   */
+  const savedAnswerActionId = liveAsk != null && !batchMode ? liveAsk.actionId : null;
+  const savedAnswer = useMemo(
+    () =>
+      saveDrafts && savedAnswerActionId != null
+        ? (getDraft(getAskAnswerDraftId(savedAnswerActionId)) ?? '')
+        : '',
+    [saveDrafts, savedAnswerActionId],
+  );
+  const answerText = liveAsk != null ? (answerDrafts[liveAsk.actionId] ?? savedAnswer) : '';
   const setAnswerText = useCallback(
     (text: string) => {
       if (liveAsk && !batchMode) {

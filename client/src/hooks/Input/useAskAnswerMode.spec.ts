@@ -15,6 +15,7 @@ const mockResetComposer = jest.fn();
 const mockGetComposerText = jest.fn(() => 'answer from A');
 const mockSetComposerText = jest.fn();
 const mockSetDraft = jest.fn();
+const mockGetDraft = jest.fn((_id: string): string | null => null);
 let mockSaveDrafts = false;
 let mockAskStatus = 'idle';
 let jotaiStore = createStore();
@@ -42,6 +43,7 @@ jest.mock('~/utils', () => ({
   getAskAnswerDraftId: (id: string) => `draft-${id}`,
   morphTransition: (update: () => void) => update(),
   setDraft: (...args: unknown[]) => mockSetDraft(...args),
+  getDraft: (id: string) => mockGetDraft(id),
 }));
 
 import { useGetMessagesByConvoId } from '~/data-provider';
@@ -74,6 +76,8 @@ describe('useAskAnswerMode', () => {
     mockGetComposerText.mockReturnValue('answer from A');
     mockSetComposerText.mockReset();
     mockSubmitAskAnswer.mockReset();
+    mockGetDraft.mockReset();
+    mockGetDraft.mockImplementation(() => null);
   });
 
   it('starts a live ask in the chat card and leaves the composer alone', () => {
@@ -96,6 +100,36 @@ describe('useAskAnswerMode', () => {
     expect(result.current.collapsed).toBe(false);
     expect(result.current.popoverVisible).toBe(true);
     expect(result.current.composerAnswers).toBe(true);
+  });
+
+  it('shows a saved answer in the chat card after a reload', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockSaveDrafts = true;
+    mockGetDraft.mockImplementation((id) => (id === 'draft-a1' ? 'typed before reload' : null));
+    mockUseGetMessages.mockReturnValue({ data: liveAsk });
+
+    const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+
+    expect(result.current.collapsed).toBe(true);
+    expect(result.current.answerText).toBe('typed before reload');
+
+    act(() => result.current.setAnswerText('edited in the card'));
+
+    expect(result.current.answerText).toBe('edited in the card');
+  });
+
+  it('leaves the saved answer alone while drafts are off', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockGetDraft.mockImplementation(() => 'should not load');
+    mockUseGetMessages.mockReturnValue({ data: liveAsk });
+
+    const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+
+    expect(result.current.answerText).toBe('');
   });
 
   it('starts a live batch in the chat card without locking the composer', () => {
