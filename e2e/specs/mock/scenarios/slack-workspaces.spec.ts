@@ -350,7 +350,7 @@ for (const theme of ['light', 'dark']) {
         setup.getByRole('checkbox', { name: 'Use this agent instead', exact: true }),
       ).toBeVisible();
       await expect(
-        setup.getByRole('button', { name: 'Activate channel', exact: true }),
+        setup.getByRole('button', { name: 'Replace assignment', exact: true }),
       ).toBeDisabled();
       await expect(setup.getByLabel('Bot token', { exact: true })).toHaveCount(0);
       if (process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX)
@@ -359,13 +359,17 @@ for (const theme of ['light', 'dark']) {
           path: `${process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX}-target-${theme}.png`,
         });
       await setup.getByRole('checkbox', { name: 'Use this agent instead', exact: true }).check();
-      await setup.getByRole('button', { name: 'Activate channel', exact: true }).click();
+      await setup.getByRole('button', { name: 'Replace assignment', exact: true }).click();
       await expect(setup).toHaveCount(0);
       expect(activations).toBe(1);
       await expect(form.getByText('Active', { exact: true })).toBeVisible();
       await form.getByRole('button', { name: 'Manage connection', exact: true }).click();
       const manage = page.getByRole('dialog', { name: 'Manage connection', exact: true });
       await expect(manage.getByRole('button', { name: 'Remove', exact: true })).toBeVisible();
+      await expect(manage.getByText('Assigned', { exact: true })).toBeVisible();
+      await expect(manage.getByRole('button', { name: 'Assign agent', exact: true })).toHaveCount(
+        0,
+      );
       if (process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX)
         await page.screenshot({
           animations: 'disabled',

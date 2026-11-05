@@ -868,7 +868,9 @@ describe('organization workspace connections', () => {
     await openAdd(user);
     await user.click(await screen.findByRole('button', { name: 'Engineering' }));
     await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
-    const activate = await screen.findByRole('button', { name: 'com_ui_channels_activate' });
+    const activate = await screen.findByRole('button', {
+      name: 'com_ui_channels_workspace_replace_assignment',
+    });
     expect(activate).toBeDisabled();
     await user.click(
       await screen.findByRole('checkbox', { name: 'com_ui_channels_workspace_replace' }),
@@ -906,7 +908,9 @@ describe('organization workspace connections', () => {
     await user.click(await screen.findByRole('button', { name: 'Engineering' }));
     await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
     await screen.findByText('com_ui_channels_workspace_route_owned');
-    expect(screen.getByRole('button', { name: 'com_ui_channels_activate' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'com_ui_channels_workspace_replace_assignment' }),
+    ).toBeDisabled();
     expect(
       screen.queryByRole('checkbox', { name: 'com_ui_channels_workspace_replace' }),
     ).not.toBeInTheDocument();
@@ -924,7 +928,9 @@ describe('organization workspace connections', () => {
     await openAdd(user);
     await user.click(await screen.findByRole('button', { name: 'Engineering' }));
     await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
-    await user.click(await screen.findByRole('button', { name: 'com_ui_channels_activate' }));
+    await user.click(
+      await screen.findByRole('button', { name: 'com_ui_channels_workspace_assign' }),
+    );
     await screen.findByRole('alert');
     await screen.findAllByText('com_ui_channels_active');
     await user.click(screen.getByRole('button', { name: 'com_ui_channels_workspace_assign' }));
@@ -970,6 +976,34 @@ describe('organization workspace connections', () => {
     expect(screen.queryByText('com_ui_slack_workspaces_admin')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'com_ui_delete' })).toBeEnabled();
   });
+  test('shows assignment status instead of a disabled action for the selected destination', async () => {
+    rows = [{ ...configured, status: 'active' }];
+    jest
+      .mocked(dataService.getAgentChannelWorkspaceTarget)
+      .mockImplementation(async (_agent, _channel, destination) => ({
+        canReplace: true,
+        occupied: destination === undefined,
+        assignedToThisChannel: destination === undefined,
+        revision: destination === undefined ? 'owned-route' : undefined,
+      }));
+    const user = userEvent.setup();
+    renderChannels();
+    await openConnection(user, 'active');
+    await screen.findByText('com_ui_channels_workspace_assigned');
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_channels_workspace_assign' }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'com_ui_channels_workspace_specific' }));
+    await user.type(screen.getByLabelText('com_ui_channels_workspace_channel_id'), 'C999');
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'com_ui_channels_workspace_assign' }),
+      ).toBeEnabled(),
+    );
+    expect(screen.queryByText('com_ui_channels_workspace_assigned')).not.toBeInTheDocument();
+    expect(dataService.setAgentChannelWorkspaceRoute).not.toHaveBeenCalled();
+  });
+
   test('removes a selected route only after confirmation and keeps the connection active', async () => {
     rows = [{ ...configured, status: 'active' }];
     let routes = [{ externalChannelId: 'C123', revision: 'route-1' }];
