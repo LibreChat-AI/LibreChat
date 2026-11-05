@@ -3,6 +3,8 @@ import { EToolResources } from 'librechat-data-provider';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   QueryKeys,
+  FileSources,
+  EModelEndpoint,
   dataService,
   MutationKeys,
   defaultOrderQuery,
@@ -10,6 +12,7 @@ import {
 } from 'librechat-data-provider';
 import type { UseMutationResult } from '@tanstack/react-query';
 import type * as t from 'librechat-data-provider';
+import { invalidateAssistantDetails } from '../Assistants/cache';
 import { invalidateRecentFiles } from '~/utils/files';
 import { useGetStartupConfig } from '../Endpoints';
 import { useLocalize } from '~/hooks';
@@ -108,6 +111,10 @@ export const useUploadFileMutation = (
         return;
       }
 
+      if (typeof endpoint === 'string') {
+        invalidateAssistantDetails(queryClient, endpoint, assistant_id);
+      }
+
       queryClient.setQueryData<t.AssistantListResponse>(
         [QueryKeys.assistants, endpoint, defaultOrderQuery],
         (prev) => {
@@ -197,6 +204,23 @@ export const useDeleteFilesMutation = (
       onError?.(error, vars, context);
     },
     onSuccess: (data, vars, context) => {
+      if (vars.assistant_id) {
+        const endpoints = new Set<string>();
+        for (const file of vars.files) {
+          if (file.source === FileSources.openai || file.filepath === EModelEndpoint.assistants) {
+            endpoints.add(EModelEndpoint.assistants);
+          } else if (
+            file.source === FileSources.azure ||
+            file.filepath === EModelEndpoint.azureAssistants
+          ) {
+            endpoints.add(EModelEndpoint.azureAssistants);
+          }
+        }
+        for (const endpoint of endpoints) {
+          invalidateAssistantDetails(queryClient, endpoint, vars.assistant_id);
+        }
+      }
+
       /** Only a reported failure leaves a record on disk, so everything else the request named
        * is gone. Reading it the other way around would strand a row the server never had: a
        * file another tab already deleted matches no record, and the route answers that with
