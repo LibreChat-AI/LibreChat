@@ -5211,6 +5211,23 @@ class GenerationJobManagerClass {
     let deliveryActivated =
       prepared?.deferDeliveryUntilActivated !== true && options?.expectedCreatedAt == null;
     let deferredDeliveries: DeferredDelivery[] = [];
+    let attachmentPending = true;
+    let attachmentTerminal: Exclude<DeferredDelivery, { type: 'chunk' }> | undefined;
+    // A live terminal can arrive inside an attachment await, before the route has its handle.
+    const finishAttachment = (afterAttachment?: () => void) => {
+      attachmentPending = false;
+      const terminal = attachmentTerminal;
+      attachmentTerminal = undefined;
+      setImmediate(() => {
+        if (terminal) {
+          terminalEventQueued = false;
+          if (terminal.type === 'done') deliverDone(terminal.event);
+          else deliverError(terminal.error);
+        }
+        afterAttachment?.();
+      });
+      return subscription;
+    };
     let subscription: {
       ready?: Promise<void>;
       unsubscribe: t.UnsubscribeFn;
@@ -5243,6 +5260,12 @@ class GenerationJobManagerClass {
       if (!subscriptionActive || terminalEventDelivered) {
         return;
       }
+      if (attachmentPending) {
+        terminalEventQueued = true;
+        runtime.finalEvent = event;
+        attachmentTerminal = { type: 'done', event };
+        return;
+      }
       terminalEventDelivered = true;
       runtime.finalEvent = event;
       try {
@@ -5253,6 +5276,15 @@ class GenerationJobManagerClass {
     };
     const deliverError = (error: string): void => {
       if (!subscriptionActive || terminalEventDelivered) {
+        return;
+      }
+      if (
+        attachmentPending &&
+        error !== SHUTDOWN_SUBSCRIBER_ERROR &&
+        error !== TERMINAL_PUBLICATION_RECONNECT_ERROR
+      ) {
+        terminalEventQueued = true;
+        attachmentTerminal = { type: 'error', error };
         return;
       }
       terminalEventDelivered = true;
@@ -5501,7 +5533,7 @@ class GenerationJobManagerClass {
       // This replica has no local replay; resume reconstructs the durable prefix before live data.
       queueError(TERMINAL_PUBLICATION_RECONNECT_ERROR);
       activateDelivery();
-      return subscription;
+      return finishAttachment();
     }
 
     const isFirst = this.eventTransport.isFirstSubscriber(streamId);
@@ -5830,11 +5862,9 @@ class GenerationJobManagerClass {
     // Only schedule stored terminal delivery after the attachment is fully prepared.
     // The async function resolves before setImmediate runs, giving the route its
     // unsubscribe handle before a terminal callback can end the response.
-    setImmediate(() => {
+    return finishAttachment(() => {
       void deliverStoredTerminal();
     });
-
-    return subscription;
   }
 
   /**
