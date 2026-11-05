@@ -119,6 +119,7 @@ import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils
 import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering/tools';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
+import { assembleSystemPrompt, sdkCachesConversationBlock } from './systemParts';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
@@ -136,6 +137,7 @@ import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { buildLangfuseConfig } from '~/langfuse/config';
+import { isStableContextEnabled } from './promptCache';
 import { applyTestRunHook } from '~/agents/testHook';
 import { frameDynamicInstructions } from './tail';
 import { isUserProvided } from '~/utils/common';
@@ -449,6 +451,10 @@ type RunAgent = Omit<Agent, 'tools'> & {
   imageDetail?: ImageDetail;
   toolContextMap?: Record<string, unknown>;
   dynamicToolContextMap?: Record<string, unknown>;
+  /** Text of each contributed system prompt part, by key (see `systemParts`). */
+  contextParts?: Readonly<Record<string, string>>;
+  /** Set by `applyTurnContext`: the turn context delivers the runtime context. */
+  runtimeInLedger?: boolean;
   toolRegistry?: LCToolRegistry;
   /** Serializable tool definitions for event-driven execution */
   toolDefinitions?: LCTool[];
@@ -2387,7 +2393,13 @@ export async function createRun({
     enqueueSubagentChildren(agent, pendingCodeFileAgents, visitedCodeFileAgents, false, false);
   }
   for (const agent of codeFileAgents.values()) {
-    prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id);
+    /** The turn context already announced the paths planned at initialization in the message. */
+    prepareQueuedCodeFileContext(
+      agent,
+      codeFileAgents.values(),
+      user?.id,
+      agent.runtimeInLedger === true,
+    );
   }
 
   const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
@@ -2479,20 +2491,19 @@ export async function createRun({
       modelCallbacks,
     );
 
-    const joinInstructionMap = (map?: Record<string, unknown>) =>
-      Object.values(map ?? {})
-        .filter((value): value is string => typeof value === 'string' && value !== '')
-        .join('\n')
-        .trim();
-
-    const toolInstructions = joinInstructionMap(agent.toolContextMap);
-    const dynamicToolInstructions = joinInstructionMap(agent.dynamicToolContextMap);
-
-    const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
-
-    let additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
-      .join('\n')
-      .trim();
+    /**
+     * With `stableContext` and a provider that caches the conversation block, only the per-turn
+     * parts (memory, RAG, this turn's queued files) stay dynamic; the rest of the conversation's
+     * context is a cached block right after the instructions, followed by a compaction summary.
+     * The block is passed even when empty: the SDK keeps the summary there only when it is set.
+     * Subagent runs are isolated and keep the split.
+     */
+    const assembled = assembleSystemPrompt(agent, {
+      stableContext: isStableContextEnabled(appConfig),
+      conversationBlock: !isSubagent && sdkCachesConversationBlock(provider, llmConfig),
+    });
+    const systemContent = assembled.instructions;
+    let additionalInstructions = assembled.additional_instructions;
     if (isSubagent && agent.alwaysApplySkillPrimes?.length) {
       const skillInstructions = agent.alwaysApplySkillPrimes
         .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
@@ -2632,6 +2643,9 @@ export async function createRun({
       tools,
       clientOptions: llmConfig,
       instructions: systemContent,
+      ...(assembled.conversation_instructions != null && {
+        conversation_instructions: assembled.conversation_instructions,
+      }),
       additional_instructions:
         frameDynamicInstructions({
           instructions: additionalInstructions,
