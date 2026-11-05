@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { createHash, randomBytes } from 'node:crypto';
 import { SLACK_CHANNEL_BOT_SCOPES } from 'librechat-data-provider';
-import type { SharedSlackGatewayPolicy } from 'librechat-data-provider';
 import { getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import type {
   ChannelConfig,
@@ -28,7 +27,6 @@ export interface SlackWorkspaceApp {
   clientId: string;
   clientSecret: string;
   signingSecret: string;
-  gateway: SharedSlackGatewayPolicy;
   redirectUri: string;
   flowLifetimeMs: number;
   requestTimeoutMs: number;

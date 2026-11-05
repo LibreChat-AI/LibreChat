@@ -421,9 +421,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
   const availableWorkspaces =
     workspaces.data?.pages
       .flatMap((page) => page.workspaces)
-      .filter(
-        (workspace) => workspace.status === 'active' && workspace.appId === workspaceStatus?.appId,
-      ) ?? [];
+      .filter((workspace) => workspace.status === 'active') ?? [];
   const useWorkspace = Boolean(workspaceStatus?.configured && source === 'workspace');
   const channels = useQuery(
     [QueryKeys.agentChannels, userId, tenantId, agentId],

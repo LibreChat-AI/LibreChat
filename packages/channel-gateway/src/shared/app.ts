@@ -12,6 +12,8 @@ import { ChannelClient } from '../client';
 import { SlackClient } from '../slack';
 import { GatewayApp } from '../app';
 
+const callback = /^\/slack\/(events|interactions)\/([-\w.]{1,128})\/(A[A-Z0-9]{1,255})$/;
+
 export class SharedGatewayApp {
   ready = false;
   private readonly ingress: SlackHTTPServer;
@@ -27,18 +29,28 @@ export class SharedGatewayApp {
       ready: () => this.ready,
       capacity: initial.workers.ingressConcurrency,
       match: (path) => {
-        if (path === '/slack/events') return false;
-        if (path === '/slack/interactions') return true;
-        return undefined;
+        const match = callback.exec(path);
+        return match ? match[1] === 'interactions' : undefined;
       },
       log,
-      dispatch: async (body, headers, interactive, signal) => {
+      dispatch: async (body, headers, interactive, signal, path) => {
+        const scope = callback.exec(path);
+        if (!scope) return { status: 404, body: { error: 'not_found' } };
+        const [, , tenantId, appId] = scope;
         const settings = await client.bootstrap(signal);
+        let security;
+        try {
+          security = await client.app(tenantId, appId, signal);
+        } catch (error) {
+          if (error instanceof ServiceError && error.status === 404)
+            return { status: 404, body: { error: 'not_found' } };
+          throw error;
+        }
         const parsed = parseSignedWebhook(
           body,
           headers,
           {
-            signingSecret: settings.signingSecret,
+            signingSecret: security.signingSecret,
             signatureToleranceSeconds: settings.gateway.signatureToleranceSeconds,
           },
           interactive,
@@ -51,16 +63,16 @@ export class SharedGatewayApp {
           request.kind === 'event' &&
           ['app_uninstalled', 'tokens_revoked'].includes(request.envelope.event.type)
         ) {
-          if (request.envelope.api_app_id !== settings.appId)
+          if (request.envelope.api_app_id !== appId)
             return { status: 400, body: { error: 'invalid_payload' } };
-          await client.lifecycle(settings.appId, request.envelope.team_id, signal);
+          await client.lifecycle(tenantId, appId, request.envelope.team_id, signal);
           return { status: 200, body: {} };
         }
-        const lookup = slackRouteLookup(request, settings.appId);
+        const lookup = slackRouteLookup(request, appId);
         if (!lookup) return { status: 200, body: {} };
         let route;
         try {
-          route = await client.route(lookup, signal);
+          route = await client.route(tenantId, lookup, signal);
         } catch (error) {
           // A removed installation or stale action is a definitive non-execution outcome.
           if (error instanceof ServiceError && error.status === 404)
@@ -68,6 +80,12 @@ export class SharedGatewayApp {
           throw error;
         }
         if (route.kind !== 'bound') {
+          if (
+            (route.workspace.tenantId || '_') !== tenantId ||
+            route.workspace.appId !== appId ||
+            route.workspace.teamId !== lookup.teamId
+          )
+            throw new Error('Slack workspace scope changed');
           if (request.kind === 'event') {
             const event = normalizeEvent(request.envelope, { channel: { slack: route.workspace } });
             if (event?.kind === 'message')
@@ -86,6 +104,7 @@ export class SharedGatewayApp {
           }
           return { status: 200, body: {} };
         }
+        if (route.tenantId !== tenantId) throw new Error('Slack route tenant changed');
         const scoped = resolveGatewayConfig(
           { ...config, CHANNEL_TENANT_ID: route.tenantId, CHANNEL_ID: route.channelId },
           settings.gateway,
@@ -94,7 +113,7 @@ export class SharedGatewayApp {
         const bundle = await channel.channel(signal);
         if (
           bundle.channel.workspaceId !== route.workspaceId ||
-          bundle.channel.slack.appId !== settings.appId ||
+          bundle.channel.slack.appId !== appId ||
           bundle.channel.slack.teamId !== lookup.teamId
         )
           throw new Error('Slack installation changed during dispatch');

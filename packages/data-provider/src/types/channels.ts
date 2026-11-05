@@ -59,7 +59,6 @@ export interface SlackWorkspace {
 
 export interface SlackWorkspaceStatus {
   configured: boolean;
-  appId?: string;
   canManage: boolean;
   workspaces: SlackWorkspace[];
   next?: string;
@@ -67,7 +66,6 @@ export interface SlackWorkspaceStatus {
 
 export interface SlackWorkspaceDetail {
   configured: boolean;
-  appId?: string;
   canManage: boolean;
   workspace: SlackWorkspace;
 }
@@ -99,10 +97,14 @@ export interface SlackWorkspaceConnect {
 
 /** Deployment-service protocol; never returned by browser configuration endpoints. */
 export interface SharedSlackGatewayBootstrap {
-  appId: string;
-  signingSecret: string;
   gateway: ChannelGatewayWirePolicy;
   workers: SharedSlackGatewayPolicy;
+}
+
+export interface SharedSlackAppSecurity {
+  tenantId: string;
+  appId: string;
+  signingSecret: string;
 }
 
 export type SharedSlackRoute =

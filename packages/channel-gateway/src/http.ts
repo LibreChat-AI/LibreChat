@@ -25,6 +25,7 @@ export class SlackHTTPServer {
         headers: WebhookHeaders,
         interactive: boolean,
         signal: AbortSignal,
+        path: string,
       ) => Promise<WebhookReply>;
       log: Logger;
     },
@@ -85,6 +86,7 @@ export class SlackHTTPServer {
         },
         interactive,
         controller.signal,
+        path,
       );
       controller.signal.throwIfAborted();
       send(reply.status, reply.body);

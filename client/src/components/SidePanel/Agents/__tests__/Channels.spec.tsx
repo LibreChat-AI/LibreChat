@@ -817,14 +817,13 @@ describe('organization workspace connections', () => {
     jest.mocked(dataService.listAgentChannels).mockImplementation(async () => rows);
     jest.mocked(dataService.getSlackWorkspaces).mockResolvedValue({
       configured: true,
-      appId: 'A123',
       canManage: true,
       workspaces: [workspace],
     });
     jest
       .mocked(dataService.getSlackWorkspace)
       .mockReset()
-      .mockResolvedValue({ configured: true, appId: 'A123', canManage: true, workspace });
+      .mockResolvedValue({ configured: true, canManage: true, workspace });
     jest
       .mocked(dataService.createWorkspaceAgentChannel)
       .mockReset()
@@ -910,7 +909,7 @@ describe('organization workspace connections', () => {
     rows = [{ ...configured, status: 'active' }];
     jest
       .mocked(dataService.getSlackWorkspace)
-      .mockResolvedValue({ configured: true, appId: 'A123', canManage: false, workspace });
+      .mockResolvedValue({ configured: true, canManage: false, workspace });
     const user = userEvent.setup();
     renderChannels();
     await openConnection(user, 'active');

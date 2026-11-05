@@ -4,6 +4,9 @@ import type {
   AgentChannel,
   ActivateAgentChannel,
   SlackChannelManifest,
+  SlackAppPage,
+  SlackAppRegistration,
+  ConfigureSlackApp,
   SlackWorkspaceStatus,
   SlackWorkspaceConnect,
   SlackWorkspaceDetail,
@@ -196,8 +199,27 @@ export function getSlackWorkspace(workspaceId: string): Promise<SlackWorkspaceDe
   return request.get(endpoints.slackWorkspaces(workspaceId));
 }
 
-export function connectSlackWorkspace(workspaceId?: string): Promise<SlackWorkspaceConnect> {
-  return request.post(`${endpoints.slackWorkspaces()}/connect`, workspaceId ? { workspaceId } : {});
+export function getSlackApps(cursor?: string): Promise<SlackAppPage> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}/apps${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function configureSlackApp(input: ConfigureSlackApp): Promise<SlackAppRegistration> {
+  return request.put(`${endpoints.slackWorkspaces()}/apps`, input);
+}
+
+export function removeSlackApp(appId: string, revision: string): Promise<void> {
+  return request.post(`${endpoints.slackWorkspaces()}/apps/${encodeURIComponent(appId)}/remove`, {
+    revision,
+  });
+}
+
+export function connectSlackWorkspace(
+  workspaceId?: string,
+  appId?: string,
+): Promise<SlackWorkspaceConnect> {
+  return request.post(`${endpoints.slackWorkspaces()}/connect`, { workspaceId, appId });
 }
 
 export function disconnectSlackWorkspace(workspaceId: string): Promise<void> {

@@ -12,9 +12,9 @@ import {
   slackPublicURL,
   SLACK_WORKSPACE_CALLBACK_PATH,
 } from './workspaces';
+import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceHandlers } from './workspaceHttp';
 import { capabilityStore } from '~/middleware/capabilities';
-import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { getOAuthCallbackUrl } from '~/oauth/url';
 
@@ -37,12 +37,21 @@ export function createSlackWorkspaceSettingsReader(deps: {
     let app: SlackWorkspaceApp | undefined;
     if (appId && channels.enabled && channels.slackApp?.enabled) {
       const registration = await deps.storage.app(appId);
-      if (registration?.clientId && registration.encryptedClientSecret && registration.encryptedSigningSecret) {
+      if (
+        registration?.clientId &&
+        registration.encryptedClientSecret &&
+        registration.encryptedSigningSecret
+      ) {
         const [clientSecret, signingSecret] = await Promise.all([
           decryptCredential(registration.encryptedClientSecret),
           decryptCredential(registration.encryptedSigningSecret),
         ]);
-        app = resolveSlackWorkspaceApp(channels, redirectUri, { appId, clientId: registration.clientId, clientSecret, signingSecret });
+        app = resolveSlackWorkspaceApp(channels, redirectUri, {
+          appId,
+          clientId: registration.clientId,
+          clientSecret,
+          signingSecret,
+        });
       }
     }
     if (app) slackPublicURL(deps.clientBaseUrl);
@@ -112,11 +121,20 @@ export function createSlackWorkspaceRuntime(
     settings: async () => {
       const { channels } = await readSettings();
       return {
-        configured: channels.enabled && channels.transport === 'webhook' && channels.slackApp?.enabled === true,
+        configured:
+          channels.enabled &&
+          channels.transport === 'webhook' &&
+          channels.slackApp?.enabled === true,
         setup: {
           redirectUri: getOAuthCallbackUrl(deps.publicBaseUrl, SLACK_WORKSPACE_CALLBACK_PATH),
-          eventsBaseUrl: getOAuthCallbackUrl(channels.gatewayUrl || deps.publicBaseUrl, '/slack/events'),
-          interactionsBaseUrl: getOAuthCallbackUrl(channels.gatewayUrl || deps.publicBaseUrl, '/slack/interactions'),
+          eventsBaseUrl: getOAuthCallbackUrl(
+            channels.gatewayUrl || deps.publicBaseUrl,
+            '/slack/events',
+          ),
+          interactionsBaseUrl: getOAuthCallbackUrl(
+            channels.gatewayUrl || deps.publicBaseUrl,
+            '/slack/interactions',
+          ),
         },
         pageSize: channels.maxMetadataPageSize,
       };

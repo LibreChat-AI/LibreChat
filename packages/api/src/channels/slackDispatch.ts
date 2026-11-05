@@ -1,6 +1,12 @@
 import { z } from 'zod';
-import { runAsSystem, tenantStorage, TransactionUnavailableError } from '@librechat/data-schemas';
 import {
+  getTenantId,
+  runAsSystem,
+  tenantStorage,
+  TransactionUnavailableError,
+} from '@librechat/data-schemas';
+import {
+  tenantIdSchema,
   sharedSlackRouteLookupSchema,
   channelGatewayWirePolicySchema,
   CHANNEL_GATEWAY_POLICY_VERSION,
@@ -21,8 +27,10 @@ import { getSafeErrorMetadata } from '~/utils/errors';
 import { readSlackJSON } from './workspaces';
 
 const installation = sharedSlackRouteLookupSchema.shape;
+const scopeInput = z.object({ tenantId: tenantIdSchema, appId: installation.appId });
+const routeInput = sharedSlackRouteLookupSchema.extend({ tenantId: tenantIdSchema });
 const lifecycleInput = z
-  .object({ appId: installation.appId, teamId: installation.teamId })
+  .object({ tenantId: tenantIdSchema, appId: installation.appId, teamId: installation.teamId })
   .strict();
 const credentialStatus = z.object({
   ok: z.boolean(),
@@ -50,13 +58,13 @@ export function createSlackDispatchHandlers(deps: {
   logError: (metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
 }): {
   bootstrap: RequestHandler;
+  app: RequestHandler;
   resolve: RequestHandler;
   discover: RequestHandler;
   lifecycle: RequestHandler;
 } {
-  type Settings = Awaited<ReturnType<typeof deps.readSettings>> & {
-    app: NonNullable<Awaited<ReturnType<typeof deps.readSettings>>['app']>;
-  };
+  type Settings = Awaited<ReturnType<typeof deps.readSettings>>;
+  type AppSettings = Settings & { app: NonNullable<Settings['app']> };
   let readiness: Promise<void> | undefined;
   const prepare = () => {
     readiness ??= runAsSystem(() => deps.dispatch.ready()).catch((error) => {
@@ -66,7 +74,7 @@ export function createSlackDispatchHandlers(deps: {
     return readiness;
   };
   const protect =
-    (action: (req: Request, res: Response, settings: Settings) => Promise<void>): RequestHandler =>
+    (action: (req: Request, res: Response) => Promise<void>): RequestHandler =>
     async (req, res) => {
       res.set('Cache-Control', 'no-store');
       if (!acceptsChannelServiceToken(req.get('authorization'), deps.serviceToken())) {
@@ -74,12 +82,7 @@ export function createSlackDispatchHandlers(deps: {
         return;
       }
       try {
-        const settings = await deps.readSettings();
-        if (!settings.app) {
-          res.sendStatus(404);
-          return;
-        }
-        await action(req, res, { ...settings, app: settings.app });
+        await action(req, res);
       } catch (error) {
         deps.logError(getSafeErrorMetadata(error));
         res.status(503).json({
@@ -90,27 +93,68 @@ export function createSlackDispatchHandlers(deps: {
         });
       }
     };
+  const enabled = (settings: Settings) =>
+    settings.channels.enabled &&
+    settings.channels.transport === 'webhook' &&
+    settings.channels.slackApp?.enabled;
+  const global = (action: (req: Request, res: Response, settings: Settings) => Promise<void>) =>
+    protect(async (req, res) => {
+      const settings = await deps.readSettings();
+      if (!enabled(settings)) {
+        res.sendStatus(404);
+        return;
+      }
+      await action(req, res, settings);
+    });
+  const organization = (
+    action: (req: Request, res: Response, settings: AppSettings) => Promise<void>,
+  ) =>
+    protect(async (req, res) => {
+      const input = scopeInput.safeParse(req.body);
+      if (!input.success) {
+        res.sendStatus(400);
+        return;
+      }
+      await tenantStorage.run(
+        { tenantId: input.data.tenantId === '_' ? undefined : input.data.tenantId },
+        async () => {
+          const settings = await deps.readSettings(input.data.appId);
+          if (!enabled(settings) || !settings.app) {
+            res.sendStatus(404);
+            return;
+          }
+          await action(req, res, { ...settings, app: settings.app });
+        },
+      );
+    });
   return {
-    bootstrap: protect(async (_req, res, { app, channels }) => {
+    bootstrap: global(async (_req, res, { channels }) => {
+      const workers = channels.slackApp?.gateway;
+      if (!workers) {
+        res.sendStatus(404);
+        return;
+      }
       await prepare();
       res.json({
-        appId: app.appId,
-        signingSecret: app.signingSecret,
         gateway: channelGatewayWirePolicySchema.parse({
           ...channels,
           version: CHANNEL_GATEWAY_POLICY_VERSION,
         }),
         workers: {
-          ...app.gateway,
-          discoveryBatchSize: Math.min(
-            app.gateway.discoveryBatchSize,
-            channels.maxMetadataPageSize,
-          ),
+          ...workers,
+          discoveryBatchSize: Math.min(workers.discoveryBatchSize, channels.maxMetadataPageSize),
         },
       });
     }),
-    resolve: protect(async (req, res, { app }) => {
-      const parsed = sharedSlackRouteLookupSchema.safeParse(req.body);
+    app: organization(async (_req, res, { app }) => {
+      res.json({
+        tenantId: getTenantId() || '_',
+        appId: app.appId,
+        signingSecret: app.signingSecret,
+      });
+    }),
+    resolve: organization(async (req, res, { app }) => {
+      const parsed = routeInput.safeParse(req.body);
       if (!parsed.success) {
         res.sendStatus(400);
         return;
@@ -121,7 +165,7 @@ export function createSlackDispatchHandlers(deps: {
         return;
       }
       const workspace = await deps.workspaces.route(appId, teamId);
-      if (!workspace) {
+      if (!workspace || (workspace.tenantId || '_') !== parsed.data.tenantId) {
         res.sendStatus(404);
         return;
       }
@@ -176,14 +220,19 @@ export function createSlackDispatchHandlers(deps: {
         } satisfies SharedSlackRoute);
       });
     }),
-    discover: protect(async (req, res, { app, channels }) => {
+    discover: global(async (req, res, { channels }) => {
+      const workers = channels.slackApp?.gateway;
+      if (!workers) {
+        res.sendStatus(404);
+        return;
+      }
       const input = z
         .object({
           limit: z
             .number()
             .int()
             .min(1)
-            .max(Math.min(app.gateway.discoveryBatchSize, channels.maxMetadataPageSize)),
+            .max(Math.min(workers.discoveryBatchSize, channels.maxMetadataPageSize)),
         })
         .strict()
         .safeParse(req.body);
@@ -193,7 +242,7 @@ export function createSlackDispatchHandlers(deps: {
       }
       res.json(await runAsSystem(() => deps.dispatch.discover(input.data.limit, Date.now())));
     }),
-    lifecycle: protect(async (req, res, { app }) => {
+    lifecycle: organization(async (req, res, { app }) => {
       const input = lifecycleInput.safeParse(req.body);
       if (!input.success) {
         res.sendStatus(400);
@@ -204,7 +253,7 @@ export function createSlackDispatchHandlers(deps: {
         return;
       }
       const workspace = await deps.workspaces.route(input.data.appId, input.data.teamId);
-      if (!workspace) {
+      if (!workspace || (workspace.tenantId || '_') !== input.data.tenantId) {
         res.sendStatus(204);
         return;
       }
