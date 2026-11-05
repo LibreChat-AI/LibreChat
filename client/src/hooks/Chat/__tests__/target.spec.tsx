@@ -5,6 +5,7 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { dataService, EModelEndpoint, QueryKeys, defaultOrderQuery } from 'librechat-data-provider';
 import {
+  useUserKeyQuery,
   useUpdateUserKeysMutation,
   useRevokeUserKeyMutation,
   useRevokeAllUserKeysMutation,
@@ -358,6 +359,108 @@ describe('selected assistant credentials', () => {
       expect(isTargetReady(client, result.current.value)).toBe(true);
     },
   );
+
+  it.each([
+    ['save missing', '', 'never'],
+    ['save expired', '2000-01-01T00:00:00.000Z', 'never'],
+    ['single revoke', 'never', ''],
+    ['bulk revoke', 'never', ''],
+  ] as const)(
+    'discards pending initial key metadata across %s',
+    async (operation, oldExpiry, expectedExpiry) => {
+      const initial = deferred<{ data: { expiresAt: string } }>();
+      const get = jest.spyOn(axios, 'get');
+      const transport = get.getMockImplementation()!;
+      let keyRequests = 0;
+      get.mockImplementation((url, options) => {
+        if (String(url).includes('/api/keys?name=assistants') && ++keyRequests === 1) {
+          return initial.promise;
+        }
+        return transport(url, options);
+      });
+      const { result, client } = setup(selected(EModelEndpoint.assistants), configured);
+      await waitFor(() => expect(keyRequests).toBe(1));
+      const key = [QueryKeys.name, EModelEndpoint.assistants];
+      expect(client.getQueryData(key)).toBeUndefined();
+      const onSuccess = jest.fn();
+      const onSettled = jest.fn();
+      const callbacks = { onSuccess, onSettled };
+      const saved = { name: EModelEndpoint.assistants, value: 'new', expiresAt: '' };
+      const revoked = { request: operation };
+      let mutation!: Promise<unknown>;
+      await act(async () => {
+        if (operation.startsWith('save')) {
+          mutation = result.current.update.mutateAsync(saved, callbacks);
+        } else if (operation === 'single revoke') {
+          mutation = result.current.revoke.mutateAsync(revoked, callbacks);
+        } else {
+          mutation = result.current.revokeAll.mutateAsync(revoked, callbacks);
+        }
+      });
+      expect(operation.startsWith('save') ? axios.put : axios.delete).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        initial.resolve({ data: { expiresAt: oldExpiry } });
+        await mutation;
+      });
+      await waitFor(() => expect(onSettled).toHaveBeenCalledTimes(1));
+      const input = operation.startsWith('save') ? saved : revoked;
+      expect(onSuccess).toHaveBeenCalledWith({}, input, undefined);
+      expect(onSettled).toHaveBeenCalledWith({}, null, input, undefined);
+      expect(client.getQueryData(key)).toEqual({ expiresAt: expectedExpiry });
+      expect(keyRequests).toBe(2);
+      await waitFor(() => expect(result.current.target.ready).toBe(operation.startsWith('save')));
+      expect(details()).toHaveLength(operation.startsWith('save') ? 1 : 0);
+      expect(isTargetReady(client, result.current.value)).toBe(operation.startsWith('save'));
+    },
+  );
+
+  it('does not cancel another endpoint initial expiry request when saving a scoped key', async () => {
+    const initial = deferred<{ data: { expiresAt: string } }>();
+    const otherInitial = deferred<{ data: { expiresAt: string } }>();
+    const get = jest.spyOn(axios, 'get');
+    const transport = get.getMockImplementation()!;
+    let keyRequests = 0;
+    let otherRequests = 0;
+    get.mockImplementation((url, options) => {
+      const path = String(url);
+      if (path.includes('/api/keys?name=assistants') && ++keyRequests === 1) return initial.promise;
+      if (path.includes('/api/keys?name=azureAssistants') && ++otherRequests === 1)
+        return otherInitial.promise;
+      return transport(url, options);
+    });
+    const { result, client } = setup(selected(EModelEndpoint.assistants), configured);
+    const other = renderHook(() => useUserKeyQuery(EModelEndpoint.azureAssistants), {
+      wrapper: ({ children }: { children: React.ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    await waitFor(() => expect([keyRequests, otherRequests]).toEqual([1, 1]));
+    let mutation!: Promise<unknown>;
+    await act(async () => {
+      mutation = result.current.update.mutateAsync({
+        name: EModelEndpoint.assistants,
+        value: 'new',
+        expiresAt: '',
+      });
+    });
+    await act(async () => {
+      initial.resolve({ data: { expiresAt: '' } });
+      await mutation;
+    });
+    expect(client.getQueryState([QueryKeys.name, EModelEndpoint.azureAssistants])).toMatchObject({
+      fetchStatus: 'fetching',
+      isInvalidated: false,
+      data: undefined,
+    });
+    await act(async () => {
+      otherInitial.resolve({ data: { expiresAt: 'other-account-expiry' } });
+    });
+    await waitFor(() =>
+      expect(other.result.current.data).toEqual({ expiresAt: 'other-account-expiry' }),
+    );
+    expect([keyRequests, otherRequests]).toEqual([2, 1]);
+    other.unmount();
+  });
 
   it('accepts an unexpired finite key', async () => {
     expiry = new Date(Date.now() + 60_000).toISOString();

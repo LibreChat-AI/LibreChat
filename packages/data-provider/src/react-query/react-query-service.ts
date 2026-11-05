@@ -103,6 +103,7 @@ export const useUpdateMessageContentMutation = (
 
 /** Details from the previous credential cannot authorize a selected assistant while keys refresh. */
 async function invalidateUserKey(queryClient: QueryClient, name?: string): Promise<void> {
+  const keyScope = name == null ? [QueryKeys.name] : [QueryKeys.name, name];
   const assistantScope = name == null || s.isAssistantsEndpoint(name);
   const detailKey = name == null ? [QueryKeys.assistant] : [QueryKeys.assistant, name];
   const listKey = name == null ? [QueryKeys.assistants] : [QueryKeys.assistants, name];
@@ -112,9 +113,8 @@ async function invalidateUserKey(queryClient: QueryClient, name?: string): Promi
     void queryClient.invalidateQueries(detailKey, { refetchType: 'none' });
     void queryClient.invalidateQueries(listKey, { refetchType: 'none' });
   }
-  const keys = queryClient.invalidateQueries(
-    name == null ? [QueryKeys.name] : [QueryKeys.name, name],
-  );
+  void queryClient.cancelQueries(keyScope);
+  const keys = queryClient.invalidateQueries(keyScope);
   void queryClient.invalidateQueries([QueryKeys.models]);
   void queryClient.invalidateQueries([QueryKeys.tokenConfig]);
   await keys;
