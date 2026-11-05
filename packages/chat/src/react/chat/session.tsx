@@ -37,7 +37,7 @@ export function ChatSessionProvider({
   index?: number;
   /** The route's conversation id, which can run ahead of the pane's conversation. */
   conversationId?: string;
-  /** The host has loaded the record whose reply stamp must precede history. */
+  /** The saved record is ready for stream recovery; history can load before it. */
   historyReady?: boolean;
   children: (session: ChatSessionMessages) => ReactNode;
 }): ReactNode {
@@ -45,7 +45,6 @@ export function ChatSessionProvider({
   const isSubmitting = useIsSubmitting(index);
   const { messages, isLoading, isFetching } = host.useMessages(conversationId, {
     isStreaming: isSubmitting,
-    enabled: historyReady,
   });
 
   const chat = useChatHelpers(index, conversationId);

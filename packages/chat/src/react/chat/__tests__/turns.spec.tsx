@@ -21,8 +21,12 @@ import {
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
 } from '../../composer';
+import {
+  submissionStartFamily,
+  showStopButtonByIndex,
+  launchedConversationFamily,
+} from '../../generation';
 import { createTurnServices, createTurnCodeInputs } from '../__fixtures__/services';
-import { launchedConversationFamily } from '../../generation';
 import { siblingIdxFamily, siblingKey } from '../../thread';
 import { activeUsageResponseIdFamily } from '../../usage';
 import { isSubmittingFamily } from '../../submission';
@@ -155,6 +159,66 @@ describe('useTurns', () => {
       submission?.initialResponse?.messageId,
     );
     expect(chat.store.get(launchedConversationFamily(0))).toBe(submission?.conversation);
+  });
+
+  it('leaves all turn state untouched until the host permits the send', () => {
+    const canSubmit = jest.fn(() => false);
+    const readCodeInputs = jest.fn(() => createTurnCodeInputs());
+    const getRouteProjectId = jest.fn(() => null);
+    const files = new Map<string, ExtendedFile>([
+      ['temp-1', { file_id: 'file-1', temp_file_id: 'temp-1', progress: 1, size: 1 }],
+    ]);
+    const chat = setup({
+      files,
+      services: createTurnServices({ canSubmit, readCodeInputs, getRouteProjectId }),
+      agent: { provider: EModelEndpoint.openAI, model: 'gpt-5' },
+    });
+    const reasoningKey = getReasoningStateKey(conversationId, 0);
+    chat.store.set(pendingManualSkillsByConvoId(conversationId), ['queued-skill']);
+    chat.store.set(pendingQuotesByConvoId(conversationId), ['queued-quote']);
+    chat.store.set(pendingReasoningOverrideFamily(reasoningKey), reasoning);
+    chat.store.set(showStopButtonByIndex(0), true);
+    const start = chat.store.get(submissionStartFamily(0));
+    const launched = chat.store.get(launchedConversationFamily(0));
+    const activeUsage = chat.store.get(activeUsageResponseIdFamily(conversationId));
+    const cacheWrites = jest.fn();
+    const stopObserving = chat.store.sub(launchedConversationFamily(0), cacheWrites);
+
+    expect(chat.turns.ask({ text: 'Next' })).toBe(false);
+    expect(canSubmit).toHaveBeenCalledWith(agentsConversation);
+    expect(readCodeInputs).not.toHaveBeenCalled();
+    expect(getRouteProjectId).not.toHaveBeenCalled();
+    expect(chat.submission()).toBeNull();
+    expect(chat.conversation()).toBe(agentsConversation);
+    expect(chat.written).toEqual([]);
+    expect(cacheWrites).not.toHaveBeenCalled();
+    expect(chat.services.openNewChat).not.toHaveBeenCalled();
+    expect(chat.services.releaseFiles).not.toHaveBeenCalled();
+    expect(chat.services.clearFilesToDelete).not.toHaveBeenCalled();
+    expect(chat.params.setFiles).not.toHaveBeenCalled();
+    expect(chat.store.get(isSubmittingFamily(0))).toBe(false);
+    expect(chat.store.get(showStopButtonByIndex(0))).toBe(true);
+    expect(chat.store.get(submissionStartFamily(0))).toBe(start);
+    expect(chat.store.get(launchedConversationFamily(0))).toBe(launched);
+    expect(chat.store.get(activeUsageResponseIdFamily(conversationId))).toBe(activeUsage);
+    expect(chat.store.get(pendingManualSkillsByConvoId(conversationId))).toEqual(['queued-skill']);
+    expect(chat.store.get(pendingQuotesByConvoId(conversationId))).toEqual(['queued-quote']);
+    expect(chat.store.get(pendingReasoningOverrideFamily(reasoningKey))).toEqual(reasoning);
+
+    canSubmit.mockReturnValue(true);
+    expect(chat.turns.ask({ text: 'Next' })).toBeUndefined();
+    expect(readCodeInputs).toHaveBeenCalledTimes(1);
+    expect(chat.written).toHaveLength(1);
+    expect(chat.submission()?.userMessage).toMatchObject({
+      text: 'Next',
+      manualSkills: ['queued-skill'],
+      quotes: ['queued-quote'],
+      reasoningOverride: reasoning,
+    });
+    expect(chat.store.get(isSubmittingFamily(0))).toBe(true);
+    expect(chat.services.releaseFiles).toHaveBeenCalled();
+    expect(chat.services.clearFilesToDelete).toHaveBeenCalled();
+    stopObserving();
   });
 
   it('refuses a second send inside the same task', () => {

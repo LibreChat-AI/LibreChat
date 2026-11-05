@@ -53,7 +53,8 @@ jest.mock('librechat-data-provider/react-query', () => ({
   useGetModelsQuery: () => ({ data: mockConfig }),
 }));
 jest.mock('~/data-provider', () => ({
-  usePrefetchConversationMessages: (id: string, enabled: boolean) => mockPrefetchMessages(id, enabled),
+  usePrefetchConversationMessages: (id: string, enabled: boolean) =>
+    mockPrefetchMessages(id, enabled),
   useGetStartupConfig: () => mockStartupQuery,
   useGetEndpointsQuery: () => mockEndpointsQuery,
   useGetAgentByIdQuery: () => ({ isFetched: true }),
@@ -314,7 +315,7 @@ it('does not hide a restored chat behind unrelated catalog loading', () => {
   expect(mockNewConversation).not.toHaveBeenCalled();
 });
 
-it('keeps the pane mounted and enables history after its record, before configuration', async () => {
+it('keeps the pane mounted and defers resume until its record, before configuration', async () => {
   mockConversation = null;
   mockHasSetConversation.current = false;
   mockStartupQuery = { data: undefined, isError: false, refetch: mockRefetchStartup };

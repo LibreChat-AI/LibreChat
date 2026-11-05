@@ -53,6 +53,9 @@ export default function useTurnServices({
     approval: codeApprovalState.readInputs,
   };
 
+  const readiness = useRef({ config, addedConversation });
+  readiness.current = { config, addedConversation };
+
   const store = useStore();
   /** The composer draft follows the conversation a submission launches; the package writes the
    *  launch just before it publishes the submission, and the subscription binds it inside that
@@ -72,6 +75,14 @@ export default function useTurnServices({
     getEphemeralAgent,
     getUserKey: getExpiry,
     getRouteProjectId: getRouteChatProjectId,
+    canSubmit: (submitted) => {
+      const { config, addedConversation } = readiness.current;
+      return (
+        config.loaded !== false &&
+        isTargetReady(queryClient, submitted) &&
+        (addedConversation == null || isTargetReady(queryClient, addedConversation))
+      );
+    },
     readCodeInputs: () => ({
       workspace: codeReaders.current.workspace(),
       approval: codeReaders.current.approval(),

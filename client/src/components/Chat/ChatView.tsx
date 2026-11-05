@@ -26,9 +26,9 @@ import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { OwnerTextProvider } from './Messages/PrivateText';
+import { TargetContext } from '~/Providers/TargetContext';
 import PendingTurn from './Messages/PendingTurn';
 import { FLAT_THREAD } from './Messages/Thread';
-import { TargetContext } from '~/Providers/TargetContext';
 import useTarget from '~/hooks/Chat/target';
 import { useAddedResponse } from '~/hooks';
 import Presentation from './Presentation';
@@ -147,66 +147,73 @@ function ChatViewPane({
     <TargetContext.Provider value={readiness}>
       <AgentsMapContext.Provider value={selectedAgents}>
         <AssistantsMapContext.Provider value={selectedAssistants}>
-    <AskAnswerHostProvider saveDrafts={saveDrafts}>
-      <ChatFormProvider {...methods}>
-        <ComposerRestoreProvider>
-          <QueuedTurnPortalProvider>
-            <AddedChatContext.Provider value={addedChatHelpers}>
-              <ApprovalProvider pendingAction={pendingAction}>
-                <Presentation routePending={routePending}>
-                  <TraceSurface conversationId={conversationId}>
-                    <ChatScreen
-                      index={index}
-                      conversationId={conversationId}
-                      messages={messages}
-                      fileMap={fileMap}
-                      isLoading={isLoading}
-                      project={project}
-                      landingFooter={landingFooter}
-                      configuredFooter={configuredFooter}
-                      renderHeader={({ parentConversationId, readOnly }) => (
-                        <Header parentConversationId={parentConversationId} readOnly={readOnly} />
-                      )}
-                      renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
-                      messagesSlots={messagesSlots}
-                      landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
-                      renderColumn={(column) => (
-                        <OwnerTextProvider
-                          messages={messages}
-                          conversationId={conversationId}
-                          isSubmitting={chat.isSubmitting}
-                        >
-                          {column}
-                        </OwnerTextProvider>
-                      )}
-                      starters={<ConversationStarters />}
-                      renderComposer={({ isLanding, footerBelow, project, placeholder }) => (
-                        <ChatForm
-                          index={index}
-                          routePending={routePending}
-                          placeholder={placeholder}
-                          project={project}
-                          isLandingPage={isLanding}
-                          enterToSend={enterToSend}
-                          autoSendText={autoSendText}
-                          speechSettingsInitialized={speechSettingsInitialized}
-                          footerBelow={footerBelow}
-                          centerFormOnLanding={centerFormOnLanding}
-                        />
-                      )}
-                      renderFooter={renderFooter}
-                      renderMascot={(bandRef, landing) => (
-                        <Lia bandRef={bandRef} landing={landing} submission={rootSubmission} />
-                      )}
-                    />
-                  </TraceSurface>
-                </Presentation>
-              </ApprovalProvider>
-            </AddedChatContext.Provider>
-          </QueuedTurnPortalProvider>
-        </ComposerRestoreProvider>
-      </ChatFormProvider>
-    </AskAnswerHostProvider>
+          <AskAnswerHostProvider saveDrafts={saveDrafts}>
+            <ChatFormProvider {...methods}>
+              <ComposerRestoreProvider>
+                <QueuedTurnPortalProvider>
+                  <AddedChatContext.Provider value={addedChatHelpers}>
+                    <ApprovalProvider pendingAction={pendingAction}>
+                      <Presentation routePending={routePending}>
+                        <TraceSurface conversationId={conversationId}>
+                          <ChatScreen
+                            index={index}
+                            conversationId={conversationId}
+                            messages={messages}
+                            fileMap={fileMap}
+                            isLoading={isLoading}
+                            project={project}
+                            landingFooter={landingFooter}
+                            configuredFooter={configuredFooter}
+                            renderHeader={({ parentConversationId, readOnly }) => (
+                              <Header
+                                parentConversationId={parentConversationId}
+                                readOnly={readOnly}
+                              />
+                            )}
+                            renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
+                            messagesSlots={messagesSlots}
+                            landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
+                            renderColumn={(column) => (
+                              <OwnerTextProvider
+                                messages={messages}
+                                conversationId={conversationId}
+                                isSubmitting={chat.isSubmitting}
+                              >
+                                {column}
+                              </OwnerTextProvider>
+                            )}
+                            starters={<ConversationStarters />}
+                            renderComposer={({ isLanding, footerBelow, project, placeholder }) => (
+                              <ChatForm
+                                index={index}
+                                routePending={routePending}
+                                placeholder={placeholder}
+                                project={project}
+                                isLandingPage={isLanding}
+                                enterToSend={enterToSend}
+                                autoSendText={autoSendText}
+                                speechSettingsInitialized={speechSettingsInitialized}
+                                footerBelow={footerBelow}
+                                centerFormOnLanding={centerFormOnLanding}
+                              />
+                            )}
+                            renderFooter={renderFooter}
+                            renderMascot={(bandRef, landing) => (
+                              <Lia
+                                bandRef={bandRef}
+                                landing={landing}
+                                submission={rootSubmission}
+                              />
+                            )}
+                          />
+                        </TraceSurface>
+                      </Presentation>
+                    </ApprovalProvider>
+                  </AddedChatContext.Provider>
+                </QueuedTurnPortalProvider>
+              </ComposerRestoreProvider>
+            </ChatFormProvider>
+          </AskAnswerHostProvider>
         </AssistantsMapContext.Provider>
       </AgentsMapContext.Provider>
     </TargetContext.Provider>

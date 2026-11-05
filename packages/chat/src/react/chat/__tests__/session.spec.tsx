@@ -86,11 +86,11 @@ describe('ChatSessionProvider', () => {
     const { host, useMessages } = createHost({ messages, isLoading: false, isFetching: false });
     const pane = renderSession(host);
 
-    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false, enabled: true });
+    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false });
     expect(pane).toHaveBeenLastCalledWith({ messages, isLoading: false });
   });
 
-  it('defers history and resume until the host has the saved record', () => {
+  it('loads history but defers resume until the host has the saved record', () => {
     const { host, useMessages } = createHost({
       messages: null,
       isLoading: false,
@@ -103,7 +103,7 @@ describe('ChatSessionProvider', () => {
         </ChatSessionProvider>
       </ChatHostProvider>,
     );
-    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false, enabled: false });
+    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false });
     expect(mockUseResumeOnLoad).toHaveBeenLastCalledWith('convo-1', expect.any(Function), 0, false);
   });
 
@@ -112,7 +112,7 @@ describe('ChatSessionProvider', () => {
     const { host, useMessages } = createHost({ messages, isLoading: false, isFetching: false });
     renderSession(host);
 
-    expect(useMessages).toHaveBeenLastCalledWith('convo-1', { isStreaming: true, enabled: true });
+    expect(useMessages).toHaveBeenLastCalledWith('convo-1', { isStreaming: true });
     getDefaultStore().set(isSubmittingFamily(1), false);
   });
 

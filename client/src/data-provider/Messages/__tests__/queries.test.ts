@@ -13,6 +13,7 @@ import type { ReactNode } from 'react';
 import {
   useCachedMessages,
   getStableMessages,
+  loadConversationMessages,
   shouldPreserveMessagesOnNotFound,
   retryMessagesOnMount,
   refetchMessagesOnMount,
@@ -1077,5 +1078,166 @@ describe('useCachedMessages', () => {
     expect(dataService.getMessagesByConvoId).toHaveBeenCalledTimes(1);
     unmount();
     queryClient.clear();
+  });
+});
+
+describe('early session reply proof', () => {
+  const conversationId = 'early-session-proof';
+  const stamp = '2026-11-09T12:00:00.000Z';
+  const queryKey = [QueryKeys.messages, conversationId];
+  const history = [message({ conversationId, messageId: 'reply', isCreatedByUser: false })];
+  let queryClient: QueryClient;
+  const mockGet = jest.mocked(dataService.getMessagesByConvoId);
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockGet.mockReset();
+    mockGet.mockResolvedValue(history);
+  });
+
+  afterEach(() => queryClient.clear());
+
+  function record(overrides = {}) {
+    queryClient.setQueryData([QueryKeys.conversation, conversationId], {
+      conversationId,
+      lastResponseAt: stamp,
+      lastResponseMessageId: 'reply',
+      ...overrides,
+    });
+  }
+
+  function load() {
+    return queryClient.fetchQuery(queryKey, () =>
+      loadConversationMessages(queryClient, conversationId, {
+        pathname: `/c/${conversationId}`,
+        isStreaming: () => false,
+      }),
+    );
+  }
+
+  it('shares the early session load with route prefetch and readers that hydrate after the record', async () => {
+    const { result, rerender, unmount } = renderHook(
+      ({ selectedId }) => {
+        const owner = useGetMessagesByConvoId(conversationId, {
+          refetchOnMount: refetchMessagesOnMount,
+        });
+        usePrefetchConversationMessages(conversationId, true);
+        const reader = useCachedMessages(selectedId);
+        return { owner, reader };
+      },
+      {
+        initialProps: { selectedId: '' },
+        wrapper: createWrapper(queryClient, `/c/${conversationId}`),
+      },
+    );
+    await waitFor(() => expect(result.current.owner.data).toEqual(history));
+    act(() => record());
+    rerender({ selectedId: conversationId });
+    await waitFor(() => expect(result.current.reader.data).toEqual(history));
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(true);
+    expect(mockGet).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it.each(['before', 'during', 'after'])(
+    'proves the accepted history when the record arrives %s its fetch',
+    async (arrival) => {
+      const request = deferred<TMessage[]>();
+      mockGet.mockReturnValue(request.promise);
+      if (arrival === 'before') record();
+      const pending = load();
+      if (arrival === 'during') record();
+      request.resolve(history);
+      await pending;
+      if (arrival === 'after') {
+        expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(false);
+        record();
+      }
+      expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(true);
+      expect(mockGet).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { lastResponseMessageId: 'newer-absent-reply' },
+    { lastResponseIsManual: true },
+    { lastResponseMessageId: undefined },
+  ])('leaves unmatched or manual records unproven: %o', async (overrides) => {
+    await load();
+    record(overrides);
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(false);
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not prove an invalidated payload before a fresh accepted fetch', async () => {
+    await load();
+    await queryClient.invalidateQueries({ queryKey, refetchType: 'none' });
+    record();
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(false);
+    await load();
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(true);
+    expect(mockGet).toHaveBeenCalledTimes(2);
+  });
+
+  it('retires eligibility on a manual write even if structural sharing retains the array', async () => {
+    await load();
+    const accepted = queryClient.getQueryData(queryKey);
+    queryClient.setQueryData(queryKey, accepted);
+    expect(queryClient.getQueryData(queryKey)).toBe(accepted);
+    record();
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(false);
+  });
+
+  it('retires the previous payload while a replacement fetch is pending', async () => {
+    await load();
+    const request = deferred<TMessage[]>();
+    mockGet.mockReturnValue(request.promise);
+    const pending = load();
+    record();
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(false);
+    request.resolve(history);
+    await pending;
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(true);
+  });
+
+  it('does not restore eligibility after a replacement fetch fails', async () => {
+    await load();
+    mockGet.mockRejectedValue(new Error('offline'));
+    await expect(load()).rejects.toThrow('offline');
+    record();
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(false);
+  });
+
+  it('does not transfer eligibility to a replacement query', async () => {
+    await load();
+    queryClient.removeQueries(queryKey);
+    queryClient.setQueryData(queryKey, history);
+    record();
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(false);
+  });
+
+  it('does not prove a cold fetch that raced with an optimistic write', async () => {
+    const request = deferred<TMessage[]>();
+    mockGet.mockReturnValue(request.promise);
+    const pending = load();
+    queryClient.setQueryData(queryKey, [message({ conversationId, messageId: 'optimistic' })]);
+    request.resolve(history);
+    await pending;
+    record();
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(false);
+  });
+
+  it('keeps an optimistic warm-cache winner unproven', async () => {
+    queryClient.setQueryData(queryKey, [message({ conversationId, messageId: 'old' })]);
+    const request = deferred<TMessage[]>();
+    mockGet.mockReturnValue(request.promise);
+    const pending = load();
+    const optimistic = [...history, message({ conversationId, messageId: 'optimistic' })];
+    queryClient.setQueryData(queryKey, optimistic);
+    request.resolve(history);
+    await pending;
+    record();
+    expect(queryClient.getQueryData(queryKey)).toEqual(optimistic);
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(false);
   });
 });
