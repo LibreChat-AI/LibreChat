@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { DEFAULT_MCP_APP_OPERATION_LIMITS } from 'librechat-data-provider';
 import {
   AlertDialog,
-  AlertDialogAction,
+  Button,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -22,53 +23,56 @@ type Pending = {
 };
 
 /** An App can request an action but only a host-controlled button can grant it. */
-export function useMCPAppApproval() {
+export function useMCPAppApproval(maxPending = DEFAULT_MCP_APP_OPERATION_LIMITS.maxActive) {
   const [pending, setPending] = useState<Pending | null>(null);
-  const pendingRef = useRef<Pending | null>(null);
+  const queueRef = useRef<Pending[]>([]);
   const suspendedRef = useRef(false);
-  const request = useCallback((action: MCPAppAction, signal: AbortSignal): Promise<boolean> => {
-    if (signal.aborted || pendingRef.current || suspendedRef.current) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => {
-      const settle = (allowed: boolean, notify = true) => {
-        if (pendingRef.current !== entry) return;
-        pendingRef.current = null;
-        signal.removeEventListener('abort', abort);
-        if (notify) setPending(null);
-        resolve(allowed && !signal.aborted);
-      };
-      // An App can abort its own SDK request while the host dialog is visible. Treat that
-      // just like a denial, rather than letting it reopen the dialog in a tight loop.
-      const abort = () => {
-        if (pendingRef.current === entry) suspendedRef.current = true;
-        settle(false);
-      };
-      const entry: Pending = { action, settle };
-      pendingRef.current = entry;
-      signal.addEventListener('abort', abort, { once: true });
-      if (signal.aborted) abort();
-      else setPending(entry);
-    });
+  const pause = useCallback((notify = true) => {
+    suspendedRef.current = true;
+    for (const entry of [...queueRef.current]) entry.settle(false, false);
+    if (notify) setPending(null);
   }, []);
-  // Escape, backdrop and Cancel all pause further App-requested actions for this View.
-  // Only closing and reopening its View restores the ability to ask.
-  const cancel = useCallback(() => {
-    if (pendingRef.current) {
-      suspendedRef.current = true;
-      pendingRef.current.settle(false);
-    }
-  }, []);
-  // Resolve an outstanding SDK request when the owning View disappears.
-  useEffect(
-    () => () => {
-      pendingRef.current?.settle(false, false);
+  const request = useCallback(
+    (action: MCPAppAction, signal: AbortSignal): Promise<boolean> => {
+      if (signal.aborted || suspendedRef.current || queueRef.current.length >= maxPending) {
+        return Promise.resolve(false);
+      }
+      return new Promise<boolean>((resolve) => {
+        const settle = (allowed: boolean, notify = true) => {
+          const index = queueRef.current.indexOf(entry);
+          if (index < 0) return;
+          queueRef.current.splice(index, 1);
+          signal.removeEventListener('abort', abort);
+          if (notify) setPending(queueRef.current[0] ?? null);
+          resolve(allowed && !signal.aborted);
+        };
+        const abort = () => {
+          // A cancelled queued request is removed without disrupting the visible approval.
+          // Cancelling the displayed request pauses the View to prevent prompt storms.
+          if (queueRef.current[0] === entry) pause();
+          else settle(false);
+        };
+        const entry: Pending = { action, settle };
+        queueRef.current.push(entry);
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+        else setPending(queueRef.current[0]);
+      });
     },
-    [],
+    [maxPending, pause],
   );
+  const cancel = useCallback(() => {
+    if (queueRef.current.length > 0) pause();
+  }, [pause]);
+  useEffect(() => {
+    suspendedRef.current = false;
+    return () => pause(false);
+  }, [pause]);
   return {
     pending: pending?.action ?? null,
     request,
     cancel,
-    approve: () => pendingRef.current?.settle(true),
+    approve: () => pending?.settle(true),
   };
 }
 
@@ -124,11 +128,11 @@ export function MCPAppApproval({
           {close && (
             <AlertDialogCancel onClick={close}>{localize('com_ui_mcp_app_stop')}</AlertDialogCancel>
           )}
-          <AlertDialogAction onClick={approve}>
+          <Button onClick={approve}>
             {localize(
               action?.kind === 'tool' ? 'com_ui_mcp_app_run_tool' : 'com_ui_mcp_app_send_message',
             )}
-          </AlertDialogAction>
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

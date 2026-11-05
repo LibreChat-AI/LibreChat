@@ -1,3 +1,4 @@
+import { SESSION_HINT_COOKIE } from 'librechat-data-provider';
 import type {
   AuthIdentityContext,
   AuthIdentitySource,
@@ -85,6 +86,7 @@ interface OpenIDSessionRefreshDeps {
     res: OpenIDResponse,
     args: {
       userId?: string;
+      tenantId?: string;
       expires: Date;
       refreshExpiryMs: number;
       refreshToken: string;
@@ -898,6 +900,7 @@ export function createOpenIDSessionRefreshService(
       setRefreshTokenCookie(res, newRefreshToken, expirationDate);
       setOpenIDMarkerCookies(res, {
         userId,
+        tenantId,
         expires: expirationDate,
         refreshExpiryMs: expiryInMilliseconds,
         refreshToken: newRefreshToken,
@@ -1378,6 +1381,7 @@ export function createOpenIDSessionRefreshService(
         'openid_id_token',
         'openid_user_id',
         'token_provider',
+        SESSION_HINT_COOKIE,
       ]) {
         res?.clearCookie?.(name);
       }

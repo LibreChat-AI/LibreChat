@@ -8,9 +8,10 @@ import {
   describeRememberedToolApprovals,
 } from './modes';
 import { bindToolApproval, bindToolApprovalIdentity } from '~/tools/approval';
-import { buildToolApprovalPayload, toClientPendingAction } from './policy';
+import { buildToolApprovalPayload } from './__fixtures__/approval';
 import { buildEffectiveToolApprovalPolicy } from './allow';
 import { bindToolReviewAuthority } from '~/tools/approval';
+import { toClientPendingAction } from './policy';
 import { buildHITLRunWiring } from './runtime';
 
 const scope = { userId: 'user-a', tenantId: 'tenant-a', conversationId: 'chat-a' };

@@ -54,6 +54,30 @@ describe('LiaEngine', () => {
     expect(engine.current).toBeNull();
   });
 
+  it('follows the pointer while held and lands on the platform under the drop', () => {
+    const { engine } = setup();
+    run(engine, 0, 500);
+    engine.hold({ x: 900, y: 120 }, 600);
+    run(engine, 600, 800);
+    expect(engine.current?.id).toBe('r-held');
+    expect(engine.position).toEqual({ x: 900, y: 120 });
+    expect(engine.play('r-hello', 2, 810)).toBe(false);
+
+    engine.release(900, 900);
+    run(engine, 900, 1000);
+    expect(engine.current?.id).toBe('r-landed');
+    expect(engine.position).toEqual({ x: PLATFORM.x1, y: PLATFORM.y });
+  });
+
+  it('ignores a release when she is not held', () => {
+    const { engine } = setup();
+    run(engine, 0, 500);
+    const before = engine.position;
+    engine.release(300, 600);
+    expect(engine.position).toEqual(before);
+    expect(engine.current?.id).not.toBe('r-landed');
+  });
+
   it('keeps a more important action from being interrupted', () => {
     const { engine } = setup();
     engine.play('r-crash', 3, 0);

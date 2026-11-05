@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { scheduledMCPFailureReasonSchema } from './scheduleConsent';
+import { partialWithoutDefaults } from '../zod';
 
 /** Cadences the dialog builds from structured pickers (hour, minute, weekday). */
 export const scheduleStructuredFrequencies = ['hourly', 'daily', 'weekdays', 'weekly'] as const;
@@ -102,19 +103,18 @@ export const createSchedulePayloadSchema = z.object({
 export type TCreateSchedule = z.infer<typeof createSchedulePayloadSchema>;
 
 /** Idempotency is a property of the CREATE attempt, not of the schedule's config. */
-export const updateSchedulePayloadSchema = createSchedulePayloadSchema
-  .omit({ clientRequestId: true })
-  .partial()
-  .extend({
-    /**
-     * The configRevision the client's edit was computed from (captured when the
-     * dialog opened). The server fences the update on it, so a concurrent edit
-     * from another tab answers 409 instead of being silently overwritten by a
-     * payload rebuilt from a stale snapshot (cadence is sent whole, so the
-     * server-side fresh-read fence alone cannot detect this).
-     */
-    expectedConfigRevision: z.number().int().min(0).optional(),
-  });
+export const updateSchedulePayloadSchema = partialWithoutDefaults(
+  createSchedulePayloadSchema.omit({ clientRequestId: true }),
+).extend({
+  /**
+   * The configRevision the client's edit was computed from (captured when the
+   * dialog opened). The server fences the update on it, so a concurrent edit
+   * from another tab answers 409 instead of being silently overwritten by a
+   * payload rebuilt from a stale snapshot (cadence is sent whole, so the
+   * server-side fresh-read fence alone cannot detect this).
+   */
+  expectedConfigRevision: z.number().int().min(0).optional(),
+});
 export type TUpdateSchedule = z.infer<typeof updateSchedulePayloadSchema>;
 
 export type TScheduleLastRun = {

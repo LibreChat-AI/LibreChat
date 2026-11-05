@@ -1,5 +1,5 @@
-import type { Document, Types } from 'mongoose';
 import type { PrincipalType } from 'librechat-data-provider';
+import type { Document, Types } from 'mongoose';
 import type { SystemCapability } from '~/types/admin';
 
 export type SystemGrant = {
@@ -23,3 +23,13 @@ export type ISystemGrant = SystemGrant &
   Document & {
     _id: Types.ObjectId;
   };
+
+/**
+ * What `moveGrantsToPrincipal` changed, as the grants were before it: the grants it re-keyed to
+ * the new principal, and the ones it removed because the new principal already held the same
+ * capability in the same tenant scope. `restoreMovedGrants` undoes exactly these.
+ */
+export type SystemGrantMove = {
+  moved: ISystemGrant[];
+  superseded: ISystemGrant[];
+};

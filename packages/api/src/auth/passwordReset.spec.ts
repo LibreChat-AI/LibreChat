@@ -9,8 +9,8 @@ function createDeps(overrides: Partial<PasswordResetDeps> = {}): jest.Mocked<Pas
     getUserById: jest.fn().mockResolvedValue(null),
     updateUser: jest.fn().mockResolvedValue({ email: 'user@example.com' }),
     deleteTokens: jest.fn().mockResolvedValue({ deletedCount: 1 }),
-    compareToken: jest.fn((candidate: string) => candidate === 'reset-token'),
-    hashPassword: jest.fn(() => 'hashed-password'),
+    compareToken: jest.fn(async (candidate: string) => candidate === 'reset-token'),
+    hashPassword: jest.fn(async () => 'hashed-password'),
     ...overrides,
   } as jest.Mocked<PasswordResetDeps>;
 }

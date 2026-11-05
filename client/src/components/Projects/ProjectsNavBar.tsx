@@ -26,7 +26,7 @@ export default function ProjectsNavBar({ onCreate, search, onSearchChange }: Pro
           label={localize('com_ui_search_projects')}
           containerClassName="order-last w-full min-w-0 md:order-none md:w-auto md:max-w-md md:flex-1"
         />
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="ms-auto flex shrink-0 items-center gap-2">
           <Button
             type="button"
             variant="default"

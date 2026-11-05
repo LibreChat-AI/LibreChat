@@ -119,6 +119,7 @@ import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils
 import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering/tools';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
+import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
@@ -136,6 +137,7 @@ import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { buildLangfuseConfig } from '~/langfuse/config';
 import { applyTestRunHook } from '~/agents/testHook';
+import { frameDynamicInstructions } from './tail';
 import { isUserProvided } from '~/utils/common';
 import { createSafeUser } from '~/utils/env';
 
@@ -1875,15 +1877,6 @@ function buildIsolatedAgentInputs(
   toInput: (agent: RunAgent, opts?: { isSubagent?: boolean }) => AgentInputs,
 ): AgentInputs {
   const childInputs = toInput(child, { isSubagent: true });
-  const alwaysApplySkillPrimes = child.alwaysApplySkillPrimes;
-  if (alwaysApplySkillPrimes && alwaysApplySkillPrimes.length > 0) {
-    const skillInstructions = alwaysApplySkillPrimes
-      .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
-      .join('\n\n');
-    childInputs.additional_instructions = [childInputs.additional_instructions, skillInstructions]
-      .filter((value): value is string => typeof value === 'string' && value.length > 0)
-      .join('\n\n');
-  }
   if ((child.backgroundToolNames?.length ?? 0) > 0) {
     childInputs.toolDefinitions = stripBackgroundFromToolDefinitions(
       childInputs.toolDefinitions,
@@ -2138,6 +2131,7 @@ export async function createRun({
   user,
   tenantId,
   centralTraceExportEnabled,
+  isTemporary,
   traceContext,
   tokenCounter,
   customHandlers,
@@ -2189,6 +2183,8 @@ export async function createRun({
    * run. Tenant fanout can still export when tenant routing is available.
    */
   centralTraceExportEnabled?: boolean;
+  /** A temporary chat's run is not traced unless `langfuse.trace.temporaryChats` opts in. */
+  isTemporary?: boolean;
   /**
    * Exact tool names the owner approved for the rest of this conversation, read from the
    * stored conversation (never from the request body). Honored only when
@@ -2494,9 +2490,17 @@ export async function createRun({
 
     const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
 
-    const additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
+    let additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
       .join('\n')
       .trim();
+    if (isSubagent && agent.alwaysApplySkillPrimes?.length) {
+      const skillInstructions = agent.alwaysApplySkillPrimes
+        .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
+        .join('\n\n');
+      additionalInstructions = [additionalInstructions, skillInstructions]
+        .filter(Boolean)
+        .join('\n\n');
+    }
 
     /** Resolves issues with new OpenAI usage field */
     if (
@@ -2628,7 +2632,12 @@ export async function createRun({
       tools,
       clientOptions: llmConfig,
       instructions: systemContent,
-      additional_instructions: additionalInstructions || undefined,
+      additional_instructions:
+        frameDynamicInstructions({
+          instructions: additionalInstructions,
+          provider,
+          promptCache: 'promptCache' in llmConfig && llmConfig.promptCache === true,
+        }) || undefined,
       name: agent.name ?? undefined,
       toolRegistry,
       maxContextTokens: effectiveMaxContextTokens,
@@ -3052,6 +3061,8 @@ export async function createRun({
     indexTokenCountMap,
     subagentUsageSink,
     subagentTasks: activeSubagentTasks,
+    // Without it a subagent that cannot start logs nothing beyond the SDK's fixed `cause`.
+    onSubagentResolutionFailure: reportSubagentResolutionFailure,
     ...(runFilesActive &&
       runFiles != null && {
         subagentContext: { prepare: runFiles.prepare, complete: runFiles.complete },
@@ -3118,6 +3129,7 @@ export async function createRun({
       runId: resolvedRunId,
       tenantId: tenantId ?? user?.tenantId,
       centralTraceExportEnabled,
+      isTemporary,
       user,
       traceContext: resolveRunTraceContext({ agents, conversationId, requestBody, traceContext }),
     }),

@@ -8,6 +8,7 @@ import type { SubagentActivityEnvelope, SubagentActivityUpdateEvent } from './su
 import type { IEventTransport } from '~/stream/interfaces/IJobStore';
 import type { ServerRequest } from '~/types';
 import {
+  boundSubagentActivityUpdate,
   SubagentActivityStream,
   createSubagentActivityStreamHandler,
   subagentActivityStreamId,
@@ -384,6 +385,29 @@ describe('detached subagent activity stream', () => {
     });
   });
 
+  it('publishes committed content invalidations in a separate sequence space', async () => {
+    const transport = new TestTransport();
+    const stream = new SubagentActivityStream(transport);
+    const onContent = jest.fn();
+    const subscription = stream.subscribe('child-thread', 'task-1', {
+      onEvent: jest.fn(),
+      onContent,
+    });
+    await subscription.ready;
+    const watermark = { taskId: 'task-1', throughSequence: 150, revision: 3 };
+    await stream.publishContent('child-thread', 'task-1', watermark);
+    expect(onContent).toHaveBeenCalledWith({
+      event: 'subagent_content_available',
+      data: watermark,
+    });
+    expect(transport.emitted[0].streamId).toBe(
+      `${subagentActivityStreamId('child-thread', 'task-1')}:content`,
+    );
+    subscription.unsubscribe();
+    await Promise.resolve();
+    expect(transport.handlers.size).toBe(0);
+  });
+
   it('delivers terminal state before the subscriber releases its task stream', async () => {
     const transport = new TestTransport();
     const stream = new SubagentActivityStream(transport);
@@ -558,7 +582,7 @@ describe('subagent activity stream authorization', () => {
 
     expect(res.chunks.join('')).toContain('"ready":true');
     expect(res.chunks.join('')).not.toContain('"final":true');
-    expect(transport.handlers.size).toBe(1);
+    expect(transport.handlers.size).toBe(2);
     res.emit('close');
   });
 
@@ -910,5 +934,35 @@ describe('subagent activity stream authorization', () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+it('bounds applied-steer activity while retaining identity, source timestamp and replay sequence', () => {
+  const event: SubagentActivityUpdateEvent = {
+    runId: 'root',
+    subagentRunId: 'task',
+    subagentType: 'worker',
+    subagentAgentId: 'agent',
+    phase: 'steer_applied',
+    activityEventId: 'task:4',
+    activitySequence: 4,
+    timestamp: '2026-10-23T00:00:00.000Z',
+    data: {
+      index: 2,
+      steerId: 'control',
+      part: { type: 'steer', steer: 'Guidance', steerId: 'control' },
+    },
+  };
+  expect(boundSubagentActivityUpdate(event)).toMatchObject(event);
+  const oversized = boundSubagentActivityUpdate({
+    ...event,
+    data: { body: 'x'.repeat(256 * 1024) },
+  });
+  expect(oversized.data).toBeUndefined();
+  expect(oversized).toMatchObject({
+    phase: 'steer_applied',
+    activityEventId: 'task:4',
+    activitySequence: 4,
+    timestamp: event.timestamp,
   });
 });

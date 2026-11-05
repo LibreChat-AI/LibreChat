@@ -118,7 +118,7 @@ function ProjectCard({
           ) : null}
         </span>
       </Button>
-      <div className="absolute top-2 right-2">
+      <div className="absolute inset-e-2 top-2">
         <DropdownPopup
           portal={true}
           focusLoop={true}
@@ -128,7 +128,7 @@ function ProjectCard({
           setIsOpen={setIsMenuOpen}
           className="z-[125]"
           minWidth="11rem"
-          iconClassName="mr-2 text-text-secondary"
+          iconClassName="me-2 text-text-secondary"
           trigger={
             <Ariakit.MenuButton
               aria-label={localize('com_ui_more_options')}

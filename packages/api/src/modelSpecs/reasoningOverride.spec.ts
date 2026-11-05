@@ -5,6 +5,7 @@ import {
   ReasoningParameterFormat,
   ThinkingLevel,
   type TReasoningOverride,
+  type TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import {
   parseReasoningOverrideRequest,
@@ -294,6 +295,128 @@ describe('resolveReasoningOverride', () => {
   });
 });
 
+describe('applyRequestReasoningOverride branch inheritance', () => {
+  const { endpointOption, ...input } = baseInput;
+  const { reasoningOverride: _picked, ...withoutPick } = input as typeof input & {
+    reasoningOverride?: unknown;
+  };
+  const high = { key: 'reasoning_effort', value: ReasoningEffort.high };
+  const request = (body: Record<string, unknown> = {}) => ({
+    user: { id: 'user-1' },
+    body: {
+      conversationId: 'convo-1',
+      parentMessageId: 'assistant-1',
+      ...body,
+      endpointOption: {
+        ...endpointOption,
+        model_parameters: { ...endpointOption.model_parameters },
+      },
+    } as Record<string, unknown> & { endpointOption: typeof endpointOption },
+  });
+
+  it('applies and records the level the branch last ran at when the turn picks none', async () => {
+    const getBranchReasoningOverride = jest.fn().mockResolvedValue(high);
+    const req = request();
+
+    await expect(
+      applyRequestReasoningOverride(req, { ...withoutPick, getBranchReasoningOverride }),
+    ).resolves.toBe(true);
+
+    expect(getBranchReasoningOverride).toHaveBeenCalledWith({
+      user: 'user-1',
+      conversationId: 'convo-1',
+      parentMessageId: 'assistant-1',
+    });
+    expect(req.body.endpointOption.model_parameters).toMatchObject({ reasoning_effort: 'high' });
+    expect(req.body.reasoningOverride).toEqual(high);
+  });
+
+  it('does not consult the branch when the turn picks a level', async () => {
+    const getBranchReasoningOverride = jest.fn();
+    const req = request();
+
+    await applyRequestReasoningOverride(req, {
+      ...withoutPick,
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.low },
+      getBranchReasoningOverride,
+    });
+
+    expect(getBranchReasoningOverride).not.toHaveBeenCalled();
+    expect(req.body.endpointOption.model_parameters).toMatchObject({ reasoning_effort: 'low' });
+  });
+
+  it('skips an inherited level the target no longer takes instead of refusing the turn', async () => {
+    const getBranchReasoningOverride = jest.fn().mockResolvedValue(high);
+    const req = request();
+    const before = req.body.endpointOption;
+
+    await expect(
+      applyRequestReasoningOverride(req, {
+        ...withoutPick,
+        enforcedModelSpecFields: new Set(['reasoning_effort']),
+        getBranchReasoningOverride,
+      }),
+    ).resolves.toBe(true);
+
+    expect(req.body.endpointOption).toBe(before);
+    expect(req.body).not.toHaveProperty('reasoningOverride');
+  });
+
+  it.each([
+    ['a new conversation', { conversationId: 'new' }],
+    ['a first turn', { parentMessageId: '00000000-0000-0000-0000-000000000000' }],
+    ['an edit', { isEdited: true }],
+    ['an edit from the browser', { editedContent: { index: 0, text: 'changed' } }],
+    ['a regeneration', { isRegenerate: true }],
+    ['a continuation', { isContinued: true }],
+  ])('does not inherit for %s', async (_label, body) => {
+    const getBranchReasoningOverride = jest.fn().mockResolvedValue(high);
+    const req = request(body);
+
+    await applyRequestReasoningOverride(req, { ...withoutPick, getBranchReasoningOverride });
+
+    expect(getBranchReasoningOverride).not.toHaveBeenCalled();
+    expect(req.body).not.toHaveProperty('reasoningOverride');
+  });
+
+  it.each([
+    ['applies it while thinking is on', true],
+    ['skips it while thinking is switched off', false],
+  ])('for an inherited thinking budget, %s', async (_label, thinking) => {
+    const model = 'gemini-2.5-pro';
+    const getBranchReasoningOverride = jest
+      .fn()
+      .mockResolvedValue({ key: 'thinkingBudget', value: 32768 });
+    const req = request();
+    req.body.endpointOption = {
+      model_parameters: { model, thinking },
+      agent: Promise.resolve({ provider: EModelEndpoint.google, model }),
+    };
+
+    await expect(
+      applyRequestReasoningOverride(req, {
+        ...withoutPick,
+        endpoint: EModelEndpoint.google,
+        getBranchReasoningOverride,
+      }),
+    ).resolves.toBe(true);
+
+    expect(req.body.endpointOption.model_parameters).toMatchObject(
+      thinking ? { thinking: true, thinkingBudget: 32768 } : { thinking: false },
+    );
+    expect('reasoningOverride' in req.body).toBe(thinking);
+  });
+
+  it('does not inherit for a resumed turn, which replays its own parameters', async () => {
+    const getBranchReasoningOverride = jest.fn().mockResolvedValue(high);
+    const req = { ...request(), resumeReplayed: true };
+
+    await applyRequestReasoningOverride(req, { ...withoutPick, getBranchReasoningOverride });
+
+    expect(getBranchReasoningOverride).not.toHaveBeenCalled();
+  });
+});
+
 describe('applyRequestReasoningOverride', () => {
   const { reasoningOverride, endpointOption, ...input } = baseInput;
   const request = () => ({
@@ -523,5 +646,270 @@ describe('applyRequestReasoningOverride', () => {
       value: 'low',
       thinkingHadValue: false,
     });
+  });
+});
+
+describe('resolveReasoningOverride: OpenRouter per-model efforts', () => {
+  const model = 'openai/gpt-6.1-sol';
+  const openRouterInput = (
+    value: ReasoningEffort,
+    capabilities: TReasoningCapabilityMap,
+  ): Partial<ReasoningOverrideInput> => ({
+    reasoningOverride: { key: 'reasoning_effort', value },
+    endpoint: 'OpenRouter',
+    endpointType: EModelEndpoint.custom,
+    isAgent: false,
+    /** The base fixture's loaded agent would otherwise replace this target. */
+    endpointOption: { model_parameters: { model }, agent: null },
+    endpointsConfig: {
+      OpenRouter: {
+        order: 0,
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          reasoningFormat: ReasoningParameterFormat.reasoningEffort,
+        },
+      },
+    },
+    reasoningCapabilities: capabilities,
+  });
+
+  it('accepts an effort the model supports', async () => {
+    const result = await resolve(
+      openRouterInput(ReasoningEffort.low, {
+        OpenRouter: { [model]: { efforts: ['low', 'high'] } },
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects an effort the model does not support', async () => {
+    const result = await resolve(
+      openRouterInput(ReasoningEffort.max, {
+        OpenRouter: { [model]: { efforts: ['low', 'high'] } },
+      }),
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
+  });
+
+  it('rejects none for a model whose reasoning is mandatory', async () => {
+    const result = await resolve(
+      openRouterInput(ReasoningEffort.none, {
+        OpenRouter: { [model]: { efforts: ['none', 'low'], mandatory: true } },
+      }),
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
+  });
+
+  it('rejects an effort for a model the provider lists without reasoning', async () => {
+    const result = await resolve(
+      openRouterInput(ReasoningEffort.low, { OpenRouter: { [model]: { efforts: [] } } }),
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
+  });
+
+  it('accepts Auto for a model the provider lists without reasoning, so a stale effort can be cleared', async () => {
+    const result = await resolve(
+      openRouterInput(ReasoningEffort.unset, { OpenRouter: { [model]: { efforts: [] } } }),
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts an effort for a model the catalog does not list, such as an alias', async () => {
+    const result = await resolve(
+      openRouterInput(ReasoningEffort.max, { OpenRouter: { 'meta/other': { efforts: ['low'] } } }),
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('keeps the generic list while the endpoint capabilities are unknown', async () => {
+    const result = await resolve(openRouterInput(ReasoningEffort.max, {}));
+
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('applyRequestReasoningOverride: capability loading', () => {
+  const makeReq = (model = 'openai/gpt-6.1-sol') => ({
+    body: { endpointOption: { model_parameters: { model }, agent: null } },
+  });
+  const openRouter = {
+    endpoint: 'OpenRouter',
+    endpointType: EModelEndpoint.custom,
+    isAgent: false,
+    endpointsConfig: {
+      OpenRouter: {
+        order: 0,
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          reasoningFormat: ReasoningParameterFormat.reasoningEffort,
+        },
+      },
+    },
+  };
+  const effort = { key: 'reasoning_effort', value: ReasoningEffort.high };
+
+  it('does not load capabilities for a request without an override', async () => {
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+
+    await applyRequestReasoningOverride(makeReq(), {
+      ...openRouter,
+      loadReasoningCapabilities: load,
+    });
+
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('loads capabilities once for an OpenRouter effort override', async () => {
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+
+    const applied = await applyRequestReasoningOverride(makeReq(), {
+      ...openRouter,
+      reasoningOverride: effort,
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(true);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledWith('OpenRouter');
+  });
+
+  it('does not load capabilities when the administrator defined reasoning_effort', async () => {
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+    const explicit = {
+      ...openRouter,
+      endpointsConfig: {
+        OpenRouter: {
+          order: 0,
+          customParams: {
+            defaultParamsEndpoint: 'openrouter',
+            paramDefinitions: [{ key: 'reasoning_effort' }],
+          },
+        },
+      },
+    };
+
+    const applied = await applyRequestReasoningOverride(makeReq(), {
+      ...explicit,
+      reasoningOverride: effort,
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(true);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('does not load capabilities for an Auto override, which sends no effort', async () => {
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+
+    const applied = await applyRequestReasoningOverride(makeReq(), {
+      ...openRouter,
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.unset },
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(true);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('accepts Auto while the catalog is unavailable', async () => {
+    const load = jest.fn(async () => {
+      throw new Error('upstream down');
+    });
+
+    const applied = await applyRequestReasoningOverride(makeReq(), {
+      ...openRouter,
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.unset },
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(true);
+  });
+
+  it('does not load capabilities when the target is not OpenRouter', async () => {
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+
+    const applied = await applyRequestReasoningOverride(makeReq('gpt-5.1'), {
+      endpoint: EModelEndpoint.openAI,
+      isAgent: false,
+      endpointsConfig: {},
+      reasoningOverride: effort,
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(true);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('rejects a disabled endpoint without loading the catalog', async () => {
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+    const disabled = {
+      ...openRouter,
+      endpointsConfig: {
+        OpenRouter: {
+          order: 0,
+          customParams: {
+            defaultParamsEndpoint: 'openrouter',
+            reasoningFormat: ReasoningParameterFormat.disabled,
+          },
+        },
+      },
+    };
+
+    const applied = await applyRequestReasoningOverride(makeReq(), {
+      ...disabled,
+      reasoningOverride: effort,
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(false);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it.each(['appliedModelSpecPrivateFields', 'enforcedModelSpecFields'])(
+    'rejects an effort a model spec locks through %s without loading the catalog',
+    async (field) => {
+      const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+
+      const applied = await applyRequestReasoningOverride(makeReq(), {
+        ...openRouter,
+        [field]: new Set(['reasoning_effort']),
+        reasoningOverride: effort,
+        loadReasoningCapabilities: load,
+      });
+
+      expect(applied).toBe(false);
+      expect(load).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not load capabilities for an override that is not an effort', async () => {
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+
+    await applyRequestReasoningOverride(makeReq(), {
+      ...openRouter,
+      reasoningOverride: { key: 'thinkingBudget', value: 2048 },
+      loadReasoningCapabilities: load,
+    });
+
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('does not load capabilities for a malformed override', async () => {
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+
+    const applied = await applyRequestReasoningOverride(makeReq(), {
+      ...openRouter,
+      reasoningOverride: { key: 'nope', value: 1 },
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(false);
+    expect(load).not.toHaveBeenCalled();
   });
 });

@@ -104,7 +104,7 @@ export default function BookmarkCardActions({ bookmark }: BookmarkCardActionsPro
           title={localize('com_ui_bookmarks_delete')}
           className="max-w-[28.125rem]"
           main={
-            <p className="text-text-secondary text-left text-sm">
+            <p className="text-text-secondary text-start text-sm">
               {localize('com_ui_bookmark_delete_confirm')}{' '}
               {/* The name is the user's and can be one unbroken run of characters. It
                   breaks anywhere rather than wrapping on spaces it does not have,

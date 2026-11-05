@@ -127,7 +127,7 @@ function RequestPasswordReset() {
 
   return (
     <div className="bg-surface-primary flex min-h-screen flex-col items-center justify-center pt-6 sm:pt-0">
-      <div className="absolute bottom-0 left-0 m-4">
+      <div className="absolute inset-s-0 bottom-0 m-4">
         <ThemeSelector />
       </div>
       <div className="flex flex-col items-center justify-center">
@@ -139,8 +139,8 @@ function RequestPasswordReset() {
           {statusText}
         </h1>
         {!verificationStatus && (
-          <div className="mt-4 flex justify-center">
-            <Spinner className="text-accent-primary h-8 w-8" />
+          <div className="text-accent-primary mt-4 flex justify-center">
+            <Spinner className="h-8 w-8" />
           </div>
         )}
         {verificationStatus && countdown > 0 && (
@@ -153,8 +153,9 @@ function RequestPasswordReset() {
             {localize('com_auth_email_verification_resend_prompt')}
             <Button
               type="button"
-              variant="link"
-              className="text-link ml-2 inline h-auto p-0"
+              variant="hyperlink"
+              size="bare"
+              className="ms-2 inline"
               onClick={handleResendEmail}
               disabled={resendEmailMutation.isLoading}
             >

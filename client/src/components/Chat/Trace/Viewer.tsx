@@ -370,7 +370,7 @@ export default function Viewer({
     if (recordsQuery.isLoading) {
       return (
         <div role="status" className="flex flex-1 items-center justify-center gap-2">
-          <Spinner className="text-text-secondary size-5" />
+          <Spinner tone="secondary" className="size-5" />
           <span className="sr-only">{localize('com_ui_trace_loading')}</span>
         </div>
       );
@@ -486,7 +486,7 @@ export default function Viewer({
               <Layers className="size-4" aria-hidden="true" />
               <span className="hidden sm:inline">{localize('com_ui_trace_all_spans')}</span>
             </Button>
-            <div className="ml-auto flex items-center gap-1">
+            <div className="ms-auto flex items-center gap-1">
               {view != null && (
                 <span className="text-text-secondary text-xs tabular-nums" aria-live="polite">
                   {selectionText()}
@@ -612,7 +612,7 @@ export default function Viewer({
         <h2 id={headingId} className="text-base font-semibold">
           {localize('com_ui_trace_title')}
         </h2>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ms-auto flex items-center gap-2">
           {langfuseUrl != null && (
             <a
               href={langfuseUrl}

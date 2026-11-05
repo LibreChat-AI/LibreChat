@@ -18,6 +18,7 @@ const mockAcknowledge2FASetup = jest.fn((req, res) => res.status(204).end());
 const mockFinalize2FASetup = jest.fn((req, res) => res.status(204).end());
 
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
   limiterCache: jest.fn(() => undefined),
   createTwoFactorManagementLimiter: (...args) =>
     require('../../../packages/api/src/middleware/twoFactor').createTwoFactorManagementLimiter(

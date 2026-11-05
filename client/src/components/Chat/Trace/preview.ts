@@ -1,9 +1,9 @@
+import { hasParallelLanes } from '@librechat/chat';
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { TraceModel } from './model';
 import { getActivityLabelPart, getActivityLabelText, isPhaseActivityLabel } from '~/utils';
 import { isModelCall, isToolWork } from './model';
-import { hasParallelLanes } from '~/utils/lanes';
 
 const PREVIEW_LENGTH = 160;
 const ELLIPSIS = '…';
@@ -216,10 +216,6 @@ export function buildMessagePreview(message: TMessage | undefined): MessagePrevi
     steps[0].toolCalls.length === 0 &&
     steps[0].text !== '';
   return { steps, finalOnly, parallel, labels };
-}
-
-export function buildStepPreviews(message: TMessage | undefined): StepPreview[] {
-  return buildMessagePreview(message).steps;
 }
 
 /**

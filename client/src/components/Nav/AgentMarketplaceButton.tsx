@@ -44,7 +44,7 @@ export default function AgentMarketplaceButton({
   const button = (
     <Button
       asChild
-      variant="ghost"
+      variant="nav"
       size={isRow ? 'row' : 'icon'}
       className={cn('shrink-0', isRow ? 'w-full justify-start' : 'h-9 w-9')}
     >

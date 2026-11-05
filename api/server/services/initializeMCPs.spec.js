@@ -82,9 +82,25 @@ const mockGetMCPToolsCacheGeneration = jest.fn();
 const mockRenewMCPToolsCacheGeneration = jest.fn();
 const mockGetNextAppToolsPublicationRevision = jest.fn();
 const mockGetDeploymentPluginMcpServers = jest.fn(() => ({}));
+const mockPolicyResolver = jest.fn();
+const mockCreateMCPPolicyResolver = jest.fn(() => mockPolicyResolver);
+const mockReportStoredMCPTombstones = jest.fn();
+const mockListConfigTombstones = jest.fn();
+
+jest.mock('~/models', () => ({
+  get listConfigTombstones() {
+    return mockListConfigTombstones;
+  },
+}));
 
 jest.mock('@librechat/api', () => ({
   createMCPAppBindingCodec: jest.fn(() => mockAppBindingCodec),
+  get createMCPPolicyResolver() {
+    return mockCreateMCPPolicyResolver;
+  },
+  get reportStoredMCPTombstones() {
+    return mockReportStoredMCPTombstones;
+  },
   get registerShutdownTask() {
     return mockRegisterShutdownTask;
   },
@@ -135,6 +151,52 @@ describe('initializeMCPs', () => {
     mockMCPManagerInstance.disconnectAppServers.mockResolvedValue(undefined);
     mockSyncStaticTools.mockResolvedValue(undefined);
     mockMergeAppTools.mockResolvedValue(undefined);
+    mockReportStoredMCPTombstones.mockResolvedValue(undefined);
+  });
+
+  describe('stored MCP tombstones', () => {
+    it('reports the tombstoned profiles against the librechat.yaml servers once registry is ready', async () => {
+      const mcpConfig = { github: { type: 'streamable-http', url: 'https://github.example.com' } };
+      const profiles = [
+        { principalType: 'role', principalId: 'USER', tombstones: ['mcpServers.github'] },
+      ];
+      mockGetAppConfig.mockResolvedValue({ mcpConfig });
+      mockListConfigTombstones.mockResolvedValue(profiles);
+
+      await initializeMCPs();
+
+      expect(mockReportStoredMCPTombstones).toHaveBeenCalledWith(expect.any(Function), mcpConfig);
+      const [listProfiles] = mockReportStoredMCPTombstones.mock.calls[0];
+      await expect(listProfiles('mcpServers')).resolves.toBe(profiles);
+      expect(mockListConfigTombstones).toHaveBeenCalledWith('mcpServers');
+      expect(mockCreateMCPServersRegistry.mock.invocationCallOrder[0]).toBeLessThan(
+        mockReportStoredMCPTombstones.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('connects the MCP servers without waiting for the report, and resolves once it is logged', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        mcpConfig: { github: { type: 'streamable-http', url: 'https://github.example.com' } },
+      });
+      let finishReport;
+      mockReportStoredMCPTombstones.mockReturnValue(
+        new Promise((resolve) => {
+          finishReport = resolve;
+        }),
+      );
+      let settled = false;
+
+      const initialized = initializeMCPs().then(() => {
+        settled = true;
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(mockMCPManagerInstance.connectAppServers).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      finishReport();
+      await initialized;
+      expect(settled).toBe(true);
+    });
   });
 
   describe('MCPServersRegistry initialization', () => {
@@ -266,7 +328,7 @@ describe('initializeMCPs', () => {
       });
     });
 
-    it('wires a per-request resolver that reads the merged (non-baseOnly) config', async () => {
+    it('wires the per-request policy resolver over the merged (non-baseOnly) config reader', async () => {
       mockGetAppConfig.mockResolvedValue({
         mcpConfig: null,
         mcpSettings: { allowedDomains: ['yaml.com'] },
@@ -274,36 +336,8 @@ describe('initializeMCPs', () => {
 
       await initializeMCPs();
 
-      const resolver = mockCreateMCPServersRegistry.mock.calls[0][3];
-      expect(typeof resolver).toBe('function');
-
-      // The resolver resolves the request's merged allowlists — not the boot YAML base.
-      mockGetAppConfig.mockResolvedValue({
-        mcpSettings: {
-          apps: true,
-          allowedDomains: ['merged.com'],
-          allowedAddresses: ['10.0.0.0/8'],
-        },
-      });
-      const resolved = await resolver({ userId: 'u1', role: 'ADMIN' });
-
-      expect(mockGetAppConfig).toHaveBeenLastCalledWith({
-        role: 'ADMIN',
-        userId: 'u1',
-        failClosed: true,
-      });
-      expect(resolved).toEqual({
-        allowedDomains: ['merged.com'],
-        allowedAddresses: ['10.0.0.0/8'],
-        mcpApps: {
-          enabled: true,
-          legacyHtmlEnabled: true,
-          maxPersistedAppBytes: 1048576,
-          maxAdmissionRequestsPerMinute: 240,
-          maxActiveViews: 3,
-          maxActionPreviewChars: 16384,
-        },
-      });
+      expect(mockCreateMCPPolicyResolver).toHaveBeenCalledWith(mockGetAppConfig);
+      expect(mockCreateMCPServersRegistry.mock.calls[0][3]).toBe(mockPolicyResolver);
     });
 
     it('should throw and log error if MCPServersRegistry initialization fails', async () => {

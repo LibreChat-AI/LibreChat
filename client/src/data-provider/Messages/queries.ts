@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
+import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import type { UseQueryOptions, QueryObserverResult, QueryClient } from '@tanstack/react-query';
 import type * as t from 'librechat-data-provider';
 import {
@@ -123,6 +123,46 @@ export const useToolCallPartQuery = (
       ...config,
     },
   );
+};
+
+/** Most files one owner lookup names; the endpoint refuses more. */
+export const SUBAGENT_ATTACHMENT_CALLS_BATCH = 32;
+
+/**
+ * The child calls of a stored message's subagent transcripts that `files` were saved under, for a
+ * client holding previews: a file that reached the message after it loaded has no hint in the
+ * cached preview. Answered from the stored transcripts, so it does not wait on the file being
+ * saved, and keyed by the files so a newer one asks again; more files than one lookup names are
+ * asked in batches. No reader is there to press retry, so a failed read retries with backoff and
+ * runs again on focus and reconnect.
+ */
+export const useSubagentAttachmentCallsQueries = (
+  params: t.SubagentAttachmentCallsParams,
+  enabled: boolean,
+): QueryObserverResult<t.SubagentAttachmentCallsResponse>[] => {
+  const { conversationId, messageId, files } = params;
+  const batches: t.SubagentAttachmentFile[][] = [];
+  for (let i = 0; i < files.length; i += SUBAGENT_ATTACHMENT_CALLS_BATCH) {
+    batches.push(files.slice(i, i + SUBAGENT_ATTACHMENT_CALLS_BATCH));
+  }
+  return useQueries({
+    queries: batches.map((batch) => ({
+      queryKey: [
+        QueryKeys.subagentAttachmentCalls,
+        conversationId,
+        messageId,
+        JSON.stringify(batch),
+      ],
+      queryFn: () =>
+        dataService.getSubagentAttachmentCalls({ conversationId, messageId, files: batch }),
+      enabled,
+      staleTime: Infinity,
+      retry: 3,
+      refetchOnMount: false,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+    })),
+  });
 };
 
 function hasActiveJob(queryClient: QueryClient, id: string) {

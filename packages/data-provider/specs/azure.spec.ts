@@ -1,5 +1,5 @@
 import type { TAzureGroups } from '../src/config';
-import { validateAzureGroups, mapModelToAzureConfig, mapGroupToAzureConfig } from '../src/azure';
+import { validateAzureGroups, mapModelToAzureConfig } from '../src/azure';
 
 describe('validateAzureGroups', () => {
   it('should validate a correct configuration', () => {
@@ -786,59 +786,5 @@ describe('validateAzureGroups with modelGroupMap and groupMap', () => {
       azureOpenAIApiKey: 'llama-key',
       azureOpenAIApiVersion: '',
     });
-  });
-});
-
-describe('mapGroupToAzureConfig', () => {
-  // Test setup for a basic config with 2 groups
-  const groupMap = {
-    group1: {
-      apiKey: 'key-for-group1',
-      instanceName: 'instance-group1',
-      models: {
-        model1: { deploymentName: 'deployment1', version: '1.0' },
-      },
-    },
-    group2: {
-      apiKey: 'key-for-group2',
-      instanceName: 'instance-group2',
-      serverless: true,
-      baseURL: 'https://group2.example.com',
-      models: {
-        model2: true, // demonstrating a boolean style model configuration
-      },
-    },
-  };
-
-  it('should successfully map non-serverless group configuration', () => {
-    const groupName = 'group1';
-    const result = mapGroupToAzureConfig({ groupName, groupMap });
-    expect(result).toEqual({
-      azureOptions: expect.objectContaining({
-        azureOpenAIApiKey: 'key-for-group1',
-        azureOpenAIApiInstanceName: 'instance-group1',
-        azureOpenAIApiDeploymentName: expect.any(String),
-        azureOpenAIApiVersion: expect.any(String),
-      }),
-    });
-  });
-
-  it('should successfully map serverless group configuration', () => {
-    const groupName = 'group2';
-    const result = mapGroupToAzureConfig({ groupName, groupMap });
-    expect(result).toEqual({
-      azureOptions: expect.objectContaining({
-        azureOpenAIApiKey: 'key-for-group2',
-      }),
-      baseURL: 'https://group2.example.com',
-      serverless: true,
-    });
-  });
-
-  it('should throw error for nonexistent group name', () => {
-    const groupName = 'nonexistent-group';
-    expect(() => {
-      mapGroupToAzureConfig({ groupName, groupMap });
-    }).toThrow(`Group named "${groupName}" not found in configuration.`);
   });
 });

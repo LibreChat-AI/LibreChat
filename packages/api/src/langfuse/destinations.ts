@@ -5,10 +5,12 @@ import {
   isLangfuseFanoutEnabled,
   isLangfuseTenantExportEnabled,
   isLangfuseTracingEnabled,
+  isLangfuseTraceAllowed,
   isLangfuseTraceSampled,
   usesLangfuseMultiTenantRouting,
 } from './policy';
 import {
+  isTimeout,
   normalizeBoolean,
   redirectPolicyFor,
   resolveLangfuseHeaders,
@@ -27,12 +29,44 @@ import { traceIdForMessage } from './trace';
 const DEFAULT_BASE_URL = 'https://cloud.langfuse.com';
 const PROJECT_LOOKUP_TIMEOUT_MS = 10_000;
 const PROJECT_LOOKUP_RETRY_MS = 30_000;
+
+/** Tells a lookup timeout apart from any other failure (a non-200 response, an
+ *  unparsable body, or a network error other than the deadline firing), so a
+ *  caller that needs to can report the two differently. */
+export type CentralProjectIdLookupOutcome =
+  | { ok: true; projectId: string }
+  | { ok: false; timedOut: boolean };
+
 type CentralProjectIdCacheEntry = {
   projectId?: string;
-  lookup?: Promise<string | undefined>;
+  lookup?: Promise<CentralProjectIdLookupOutcome>;
   retryAt: number;
+  /** Why the lookup that opened the current retry window failed, so a caller
+   *  hitting the window reports `timedOut` consistently with that failure
+   *  instead of always reporting `false`. */
+  retryReason?: 'timeout' | 'other';
 };
 const centralProjectIdCache = new Map<string, CentralProjectIdCacheEntry>();
+
+/** Waits for the shared `lookup` for at most `timeoutMs`, without affecting the
+ *  lookup itself: the local timer only decides what this call returns, and is
+ *  always cleared, so the lookup keeps running — and still updates the cache
+ *  entry and retry window on completion — for any other caller still waiting
+ *  on it. */
+async function waitWithTimeout(
+  lookup: Promise<CentralProjectIdLookupOutcome>,
+  timeoutMs: number,
+): Promise<CentralProjectIdLookupOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const localTimeout = new Promise<CentralProjectIdLookupOutcome>((resolve) => {
+    timer = setTimeout(() => resolve({ ok: false, timedOut: true }), timeoutMs);
+  });
+  try {
+    return await Promise.race([lookup, localTimeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export type LangfuseScoreDestination = {
   id?: string;
@@ -83,7 +117,7 @@ export function getLangfuseDestinationId(baseUrl: string, projectId: string): st
     .digest('hex');
 }
 
-function getCentralEnvBaseUrl(): string {
+export function getCentralEnvBaseUrl(): string {
   return (
     normalizeString(process.env.LANGFUSE_BASE_URL) ??
     normalizeString(process.env.LANGFUSE_HOST) ??
@@ -92,16 +126,35 @@ function getCentralEnvBaseUrl(): string {
   );
 }
 
-async function resolveCentralProjectId(
+/**
+ * The deployment's own Langfuse project id for its env credentials, cached and
+ * looked up at most once per retry window. `waitForLookup` awaits an in-flight
+ * lookup instead of returning a not-ok outcome while it resolves, for a caller
+ * that needs a definitive answer rather than best-effort warm cache data.
+ * The underlying fetch always runs with the deployment-wide
+ * `PROJECT_LOOKUP_TIMEOUT_MS`, and owns the cache entry and retry window exactly
+ * as if `timeoutMs` were never passed. `timeoutMs` only bounds how long this
+ * call itself waits for that shared fetch: when it elapses first, this call
+ * returns `{ ok: false, timedOut: true }` without touching the cache entry or
+ * retry window, and the shared fetch keeps running for any other waiter. A
+ * lookup that genuinely fails inside the shared fetch — rather than this call
+ * giving up on waiting for it — keeps reporting `timedOut` from that real
+ * failure. A caller inside the retry window gets the reason recorded by the
+ * failure that opened it. The outcome tells a lookup timeout apart from any
+ * other failure, which `resolveCentralProjectId` collapses for callers that
+ * only need the resolved id.
+ */
+export async function resolveCentralProjectIdOutcome(
   baseUrl: string,
   publicKey: string,
   secretKey: string,
   waitForLookup: boolean,
   headers?: Record<string, string>,
-): Promise<string | undefined> {
+  timeoutMs: number = PROJECT_LOOKUP_TIMEOUT_MS,
+): Promise<CentralProjectIdLookupOutcome> {
   const configuredProjectId = normalizeString(process.env.LANGFUSE_PROJECT_ID);
   if (configuredProjectId) {
-    return configuredProjectId;
+    return { ok: true, projectId: configuredProjectId };
   }
 
   /** Headers participate in the key so the header-less module warm-up below
@@ -113,16 +166,20 @@ async function resolveCentralProjectId(
   const cached = centralProjectIdCache.get(cacheKey) ?? { retryAt: 0 };
   centralProjectIdCache.set(cacheKey, cached);
   if (cached.projectId) {
-    return cached.projectId;
+    return { ok: true, projectId: cached.projectId };
   }
 
   if (!cached.lookup && Date.now() >= cached.retryAt) {
-    cached.lookup = (async () => {
+    cached.lookup = (async (): Promise<CentralProjectIdLookupOutcome> => {
       try {
         const response = await fetch(`${baseUrl}/api/public/projects`, {
           headers: mergeHeaders(headers, {
             Authorization: toBasicAuthorization(publicKey, secretKey),
           }),
+          // Always the deployment-wide timeout: this lookup is shared by every
+          // caller's cache entry, so it must not inherit the budget of whichever
+          // caller happened to start it. A caller-specific bound is applied only
+          // to that caller's own wait, below.
           signal: AbortSignal.timeout(PROJECT_LOOKUP_TIMEOUT_MS),
           ...redirectPolicyFor(headers),
         });
@@ -130,7 +187,7 @@ async function resolveCentralProjectId(
           logger.warn(
             `[langfuse] Could not resolve central project identity: Langfuse responded with ${response.status}`,
           );
-          return undefined;
+          return { ok: false, timedOut: false };
         }
 
         const projects: unknown = await response.json();
@@ -146,25 +203,56 @@ async function resolveCentralProjectId(
           logger.warn(
             '[langfuse] Could not resolve central project identity from Langfuse response',
           );
-          return undefined;
+          return { ok: false, timedOut: false };
         }
-        return projectId;
+        return { ok: true, projectId };
       } catch (error) {
         logger.warn('[langfuse] Could not resolve central project identity:', error);
-        return undefined;
+        return { ok: false, timedOut: isTimeout(error) };
       }
-    })().then((projectId) => {
+    })().then((outcome) => {
       cached.lookup = undefined;
-      if (projectId) {
-        cached.projectId = projectId;
+      if (outcome.ok) {
+        cached.projectId = outcome.projectId;
       } else {
         cached.retryAt = Date.now() + PROJECT_LOOKUP_RETRY_MS;
+        cached.retryReason = outcome.timedOut ? 'timeout' : 'other';
       }
-      return projectId;
+      return outcome;
     });
   }
 
-  return waitForLookup && cached.lookup ? cached.lookup : undefined;
+  if (!cached.lookup) {
+    // Inside the retry window a prior failure opened: report the reason that
+    // failure recorded instead of always reporting `timedOut: false`, so
+    // `/resolve` keeps mapping a timeout to 504 for the whole window.
+    return { ok: false, timedOut: cached.retryReason === 'timeout' };
+  }
+  if (!waitForLookup) {
+    return { ok: false, timedOut: false };
+  }
+  return waitWithTimeout(cached.lookup, timeoutMs);
+}
+
+/**
+ * The string-or-undefined view of {@link resolveCentralProjectIdOutcome} for callers that
+ * only need the resolved id and always use the default lookup timeout.
+ */
+export async function resolveCentralProjectId(
+  baseUrl: string,
+  publicKey: string,
+  secretKey: string,
+  waitForLookup: boolean,
+  headers?: Record<string, string>,
+): Promise<string | undefined> {
+  const outcome = await resolveCentralProjectIdOutcome(
+    baseUrl,
+    publicKey,
+    secretKey,
+    waitForLookup,
+    headers,
+  );
+  return outcome.ok ? outcome.projectId : undefined;
 }
 
 async function getCentralScoreDestination(
@@ -366,7 +454,8 @@ export type LangfuseTraceMessageFields = {
 /**
  * The sampling record a response stores for its run's trace. `runId` names the
  * run when it is not the response's own id, as for a failed turn's error row;
- * it is then stored too, so feedback and the trace viewer follow that run.
+ * it is then stored too, so feedback and the trace viewer follow that run. A
+ * temporary turn's run was not traced unless the deployment opts in.
  */
 export async function getLangfuseTraceMessageFields(
   appConfig: AppConfig | undefined,
@@ -374,14 +463,19 @@ export async function getLangfuseTraceMessageFields(
   {
     centralTraceExportEnabled = true,
     runId = messageId,
-  }: Pick<LangfuseScoreDestinationOptions, 'centralTraceExportEnabled'> & { runId?: string } = {},
+    isTemporary,
+  }: Pick<LangfuseScoreDestinationOptions, 'centralTraceExportEnabled'> & {
+    runId?: string;
+    isTemporary?: boolean;
+  } = {},
 ): Promise<{
   langfuseSampled: boolean;
   langfuseDestinationIds?: string[];
   langfuseRunId?: string;
 }> {
   const traceId = traceIdForMessage(runId);
-  const langfuseSampled = isLangfuseTraceSampled(traceId);
+  const langfuseSampled =
+    isLangfuseTraceAllowed(appConfig, isTemporary) && isLangfuseTraceSampled(traceId);
   return {
     langfuseSampled,
     langfuseDestinationIds: await getLangfuseTraceDestinationIds(
@@ -406,13 +500,14 @@ export async function getFailedTurnTraceFields(
     messageId,
     runId,
     runCreated,
-  }: { messageId: string; runId?: string | null; runCreated: boolean },
+    isTemporary,
+  }: { messageId: string; runId?: string | null; runCreated: boolean; isTemporary?: boolean },
 ): Promise<LangfuseTraceMessageFields> {
   if (!runCreated || typeof runId !== 'string' || runId.length === 0) {
     return {};
   }
   try {
-    return await getLangfuseTraceMessageFields(appConfig, messageId, { runId });
+    return await getLangfuseTraceMessageFields(appConfig, messageId, { runId, isTemporary });
   } catch (error) {
     logger.warn('[langfuse] Could not record the failed run trace:', error);
     return {};

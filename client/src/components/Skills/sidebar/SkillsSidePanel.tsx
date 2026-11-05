@@ -49,7 +49,7 @@ export default function SkillsSidePanel({ className }: SkillsSidePanelProps) {
   return (
     <div
       className={cn(
-        'border-border-light flex h-full w-full flex-col overflow-hidden border-r pt-2',
+        'border-border-light flex h-full w-full flex-col overflow-hidden border-e pt-2',
         className,
       )}
     >

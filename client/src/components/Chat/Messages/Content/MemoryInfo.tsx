@@ -52,10 +52,10 @@ export default function MemoryInfo({ memoryArtifacts }: { memoryArtifacts: Memor
         <div className="space-y-3">
           {updatedMemories.map((artifact) => (
             <div key={`update-${artifact.key}`}>
-              <div className="mb-1 text-xs font-bold uppercase tracking-wide text-text-secondary">
+              <div className="text-text-secondary mb-1 text-xs font-bold tracking-wide uppercase">
                 {artifact.key}
               </div>
-              <div className="whitespace-pre-wrap text-sm text-text-primary">{artifact.value}</div>
+              <div className="text-text-primary text-sm whitespace-pre-wrap">{artifact.value}</div>
             </div>
           ))}
         </div>
@@ -65,10 +65,10 @@ export default function MemoryInfo({ memoryArtifacts }: { memoryArtifacts: Memor
         <div className="space-y-3">
           {deletedMemories.map((artifact) => (
             <div key={`delete-${artifact.key}`} className="opacity-60">
-              <div className="mb-1 text-xs font-bold uppercase tracking-wide text-text-secondary">
+              <div className="text-text-secondary mb-1 text-xs font-bold tracking-wide uppercase">
                 {artifact.key}
               </div>
-              <div className="text-sm italic text-text-secondary">
+              <div className="text-text-secondary text-sm italic">
                 {localize('com_ui_memory_deleted')}
               </div>
             </div>
@@ -78,7 +78,7 @@ export default function MemoryInfo({ memoryArtifacts }: { memoryArtifacts: Memor
 
       {errorMessages.length > 0 && (
         <div>
-          <p className="mb-2 text-sm font-semibold text-status-error">
+          <p className="text-status-error mb-2 text-sm font-semibold">
             {localize('com_ui_memory_storage_full')}
           </p>
           <div className="space-y-2">

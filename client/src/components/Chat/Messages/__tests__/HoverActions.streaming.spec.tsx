@@ -1,8 +1,10 @@
 import React, { useMemo } from 'react';
+import { getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
 import { render, screen, act } from '@testing-library/react';
+import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import { QueryKeys, type TConversation, type TMessage } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
@@ -11,17 +13,11 @@ import StructuredMessage from '~/components/Messages/MessageContent';
 import MessageParts from '~/components/Chat/Messages/MessageParts';
 import Message from '~/components/Chat/Messages/Message';
 import store from '~/store';
+import '~/components/Chat/Messages/Content/register';
+import '~/Providers/MessagesHostContext';
 
 let mockHoverButtonsRenderCount = 0;
 let mockContentRenderCount = 0;
-
-jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
-  __esModule: true,
-  default: () => {
-    mockHoverButtonsRenderCount += 1;
-    return <div data-testid="hover-buttons" />;
-  },
-}));
 
 jest.mock('~/components/Chat/Messages/Content/MessageContent', () => ({
   __esModule: true,
@@ -47,14 +43,23 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => {
   };
 });
 
-jest.mock('~/components/Chat/Messages/Content/Parts/AuthorHeader', () => ({
-  __esModule: true,
-  default: () => <div data-testid="author-header" />,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  HoverButtons: () => {
+    mockHoverButtonsRenderCount += 1;
+    return <div data-testid="hover-buttons" />;
+  },
+  AuthorHeader: () => <div data-testid="author-header" />,
 }));
 
 jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   __esModule: true,
   default: () => <div data-testid="message-icon" />,
+}));
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => key,
 }));
 
 jest.mock('~/hooks', () => {
@@ -234,7 +239,7 @@ function renderStreamingRow(
 
   const initializeState = ({ set }: MutableSnapshot) => {
     set(store.conversationByIndex(0), conversation);
-    set(store.isSubmittingFamily(0), submitting);
+    getDefaultStore().set(isSubmittingFamily(0), submitting);
   };
 
   render(
@@ -254,6 +259,10 @@ function renderStreamingRow(
 
   return queryClient;
 }
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('streaming hover actions', () => {
   beforeEach(() => {
@@ -311,7 +320,7 @@ describe('streaming hover actions', () => {
     renderStreamingRow(structured);
 
     expect(screen.getByRole('navigation', { name: 'com_ui_sibling_navigation' })).toHaveClass(
-      '[@media(hover:hover)]:opacity-0',
+      'no-touch:opacity-0',
     );
   });
 

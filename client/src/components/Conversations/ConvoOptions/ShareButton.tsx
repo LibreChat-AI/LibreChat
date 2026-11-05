@@ -129,7 +129,7 @@ export default function ShareButton({
           }
         }}
       >
-        <OGDialogHeader className="shrink-0 px-6 pt-6 pr-14 pb-0 text-left">
+        <OGDialogHeader className="shrink-0 px-6 pe-14 pt-6 pb-0 text-start">
           <div className="flex items-center gap-2">
             <OGDialogTitle className="text-xl font-semibold tracking-tight">
               {localize('com_ui_share_link_to_chat')}
@@ -166,7 +166,7 @@ export default function ShareButton({
                   <Label
                     id="share-files-label"
                     htmlFor="share-files-switch"
-                    className="text-text-primary cursor-pointer text-sm font-medium"
+                    className="cursor-pointer text-sm font-medium"
                   >
                     {localize('com_ui_share_files')}
                   </Label>

@@ -50,6 +50,78 @@ function getCacheCreationTokens(usage: UsageMetadata): number {
   );
 }
 
+/** The 1-hour share of the cache writes, never more than the writes themselves */
+function getCacheCreation1hTokens(usage: UsageMetadata, cacheCreation: number): number {
+  return Math.min(
+    Math.max(Number(usage.input_token_details?.cache_creation_1h) || 0, 0),
+    cacheCreation,
+  );
+}
+
+interface RawProviderUsage {
+  /** Anthropic (direct and Vertex) */
+  cache_creation?: {
+    ephemeral_5m_input_tokens?: unknown;
+    ephemeral_1h_input_tokens?: unknown;
+  } | null;
+  /** Bedrock Converse */
+  cacheDetails?: ReadonlyArray<{ ttl?: string; inputTokens?: unknown } | null> | null;
+}
+
+interface ModelEndOutput {
+  usage_metadata?: UsageMetadata;
+  response_metadata?: {
+    usage?: RawProviderUsage | null;
+    /** Bedrock's streamed `metadata` event */
+    metadata?: { usage?: RawProviderUsage | null } | null;
+  } | null;
+}
+
+function getOneHourCacheWrites(usage?: RawProviderUsage | null): number {
+  const anthropic = Number(usage?.cache_creation?.ephemeral_1h_input_tokens);
+  if (anthropic > 0) {
+    return anthropic;
+  }
+  if (!Array.isArray(usage?.cacheDetails)) {
+    return 0;
+  }
+  let total = 0;
+  for (const detail of usage.cacheDetails) {
+    if (detail?.ttl === '1h') {
+      total += Number(detail.inputTokens) || 0;
+    }
+  }
+  return total;
+}
+
+/**
+ * Usage of one finished model call. Providers split cache writes by TTL only in
+ * their raw usage (Anthropic's `cache_creation.ephemeral_1h_input_tokens`, Bedrock's
+ * `cacheDetails`), which the agents SDK keeps on `response_metadata` but leaves out
+ * of `usage_metadata`. The 1-hour count is folded into
+ * `input_token_details.cache_creation_1h` so those writes are billed at the 1-hour
+ * rate; without a breakdown the usage is returned unchanged.
+ */
+export function getModelEndUsage(output?: ModelEndOutput | null): UsageMetadata | undefined {
+  const usage = output?.usage_metadata;
+  if (!usage) {
+    return undefined;
+  }
+  const metadata = output?.response_metadata;
+  const oneHour =
+    getOneHourCacheWrites(metadata?.usage) || getOneHourCacheWrites(metadata?.metadata?.usage);
+  if (!(oneHour > 0)) {
+    return usage;
+  }
+  return {
+    ...usage,
+    input_token_details: {
+      ...usage.input_token_details,
+      cache_creation_1h: Math.min(oneHour, getCacheCreationTokens(usage)),
+    },
+  };
+}
+
 /**
  * Resolves `completionTokens` for billing, repairing providers whose
  * `usage_metadata.output_tokens` undercounts.
@@ -100,6 +172,8 @@ interface SplitUsage {
   /** Non-cached input portion — what gets billed at the standard input rate */
   inputOnly: number;
   cacheCreation: number;
+  /** Subset of `cacheCreation` written to the 1-hour cache */
+  cacheCreation1h: number;
   cacheRead: number;
   /** Total prompt tokens including cached portion */
   totalInput: number;
@@ -123,6 +197,7 @@ export interface CollectedUsageBreakdown {
 
 function splitUsage(usage: UsageMetadata): SplitUsage {
   const cacheCreation = getCacheCreationTokens(usage);
+  const cacheCreation1h = getCacheCreation1hTokens(usage, cacheCreation);
   const cacheRead =
     Number(usage.input_token_details?.cache_read) || Number(usage.cache_read_input_tokens) || 0;
   const rawInput = Number(usage.input_tokens) || 0;
@@ -131,6 +206,7 @@ function splitUsage(usage: UsageMetadata): SplitUsage {
     return {
       inputOnly: Math.max(0, rawInput - cacheCreation - cacheRead),
       cacheCreation,
+      cacheCreation1h,
       cacheRead,
       totalInput: rawInput,
       completion,
@@ -139,6 +215,7 @@ function splitUsage(usage: UsageMetadata): SplitUsage {
   return {
     inputOnly: rawInput,
     cacheCreation,
+    cacheCreation1h,
     cacheRead,
     totalInput: rawInput + cacheCreation + cacheRead,
     completion,
@@ -217,7 +294,7 @@ export function computeUsageCostUSD(
   pricing: PricingFns,
   endpointTokenConfig?: EndpointTokenConfig,
 ): number {
-  const { inputOnly, cacheCreation, cacheRead, completion } = splitUsage(usage);
+  const { inputOnly, cacheCreation, cacheCreation1h, cacheRead, completion } = splitUsage(usage);
   /** user/context/conversationId only populate the transaction doc, which is
    *  discarded here — only `tokenValue` (credits) is summed */
   const txData: TxMetadata = {
@@ -232,7 +309,12 @@ export function computeUsageCostUSD(
       ? prepareStructuredTokenSpend(
           txData,
           {
-            promptTokens: { input: inputOnly, write: cacheCreation, read: cacheRead },
+            promptTokens: {
+              input: inputOnly,
+              write: cacheCreation,
+              ...(cacheCreation1h > 0 && { write1h: cacheCreation1h }),
+              read: cacheRead,
+            },
             completionTokens: completion,
           },
           pricing,
@@ -871,7 +953,8 @@ export async function recordCollectedUsage(
         continue;
       }
 
-      const { inputOnly, cacheCreation, cacheRead, completion } = splitUsage(usage);
+      const { inputOnly, cacheCreation, cacheCreation1h, cacheRead, completion } =
+        splitUsage(usage);
 
       if (options?.excludeFromOutputTotal !== true) {
         total_output_tokens += completion;
@@ -902,6 +985,7 @@ export async function recordCollectedUsage(
                   promptTokens: {
                     input: inputOnly,
                     write: cacheCreation,
+                    ...(cacheCreation1h > 0 && { write1h: cacheCreation1h }),
                     read: cacheRead,
                   },
                   completionTokens: completion,
@@ -926,6 +1010,7 @@ export async function recordCollectedUsage(
             promptTokens: {
               input: inputOnly,
               write: cacheCreation,
+              ...(cacheCreation1h > 0 && { write1h: cacheCreation1h }),
               read: cacheRead,
             },
             completionTokens: completion,

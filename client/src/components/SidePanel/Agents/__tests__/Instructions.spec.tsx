@@ -69,7 +69,7 @@ describe('Agent Instructions', () => {
   it('switching to Prompt mode hides the inline editor without unmounting it', () => {
     render(<InstructionsHarness />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_agents_instructions_source_prompt' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'com_agents_instructions_source_prompt' }));
 
     expect(screen.getByTestId('instructions-prompt-fields')).toBeInTheDocument();
     expect(screen.getByTestId('instructions-inline-panel')).toHaveClass('hidden');
@@ -102,10 +102,10 @@ describe('Agent Instructions', () => {
     expect(screen.getByTestId('restricted-instructions-prompt')).toBeInTheDocument();
     expect(screen.getByTestId('instructions-prompt-fields')).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'com_agents_instructions_source_inline' }),
+      screen.getByRole('radio', { name: 'com_agents_instructions_source_inline' }),
     ).not.toBeDisabled();
     expect(
-      screen.getByRole('button', { name: 'com_agents_instructions_source_prompt' }),
+      screen.getByRole('radio', { name: 'com_agents_instructions_source_prompt' }),
     ).not.toBeDisabled();
   });
 
@@ -117,7 +117,7 @@ describe('Agent Instructions', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_agents_instructions_source_inline' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'com_agents_instructions_source_inline' }));
 
     expect(screen.queryByTestId('instructions-prompt-fields')).not.toBeInTheDocument();
     expect(screen.queryByTestId('restricted-instructions-prompt')).not.toBeInTheDocument();
@@ -136,10 +136,10 @@ describe('Agent Instructions', () => {
       />,
     );
 
-    const promptButton = screen.getByRole('button', {
+    const promptButton = screen.getByRole('radio', {
       name: 'com_agents_instructions_source_prompt',
     });
-    const inlineButton = screen.getByRole('button', {
+    const inlineButton = screen.getByRole('radio', {
       name: 'com_agents_instructions_source_inline',
     });
 
@@ -168,10 +168,10 @@ describe('Agent Instructions', () => {
     expect(screen.queryByTestId('instructions-prompt-fields')).not.toBeInTheDocument();
     expect(screen.queryByTestId('instructions-inline-panel')).not.toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'com_agents_instructions_source_inline' }),
+      screen.getByRole('radio', { name: 'com_agents_instructions_source_inline' }),
     ).toBeDisabled();
     expect(
-      screen.getByRole('button', { name: 'com_agents_instructions_source_prompt' }),
+      screen.getByRole('radio', { name: 'com_agents_instructions_source_prompt' }),
     ).toBeDisabled();
   });
 
@@ -191,7 +191,7 @@ describe('Agent Instructions', () => {
     expect(screen.getByTestId('instructions-prompt-fields')).toBeInTheDocument();
     expect(screen.queryByText('com_ui_loading')).not.toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'com_agents_instructions_source_prompt' }),
+      screen.getByRole('radio', { name: 'com_agents_instructions_source_prompt' }),
     ).not.toBeDisabled();
   });
 
@@ -215,10 +215,10 @@ describe('Agent Instructions', () => {
       'com_agents_instructions_prompt_load_error',
     );
     expect(
-      screen.getByRole('button', { name: 'com_agents_instructions_source_inline' }),
+      screen.getByRole('radio', { name: 'com_agents_instructions_source_inline' }),
     ).toBeDisabled();
     expect(
-      screen.getByRole('button', { name: 'com_agents_instructions_source_prompt' }),
+      screen.getByRole('radio', { name: 'com_agents_instructions_source_prompt' }),
     ).toBeDisabled();
 
     await user.click(screen.getByRole('button', { name: 'com_ui_retry' }));
@@ -231,7 +231,7 @@ describe('Agent Instructions', () => {
 
       expect(screen.getByTestId('instructions-heading')).toHaveTextContent('com_ui_instructions');
       expect(
-        screen.getByRole('group', { name: 'com_agents_instructions_source_toggle_aria' }),
+        screen.getByRole('radiogroup', { name: 'com_agents_instructions_source_toggle_aria' }),
       ).toBeInTheDocument();
     });
 

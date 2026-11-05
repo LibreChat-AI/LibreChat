@@ -151,7 +151,7 @@ export default function VersionPanel() {
           aria-label={localize('com_ui_back_to_builder')}
           className="text-text-secondary hover:text-text-primary shrink-0"
         >
-          <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
+          <ChevronLeft className="h-5 w-5 rtl:-scale-x-100" strokeWidth={1.75} aria-hidden="true" />
         </Button>
         <div className="flex flex-col items-center">
           <h2 className="text-text-primary text-base font-semibold">

@@ -17,6 +17,7 @@ import type {
   CodeOutputDownloadFallback,
   ProcessPublishedCodeOutputInput,
 } from './publication';
+import type { FileProvisionStorage, FileStorageUploadObserver } from '../operations';
 import type { sanitizeArtifactPath, flattenArtifactPath } from '~/utils/files';
 import type { classifyCodeArtifact, CodeArtifactCategory } from './classify';
 import type { hasOfficeHtmlPath, getExtractedTextFormat } from './extract';
@@ -24,6 +25,7 @@ import type { RetentionExpiry } from '~/files/retention';
 import type { extractCodeArtifactText } from './extract';
 import type { logAxiosError } from '~/utils/axios';
 import type { ServerRequest } from '~/types';
+import { withFileProvisioning, FileProvisionPersistenceError } from '../operations';
 import { createCodeOutputPersistence } from './publication';
 
 export type CodeOutputProcessorInput = Omit<
@@ -57,6 +59,7 @@ type DownloadFallbackInput = Pick<
 > & { expiresAt: number };
 
 export interface CodeOutputProcessorDeps {
+  fileStorage: FileProvisionStorage;
   getCodeOutputFileSettings: (req: ServerRequest) => {
     endpointFileConfig: ReturnType<typeof getEndpointFileConfig>;
     fileSizeLimit: number;
@@ -140,7 +143,7 @@ export async function processCodeOutput(
     getStrategyFunctions,
     determineFileType,
     claimCodeFile,
-    commitCodeFile: commitOutput,
+    fileStorage,
     finalizePreview,
     hasOfficeHtmlPath,
     sanitizeArtifactPath,
@@ -299,282 +302,297 @@ export async function processCodeOutput(
       );
     }
 
-    /**
-     * The data-schema method checks background dispatch ownership atomically with
-     * the write. A superseded commit misses and its attachment is skipped.
-     * Bytes already uploaded to a reused storage key retain the existing race;
-     * a per-file lock would be needed to cover that storage write as well.
-     * Foreground outputs retain their unconditional commit behavior.
-     */
+    /** Retain the completed output for token-qualified persistence after storage settles. */
+    let pendingOutput: CodeOutputStoredFile | undefined;
     async function commitCodeFile(fileData: CodeOutputStoredFile): Promise<boolean> {
-      const committed = await commitOutput(
-        fileData,
-        freshClaimAfter == null ? undefined : sourceDispatchedAt,
-      );
-      if (!committed) {
-        logger.warn(
-          `[processCodeOutput] Skipping stale background output "${safeName}" (${file_id}): a newer run owns this filename`,
-        );
-      }
-      return committed;
+      pendingOutput = structuredClone(fileData);
+      return true;
     }
 
-    /**
-     * Preserve the original `messageId` on update. Each `processCodeOutput`
-     * call would otherwise overwrite it with the current run's run id, which
-     * decouples the file from the assistant message that originally created
-     * it. `getCodeGeneratedFiles` filters by `messageId IN <thread>`, so a
-     * stale id (e.g. from a later regeneration / failed re-read attempt)
-     * silently excludes the file from priming on subsequent turns.
-     */
-    const persistedMessageId = isUpdate ? (claimed.messageId ?? messageId) : messageId;
-    /* A generated-output write replaces the file's bytes, so pointers to
-     * earlier content in another profile must not survive as reusable refs. */
-    const codeEnvReferenceSet = mergeCodeEnvRef(undefined, codeEnvRef);
-    const codeEnvMetadata = {
-      ...claimed.metadata,
-      ...codeEnvReferenceSet,
-      sourceDispatchedAt,
-    };
+    const writeOutput = async (
+      onUploadStart: FileStorageUploadObserver,
+    ): Promise<CodeOutputResult | null> => {
+      /**
+       * Preserve the original `messageId` on update. Each `processCodeOutput`
+       * call would otherwise overwrite it with the current run's run id, which
+       * decouples the file from the assistant message that originally created
+       * it. `getCodeGeneratedFiles` filters by `messageId IN <thread>`, so a
+       * stale id (e.g. from a later regeneration / failed re-read attempt)
+       * silently excludes the file from priming on subsequent turns.
+       */
+      const persistedMessageId = isUpdate ? (claimed.messageId ?? messageId) : messageId;
+      /* A generated-output write replaces the file's bytes, so pointers to
+       * earlier content in another profile must not survive as reusable refs. */
+      const codeEnvReferenceSet = mergeCodeEnvRef(undefined, codeEnvRef);
+      const codeEnvMetadata = {
+        ...claimed.metadata,
+        ...codeEnvReferenceSet,
+        sourceDispatchedAt,
+      };
 
-    if (isImage) {
-      const usage = isUpdate ? (claimed.usage ?? 0) + 1 : 1;
-      const _file = await convertImage(req, buffer, 'high', `${file_id}${fileExt}`);
-      const filepath = usage > 1 ? `${_file.filepath}?v=${Date.now()}` : _file.filepath;
+      if (isImage) {
+        const usage = isUpdate ? (claimed.usage ?? 0) + 1 : 1;
+        onUploadStart();
+        const _file = await convertImage(req, buffer, 'high', `${file_id}${fileExt}`);
+        const filepath = usage > 1 ? `${_file.filepath}?v=${Date.now()}` : _file.filepath;
+        const storageMetadata = getStorageMetadata({
+          filepath: _file.filepath,
+          source: appConfig.fileStrategy,
+          storageKey: _file.storageKey,
+          storageRegion: _file.storageRegion,
+        });
+        outputPersistence.trackStored({
+          ..._file,
+          ...storageMetadata,
+          file_id,
+          filepath: _file.filepath,
+          filename: safeName,
+          type: `image/${appConfig.imageOutputType}`,
+          user: req.user.id,
+          tenantId: req.user.tenantId,
+          conversationId,
+          source: appConfig.fileStrategy,
+        });
+        const file: CodeOutputStoredFile & Pick<CodeEnvRef, 'executionProfile'> = {
+          ..._file,
+          filepath,
+          ...storageMetadata,
+          file_id,
+          messageId: persistedMessageId,
+          usage,
+          filename: safeName,
+          conversationId,
+          executionProfile,
+          user: req.user.id,
+          tenantId: req.user.tenantId,
+          type: `image/${appConfig.imageOutputType}`,
+          createdAt: isUpdate ? claimed.createdAt : formattedDate,
+          updatedAt: formattedDate,
+          source: appConfig.fileStrategy,
+          context: outputPersistence.context,
+          metadata: codeEnvMetadata,
+          ...(await retentionExpiryPromise),
+        };
+        if (!(await outputPersistence.commit(file))) {
+          return null;
+        }
+        return { file: Object.assign(file, { messageId, toolCallId, agentId }) };
+      }
+
+      const { saveBuffer } = getStrategyFunctions(appConfig.fileStrategy);
+      if (!saveBuffer) {
+        logger.warn(
+          `[processCodeOutput] saveBuffer not available for strategy ${appConfig.fileStrategy}, falling back to download URL`,
+        );
+        return {
+          file: createDownloadFallback({
+            id,
+            name,
+            agentId,
+            messageId,
+            toolCallId,
+            session_id,
+            conversationId,
+            executionProfile,
+            executionRouteKey,
+            expiresAt: currentDate.getTime() + 86400000,
+          }),
+        };
+      }
+
+      const detectedType = await determineFileType(buffer, true);
+      const mimeType = detectedType?.mime || inferMimeType(name, '') || 'application/octet-stream';
+
+      /** Check MIME type support - for code-generated files, we're lenient but log unsupported types */
+      const isSupportedMimeType = fileConfig.checkType(
+        mimeType,
+        endpointFileConfig.supportedMimeTypes,
+      );
+      if (!isSupportedMimeType) {
+        logger.warn(
+          `[processCodeOutput] File "${name}" has unsupported MIME type "${mimeType}", proceeding with storage but may not be usable as tool resource`,
+        );
+      }
+
+      /* Compose the storage key here, after `file_id` is known, so the
+       * `flattenArtifactPath` cap budget can be calculated against the
+       * actual prefix length. The full key has to fit in one filesystem
+       * path component (NAME_MAX = 255 on most filesystems); without this
+       * cap, deeply-nested artifact paths whose individual segments were
+       * within bounds can still produce a flat form that overflows once
+       * `${file_id}__` is prepended, causing `ENAMETOOLONG` inside
+       * saveBuffer and falling back to a download URL. The 255 figure is
+       * the conservative cross-platform NAME_MAX (Linux ext4, NTFS, APFS).
+       */
+      const NAME_MAX = 255;
+      const flatName = flattenArtifactPath(safeName, NAME_MAX - file_id.length - 2);
+      const fileName = `${file_id}__${flatName}`;
+      onUploadStart();
+      const filepath = await saveBuffer({
+        userId: req.user.id,
+        buffer,
+        fileName,
+        basePath: 'uploads',
+        tenantId: req.user.tenantId,
+      });
       const storageMetadata = getStorageMetadata({
-        filepath: _file.filepath,
+        filepath,
         source: appConfig.fileStrategy,
-        storageKey: _file.storageKey,
-        storageRegion: _file.storageRegion,
       });
       outputPersistence.trackStored({
-        ..._file,
-        ...storageMetadata,
         file_id,
-        filepath: _file.filepath,
+        filepath,
+        ...storageMetadata,
         filename: safeName,
-        type: `image/${appConfig.imageOutputType}`,
+        type: mimeType,
+        bytes: buffer.length,
         user: req.user.id,
         tenantId: req.user.tenantId,
         conversationId,
         source: appConfig.fileStrategy,
       });
-      const file: CodeOutputStoredFile & Pick<CodeEnvRef, 'executionProfile'> = {
-        ..._file,
+
+      /* `classifyCodeArtifact` and `extractCodeArtifactText` make
+       * extension/bare-name decisions on the input string. With the
+       * path-preserving sanitizer they can now receive a nested path like
+       * `reports.v1/Makefile`, which the classifier's `extensionOf` reads
+       * as `v1/Makefile` (the slice after the dot in the directory name)
+       * and the bare-name branch rejects because it sees a `.` anywhere in
+       * the string. Result: extensionless artifacts under dotted folders
+       * (Makefile, Dockerfile, etc.) get misclassified as `other` and
+       * skip text extraction. Pass the basename so classification matches
+       * what it would have gotten with the old flat-name flow. */
+      const leafName = path.basename(safeName);
+      const category = classifyCodeArtifact(leafName, mimeType);
+
+      /* Office-bucket files (DOCX/XLSX/XLS/ODS/CSV/PPTX) route through
+       * `bufferToOfficeHtml` which is CPU-heavy. Persist the record now
+       * with `status: 'pending'` and `text: null` so the agent's response
+       * isn't blocked, then return a `finalize` thunk the caller can run
+       * in the background. Non-office files have cheap or no extraction
+       * — run it inline so the caller gets a fully-resolved record
+       * without juggling a finalize step. */
+      const expectsPreview = hasOfficeHtmlPath(leafName, mimeType);
+
+      const baseFile: CodeOutputStoredFile = {
+        file_id,
         filepath,
         ...storageMetadata,
-        file_id,
         messageId: persistedMessageId,
-        usage,
+        object: 'file',
         filename: safeName,
+        type: mimeType,
         conversationId,
-        executionProfile,
         user: req.user.id,
         tenantId: req.user.tenantId,
-        type: `image/${appConfig.imageOutputType}`,
-        createdAt: isUpdate ? claimed.createdAt : formattedDate,
+        bytes: buffer.length,
         updatedAt: formattedDate,
+        metadata: codeEnvMetadata,
         source: appConfig.fileStrategy,
         context: outputPersistence.context,
-        metadata: codeEnvMetadata,
+        usage: isUpdate ? (claimed.usage ?? 0) + 1 : 1,
+        createdAt: isUpdate ? claimed.createdAt : formattedDate,
         ...(await retentionExpiryPromise),
       };
+
+      if (expectsPreview) {
+        /* Persist with `status: 'pending'` and explicit
+         * `text: null` / `textFormat: null` so an update that previously
+         * had cached text gets cleared. The deferred finalize transitions
+         * to 'ready' (with text/textFormat) or 'failed' (with
+         * previewError).
+         *
+         * `previewRevision` is a fresh UUID stamped on every emit. The
+         * deferred finalize's `updateFile` is conditional on this — if
+         * a newer turn (cross-turn filename reuse) has rotated the
+         * revision before this render finishes, the stale render is
+         * silently discarded rather than overwriting the newer record.
+         * (Codex P1 review on PR #12957.) */
+        const previewRevision = v4();
+        const file = {
+          ...baseFile,
+          text: null,
+          textFormat: null,
+          status: 'pending',
+          previewError: null,
+          previewRevision,
+        } satisfies CodeOutputStoredFile;
+        if (!(await outputPersistence.commit(file))) {
+          return null;
+        }
+        return {
+          file: Object.assign(file, { messageId, toolCallId, agentId }),
+          finalize: outputPersistence.finalize(file, () =>
+            finalizePreview({
+              buffer,
+              leafName,
+              mimeType,
+              category,
+              file_id: file.file_id,
+              previewRevision: file.previewRevision,
+            }),
+          ),
+          previewRevision: file.previewRevision,
+        };
+      }
+
+      /* Non-office path: extraction is cheap (utf8 decode, parseDocument
+       * for PDF/ODT, or null for binaries). Run inline and return a
+       * fully-resolved record — no `finalize` needed. */
+      const text = await extractCodeArtifactText(buffer, leafName, mimeType, category);
+      /* `textFormat` accompanies `text` so the client can gate
+       * office-HTML-bucket routing on a trusted signal — clients MUST
+       * NOT inject `text` into the iframe as HTML unless `textFormat ===
+       * 'html'`. RAG-uploaded `.docx` etc. arrive with plain text from
+       * mammoth.extractRawText and would otherwise be hijacked by the
+       * extension-based office routing into the HTML-injection path
+       * (Codex P1 review on PR #12934). null on extract failure — the
+       * client treats absence as 'text' for safety. */
+      const textFormat = getExtractedTextFormat(leafName, mimeType, text);
+      const file: CodeOutputStoredFile = {
+        ...baseFile,
+        // Always set explicitly so an update which produces a binary or
+        // oversized artifact clears any previously cached text — createFile
+        // uses findOneAndUpdate with $set semantics.
+        text: text ?? null,
+        textFormat: textFormat ?? null,
+        // Clear deferred-preview lifecycle fields in case the prior emit
+        // at this (filename, conversationId) was an office file —
+        // otherwise stale `pending`/`failed` would persist and the client
+        // would render the wrong state for the now non-office artifact.
+        status: null,
+        previewError: null,
+        previewRevision: null,
+      };
+
       if (!(await outputPersistence.commit(file))) {
         return null;
       }
       return { file: Object.assign(file, { messageId, toolCallId, agentId }) };
-    }
-
-    const { saveBuffer } = getStrategyFunctions(appConfig.fileStrategy);
-    if (!saveBuffer) {
-      logger.warn(
-        `[processCodeOutput] saveBuffer not available for strategy ${appConfig.fileStrategy}, falling back to download URL`,
-      );
-      return {
-        file: createDownloadFallback({
-          id,
-          name,
-          agentId,
-          messageId,
-          toolCallId,
-          session_id,
-          conversationId,
-          executionProfile,
-          executionRouteKey,
-          expiresAt: currentDate.getTime() + 86400000,
-        }),
-      };
-    }
-
-    const detectedType = await determineFileType(buffer, true);
-    const mimeType = detectedType?.mime || inferMimeType(name, '') || 'application/octet-stream';
-
-    /** Check MIME type support - for code-generated files, we're lenient but log unsupported types */
-    const isSupportedMimeType = fileConfig.checkType(
-      mimeType,
-      endpointFileConfig.supportedMimeTypes,
-    );
-    if (!isSupportedMimeType) {
-      logger.warn(
-        `[processCodeOutput] File "${name}" has unsupported MIME type "${mimeType}", proceeding with storage but may not be usable as tool resource`,
-      );
-    }
-
-    /* Compose the storage key here, after `file_id` is known, so the
-     * `flattenArtifactPath` cap budget can be calculated against the
-     * actual prefix length. The full key has to fit in one filesystem
-     * path component (NAME_MAX = 255 on most filesystems); without this
-     * cap, deeply-nested artifact paths whose individual segments were
-     * within bounds can still produce a flat form that overflows once
-     * `${file_id}__` is prepended, causing `ENAMETOOLONG` inside
-     * saveBuffer and falling back to a download URL. The 255 figure is
-     * the conservative cross-platform NAME_MAX (Linux ext4, NTFS, APFS).
-     */
-    const NAME_MAX = 255;
-    const flatName = flattenArtifactPath(safeName, NAME_MAX - file_id.length - 2);
-    const fileName = `${file_id}__${flatName}`;
-    const filepath = await saveBuffer({
+    };
+    if (publication) return await writeOutput(() => undefined);
+    return await withFileProvisioning({
+      file: { file_id, user: req.user.id, tenantId: req.user.tenantId },
       userId: req.user.id,
-      buffer,
-      fileName,
-      basePath: 'uploads',
-      tenantId: req.user.tenantId,
+      storage: fileStorage,
+      destination: JSON.stringify(['generated-output', sourceDispatchedAt, id]),
+      operation: async (_claim, onUploadStart) => {
+        const value = await writeOutput(onUploadStart);
+        return {
+          value,
+          commit: pendingOutput
+            ? {
+                output: {
+                  file: pendingOutput,
+                  sourceDispatchedAt: freshClaimAfter == null ? undefined : sourceDispatchedAt,
+                },
+              }
+            : { releaseOnly: true },
+        };
+      },
     });
-    const storageMetadata = getStorageMetadata({
-      filepath,
-      source: appConfig.fileStrategy,
-    });
-    outputPersistence.trackStored({
-      file_id,
-      filepath,
-      ...storageMetadata,
-      filename: safeName,
-      type: mimeType,
-      bytes: buffer.length,
-      user: req.user.id,
-      tenantId: req.user.tenantId,
-      conversationId,
-      source: appConfig.fileStrategy,
-    });
-
-    /* `classifyCodeArtifact` and `extractCodeArtifactText` make
-     * extension/bare-name decisions on the input string. With the
-     * path-preserving sanitizer they can now receive a nested path like
-     * `reports.v1/Makefile`, which the classifier's `extensionOf` reads
-     * as `v1/Makefile` (the slice after the dot in the directory name)
-     * and the bare-name branch rejects because it sees a `.` anywhere in
-     * the string. Result: extensionless artifacts under dotted folders
-     * (Makefile, Dockerfile, etc.) get misclassified as `other` and
-     * skip text extraction. Pass the basename so classification matches
-     * what it would have gotten with the old flat-name flow. */
-    const leafName = path.basename(safeName);
-    const category = classifyCodeArtifact(leafName, mimeType);
-
-    /* Office-bucket files (DOCX/XLSX/XLS/ODS/CSV/PPTX) route through
-     * `bufferToOfficeHtml` which is CPU-heavy. Persist the record now
-     * with `status: 'pending'` and `text: null` so the agent's response
-     * isn't blocked, then return a `finalize` thunk the caller can run
-     * in the background. Non-office files have cheap or no extraction
-     * — run it inline so the caller gets a fully-resolved record
-     * without juggling a finalize step. */
-    const expectsPreview = hasOfficeHtmlPath(leafName, mimeType);
-
-    const baseFile: CodeOutputStoredFile = {
-      file_id,
-      filepath,
-      ...storageMetadata,
-      messageId: persistedMessageId,
-      object: 'file',
-      filename: safeName,
-      type: mimeType,
-      conversationId,
-      user: req.user.id,
-      tenantId: req.user.tenantId,
-      bytes: buffer.length,
-      updatedAt: formattedDate,
-      metadata: codeEnvMetadata,
-      source: appConfig.fileStrategy,
-      context: outputPersistence.context,
-      usage: isUpdate ? (claimed.usage ?? 0) + 1 : 1,
-      createdAt: isUpdate ? claimed.createdAt : formattedDate,
-      ...(await retentionExpiryPromise),
-    };
-
-    if (expectsPreview) {
-      /* Persist with `status: 'pending'` and explicit
-       * `text: null` / `textFormat: null` so an update that previously
-       * had cached text gets cleared. The deferred finalize transitions
-       * to 'ready' (with text/textFormat) or 'failed' (with
-       * previewError).
-       *
-       * `previewRevision` is a fresh UUID stamped on every emit. The
-       * deferred finalize's `updateFile` is conditional on this — if
-       * a newer turn (cross-turn filename reuse) has rotated the
-       * revision before this render finishes, the stale render is
-       * silently discarded rather than overwriting the newer record.
-       * (Codex P1 review on PR #12957.) */
-      const previewRevision = v4();
-      const file = {
-        ...baseFile,
-        text: null,
-        textFormat: null,
-        status: 'pending',
-        previewError: null,
-        previewRevision,
-      } satisfies CodeOutputStoredFile;
-      if (!(await outputPersistence.commit(file))) {
-        return null;
-      }
-      return {
-        file: Object.assign(file, { messageId, toolCallId, agentId }),
-        finalize: outputPersistence.finalize(file, () =>
-          finalizePreview({
-            buffer,
-            leafName,
-            mimeType,
-            category,
-            file_id: file.file_id,
-            previewRevision: file.previewRevision,
-          }),
-        ),
-        previewRevision: file.previewRevision,
-      };
-    }
-
-    /* Non-office path: extraction is cheap (utf8 decode, parseDocument
-     * for PDF/ODT, or null for binaries). Run inline and return a
-     * fully-resolved record — no `finalize` needed. */
-    const text = await extractCodeArtifactText(buffer, leafName, mimeType, category);
-    /* `textFormat` accompanies `text` so the client can gate
-     * office-HTML-bucket routing on a trusted signal — clients MUST
-     * NOT inject `text` into the iframe as HTML unless `textFormat ===
-     * 'html'`. RAG-uploaded `.docx` etc. arrive with plain text from
-     * mammoth.extractRawText and would otherwise be hijacked by the
-     * extension-based office routing into the HTML-injection path
-     * (Codex P1 review on PR #12934). null on extract failure — the
-     * client treats absence as 'text' for safety. */
-    const textFormat = getExtractedTextFormat(leafName, mimeType, text);
-    const file: CodeOutputStoredFile = {
-      ...baseFile,
-      // Always set explicitly so an update which produces a binary or
-      // oversized artifact clears any previously cached text — createFile
-      // uses findOneAndUpdate with $set semantics.
-      text: text ?? null,
-      textFormat: textFormat ?? null,
-      // Clear deferred-preview lifecycle fields in case the prior emit
-      // at this (filename, conversationId) was an office file —
-      // otherwise stale `pending`/`failed` would persist and the client
-      // would render the wrong state for the now non-office artifact.
-      status: null,
-      previewError: null,
-      previewRevision: null,
-    };
-
-    if (!(await outputPersistence.commit(file))) {
-      return null;
-    }
-    return { file: Object.assign(file, { messageId, toolCallId, agentId }) };
   } catch (error) {
+    if (freshClaimAfter != null && error instanceof FileProvisionPersistenceError) return null;
     if (
       error != null &&
       typeof error === 'object' &&

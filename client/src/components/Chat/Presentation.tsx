@@ -1,22 +1,23 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { EModelEndpoint, FileSources, LocalStorageKeys } from 'librechat-data-provider';
-import type { ExtendedFile } from '~/common';
-import { ParentSubagentsProvider } from '~/components/Chat/Subagents/ParentSubagentsProvider';
+import { EModelEndpoint } from 'librechat-data-provider';
+import {
+  activeSubagentPanel,
+  useIsSubmitting,
+  ParentSubagentsProvider,
+} from '@librechat/chat/react';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
-import { useDeleteFilesMutation, useGetStartupConfig } from '~/data-provider';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
-import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { EditorProvider, ArtifactsProvider } from '~/Providers';
 import { SidePanelGroup } from '~/components/SidePanel';
 import AppChatSurface from '~/components/Chat/Surface';
+import { useGetStartupConfig } from '~/data-provider';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
-import { useSetFilesToDelete } from '~/hooks';
-import { failedFileIdsFrom } from '~/utils';
+import { migrateStoredFileDeletions } from '~/utils';
 import store from '~/store';
 
 const Artifacts = lazyWithRecovery(() => import('~/components/Artifacts/Artifacts'));
@@ -44,7 +45,7 @@ export default function Presentation({
   const conversationId = useRecoilValue(store.conversationIdByIndex(0));
   const conversationEndpoint = useRecoilValue(store.effectiveEndpointByIndex(0));
   const conversationAgentId = useRecoilValue(store.conversationAgentIdByIndex(0));
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(0));
+  const isSubmitting = useIsSubmitting(0);
   const isUndocked = useAtomValue(artifactsUndocked);
   const selectedSubagent = useAtomValue(activeSubagentPanel);
   const setSelectedSubagent = useSetAtom(activeSubagentPanel);
@@ -53,66 +54,24 @@ export default function Presentation({
 
   useArtifactsRegistryLifetime(conversationId);
 
+  useEffect(
+    () => () =>
+      setSelectedSubagent((current) => (current?.host === 'conversation' ? null : current)),
+    [setSelectedSubagent],
+  );
+
   useEffect(() => {
     const previous = previousConversationIdRef.current;
     const next = conversationId ?? null;
     previousConversationIdRef.current = next;
-    if (previous != null && previous !== next) resetSelectedSubagent();
-  }, [conversationId, resetSelectedSubagent]);
-
-  const setFilesToDelete = useSetFilesToDelete();
+    if (previous != null && previous !== next) {
+      setSelectedSubagent((current) => (current?.durable == null ? null : current));
+    }
+  }, [conversationId, setSelectedSubagent]);
 
   const { data: startupConfig, isSuccess: hasStartupConfig } = useGetStartupConfig();
-  const { mutateAsync } = useDeleteFilesMutation({
-    onSuccess: (result) => {
-      console.log('Temporary Files deleted');
-      const failed = new Set(failedFileIdsFrom(result));
-      if (failed.size === 0) {
-        setFilesToDelete({});
-        return;
-      }
-      try {
-        const filesToDelete = localStorage.getItem(LocalStorageKeys.FILES_TO_DELETE);
-        const map = JSON.parse(filesToDelete ?? '{}') as Record<string, ExtendedFile>;
-        const remaining: Record<string, ExtendedFile> = {};
-        for (const [key, file] of Object.entries(map)) {
-          if (
-            (file.file_id != null && failed.has(file.file_id)) ||
-            (file.temp_file_id != null && failed.has(file.temp_file_id))
-          ) {
-            remaining[key] = file;
-          }
-        }
-        setFilesToDelete(remaining);
-      } catch {
-        // Keep existing records if reading or parsing fails.
-      }
-    },
-    onError: (error) => {
-      console.log('Error deleting temporary files:', error);
-    },
-  });
 
-  useEffect(() => {
-    const filesToDelete = localStorage.getItem(LocalStorageKeys.FILES_TO_DELETE);
-    const map = JSON.parse(filesToDelete ?? '{}') as Record<string, ExtendedFile>;
-    const files = Object.values(map)
-      .filter(
-        (file) =>
-          file.filepath != null && file.source && !(file.embedded ?? false) && file.temp_file_id,
-      )
-      .map((file) => ({
-        file_id: file.file_id,
-        filepath: file.filepath as string,
-        source: file.source as FileSources,
-        embedded: !!(file.embedded ?? false),
-      }));
-
-    if (files.length === 0) {
-      return;
-    }
-    mutateAsync({ files });
-  }, [mutateAsync]);
+  useEffect(() => migrateStoredFileDeletions(), []);
 
   /* The deployment's answer about the undocked window, resolved once by the
    * host and handed to the pane. Until the config has actually answered the
@@ -152,14 +111,16 @@ export default function Presentation({
     if (
       selectedSubagent == null ||
       selectedSubagent.host !== 'conversation' ||
-      selectedSubagent.parentConversationId !== conversationId
+      (selectedSubagent.durable == null && selectedSubagent.parentConversationId !== conversationId)
     ) {
       return null;
     }
     return (
-      <Suspense fallback={null}>
-        <SubagentThreadPanel selection={selectedSubagent} />
-      </Suspense>
+      <ParentSubagentsProvider conversationId={selectedSubagent.parentConversationId} enabled>
+        <Suspense fallback={null}>
+          <SubagentThreadPanel selection={selectedSubagent} />
+        </Suspense>
+      </ParentSubagentsProvider>
     );
   }, [conversationId, selectedSubagent]);
 

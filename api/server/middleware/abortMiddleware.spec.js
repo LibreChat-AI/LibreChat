@@ -32,10 +32,12 @@ jest.mock('@librechat/api', () => ({
   isAbortError: jest.requireActual('@librechat/api').isAbortError,
   hasPersistableAbortContent: jest.requireActual('@librechat/api').hasPersistableAbortContent,
   announceReply: jest.requireActual('@librechat/api').announceReply,
+  abortOwnedGeneration: jest.requireActual('@librechat/api').abortOwnedGeneration,
   countTokens: jest.fn().mockResolvedValue(100),
   isEnabled: jest.fn().mockReturnValue(false),
   sendEvent: jest.fn(),
   GenerationJobManager: {
+    getJob: jest.fn(),
     abortJob: jest.fn(),
   },
   recordCollectedUsage: mockRecordCollectedUsage,
@@ -197,6 +199,24 @@ describe('abortMiddleware - handleAbort billing', () => {
     mockGetTransactionsConfig.mockReturnValue({ enabled: false });
     mockRecordCollectedUsage.mockResolvedValue({ input_tokens: 100, output_tokens: 50 });
     db.getConvo.mockResolvedValue({ title: 'Test Chat' });
+    GenerationJobManager.getJob.mockResolvedValue({
+      createdAt: 1,
+      metadata: { userId: 'user-123' },
+    });
+  });
+
+  it.each([
+    ['another user', { userId: 'user-456' }],
+    ['another tenant', { userId: 'user-123', tenantId: 'tenant-b' }],
+  ])('does not stop or persist a run owned by %s', async (_case, metadata) => {
+    GenerationJobManager.getJob.mockResolvedValue({ createdAt: 1, metadata });
+    const res = { ...buildRes(), status: jest.fn().mockReturnThis() };
+
+    await handleAbort()({ ...buildReq(), user: { id: 'user-123', tenantId: 'tenant-a' } }, res);
+
+    expect(GenerationJobManager.abortJob).not.toHaveBeenCalled();
+    expect(db.saveMessage).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(204);
   });
 
   it.each([null, undefined])(

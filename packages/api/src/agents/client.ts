@@ -301,35 +301,6 @@ function estimateDocumentBlockTokens(
 }
 
 /**
- * Estimates token cost for image and document blocks in a message's
- * content array. Covers: image_url, image, image_file, document, file.
- */
-export function estimateMediaTokensForMessage(
-  content: unknown,
-  isClaude: boolean,
-  getTokenCount?: (text: string) => number,
-): number {
-  if (!Array.isArray(content)) {
-    return 0;
-  }
-  let tokens = 0;
-  for (const block of content as ContentBlock[]) {
-    if (block == null || typeof block !== 'object' || typeof block.type !== 'string') {
-      continue;
-    }
-    const type = block.type;
-    if (type === 'image_url' || type === 'image' || type === 'image_file') {
-      tokens += estimateImageBlockTokens(block, isClaude);
-      continue;
-    }
-    if (type === 'document' || type === 'file') {
-      tokens += estimateDocumentBlockTokens(block, isClaude, getTokenCount);
-    }
-  }
-  return tokens;
-}
-
-/**
  * Single-pass token counter for formatted messages (plain objects with role/content/name).
  * Handles text, tool_call, image, and document content types in one iteration,
  * then applies Claude correction when applicable.
@@ -508,14 +479,6 @@ export function collectToolCallIds(
     }
   }
   return ids;
-}
-
-export function createTokenCounter(
-  encoding: Parameters<typeof Tokenizer.getTokenCount>[1],
-): TokenCounter {
-  return createMessageTokenCounter(encoding, (text: string) =>
-    Tokenizer.getTokenCount(text, encoding),
-  );
 }
 
 function createMessageTokenCounter(

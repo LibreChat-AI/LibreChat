@@ -1,12 +1,27 @@
 import {
+  Constants,
+  Providers,
+  getModelReasoning,
+  effectiveModelReasoning,
+  hasExplicitReasoningEffort,
+  ReasoningEffort,
   isReasoningOverrideSupported,
   reasoningOverrideSchema,
   ReasoningParameterFormat,
   resolveReasoningSettingForTarget,
   type TEndpointsConfig,
   type TReasoningOverride,
+  type TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { AgentContinuationAdmissionSource } from '~/agents/triggers/host';
+import type { ReasoningCapabilityResult } from '~/types';
+
+/** Override keys whose level also turns thinking on. */
+const THINKING_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  'effort',
+  'thinkingLevel',
+  'thinkingBudget',
+]);
 
 export type ReasoningOverrideRequest =
   | { ok: true; reasoningOverride?: TReasoningOverride }
@@ -56,6 +71,8 @@ export type ReasoningOverrideInput = {
   parsedModel?: string | null;
   isAgent: boolean;
   endpointsConfig?: TEndpointsConfig;
+  /** Provider-reported efforts per OpenRouter model; absent while unknown. */
+  reasoningCapabilities?: TReasoningCapabilityMap;
   defaultParamsEndpoint?: string | null;
   appliedModelSpecPrivateFields?: ReadonlySet<string>;
   enforcedModelSpecFields?: ReadonlySet<string>;
@@ -87,6 +104,7 @@ export async function resolveReasoningOverride({
   parsedModel,
   isAgent,
   endpointsConfig,
+  reasoningCapabilities,
   defaultParamsEndpoint,
   appliedModelSpecPrivateFields = new Set(),
   enforcedModelSpecFields = new Set(),
@@ -111,6 +129,21 @@ export async function resolveReasoningOverride({
     return { ok: false, reason: 'invalid-reasoning-override' };
   }
 
+  const modelReasoning =
+    effectiveModel == null
+      ? undefined
+      : effectiveModelReasoning(
+          getModelReasoning(reasoningCapabilities, customEndpointKey, effectiveModel),
+          customParams?.paramDefinitions,
+        );
+  /** Auto sends no effort. For a model the provider lists without effort selection it is the one
+   *  valid override: it lets a caller clear an effort saved on another model. The disabled and
+   *  locked refusals above have already run. */
+  const clearsEffort =
+    modelReasoning === null &&
+    reasoningOverride.key === 'reasoning_effort' &&
+    reasoningOverride.value === ReasoningEffort.unset;
+
   const supportedSetting = resolveReasoningSettingForTarget({
     endpoint: effectiveEndpoint,
     model: effectiveModel,
@@ -119,16 +152,14 @@ export async function resolveReasoningOverride({
     paramDefinitions: customParams?.paramDefinitions,
     reasoningFormat: customParams?.reasoningFormat,
     blockedReasoningKeys: new Set([...appliedModelSpecPrivateFields, ...enforcedModelSpecFields]),
+    modelReasoning,
   });
 
-  if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
+  if (!clearsEffort && !isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
     return { ok: false, reason: 'invalid-reasoning-override' };
   }
 
-  const enablesThinking =
-    reasoningOverride.key === 'effort' ||
-    reasoningOverride.key === 'thinkingLevel' ||
-    reasoningOverride.key === 'thinkingBudget';
+  const enablesThinking = THINKING_LEVEL_KEYS.has(reasoningOverride.key);
   const nextBase =
     existingBase?.key === reasoningOverride.key
       ? existingBase
@@ -153,13 +184,112 @@ export async function resolveReasoningOverride({
   };
 }
 
+/**
+ * The provider's per-model efforts, loaded only when the override is a non-Auto effort on an
+ * OpenRouter endpoint: any other target is validated without the catalog, so an
+ * unavailable OpenRouter never delays an unrelated request.
+ */
+async function loadCapabilitiesFor(
+  override: TReasoningOverride,
+  endpointOption: EndpointOption,
+  input: Omit<RequestReasoningOverrideInput, 'reasoningOverride' | 'loadReasoningCapabilities'>,
+  load?: (endpoint: string) => Promise<ReasoningCapabilityResult>,
+): Promise<TReasoningCapabilityMap | undefined> {
+  /** Auto sends no effort, so no catalog entry can change whether it is accepted. */
+  if (
+    load == null ||
+    override.key !== 'reasoning_effort' ||
+    override.value === ReasoningEffort.unset
+  ) {
+    return undefined;
+  }
+  const loadedAgent = await endpointOption.agent;
+  const endpointKey = input.isAgent
+    ? (loadedAgent?.provider ?? endpointOption.endpointType ?? input.endpointType ?? input.endpoint)
+    : input.endpoint;
+  const customParams = input.endpointsConfig?.[endpointKey]?.customParams;
+  const paramsEndpoint = customParams?.defaultParamsEndpoint ?? input.defaultParamsEndpoint;
+  /** Requests `resolveReasoningOverride` refuses regardless of the catalog fail without it. */
+  const locked =
+    input.appliedModelSpecPrivateFields?.has(override.key) === true ||
+    input.enforcedModelSpecFields?.has(override.key) === true;
+  if (
+    locked ||
+    customParams?.reasoningFormat === ReasoningParameterFormat.disabled ||
+    hasExplicitReasoningEffort(customParams?.paramDefinitions)
+  ) {
+    return undefined;
+  }
+  return paramsEndpoint === Providers.OPENROUTER
+    ? (await load(endpointKey)).capabilities
+    : undefined;
+}
+
 export type RequestReasoningOverrideInput = Omit<
   ReasoningOverrideInput,
-  'reasoningOverride' | 'endpointOption' | 'reasoningOverrideBase'
+  'reasoningOverride' | 'endpointOption' | 'reasoningOverrideBase' | 'reasoningCapabilities'
 > & {
+  /** Loads per-model efforts; called only for a request that carries an override. */
+  loadReasoningCapabilities?: (endpoint: string) => Promise<ReasoningCapabilityResult>;
   /** The raw request field; validated here, so the caller passes it unparsed. */
   reasoningOverride?: unknown;
+  /** Reads the level the branch a fresh turn extends last ran at, for a request that picks none. */
+  getBranchReasoningOverride?: (params: {
+    user: string;
+    conversationId: string;
+    parentMessageId: string;
+  }) => Promise<unknown>;
 };
+
+type BranchReasoningRequest = {
+  resumeReplayed?: boolean;
+  user?: { id?: string };
+  body: {
+    conversationId?: unknown;
+    parentMessageId?: unknown;
+    isEdited?: unknown;
+    editedContent?: unknown;
+    isRegenerate?: unknown;
+    isContinued?: unknown;
+  };
+};
+
+/**
+ * The level a turn without its own pick inherits: the one the branch it extends last ran at, so a
+ * composer choice holds for the rest of the conversation until the user picks another. Only a fresh
+ * turn inherits: a resume replays its own parameters, and an edit, regeneration or continuation
+ * replays a turn that already ran, with the override the client sends for it.
+ */
+async function loadBranchReasoningOverride(
+  req: BranchReasoningRequest,
+  getBranchReasoningOverride: RequestReasoningOverrideInput['getBranchReasoningOverride'],
+): Promise<TReasoningOverride | undefined> {
+  const { conversationId, parentMessageId, isEdited, editedContent, isRegenerate, isContinued } =
+    req.body;
+  if (
+    getBranchReasoningOverride == null ||
+    req.resumeReplayed === true ||
+    isEdited === true ||
+    editedContent != null ||
+    isRegenerate === true ||
+    isContinued === true ||
+    req.user?.id == null ||
+    typeof conversationId !== 'string' ||
+    conversationId === '' ||
+    conversationId === Constants.NEW_CONVO ||
+    typeof parentMessageId !== 'string' ||
+    parentMessageId === Constants.NO_PARENT
+  ) {
+    return undefined;
+  }
+  const stored = await getBranchReasoningOverride({
+    user: req.user.id,
+    conversationId,
+    parentMessageId,
+  });
+  const parsed = reasoningOverrideSchema.safeParse(stored);
+  return parsed.success ? parsed.data : undefined;
+}
 
 /**
  * Validates a request's reasoning override, applies it to the built endpoint
@@ -179,13 +309,19 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
     reasoningOverrideBase?: ReasoningOverrideBase;
     resumeReplayed?: boolean;
     _isAgentTrigger?: boolean;
-    body: {
+    user?: { id?: string };
+    body: BranchReasoningRequest['body'] & {
       endpointOption: T;
       reasoningOverride?: unknown;
       agentContinuationAdmission?: AgentContinuationAdmissionSource;
     };
   },
-  { reasoningOverride: raw, ...input }: RequestReasoningOverrideInput,
+  {
+    reasoningOverride: raw,
+    loadReasoningCapabilities,
+    getBranchReasoningOverride,
+    ...input
+  }: RequestReasoningOverrideInput,
 ): Promise<boolean> {
   const stripReplayedOverride = (): boolean => {
     delete req.body.reasoningOverride;
@@ -226,17 +362,45 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
   if (!request.ok) {
     return replayed ? stripReplayedOverride() : false;
   }
-  if (request.reasoningOverride == null) {
+  const inherited = request.reasoningOverride == null;
+  const reasoningOverride =
+    request.reasoningOverride ??
+    (await loadBranchReasoningOverride(req, getBranchReasoningOverride));
+  if (reasoningOverride == null) {
+    return true;
+  }
+  /* Thinking switched off for the conversation wins over a level the turn only inherited: applying
+     it would turn thinking back on behind the switch. A level picked for this turn still does. */
+  if (
+    inherited &&
+    THINKING_LEVEL_KEYS.has(reasoningOverride.key) &&
+    req.body.endpointOption.model_parameters?.thinking === false
+  ) {
     return true;
   }
   const resolution = await resolveReasoningOverride({
     ...input,
-    reasoningOverride: request.reasoningOverride,
+    reasoningCapabilities: await loadCapabilitiesFor(
+      reasoningOverride,
+      req.body.endpointOption,
+      input,
+      loadReasoningCapabilities,
+    ),
+    reasoningOverride,
     endpointOption: req.body.endpointOption,
     reasoningOverrideBase: req.reasoningOverrideBase,
   });
+  /* An inherited level the target no longer takes (a model switch, an enforced spec, an
+     unknown catalog) is skipped rather than refused: the user asked for nothing this turn. */
   if (!resolution.ok) {
+    if (inherited) {
+      return true;
+    }
     return replayed ? stripReplayedOverride() : false;
+  }
+  if (inherited) {
+    /* Recorded on the turn like a pick, so the level keeps riding the branch. */
+    req.body.reasoningOverride = reasoningOverride;
   }
   req.reasoningOverrideBase = resolution.reasoningOverrideBase;
   req.body.endpointOption = {

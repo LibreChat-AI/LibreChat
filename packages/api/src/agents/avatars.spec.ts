@@ -11,7 +11,6 @@ import {
   AVATAR_REFRESH_BATCH_SIZE,
   MAX_AVATAR_REFRESH_AGENTS,
   applyCachedAvatarUrl,
-  getAvatarRefreshCoveredIds,
   mergeAvatarRefreshCacheEntry,
   refreshListAvatars,
   resolveAvatarRefresh,
@@ -603,8 +602,8 @@ describe('refreshListAvatars', () => {
     );
 
     expect(Object.keys(boundedEntry.coveredIds)).toHaveLength(defaultCoverageLimit);
-    expect(getAvatarRefreshCoveredIds(boundedEntry, 1)).not.toContain('agent0');
-    expect(getAvatarRefreshCoveredIds(boundedEntry, 1)).toContain('agent1000');
+    expect(Object.keys(boundedEntry.coveredIds)).not.toContain('agent0');
+    expect(Object.keys(boundedEntry.coveredIds)).toContain('agent1000');
 
     const { cache } = createRefreshCache();
     const now = jest.spyOn(Date, 'now').mockReturnValue(1);

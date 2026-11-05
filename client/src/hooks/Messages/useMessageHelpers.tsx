@@ -13,7 +13,7 @@ import {
   hasCopyableText,
 } from './useCopyToClipboard';
 import { useMessagesViewContext, useAssistantsMapContext, useAgentsMapContext } from '~/Providers';
-import { useGetAddedConvo } from '~/hooks/Chat';
+import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { logger } from '~/utils';
 
 export default function useMessageHelpers(

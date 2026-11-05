@@ -6,6 +6,7 @@ const {
   openWeatherSchema,
   OPEN_WEATHER_TOOL_DESCRIPTION,
   resolveOpenWeatherOneCallVersion,
+  formatToolError,
 } = require('@librechat/api');
 
 class OpenWeather extends Tool {
@@ -42,7 +43,7 @@ class OpenWeather extends Tool {
         ),
       });
     } catch (err) {
-      return `Error: ${err.message}`;
+      return formatToolError(err, 'OpenWeather');
     }
   }
 }

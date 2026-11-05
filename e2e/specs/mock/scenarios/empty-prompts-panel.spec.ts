@@ -22,6 +22,12 @@ test.describe('empty panel cards', () => {
   test('the empty prompts panel is drawn like the other panels @scenario:empty-prompts-panel-matches-other-panels', async ({
     page,
   }) => {
+    await page.route('**/api/tags', (route) => route.fulfill({ json: [] }));
+    await page.route('**/api/prompts/groups?**', (route) =>
+      route.fulfill({
+        json: { promptGroups: [], pageNumber: '1', pageSize: '10', pages: 0, has_more: false },
+      }),
+    );
     await page.goto('/c/new', { timeout: 10000 });
 
     const prompts = await openPanelCard(page, 'Prompts', 'No prompts yet');

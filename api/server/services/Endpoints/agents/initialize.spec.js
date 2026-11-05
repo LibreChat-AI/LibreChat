@@ -648,6 +648,47 @@ describe('initializeClient — processAgent ACL gate', () => {
     });
   });
 
+  it('rewrites the attached-workspace file note before the agent runs', async () => {
+    const config = makePrimaryConfig([]);
+    config.codeExecutionContext = {
+      baseUrl: 'https://code-attached.example.com',
+      codeSessionKey: 'execute_code',
+      executionProfile: 'stateful',
+      statefulSessions: true,
+      environmentType: 'attached',
+      environmentId: 'machine',
+      codeWorkspace: {
+        environmentId: 'machine',
+        workspaceId: 'primary',
+        operations: ['read_file'],
+      },
+    };
+    config.dynamicToolContextMap = { execute_code: 'programmatic-only note' };
+    config.codeContextEntries = [
+      {
+        file: { file_id: 'upload-1', filename: 'release.zip', user: testUser._id.toString() },
+        destination: 'release.zip',
+        agentScoped: false,
+        source: { storage_session_id: 'session-1', file_id: 'object-1' },
+      },
+    ];
+    mockInitializeAgent.mockResolvedValue(config);
+
+    await initializeClient({
+      req: makeReq(),
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+
+    expect(agentClientArgs.agent.dynamicToolContextMap.execute_code).toContain(
+      "release.zip (attached by user): this machine's LibreChat worker cannot receive attachments yet",
+    );
+    expect(agentClientArgs.agent.dynamicToolContextMap.execute_code).not.toContain(
+      '$LIBRECHAT_CODE_DATA_DIR',
+    );
+  });
+
   it('binds foreground tool execution to the host-owned run signal', async () => {
     mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
     const controller = new AbortController();
@@ -692,6 +733,47 @@ describe('initializeClient — processAgent ACL gate', () => {
     });
     expect(capturedToolExecuteOptions.ordinaryToolCancellation).toBe(true);
     expect(capturedToolExecuteOptions.backgroundCompletionResultMaxChars).toBe(4096);
+  });
+
+  it('never swallows an option-limit failure from runtime classification', async () => {
+    loadAgentTools.mockImplementationOnce(({ agent }) =>
+      jest.requireActual('@librechat/api').buildToolClassification({
+        userId: testUser._id.toString(),
+        agentId: agent.id,
+        agentToolOptions: {
+          db_query_mcp_db: { approval_mode: 'ask' },
+          ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' },
+        },
+        loadedTools: [
+          {
+            name: 'query_mcp_db',
+            mcp: true,
+            mcpRawServerName: 'db',
+            mcpServerToolName: 'db_query',
+          },
+        ],
+      }),
+    );
+    mockInitializeAgent.mockImplementationOnce(async ({ req, res, loadTools, agent }) => {
+      await loadTools({
+        req,
+        res,
+        tools: ['query_mcp_db'],
+        model: agent.model,
+        agentId: agent.id,
+        provider: agent.provider,
+      });
+      return makePrimaryConfig([]);
+    });
+    await expect(
+      initializeClient({
+        req: makeReq(),
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      }),
+    ).rejects.toMatchObject({ code: 'AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED' });
+    expect(agentClientArgs).toBeUndefined();
   });
 
   it('propagates an expected-MCP-tools failure from the runtime tool loader', async () => {
@@ -1142,6 +1224,73 @@ describe('initializeClient — processAgent ACL gate', () => {
       canCreateSkillSpy.mockRestore();
     }
   });
+
+  describe('an agent saved under another spelling of a served endpoint', () => {
+    const actualApi = jest.requireActual('@librechat/api');
+
+    /** The effective config as served: custom endpoint `Ollama` from librechat.yaml, its
+     *  models under the served name `ollama`, and `allowedProviders` in served names. */
+    const runAgent = async (provider, catalog = { ollama: ['llama3.2'] }) => {
+      const req = makeReq();
+      req.config = {
+        endpoints: {
+          agents: { allowedProviders: ['ollama'] },
+          custom: [
+            {
+              name: 'Ollama',
+              apiKey: 'ollama',
+              baseURL: 'http://ollama.test:11434/v1',
+              models: { default: ['llama3.2'] },
+            },
+          ],
+        },
+      };
+      getModelsConfig.mockResolvedValueOnce(catalog);
+      mockValidateAgentModel.mockImplementation(actualApi.validateAgentModel);
+      mockInitializeAgent.mockImplementation(actualApi.initializeAgent);
+      loadAgentTools.mockResolvedValue({ tools: [], toolContextMap: {}, toolDefinitions: [] });
+      await initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: {
+          ...makeEndpointOption(),
+          agent: Promise.resolve({
+            id: PRIMARY_ID,
+            name: 'Primary',
+            provider,
+            model: 'llama3.2',
+            tools: [],
+          }),
+          model_parameters: { model: 'llama3.2' },
+        },
+      });
+      return agentClientArgs.agent;
+    };
+
+    afterEach(() => {
+      mockValidateAgentModel.mockReset();
+      mockInitializeAgent.mockReset();
+      loadAgentTools.mockReset();
+    });
+
+    it.each(['Ollama', 'OLLAMA'])(
+      'validates and runs an agent saved as %s on the served ollama endpoint',
+      async (provider) => {
+        const agent = await runAgent(provider);
+
+        expect(agent.endpoint).toBe('ollama');
+        expect(agent.model).toBe('llama3.2');
+        expect(mockValidateAgentModel).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('still rejects a provider the served allowedProviders do not name', async () => {
+      await expect(runAgent('Probe', { Probe: ['llama3.2'] })).rejects.toThrow(
+        ErrorTypes.INVALID_AGENT_PROVIDER,
+      );
+    });
+  });
 });
 
 describe('initializeClient — subagent loading', () => {
@@ -1367,22 +1516,30 @@ describe('initializeClient — subagent loading', () => {
       endpointOption: makeEndpointOption(),
     });
     const existingConfig = agentClientArgs.subagentTasks;
-    const hasTasksSpy = jest.spyOn(existingConfig.store, 'hasTasks').mockResolvedValueOnce(true);
+    const subagentThreadTaskStore = require('./subagentThreadStore');
+    const hasTasksSpy = jest.spyOn(subagentThreadTaskStore, 'hasTasks').mockResolvedValueOnce(true);
     mockInitializeAgent.mockResolvedValue(makePrimaryConfig({}));
     const changedReq = makeSubagentReq();
     changedReq.config.endpoints.agents.capabilities.push('run_in_background');
 
-    await initializeClient({
-      req: changedReq,
-      res: {},
-      signal: new AbortController().signal,
-      endpointOption: makeEndpointOption(),
-    });
+    try {
+      await initializeClient({
+        req: changedReq,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      });
 
-    expect(agentClientArgs.subagentTasks).toEqual(existingConfig);
-    expect(capturedToolExecuteOptions.subagentTasks).toEqual(existingConfig);
-    expect(agentClientArgs.agent.subagents).toBeUndefined();
-    hasTasksSpy.mockRestore();
+      const currentConfig = agentClientArgs.subagentTasks;
+      expect(hasTasksSpy).toHaveBeenCalledWith(existingConfig.scopeId);
+      expect(currentConfig.scopeId).toBe(existingConfig.scopeId);
+      expect(currentConfig.completionDelivery).toBe(existingConfig.completionDelivery);
+      expect(currentConfig.store).not.toBe(existingConfig.store);
+      expect(capturedToolExecuteOptions.subagentTasks).toBe(currentConfig);
+      expect(agentClientArgs.agent.subagents).toBeUndefined();
+    } finally {
+      hasTasksSpy.mockRestore();
+    }
   });
 
   it('disables every nested subagent path at the durable child-thread depth limit', async () => {
@@ -1481,6 +1638,35 @@ describe('initializeClient — subagent loading', () => {
         signal: new AbortController().signal,
       }),
     ).rejects.toBe(toolError);
+  });
+
+  it('does not omit a lazy child when persisted option validation fails', async () => {
+    const child = await createAgent({
+      id: SUBAGENT_ID,
+      name: 'Oversized child',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: testUser._id,
+      tools: [],
+      tool_options: { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' } },
+    });
+    await grantView(child);
+    mockInitializeAgent.mockResolvedValue(
+      makePrimaryConfig({
+        subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+      }),
+    );
+    const req = makeSubagentReq();
+    req.config.endpoints.agents.capabilities.push('tools');
+    await expect(
+      initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      }),
+    ).rejects.toMatchObject({ code: 'AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED' });
+    expect(agentClientArgs).toBeUndefined();
   });
 
   it('defers pure-subagent resource recovery until the descriptor is selected', async () => {
@@ -2397,6 +2583,119 @@ describe('initializeClient — subagent loading', () => {
     } finally {
       delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
       delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
+    }
+  });
+
+  it('forwards the initializer code opt-out through the tool loader', async () => {
+    const codeExecutionContext = {
+      baseUrl: 'https://api.librechat.ai/v1',
+      codeSessionKey: 'execute_code',
+      executionProfile: 'default',
+      statefulSessions: false,
+    };
+    mockInitializeAgent.mockImplementationOnce(async (params) => {
+      await params.loadTools({
+        agentId: PRIMARY_ID,
+        tools: ['execute_code'],
+        codeExecutionContext,
+        attachedEnvironmentOptOut: true,
+      });
+      return makePrimaryConfig({});
+    });
+
+    await initializeClient({
+      req: makeSubagentReq(),
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+
+    expect(loadAgentTools).toHaveBeenCalledWith(
+      expect.objectContaining({ codeExecutionContext, attachedEnvironmentOptOut: true }),
+    );
+  });
+
+  it('keeps a lazy subagent off its attached machine in a conversation that chose no workspace', async () => {
+    const subAgent = await createAgent({
+      id: SUBAGENT_ID,
+      name: 'Attached Default Subagent',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: new mongoose.Types.ObjectId(),
+      tools: ['execute_code'],
+      stateful_code_sessions: true,
+      stateful_code_environment: 'agent-user',
+      code_environment_id: 'attached-vm',
+      code_environment_ids: ['other-vm'],
+    });
+    await grantView(subAgent);
+    mockInitializeAgent.mockResolvedValue(
+      makePrimaryConfig({
+        subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+      }),
+    );
+    const attachedVm = (id) => ({
+      id,
+      name: id,
+      type: 'attached',
+      owner: 'deployment',
+      workerId: `${id}-worker`,
+      baseURL: 'https://bridge.example.com/v1/',
+    });
+    const req = makeSubagentReq();
+    req.body.codeEnvironmentMode = 'without_attached';
+    req.config.endpoints.agents.capabilities.push('execute_code', 'stateful_code_sessions');
+    req.config.endpoints.agents.statefulCodeSessions = {
+      allowedEnvironments: ['agent-user'],
+      allowEnvironmentSelection: true,
+      environments: [attachedVm('attached-vm'), attachedVm('other-vm')],
+    };
+    const fetchSpy = jest.spyOn(globalThis, 'fetch');
+
+    try {
+      await initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      });
+
+      const descriptor = agentClientArgs.agent.lazySubagentConfigs[0];
+      expect(descriptor).toEqual(
+        expect.objectContaining({
+          codeEnvAvailable: false,
+          statefulCodeSessions: false,
+          codeExecutionContext: undefined,
+          subagentHostArgs: undefined,
+          codeExecutionChoices: undefined,
+        }),
+      );
+      expect(descriptor.description ?? '').not.toContain('Unavailable in this conversation');
+
+      const initCalls = mockInitializeAgent.mock.calls.length;
+      await expect(
+        descriptor.resolve({
+          signal: new AbortController().signal,
+          hostArgs: { machine: 'other-vm' },
+        }),
+      ).rejects.toThrow(/rejected/);
+      expect(mockInitializeAgent).toHaveBeenCalledTimes(initCalls);
+      mockInitializeAgent.mockResolvedValueOnce(makeSubagentConfig(SUBAGENT_ID));
+      await descriptor.resolve({ signal: new AbortController().signal });
+
+      const childInit = mockInitializeAgent.mock.calls.at(-1)[0];
+      expect(childInit.agent.code_environment_id).toBe('attached-vm');
+      expect(childInit.requestBody).toEqual(
+        expect.objectContaining({ codeEnvironmentMode: 'without_attached' }),
+      );
+      expect(
+        mockInitializeAgent.mock.calls.some(
+          ([params]) => params.agent?.code_environment_id === 'other-vm',
+        ),
+      ).toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
     }
   });
 

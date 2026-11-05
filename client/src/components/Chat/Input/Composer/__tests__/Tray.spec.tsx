@@ -46,7 +46,6 @@ function renderTray(
       files={files}
       setFiles={jest.fn()}
       setFilesLoading={jest.fn()}
-      isRTL={false}
       index={0}
       isPastedTextFile={mockIsPastedTextFile}
       isPasteActionPending={mockIsPasteActionPending}

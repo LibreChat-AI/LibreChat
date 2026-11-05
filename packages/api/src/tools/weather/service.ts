@@ -20,6 +20,7 @@ import {
   unixAtLocalMidnight,
 } from './normalize';
 import { mapUnitsToOpenWeather, roundTemperatures } from './units';
+import { ToolInputError, formatToolError } from '../format';
 
 export const OPENWEATHER_API_ORIGIN: string = 'https://api.openweathermap.org';
 export const DEFAULT_OPENWEATHER_ONECALL_VERSION: OpenWeatherOneCallVersion = '4.0';
@@ -254,19 +255,19 @@ export function getOpenWeatherHelp(version: OpenWeatherOneCallVersion = '4.0'): 
 
 export function convertDateToUnix(dateStr: string, timeZone?: string): number {
   if (!DATE_PATTERN.test(dateStr)) {
-    throw new Error('Invalid date format. Expected YYYY-MM-DD.');
+    throw new ToolInputError('Invalid date format. Expected YYYY-MM-DD.');
   }
   const parts = dateStr.split('-');
   const year = parseInt(parts[0], 10);
   const month = parseInt(parts[1], 10);
   const day = parseInt(parts[2], 10);
   if (isNaN(year) || isNaN(month) || isNaN(day)) {
-    throw new Error('Invalid date format. Expected YYYY-MM-DD with valid numbers.');
+    throw new ToolInputError('Invalid date format. Expected YYYY-MM-DD with valid numbers.');
   }
 
   const utcMidnight = Date.UTC(year, month - 1, day, 0, 0, 0);
   if (isNaN(utcMidnight)) {
-    throw new Error('Invalid date provided. Cannot parse into a valid date.');
+    throw new ToolInputError('Invalid date provided. Cannot parse into a valid date.');
   }
 
   return unixAtLocalMidnight(year, month, day, timeZone);
@@ -608,11 +609,11 @@ async function geocodeCity(
   const response = await deps.fetch(url);
   const body: unknown = await response.json();
   if (!response.ok || !Array.isArray(body) || body.length === 0) {
-    throw new Error(`Could not find coordinates for city: ${city}`);
+    throw new ToolInputError(`Could not find coordinates for city: ${city}`);
   }
   const first = body[0];
   if (!isObject(first) || typeof first.lat !== 'number' || typeof first.lon !== 'number') {
-    throw new Error(`Could not find coordinates for city: ${city}`);
+    throw new ToolInputError(`Could not find coordinates for city: ${city}`);
   }
   return { lat: first.lat, lon: first.lon };
 }
@@ -748,7 +749,7 @@ async function currentForecast(
     if (result.status === 'fulfilled') {
       parts[name] = result.value;
     } else {
-      const message = result.reason instanceof Error ? result.reason.message : 'Unknown error';
+      const message = formatToolError(result.reason, 'OpenWeather').replace(/^Error: /, '');
       partErrors.push({ name, message });
     }
   }
@@ -759,7 +760,9 @@ async function currentForecast(
     parts.daily == null &&
     parts.minutely == null
   ) {
-    return `Error: ${partErrors[0]?.message ?? 'OpenWeather API request failed'}`;
+    return partErrors[0] != null
+      ? `Error: ${partErrors[0].message}`
+      : formatToolError(new Error('OpenWeather API request failed'), 'OpenWeather');
   }
 
   const result = normalizeCurrentForecast(parts);
@@ -995,7 +998,6 @@ export async function executeOpenWeather(
         return `Error: Unknown action: ${action}`;
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    return `Error: ${message}`;
+    return formatToolError(err, 'OpenWeather');
   }
 }

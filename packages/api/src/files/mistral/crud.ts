@@ -20,6 +20,12 @@ import type {
   OCRResult,
   OCRImage,
 } from '~/types';
+import {
+  getOutboundTimeout,
+  outboundRequestBudget,
+  getOutboundTimeoutMs,
+  DEFAULT_OUTBOUND_TIMEOUTS_MS,
+} from '~/utils/timeouts';
 import { decryptConfigSecret, isEncryptedSecretPayload } from '~/admin/secrets';
 import { logAxiosError, createAxiosInstance } from '~/utils/axios';
 import { applySSRFSafeAgentIfDirect } from '~/auth/agent';
@@ -65,7 +71,13 @@ function createProtectedProviderError(
   if (!contentProtected) {
     return null;
   }
-  logger.error(message, getSafeErrorMetadata(error));
+  /** The budget message names only the config key, so it is safe to keep. */
+  const timeout = getOutboundTimeout(error);
+  if (timeout) {
+    logger.warn(`${message} ${timeout.message}`);
+  } else {
+    logger.error(message, getSafeErrorMetadata(error));
+  }
   return new Error(message);
 }
 
@@ -84,18 +96,21 @@ export async function uploadDocumentToMistral({
   baseURL = DEFAULT_MISTRAL_BASE_URL,
   fileName = '',
   allowedAddresses,
+  timeout = DEFAULT_OUTBOUND_TIMEOUTS_MS.ocrMs,
 }: {
   apiKey: string;
   filePath: string;
   baseURL?: string;
   fileName?: string;
   allowedAddresses?: string[] | null;
+  timeout?: number;
 }): Promise<MistralFileUploadResponse> {
   const form = new FormData();
   form.append('purpose', 'ocr');
   const actualFileName = fileName || path.basename(filePath);
 
   const config: AxiosRequestConfig = {
+    ...outboundRequestBudget(timeout, 'ocrMs'),
     headers: {
       Authorization: `Bearer ${apiKey}`,
       ...form.getHeaders(),
@@ -124,6 +139,7 @@ export async function getSignedUrl({
   expiry = 24,
   baseURL = DEFAULT_MISTRAL_BASE_URL,
   allowedAddresses,
+  timeout = DEFAULT_OUTBOUND_TIMEOUTS_MS.ocrMs,
   contentProtected = false,
 }: {
   apiKey: string;
@@ -131,9 +147,11 @@ export async function getSignedUrl({
   expiry?: number;
   baseURL?: string;
   allowedAddresses?: string[] | null;
+  timeout?: number;
   contentProtected?: boolean;
 }): Promise<MistralSignedUrlResponse> {
   const config: AxiosRequestConfig = {
+    ...outboundRequestBudget(timeout, 'ocrMs'),
     headers: {
       Authorization: `Bearer ${apiKey}`,
     },
@@ -176,6 +194,7 @@ export async function performOCR({
   baseURL = DEFAULT_MISTRAL_BASE_URL,
   documentType = 'document_url',
   allowedAddresses,
+  timeout = DEFAULT_OUTBOUND_TIMEOUTS_MS.ocrMs,
   contentProtected = false,
 }: {
   url: string;
@@ -184,11 +203,13 @@ export async function performOCR({
   baseURL?: string;
   documentType?: 'document_url' | 'image_url';
   allowedAddresses?: string[] | null;
+  timeout?: number;
   contentProtected?: boolean;
 }): Promise<OCRResult> {
   const documentKey = documentType === 'image_url' ? 'image_url' : 'document_url';
 
   const config: AxiosRequestConfig = {
+    ...outboundRequestBudget(timeout, 'ocrMs'),
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
@@ -241,15 +262,18 @@ export async function deleteMistralFile({
   apiKey,
   baseURL = DEFAULT_MISTRAL_BASE_URL,
   allowedAddresses,
+  timeout = DEFAULT_OUTBOUND_TIMEOUTS_MS.ocrMs,
   contentProtected = false,
 }: {
   fileId: string;
   apiKey: string;
   baseURL?: string;
   allowedAddresses?: string[] | null;
+  timeout?: number;
   contentProtected?: boolean;
 }): Promise<void> {
   const config: AxiosRequestConfig = {
+    ...outboundRequestBudget(timeout, 'ocrMs'),
     headers: {
       Authorization: `Bearer ${apiKey}`,
     },
@@ -290,6 +314,15 @@ function getEnvVarName(configValue: string, defaultName: string): string {
   return extractVariableName(configValue) || defaultName;
 }
 
+/** The variable that names OCR's default destination, the one `OCR_API_KEY` belongs with. */
+const DEFAULT_OCR_BASEURL_VAR = 'OCR_BASEURL';
+
+/** Whether a base URL is OCR's default destination: unset, or `${OCR_BASEURL}`. */
+function isDefaultOCRDestination(baseURL: string): boolean {
+  const trimmed = baseURL.trim();
+  return trimmed === '' || extractVariableName(trimmed) === DEFAULT_OCR_BASEURL_VAR;
+}
+
 /**
  * Resolves a configuration value from either hardcoded or environment
  */
@@ -310,7 +343,13 @@ async function resolveConfigValue(
 }
 
 /**
- * Loads authentication configuration from OCR config
+ * Loads authentication configuration from OCR config.
+ *
+ * An empty API key falls back to the deployment's `OCR_API_KEY` only while the base URL is the
+ * deployment's default OCR destination too: unset, or `${OCR_BASEURL}`. With any other base URL,
+ * a literal or a reference to another variable, an empty key stays empty: the deployment's key is
+ * never sent to a host a config override chose, including when the override's inherited key was
+ * dropped for pointing OCR elsewhere.
  */
 async function loadAuthConfig(context: OCRContext): Promise<AuthConfig> {
   const appConfig = context.req.config;
@@ -320,34 +359,47 @@ async function loadAuthConfig(context: OCRContext): Promise<AuthConfig> {
     ? (decryptConfigSecret(rawApiKeyConfig) ?? '')
     : rawApiKeyConfig;
   const baseURLConfig = ocrConfig?.baseURL || '';
+  const baseURLFromEnv = needsEnvLoad(baseURLConfig);
+  const apiKeyBlank = !apiKeyConfig.trim();
+  const defaultDestination = isDefaultOCRDestination(baseURLConfig);
+  const apiKeyFromEnv = envVarRegex.test(apiKeyConfig) || (apiKeyBlank && defaultDestination);
+  const literalApiKey = apiKeyBlank ? '' : apiKeyConfig;
 
-  if (!needsEnvLoad(apiKeyConfig) && !needsEnvLoad(baseURLConfig)) {
+  if (apiKeyBlank && !defaultDestination) {
+    logger.warn(
+      '[loadAuthConfig] OCR has a configured base URL and no API key; the default OCR_API_KEY is only used with the default OCR base URL',
+    );
+  }
+
+  if (!apiKeyFromEnv && !baseURLFromEnv) {
     return {
-      apiKey: apiKeyConfig,
+      apiKey: literalApiKey,
       baseURL: baseURLConfig,
     };
   }
 
   const authFields: string[] = [];
 
-  if (needsEnvLoad(baseURLConfig)) {
-    authFields.push(getEnvVarName(baseURLConfig, 'OCR_BASEURL'));
+  if (baseURLFromEnv) {
+    authFields.push(getEnvVarName(baseURLConfig, DEFAULT_OCR_BASEURL_VAR));
   }
 
-  if (needsEnvLoad(apiKeyConfig)) {
+  if (apiKeyFromEnv) {
     authFields.push(getEnvVarName(apiKeyConfig, 'OCR_API_KEY'));
   }
 
   const authValues = await context.loadAuthValues({
     userId: context.req.user?.id || '',
     authFields,
-    optional: new Set(['OCR_BASEURL']),
+    optional: new Set([DEFAULT_OCR_BASEURL_VAR]),
   });
 
-  const apiKey = await resolveConfigValue(apiKeyConfig, 'OCR_API_KEY', authValues);
+  const apiKey = apiKeyFromEnv
+    ? await resolveConfigValue(apiKeyConfig, 'OCR_API_KEY', authValues)
+    : literalApiKey;
   const baseURL = await resolveConfigValue(
     baseURLConfig,
-    'OCR_BASEURL',
+    DEFAULT_OCR_BASEURL_VAR,
     authValues,
     DEFAULT_MISTRAL_BASE_URL,
   );
@@ -450,6 +502,7 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
   const contentProtected = hasActiveFilePolicy(context.req.config?.filters);
 
   const allowedAddresses = context.req.config?.ocr?.allowedAddresses;
+  const timeout = getOutboundTimeoutMs(context.req.config, 'ocrMs');
 
   try {
     const authConfig = await loadAuthConfig(context);
@@ -463,6 +516,7 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
       apiKey,
       baseURL,
       allowedAddresses,
+      timeout,
     });
 
     mistralFileId = mistralFile.id;
@@ -472,6 +526,7 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
       baseURL,
       fileId: mistralFile.id,
       allowedAddresses,
+      timeout,
       contentProtected,
     });
 
@@ -483,6 +538,7 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
       apiKey,
       model,
       allowedAddresses,
+      timeout,
       contentProtected,
     });
 
@@ -499,6 +555,7 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
         apiKey,
         baseURL,
         allowedAddresses,
+        timeout,
         contentProtected,
       });
     }
@@ -517,6 +574,7 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
         apiKey,
         baseURL,
         allowedAddresses,
+        timeout,
         contentProtected,
       });
     }
@@ -545,6 +603,7 @@ export const uploadAzureMistralOCR = async (
     const { apiKey, baseURL } = await loadAuthConfig(context);
     const model = getModelConfig(context.req.config?.ocr);
     const allowedAddresses = context.req.config?.ocr?.allowedAddresses;
+    const timeout = getOutboundTimeoutMs(context.req.config, 'ocrMs');
 
     const { content: buffer } = await readFileAsBuffer(context.file.path, {
       fileSize: context.file.size,
@@ -561,6 +620,7 @@ export const uploadAzureMistralOCR = async (
       url: `${base64Prefix}${base64}`,
       documentType,
       allowedAddresses,
+      timeout,
       contentProtected,
     });
 
@@ -591,7 +651,7 @@ export const uploadAzureMistralOCR = async (
 /**
  * Loads Google service account configuration
  */
-async function loadGoogleAuthConfig(): Promise<{
+async function loadGoogleAuthConfig(timeout: number): Promise<{
   serviceAccount: GoogleServiceAccount;
   accessToken: string;
 }> {
@@ -613,7 +673,7 @@ async function loadGoogleAuthConfig(): Promise<{
   }
 
   const jwt = await createJWT(serviceKey as GoogleServiceAccount);
-  const accessToken = await exchangeJWTForAccessToken(jwt);
+  const accessToken = await exchangeJWTForAccessToken(jwt, timeout);
 
   return {
     serviceAccount: serviceKey as GoogleServiceAccount,
@@ -658,8 +718,9 @@ async function createJWT(serviceKey: GoogleServiceAccount): Promise<string> {
 /**
  * Exchanges JWT for access token
  */
-async function exchangeJWTForAccessToken(jwt: string): Promise<string> {
+async function exchangeJWTForAccessToken(jwt: string, timeout: number): Promise<string> {
   const config: AxiosRequestConfig = {
+    ...outboundRequestBudget(timeout, 'ocrMs'),
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
     },
@@ -693,6 +754,7 @@ async function performGoogleVertexOCR({
   model,
   documentType = 'document_url',
   contentProtected = false,
+  timeout = DEFAULT_OUTBOUND_TIMEOUTS_MS.ocrMs,
 }: {
   url: string;
   accessToken: string;
@@ -700,6 +762,7 @@ async function performGoogleVertexOCR({
   model: string;
   documentType?: 'document_url' | 'image_url';
   contentProtected?: boolean;
+  timeout?: number;
 }): Promise<OCRResult> {
   const location = process.env.GOOGLE_LOC || 'us-central1';
   const modelId = model || 'mistral-ocr-2505';
@@ -731,6 +794,7 @@ async function performGoogleVertexOCR({
   });
 
   const config: AxiosRequestConfig = {
+    ...outboundRequestBudget(timeout, 'ocrMs'),
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${accessToken}`,
@@ -785,7 +849,8 @@ export const uploadGoogleVertexMistralOCR = async (
 ): Promise<MistralOCRUploadResult> => {
   const contentProtected = hasActiveFilePolicy(context.req.config?.filters);
   try {
-    const { serviceAccount, accessToken } = await loadGoogleAuthConfig();
+    const timeout = getOutboundTimeoutMs(context.req.config, 'ocrMs');
+    const { serviceAccount, accessToken } = await loadGoogleAuthConfig(timeout);
     const model = getModelConfig(context.req.config?.ocr);
 
     const { content: buffer } = await readFileAsBuffer(context.file.path, {
@@ -802,6 +867,7 @@ export const uploadGoogleVertexMistralOCR = async (
       model,
       documentType,
       contentProtected,
+      timeout,
     });
 
     if (!ocrResult || !ocrResult.pages || ocrResult.pages.length === 0) {

@@ -1,11 +1,11 @@
 import { memo, useCallback, useEffect, useRef } from 'react';
 import { TextQuote, WandSparkles } from 'lucide-react';
+import { ComposerChip as Chip } from '@librechat/chat/components';
 import type { TConversation } from 'librechat-data-provider';
 import type { ComposerItem, ComposerItemKind } from '~/hooks/Input/useComposerItems';
 import type { ExtendedFile, FileSetter } from '~/common';
 import { useFileHandlingNoChatContext, useLocalize } from '~/hooks';
 import FileRow from '../Files/FileRow';
-import Chip from './Chip';
 
 const KIND_ICON: Record<ComposerItemKind, JSX.Element> = {
   quote: <TextQuote className="h-4 w-4" aria-hidden="true" />,
@@ -44,7 +44,6 @@ interface TrayProps {
   files: Map<string, ExtendedFile>;
   setFiles: FileSetter;
   setFilesLoading: React.Dispatch<React.SetStateAction<boolean>>;
-  isRTL: boolean;
   index: number;
   isPastedTextFile: (file: ExtendedFile) => boolean;
   isPasteActionPending: (file: ExtendedFile) => boolean;
@@ -70,7 +69,6 @@ function Tray({
   files,
   setFiles,
   setFilesLoading,
-  isRTL,
   index,
   isPastedTextFile,
   isPasteActionPending,
@@ -116,6 +114,7 @@ function Tray({
     [items, focusComposer],
   );
   const { abortUpload } = useFileHandlingNoChatContext(undefined, {
+    index,
     files,
     setFiles,
     setFilesLoading,
@@ -131,7 +130,6 @@ function Tray({
       <FileRow
         files={files}
         setFiles={setFiles}
-        isRTL={isRTL}
         abortUpload={abortUpload}
         setFilesLoading={setFilesLoading}
         index={index}

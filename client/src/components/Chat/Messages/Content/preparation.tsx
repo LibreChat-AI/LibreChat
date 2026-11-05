@@ -1,29 +1,8 @@
 import { createContext, useContext } from 'react';
 import { Constants, actionDelimiter } from 'librechat-data-provider';
-import type { PartMetadata } from 'librechat-data-provider';
-import { areToolCallArgsComplete } from './Parts/parseJsonField';
-import { getToolDisplayLabel } from '~/utils/toolLabels';
+import { getToolDisplayLabel, isToolCallPreparing } from '@librechat/chat';
+import type { ToolPreparationInput } from '@librechat/chat';
 import { useLocalize } from '~/hooks';
-
-export interface ToolPreparationInput
-  extends Pick<PartMetadata, 'toolPreparationStartedAt' | 'toolDispatchedAt' | 'runStepStatus'> {
-  args?: string | Record<string, unknown>;
-  output?: string | null;
-  progress?: number;
-}
-
-/** Dispatch and result signals outrank argument completeness on legacy and resumed calls. */
-export function isToolCallPreparing(call: ToolPreparationInput): boolean {
-  if (
-    call.toolDispatchedAt != null ||
-    call.runStepStatus != null ||
-    (call.output?.length ?? 0) > 0 ||
-    (call.progress ?? 0) >= 1
-  ) {
-    return false;
-  }
-  return call.toolPreparationStartedAt != null || !areToolCallArgsComplete(call.args);
-}
 
 const ToolPreparationContext = createContext<string | undefined>(undefined);
 

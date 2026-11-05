@@ -10,8 +10,10 @@ jest.mock('../Parts', () => ({
   AgentUpdate: () => <div data-testid="agent-update" />,
   EmptyText: () => <div data-testid="empty-text" />,
   Reasoning: () => <div data-testid="reasoning" />,
-  ReasoningMarker: ({ label }: { label?: string }) => (
-    <div data-testid="reasoning-marker">{label}</div>
+  ReasoningMarker: ({ label, encrypted }: { label?: string; encrypted?: boolean }) => (
+    <div data-testid="reasoning-marker" data-encrypted={String(encrypted === true)}>
+      {label}
+    </div>
   ),
   Summary: () => <div data-testid="summary" />,
   Text: ({ text }: { text?: string }) => <div data-testid="text">{text}</div>,
@@ -279,5 +281,35 @@ describe('Part tool renderer selection', () => {
 
     expect(screen.getByTestId('reasoning')).toBeInTheDocument();
     expect(screen.queryByTestId('reasoning-marker')).not.toBeInTheDocument();
+  });
+
+  it('renders encrypted reasoning as an encrypted marker without its stale label', () => {
+    /** Bedrock `redactedContent`, base64-encoded into THINK text by the SDK. */
+    const encoded = Buffer.from(Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256)).toString(
+      'base64',
+    );
+    renderPart({
+      type: ContentTypes.THINK,
+      think: encoded,
+      reasoning_label: 'Inspecting an encoded data snapshot',
+    } as TMessageContentParts);
+
+    const marker = screen.getByTestId('reasoning-marker');
+    expect(marker).toHaveAttribute('data-encrypted', 'true');
+    expect(marker).not.toHaveTextContent('Inspecting an encoded data snapshot');
+    expect(screen.queryByTestId('reasoning')).not.toBeInTheDocument();
+  });
+
+  it('renders persisted encrypted reasoning inside think tags as an encrypted marker', () => {
+    const encoded = Buffer.from(Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256)).toString(
+      'base64',
+    );
+    renderPart({
+      type: ContentTypes.THINK,
+      think: `<think>${encoded}</think>`,
+    } as TMessageContentParts);
+
+    expect(screen.getByTestId('reasoning-marker')).toHaveAttribute('data-encrypted', 'true');
+    expect(screen.queryByTestId('reasoning')).not.toBeInTheDocument();
   });
 });

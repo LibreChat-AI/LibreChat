@@ -69,6 +69,35 @@ export async function getReplayablePendingMCPOAuthStart({
   }
 }
 
+/**
+ * Reads the pending OAuth flows of several servers at once, skipping any `skip` rejects.
+ * The result keeps the order of `serverNames`, and holds only servers with a replayable start.
+ */
+export async function getReplayablePendingMCPOAuthStarts({
+  flowManager,
+  userId,
+  serverNames,
+  skip,
+}: Omit<ReplayablePendingMCPOAuthStartOptions, 'serverName'> & {
+  serverNames: Iterable<string>;
+  skip?: (serverName: string) => boolean;
+}): Promise<Map<string, PendingOAuthStart>> {
+  const names = Array.from(serverNames).filter((serverName) => !skip?.(serverName));
+  const starts = await Promise.all(
+    names.map((serverName) =>
+      getReplayablePendingMCPOAuthStart({ flowManager, userId, serverName }),
+    ),
+  );
+  const pending = new Map<string, PendingOAuthStart>();
+  names.forEach((serverName, index) => {
+    const start = starts[index];
+    if (start) {
+      pending.set(serverName, start);
+    }
+  });
+  return pending;
+}
+
 type OAuthEndHandler = () => Promise<void>;
 
 export class OAuthLifecycleRelay {

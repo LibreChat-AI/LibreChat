@@ -117,7 +117,7 @@ const ConversationRow = memo(
           ) : null}
         </Button>
         {conversationId ? (
-          <div className="pr-2">
+          <div className="pe-2">
             <ProjectChatOptions
               conversation={conversation}
               isMenuOpen={isMenuOpen}
@@ -279,8 +279,7 @@ const ProjectChatList = ({
             deferredMeasurementCache={cache}
             overscanRowCount={8}
             onRowsRendered={handleRowsRendered}
-            className="outline-hidden"
-            style={{ outline: 'none' }}
+            className="outline-none"
           />
         )}
       </AutoSizer>

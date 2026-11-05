@@ -81,7 +81,7 @@ function ModelSelectorContent() {
               {selectedIcon}
             </div>
           )}
-          <span className="truncate text-left">{selectedDisplayValue}</span>
+          <span className="truncate text-start">{selectedDisplayValue}</span>
         </button>
       }
     />

@@ -4,13 +4,11 @@ const { sendEvent } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const {
   StepTypes,
-  RunStatus,
   StepStatus,
   ContentTypes,
   ToolCallTypes,
   imageGenTools,
   EModelEndpoint,
-  defaultOrderQuery,
 } = require('librechat-data-provider');
 const { retrieveAndProcessFile } = require('~/server/services/Files/process');
 const { processRequiredActions } = require('~/server/services/ToolService');
@@ -75,44 +73,6 @@ async function createOnTextProgress({
     });
     sendEvent(openai.res, contentData);
   };
-}
-
-/**
- * Retrieves the response from an OpenAI run.
- *
- * @param {Object} params - The parameters for getting the response.
- * @param {OpenAI} params.openai - The OpenAI SDK client instance.
- * @param {string} params.run_id - The ID of the run to get the response for.
- * @param {string} params.thread_id - The ID of the thread associated with the run.
- * @return {Promise<OpenAIAssistantFinish | OpenAIAssistantAction[] | ThreadMessage[] | RequiredActionFunctionToolCall[]>}
- */
-async function getResponse({ openai, run_id, thread_id }) {
-  const run = await waitForRun({ openai, run_id, thread_id, pollIntervalMs: 2000 });
-
-  if (run.status === RunStatus.COMPLETED) {
-    const messages = await openai.beta.threads.messages.list(thread_id, defaultOrderQuery);
-    const newMessages = messages.data.filter((msg) => msg.run_id === run_id);
-
-    return newMessages;
-  } else if (run.status === RunStatus.REQUIRES_ACTION) {
-    const actions = [];
-    run.required_action?.submit_tool_outputs.tool_calls.forEach((item) => {
-      const functionCall = item.function;
-      const args = JSON.parse(functionCall.arguments);
-      actions.push({
-        tool: functionCall.name,
-        toolInput: args,
-        toolCallId: item.id,
-        run_id,
-        thread_id,
-      });
-    });
-
-    return actions;
-  }
-
-  const runInfo = JSON.stringify(run, null, 2);
-  throw new Error(`Unexpected run status ${run.status}.\nFull run info:\n\n${runInfo}`);
 }
 
 /**
@@ -369,14 +329,6 @@ async function runAssistant({
       logger.debug(`[runAssistant] Final step for ${run_id} with status ${runStatus}`, step);
 
       const promises = [];
-      // promises.push(
-      //   openai.beta.threads.messages.list(thread_id, defaultOrderQuery),
-      // );
-
-      // const finalSteps = stepsByStatus[runStatus];
-      // for (const stepPromise of finalSteps) {
-      //   promises.push(stepPromise);
-      // }
 
       // loop across all statuses
       for (const [_status, stepsPromises] of Object.entries(stepsByStatus)) {
@@ -395,8 +347,6 @@ async function runAssistant({
         }
       }
       await in_progress({ step });
-      // const res = resolved.shift();
-      // messages = messages.concat(res.data.filter((msg) => msg && msg.run_id === run_id));
       resolved.push(step);
       /* Note: no issues without deep cloning, but it's safer to do so */
       steps = klona(finalSteps);
@@ -418,8 +368,6 @@ async function runAssistant({
   });
 
   if (!run.required_action) {
-    // const { messages: sortedMessages, text } = await processMessages(openai, messages);
-    // return { run, steps, messages: sortedMessages, text };
     const sortedMessages = messages.sort((a, b) => a.created_at - b.created_at);
     return {
       run,
@@ -461,7 +409,6 @@ async function runAssistant({
 }
 
 module.exports = {
-  getResponse,
   runAssistant,
   createOnTextProgress,
 };

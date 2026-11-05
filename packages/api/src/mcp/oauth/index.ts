@@ -8,3 +8,5 @@ export * from './pending';
 export * from './events';
 export * from './resume';
 export * from './cleanup';
+export * from './target';
+export * from './access';

@@ -53,8 +53,16 @@ function schedulePin(svg: SVGSVGElement) {
   }
 }
 
+/** `current` follows the surrounding ink; the others pin it to a text role. */
+const SPINNER_TONES = {
+  current: '',
+  primary: 'text-text-primary',
+  secondary: 'text-text-secondary',
+} as const;
+
 interface SpinnerProps {
   className?: string;
+  tone?: keyof typeof SPINNER_TONES;
   size?: string | number;
   color?: string;
   bgOpacity?: number;
@@ -73,6 +81,7 @@ interface SpinnerProps {
  */
 export default function Spinner({
   className = 'm-auto',
+  tone = 'current',
   size = 20,
   color = 'currentColor',
   bgOpacity = 0.1,
@@ -115,7 +124,7 @@ export default function Spinner({
     <svg
       ref={svgRef}
       onAnimationStart={handleAnimationStart}
-      className={cn(className, 'spinner')}
+      className={cn(className, SPINNER_TONES[tone], 'spinner')}
       width={size}
       height={size}
       viewBox="0 0 40 40"

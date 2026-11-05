@@ -285,13 +285,17 @@ describe('OpenWeather Tool', () => {
   });
 
   test('API request failure returns an error', async () => {
-    mockOpenWeather({ errorStatus: 404, errorBody: { message: 'Not found' } });
+    mockOpenWeather({
+      errorStatus: 404,
+      errorBody: { message: 'Not found for PRIVATE-PROVIDER-DETAIL' },
+    });
 
     const result = await tool.call({
       action: 'current_forecast',
       city: 'Knoxville, Tennessee',
     });
-    expect(result).toMatch(/Error: OpenWeather API request failed with status 404: Not found/);
+    expect(result).toBe('Error: OpenWeather found no result for this request (status 404).');
+    expect(result).not.toContain('PRIVATE-PROVIDER-DETAIL');
   });
 
   test('invalid date format returns an error', async () => {
@@ -300,8 +304,20 @@ describe('OpenWeather Tool', () => {
     const result = await tool.call({
       action: 'timestamp',
       city: 'Knoxville, Tennessee',
-      date: '03-04-2020',
+      date: '2020/03/04', // Wrong format
     });
     expect(result).toMatch(/Error: Invalid date format. Expected YYYY-MM-DD./);
+  });
+
+  test('a failed request returns approved text, not the exception message', async () => {
+    fetch.mockImplementationOnce((url) =>
+      Promise.reject(new Error(`request to ${url} failed, reason: getaddrinfo ENOTFOUND`)),
+    );
+
+    const result = await tool.call({ action: 'current_forecast', lat: 35.96, lon: -83.92 });
+
+    expect(result).toBe('Error: The tool request failed.');
+    expect(result).not.toContain('test-api-key');
+    expect(result).not.toContain('ENOTFOUND');
   });
 });

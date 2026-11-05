@@ -3,11 +3,14 @@ import fs from 'fs';
 import path from 'path';
 import { constants } from 'zlib';
 import { defineConfig } from 'vite';
+import { Features } from 'lightningcss';
+import { THEME_BOOT_FILE } from 'librechat-data-provider';
 import { createRequire } from 'module';
 import { VitePWA } from 'vite-plugin-pwa';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { compression, defineAlgorithm } from 'vite-plugin-compression2';
 import type { Plugin } from 'vite';
+import { bundledThemeBoot, injectThemeCacheVersion } from './src/Providers/bootVersion.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -89,6 +92,7 @@ export default defineConfig(({ command }) => ({
         });
       },
     },
+    themeCacheVersion(),
     copyPublicAssets(),
     VitePWA({
       injectRegister: 'auto', // 'auto' | 'manual' | 'disabled'
@@ -213,6 +217,12 @@ export default defineConfig(({ command }) => ({
     ],
   },
   publicDir: command === 'serve' ? './public' : false,
+  css: {
+    /** The CSS minifier lowers `:dir()` for `build.cssTarget` browsers into a `:lang()` list,
+     *  which mirrors by UI language instead of the element's direction and breaks LTR islands
+     *  in an RTL page. Tailwind keeps `:dir()` for the same reason; the minifier has to agree. */
+    lightningcss: { exclude: Features.DirSelector },
+  },
   build: {
     sourcemap: buildSourceMap,
     outDir: './dist',
@@ -240,6 +250,11 @@ export default defineConfig(({ command }) => ({
               priority: 1,
             },
             {
+              name: 'utilities',
+              test: /node_modules[\\/]lodash(?:\.[^\\/]+)?[\\/]/,
+              priority: 1,
+            },
+            {
               name(id: string) {
                 const normalizedId = id.replace(/\\/g, '/');
                 if (normalizedId.includes('node_modules')) {
@@ -247,7 +262,13 @@ export default defineConfig(({ command }) => ({
                     return 'polyfills';
                   }
 
-                  if (normalizedId.includes('@hyperdx/')) {
+                  if (
+                    normalizedId.includes('@hyperdx/') ||
+                    normalizedId.includes('@opentelemetry/') ||
+                    /\/node_modules\/(?:rrweb(?:-snapshot)?|@rrweb\/[^/]+|fflate|protobufjs|long)\//.test(
+                      normalizedId,
+                    )
+                  ) {
                     return 'rum';
                   }
 
@@ -454,6 +475,26 @@ export default defineConfig(({ command }) => ({
     },
   },
 }));
+
+/**
+ * Writes the deployment-theme cache version into the boot script's check, the same value
+ * `themeCache.ts` stamps on the entries it stores, so a role added to the registry retires
+ * every entry stored before it without anyone remembering to bump a number. It also emits
+ * the bundled themes resolved for the boot script, which the server embeds in a first visit.
+ */
+export function themeCacheVersion(): Plugin {
+  return {
+    name: 'theme-cache-version',
+    transformIndexHtml: injectThemeCacheVersion,
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: THEME_BOOT_FILE,
+        source: JSON.stringify(bundledThemeBoot()),
+      });
+    },
+  };
+}
 
 interface SourcemapExclude {
   excludeNodeModules?: boolean;

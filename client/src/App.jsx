@@ -2,10 +2,11 @@ import { useEffect } from 'react';
 import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { RouterProvider } from 'react-router-dom';
-import * as RadixToast from '@radix-ui/react-toast';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { QueryClient, QueryClientProvider, QueryCache } from '@tanstack/react-query';
 import { Toast, ToastViewport, ToastProvider, useInputModality } from '@librechat/client';
+import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from '@tanstack/react-query';
+import { FilesHostProvider, appFilesHost } from '~/Providers/FilesHostContext';
+import Direction, { ToastSwipeProvider } from '~/Providers/Direction';
 import { ScreenshotProvider, useApiErrorBoundary } from './hooks';
 import WakeLockManager from '~/components/System/WakeLockManager';
 import QueryDevtoolsGate from '~/components/QueryDevtoolsGate';
@@ -13,8 +14,13 @@ import LanguageSync from '~/components/System/LanguageSync';
 import DeploymentTheme from '~/Providers/DeploymentTheme';
 import UiScaleSync from '~/components/System/UiScaleSync';
 import { initializeFontSize } from '~/store/fontSize';
+import { reopenTermsOnRefusal } from '~/utils/terms';
 import { LiveAnnouncer } from '~/a11y';
 import { router } from './routes';
+import '~/Providers/MessagePartsHostContext';
+import '~/Providers/MessagesHostContext';
+import '~/Providers/SubagentsHostContext';
+import '~/components/Chat/Messages/Content/register';
 
 const App = () => {
   const { setError } = useApiErrorBoundary();
@@ -38,6 +44,11 @@ const App = () => {
         }
       },
     }),
+    mutationCache: new MutationCache({
+      onError: (error) => {
+        reopenTermsOnRefusal(queryClient, error?.response?.data);
+      },
+    }),
   });
 
   useEffect(() => {
@@ -49,12 +60,13 @@ const App = () => {
       <RecoilRoot>
         <LanguageSync />
         <UiScaleSync />
-        <LiveAnnouncer>
-          <DeploymentTheme>
-            <RadixToast.Provider>
-              <ToastProvider>
-                <DndProvider backend={HTML5Backend}>
-                  {/* Location updates commit in the caller's own task instead
+        <Direction>
+          <LiveAnnouncer>
+            <DeploymentTheme>
+              <ToastSwipeProvider>
+                <ToastProvider>
+                  <DndProvider backend={HTML5Backend}>
+                    {/* Location updates commit in the caller's own task instead
                       of React's transition lane. A transition keeps the
                       OUTGOING route painted until the incoming one finishes
                       rendering, so switching conversations left the previous
@@ -73,16 +85,19 @@ const App = () => {
                       transition-safe reads are gated behind
                       `_TRANSITION_SUPPORT_UNSTABLE` hooks this app does not use.
                       Worth revisiting once that state has moved to Jotai. */}
-                  <RouterProvider router={router} useTransitions={false} />
-                  <WakeLockManager />
-                  <QueryDevtoolsGate />
-                  <Toast />
-                  <ToastViewport />
-                </DndProvider>
-              </ToastProvider>
-            </RadixToast.Provider>
-          </DeploymentTheme>
-        </LiveAnnouncer>
+                    <FilesHostProvider host={appFilesHost}>
+                      <RouterProvider router={router} useTransitions={false} />
+                    </FilesHostProvider>
+                    <WakeLockManager />
+                    <QueryDevtoolsGate />
+                    <Toast />
+                    <ToastViewport />
+                  </DndProvider>
+                </ToastProvider>
+              </ToastSwipeProvider>
+            </DeploymentTheme>
+          </LiveAnnouncer>
+        </Direction>
       </RecoilRoot>
     </QueryClientProvider>
   );

@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import { Slider, InputNumber, Switch } from '@librechat/client';
-import { cn, defaultTextProps, optionText } from '~/utils/';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -61,7 +60,7 @@ export default function AutoSendTextSelector() {
           id="autoSendTextToggle"
           checked={isEnabled}
           onCheckedChange={handleToggle}
-          className="ml-4"
+          className="ms-4"
           data-testid="autoSendTextToggle"
           aria-labelledby={labelId}
           disabled={!speechToText}
@@ -70,7 +69,7 @@ export default function AutoSendTextSelector() {
       {isEnabled && (
         <div className="mt-2 flex items-center justify-between">
           <div className="flex items-center justify-between">
-            <div id="auto-send-delay-label" className="text-sm text-text-secondary">
+            <div id="auto-send-delay-label" className="text-text-secondary text-sm">
               {localize('com_nav_setting_delay')}
             </div>
           </div>
@@ -87,7 +86,7 @@ export default function AutoSendTextSelector() {
               min={0}
               max={60}
               step={1}
-              className="ml-4 flex h-4 w-24"
+              className="ms-4 flex h-4 w-24"
               disabled={!speechToText || !isEnabled}
               aria-labelledby="auto-send-delay-label"
             />
@@ -99,13 +98,8 @@ export default function AutoSendTextSelector() {
               min={0}
               max={60}
               aria-labelledby="auto-send-delay-label"
-              className={cn(
-                defaultTextProps,
-                cn(
-                  optionText,
-                  'reset-rc-number-input reset-rc-number-input-text-right h-auto w-12 border-0 group-hover/temp:border-border-light',
-                ),
-              )}
+              variant="option"
+              className="w-12"
             />
           </div>
         </div>

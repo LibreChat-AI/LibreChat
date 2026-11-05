@@ -3,9 +3,11 @@ import { injectBootstrapConfig } from './bootstrap';
 
 const CONFIGURED_FOOTER_SENTINEL = 'data-librechat-configured-footer="true"';
 
-/** What the deployment configured, as the server holds it: the footer env var. */
+/** What the deployment configured, as the server holds it: the footer env var
+ *  and the base config's `interface.landingFooter`. */
 export interface ConfiguredFooterSource {
   customFooter?: string | null;
+  landingFooter?: boolean | null;
 }
 
 /**
@@ -20,6 +22,9 @@ export interface ConfiguredFooterSource {
  * served before there is a caller whose config overrides could be resolved; the
  * client prefers `/api/config`'s resolved answer once it has it.
  *
+ * The welcome screen's own footer is answered the same way: a deployment that
+ * turned it off would otherwise paint it until `/api/config` removed it.
+ *
  * Always injected, including the negative answer, so an absent flag means "no
  * server said" (the Vite dev server) rather than "no footer".
  */
@@ -33,5 +38,6 @@ export const injectConfiguredFooterBootstrap = (
       hasConfiguredFooter: hasConfiguredFooter({
         customFooter: source?.customFooter ?? undefined,
       }),
+      landingFooter: source?.landingFooter !== false,
     },
   });

@@ -242,10 +242,7 @@ const TwoFactorAuthentication: React.FC = () => {
               </OGDialogTitle>
               {phase !== 'disable' && (
                 <div className="mt-4 space-y-3">
-                  <Progress
-                    value={(currentStep / (steps.length - 1)) * 100}
-                    className="h-2 rounded-full"
-                  />
+                  <Progress value={(currentStep / (steps.length - 1)) * 100} className="h-2" />
                   <div className="text-text-primary flex justify-between text-sm">
                     {steps.map((step, index) => (
                       <motion.span

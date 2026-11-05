@@ -208,6 +208,20 @@ export type CodeFileLocation = 'sandbox' | 'programmatic';
 
 type CodeContextFile = Pick<TFile, 'file_id' | 'filename' | 'context' | 'status' | 'previewError'>;
 
+/**
+ * A file the code-file note describes, kept structured on routes where the note is rebuilt
+ * after priming: an attached workspace replaces it once attachments are copied in.
+ */
+export interface CodeContextEntry {
+  file: TFile;
+  /** Name under the code data directory. */
+  destination: string;
+  /** One of the agent's own files rather than something attached in this chat. */
+  agentScoped: boolean;
+  /** The code-environment object holding the bytes, when one is stored. */
+  source?: { storage_session_id: string; file_id: string };
+}
+
 const CODE_FILE_CONTEXT_ROOTS: Record<CodeFileLocation, string> = {
   sandbox: '/mnt/data',
   programmatic: '$LIBRECHAT_CODE_DATA_DIR',
@@ -258,17 +272,34 @@ export function getCodeFileContextLine(
   destination: string,
   location: CodeFileLocation = 'sandbox',
 ): string {
-  const displaced = destination !== file.filename;
-  if (file.context === FileContext.execute_code && !displaced) {
+  if (!isDescribedCodeFile(file, destination)) {
     return '';
   }
+  return `\n\t- ${CODE_FILE_CONTEXT_ROOTS[location]}/${destination}${getCodeFileContextSuffix(
+    file,
+    agentResourceIds.has(file.file_id),
+    destination,
+  )}`;
+}
+
+/** Whether the code-file note mentions this file at `destination` at all. */
+export function isDescribedCodeFile(file: CodeContextFile, destination: string): boolean {
+  return file.context !== FileContext.execute_code || destination !== file.filename;
+}
+
+/** Provenance and preview state appended to a file shown under `shownName`. */
+export function getCodeFileContextSuffix(
+  file: CodeContextFile,
+  agentScoped: boolean,
+  shownName: string,
+): string {
   const origin =
     file.context === FileContext.execute_code
       ? ` (written earlier as ${file.filename})`
-      : `${agentResourceIds.has(file.file_id) ? '' : ' (attached by user)'}${
-          displaced ? ` (uploaded as ${file.filename})` : ''
+      : `${agentScoped ? '' : ' (attached by user)'}${
+          shownName !== file.filename ? ` (uploaded as ${file.filename})` : ''
         }`;
-  return `\n\t- ${CODE_FILE_CONTEXT_ROOTS[location]}/${destination}${origin}${getPreviewContextSuffix(file)}`;
+  return `${origin}${getPreviewContextSuffix(file)}`;
 }
 
 export function appendCodeFileContextLine(

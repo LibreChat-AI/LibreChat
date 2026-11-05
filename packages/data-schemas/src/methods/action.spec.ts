@@ -123,3 +123,14 @@ describe('action criteria', () => {
     expect(found.map((a) => a.action_id)).toEqual(['act-1']);
   });
 });
+
+describe('action indexes', () => {
+  it.each(['agent_id', 'assistant_id'])('loads actions by %s through an index', async (field) => {
+    await Action.syncIndexes();
+    await seed({ action_id: 'act-1', [field]: 'owner-1' });
+
+    const plan = await Action.find({ [field]: 'owner-1' }).explain();
+
+    expect(JSON.stringify(plan)).toContain('"IXSCAN"');
+  });
+});

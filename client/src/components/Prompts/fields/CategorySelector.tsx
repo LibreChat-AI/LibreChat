@@ -1,9 +1,9 @@
 import React, { useId, useMemo, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { useTranslation } from 'react-i18next';
-import { DropdownPopup } from '@librechat/client';
 import { LocalStorageKeys } from 'librechat-data-provider';
 import { useFormContext, Controller } from 'react-hook-form';
+import { DropdownPopup, disabledFillClasses } from '@librechat/client';
 import type { MenuItemProps } from '@librechat/client';
 import type { ReactNode } from 'react';
 import { usePromptGroupsContext } from '~/Providers';
@@ -16,6 +16,8 @@ interface CategorySelectorProps {
   className?: string;
   /** Portaled menus are unclickable inside a modal dialog, which locks pointer events on the body */
   portal?: boolean;
+  /** Disables the trigger for a read-only group */
+  disabled?: boolean;
 }
 
 const CategorySelector: React.FC<CategorySelectorProps> = ({
@@ -23,6 +25,7 @@ const CategorySelector: React.FC<CategorySelectorProps> = ({
   onValueChange,
   className = '',
   portal = true,
+  disabled = false,
 }) => {
   const instanceId = useId();
   const menuId = `${instanceId}-category-menu`;
@@ -79,11 +82,14 @@ const CategorySelector: React.FC<CategorySelectorProps> = ({
   const trigger = (
     <Ariakit.MenuButton
       className={cn(
-        'relative inline-flex h-9 items-center justify-between rounded-xl border border-border-medium bg-transparent px-3 text-sm text-text-primary transition-all duration-200 ease-in-out hover:bg-surface-hover hover:text-text-primary focus:ring-2 focus:ring-ring-primary',
+        'border-border-medium text-text-primary hover:bg-surface-hover hover:text-text-primary focus:ring-ring-primary relative inline-flex h-9 items-center justify-between rounded-xl border bg-transparent px-3 text-sm transition-all duration-200 ease-in-out focus:ring-2',
         'gap-2 sm:w-fit',
+        'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
+        disabledFillClasses,
         className,
       )}
-      onClick={() => setIsOpen(!isOpen)}
+      disabled={disabled}
+      onClick={() => !disabled && setIsOpen(!isOpen)}
       aria-label={t('com_ui_prompt_category_selector_aria')}
     >
       <div className="flex items-center space-x-2">
@@ -92,7 +98,7 @@ const CategorySelector: React.FC<CategorySelectorProps> = ({
         )}
         <span>{displayCategory.value ? displayCategory.label : t('com_ui_category')}</span>
       </div>
-      <Ariakit.MenuButtonArrow />
+      {!disabled && <Ariakit.MenuButtonArrow />}
     </Ariakit.MenuButton>
   );
 

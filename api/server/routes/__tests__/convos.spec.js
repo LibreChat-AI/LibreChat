@@ -237,6 +237,21 @@ describe('Convos Routes', () => {
     });
   });
 
+  describe('GET /:conversationId/pull-request', () => {
+    it('is registered and reaches the pull request handler', async () => {
+      const response = await request(app).get('/api/convos/ordinary/pull-request');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ pullRequest: null });
+    });
+
+    it('does not fall through to the conversation read', async () => {
+      await request(app).get('/api/convos/ordinary/pull-request');
+
+      expect(getConvo).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /import', () => {
     const { importConversations } = require('~/server/utils/import');
 
@@ -349,6 +364,30 @@ describe('Convos Routes', () => {
             starterPatterns: ['sk_prefix'],
           },
         }),
+      );
+    });
+
+    it('forwards excludeFiles only when it is exactly true', async () => {
+      forkConversation.mockResolvedValue({ conversation: { conversationId: 'forked-convo' } });
+
+      await request(app).post('/api/convos/fork').send({
+        conversationId: 'source-convo',
+        messageId: 'source-message',
+        excludeFiles: true,
+      });
+      await request(app).post('/api/convos/fork').send({
+        conversationId: 'source-convo',
+        messageId: 'source-message',
+        excludeFiles: 'true',
+      });
+
+      expect(forkConversation).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ excludeFiles: true }),
+      );
+      expect(forkConversation).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ excludeFiles: false }),
       );
     });
 

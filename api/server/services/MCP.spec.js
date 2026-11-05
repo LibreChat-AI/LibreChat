@@ -250,6 +250,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       expect(mockRegistryInstance.getAllServerConfigs).toHaveBeenCalledWith(
         mockUserId,
         expect.any(Object),
+        undefined,
+        { idOnTheSource: undefined },
       );
       expect(mockGetMCPManager).toHaveBeenCalledWith(mockUserId);
       expect(mockMCPManager.getLoadedAppConnections).toHaveBeenCalledWith(

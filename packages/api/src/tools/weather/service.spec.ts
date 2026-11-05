@@ -759,6 +759,7 @@ describe('executeOpenWeather', () => {
       },
       { apiKey, fetch },
     );
-    expect(result).toBe('Error: OpenWeather API request failed with status 404: Not found');
+    expect(result).toBe('Error: OpenWeather found no result for this request (status 404).');
+    expect(result).not.toContain('Not found');
   });
 });

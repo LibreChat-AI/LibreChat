@@ -8,7 +8,7 @@ import {
   seedMessages,
 } from '../db';
 import { NEW_CHAT_PATH, MOCK_ENDPOINTS, selectMockEndpoint, sendMessage } from '../helpers';
-import { computedStyles, probeStyle } from './style.helpers';
+import { computedStyles, normalizeColor, probeStyle, themeValue } from './style.helpers';
 import { getE2EUser } from '../../../setup/user';
 
 const PHASE = 'Checked the message theme';
@@ -149,7 +149,7 @@ for (const definition of ['stock', 'clickhouse'] as const) {
         expect(
           (await computedStyles(page.locator('.markdown blockquote'), ['borderLeftColor']))
             .borderLeftColor,
-        ).toBe(await probeStyle(page, 'border border-border-medium', 'border-left-color'));
+        ).toBe(await normalizeColor(page, `rgb(${await themeValue(page, '--prose-quote-bar')})`));
 
         await page.goto(NEW_CHAT_PATH);
         await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);

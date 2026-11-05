@@ -289,6 +289,54 @@ test.describe('ask question batch refinements', () => {
     }
   });
 
+  test('a long composer draft keeps the batch card and its controls on screen @scenario:ask-batch-fits-above-long-draft', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await page.setViewportSize({ width: 1280, height: 640 });
+    const label = `${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+    const questions = buildBatch(label);
+    const draft = Array.from({ length: 40 }, (_, line) => `draft line ${line + 1}`).join('\n');
+    let agentId: string | undefined;
+
+    try {
+      const agent = await createAgent(page);
+      agentId = agent.id;
+      const popover = await openBatch(page, agent, label);
+
+      /** The composer is only writable while the card owns the batch, so the draft is
+       *  typed there and the batch moved back over it, the order a user would hit. */
+      await popover.getByRole('button', { name: MOVE_TO_CHAT }).click();
+      await expect(popover).toBeHidden();
+      const composer = page.getByRole('textbox', { name: 'Message input' });
+      await composer.fill(draft);
+      await expect
+        .poll(async () => (await composer.boundingBox())?.height ?? 0)
+        .toBeGreaterThan(640 * 0.4);
+
+      await messagesView(page).getByRole('button', { name: MOVE_TO_COMPOSER }).click();
+      await expect(popover).toBeVisible();
+      await expect(composer).toBeDisabled();
+      await expect(composer).toHaveValue(draft);
+
+      await expect
+        .poll(async () => (await popover.boundingBox())?.y ?? -1, { timeout: 5000 })
+        .toBeGreaterThanOrEqual(0);
+      await expect(popover.getByText(questions[0].question, { exact: true })).toBeInViewport();
+      await expect(popover.getByRole('button', { name: MOVE_TO_CHAT })).toBeInViewport();
+
+      await popover.getByRole('button', { name: MOVE_TO_CHAT }).click();
+      await expect(popover).toBeHidden();
+      await expect(composer).toBeEnabled();
+      await expect(composer).toHaveValue(draft);
+      await expect
+        .poll(async () => (await composer.boundingBox())?.height ?? 0)
+        .toBeGreaterThan(640 * 0.4);
+    } finally {
+      await cleanupAgent(page, agentId);
+    }
+  });
+
   test('a typed answer deselects the option and locks the rows until cleared @scenario:ask-typed-answer-locks-options', async ({
     page,
   }) => {

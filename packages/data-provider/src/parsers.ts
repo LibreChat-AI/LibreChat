@@ -15,7 +15,6 @@ import {
   Providers,
   anthropicSchema,
   assistantSchema,
-  // agentsSchema,
   compactAgentsSchema,
   compactGoogleSchema,
   compactAssistantSchema,
@@ -69,10 +68,6 @@ const getFallbackEndpointSchema = <TSchema>(
     : undefined;
   return overrideSchema ?? schemas[endpointType];
 };
-
-// const schemaCreators: Record<EModelEndpoint, (customSchema: DefaultSchemaValues) => EndpointSchema> = {
-//   [EModelEndpoint.google]: createGoogleSchema,
-// };
 
 /** Get the enabled endpoints from the `ENDPOINTS` environment variable */
 export function getEnabledEndpoints() {

@@ -1,10 +1,6 @@
 import { Permissions, PermissionTypes, AgentCapabilities } from 'librechat-data-provider';
 import type { AppConfig, IRole, ISchedule, AgentGraphAccessContext } from '@librechat/data-schemas';
-import {
-  createScheduleMCPRuntimeHost,
-  prepareScheduleMCPExecution,
-  initializeWithScheduleMCPExecution,
-} from './runtime';
+import { createScheduleMCPRuntimeHost, initializeWithScheduleMCPExecution } from './runtime';
 import { bindScheduledMCPInvocation, getScheduleMCPExecution } from './execution';
 import { executionFixture, readTool } from './execution.helper';
 import { createMCPRequestContext } from '~/mcp/request';
@@ -287,11 +283,14 @@ it('keeps live role denial and policy removal fail-closed for enrolled schedules
 it('does not construct the host for ordinary chats', async () => {
   const f = await setup();
   const getHost = jest.fn(() => f.host);
-  await prepareScheduleMCPExecution(
+  const initialize = jest.fn().mockResolvedValue(undefined);
+  await initializeWithScheduleMCPExecution(
     { req: { ...f.req, _isScheduledFire: false, _isAgentTrigger: false }, context: f.context },
     getHost,
+    initialize,
   );
   expect(getHost).not.toHaveBeenCalled();
+  expect(initialize).toHaveBeenCalledTimes(1);
 });
 
 it('does not downgrade if enrollment disappears during run preparation', async () => {
@@ -580,9 +579,6 @@ it('sanitizes host construction and lineage-retention failures without masking p
   const getHost = () => {
     throw privateError;
   };
-  await expect(
-    prepareScheduleMCPExecution({ req: f.req, context: f.context }, getHost),
-  ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
   await expect(
     initializeWithScheduleMCPExecution({ req: f.req, context: f.context }, getHost, initialize),
   ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });

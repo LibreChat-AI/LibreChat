@@ -15,7 +15,7 @@ describe('composerSubmitClasses', () => {
     const classes = composerSubmitClasses();
 
     expect(classes).toContain('size-theme-control');
-    expect(classes).toContain('rounded-theme-control-round');
+    expect(classes).toContain('rounded-theme-composer-action');
     expect(classes).toContain('p-theme-compact');
   });
 
