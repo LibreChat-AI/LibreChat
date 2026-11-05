@@ -3,6 +3,7 @@ import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
+import store from '~/store/language';
 import Landing from '../Landing';
 
 let mockConversation: Record<string, unknown> | null = null;
@@ -36,6 +37,11 @@ jest.mock('~/Providers', () => ({
   useAssistantsMapContext: () => mockAssistantMap,
 }));
 
+jest.mock('~/store', () => ({
+  __esModule: true,
+  default: jest.requireActual('~/store/language').default,
+}));
+
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: { interface: mockInterfaceConfig } }),
   useGetEndpointsQuery: () => ({ data: {} }),
@@ -44,6 +50,7 @@ jest.mock('~/data-provider', () => ({
 jest.mock('~/hooks', () => ({
   useAuthContext: () => ({ user: undefined }),
   useGreeting: () => 'Welcome',
+  useLocalizedConfig: jest.requireActual('~/hooks/useLocalizedConfig').default,
   useLocalize: () => (key: string) => {
     const translations: Record<string, string> = {
       com_agents_contact: 'Contact',
@@ -88,9 +95,12 @@ jest.mock('~/utils', () => ({
 
 jest.mock('~/components/Endpoints/ConvoIcon', () => () => <span data-testid="convo-icon" />);
 
-function renderLanding({ isTemporary = false }: { isTemporary?: boolean } = {}) {
+function renderLanding({
+  isTemporary = false,
+  lang,
+}: { isTemporary?: boolean; lang?: string } = {}) {
   return render(
-    <RecoilRoot>
+    <RecoilRoot initializeState={({ set }) => lang != null && set(store.lang, lang)}>
       <ChatSettingsContext.Provider value={{ ...defaultChatSettings, isTemporary }}>
         <Landing centerFormOnLanding={false} />
       </ChatSettingsContext.Provider>
@@ -269,5 +279,20 @@ describe('Landing heading', () => {
 
     expect(screen.getByText('Hello there')).toBeInTheDocument();
     expect(screen.queryByText('Data Analyst')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['es-AR', 'Hola'],
+    ['en-US', 'Hello'],
+    ['fr', 'Hello'],
+  ])('picks the configured welcome for the %s interface language', (lang, expected) => {
+    mockInterfaceConfig = {
+      landingHeading: 'greeting',
+      customWelcome: { en: 'Hello', es: 'Hola' },
+    };
+
+    renderLanding({ lang });
+
+    expect(screen.getByText(expected)).toBeInTheDocument();
   });
 });

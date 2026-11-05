@@ -4,10 +4,10 @@ import { easings } from '@react-spring/web';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { BirthdayIcon, TooltipAnchor, SplitText, useRemScale } from '@librechat/client';
 import { useChatContext, useAgentsMapContext, useAssistantsMapContext } from '~/Providers';
+import { useLocalize, useAuthContext, useGreeting, useLocalizedConfig } from '~/hooks';
 import Description, { isHtmlDescription } from '~/components/ui/Description';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { getIconEndpoint, getEntity, getModelSpec } from '~/utils';
-import { useLocalize, useAuthContext, useGreeting } from '~/hooks';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import AgentContact from '~/components/Agents/AgentContact';
 import ConvoIcon from '~/components/Endpoints/ConvoIcon';
@@ -44,6 +44,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const { user } = useAuthContext();
   const localize = useLocalize();
+  const getLocalizedValue = useLocalizedConfig();
   const remScale = useRemScale();
   const { isTemporary } = useChatSettings();
 
@@ -90,10 +91,9 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
   const selectedAgent =
     isAgent && conversation?.agent_id != null ? agentsMap?.[conversation.agent_id] : undefined;
 
+  const configuredWelcome = startupConfig?.interface?.customWelcome;
   const customWelcome =
-    typeof startupConfig?.interface?.customWelcome === 'string'
-      ? startupConfig.interface.customWelcome
-      : undefined;
+    configuredWelcome != null ? getLocalizedValue(configuredWelcome, '') : undefined;
 
   const scheduledGreeting = useGreeting(user?.name);
 
