@@ -200,7 +200,12 @@ export type { ChatPaneProps } from './components/pane/ChatPane';
 export type { ChatPaneView, ChatPaneColumn } from './components/pane/view';
 export { default as ChatScreen } from './components/pane/Screen';
 export { getChatPaneChrome } from './components/pane/chrome';
-export type { ChatScreenProps, ChatScreenComposerProps } from './components/pane/Screen';
+export type {
+  ChatScreenProps,
+  ChatScreenComposerProps,
+  ChatScreenMessagesProps,
+  ChatScreenMessagesSlots,
+} from './components/pane/Screen';
 export type { ChatPaneChrome } from './components/pane/chrome';
 
 /** Message list root: the scroll container, mount window and pending tail around the thread. */
