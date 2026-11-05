@@ -276,6 +276,7 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
       >
         <OGDialogTemplate
           className="max-w-md"
+          footerClassName="sm:justify-between"
           title={localize(confirmAction)}
           description={confirm?.teamName}
           main={<p className="text-text-secondary text-sm">{localize(confirmLabel)}</p>}
