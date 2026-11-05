@@ -251,3 +251,41 @@ export async function preparePermissionPrincipals(
   });
   return validated.filter((principal): principal is PermissionPrincipal => principal !== null);
 }
+
+interface DirectoryGroupMethods {
+  getGroupMembers: (token: string, sub: string, sourceId: string) => Promise<string[]>;
+  getGroupOwners: (token: string, sub: string, sourceId: string) => Promise<string[]>;
+  includeOwners: boolean;
+  updateMembers: (members: string[]) => Promise<unknown>;
+  logger: PermissionPrincipalMethods['logger'];
+}
+
+/** Refresh persisted membership from its stored identity, never the submitted directory fields. */
+export async function refreshDirectoryGroupMembers(
+  group: Pick<TPrincipal, 'source' | 'idOnTheSource'>,
+  authContext: DirectoryAuthContext | null,
+  methods: DirectoryGroupMethods,
+): Promise<void> {
+  if (
+    group.source !== 'entra' ||
+    !group.idOnTheSource ||
+    !authContext?.accessToken ||
+    !authContext.sub
+  ) {
+    return;
+  }
+  let memberIds: string[];
+  try {
+    const [members, owners] = await Promise.all([
+      methods.getGroupMembers(authContext.accessToken, authContext.sub, group.idOnTheSource),
+      methods.includeOwners
+        ? methods.getGroupOwners(authContext.accessToken, authContext.sub, group.idOnTheSource)
+        : [],
+    ]);
+    memberIds = owners.length > 0 ? [...new Set([...members, ...owners])] : members;
+  } catch (error) {
+    methods.logger.error('Directory group membership refresh failed', getSafeErrorMetadata(error));
+    throw new DirectoryVerificationError();
+  }
+  await methods.updateMembers(memberIds);
+}

@@ -3,6 +3,7 @@ import {
   ensureDirectoryPrincipalUser,
   preparePermissionPrincipals,
   DirectoryVerificationError,
+  refreshDirectoryGroupMembers,
   resolveDirectoryPrincipal,
   validateLocalPrincipalId,
 } from './principals';
@@ -323,5 +324,67 @@ describe('preparePermissionPrincipals', () => {
     await expect(
       preparePermissionPrincipals([{ ...principal, id: 'local-id' }], null, deps),
     ).rejects.toBeInstanceOf(DirectoryVerificationError);
+  });
+});
+
+describe('refreshDirectoryGroupMembers', () => {
+  const group = { source: 'entra' as const, idOnTheSource: 'stored-group-id' };
+  const createMethods = () => ({
+    getGroupMembers: jest.fn().mockResolvedValue(['active-member']),
+    getGroupOwners: jest.fn().mockResolvedValue(['active-member', 'owner']),
+    includeOwners: false,
+    updateMembers: jest.fn().mockResolvedValue(undefined),
+    logger: { error: jest.fn() },
+  });
+
+  it('refreshes members by stored external ID and includes owners only when configured', async () => {
+    const methods = createMethods();
+    methods.includeOwners = true;
+    await refreshDirectoryGroupMembers(group, authContext, methods);
+    expect(methods.getGroupMembers).toHaveBeenCalledWith(
+      authContext.accessToken,
+      authContext.sub,
+      group.idOnTheSource,
+    );
+    expect(methods.getGroupOwners).toHaveBeenCalledWith(
+      authContext.accessToken,
+      authContext.sub,
+      group.idOnTheSource,
+    );
+    expect(methods.updateMembers).toHaveBeenCalledWith(['active-member', 'owner']);
+  });
+
+  it('replaces stale members with an empty successful directory response', async () => {
+    const methods = createMethods();
+    methods.getGroupMembers.mockResolvedValue([]);
+    await refreshDirectoryGroupMembers(group, authContext, methods);
+    expect(methods.updateMembers).toHaveBeenCalledWith([]);
+    expect(methods.getGroupOwners).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { ...authContext, accessToken: '' }, { ...authContext, sub: '' }])(
+    'preserves persisted members without authenticated integration context: %j',
+    async (context) => {
+      const methods = createMethods();
+      await refreshDirectoryGroupMembers(group, context, methods);
+      expect(methods.getGroupMembers).not.toHaveBeenCalled();
+      expect(methods.updateMembers).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not use directory fields on a local group', async () => {
+    const methods = createMethods();
+    await refreshDirectoryGroupMembers({ ...group, source: 'local' }, authContext, methods);
+    expect(methods.getGroupMembers).not.toHaveBeenCalled();
+    expect(methods.updateMembers).not.toHaveBeenCalled();
+  });
+
+  it('does not overwrite persisted membership on a rejected provider call', async () => {
+    const methods = createMethods();
+    methods.getGroupMembers.mockRejectedValue(new Error('Sensitive provider detail'));
+    await expect(refreshDirectoryGroupMembers(group, authContext, methods)).rejects.toBeInstanceOf(
+      DirectoryVerificationError,
+    );
+    expect(methods.updateMembers).not.toHaveBeenCalled();
   });
 });

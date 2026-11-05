@@ -9,6 +9,7 @@ const {
   AccessRoleIds,
   PrincipalType,
   PermissionTypes,
+  PermissionBits,
 } = require('librechat-data-provider');
 
 jest.mock('~/server/middleware', () => ({
@@ -35,8 +36,8 @@ jest.mock('~/models', () => ({
 }));
 
 const db = require('~/models');
-const { createGraphClient } = require('~/server/services/GraphApiService');
-const { grantPermission } = require('~/server/services/PermissionService');
+const { createGraphClient, getGroupMembers } = require('~/server/services/GraphApiService');
+const { grantPermission, checkPermission } = require('~/server/services/PermissionService');
 const router = require('./accessPermissions');
 
 const sourceId = '767f2e31-cd94-4247-909e-64b6b104e1f0';
@@ -301,6 +302,51 @@ describe('Shared-link directory principal provisioning', () => {
     });
     expect(response.body.results.principals[0].id).toBe(group._id.toString());
     expect(await User.countDocuments()).toBe(1);
+  });
+
+  it('refreshes persisted Entra membership from its stored ID before sharing a new link', async () => {
+    const removed = await User.create({
+      email: 'removed@example.com',
+      provider: 'openid',
+      idOnTheSource: 'removed-member',
+    });
+    const active = await User.create({
+      email: 'active@example.com',
+      provider: 'openid',
+      idOnTheSource: 'active-member',
+    });
+    const group = await Group.create({
+      name: 'Stored Directory Group',
+      source: 'entra',
+      idOnTheSource: sourceId,
+      memberIds: ['removed-member', 'active-member'],
+    });
+    await db.getUserPrincipals({ userId: removed._id.toString(), role: SystemRoles.USER });
+    getGroupMembers.mockResolvedValueOnce(['active-member']);
+    const response = await update([
+      {
+        ...forged,
+        type: PrincipalType.GROUP,
+        id: group._id.toString(),
+        idOnTheSource: 'forged-group-id',
+      },
+    ]);
+    expect(response.status).toBe(200);
+    expect(getGroupMembers).toHaveBeenCalledWith('test-access-token', 'owner-subject', sourceId);
+    expect((await Group.findById(group._id).lean()).memberIds).toEqual(['active-member']);
+    const permission = {
+      role: SystemRoles.USER,
+      resourceType: ResourceType.SHARED_LINK,
+      resourceId,
+      requiredPermission: PermissionBits.VIEW,
+    };
+    await expect(checkPermission({ ...permission, userId: removed._id.toString() })).resolves.toBe(
+      false,
+    );
+    await expect(checkPermission({ ...permission, userId: active._id.toString() })).resolves.toBe(
+      true,
+    );
+    expect(createGraphClient).not.toHaveBeenCalled();
   });
 
   it.each(['disabled', 'local login', 'token reuse disabled', 'missing token'])(
