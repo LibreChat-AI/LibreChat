@@ -6,12 +6,12 @@ import {
   AuthorHeader,
   SiblingSwitch,
   getHeaderHoverLabel,
+  MinimalHoverButtons,
 } from '@librechat/chat/components';
 import type { TMessageProps } from '~/common';
 import SearchContent, {
   rendersMarkdownLite,
 } from '~/components/Chat/Messages/Content/SearchContent';
-import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
 import WakeupRow from '~/components/Chat/Messages/ui/WakeupRow';

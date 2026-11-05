@@ -37,7 +37,43 @@ jobs:
           cache: npm
       - name: Test Lighthouse failure reporting
         run: node --test e2e/lighthouse.test.mts
-      - run: npm ci
+      # Shares the E2E workflows' exact key and path list: one installed tree
+      # per lockfile, never a tree from another lockfile.
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        id: install-dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+      # Saved before the audit runs, so nothing the build or the app writes can
+      # end up in the tree other jobs restore.
+      - name: Save node_modules cache
+        if: steps.install-dependencies.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
       - name: Install lockfile-pinned Chromium
         run: npx playwright install --with-deps --no-shell chromium
       - name: Select Lighthouse browser

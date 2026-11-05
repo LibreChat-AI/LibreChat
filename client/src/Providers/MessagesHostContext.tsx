@@ -1,23 +1,35 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
-import { useRecoilState } from 'recoil';
-import { setDefaultMessagesHost } from '@librechat/chat/react';
+import { useRecoilState, useRecoilValue } from 'recoil';
+import { EventSubagentActivityGroup } from '@librechat/chat/components';
+import { setDefaultMessagesHost, revealedQueuedTurnFamily } from '@librechat/chat/react';
 import type {
   ForkEvents,
+  MessageCopy,
   MessagesHost,
+  MessageCopyInput,
   ForkPreferences,
   ForkConversation,
-  MessagesScrolling,
+  MessageAudioProps,
 } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
-import useConversationSeen from '~/hooks/Conversations/useConversationSeen';
-import useMessageScrolling from '~/hooks/Messages/useMessageScrolling';
+import {
+  hasCopyableText,
+  useNavigateToConvo,
+  getMessageClipboardSource,
+  useCopyMessageToClipboard,
+} from '~/hooks';
+import { useForkConvoMutation, useGetMessagesByConvoId } from '~/data-provider';
+import useConversationSeenSource from '~/hooks/Conversations/seenSource';
+import { useOptionalMessagesOperations } from './MessagesViewContext';
+import ThreadMessage from '~/components/Chat/Messages/Thread/Message';
+import MessageAudio from '~/components/Chat/Messages/MessageAudio';
+import MessageIcon from '~/components/Chat/Messages/MessageIcon';
+import { useFileMapContext } from '~/Providers/FileMapContext';
 import Files from '~/components/Chat/Messages/Content/Files';
 import { useScreenshot } from '~/hooks/ScreenshotContext';
-import { useForkConvoMutation } from '~/data-provider';
 import useClockFormat from '~/hooks/useClockFormat';
 import { autoScrollAtom } from '~/store/autoScroll';
-import { useNavigateToConvo } from '~/hooks';
 import store from '~/store';
 
 function useAppForkPreferences(): ForkPreferences {
@@ -58,26 +70,70 @@ function useAppForkConversation(): ForkConversation {
   );
 }
 
-/** The app's scrolling hook, as the message list reads it. */
-function useScrolling(messagesTree: TMessage[] | null | undefined): MessagesScrolling {
-  const { conversation, ...scrolling } = useMessageScrolling(messagesTree);
-  return { ...scrolling, conversationId: conversation?.conversationId };
+function useAppMessageCopy({ message, searchResults, variant }: MessageCopyInput): MessageCopy {
+  const clipboardSource = useMemo(() => getMessageClipboardSource(message), [message]);
+  const copyToClipboard = useCopyMessageToClipboard({
+    ...clipboardSource,
+    searchResults,
+    variant: clipboardSource.variant ?? variant,
+  });
+  const canCopy = useMemo(
+    () => hasCopyableText({ ...clipboardSource, searchResults }),
+    [clipboardSource, searchResults],
+  );
+  return { copyToClipboard, canCopy };
+}
+
+function useAppGetMessages(): () => TMessage[] | undefined {
+  return useOptionalMessagesOperations().getMessages;
+}
+
+function useAppConversationMessages(
+  conversationId: string | null | undefined,
+  isStreaming: boolean,
+): TMessage[] | undefined {
+  return useGetMessagesByConvoId(
+    conversationId ?? '',
+    { enabled: !!conversationId },
+    { isStreaming },
+  ).data;
+}
+
+function useAppHasPendingTurn(conversationId: string): boolean {
+  return useAtomValue(revealedQueuedTurnFamily(conversationId)) != null;
+}
+
+/** Read-aloud follows the viewer's text-to-speech setting; off, the row draws no control. */
+function AppMessageAudio(props: MessageAudioProps) {
+  const textToSpeech = useRecoilValue<boolean>(store.textToSpeech);
+  if (!textToSpeech) {
+    return null;
+  }
+  return <MessageAudio {...props} />;
 }
 
 /** What the message list reads from the app: the viewer's clock format and fork defaults, the
- *  fork request, its scrolling, screenshot and seen reporting, and the row pieces that still live
- *  here. Registered as the default when this module loads, so rows read it on every route, the
+ *  fork request, the rich-text copy, its auto-scroll preference, screenshot and seen reporting, the thread's
+ *  file map, and the row pieces that still live here: the message body and the subagent activity
+ *  group. Registered as the default when this module loads, so rows read it on every route, the
  *  shared view included. */
 export const appMessagesHost: MessagesHost = {
   useHour12: useClockFormat,
   renderFiles: (message) => <Files message={message} />,
   useForkPreferences: useAppForkPreferences,
   useForkConversation: useAppForkConversation,
-
-  useScrolling,
+  useMessageCopy: useAppMessageCopy,
+  useGetMessages: useAppGetMessages,
+  useHasPendingTurn: useAppHasPendingTurn,
+  useConversationMessages: useAppConversationMessages,
+  renderMessageAudio: (props) => <AppMessageAudio {...props} />,
   useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
   useAutoScroll: () => useAtomValue(autoScrollAtom),
-  useConversationSeen,
+  useSeenSource: useConversationSeenSource,
+  renderMessageIcon: (props) => <MessageIcon {...props} />,
+  renderMessageRow: (props) => <ThreadMessage {...props} />,
+  renderActivity: (props) => <EventSubagentActivityGroup {...props} />,
+  useFileMap: useFileMapContext,
 };
 
 setDefaultMessagesHost(appMessagesHost);

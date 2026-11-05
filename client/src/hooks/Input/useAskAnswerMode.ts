@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtom } from 'jotai';
 import {
+  ASK_USER_DECLINED_ANSWER,
+  findLiveAskUserQuestion,
+  splitOtherOption,
+} from '@librechat/chat';
+import {
   collapsedAskActionsAtom,
   askAnswerSelectionAtom,
   askAnswerCheckedAtom,
@@ -12,11 +17,6 @@ import {
   useAskSubmitStatus,
   useResumeSubmit,
 } from '~/components/Chat/Messages/Content/ApprovalContext';
-import {
-  ASK_USER_DECLINED_ANSWER,
-  findLiveAskUserQuestion,
-  splitOtherOption,
-} from '~/utils/approval';
 import { getAskAnswerDraftId, morphTransition, setDraft } from '~/utils';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { useOptionalChatFormContext } from '~/Providers';

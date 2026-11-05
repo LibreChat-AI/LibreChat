@@ -100,7 +100,7 @@ export default function MemoryArtifacts({ attachments }: { attachments?: TAttach
           <ChevronDown
             className={cn(
               disclosureChevronVariants({ expanded: showInfo }),
-              'size-4 translate-y-[0.0625rem]',
+              'ms-auto size-4 translate-y-[0.0625rem]',
             )}
             aria-hidden="true"
           />

@@ -124,6 +124,8 @@ export interface SeedMessage {
   content?: Record<string, unknown>[];
   /** Why the turn stopped; the hover Continue is offered only for some values. */
   finish_reason?: string;
+  /** A turn the server left incomplete, such as one that ran out of agent steps. */
+  unfinished?: boolean;
   model?: string;
   /** Attachments on the turn, as the client renders them (an image opens the lightbox). */
   files?: Record<string, unknown>[];
@@ -149,7 +151,7 @@ export async function seedMessages(
       user: userId,
       endpoint: 'openAI',
       error: false,
-      unfinished: false,
+      unfinished: message.unfinished ?? false,
       createdAt: new Date(start + index * 1000),
       updatedAt: new Date(start + index * 1000),
       __v: 0,

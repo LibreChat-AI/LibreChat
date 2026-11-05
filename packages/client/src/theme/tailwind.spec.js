@@ -115,6 +115,28 @@ describe('LibreChat Tailwind preset', () => {
     expect(fallback).toContain('--theme-switch-width');
   });
 
+  it('publishes the chat motion roles the package components write', async () => {
+    const css = await generate([
+      'transition-reveal',
+      'transition-crossfade',
+      'transition-max-width',
+      'transition-stroke-dashoffset',
+      'blur-crossfade',
+    ]);
+
+    expect(rule(css, 'transition-reveal')).toContain(
+      'transition-property: opacity, color, background-color',
+    );
+    expect(rule(css, 'transition-crossfade')).toContain(
+      'transition-property: opacity, transform, filter',
+    );
+    expect(rule(css, 'transition-max-width')).toContain('transition-property: max-width');
+    expect(rule(css, 'transition-stroke-dashoffset')).toContain(
+      'transition-property: stroke-dashoffset',
+    );
+    expect(rule(css, 'blur-crossfade')).toContain('blur(2px)');
+  });
+
   it('generates every component animation and its keyframes together', async () => {
     const names = ['loading-dot', 'accordion-down', 'accordion-up', 'caret-blink'];
     const css = await generate(names.map((name) => `animate-${name}`));

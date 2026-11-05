@@ -29,7 +29,8 @@ jest.mock('~/hooks', () => ({
   useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
 }));
 
-jest.mock('~/utils/approval', () => ({
+jest.mock('@librechat/chat', () => ({
+  ...jest.requireActual('@librechat/chat'),
   getSubmittedAskAnswer: () => undefined,
   parseAskUserQuestionArgs: (args: string | Record<string, unknown> | undefined) => {
     if (typeof args === 'string') {

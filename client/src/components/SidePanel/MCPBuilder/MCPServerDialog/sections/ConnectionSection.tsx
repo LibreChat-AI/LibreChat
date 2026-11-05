@@ -1,9 +1,9 @@
 import { useFormContext } from 'react-hook-form';
 import { Input, Label } from '@librechat/client';
+import type { MCPServerFormData } from '../hooks/useMCPServerForm';
+import { isValidUrl, normalizeUrl } from '../utils/urlUtils';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-import { isValidUrl, normalizeUrl } from '../utils/urlUtils';
-import type { MCPServerFormData } from '../hooks/useMCPServerForm';
 
 export default function ConnectionSection() {
   const localize = useLocalize();
@@ -38,7 +38,7 @@ export default function ConnectionSection() {
         className={cn(errors.url && 'border-border-destructive')}
       />
       {errors.url && (
-        <p id="url-error" role="alert" className="text-xs text-text-destructive">
+        <p id="url-error" role="alert" className="text-text-destructive text-xs">
           {errors.url.message}
         </p>
       )}

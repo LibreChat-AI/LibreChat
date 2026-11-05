@@ -35,6 +35,8 @@ export interface CommandPopoverProps {
   activeIndex: number;
   onActiveIndexChange: Dispatch<SetStateAction<number>>;
   isLoading?: boolean;
+  /** A message shown under the search field while open, such as an empty or failed list. */
+  notice?: ReactNode;
   /** Enter or Tab on an option, or a click; the key event lets the caller decide its default. */
   onSelect: (option: CommandOption, event?: KeyboardEvent<HTMLInputElement>) => void;
   /** The popover asks to close; a key event is present unless focus left the input. */
@@ -67,6 +69,7 @@ export default function CommandPopover({
   activeIndex,
   onActiveIndexChange,
   isLoading = false,
+  notice,
   onSelect,
   onDismiss,
 }: CommandPopoverProps): React.JSX.Element {
@@ -181,6 +184,11 @@ export default function CommandPopover({
         {open && isLoading && matches.length === 0 && (
           <div className="text-text-primary flex h-32 items-center justify-center">
             <Spinner />
+          </div>
+        )}
+        {open && notice != null && (
+          <div role="status" className="text-text-secondary p-4 text-center text-sm">
+            {notice}
           </div>
         )}
         <div

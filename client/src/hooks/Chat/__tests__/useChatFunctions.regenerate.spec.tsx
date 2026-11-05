@@ -1347,7 +1347,8 @@ describe('useChatFunctions ask compaction', () => {
     expect(submission.compact).toBe(true);
     expect(submission.isRegenerate).toBe(true);
     expect(submission.initialResponse?.parentMessageId).toBe('a1');
-    expect(submission.initialResponse?.messageId).toBe('a1_');
+    expect(submission.initialResponse?.messageId).toMatch(/_$/);
+    expect(submission.initialResponse?.messageId).not.toBe('a1_');
     /** The leaf stands in for the user message so an error lands under it. */
     expect(submission.userMessage.messageId).toBe('a1');
     expect(submission.userMessage.overrideParentMessageId).toBeNull();
@@ -1359,7 +1360,11 @@ describe('useChatFunctions ask compaction', () => {
     ]);
 
     const rendered = setMessages.mock.calls[0][0] as TMessage[];
-    expect(rendered.map((message) => message.messageId)).toEqual(['u1', 'a1', 'a1_']);
+    expect(rendered.map((message) => message.messageId)).toEqual([
+      'u1',
+      'a1',
+      submission.initialResponse?.messageId,
+    ]);
   });
 
   it('does not re-attach the leaf files a user-message leaf carries', () => {

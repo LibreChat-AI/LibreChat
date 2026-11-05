@@ -36,14 +36,14 @@ describe('OutputRenderer', () => {
     (copy as jest.Mock).mockClear();
   });
 
-  it('lays the copy control over the bottom right of the output without reserving width', () => {
+  it('pins the copy control to the top corner and keeps text clear of it', () => {
     render(<OutputRenderer text={'First line\nSecond line'} />);
 
     const copyButton = screen.getByTestId('copy-output');
-    expect(copyButton).toHaveClass('absolute', 'inset-e-0', 'bottom-0');
+    expect(copyButton).toHaveClass('absolute', '-inset-e-1', '-top-1');
     expect(copyButton).toHaveClass('no-touch:group-hover/copy:opacity-100');
     expect(copyButton.parentElement).toHaveClass('group/copy', 'relative');
-    expect(copyButton.parentElement).not.toHaveClass('pe-10');
+    expect(screen.getByText(/First line/).closest('pre')).toHaveClass('pe-6');
   });
 
   it('copies original bytes when a code result has been formatted for display', () => {

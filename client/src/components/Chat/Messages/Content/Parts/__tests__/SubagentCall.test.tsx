@@ -87,7 +87,8 @@ jest.mock('~/Providers', () => ({
     },
   }),
 }));
-jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useParentSubagents: () => ({ byThreadId: mockIndexedChildren }),
 }));
 jest.mock('~/components/Share/MessageIcon', () => ({
@@ -98,7 +99,6 @@ jest.mock('~/components/Share/MessageIcon', () => ({
 }));
 jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => mockMCPServerNames }));
 jest.mock('~/utils', () => ({
-  ...jest.requireActual('~/utils/toolLabels'),
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
   logger: { log: jest.fn() },
 }));

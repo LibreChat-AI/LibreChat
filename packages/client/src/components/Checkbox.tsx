@@ -3,11 +3,19 @@ import { Check } from 'lucide-react';
 import * as CheckboxPrimitive from '@radix-ui/react-checkbox';
 import { cn, disabledFillClasses } from '~/utils';
 
+/** `fade` eases the check fill in and out over 300ms, for a checkbox that sits in running
+ *  prose such as the fork menu's options; reduced motion snaps it like the default. */
+const CHECKBOX_VARIANTS: Record<'default' | 'fade', string> = {
+  default: '',
+  fade: 'transition duration-300 ease-in-out motion-reduce:transition-none',
+};
+
 type BaseCheckboxProps = Omit<
   React.ComponentPropsWithoutRef<typeof CheckboxPrimitive.Root>,
   'aria-label' | 'aria-labelledby'
 > & {
   asChild?: boolean;
+  variant?: keyof typeof CHECKBOX_VARIANTS;
 };
 
 export type CheckboxProps =
@@ -23,12 +31,13 @@ export type CheckboxProps =
 const Checkbox: React.ForwardRefExoticComponent<
   CheckboxProps & React.RefAttributes<HTMLButtonElement>
 > = React.forwardRef<React.ElementRef<typeof CheckboxPrimitive.Root>, CheckboxProps>(
-  ({ className = '', ...props }, ref) => (
+  ({ className = '', variant = 'default', ...props }, ref) => (
     <CheckboxPrimitive.Root
       ref={ref}
       className={cn(
         'peer border-border-xheavy ring-offset-surface-primary focus-visible:ring-focus-control theme-checkbox-fill:bg-checkbox-fill data-[state=checked]:bg-surface-inverted data-[state=checked]:text-text-inverted size-theme-checkbox rounded-theme-checkbox shrink-0 border focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
         disabledFillClasses,
+        CHECKBOX_VARIANTS[variant],
         className,
       )}
       {...props}

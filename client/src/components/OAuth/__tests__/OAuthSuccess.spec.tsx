@@ -1,6 +1,6 @@
 import React from 'react';
-import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { render, screen, fireEvent } from '@testing-library/react';
 import OAuthSuccess from '../OAuthSuccess';
 
 const mockAnnounce = jest.fn();
@@ -27,5 +27,19 @@ describe('OAuthSuccess', () => {
     );
     expect(mockAnnounce).toHaveBeenCalledTimes(1);
     expect(mockAnnounce).toHaveBeenCalledWith({ outcome: 'succeeded', flowId: 'flow-a' });
+  });
+
+  it('names the connected server and closes the window on demand', () => {
+    const close = jest.spyOn(window, 'close').mockImplementation(() => undefined);
+    render(
+      <MemoryRouter initialEntries={['/oauth/success?serverName=GitHub&flow=flow-a']}>
+        <OAuthSuccess />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('heading', { name: 'com_ui_oauth_success_title' })).toBeInTheDocument();
+    expect(screen.getByText('GitHub')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close_window' }));
+    expect(close).toHaveBeenCalledTimes(1);
+    close.mockRestore();
   });
 });

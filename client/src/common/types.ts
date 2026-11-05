@@ -5,9 +5,11 @@ import type {
   TAskProps,
   TAskFunction,
   PaneOptionSettings,
+  MessageAudioProps,
   NewConversationParams,
 } from '@librechat/chat/react';
 import type { UseMutationResult } from '@tanstack/react-query';
+import type { MessageIconData } from '@librechat/chat/react';
 import type { ExtendedFile } from '@librechat/chat';
 import type * as t from 'librechat-data-provider';
 import type { LucideIcon } from 'lucide-react';
@@ -172,6 +174,8 @@ export type AgentPanelContextType = {
   setActivePanel: React.Dispatch<React.SetStateAction<Panel>>;
   setCurrentAgentId: React.Dispatch<React.SetStateAction<string | undefined>>;
   agent_id?: string;
+  /** Runs `start` once the chat it opens is in view: the host closes the mobile drawer first. */
+  revealChat: (start: () => void) => void;
   startupConfig?: t.TStartupConfig | null;
   agentsConfig?: t.TAgentsEndpoint | null;
   endpointsConfig?: t.TEndpointsConfig | null;
@@ -306,11 +310,7 @@ export type TMessageProps = {
   setSiblingIdx?: ((value: number) => void | React.Dispatch<React.SetStateAction<number>>) | null;
 };
 
-export type TMessageIcon = { endpoint?: string | null; isCreatedByUser?: boolean } & Pick<
-  t.TConversation,
-  'modelLabel'
-> &
-  Pick<t.TMessage, 'model' | 'iconURL'>;
+export type TMessageIcon = MessageIconData;
 
 export type TInitialProps = {
   text: string;
@@ -418,22 +418,7 @@ export type VoiceOption = {
   label: string;
 };
 
-export type TMessageAudio = {
-  isLast?: boolean;
-  index: number;
-  messageId: string;
-  content: string;
-  className?: string;
-  renderButton?: (props: {
-    onClick: (e?: React.MouseEvent<HTMLButtonElement>) => void;
-    title: string;
-    icon: React.ReactNode;
-    isActive?: boolean;
-    isVisible?: boolean;
-    isDisabled?: boolean;
-    className?: string;
-  }) => React.ReactNode;
-};
+export type TMessageAudio = MessageAudioProps;
 
 export type OptionWithIcon = Option & { icon?: React.ReactNode };
 export type DropdownValueSetter = (value: string | Option | OptionWithIcon) => void;

@@ -6,6 +6,13 @@ import {
   seedConversations,
   seedMessages,
 } from '../db';
+import {
+  replyText,
+  replyPrompt,
+  sendMessage,
+  MOCK_ENDPOINTS,
+  selectMockEndpoint,
+} from '../helpers';
 import { getE2EUser } from '../../../setup/user';
 
 /** Past the row count at which the thread mounts progressively instead of all at once. */
@@ -85,5 +92,69 @@ test.describe('long conversations', () => {
 
     await expect(latest).toBeInViewport();
     await expect(scrollControl).toBeHidden();
+  });
+
+  test('opening a long conversation lands on its latest turn @scenario:long-conversation-opens-at-its-latest-turn', async ({
+    page,
+  }) => {
+    await page.goto(`/c/${conversationId}`);
+
+    const thread = page.locator(`[data-conversation-id="${conversationId}"]`);
+    await expect(thread.locator('.message-render')).toHaveCount(TURNS);
+
+    await expect(
+      thread.getByText(`Turn ${TURNS} of the long conversation`, { exact: true }),
+    ).toBeInViewport();
+    await expect(
+      thread.getByText('Turn 1 of the long conversation', { exact: true }),
+    ).not.toBeInViewport();
+  });
+
+  test('a reply sent from the top of a long conversation is followed into view @scenario:sent-reply-is-followed-into-view', async ({
+    page,
+  }) => {
+    await page.goto(`/c/${conversationId}`);
+
+    const thread = page.locator(`[data-conversation-id="${conversationId}"]`);
+    await expect(thread.locator('.message-render')).toHaveCount(TURNS);
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const first = thread.getByText('Turn 1 of the long conversation', { exact: true });
+    await first.scrollIntoViewIfNeeded();
+    await expect(first).toBeInViewport();
+
+    const label = randomUUID().slice(0, 8);
+    await sendMessage(page, replyPrompt(label));
+
+    const reply = thread.getByText(replyText(label));
+    await expect(reply).toBeVisible({ timeout: 30_000 });
+    await expect(reply).toBeInViewport();
+    await expect(first).not.toBeInViewport();
+  });
+
+  test.describe('on a desktop viewport, where the navigation rail shows', () => {
+    test.use({ viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false });
+
+    test('the navigation rail jumps to the first turn and back to the latest @scenario:message-nav-jumps-between-ends', async ({
+      page,
+    }) => {
+      await page.goto(`/c/${conversationId}`);
+
+      const thread = page.locator(`[data-conversation-id="${conversationId}"]`);
+      await expect(thread.locator('.message-render')).toHaveCount(TURNS);
+      const first = thread.getByText('Turn 1 of the long conversation', { exact: true });
+      const latest = thread.getByText(`Turn ${TURNS} of the long conversation`, { exact: true });
+      await expect(latest).toBeInViewport();
+
+      const rail = page.getByRole('navigation', { name: 'Message navigation' });
+      await expect(rail.getByRole('button', { name: 'Navigate to next message' })).toBeDisabled();
+      await rail.getByRole('button', { name: 'Scroll to top' }).click();
+      await expect(first).toBeInViewport();
+      await expect(
+        rail.getByRole('button', { name: 'Navigate to previous message' }),
+      ).toBeDisabled();
+
+      await rail.getByRole('button', { name: 'Scroll to bottom' }).click();
+      await expect(latest).toBeInViewport();
+    });
   });
 });

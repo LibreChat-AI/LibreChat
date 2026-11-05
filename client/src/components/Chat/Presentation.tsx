@@ -2,8 +2,11 @@ import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { EModelEndpoint } from 'librechat-data-provider';
-import { activeSubagentPanel, useIsSubmitting } from '@librechat/chat/react';
-import { ParentSubagentsProvider } from '~/components/Chat/Subagents/ParentSubagentsProvider';
+import {
+  activeSubagentPanel,
+  useIsSubmitting,
+  ParentSubagentsProvider,
+} from '@librechat/chat/react';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';

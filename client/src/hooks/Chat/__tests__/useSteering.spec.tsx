@@ -1,9 +1,9 @@
 import React from 'react';
 import { useSteering } from '@librechat/chat/react';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
-import { claimQueuedIntent, releaseQueuedIntent } from '@librechat/chat';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { useQueueDrain, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
+import { claimQueuedIntent, releaseQueuedIntent, applyPendingAction } from '@librechat/chat';
 import {
   getDefaultStore,
   Provider as JotaiProvider,
@@ -56,7 +56,6 @@ import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
 import ChatSettingsProvider from '~/routes/ChatSettings';
 import { duringRunActionAtom } from '~/store/duringRun';
 import { SteerHostTestProvider } from 'test/steerHost';
-import { applyPendingAction } from '~/utils/approval';
 import English from '~/locales/en/translation.json';
 
 const CONVO_ID = 'convo-steer-ui';

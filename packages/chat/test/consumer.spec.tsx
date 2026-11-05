@@ -4,27 +4,53 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Chat } from '@librechat/chat';
 import { createInstance } from 'i18next';
-import { ContentTypes } from 'librechat-data-provider';
+import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Part,
   Text,
   MessageRow,
   MentionPopover,
+  ChatScreen,
+  HoverButtons,
+  MessagesView,
+  SiblingSwitch,
+  ComposerField,
+  ComposerFrame,
+  ComposerActions,
   getHeaderHoverLabel,
+  EventSubagentActivityGroup,
 } from '@librechat/chat/components';
 import { initReactI18next, I18nextProvider } from 'react-i18next';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { Button, Textarea, ThemeProvider, clickHouseTheme } from '@librechat/client';
 import {
+  ChatContext,
   MessageContext,
   MessagePartIndex,
+  StreamHostProvider,
+  ChatSurfaceProvider,
   MessagesHostProvider,
   MessagePartsHostProvider,
+  ParentSubagentsProvider,
 } from '@librechat/chat/react';
-import type { ChatEvent, TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type {
+  ChatEvent,
+  TMessage,
+  ParentSubagentIndex,
+  TConversation,
+  TMessageContentParts,
+} from 'librechat-data-provider';
 import type { ChatState, ChatStream, ChatTransport } from '@librechat/chat';
 import type { PartRenderers } from '@librechat/chat/components';
-import type { MessagesHost, MessagePartsHost } from '@librechat/chat/react';
+import type {
+  StreamHost,
+  ChatSurface,
+  ChatContract,
+  MessagesHost,
+  SteeringControls,
+  MessagePartsHost,
+} from '@librechat/chat/react';
 import type { ReactElement } from 'react';
 
 /**
@@ -161,6 +187,10 @@ const host: MessagePartsHost = {
   useSmoothStreaming: () => false,
   useAgent: () => undefined,
   renderAgentIcon: () => null,
+  renderAgentAvatar: () => null,
+  renderContentParts: () => null,
+  renderImage: () => null,
+  renderFilePreview: () => null,
   useFontSize: () => 'text-base',
   useShowThinking: () => false,
   useAutoExpandTools: () => false,
@@ -179,6 +209,7 @@ const host: MessagePartsHost = {
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, () => undefined],
+  useShare: () => ({}),
 };
 
 const messagesHost: MessagesHost = {
@@ -193,17 +224,23 @@ const messagesHost: MessagesHost = {
     setRememberOption: () => undefined,
   }),
   useForkConversation: () => null,
-  useScrolling: () => ({
-    contentRef: { current: null },
-    scrollableRef: { current: null },
-    messagesEndRef: { current: null },
-    handleSmoothToRef: () => undefined,
-    debouncedHandleScroll: () => undefined,
-    handleNearBottomChange: () => undefined,
-  }),
+  useMessageCopy: () => ({ copyToClipboard: () => undefined, canCopy: false }),
+  useGetMessages: () => () => undefined,
+  useHasPendingTurn: () => false,
+  renderMessageAudio: () => null,
   useScreenshotTarget: () => undefined,
   useAutoScroll: () => false,
-  useConversationSeen: () => () => undefined,
+  useConversationMessages: () => undefined,
+  useSeenSource: () => ({
+    readReply: () => undefined,
+    hasReplyProof: () => false,
+    markSeen: () => undefined,
+    consumeFocusSuppression: () => false,
+  }),
+  renderMessageIcon: () => null,
+  renderMessageRow: () => null,
+  renderActivity: () => null,
+  useFileMap: () => undefined,
 };
 
 const renderers: PartRenderers = {
@@ -224,6 +261,9 @@ const partsOf = (message: TMessage): TMessageContentParts[] =>
   message.content?.length
     ? message.content
     : [{ type: ContentTypes.TEXT, text: message.text ?? '' }];
+
+const conversation = { conversationId: 'convo', endpoint: EModelEndpoint.agents } as TConversation;
+const noop = (): void => undefined;
 
 function ChatView({ chat }: { chat: Chat }): ReactElement {
   const subscribe = useMemo(() => chat.subscribe.bind(chat), [chat]);
@@ -248,7 +288,20 @@ function ChatView({ chat }: { chat: Chat }): ReactElement {
                   ariaLabel={label}
                   hoverLabel={getHeaderHoverLabel(false, message.model)}
                   icon={null}
-                  footer={null}
+                  footer={
+                    <HoverButtons
+                      index={0}
+                      isLast={false}
+                      isEditing={false}
+                      message={message}
+                      conversation={conversation}
+                      enterEdit={noop}
+                      regenerate={noop}
+                      handleContinue={noop}
+                      copyToClipboard={noop}
+                      getCanCopy={() => status === 'ready'}
+                    />
+                  }
                   timestamp={message.createdAt}
                   isCreatedByUser={message.isCreatedByUser}
                 >
@@ -361,6 +414,8 @@ describe('a consumer built on the public entries', () => {
     expect(await within(list).findByText('Hello there.')).toBeInTheDocument();
     expect(within(list).getAllByRole('listitem')).toHaveLength(2);
     expect(await screen.findByText('ready')).toBeInTheDocument();
+    const settled = within(list).getByRole('group', { name: 'Assistant' });
+    expect(within(settled).getByRole('button', { name: 'com_ui_copy_to_clipboard' })).toBeEnabled();
     expect(document.documentElement.style.getPropertyValue('--theme-mono-font-family')).toContain(
       'Inconsolata',
     );
@@ -397,5 +452,255 @@ describe('a consumer built on the public entries', () => {
     fireEvent.keyDown(combobox, { key: 'Enter' });
     expect(onSelectMention).toHaveBeenCalledWith(expect.objectContaining({ value: 'review' }));
     textarea.remove();
+  });
+
+  it('lays out a chat screen from a session, with the app surfaces as slots', () => {
+    const root = '00000000-0000-0000-0000-000000000000';
+    const base = { conversationId: 'convo', createdAt: new Date().toISOString() };
+    const messages: TMessage[] = [
+      { ...base, messageId: 'u1', parentMessageId: root, isCreatedByUser: true, text: 'Question' },
+      { ...base, messageId: 'a1', parentMessageId: 'u1', isCreatedByUser: false, text: 'Answer' },
+    ];
+    const screenFor = (session: { conversationId?: string; messages: TMessage[] | null }) => (
+      <I18nextProvider i18n={i18n}>
+        <ChatContext.Provider
+          value={{ conversation: { conversationId: 'convo', title: 'Plans' } } as ChatContract}
+        >
+          <ChatScreen
+            {...session}
+            isLoading={false}
+            landingFooter={false}
+            configuredFooter={false}
+            landing={<p>Welcome</p>}
+            renderMessages={({ messagesTree }) => (
+              <ol aria-label="Messages">
+                {messagesTree?.map((message) => (
+                  <li key={message.messageId}>{message.text}</li>
+                ))}
+              </ol>
+            )}
+            renderComposer={() => <Textarea aria-label="Message" />}
+          />
+        </ChatContext.Provider>
+      </I18nextProvider>
+    );
+
+    const view = render(screenFor({ messages: null }));
+    expect(screen.getByText('Welcome')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeInTheDocument();
+
+    view.rerender(screenFor({ conversationId: 'convo', messages }));
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Plans');
+    expect(
+      within(screen.getByRole('list', { name: 'Messages' })).getByText('Question'),
+    ).toBeInTheDocument();
+  });
+
+  it('drafts in the composer frame and offers send once there is text', () => {
+    const textAreaRef = { current: null as HTMLTextAreaElement | null };
+    function Composer(): ReactElement {
+      const [text, setText] = useState('');
+      return (
+        <ThemeProvider themeDefinition={clickHouseTheme} persistThemeDefinition={false}>
+          <ComposerFrame
+            onSubmit={(event) => event.preventDefault()}
+            direction="auto"
+            maximizeChatSpace={false}
+            focused={false}
+            isTemporary={false}
+            onFocusDraft={() => textAreaRef.current?.focus()}
+          >
+            <ComposerField
+              textAreaRef={textAreaRef}
+              ariaLabel="Message"
+              textareaProps={{ value: text, onChange: (event) => setText(event.target.value) }}
+              value={text}
+              listening={false}
+              dictationActive={false}
+              locked={false}
+            />
+            <ComposerActions
+              text={text}
+              submitButtonRef={{ current: null }}
+              isSubmitting={false}
+              answersAsk={false}
+              hasEndpoint
+              steering={{ duringRunActive: false } as SteeringControls}
+              isNewConversation
+              getText={() => text}
+              onConsumed={() => undefined}
+              enterToSend
+              fileCount={0}
+              sendDisabled={false}
+              duringRunDisabled={false}
+              showStopButton={false}
+              setShowStopButton={() => undefined}
+              stop={() => undefined}
+              canStop
+              isPreparingFromUrl={false}
+            />
+          </ComposerFrame>
+        </ThemeProvider>
+      );
+    }
+    render(<Composer />);
+
+    const field = screen.getByRole('textbox', { name: 'Message' });
+    expect(textAreaRef.current).toBe(field);
+    expect(screen.getByTestId('send-button')).toBeDisabled();
+    fireEvent.change(field, { target: { value: 'Hello' } });
+    expect(screen.getByTestId('send-button')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('composer-surface'));
+    expect(document.activeElement).toBe(field);
+  });
+});
+
+describe('a consumer rendering subagent activity', () => {
+  const index: ParentSubagentIndex = {
+    parentConversationId: 'convo',
+    childrenTruncated: false,
+    children: [
+      {
+        threadId: 'thread-1',
+        parentMessageId: 'reply-1',
+        subagentType: 'researcher',
+        subagentKind: 'agent',
+        title: 'Researcher',
+        origin: 'event',
+        actorId: 'researcher-a',
+        status: 'running',
+        latestTaskId: 'task-1',
+        tasks: [{ taskId: 'task-1', status: 'running' }],
+        tasksTruncated: false,
+      },
+    ],
+  };
+  const unused = () => {
+    throw new Error('not part of the activity consumer');
+  };
+  const streamHost: StreamHost = {
+    useResumableServices: unused,
+    useLegacyServices: unused,
+    useTransport: () => null,
+    useQueuedTurnReceipts: unused,
+    useActiveJobs: unused,
+    extendActiveJobsGrace: unused,
+    useStreamStatus: unused,
+    useResumeSettings: unused,
+    useEventServices: unused,
+    useParentSubagentIndex: () => ({
+      data: index,
+      isError: false,
+      refetch: async () => ({ data: index }),
+    }),
+  };
+
+  it('lists the children under their reply and opens one through the surface it supplies', () => {
+    const claimForeground = jest.fn();
+    const surface: ChatSurface = {
+      enterToSend: true,
+      maximizeChatSpace: false,
+      showScrollButton: false,
+      composerBindings: {
+        shortcutsEnabled: true,
+        submitOverride: undefined,
+        yieldedChords: new Set<string>(),
+      },
+      claimForeground,
+      handOffComposerText: () => undefined,
+    };
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={new QueryClient()}>
+          <StreamHostProvider host={streamHost}>
+            <MessagePartsHostProvider host={host}>
+              <ChatSurfaceProvider value={surface}>
+                <ParentSubagentsProvider conversationId="convo" enabled>
+                  <EventSubagentActivityGroup
+                    conversationId="convo"
+                    parentMessageIds={['reply-1']}
+                  />
+                </ParentSubagentsProvider>
+              </ChatSurfaceProvider>
+            </MessagePartsHostProvider>
+          </StreamHostProvider>
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+
+    const group = screen.getByRole('region');
+    fireEvent.click(within(group).getAllByRole('button')[0]);
+    const child = group.querySelector('[data-subagent-thread="thread-1"]');
+    expect(child).toHaveTextContent('researcher-a');
+    fireEvent.click(child as HTMLElement);
+    expect(claimForeground).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders a branched conversation through the package message list and its default thread', () => {
+    const root = '00000000-0000-0000-0000-000000000000';
+    const base = { conversationId: 'convo', createdAt: new Date().toISOString() };
+    const messages: TMessage[] = [
+      { ...base, messageId: 'u1', parentMessageId: root, isCreatedByUser: true, text: 'Question' },
+      { ...base, messageId: 'a1', parentMessageId: 'u1', isCreatedByUser: false, text: 'First' },
+      { ...base, messageId: 'a2', parentMessageId: 'u1', isCreatedByUser: false, text: 'Second' },
+    ];
+    const threadHost: MessagesHost = {
+      ...messagesHost,
+      renderMessageRow: ({ message, siblingIdx, siblingCount, setSiblingIdx }) => {
+        const label = message.isCreatedByUser ? 'You' : 'Assistant';
+        return (
+          <MessageRow
+            message={message}
+            label={label}
+            ariaLabel={label}
+            icon={null}
+            footer={
+              <SiblingSwitch
+                siblingIdx={siblingIdx}
+                siblingCount={siblingCount}
+                setSiblingIdx={setSiblingIdx}
+              />
+            }
+            isCreatedByUser={message.isCreatedByUser}
+          >
+            <p>{message.text}</p>
+          </MessageRow>
+        );
+      },
+    };
+    const contract = {
+      index: 0,
+      isSubmitting: false,
+      latestMessageDepth: 0,
+      messagesKey: 'convo',
+    } as ChatContract;
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatContext.Provider value={contract}>
+            <MessagesHostProvider host={threadHost}>
+              <MessagePartsHostProvider host={host}>
+                <MessagesView
+                  messages={messages}
+                  messagesTree={messages}
+                  showScrollButton={false}
+                  maximizeChatSpace={false}
+                />
+              </MessagePartsHostProvider>
+            </MessagesHostProvider>
+          </ChatContext.Provider>
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+
+    const reply = screen.getByRole('group', { name: 'Assistant' });
+    expect(screen.getByRole('group', { name: 'You' })).toHaveTextContent('Question');
+    expect(reply).toHaveTextContent('Second');
+    expect(within(reply).getByRole('status')).toHaveTextContent('2 / 2');
+
+    fireEvent.click(within(reply).getByRole('button', { name: 'com_ui_previous_sibling' }));
+    const older = screen.getByRole('group', { name: 'Assistant' });
+    expect(older).toHaveTextContent('First');
+    expect(within(older).getByRole('status')).toHaveTextContent('1 / 2');
   });
 });

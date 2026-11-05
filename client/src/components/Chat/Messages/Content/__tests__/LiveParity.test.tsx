@@ -2,6 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, useSetAtom } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
+import { resolveAskUserQuestionPart } from '@librechat/chat';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ContentTypes, Tools, Constants, ToolCallTypes } from 'librechat-data-provider';
@@ -12,7 +13,6 @@ import type {
   SearchResultData,
 } from 'librechat-data-provider';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
-import { resolveAskUserQuestionPart } from '~/utils/approval';
 import ContentParts from '../ContentParts';
 import { getLiveActivity } from '../live';
 import * as mcpHooks from '~/hooks/MCP';
@@ -396,6 +396,7 @@ describe('live fold parity with the cards it hides', () => {
     const second = toPart({ name: 'create_file', output: '' }, 'second');
     const view = mount([first, second], undefined, true);
 
+    expect(screen.getByTestId('live-phase-combo')).toHaveClass('sr-only');
     expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('×2');
     expect(
       within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0],
@@ -1277,7 +1278,9 @@ describe('live activity hardening transitions', () => {
     const header = screen.getByRole('button');
     expect(header).toHaveAccessibleName('Checking the next file');
     expect(screen.queryByTestId('live-phase-combo')).toBeNull();
-    expect(header.querySelector('.absolute[aria-hidden="true"]')).toBeNull();
+    expect(
+      header.querySelector('.absolute[aria-hidden="true"]:not(.lucide-chevron-down)'),
+    ).toBeNull();
   });
 
   it.each(['error', 'cancelled', 'completed'] as const)(

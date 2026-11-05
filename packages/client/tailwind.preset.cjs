@@ -180,6 +180,21 @@ module.exports = {
         'theme-fast': 'var(--theme-motion-fast, 150ms)',
         'theme-normal': 'var(--theme-motion-normal, 200ms)',
       },
+      transitionProperty: {
+        /** A control that fades in with its row and keeps a hover tint: naming opacity alone
+         *  would drop the color fade a `Button` brings. */
+        reveal: 'opacity, color, background-color',
+        /** Two labels sharing one slot that swap by fading, sliding and blurring. */
+        crossfade: 'opacity, transform, filter',
+        /** A column that widens or narrows with the chat-width preference. */
+        'max-width': 'max-width',
+        /** A progress ring filling as its dash offset falls. */
+        'stroke-dashoffset': 'stroke-dashoffset',
+      },
+      blur: {
+        /** The soft blur a crossfading label passes through on its way out or in. */
+        crossfade: '2px',
+      },
     },
   },
   plugins: [

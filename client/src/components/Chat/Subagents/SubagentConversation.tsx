@@ -13,6 +13,7 @@ import {
   isLiveSubagentStatus,
   hasTerminalOutcome,
   standardContent,
+  useChatSurface,
 } from '@librechat/chat/react';
 import {
   SystemEventHeader,
@@ -21,30 +22,30 @@ import {
   messageFooterClasses,
   ElapsedTimer,
   MessageRow,
+  SubagentActivityContent,
+  SubagentStatus,
+  getActivityContent,
+  MinimalHoverButtons,
 } from '@librechat/chat/components';
-import type { ChildConversationTurn, ToolContentQuery } from '@librechat/chat/react';
+import type { ChildConversationTurn, ToolContentQuery, TurnAuthor } from '@librechat/chat/react';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { TaskContentScope } from '~/data-provider/Subagents/content';
 import type { MessagePartsHost } from '~/hooks/Chat/contract';
 import type { TranslationKeys } from '~/hooks';
-import type { TurnAuthor } from './author';
 import {
   TaskContentScopeContext,
   useSubagentTaskContentQuery,
   useSubagentToolContentQuery,
 } from '~/data-provider/Subagents/content';
 import { MessagePartsHostProvider, useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { SubagentActivityContent, SubagentStatus, getActivityContent } from './SubagentActivity';
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
 import { useSearchResultsByTurn } from '~/hooks/Messages/useSearchResultsByTurn';
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
-import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import { AuthorContext } from '~/Providers/AuthorContext';
 import { ChatContext } from '~/Providers/ChatContext';
 import { isEmptyContentPart } from '~/utils/messages';
-import { useChatSurface } from './surface';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

@@ -5,6 +5,7 @@ import { dataService, ForkOptions } from 'librechat-data-provider';
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
 import { isMacPlatform, resolveComposerKeyDown } from '@librechat/chat';
 import { ArrowUpRight, Clock, OctagonPause, X, Zap } from 'lucide-react';
+import { SubagentActivity, SubagentActivityScrollSurface } from '@librechat/chat/components';
 import {
   Alert,
   Button,
@@ -30,6 +31,14 @@ import {
   resolveSubagentAgentId,
   isLiveSubagentStatus,
   getSubagentPrompt,
+  useParentSubagents,
+  agentAuthor,
+  resolveSubagentAuthor,
+  isSelfSpawn as isSelfSpawnType,
+  resolveChildAgent,
+  readableSubagentType,
+  useParentAuthor,
+  useChatSurface,
 } from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
@@ -50,26 +59,15 @@ import {
   useSubagentControlMutation,
   useSubagentThreadQuery,
 } from '~/data-provider';
-import {
-  agentAuthor,
-  resolveSubagentAuthor,
-  isSelfSpawn as isSelfSpawnType,
-  resolveChildAgent,
-  readableSubagentType,
-  useParentAuthor,
-} from './author';
-import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
 import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
 import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
 import { useFocusTrap, useLocalize, useNavigateToConvo } from '~/hooks';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
-import { useParentSubagents } from './ParentSubagentsProvider';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import SubagentConversation from './SubagentConversation';
 import { useAgentsMapContext } from '~/Providers';
 import { cn, renderAgentAvatar } from '~/utils';
-import { useChatSurface } from './surface';
 
 const EVENT_TASK_PAGE_SIZE = 3;
 const TERMINAL_CONTROL_REASONS = new Set([

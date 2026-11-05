@@ -15,8 +15,12 @@ export type {
   MessagePartsHost,
   MessagePartsUser,
   MessagePartsToast,
+  MessagePartsShare,
+  ContentPartsSlotProps,
   MessagePartMessage,
   MessagePartsMarkdownProps,
+  MessagePartsImageProps,
+  MessagePartsFilePreviewProps,
   MessagePartsUserTextPreferences,
 } from './react/host';
 export {
@@ -71,6 +75,7 @@ export {
   submissionStartFamily,
   showStopButtonByIndex,
   abortScrollFamily,
+  launchedConversationFamily,
 } from './react/generation';
 export { SteerHostProvider, useSteerHost } from './react/steer/host';
 export type {
@@ -123,20 +128,47 @@ export { composerLiftFamily } from './react/lift';
 export { showSkillsPopoverFamily } from './react/skills';
 export { useComposerOverlay, composerOverlayCountFamily } from './react/overlay';
 export { default as useTimeTick } from './react/tick';
+export { default as useGenerationsByLatest } from './react/messages/generations';
+export type { Generations, TUseGenerations } from './react/messages/generations';
+export { default as useConversationSeen } from './react/messages/useConversationSeen';
+export {
+  reconcileMessageContentLayout,
+  getRenderedContentMaxScrollTop,
+  scheduleMessageContentLayoutReconcile,
+} from './react/messages/messageLayout';
 export {
   useMessagesHost,
   MessagesHostProvider,
   setDefaultMessagesHost,
+  MessageIconSlot,
 } from './react/messages/host';
 export type {
   ForkEvents,
+  MessageCopy,
   MessagesHost,
+  MarkdownVariant,
+  MessageCopyInput,
   ForkPreferences,
   ForkConversation,
-  MessagesScrolling,
+  ActivitySlotProps,
   ReportNearBottom,
+  SeenReply,
+  ReplyProofSource,
+  ConversationSeenSource,
+  MessageIconData,
+  MessageIconProps,
+  MessageAudioProps,
+  MessageAudioButtonProps,
+  MessageRowSlotProps,
 } from './react/messages/host';
+export { AuthorContext, useAuthorContext } from './react/messages/author';
+export type { TMessageAuthor } from './react/messages/author';
+export { ErrorSourceProvider, useErrorSource } from './react/messages/error';
+export type { ErrorSource } from './react/messages/error';
+export { MessageSurfaceContext } from './react/messages/surface';
+export type { MessageSurface } from './react/messages/surface';
 export {
+  GeneratedToolLabelContext,
   SoleToolContext,
   LoneGroupContext,
   useToolExpansion,
