@@ -146,6 +146,19 @@ export type FileSearchSource = {
   [key: string]: unknown;
 };
 
+/**
+ * Provider cost of a single tool call, reported by the MCP server under the result's
+ * `_meta.cost`. Only the server knows its own pricing (and per-call variation such as
+ * image size or the model it picked), so the figure is supplied rather than derived.
+ */
+export type ToolCost = {
+  /** Cost in USD for this call. */
+  usd: number;
+  /** What produced it, used as the billing model label; falls back to the tool name. */
+  model?: string;
+  provider?: string;
+};
+
 export type Artifacts =
   | {
       content?: FormattedContent[];
@@ -160,6 +173,7 @@ export type Artifacts =
       files?: Array<{ id: string; name: string }>;
       session_id?: string;
       file_ids?: string[];
+      cost?: ToolCost;
     }
   | undefined;
 
