@@ -392,7 +392,16 @@ export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependen
         return res.status(401).json({ message: 'Unauthorized' });
       }
 
-      const user = await deps.getUserById(userId, OPT_IN_CONFIRMATION_PROJECTION);
+      /**
+       * Only the refresh session the request belongs to survives, rotated in place. An access token
+       * on its own proves no such session, so it cannot trade enrollment for a long-lived one. Both
+       * reads depend on request data alone, so they start together; every check still runs before a write.
+       */
+      const refreshToken = req.cookies?.refreshToken;
+      const [user, session] = await Promise.all([
+        deps.getUserById(userId, OPT_IN_CONFIRMATION_PROJECTION),
+        refreshToken ? deps.findSession({ userId, refreshToken }, { lean: false }) : null,
+      ]);
       const secretSource = user?.pendingTotpSecret ?? user?.totpSecret;
       if (!user || !secretSource) {
         return res.status(400).json({ message: '2FA not initiated' });
@@ -402,14 +411,6 @@ export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependen
         return res.status(400).json({ message: '2FA setup is not available for this user' });
       }
 
-      /**
-       * Only the refresh session the request belongs to survives, rotated in place. An access token
-       * on its own proves no such session, so it cannot trade enrollment for a long-lived one.
-       */
-      const refreshToken = req.cookies?.refreshToken;
-      const session = refreshToken
-        ? await deps.findSession({ userId, refreshToken }, { lean: false })
-        : null;
       if (!session || !(session.expiration > new Date())) {
         return res.status(401).json({ message: 'Sign in again to enable 2FA' });
       }

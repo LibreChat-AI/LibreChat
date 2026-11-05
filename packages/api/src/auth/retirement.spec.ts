@@ -549,6 +549,36 @@ describe('opt-in two-factor confirmation', () => {
     expect(isTokenRetired(legacyBearer, await readCutoffs(userId))).toBe(true);
   });
 
+  it('starts the user and session reads together', async () => {
+    const userId = await createUser({ pendingTotpSecret: PENDING_SECRET });
+    let sessionRead: () => void = () => undefined;
+    const sessionStarted = new Promise<void>((resolve) => {
+      sessionRead = resolve;
+    });
+    let firstUserRead = true;
+    const { deps } = createDeps({
+      getUserById: async (id, projection) => {
+        /** The opening read cannot finish until the session read has begun, so a serial order hangs. */
+        if (firstUserRead) {
+          firstUserRead = false;
+          await sessionStarted;
+        }
+        return methods.getUserById(id, projection) as Promise<StoredTwoFactorAccount | null>;
+      },
+      findSession: async (query, options) => {
+        sessionRead();
+        return methods.findSession(query, options);
+      },
+    });
+    const req = await createReq(userId);
+    const res = createRes();
+
+    await createOptInTwoFactorConfirmation(deps)(req, res as unknown as Response);
+
+    expect(res.status).not.toHaveBeenCalledWith(401);
+    expect(res.status).not.toHaveBeenCalledWith(500);
+  });
+
   it('refuses an access token that comes without its refresh session', async () => {
     const userId = await createUser({ pendingTotpSecret: PENDING_SECRET });
     await methods.createSession(userId);
