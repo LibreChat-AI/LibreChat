@@ -2,6 +2,8 @@
 process.env.MCP_REGISTRY_CACHE_TTL = '50';
 const waitForRegistryCache = () => new Promise((resolve) => setTimeout(resolve, 100));
 
+/** The shared jest setup stubs `~/config`; the route must reach the real MCP registry. */
+jest.mock('~/config', () => jest.requireActual('~/config'));
 jest.mock('~/server/services/Config', () => ({
   ...jest.requireActual('~/server/services/Config'),
   getAppConfig: jest.fn().mockResolvedValue({}),
@@ -193,5 +195,104 @@ describe('POST /agents/:id/revert - MCP server authorization', () => {
     expect(stored.mcpServerNames ?? []).not.toContain(serverName);
     await waitForRegistryCache();
     expect(await bobsServers()).not.toContain(serverName);
+  });
+  /** Alice's agent used the server in version 0 and dropped it in version 1. */
+  async function createDetachedAgent(id, serverName) {
+    const agent = await methods.createAgent({
+      id,
+      name: 'Shared',
+      provider: 'openai',
+      model: 'gpt-4o',
+      author: alice._id,
+      tools: [mcpTool(serverName)],
+      mcpServerNames: [serverName],
+    });
+    await methods.updateAgent(
+      { id: agent.id },
+      { tools: [] },
+      { updatingUserId: alice._id.toString() },
+    );
+    await shareAgent(agent);
+    return agent;
+  }
+
+  it('a stale index on the target agent does not authorize the restore', async () => {
+    const serverName = await createPrivateServer();
+    const agent = await createDetachedAgent('agent_revert_stale_index', serverName);
+    /** The state an earlier revert left behind: no tool uses the server, the index still names it. */
+    await mongoose.models.Agent.updateOne(
+      { id: agent.id },
+      { $set: { mcpServerNames: [serverName] } },
+    );
+    await waitForRegistryCache();
+
+    currentUser = asUser(bob);
+    const res = await request(app).post(`/agents/${agent.id}/revert`).send({ version_index: 0 });
+
+    expect(res.status).toBe(200);
+    const stored = await methods.getAgent({ id: agent.id });
+    expect(stored.tools).toEqual([]);
+    expect(stored.mcpServerNames).toEqual([]);
+    await waitForRegistryCache();
+    expect(await bobsServers()).not.toContain(serverName);
+  });
+
+  it('access cached from before the owner detached the server does not authorize the restore', async () => {
+    const serverName = await createPrivateServer();
+    const agent = await methods.createAgent({
+      id: 'agent_revert_cached',
+      name: 'Shared',
+      provider: 'openai',
+      model: 'gpt-4o',
+      author: alice._id,
+      tools: [mcpTool(serverName)],
+      mcpServerNames: [serverName],
+    });
+    await shareAgent(agent);
+    expect(await bobsServers()).toContain(serverName);
+    await methods.updateAgent(
+      { id: agent.id },
+      { tools: [] },
+      { updatingUserId: alice._id.toString() },
+    );
+
+    currentUser = asUser(bob);
+    const res = await request(app).post(`/agents/${agent.id}/revert`).send({ version_index: 0 });
+
+    expect(res.status).toBe(200);
+    const stored = await methods.getAgent({ id: agent.id });
+    expect(stored.tools).toEqual([]);
+    expect(stored.mcpServerNames).toEqual([]);
+  });
+
+  it('an editor who reaches the server through another agent can restore it', async () => {
+    const serverName = await createPrivateServer();
+    const agent = await createDetachedAgent('agent_revert_other_grant', serverName);
+    const other = await methods.createAgent({
+      id: 'agent_other_grant',
+      name: 'Other',
+      provider: 'openai',
+      model: 'gpt-4o',
+      author: alice._id,
+      tools: [mcpTool(serverName)],
+      mcpServerNames: [serverName],
+    });
+    await grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: bob._id,
+      resourceType: ResourceType.AGENT,
+      resourceId: other._id,
+      accessRoleId: AccessRoleIds.AGENT_VIEWER,
+      grantedBy: alice._id,
+    });
+    await waitForRegistryCache();
+
+    currentUser = asUser(bob);
+    const res = await request(app).post(`/agents/${agent.id}/revert`).send({ version_index: 0 });
+
+    expect(res.status).toBe(200);
+    const stored = await methods.getAgent({ id: agent.id });
+    expect(stored.tools).toEqual([mcpTool(serverName)]);
+    expect(stored.mcpServerNames).toEqual([serverName]);
   });
 });

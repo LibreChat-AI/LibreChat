@@ -2786,7 +2786,8 @@ export function createAgentMethods(
       },
     );
     if (!revertedAgent) {
-      throw new Error('Agent not found');
+      /** The agent was read above, so a miss is the revision filter refusing a newer write. */
+      throw new AgentRevisionConflictError();
     }
     return revertedAgent;
   }

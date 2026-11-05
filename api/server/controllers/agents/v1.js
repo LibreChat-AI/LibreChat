@@ -52,7 +52,7 @@ const {
   checkInstructionsPromptWrite,
   applyInstructionsPromptUnset,
   instructionsContentForScan,
-  resolveRestoredMCPServerNames,
+  authorizeAgentRestore,
 } = require('@librechat/api');
 const {
   Time,
@@ -545,6 +545,7 @@ const getSubagentReferenceError = async (subagents, req, allowedMissingIds = new
  * @param {Record<string, unknown>} params.availableTools - Global non-MCP tool cache
  * @param {string[]} [params.existingTools] - Tools already persisted on the agent document
  * @param {Record<string, unknown>} [params.configServers] - Config-source MCP servers resolved from appConfig overrides
+ * @param {(tool: string, serverName: string) => Promise<boolean>} [params.admitAgentScopedTool] - Extra gate for a tool whose server the user reaches only through agents
  * @returns {Promise<string[]>} Only the authorized subset of tools
  */
 const filterAuthorizedTools = async ({
@@ -557,6 +558,7 @@ const filterAuthorizedTools = async ({
   existingTools,
   configServers,
   resolvedServerNames,
+  admitAgentScopedTool,
 }) => {
   const filteredTools = [];
   let mcpServerConfigs;
@@ -646,6 +648,17 @@ const filterAuthorizedTools = async ({
     if (shadowedServerNames.has(serverName)) {
       logger.warn(
         `[filterAuthorizedTools] Rejected MCP tool "${tool}" — server "${serverName}" is shadowed by a name collision; rename one server to use it`,
+      );
+      continue;
+    }
+
+    if (
+      admitAgentScopedTool &&
+      mcpServerConfigs[serverName]?.consumeOnly &&
+      !(await admitAgentScopedTool(tool, serverName))
+    ) {
+      logger.warn(
+        `[filterAuthorizedTools] Rejected MCP tool "${tool}" — server "${serverName}" reachable by user ${userId} only through the agent being changed`,
       );
       continue;
     }
@@ -2135,36 +2148,33 @@ const revertAgentVersionHandler = async (req, res) => {
       return;
     }
 
-    /** Authorize the restored tools against the agent as it stands, before the restore
-     *  writes the snapshot's MCP index: agent-scoped MCP access is granted from that
-     *  index, so checking afterwards would let the restored servers vouch for themselves. */
-    const restoredTools = Array.isArray(revertVersion.tools)
-      ? revertVersion.tools
-      : (existingAgent.tools ?? []);
-    const revertOptions = { expectedUpdatedAt: existingAgent.updatedAt };
-    if (restoredTools.length > 0) {
-      const [availableTools, configServers] = await Promise.all([
-        getCachedTools().then((t) => t ?? {}),
-        resolveConfigServers(req),
-      ]);
-      const resolvedServerNames = new Set();
-      revertOptions.tools = await filterAuthorizedTools({
-        tools: restoredTools,
-        userId: req.user.id,
-        role: req.user.role,
-        user: req.user,
-        mcpPermissionContext: createMCPPermissionContext(req),
-        availableTools,
-        existingTools: existingAgent.tools ?? [],
-        configServers,
-        resolvedServerNames,
-      });
-      revertOptions.mcpServerNames = resolveRestoredMCPServerNames({
-        tools: revertOptions.tools,
-        resolvedServerNames,
-        priorNames: existingAgent.mcpServerNames ?? [],
-      });
-    }
+    const revertOptions = await authorizeAgentRestore({
+      agent: existingAgent,
+      versionTools: revertVersion.tools,
+      authorizeTools: async (request) => {
+        const [availableTools, configServers] = await Promise.all([
+          getCachedTools().then((t) => t ?? {}),
+          resolveConfigServers(req),
+        ]);
+        return filterAuthorizedTools({
+          ...request,
+          userId: req.user.id,
+          role: req.user.role,
+          user: req.user,
+          mcpPermissionContext: createMCPPermissionContext(req),
+          availableTools,
+          configServers,
+        });
+      },
+      listAgentIdsForServer: db.getAgentIdsByMCPServerName,
+      getAgentPermissions: (resourceIds) =>
+        getResourcePermissionsMap({
+          userId: req.user.id,
+          role: req.user.role,
+          resourceType: ResourceType.AGENT,
+          resourceIds,
+        }),
+    });
 
     let updatedAgent = await db.revertAgentVersion({ id }, version_index, revertOptions);
     const revertUpdates = {};

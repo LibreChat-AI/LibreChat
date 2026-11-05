@@ -3292,6 +3292,34 @@ describe('Agent Methods', () => {
       expect((await getAgent({ id: agentId }))?.name).toBe('Edited');
     });
 
+    test('should report a write that lands between the read and the restore as a conflict', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      await createAgent({
+        id: agentId,
+        name: 'Original',
+        provider: 'test',
+        model: 'test-model',
+        author: new mongoose.Types.ObjectId(),
+      });
+      await updateAgent({ id: agentId }, { name: 'Edited' });
+
+      const realFindOne = Agent.findOne.bind(Agent);
+      const spy = jest.spyOn(Agent, 'findOne').mockImplementationOnce(((
+        filter: RootFilterQuery<IAgent>,
+      ) =>
+        realFindOne(filter).then(async (agent) => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          await Agent.updateOne({ id: agentId }, { $set: { name: 'Concurrent' } });
+          return agent;
+        })) as typeof Agent.findOne);
+
+      await expect(revertAgentVersion({ id: agentId }, 0)).rejects.toMatchObject({
+        statusCode: 409,
+      });
+      spy.mockRestore();
+      expect((await getAgent({ id: agentId }))?.name).toBe('Concurrent');
+    });
+
     test('should unset a linked prompt-group instructions selection absent from the restored version', async () => {
       const agentId = `agent_${uuidv4()}`;
       const authorId = new mongoose.Types.ObjectId();
