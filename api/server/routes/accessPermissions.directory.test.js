@@ -2,7 +2,7 @@ const express = require('express');
 const request = require('supertest');
 const mongoose = require('mongoose');
 const { MongoMemoryServer } = require('mongodb-memory-server');
-const { createModels } = require('@librechat/data-schemas');
+const { createModels, tenantStorage } = require('@librechat/data-schemas');
 const {
   SystemRoles,
   ResourceType,
@@ -58,6 +58,7 @@ describe('Shared-link directory principal provisioning', () => {
   let User;
   let Group;
   let AclEntry;
+  let requestTenant;
   const originalEnv = {
     USE_ENTRA_ID_FOR_PEOPLE_SEARCH: process.env.USE_ENTRA_ID_FOR_PEOPLE_SEARCH,
     OPENID_REUSE_TOKENS: process.env.OPENID_REUSE_TOKENS,
@@ -71,6 +72,7 @@ describe('Shared-link directory principal provisioning', () => {
     await db.seedDefaultRoles();
     app = express();
     app.use(express.json());
+    app.use((_req, _res, next) => tenantStorage.run({ tenantId: requestTenant }, next));
     app.use((req, _res, next) => {
       req.user = { ...owner.toObject(), id: owner._id.toString() };
       next();
@@ -92,6 +94,7 @@ describe('Shared-link directory principal provisioning', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    requestTenant = undefined;
     await Promise.all([User.deleteMany({}), Group.deleteMany({}), AclEntry.deleteMany({})]);
     process.env.USE_ENTRA_ID_FOR_PEOPLE_SEARCH = 'true';
     process.env.OPENID_REUSE_TOKENS = 'true';
@@ -118,14 +121,20 @@ describe('Shared-link directory principal provisioning', () => {
     db.getRoleByName.mockResolvedValue({
       permissions: {
         [PermissionTypes.SHARED_LINKS]: { USE: true, SHARE: true, SHARE_PUBLIC: true },
+        [PermissionTypes.AGENTS]: { USE: true, SHARE: true, SHARE_PUBLIC: true },
       },
     });
     graphGet = jest.fn().mockResolvedValue(null);
     createGraphClient.mockResolvedValue({ api: () => ({ select: () => ({ get: graphGet }) }) });
   });
 
-  const update = (principals, token = 'test-access-token', extra = {}) => {
-    const call = request(app).put(`/api/permissions/${ResourceType.SHARED_LINK}/${resourceId}`);
+  const update = (
+    principals,
+    token = 'test-access-token',
+    extra = {},
+    resourceType = ResourceType.SHARED_LINK,
+  ) => {
+    const call = request(app).put(`/api/permissions/${resourceType}/${resourceId}`);
     if (token) {
       call.set('Authorization', `Bearer ${token}`);
     }
@@ -170,18 +179,46 @@ describe('Shared-link directory principal provisioning', () => {
     },
   );
 
-  it.each([403, 404, 503])(
-    'fails closed without disclosure on Graph status %i',
-    async (statusCode) => {
+  it.each([403, 404])('fails closed without disclosure on Graph status %i', async (statusCode) => {
+    const existing = await User.create({ email: forged.email, name: 'Private User' });
+    graphGet.mockRejectedValue(Object.assign(new Error('Private upstream detail'), { statusCode }));
+    const response = await update([forged]);
+    expect(response.status).toBe(200);
+    expect(response.body.results.principals).toEqual([]);
+    expect(JSON.stringify(response.body)).not.toContain(existing._id.toString());
+    expect(JSON.stringify(response.body)).not.toContain('Private upstream detail');
+    expect(await User.countDocuments()).toBe(2);
+    expect(await AclEntry.countDocuments()).toBe(1);
+  });
+
+  it.each(['client', 'lookup'])(
+    'returns a safe failure without ACL changes on a provider %s outage',
+    async (failure) => {
       const existing = await User.create({ email: forged.email, name: 'Private User' });
-      graphGet.mockRejectedValue(
-        Object.assign(new Error('Private upstream detail'), { statusCode }),
+      const error = Object.assign(new Error('Private upstream detail'), { statusCode: 503 });
+      if (failure === 'client') {
+        createGraphClient.mockRejectedValueOnce(error);
+      } else {
+        graphGet.mockRejectedValue(error);
+      }
+      const response = await update(
+        [
+          {
+            type: PrincipalType.USER,
+            id: existing._id.toString(),
+            accessRoleId: AccessRoleIds.SHARED_LINK_VIEWER,
+          },
+          forged,
+        ],
+        undefined,
+        { public: true, publicAccessRoleId: AccessRoleIds.SHARED_LINK_VIEWER },
       );
-      const response = await update([forged]);
-      expect(response.status).toBe(200);
-      expect(response.body.results.principals).toEqual([]);
+      expect(response.status).toBe(502);
+      expect(response.body).toEqual({
+        error: 'Failed to update permissions',
+        details: 'Directory identity verification failed',
+      });
       expect(JSON.stringify(response.body)).not.toContain(existing._id.toString());
-      expect(JSON.stringify(response.body)).not.toContain('Private upstream detail');
       expect(await User.countDocuments()).toBe(2);
       expect(await AclEntry.countDocuments()).toBe(1);
     },
@@ -264,6 +301,140 @@ describe('Shared-link directory principal provisioning', () => {
     });
     expect(response.body.results.principals[0].id).toBe(group._id.toString());
     expect(await User.countDocuments()).toBe(1);
+  });
+
+  it.each(['disabled', 'local login', 'token reuse disabled', 'missing token'])(
+    'shares with persisted Entra groups without Graph when %s',
+    async (unavailable) => {
+      const group = await Group.create({
+        name: 'Stored Directory Group',
+        source: 'entra',
+        idOnTheSource: sourceId,
+        memberIds: ['stored-member'],
+      });
+      if (unavailable === 'disabled') {
+        process.env.USE_ENTRA_ID_FOR_PEOPLE_SEARCH = 'false';
+      } else if (unavailable === 'local login') {
+        owner.provider = 'local';
+      } else if (unavailable === 'token reuse disabled') {
+        process.env.OPENID_REUSE_TOKENS = 'false';
+      }
+      const response = await update(
+        [
+          {
+            ...forged,
+            type: PrincipalType.GROUP,
+            id: group._id.toString(),
+            idOnTheSource: 'forged-source',
+          },
+        ],
+        unavailable === 'missing token' ? null : undefined,
+      );
+      expect(response.status).toBe(200);
+      expect(response.body.results.principals).toHaveLength(1);
+      expect(response.body.results.principals[0].id).toBe(group._id.toString());
+      expect(await AclEntry.countDocuments()).toBe(2);
+      expect(await Group.findById(group._id).lean()).toMatchObject({
+        name: group.name,
+        idOnTheSource: sourceId,
+        memberIds: ['stored-member'],
+      });
+      expect(createGraphClient).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([new mongoose.Types.ObjectId().toString(), { $ne: null }])(
+    'rejects a nonexistent or malformed local Entra group ID without provisioning: %j',
+    async (id) => {
+      const response = await update([{ ...forged, type: PrincipalType.GROUP, id }]);
+      expect(response.status).toBe(200);
+      expect(response.body.results.principals).toEqual([]);
+      expect(await Group.countDocuments()).toBe(0);
+      expect(await AclEntry.countDocuments()).toBe(1);
+      expect(createGraphClient).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a persisted Entra group from another tenant', async () => {
+    const group = await Group.create({
+      name: 'Private Directory Group',
+      source: 'entra',
+      tenantId: 'other-tenant',
+      idOnTheSource: sourceId,
+    });
+    requestTenant = 'current-tenant';
+    await tenantStorage.run({ tenantId: requestTenant }, async () => {
+      await db.seedDefaultRoles();
+      owner = await User.create({ email: 'tenant-owner@example.com', role: SystemRoles.USER });
+      const link = await mongoose.models.SharedLink.create({
+        conversationId: 'tenant-conversation',
+        user: owner._id.toString(),
+      });
+      resourceId = link._id;
+      await grantPermission({
+        principalType: PrincipalType.USER,
+        principalId: owner._id,
+        resourceType: ResourceType.SHARED_LINK,
+        resourceId,
+        accessRoleId: AccessRoleIds.SHARED_LINK_OWNER,
+        grantedBy: owner._id,
+      });
+    });
+    const response = await update([
+      { ...forged, type: PrincipalType.GROUP, id: group._id.toString() },
+    ]);
+    expect(response.status).toBe(200);
+    expect(response.body.results.principals).toEqual([]);
+    expect(JSON.stringify(response.body)).not.toContain(group.name);
+    expect(await AclEntry.countDocuments({ resourceId })).toBe(1);
+    expect(createGraphClient).not.toHaveBeenCalled();
+  });
+
+  it('applies a stored Entra group permission downgrade without Graph', async () => {
+    owner.provider = 'local';
+    const group = await Group.create({
+      name: 'Stored Directory Group',
+      source: 'entra',
+      idOnTheSource: sourceId,
+    });
+    await grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: owner._id,
+      resourceType: ResourceType.AGENT,
+      resourceId,
+      accessRoleId: AccessRoleIds.AGENT_OWNER,
+      grantedBy: owner._id,
+    });
+    await grantPermission({
+      principalType: PrincipalType.GROUP,
+      principalId: group._id,
+      resourceType: ResourceType.AGENT,
+      resourceId,
+      accessRoleId: AccessRoleIds.AGENT_EDITOR,
+      grantedBy: owner._id,
+    });
+    const response = await update(
+      [
+        {
+          ...forged,
+          type: PrincipalType.GROUP,
+          id: group._id.toString(),
+          accessRoleId: AccessRoleIds.AGENT_VIEWER,
+        },
+      ],
+      null,
+      {},
+      ResourceType.AGENT,
+    );
+    expect(response.status).toBe(200);
+    expect(response.body.results.principals[0]).toMatchObject({
+      id: group._id.toString(),
+      accessRoleId: AccessRoleIds.AGENT_VIEWER,
+    });
+    const entry = await AclEntry.findOne({ resourceId, principalId: group._id }).lean();
+    const viewer = await db.findRoleByIdentifier(AccessRoleIds.AGENT_VIEWER);
+    expect(entry.permBits).toBe(viewer.permBits);
+    expect(createGraphClient).not.toHaveBeenCalled();
   });
 
   it('preserves local user, local group, role, public sharing, and revocation without Entra', async () => {
