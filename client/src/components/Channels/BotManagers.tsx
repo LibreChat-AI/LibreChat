@@ -2,10 +2,65 @@ import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, OGDialog, OGDialogTemplate, Spinner } from '@librechat/client';
 import { dataService, MutationKeys, PrincipalType, QueryKeys } from 'librechat-data-provider';
-import type { SlackWorkspace, TPrincipal } from 'librechat-data-provider';
-import UnifiedPeopleSearch from '~/components/Sharing/PeoplePicker/UnifiedPeopleSearch';
+import type { SlackWorkspace, SlackBotManager } from 'librechat-data-provider';
+import PeoplePickerSearchItem from '~/components/Sharing/PeoplePicker/PeoplePickerSearchItem';
+import { SearchPicker } from '~/components/Sharing/PeoplePicker/SearchPicker';
 import PrincipalAvatar from '~/components/Sharing/PrincipalAvatar';
 import { useLocalize } from '~/hooks';
+
+function ManagerSearch({
+  workspaceId,
+  principalKey,
+  managers,
+  onAdd,
+}: {
+  workspaceId: string;
+  principalKey: string;
+  managers: SlackBotManager[];
+  onAdd: (manager: SlackBotManager) => void;
+}) {
+  const localize = useLocalize();
+  const [input, setInput] = useState('');
+  const query = input.trim();
+  const search = useQuery(
+    [QueryKeys.slackWorkspaces, principalKey, 'managerSearch', workspaceId, query],
+    () => dataService.searchSlackBotManagers(workspaceId, query),
+    { enabled: query.length >= 2, retry: false, cacheTime: 0, refetchOnWindowFocus: false },
+  );
+  const selected = new Set(managers.map((manager) => manager.id));
+  return (
+    <div className="space-y-2">
+      <SearchPicker
+        label={localize('com_ui_slack_bot_managers_search')}
+        placeholder={localize('com_ui_slack_bot_managers_search')}
+        options={(search.data ?? [])
+          .filter((manager) => !selected.has(manager.id))
+          .map((manager) => ({ ...manager, key: manager.id, value: manager.id }))}
+        renderOptions={(manager) => (
+          <PeoplePickerSearchItem principal={{ ...manager, type: PrincipalType.USER }} />
+        )}
+        query={input}
+        onQueryChange={setInput}
+        onPick={onAdd}
+        isLoading={search.isFetching}
+        minQueryLengthForNoResults={search.isError ? Infinity : 2}
+      />
+      {search.isError && (
+        <Alert variant="error">
+          <p>{localize('com_ui_slack_bot_managers_search_error')}</p>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={search.isFetching}
+            onClick={() => void search.refetch()}
+          >
+            {localize('com_ui_retry')}
+          </Button>
+        </Alert>
+      )}
+    </div>
+  );
+}
 
 /** Installation admins grant management; managers never receive credentials or sharing authority. */
 export default function BotManagers({
@@ -21,7 +76,7 @@ export default function BotManagers({
   const client = useQueryClient();
   const trigger = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
-  const [managers, setManagers] = useState<TPrincipal[]>([]);
+  const [managers, setManagers] = useState<SlackBotManager[]>([]);
   const query = useQuery(
     [QueryKeys.slackWorkspaces, principalKey, 'managers', workspace.workspaceId],
     () => dataService.getSlackBotManagers(workspace.workspaceId),
@@ -30,14 +85,7 @@ export default function BotManagers({
       retry: false,
       cacheTime: 0,
       refetchOnWindowFocus: false,
-      onSuccess: (data) =>
-        setManagers(
-          data.managers.map((manager) => ({
-            ...manager,
-            idOnTheSource: manager.id,
-            type: PrincipalType.USER,
-          })),
-        ),
+      onSuccess: (data) => setManagers(data.managers),
     },
   );
   const mutation = useMutation({
@@ -47,7 +95,7 @@ export default function BotManagers({
       return dataService.setSlackBotManagers(
         workspace.workspaceId,
         query.data.revision,
-        managers.map((manager) => manager.id!),
+        managers.map((manager) => manager.id),
       );
     },
     onSuccess: async () => {
@@ -55,7 +103,7 @@ export default function BotManagers({
       setOpen(false);
     },
   });
-  const ids = managers.map((manager) => manager.id!).sort();
+  const ids = managers.map((manager) => manager.id).sort();
   const initialIds = query.data?.managers.map((manager) => manager.id).sort();
   const changed = JSON.stringify(ids) !== JSON.stringify(initialIds);
   const tooMany = Boolean(query.data && managers.length > query.data.maxManagers);
@@ -115,21 +163,16 @@ export default function BotManagers({
               {query.isSuccess && !query.isFetching && (
                 <>
                   {!mutation.isLoading && (
-                    <UnifiedPeopleSearch
-                      label={localize('com_ui_slack_bot_managers_search')}
-                      placeholder={localize('com_ui_slack_bot_managers_search')}
+                    <ManagerSearch
+                      workspaceId={workspace.workspaceId}
                       principalKey={principalKey}
-                      localOnly
-                      typeFilter={[PrincipalType.USER]}
-                      excludeIds={managers.map((manager) => manager.idOnTheSource)}
-                      onAddPeople={(people) =>
-                        setManagers((current) => {
-                          const combined = new Map(current.map((person) => [person.id, person]));
-                          for (const person of people)
-                            if (person.type === PrincipalType.USER && person.id)
-                              combined.set(person.id, person);
-                          return [...combined.values()];
-                        })
+                      managers={managers}
+                      onAdd={(manager) =>
+                        setManagers((current) =>
+                          current.some((person) => person.id === manager.id)
+                            ? current
+                            : [...current, manager],
+                        )
                       }
                     />
                   )}
@@ -144,7 +187,10 @@ export default function BotManagers({
                       className="border-border-light flex items-center justify-between gap-3 rounded-lg border p-3"
                     >
                       <div className="flex min-w-0 items-center gap-3">
-                        <PrincipalAvatar principal={manager} size="sm" />
+                        <PrincipalAvatar
+                          principal={{ ...manager, type: PrincipalType.USER }}
+                          size="sm"
+                        />
                         <div className="min-w-0">
                           <p className="truncate font-medium">{manager.name || manager.email}</p>
                           {manager.name && (

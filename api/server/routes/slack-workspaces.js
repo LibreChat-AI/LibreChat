@@ -23,6 +23,7 @@ router.post(
   handlers.removeApp,
 );
 router.get('/workspaces/:workspaceId/managers', requireJwtAuth, handlers.managers);
+router.get('/workspaces/:workspaceId/managers/search', requireJwtAuth, handlers.searchManagers);
 router.put(
   '/workspaces/:workspaceId/managers',
   requireJwtAuth,

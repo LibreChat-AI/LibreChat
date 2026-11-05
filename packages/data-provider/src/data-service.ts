@@ -9,6 +9,7 @@ import type {
   ConfigureSlackApp,
   SlackWorkspaceStatus,
   SlackBotManagers,
+  SlackBotManager,
   SlackWorkspaceConnect,
   SlackWorkspaceDetail,
   SlackWorkspaceRoutePage,
@@ -202,6 +203,15 @@ export function getSlackWorkspaces(cursor?: string): Promise<SlackWorkspaceStatu
 
 export function getSlackBotManagers(workspaceId: string): Promise<SlackBotManagers> {
   return request.get(`${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers`);
+}
+
+export function searchSlackBotManagers(
+  workspaceId: string,
+  query: string,
+): Promise<SlackBotManager[]> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers/search?q=${encodeURIComponent(query)}`,
+  );
 }
 
 export function setSlackBotManagers(

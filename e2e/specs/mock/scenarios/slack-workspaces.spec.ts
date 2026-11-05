@@ -25,20 +25,18 @@ for (const theme of ['light', 'dark']) {
     let attempt = 0;
     let cancelled = 0;
     let disconnected = 0;
+    let searches = 0;
+    let legacySearches = 0;
+    await page.route('**/api/permissions/search-principals**', (route) => {
+      legacySearches++;
+      return route.fulfill({ status: 403, json: { error: 'forbidden' } });
+    });
     let managers: Array<{ id: string; name: string; email: string }> = [];
     const manager = {
       id: '000000000000000000000002',
       name: 'Alex Morgan',
       email: 'alex@example.com',
     };
-    await page.route('**/api/permissions/search-principals**', (route) =>
-      route.fulfill({
-        json: {
-          results: [{ ...manager, idOnTheSource: manager.id, source: 'local', type: 'user' }],
-          count: 1,
-        },
-      }),
-    );
     await page.addInitScript((mode) => localStorage.setItem('color-theme', mode), theme);
     if (theme === 'light')
       await context.addInitScript(() =>
@@ -49,6 +47,15 @@ for (const theme of ['light', 'dark']) {
     );
     await page.route('**/api/channels/workspaces**', async (route) => {
       const url = new URL(route.request().url());
+      if (url.pathname.endsWith('/managers/search')) {
+        expect(url.searchParams.get('q')).toBe('alex');
+        if (searches++ === 0) {
+          await route.fulfill({ status: 503, json: { error: 'unavailable' } });
+          return;
+        }
+        await route.fulfill({ json: [manager] });
+        return;
+      }
       if (url.pathname.endsWith('/managers')) {
         if (route.request().method() === 'PUT') {
           expect(route.request().postDataJSON()).toEqual({
@@ -188,6 +195,16 @@ for (const theme of ['light', 'dark']) {
       access.getByText('Only administrators can assign agents until you add a bot manager.'),
     ).toBeVisible();
     await access.getByRole('combobox', { name: 'Add a bot manager' }).fill('alex');
+    await expect(
+      access.getByText('Could not search your organization’s users. Try again.'),
+    ).toBeVisible();
+    await expect(access.getByText('No results found', { exact: true })).toHaveCount(0);
+    if (process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX)
+      await page.screenshot({
+        animations: 'disabled',
+        path: `${process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX}-search-error-${theme}.png`,
+      });
+    await access.getByRole('button', { name: 'Retry', exact: true }).click();
     await access.getByRole('option', { name: /Alex Morgan/ }).click();
     await expect(access.getByText('Alex Morgan', { exact: true })).toBeVisible();
     if (process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX)
@@ -198,6 +215,8 @@ for (const theme of ['light', 'dark']) {
     await access.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(access).not.toBeVisible();
     expect(managers).toEqual([manager]);
+    expect(legacySearches).toBe(0);
+    expect(searches).toBe(2);
     await workspacesPanel.getByRole('button', { name: 'Manage bot access', exact: true }).click();
     await expect(access.getByText('Alex Morgan', { exact: true })).toBeVisible();
     await access.getByRole('button', { name: 'Cancel', exact: true }).click();

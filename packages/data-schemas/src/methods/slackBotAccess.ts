@@ -9,6 +9,7 @@ import {
 import type { SlackBotManager } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { SlackWorkspaceRecord } from '~/models/slackWorkspace';
+import type { IUser } from '~/types';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createSlackWorkspaceModel } from '~/models/slackWorkspace';
 import { createResponseScopeModel } from '~/models/responseScope';
@@ -16,7 +17,9 @@ import { withRequiredTransaction } from '~/utils/transactions';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 import { createAclEntryModel } from '~/models/aclEntry';
+import { buildUserSearchFilter } from '~/utils/search';
 import { permissionBitSupersets } from './aclEntry';
+import { createUserModel } from '~/models/user';
 
 type Workspace = Pick<SlackWorkspaceRecord, 'workspaceId' | 'tenantId'> & { _id: Types.ObjectId };
 
@@ -40,6 +43,7 @@ interface SlackBotAccess {
   ): Promise<Set<string>>;
   allows(record: Workspace, userId: string, session?: ClientSession): Promise<boolean>;
   read(workspaceId: string): Promise<{ revision: string; managers: SlackBotManager[] } | null>;
+  search(workspaceId: string, query: string, limit: number): Promise<SlackBotManager[] | null>;
   set(input: BotManagerUpdate): Promise<BotManagerWriteResult>;
   clear(record: Workspace, session: ClientSession): Promise<void>;
 }
@@ -47,7 +51,14 @@ interface SlackBotAccess {
 /** Bot-management grants use existing ACL storage; only installation-admin routes write them. */
 export function createSlackBotAccess(mongoose: typeof import('mongoose')): SlackBotAccess {
   const workspaces = createSlackWorkspaceModel(mongoose);
-  const acl = mongoose.models.AclEntry ?? createAclEntryModel(mongoose);
+  const acl = createAclEntryModel(mongoose);
+  const users = createUserModel(mongoose);
+  const manager = (user: Pick<IUser, '_id' | 'name' | 'email' | 'avatar'>): SlackBotManager => ({
+    id: String(user._id),
+    name: user.name,
+    email: user.email,
+    avatar: user.avatar,
+  });
   const ensureIndexes = createChannelIndexGate(() => [
     workspaces,
     acl,
@@ -92,6 +103,30 @@ export function createSlackBotAccess(mongoose: typeof import('mongoose')): Slack
 
   return {
     allowedResources,
+    async search(workspaceId, query, limit) {
+      const tenantId = scope();
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+        throw new TypeError('Invalid bot manager search page size');
+      if (
+        !(await workspaces
+          .exists({ workspaceId, tenantId: tenantId ?? null, status: 'active' })
+          .read('primary'))
+      )
+        return null;
+      const filter = buildUserSearchFilter(query);
+      if (!filter) return [];
+      const candidates = await users
+        .find({
+          ...filter,
+          tenantId: tenantId ?? null,
+          agentTriggerDeletionStartedAt: { $exists: false },
+        })
+        .select('_id name email avatar')
+        .limit(limit)
+        .read('primary')
+        .lean();
+      return candidates.map(manager);
+    },
     async allows(record: Workspace, userId: string, session?: ClientSession) {
       return (await allowedResources([record], userId, session)).has(String(record._id));
     },
@@ -113,20 +148,16 @@ export function createSlackBotAccess(mongoose: typeof import('mongoose')): Slack
             .select('principalId')
             .session(session)
             .lean();
-          const users = await mongoose.models.User.find({
-            _id: { $in: entries.map((entry) => entry.principalId) },
-            tenantId: tenantId ?? null,
-            agentTriggerDeletionStartedAt: { $exists: false },
-          })
+          const records = await users
+            .find({
+              _id: { $in: entries.map((entry) => entry.principalId) },
+              tenantId: tenantId ?? null,
+              agentTriggerDeletionStartedAt: { $exists: false },
+            })
             .select('_id name email avatar')
             .session(session)
             .lean();
-          const managers: SlackBotManager[] = users.map((user) => ({
-            id: String(user._id),
-            name: user.name,
-            email: user.email,
-            avatar: user.avatar,
-          }));
+          const managers = records.map(manager);
           return { revision: workspace.revision, managers };
         },
         ensureIndexes,
@@ -146,9 +177,7 @@ export function createSlackBotAccess(mongoose: typeof import('mongoose')): Slack
         tenantId: tenantId ?? null,
         agentTriggerDeletionStartedAt: { $exists: false },
       };
-      if (
-        (await mongoose.models.User.countDocuments(userFilter).read('primary')) !== subjects.length
-      )
+      if ((await users.countDocuments(userFilter).read('primary')) !== subjects.length)
         return { ok: false, code: 'manager_unavailable' };
       const admit = await Promise.all(
         subjects.map((userId) => prepareChannelOwnerAdmission(mongoose, { userId, tenantId })),
@@ -166,10 +195,7 @@ export function createSlackBotAccess(mongoose: typeof import('mongoose')): Slack
             .session(session)
             .lean();
           if (!current) return { ok: false, code: 'workspace_changed' };
-          if (
-            (await mongoose.models.User.countDocuments(userFilter).session(session)) !==
-            subjects.length
-          )
+          if ((await users.countDocuments(userFilter).session(session)) !== subjects.length)
             return { ok: false, code: 'manager_unavailable' };
           for (const touch of admit)
             if (!(await touch(session))) return { ok: false, code: 'principal_unavailable' };
