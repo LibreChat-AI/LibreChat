@@ -3,11 +3,17 @@ import { createHash, randomBytes } from 'node:crypto';
 import { SLACK_CHANNEL_BOT_SCOPES } from 'librechat-data-provider';
 import { getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import type {
+  ChannelConfig,
+  SlackWorkspace,
+  SlackWorkspaceConnect,
+  ConfigureSlackApp,
+  SlackAppRegistration,
+} from 'librechat-data-provider';
+import type {
   SlackWorkspaceStorage,
   SlackInstallRecord,
   SlackClaimedInstall,
 } from '@librechat/data-schemas';
-import type { ChannelConfig, SlackWorkspace, SlackWorkspaceConnect } from 'librechat-data-provider';
 
 export const SLACK_WORKSPACE_CALLBACK_PATH = '/api/channels/workspaces/oauth/callback';
 
@@ -20,6 +26,7 @@ export interface SlackWorkspaceApp {
   appId: string;
   clientId: string;
   clientSecret: string;
+  signingSecret: string;
   redirectUri: string;
   flowLifetimeMs: number;
   requestTimeoutMs: number;
@@ -75,30 +82,28 @@ const grantSchema = z.object({
   refresh_token: z.string().optional(),
 });
 
-/** Read only the deployment's base configuration; tenant overrides must not replace this app. */
+/** Operator policy enables the service; application credentials belong to the current organization. */
 export function resolveSlackWorkspaceApp(
   config: ChannelConfig,
   redirectUri: string,
+  credentials?: Pick<SlackWorkspaceApp, 'appId' | 'clientId' | 'clientSecret' | 'signingSecret'>,
 ): SlackWorkspaceApp | undefined {
   const app = config.slackApp;
-  if (!config.enabled || !app?.enabled) return undefined;
+  if (!config.enabled || !app?.enabled || !credentials) return undefined;
   if (
     config.transport !== 'webhook' ||
-    !app.appId ||
-    !/^A[A-Z0-9]+$/.test(app.appId) ||
-    !app.clientId?.trim() ||
-    !app.clientSecret?.trim() ||
-    !app.signingSecret?.trim()
+    !/^A[A-Z0-9]+$/.test(credentials.appId) ||
+    !credentials.clientId.trim() ||
+    !credentials.clientSecret.trim() ||
+    !credentials.signingSecret.trim()
   )
     throw new Error(
-      'Shared Slack workspaces require webhook transport and deployment app credentials',
+      'Shared Slack workspaces require webhook transport and organization app credentials',
     );
   slackPublicURL(redirectUri);
   return {
     ...app,
-    appId: app.appId,
-    clientId: app.clientId,
-    clientSecret: app.clientSecret,
+    ...credentials,
     redirectUri,
   };
 }
@@ -126,7 +131,7 @@ async function readGrant(response: Response, limit: number): Promise<unknown> {
 /** OAuth installs a workspace for an org; it never grants the installer's execution identity. */
 export function createSlackWorkspaceService(deps: {
   storage: SlackWorkspaceStorage;
-  config: () => Promise<SlackWorkspaceApp | undefined>;
+  config: (appId?: string) => Promise<SlackWorkspaceApp | undefined>;
   canManage: (principal: SlackWorkspacePrincipal) => Promise<boolean>;
   encrypt: (token: string) => Promise<string>;
   fetch: SlackWorkspaceFetch;
@@ -144,14 +149,46 @@ export function createSlackWorkspaceService(deps: {
   }
 
   return {
+    async configureApp(
+      principal: SlackWorkspacePrincipal,
+      input: ConfigureSlackApp,
+    ): Promise<Result<SlackAppRegistration>> {
+      if (!inScope(principal) || !(await deps.canManage(principal))) return failure('forbidden');
+      const [encryptedClientSecret, encryptedSigningSecret] = await Promise.all([
+        deps.encrypt(input.clientSecret),
+        deps.encrypt(input.signingSecret),
+      ]);
+      const saved = await deps.storage.configureApp(
+        {
+          appId: input.appId,
+          clientId: input.clientId,
+          encryptedClientSecret,
+          encryptedSigningSecret,
+        },
+        principal.id,
+        input.expectedRevision,
+      );
+      return saved ? { ok: true, value: saved } : failure('stale_install');
+    },
+    async removeApp(
+      principal: SlackWorkspacePrincipal,
+      appId: string,
+      revision: string,
+    ): Promise<Result<boolean>> {
+      if (!inScope(principal) || !(await deps.canManage(principal))) return failure('forbidden');
+      const result = await deps.storage.removeApp(appId, revision);
+      if (result === 'workspace_in_use') return failure('workspace_in_use');
+      return result === 'removed' ? { ok: true, value: true } : failure('stale_install');
+    },
     async start(
       principal: SlackWorkspacePrincipal,
       workspaceId?: string,
+      appId?: string,
     ): Promise<Result<SlackWorkspaceConnect>> {
       if (!inScope(principal) || !(await deps.canManage(principal))) return failure('forbidden');
-      const app = await deps.config();
-      if (!app) return failure('not_configured');
       const current = workspaceId ? await deps.storage.read(workspaceId) : null;
+      const app = await deps.config(current?.appId ?? appId);
+      if (!app) return failure('not_configured');
       if (workspaceId && (!current || current.appId !== app.appId))
         return failure('workspace_changed');
       const state = randomBytes(32).toString('base64url');
@@ -208,7 +245,7 @@ export function createSlackWorkspaceService(deps: {
     async finish(flow: SlackClaimedInstall, code: string): Promise<Result<SlackWorkspace>> {
       const principal = { id: flow.userId, tenantId: flow.tenantId };
       if (!inScope(principal) || !(await deps.canManage(principal))) return failure('forbidden');
-      const app = await deps.config();
+      const app = await deps.config(flow.appId);
       if (!app) return failure('not_configured');
       if (
         flow.appId !== app.appId ||
@@ -242,7 +279,7 @@ export function createSlackWorkspaceService(deps: {
       const scopes = [...new Set(grant.data.scope.split(',').map((scope) => scope.trim()))];
       if (!SLACK_CHANNEL_BOT_SCOPES.every((scope) => scopes.includes(scope)))
         return failure('missing_scopes');
-      const configured = await deps.config();
+      const configured = await deps.config(flow.appId);
       if (
         !configured ||
         configured.appId !== app.appId ||

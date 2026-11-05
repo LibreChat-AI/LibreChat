@@ -2665,37 +2665,6 @@ describe('createAdminConfigHandlers', () => {
   });
 
   describe('getBaseConfig', () => {
-    it('removes deployment Slack credentials from normalized and raw config responses', async () => {
-      const endpoints = {
-        agents: {
-          channels: {
-            slackApp: {
-              enabled: true,
-              appId: 'public-app-id',
-              clientId: 'public-client-id',
-              clientSecret: 'private-slack-client',
-              signingSecret: 'private-slack-signing',
-            },
-          },
-        },
-      };
-      const { handlers } = createHandlers({
-        getAppConfig: jest.fn().mockResolvedValue({
-          endpoints,
-          config: { endpoints: structuredClone(endpoints) },
-        }),
-      });
-      const res = mockRes();
-      await handlers.getBaseConfig(mockReq(), res);
-      expect(res.statusCode).toBe(200);
-      const serialized = JSON.stringify(res.body);
-      expect(serialized).not.toContain('private-slack');
-      expect(serialized).not.toContain('clientSecret');
-      expect(serialized).not.toContain('signingSecret');
-      expect(serialized).toContain('public-app-id');
-      expect(serialized).toContain('public-client-id');
-    });
-
     it('returns 403 when user lacks READ_CONFIGS', async () => {
       const { handlers } = createHandlers({
         hasConfigCapability: jest.fn().mockResolvedValue(false),

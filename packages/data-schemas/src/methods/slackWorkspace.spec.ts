@@ -69,6 +69,84 @@ describe('organization-owned Slack workspaces', () => {
     });
   });
 
+  const appCredentials = {
+    appId: 'A123',
+    clientId: '123.456',
+    encryptedClientSecret: 'encrypted-client-secret',
+    encryptedSigningSecret: 'encrypted-signing-secret',
+  };
+
+  it('keeps app credentials organization-owned, secret-free in listings and isolated by tenant', async () => {
+    await scoped('org-a', async () => {
+      expect(await store.configureApp(appCredentials, userId)).toMatchObject({
+        appId: 'A123',
+        clientId: '123.456',
+      });
+      expect(await store.app('A123')).toMatchObject(appCredentials);
+      expect(JSON.stringify(await store.apps())).not.toContain('encrypted-');
+      await closeResponseScopes(db, { userId, tenantId: 'org-a' });
+      await eraseChannelPersistenceForUser(db, { userId, tenantId: 'org-a' });
+      expect((await store.apps()).apps).toHaveLength(1);
+    });
+    await scoped('org-b', async () => {
+      expect(await store.app('A123')).toBeNull();
+      expect((await store.apps()).apps).toEqual([]);
+    });
+  });
+
+  it('requires the current app revision and fences a callback when credentials change', async () => {
+    await scoped('org-a', async () => {
+      const first = await store.configureApp(appCredentials, userId);
+      expect(first).not.toBeNull();
+      await start('before-app-update');
+      expect(await store.configureApp(appCredentials, userId)).toBeNull();
+      expect(await store.configureApp(appCredentials, userId, 'stale')).toBeNull();
+      const next = await store.configureApp(
+        { ...appCredentials, encryptedClientSecret: 'replacement-ciphertext' },
+        userId,
+        first!.revision,
+      );
+      expect(next?.revision).not.toBe(first!.revision);
+      expect(await finish('before-app-update')).toEqual({ ok: false, code: 'stale_install' });
+    });
+  });
+
+  it('does not remove credentials while workspaces use the app, then erases both secrets', async () => {
+    await scoped('org-a', async () => {
+      await store.configureApp(appCredentials, userId);
+      await start('active-workspace');
+      const installed = await finish('active-workspace');
+      expect(installed.ok).toBe(true);
+      const current = await store.app('A123');
+      expect(await store.removeApp('A123', current!.revision)).toBe('workspace_in_use');
+      if (!installed.ok) throw new Error('Test install failed');
+      await store.disconnect(installed.workspace.workspaceId);
+      const disconnected = await store.app('A123');
+      expect(await store.removeApp('A123', disconnected!.revision)).toBe('removed');
+      expect(await store.app('A123')).toBeNull();
+      expect((await store.apps()).apps).toEqual([]);
+    });
+  });
+
+  it('allows only one concurrent update of the same organization app revision', async () => {
+    await scoped('org-a', async () => {
+      const current = await store.configureApp(appCredentials, userId);
+      const changes = await Promise.all([
+        store.configureApp(
+          { ...appCredentials, encryptedClientSecret: 'first' },
+          userId,
+          current!.revision,
+        ),
+        store.configureApp(
+          { ...appCredentials, encryptedClientSecret: 'second' },
+          userId,
+          current!.revision,
+        ),
+      ]);
+      expect(changes.filter(Boolean)).toHaveLength(1);
+    });
+  });
+
   it('supports several workspaces without tying them to the installing user', async () => {
     await scoped('org-a', async () => {
       await start('state-a');

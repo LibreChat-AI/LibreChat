@@ -31,6 +31,9 @@ export interface SlackInstallGeneration {
   appId: string;
   revision: string;
   writes: number;
+  clientId?: string;
+  encryptedClientSecret?: string;
+  encryptedSigningSecret?: string;
 }
 
 export function createSlackWorkspaceModel(
@@ -97,6 +100,9 @@ export function createSlackInstallGenerationModel(
     appId: { type: String, required: true },
     revision: { type: String, required: true },
     writes: { type: Number, required: true, default: 0 },
+    clientId: String,
+    encryptedClientSecret: { type: String, select: false },
+    encryptedSigningSecret: { type: String, select: false },
   });
   schema.index({ partition: 1, appId: 1 }, { unique: true });
   applyTenantIsolation(schema);

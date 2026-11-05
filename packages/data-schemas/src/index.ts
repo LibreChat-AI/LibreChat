@@ -15,6 +15,7 @@ export type {
   SlackWorkspaceRecord,
   SlackInstallRecord,
   SlackClaimedInstall,
+  SlackInstallGeneration,
 } from './models/slackWorkspace';
 export { createResponseStorage, sameResponseTerminalReceipt } from './methods/response';
 export type {

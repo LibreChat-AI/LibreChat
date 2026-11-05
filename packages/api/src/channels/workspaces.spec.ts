@@ -75,6 +75,7 @@ describe('Slack workspace installation', () => {
       appId: 'A123',
       clientId: '123.456',
       clientSecret: 'test-client-secret',
+      signingSecret: 'test-signing-secret',
       redirectUri: 'https://chat.example/base/api/channels/workspaces/oauth/callback',
       flowLifetimeMs: 600_000,
       requestTimeoutMs: 10_000,
@@ -112,6 +113,25 @@ describe('Slack workspace installation', () => {
       }),
     );
     expect(await service.flow(state)).toBeNull();
+  });
+
+  it('registers encrypted organization app credentials without returning either secret', async () => {
+    const result = await scoped(() =>
+      service.configureApp(principal, {
+        appId: 'A123',
+        clientId: '123.456',
+        clientSecret: 'test-client-secret',
+        signingSecret: 'test-signing-secret',
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('secret');
+    const stored = await scoped(() => storage.app('A123'));
+    expect(stored?.encryptedClientSecret).toMatch(/^v3:/);
+    expect(stored?.encryptedSigningSecret).toMatch(/^v3:/);
+    expect(await decryptCredential(stored!.encryptedClientSecret!)).toBe('test-client-secret');
+    expect(await decryptCredential(stored!.encryptedSigningSecret!)).toBe('test-signing-secret');
+    expect(await tenantStorage.run({ tenantId: 'org-b' }, () => storage.app('A123'))).toBeNull();
   });
 
   it('rejects users without organization management permission before creating an attempt', async () => {
@@ -263,11 +283,66 @@ describe('Slack workspace installation', () => {
         logError: jest.fn(),
       });
     server.get('/workspaces', handlers.list);
+    server.get('/workspaces/apps', handlers.apps);
+    server.put('/workspaces/apps', handlers.configureApp);
+    server.post('/workspaces/apps/:appId/remove', handlers.removeApp);
     server.post('/workspaces/connect', setOAuthSession, handlers.connect);
     server.delete('/workspaces/attempts/:flowId', handlers.cancel);
     server.get('/api/channels/workspaces/oauth/callback', handlers.callback);
     return supertest(server);
   }
+
+  it('requires fresh same-tenant admin authority to register an app and never echoes secrets', async () => {
+    const input = {
+      appId: 'A123',
+      clientId: '123.456',
+      clientSecret: 'private-client',
+      signingSecret: 'private-signing',
+    };
+    await http().put('/workspaces/apps').send(input).expect(401);
+    await http()
+      .put('/workspaces/apps')
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-b')
+      .send(input)
+      .expect(403);
+    canManage.mockResolvedValueOnce(false);
+    await http()
+      .put('/workspaces/apps')
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-a')
+      .send(input)
+      .expect(403);
+    expect(await scoped(() => storage.app('A123'))).toBeNull();
+    const saved = await http()
+      .put('/workspaces/apps')
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-a')
+      .send(input)
+      .expect(200);
+    expect(saved.body).toMatchObject({ appId: 'A123', clientId: '123.456' });
+    expect(JSON.stringify(saved.body)).not.toContain('private-');
+    const listed = await http()
+      .get('/workspaces/apps')
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-a')
+      .expect(200);
+    expect(listed.body.apps).toEqual([saved.body]);
+    expect(JSON.stringify(listed.body)).not.toContain('private-');
+    await http()
+      .put('/workspaces/apps')
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-a')
+      .send(input)
+      .expect(409);
+    await http()
+      .post('/workspaces/apps/A123/remove')
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-a')
+      .send({ revision: saved.body.revision })
+      .expect(204);
+    expect(await scoped(() => storage.app('A123'))).toBeNull();
+  });
 
   it('requires a signed-in same-tenant principal on browser management routes', async () => {
     const anonymous = await http().get('/workspaces').expect(401);
@@ -279,7 +354,7 @@ describe('Slack workspace installation', () => {
       .expect(403);
   });
 
-  it('uses deployment app configuration and freshly verifies organization admin capabilities', async () => {
+  it('uses organization app credentials with deployment policy and fresh admin capabilities', async () => {
     const config: AppConfig = {
       config: {},
       fileStrategy: FileSources.local,
@@ -291,16 +366,23 @@ describe('Slack workspace installation', () => {
             transport: 'webhook',
             slackApp: {
               enabled: true,
-              appId: 'A123',
-              clientId: '123.456',
-              clientSecret: 'test-secret',
-              signingSecret: 'test-signature',
             },
           }),
         },
       },
     };
     const readAppConfig = jest.fn(async () => config);
+    await scoped(async () =>
+      storage.configureApp(
+        {
+          appId: 'A123',
+          clientId: '123.456',
+          encryptedClientSecret: await encryptCredential('test-secret'),
+          encryptedSigningSecret: await encryptCredential('test-signature'),
+        },
+        principal.id,
+      ),
+    );
     const findUser = jest.fn(async () => ({ tenantId: 'org-a', role: 'ADMIN' }));
     const isPrincipalActive = jest.fn(async () => true);
     const hasCapability = jest.fn(async () => true);
@@ -319,7 +401,7 @@ describe('Slack workspace installation', () => {
       .post('/workspaces/connect')
       .set('x-test-user', 'yes')
       .set('x-test-tenant', 'org-a')
-      .send({})
+      .send({ appId: 'A123' })
       .expect(200);
     expect(readAppConfig).toHaveBeenCalledWith({ baseOnly: true, failClosed: true });
     const destination = new URL(initial.body.url);

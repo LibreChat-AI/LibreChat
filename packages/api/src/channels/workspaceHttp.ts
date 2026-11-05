@@ -14,10 +14,31 @@ const identifier = z
   .min(1)
   .max(128)
   .regex(/^[\w-]+$/);
-const connectBody = z.object({ workspaceId: identifier.optional() }).strict();
+const appId = z
+  .string()
+  .regex(/^A[A-Z0-9]+$/)
+  .max(256);
+const configureBody = z
+  .object({
+    appId,
+    clientId: z
+      .string()
+      .regex(/^\d+\.\d+$/)
+      .max(512),
+    clientSecret: z.string().trim().min(1).max(512),
+    signingSecret: z.string().trim().min(1).max(512),
+    expectedRevision: identifier.optional(),
+  })
+  .strict();
+const connectBody = z
+  .object({ workspaceId: identifier.optional(), appId: appId.optional() })
+  .strict();
 const pageQuery = z.object({ cursor: identifier.optional() }).strict();
 
 export interface SlackWorkspaceHandlers {
+  apps: RequestHandler;
+  configureApp: RequestHandler;
+  removeApp: RequestHandler;
   list: RequestHandler;
   connect: RequestHandler;
   disconnect: RequestHandler;
@@ -29,7 +50,11 @@ export interface SlackWorkspaceHandlers {
 export function createSlackWorkspaceHandlers(deps: {
   service: SlackWorkspaceService;
   storage: SlackWorkspaceStorage;
-  settings: () => Promise<{ configured: boolean; pageSize: number }>;
+  settings: () => Promise<{
+    configured: boolean;
+    pageSize: number;
+    setup?: { redirectUri: string; eventsBaseUrl: string; interactionsBaseUrl: string };
+  }>;
   canManage: (principal: SlackWorkspacePrincipal) => Promise<boolean>;
   clientBaseUrl: string;
   logError: (metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
@@ -59,6 +84,50 @@ export function createSlackWorkspaceHandlers(deps: {
     };
 
   return {
+    apps: browser(async (req, res, principal) => {
+      const page = pageQuery.safeParse(req.query);
+      if (!page.success) {
+        res.sendStatus(400);
+        return;
+      }
+      const [settings, canManage] = await Promise.all([deps.settings(), deps.canManage(principal)]);
+      const apps = canManage
+        ? await deps.storage.apps(page.data.cursor, settings.pageSize)
+        : { apps: [] };
+      res.json({ configured: settings.configured, canManage, setup: settings.setup, ...apps });
+    }),
+    configureApp: browser(async (req, res, principal) => {
+      const input = configureBody.safeParse(req.body);
+      if (!input.success) {
+        res.status(400).json({ ok: false, error: { code: 'invalid_install' } });
+        return;
+      }
+      if (!(await deps.settings()).configured) {
+        res.sendStatus(404);
+        return;
+      }
+      const result = await deps.service.configureApp(principal, input.data);
+      if (!result.ok) res.status(result.error.code === 'forbidden' ? 403 : 409).json(result);
+      else res.json(result.value);
+    }),
+    removeApp: browser(async (req, res, principal) => {
+      const body = z.object({ revision: identifier }).strict().safeParse(req.body);
+      const parsed = z.object({ appId, revision: identifier }).safeParse({
+        appId: req.params.appId,
+        revision: body.success ? body.data.revision : undefined,
+      });
+      if (!parsed.success) {
+        res.sendStatus(400);
+        return;
+      }
+      const result = await deps.service.removeApp(
+        principal,
+        parsed.data.appId,
+        parsed.data.revision,
+      );
+      if (!result.ok) res.status(result.error.code === 'forbidden' ? 403 : 409).json(result);
+      else res.sendStatus(204);
+    }),
     list: browser(async (req, res, principal) => {
       const page = pageQuery.safeParse(req.query);
       if (!page.success) {
@@ -75,7 +144,7 @@ export function createSlackWorkspaceHandlers(deps: {
         res.status(400).json({ ok: false, error: { code: 'invalid_install' } });
         return;
       }
-      const result = await deps.service.start(principal, body.data.workspaceId);
+      const result = await deps.service.start(principal, body.data.workspaceId, body.data.appId);
       if (!result.ok) {
         res.status(result.error.code === 'forbidden' ? 403 : 409).json(result);
         return;
