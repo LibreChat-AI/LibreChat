@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import { Tools, Permissions, EToolResources, PermissionTypes } from 'librechat-data-provider';
 import type { Request as ServerRequest } from 'express';
 import type { IRole } from '@librechat/data-schemas';
@@ -175,6 +176,24 @@ describe('resolveToolRolePermissions', () => {
     expect(getRoleByName).not.toHaveBeenCalled();
     expect(canUse(Tools.file_search)).toBe(true);
   });
+
+  it('logs the denial of a tool the agent requests', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const getRoleByName = jest
+      .fn()
+      .mockResolvedValue(buildRole({ [PermissionTypes.WEB_SEARCH]: { [Permissions.USE]: false } }));
+    const canUse = await resolveToolRolePermissions({
+      req: buildReq(),
+      tools: [Tools.web_search],
+      getRoleByName,
+    });
+
+    expect(canUse(Tools.web_search)).toBe(false);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(`[${PermissionTypes.WEB_SEARCH}] Forbidden`),
+    );
+    warn.mockRestore();
+  });
 });
 
 describe('checkToolResourceUploadPermission', () => {
@@ -330,6 +349,23 @@ describe('resolveToolRoleGrants', () => {
       fileSearch: true,
       webSearch: false,
     });
+  });
+
+  /** The grants are read on every agent request, whether or not the agent uses
+   *  the tool, so a role without web search would log a denial per message. */
+  it('resolves a withheld grant without logging a denial', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const getRoleByName = jest
+      .fn()
+      .mockResolvedValue(buildRole({ [PermissionTypes.WEB_SEARCH]: { [Permissions.USE]: false } }));
+
+    await expect(resolveToolRoleGrants({ req: buildReq(), getRoleByName })).resolves.toEqual({
+      runCode: true,
+      fileSearch: true,
+      webSearch: false,
+    });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   /** The whole point of centralizing: several gates on one request must not
