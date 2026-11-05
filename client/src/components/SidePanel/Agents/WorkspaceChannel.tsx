@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import { ExternalLink } from 'lucide-react';
 import { dataService, QueryKeys, MutationKeys } from 'librechat-data-provider';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -161,6 +162,9 @@ export default function WorkspaceChannel({
   const entries = routes.data?.pages.flatMap((page) => page.routes) ?? [];
   const replacesOther = settledInput && target.data?.occupied && !target.data.assignedToThisChannel;
   const blocked = replacesOther && target.data?.canReplace !== true;
+  const replaceAssignmentLabel = specific
+    ? 'com_ui_channels_workspace_replace_channel_assignment'
+    : 'com_ui_channels_workspace_replace_assignment';
   const alreadyAssigned =
     settledInput &&
     target.isSuccess &&
@@ -174,8 +178,22 @@ export default function WorkspaceChannel({
           <span className="min-w-0 flex-1 font-medium break-words">
             {workspace.data?.workspace.teamName ?? localize('com_ui_channels_org_workspace')}
           </span>
-          <ChannelStatus status={channel.status} />
+          <ChannelStatus
+            status={channel.status}
+            pendingLabel="com_ui_channels_workspace_not_assigned"
+          />
         </div>
+        {workspace.data && (
+          <a
+            href={`https://slack.com/app_redirect?app=${encodeURIComponent(workspace.data.workspace.appId)}&team=${encodeURIComponent(workspace.data.workspace.teamId)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1 underline underline-offset-2"
+          >
+            {localize('com_ui_channels_workspace_open_bot')}
+            <ExternalLink className="size-3" aria-hidden="true" />
+          </a>
+        )}
         <p className="text-text-secondary">{localize('com_ui_channels_workspace_identity')}</p>
         {workspace.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
         {workspace.isError && (
@@ -332,17 +350,31 @@ export default function WorkspaceChannel({
             )}
             {replacesOther && !blocked && (
               <div className="border-border-medium space-y-2 rounded-lg border p-3">
-                <p>{localize('com_ui_channels_workspace_replace_help')}</p>
+                <p>
+                  {localize(
+                    specific
+                      ? 'com_ui_channels_workspace_replace_channel_help'
+                      : 'com_ui_channels_workspace_replace_help',
+                  )}
+                </p>
                 <div className="flex items-center gap-2">
                   <Checkbox
-                    aria-label={localize('com_ui_channels_workspace_replace')}
+                    aria-label={localize(
+                      specific
+                        ? 'com_ui_channels_workspace_replace_channel'
+                        : 'com_ui_channels_workspace_replace',
+                    )}
                     id={`${id}-replace`}
                     checked={replace}
                     disabled={busy}
                     onCheckedChange={(value) => setReplace(value === true)}
                   />
                   <Label htmlFor={`${id}-replace`}>
-                    {localize('com_ui_channels_workspace_replace')}
+                    {localize(
+                      specific
+                        ? 'com_ui_channels_workspace_replace_channel'
+                        : 'com_ui_channels_workspace_replace',
+                    )}
                   </Label>
                 </div>
               </div>
@@ -361,9 +393,7 @@ export default function WorkspaceChannel({
                 onClick={() => mutation.mutate({ kind: 'assign' })}
               >
                 {localize(
-                  replacesOther
-                    ? 'com_ui_channels_workspace_replace_assignment'
-                    : 'com_ui_channels_workspace_assign',
+                  replacesOther ? replaceAssignmentLabel : 'com_ui_channels_workspace_assign',
                 )}
               </Button>
             )}
