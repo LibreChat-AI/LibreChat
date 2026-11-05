@@ -2,8 +2,11 @@ import { Response } from 'express';
 import { Providers } from '@librechat/agents';
 import { Tools } from 'librechat-data-provider';
 import { logger } from '@librechat/data-schemas';
+import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { MemoryArtifact } from 'librechat-data-provider';
-import { createMemoryTool, processMemory } from '../memory';
+import { createMemoryProcessor, createMemoryTool, processMemory } from '../memory';
+import { isLangfuseTraceSampled } from '~/langfuse/policy';
+import { traceIdForMessage } from '~/langfuse/trace';
 import Tokenizer from '~/utils/tokenizer';
 
 // Mock the logger
@@ -677,5 +680,145 @@ describe('processMemory - GPT-5+ handling', () => {
         }),
       }),
     );
+  });
+});
+
+describe('processMemory - Langfuse tracing', () => {
+  const langfuseEnvKeys = [
+    'LANGFUSE_PUBLIC_KEY',
+    'LANGFUSE_SECRET_KEY',
+    'LANGFUSE_BASE_URL',
+    'LANGFUSE_TRACING_ENABLED',
+    'LANGFUSE_SAMPLE_RATE',
+  ];
+  const emailAppConfig = { langfuse: { trace: { userIdField: 'email' } } } as AppConfig;
+  const user = { id: 'user-1', email: 'alice@example.com' } as IUser;
+  let mockRes: Partial<Response>;
+
+  const clearLangfuseEnv = () => {
+    for (const key of langfuseEnvKeys) {
+      delete process.env[key];
+    }
+  };
+
+  const runMemory = (overrides: Partial<Parameters<typeof processMemory>[0]> = {}) =>
+    processMemory({
+      res: mockRes as Response,
+      userId: 'user-1',
+      setMemory: jest.fn().mockResolvedValue({ ok: true }),
+      deleteMemory: jest.fn().mockResolvedValue({ ok: true }),
+      messages: [],
+      memory: 'Test memory',
+      messageId: 'msg-123',
+      conversationId: 'conv-123',
+      instructions: 'Test instructions',
+      ...overrides,
+    });
+
+  const getRunConfig = () => {
+    const { Run } = jest.requireMock('@librechat/agents');
+    return (Run.create as jest.Mock).mock.calls[0][0];
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearLangfuseEnv();
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-test';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-test';
+    process.env.LANGFUSE_BASE_URL = 'https://langfuse.example.com';
+    mockRes = { headersSent: false, write: jest.fn() };
+    const { Run } = jest.requireMock('@librechat/agents');
+    (Run.create as jest.Mock).mockResolvedValue({
+      processStream: jest.fn().mockResolvedValue('Memory processed'),
+    });
+  });
+
+  afterAll(clearLangfuseEnv);
+
+  it('traces under the configured user id field', async () => {
+    await runMemory({ appConfig: emailAppConfig, user });
+
+    const runConfig = getRunConfig();
+    expect(runConfig.langfuse).toEqual(
+      expect.objectContaining({ userId: 'alice@example.com', deterministicTraceId: false }),
+    );
+    expect(runConfig.langfuse.enabled).not.toBe(false);
+  });
+
+  it('keeps the run id on the message so memory attachments stay linked to it', async () => {
+    await runMemory({ appConfig: emailAppConfig, user });
+
+    expect(getRunConfig().runId).toBe('msg-123');
+  });
+
+  it('leaves the SDK default user id without a langfuse trace config', async () => {
+    await runMemory({ user });
+
+    expect(getRunConfig().langfuse.userId).toBeUndefined();
+  });
+
+  it('leaves the SDK default user id when the user lacks the configured field', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+
+    const result = await runMemory({ appConfig: emailAppConfig, user: { id: 'user-2' } as IUser });
+
+    expect(result).toEqual([]);
+    expect(getRunConfig().langfuse.userId).toBeUndefined();
+    warn.mockRestore();
+  });
+
+  it('disables tracing when Langfuse is turned off', async () => {
+    process.env.LANGFUSE_TRACING_ENABLED = 'false';
+
+    await runMemory({ appConfig: emailAppConfig, user });
+
+    expect(getRunConfig().langfuse.enabled).toBe(false);
+  });
+
+  it('disables tracing for temporary chats', async () => {
+    await runMemory({ appConfig: emailAppConfig, user, isTemporary: true });
+
+    expect(getRunConfig().langfuse.enabled).toBe(false);
+  });
+
+  it('samples on the message id, matching the main run', async () => {
+    process.env.LANGFUSE_SAMPLE_RATE = '0.5';
+    const ids = Array.from({ length: 50 }, (_, index) => `msg-${index}`);
+    const sampledId = ids.find((id) => isLangfuseTraceSampled(traceIdForMessage(id)));
+    const unsampledId = ids.find((id) => !isLangfuseTraceSampled(traceIdForMessage(id)));
+    expect(sampledId).toBeDefined();
+    expect(unsampledId).toBeDefined();
+
+    await runMemory({ messageId: unsampledId, appConfig: emailAppConfig, user });
+    expect(getRunConfig().langfuse.enabled).toBe(false);
+
+    jest.clearAllMocks();
+    await runMemory({ messageId: sampledId, appConfig: emailAppConfig, user });
+    expect(getRunConfig().langfuse.enabled).not.toBe(false);
+  });
+
+  it('forwards the app config from createMemoryProcessor', async () => {
+    const [, processor] = await createMemoryProcessor({
+      res: mockRes as Response,
+      userId: 'user-1',
+      messageId: 'msg-123',
+      conversationId: 'conv-123',
+      memoryMethods: {
+        setMemory: jest.fn().mockResolvedValue({ ok: true }),
+        deleteMemory: jest.fn().mockResolvedValue({ ok: true }),
+        getUserMemories: jest.fn().mockResolvedValue([]),
+        getFormattedMemories: jest.fn().mockResolvedValue({
+          withKeys: '',
+          withoutKeys: '',
+          totalTokens: 0,
+        }),
+      },
+      appConfig: emailAppConfig,
+      user,
+    });
+
+    await processor?.([]);
+
+    expect(getRunConfig().langfuse.userId).toBe('alice@example.com');
   });
 });

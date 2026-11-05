@@ -9477,6 +9477,29 @@ describe('AgentClient - titleConvo', () => {
       expect(mockCreateMemoryProcessor.mock.calls[0][0]).not.toHaveProperty('contentInspection');
     });
 
+    it('should pass the app config and temporary-chat state for memory run tracing', async () => {
+      mockReq.body = { isTemporary: true };
+      mockCheckAccess.mockResolvedValue(true);
+      mockInitializeAgent.mockResolvedValue({
+        ...mockAgent,
+        provider: EModelEndpoint.openAI,
+      });
+      mockCreateMemoryProcessor.mockResolvedValue([undefined, jest.fn()]);
+
+      client = new AgentClient(mockOptions);
+      client.conversationId = 'convo-123';
+      client.responseMessageId = 'response-123';
+
+      await client.useMemory();
+
+      expect(mockCreateMemoryProcessor).toHaveBeenCalledWith(
+        expect.objectContaining({
+          appConfig: mockReq.config,
+          isTemporary: true,
+        }),
+      );
+    });
+
     it('should load different agent when memory config agent.id differs from current agent id', async () => {
       const differentAgentId = 'different-agent-456';
       const differentAgent = {
