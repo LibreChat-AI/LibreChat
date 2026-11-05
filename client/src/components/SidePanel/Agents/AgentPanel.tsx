@@ -484,9 +484,40 @@ export default function AgentPanel() {
 
   const { onSelect: onSelectAgent } = useSelectAgent();
 
+  const allowedProviders = useMemo(
+    () => new Set(agentsConfig?.allowedProviders),
+    [agentsConfig?.allowedProviders],
+  );
+  const providerEndpoints = useMemo(
+    () =>
+      Object.keys(endpointsConfig ?? {}).filter(
+        (key) =>
+          !isAssistantsEndpoint(key) &&
+          (allowedProviders.size === 0 || allowedProviders.has(key)) &&
+          key !== EModelEndpoint.agents,
+      ),
+    [endpointsConfig, allowedProviders],
+  );
+  const providers = useMemo(
+    () => providerEndpoints.map((provider) => createProviderOption(provider)),
+    [providerEndpoints],
+  );
   const modelsQuery = useModelCatalog(
     { refetchOnMount: 'always' },
-    { endpoints: Object.keys(endpointsConfig ?? {}) },
+    { eager: true, endpoints: providerEndpoints },
+  );
+  const isProviderReady = useCallback(
+    (provider: string) => {
+      const key = resolveModelCatalogKey(provider, modelsQuery.endpointQueries);
+      const query = modelsQuery.endpointQueries[key];
+      return (
+        providerEndpoints.includes(key) &&
+        query?.isFetchedAfterMount === true &&
+        query.isSuccess &&
+        !query.isFetching
+      );
+    },
+    [modelsQuery.endpointQueries, providerEndpoints],
   );
   const basicAgentQuery = useGetAgentByIdQuery(current_agent_id);
 
@@ -519,15 +550,15 @@ export default function AgentPanel() {
     expandedAgentQuery.refetch();
   }, [expandedAgentQuery]);
 
-  const modelsReady = modelsQuery.isFetchedAfterMount && !modelsQuery.isFetching;
-  const modelsError = modelsQuery.isFetchedAfterMount && !modelsQuery.isSuccess;
-  /** The models query is seeded with a static fallback config, so its entries only describe the
-   *  active server once the fetch issued on mount has resolved. Until then there is nothing
-   *  authoritative to offer, and an outright failure must not fall back to the seed either. */
-  const models = useMemo(
-    () => (modelsQuery.isFetchedAfterMount && !modelsError ? (modelsQuery.data ?? {}) : {}),
-    [modelsError, modelsQuery.isFetchedAfterMount, modelsQuery.data],
-  );
+  const models = useMemo(() => {
+    const available: Record<string, string[] | undefined> = {};
+    for (const endpoint of providerEndpoints) {
+      if (isProviderReady(endpoint)) {
+        available[endpoint] = modelsQuery.data[endpoint];
+      }
+    }
+    return available;
+  }, [isProviderReady, modelsQuery.data, providerEndpoints]);
   const methods = useForm<AgentForm>({
     defaultValues: getDefaultAgentFormValues(defaultStatefulCodeEnvironment),
     mode: 'onChange',
@@ -542,6 +573,17 @@ export default function AgentPanel() {
     resetField,
     formState: { dirtyFields },
   } = methods;
+  const providerOption = useWatch({ control, name: 'provider' });
+  const selectedProvider = String(
+    typeof providerOption === 'string' ? providerOption : (providerOption?.value ?? ''),
+  );
+  const selectedModelsQuery =
+    modelsQuery.endpointQueries[
+      resolveModelCatalogKey(selectedProvider, modelsQuery.endpointQueries)
+    ];
+  const modelsReady = !selectedProvider || isProviderReady(selectedProvider);
+  const modelsError =
+    selectedModelsQuery?.isFetchedAfterMount === true && selectedModelsQuery.isError;
   const submittedStartersRef = useRef<SubmittedStarters | null>(null);
   const submittedInstructionsRef = useRef<{
     agentId: string;
@@ -663,30 +705,18 @@ export default function AgentPanel() {
     }
   }, [agentQuery.data, instructionsPromptStatus]);
 
-  const allowedProviders = useMemo(
-    () => new Set(agentsConfig?.allowedProviders),
-    [agentsConfig?.allowedProviders],
-  );
-
-  const providers = useMemo(
-    () =>
-      Object.keys(endpointsConfig ?? {})
-        .filter(
-          (key) =>
-            !isAssistantsEndpoint(key) &&
-            (allowedProviders.size > 0 ? allowedProviders.has(key) : true) &&
-            key !== EModelEndpoint.agents,
-        )
-        .map((provider) => createProviderOption(provider)),
-    [endpointsConfig, allowedProviders],
-  );
   useEffect(() => {
-    if (endpointsConfig == null || !modelsReady || !modelsQuery.isSuccess) {
+    if (endpointsConfig == null) {
       return;
     }
 
     const storedProvider = localStorage.getItem(LocalStorageKeys.LAST_AGENT_PROVIDER) ?? '';
     const storedModel = localStorage.getItem(LocalStorageKeys.LAST_AGENT_MODEL) ?? '';
+    const storedKey = resolveModelCatalogKey(storedProvider, modelsQuery.endpointQueries);
+    // Only a successful mounted fetch can invalidate a remembered model.
+    if (providerEndpoints.includes(storedKey) && !isProviderReady(storedProvider)) {
+      return;
+    }
     const storedSelection = getAvailableAgentSelection({
       provider: storedProvider,
       model: storedModel,
@@ -701,15 +731,18 @@ export default function AgentPanel() {
       localStorage.removeItem(LocalStorageKeys.LAST_AGENT_MODEL);
     }
 
-    if (current_agent_id || dirtyFields.provider === true || dirtyFields.model === true) {
+    if (
+      current_agent_id ||
+      dirtyFields.provider === true ||
+      dirtyFields.model === true ||
+      (providerEndpoints.includes(
+        resolveModelCatalogKey(selectedProvider, modelsQuery.endpointQueries),
+      ) &&
+        !isProviderReady(selectedProvider))
+    ) {
       return;
     }
 
-    const selectedProviderOption = getValues('provider');
-    const selectedProvider =
-      (typeof selectedProviderOption === 'string'
-        ? selectedProviderOption
-        : (selectedProviderOption as StringOption | undefined)?.value) ?? '';
     const selectedModel = getValues('model') ?? '';
 
     if (storedSelection.provider !== selectedProvider) {
@@ -725,9 +758,11 @@ export default function AgentPanel() {
     endpointsConfig,
     getValues,
     models,
-    modelsQuery.isSuccess,
-    modelsReady,
+    modelsQuery.endpointQueries,
+    isProviderReady,
+    providerEndpoints,
     providers,
+    selectedProvider,
     setValue,
   ]);
 
@@ -913,7 +948,7 @@ export default function AgentPanel() {
           status: 'error',
         });
       }
-      if (!modelsReady || modelsError) {
+      if (!isProviderReady(provider)) {
         return showToast({
           message: localize('com_error_models_not_loaded'),
           status: 'error',
@@ -955,8 +990,7 @@ export default function AgentPanel() {
       handleAvatarUpload,
       instructionsPromptStatus,
       models,
-      modelsError,
-      modelsReady,
+      isProviderReady,
       update,
       showToast,
       startupConfig,
@@ -1042,13 +1076,34 @@ export default function AgentPanel() {
             </div>
           )}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.model && (
-            <ModelPanel
-              models={models}
-              providers={providers}
-              modelsError={modelsError}
-              modelsReady={modelsReady}
-              setActivePanel={setActivePanel}
-            />
+            <>
+              <ModelPanel
+                models={models}
+                providers={providers}
+                modelsError={modelsError}
+                modelsReady={modelsReady}
+                setActivePanel={setActivePanel}
+              />
+              {providerEndpoints.map((endpoint) => {
+                const query = modelsQuery.endpointQueries[endpoint];
+                if (!query?.isError) {
+                  return null;
+                }
+                return (
+                  <Button
+                    key={endpoint}
+                    type="button"
+                    variant="outline"
+                    disabled={query.isFetching}
+                    onClick={() => {
+                      void query.refetch();
+                    }}
+                  >
+                    {localize('com_ui_retry')} ({endpoint})
+                  </Button>
+                );
+              })}
+            </>
           )}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.builder && (
             <AgentConfig

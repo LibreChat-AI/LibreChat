@@ -157,6 +157,42 @@ test('URL settings replace an unavailable saved agent before checking send readi
   }
 });
 
+for (const interaction of ['pointer', 'keyboard']) {
+  test(`opening the selector by ${interaction} starts its catalogs without waiting for browser idle`, async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      window.requestIdleCallback = () => 1;
+      window.cancelIdleCallback = () => {};
+    });
+    const catalogs = new Set<string>();
+    page.on('request', (request) => {
+      if (request.method() !== 'GET') return;
+      const url = new URL(request.url());
+      if (url.pathname === '/api/models') catalogs.add('models');
+      if (url.pathname === '/api/agents') catalogs.add('agents');
+      if (/^\/api\/assistants\/v[12]$/.test(url.pathname)) catalogs.add('assistants');
+    });
+    await page.goto(`${NEW_CHAT_PATH}?spec=e2e-soft-default`);
+    await expect(trigger(page)).toContainText('E2E Soft Default');
+    await expect(composer(page)).toBeEditable();
+    expect([...catalogs]).toEqual([]);
+
+    if (interaction === 'keyboard') {
+      await trigger(page).focus();
+      await page.keyboard.press('Enter');
+    } else {
+      await trigger(page).click();
+    }
+    await expect.poll(() => [...catalogs].sort()).toEqual(['agents', 'assistants', 'models']);
+    await page.getByRole('option', { name: 'Mock Provider C', exact: true }).click();
+    await page.getByRole('option', { name: 'mock-model-c', exact: true }).click();
+    await expect(trigger(page)).toContainText('mock-model-c');
+    await expect(trigger(page)).toHaveAttribute('aria-expanded', 'false');
+    await expect(composer(page)).toBeEditable();
+  });
+}
+
 test('selecting a model waits for its catalog and closes the picker before composer tools', async ({
   page,
 }) => {
