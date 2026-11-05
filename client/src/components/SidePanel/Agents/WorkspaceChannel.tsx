@@ -9,6 +9,7 @@ import {
   Label,
   OGDialogFooter,
   Separator,
+  Tag,
 } from '@librechat/client';
 import type { AgentChannel, SlackWorkspaceRouteTarget } from 'librechat-data-provider';
 import { channelErrorLabel } from '~/utils/channelErrors';
@@ -160,7 +161,12 @@ export default function WorkspaceChannel({
   const entries = routes.data?.pages.flatMap((page) => page.routes) ?? [];
   const replacesOther = settledInput && target.data?.occupied && !target.data.assignedToThisChannel;
   const blocked = replacesOther && target.data?.canReplace !== true;
-  const alreadyAssigned = target.data?.assignedToThisChannel && channel.status === 'active';
+  const alreadyAssigned =
+    settledInput &&
+    target.isSuccess &&
+    !target.isFetching &&
+    target.data.assignedToThisChannel &&
+    channel.status === 'active';
   return (
     <>
       <div className="min-h-0 space-y-4 overflow-y-auto px-6 pb-6 text-sm">
@@ -331,25 +337,33 @@ export default function WorkspaceChannel({
                 </div>
               </div>
             )}
-            <Button
-              type="button"
-              disabled={
-                busy ||
-                !validTarget ||
-                !settledInput ||
-                !target.isSuccess ||
-                target.isFetching ||
-                Boolean(alreadyAssigned) ||
-                Boolean(replacesOther && (blocked || !replace))
-              }
-              onClick={() => mutation.mutate({ kind: 'assign' })}
-            >
-              {localize(
-                channel.status === 'active'
-                  ? 'com_ui_channels_workspace_assign'
-                  : 'com_ui_channels_activate',
-              )}
-            </Button>
+            {alreadyAssigned ? (
+              <Tag
+                role="status"
+                className="w-fit"
+                variant="success"
+                label={localize('com_ui_channels_workspace_assigned')}
+              />
+            ) : (
+              <Button
+                type="button"
+                disabled={
+                  busy ||
+                  !validTarget ||
+                  !settledInput ||
+                  !target.isSuccess ||
+                  target.isFetching ||
+                  Boolean(replacesOther && (blocked || !replace))
+                }
+                onClick={() => mutation.mutate({ kind: 'assign' })}
+              >
+                {localize(
+                  replacesOther
+                    ? 'com_ui_channels_workspace_replace_assignment'
+                    : 'com_ui_channels_workspace_assign',
+                )}
+              </Button>
+            )}
           </section>
         )}
         {confirm && (
