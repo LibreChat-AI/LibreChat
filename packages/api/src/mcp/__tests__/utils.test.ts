@@ -414,6 +414,7 @@ describe('redactServerSecrets', () => {
       updatedAt: 1700000000000,
       consumeOnly: false,
       inspectionFailed: false,
+      deferLoading: true,
       customUserVars: { API_KEY: { title: 'API Key', description: 'Your key' } },
     };
     const redacted = redactServerSecrets(config);
@@ -428,6 +429,7 @@ describe('redactServerSecrets', () => {
     expect(redacted.updatedAt).toBe(1700000000000);
     expect(redacted.consumeOnly).toBe(false);
     expect(redacted.inspectionFailed).toBe(false);
+    expect(redacted.deferLoading).toBe(true);
     expect(redacted.customUserVars).toEqual(config.customUserVars);
   });
 

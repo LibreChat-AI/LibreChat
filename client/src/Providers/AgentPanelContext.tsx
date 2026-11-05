@@ -145,6 +145,7 @@ export function AgentPanelProvider({
           requestScoped: serverConfig?.requestScoped,
           metadata,
           consumeOnly: serverConfig?.consumeOnly,
+          deferLoading: serverData.deferLoading ?? serverConfig?.deferLoading,
         });
       }
     }
@@ -182,6 +183,7 @@ export function AgentPanelProvider({
         ),
         requestScoped: serverConfig?.requestScoped,
         consumeOnly: serverConfig?.consumeOnly,
+        deferLoading: serverConfig?.deferLoading,
       });
     }
 
