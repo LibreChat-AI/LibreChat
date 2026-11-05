@@ -1348,6 +1348,8 @@ export type TBalanceResponse = {
   refillMode?: BalanceRefillMode;
   /** Credits granted at the start of the current period; absent on records not yet granted one. */
   allotment?: number;
+  /** When `allotment` was granted; a later `lastRefill` means a writer replaced the period without it. */
+  allottedAt?: Date | string;
 };
 
 /* -------------------------------------------------------------------------- */

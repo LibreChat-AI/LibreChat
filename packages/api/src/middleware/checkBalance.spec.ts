@@ -302,6 +302,8 @@ describe('checkBalance', () => {
         user: 'user-1',
         tokenCredits: 5000,
         allotment: 5000,
+        allottedAt: expect.any(Date),
+        lastRefill: expect.any(Date),
       });
     });
 
@@ -322,6 +324,7 @@ describe('checkBalance', () => {
         user: 'user-1',
         tokenCredits: 5000,
         allotment: 5000,
+        allottedAt: expect.any(Date),
         autoRefillEnabled: true,
         refillIntervalValue: 1,
         refillIntervalUnit: 'days',
@@ -341,6 +344,8 @@ describe('checkBalance', () => {
         user: 'user-1',
         tokenCredits: 5000,
         allotment: 5000,
+        allottedAt: expect.any(Date),
+        lastRefill: expect.any(Date),
       });
     });
 
@@ -353,6 +358,8 @@ describe('checkBalance', () => {
         user: 'user-1',
         tokenCredits: 0,
         allotment: 0,
+        allottedAt: expect.any(Date),
+        lastRefill: expect.any(Date),
       });
     });
 

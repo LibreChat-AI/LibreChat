@@ -1,4 +1,8 @@
-import { CREDITS_PER_USD, getRefillEligibilityDate } from 'librechat-data-provider';
+import {
+  CREDITS_PER_USD,
+  getGrantedAllotment,
+  getRefillEligibilityDate,
+} from 'librechat-data-provider';
 import type { BalanceDisplay, BalanceRefillMode, TBalanceResponse } from 'librechat-data-provider';
 import type { CurrencyConfig } from './tokens';
 import { formatCost } from './tokens';
@@ -71,7 +75,7 @@ export function summarizeBalance(
 ): BalanceSummary {
   const credits = Number.isFinite(balance.tokenCredits) ? balance.tokenCredits : 0;
   const refillAmount = balance.autoRefillEnabled ? positive(balance.refillAmount) : null;
-  const allotment = positive(balance.allotment) ?? refillAmount ?? positive(startBalance);
+  const allotment = getGrantedAllotment(balance) ?? refillAmount ?? positive(startBalance);
   const usedPercent = getUsedPercent(credits, allotment);
 
   let tone: BalanceTone = 'normal';

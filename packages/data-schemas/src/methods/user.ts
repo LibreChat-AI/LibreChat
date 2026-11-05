@@ -291,6 +291,7 @@ export function createUserMethods(
     }
 
     const Balance = mongoose.models.Balance;
+    const grantedAt = new Date();
     const initial: {
       tokenCredits: number;
       autoRefillEnabled?: boolean;
@@ -299,7 +300,14 @@ export function createUserMethods(
       refillAmount?: number;
       refillMode?: BalanceRefillMode;
       allotment: number;
-    } = { tokenCredits: balanceConfig.startBalance, allotment: balanceConfig.startBalance };
+      allottedAt: Date;
+      lastRefill: Date;
+    } = {
+      tokenCredits: balanceConfig.startBalance,
+      allotment: balanceConfig.startBalance,
+      allottedAt: grantedAt,
+      lastRefill: grantedAt,
+    };
 
     if (
       balanceConfig.autoRefillEnabled &&
