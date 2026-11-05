@@ -75,6 +75,7 @@ function createDefaultValues(): MCPServerFormData {
     auth: {
       auth_type: 'none' as MCPServerFormData['auth']['auth_type'],
     },
+    headers: [],
     trust: false,
   };
 }

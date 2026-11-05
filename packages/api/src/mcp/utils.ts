@@ -10,8 +10,8 @@ import {
 import type { AgentToolOptions, MCPOptions } from 'librechat-data-provider';
 import type { ParsedServerConfig } from '~/mcp/types';
 import type { RequestBody } from '~/types';
+import { getHeaderNames, isApiKeyHeaderOverridden, isGeneratedUserApiKeyVariable } from './headers';
 import { capturePersistedToolOptions, retainToolOptionsLimits } from '~/agents/options';
-import { isApiKeyHeaderOverridden, isGeneratedUserApiKeyVariable } from './headers';
 import { isDirectOpenIDBearerRecoveryEnabled } from '~/mcp/openid';
 import { ALLOWED_BODY_FIELDS, isPluginSourced } from '~/utils/env';
 import { isEnabled } from '~/utils/common';
@@ -718,6 +718,8 @@ export function resolveServerInstructions(config: ParsedServerConfig): string | 
 export type RedactedServerConfig = Partial<ParsedServerConfig> & {
   /** True when this config needs chat request fields before it can connect. */
   requestScoped?: boolean;
+  /** Names of the custom `headers` the config sends; values are never included. */
+  headerNames?: string[];
 };
 
 /**
@@ -781,6 +783,12 @@ export function redactServerSecrets(
 
   if (config.obo) {
     safe.obo = config.obo;
+  }
+
+  /** Custom header names only: values may carry credentials and are never returned. */
+  const headerNames = getHeaderNames(config);
+  if (headerNames && options?.canEdit) {
+    safe.headerNames = headerNames;
   }
 
   if (!options?.canEdit) {

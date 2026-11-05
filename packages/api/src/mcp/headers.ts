@@ -27,6 +27,29 @@ export function getAdminApiKeyHeader(
   return { name, value: `${prefix}${key}` };
 }
 
+/** Reads the static `headers` map a remote transport config may carry. */
+export function getConfigHeaders(config?: MCPOptions | null): Record<string, string> | undefined {
+  return (config as { headers?: Record<string, string> } | null | undefined)?.headers ?? undefined;
+}
+
+const GENERATED_API_KEY_PLACEHOLDER = /\{\{MCP_API_KEY(?:_[a-f0-9]{64})?\}\}/;
+
+/**
+ * Names of the user-defined custom headers, never their values, for API responses. The header
+ * generated for a per-user API key is excluded because the API key settings own it.
+ */
+export function getHeaderNames(config: MCPOptions): string[] | undefined {
+  const headers = getConfigHeaders(config);
+  if (!headers) {
+    return undefined;
+  }
+  const isUserApiKey = config.apiKey?.source === 'user';
+  const names = Object.keys(headers).filter(
+    (name) => !(isUserApiKey && GENERATED_API_KEY_PLACEHOLDER.test(headers[name])),
+  );
+  return names.length > 0 ? names : undefined;
+}
+
 /** A shadowed catalog credential must not be injected or required by a chat connection. */
 export function isApiKeyHeaderOverridden(
   apiKey: ApiKeyConfig,

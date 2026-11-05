@@ -56,6 +56,8 @@ export interface MCPServerDefinition {
   consumeOnly?: boolean;
   /** True when chat request fields are required before the server can connect. */
   requestScoped?: boolean;
+  /** Names of the custom headers the server sends; values are never returned. */
+  headerNames?: string[];
 }
 
 // Poll intervals are kept local since they're timer references that can't be serialized
@@ -134,7 +136,7 @@ export function useMCPServerManager({
     const definitions: MCPServerDefinition[] = [];
     if (loadedServers) {
       for (const [serverName, metadata] of Object.entries(loadedServers)) {
-        const { dbId, consumeOnly, requestScoped, ...config } = metadata;
+        const { dbId, consumeOnly, requestScoped, headerNames, ...config } = metadata;
 
         // Get effective permissions from the permissions map using _id
         // Fall back to 1 (VIEW) for YAML-based servers without _id
@@ -146,6 +148,7 @@ export function useMCPServerManager({
           effectivePermissions,
           consumeOnly,
           requestScoped,
+          headerNames,
           config,
         });
       }

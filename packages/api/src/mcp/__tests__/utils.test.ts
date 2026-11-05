@@ -262,6 +262,38 @@ describe('buildOAuthToolCallName', () => {
 });
 
 describe('redactServerSecrets', () => {
+  it('exposes custom header names to editors and never their values', () => {
+    const config = {
+      type: 'streamable-http',
+      url: 'https://example.com/mcp',
+      headers: { 'X-Client-Id': 'client-123', 'X-Client-Secret': 'super-secret' },
+    } as unknown as ParsedServerConfig;
+
+    const redacted = redactServerSecrets(config, { canEdit: true });
+    expect(redacted.headerNames).toEqual(['X-Client-Id', 'X-Client-Secret']);
+    expect((redacted as { headers?: unknown }).headers).toBeUndefined();
+    expect(JSON.stringify(redacted)).not.toContain('super-secret');
+    expect(JSON.stringify(redacted)).not.toContain('client-123');
+  });
+
+  it('omits header names for viewers who cannot edit', () => {
+    const config = {
+      type: 'sse',
+      url: 'https://example.com/mcp',
+      headers: { 'X-Client-Secret': 'super-secret' },
+    } as unknown as ParsedServerConfig;
+    expect(redactServerSecrets(config).headerNames).toBeUndefined();
+  });
+
+  it('excludes the header generated for a per-user API key', () => {
+    const config = {
+      type: 'sse',
+      url: 'https://example.com/mcp',
+      apiKey: { source: 'user', authorization_type: 'bearer' },
+      headers: { Authorization: `Bearer {{MCP_API_KEY_${'a'.repeat(64)}}}`, 'X-Tenant': 't1' },
+    } as unknown as ParsedServerConfig;
+    expect(redactServerSecrets(config, { canEdit: true }).headerNames).toEqual(['X-Tenant']);
+  });
   it('should strip apiKey.key from admin-sourced keys', () => {
     const config: ParsedServerConfig = {
       type: 'sse',

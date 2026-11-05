@@ -23,6 +23,7 @@ const {
   createMCPServerAuditor,
   settleMCPCommit,
   getMCPErrorResponse,
+  withRetainedHeaderValues,
   prepareMCPServerOAuthDeletion,
   cleanupDeletedMCPServerOAuthUsers,
 } = require('@librechat/api');
@@ -568,7 +569,9 @@ const updateMCPServerController = async (req, res) => {
       { includeHidden: true },
     );
     if (configHasObo(existingConfig) && !(await callerCanConfigureObo(req))) {
-      if (violatesOboLockdown(existingConfig, validation.data)) {
+      /** Blank header values mean "keep", so compare with the values they resolve to. */
+      const comparedConfig = withRetainedHeaderValues(validation.data, existingConfig);
+      if (violatesOboLockdown(existingConfig, comparedConfig)) {
         logger.warn(
           `[updateMCPServer] User ${userId} attempted to modify a locked field on OBO server '${serverName}' without ${Permissions.CONFIGURE_OBO} permission`,
         );
