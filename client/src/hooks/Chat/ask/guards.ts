@@ -48,7 +48,7 @@ export function isTargetReady(
     const assistant = queryClient.getQueryState<Assistant>(
       assistantKey(endpoint, id, version, conversation?.model),
     );
-    return assistant?.status === 'success' && assistant.data?.id === id;
+    return assistant?.status === 'success' && !assistant.isInvalidated && assistant.data?.id === id;
   }
   return !!conversation?.model;
 }

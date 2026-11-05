@@ -25,6 +25,7 @@ import { mapEndpoints, getPresetTitle } from '~/utils';
 import { EndpointIcon } from '~/components/Endpoints';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import { filterMentionEndpoints } from './mentions';
+import useModelSpecs from '~/hooks/Agents/specs';
 
 const defaultInterface = getConfigDefaults().interface;
 
@@ -150,7 +151,7 @@ export default function useMentions({
     [listMap, assistantMap, endpointsConfig],
   );
 
-  const modelSpecs = useMemo(() => startupConfig?.modelSpecs?.list ?? [], [startupConfig]);
+  const modelSpecs = useModelSpecs(startupConfig);
 
   const options: MentionOption[] = useMemo(() => {
     const modelOptions = validEndpoints.flatMap((endpoint) => {

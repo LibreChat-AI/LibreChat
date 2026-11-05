@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { dataService, EModelEndpoint, QueryKeys } from 'librechat-data-provider';
 import type { TConversation, Agent, Assistant, TModelsConfig } from 'librechat-data-provider';
 import { startupConfigKey } from '~/data-provider/Endpoints/queries';
-import { isTargetReady } from '../ask/guards';
+import { assistantKey, isTargetReady } from '../ask/guards';
 import useTarget from '../target';
 
 jest.mock('../../../../../packages/data-provider/src/data-service', () => ({
@@ -194,4 +194,62 @@ it('keeps a missing remembered agent selected rather than using a catalog fallba
   await waitFor(() => expect(result.current.target.failed).toBe(true));
   expect(result.current.value?.agent_id).toBe('agent_missing');
   expect(dataService.listAgents).not.toHaveBeenCalled();
+});
+
+it('retries a successfully loaded catalog when the selected endpoint is absent', async () => {
+  const endpoints = jest.spyOn(dataService, 'getAIEndpoints');
+  const { result, client } = setup(conversation({ model: 'configured-model' }));
+  await waitFor(() => expect(result.current.target.ready).toBe(true));
+  act(() => client.setQueryData([QueryKeys.endpoints], {}));
+  await waitFor(() => expect(result.current.target.failed).toBe(true));
+  const calls = endpoints.mock.calls.length;
+  act(() => result.current.target.retry());
+  await waitFor(() => expect(endpoints.mock.calls.length).toBeGreaterThan(calls));
+  await waitFor(() => expect(result.current.target.ready).toBe(true));
+  expect(result.current.value?.model).toBe('configured-model');
+});
+
+it('refuses sends while selected assistant details are invalidated and restores readiness after refresh', async () => {
+  const refresh = deferred<Assistant>();
+  const retrieve = jest
+    .spyOn(dataService, 'getAssistantById')
+    .mockResolvedValueOnce({ id: 'asst-one', model: 'model' } as Assistant)
+    .mockReturnValue(refresh.promise);
+  const { result, client } = setup(
+    conversation({ endpoint: EModelEndpoint.assistants, assistant_id: 'asst-one', model: 'model' }),
+  );
+  await waitFor(() => expect(result.current.target.ready).toBe(true));
+  act(() => {
+    void client.invalidateQueries([QueryKeys.assistant, EModelEndpoint.assistants, 'asst-one']);
+  });
+  expect(isTargetReady(client, result.current.value)).toBe(false);
+  await waitFor(() => expect(result.current.target.ready).toBe(false));
+  expect(result.current.value?.assistant_id).toBe('asst-one');
+  await act(async () =>
+    refresh.resolve({ id: 'asst-one', name: 'updated', model: 'model' } as Assistant),
+  );
+  await waitFor(() => expect(result.current.target.ready).toBe(true));
+  expect(result.current.target.assistant?.name).toBe('updated');
+  expect(retrieve).toHaveBeenCalledTimes(2);
+});
+
+it('keeps a deleted assistant unsendable even while its previous details remain cached', async () => {
+  const retrieve = jest
+    .spyOn(dataService, 'getAssistantById')
+    .mockResolvedValueOnce({ id: 'asst-one', model: 'model' } as Assistant);
+  const { result, client } = setup(
+    conversation({ endpoint: EModelEndpoint.assistants, assistant_id: 'asst-one', model: 'model' }),
+  );
+  await waitFor(() => expect(result.current.target.ready).toBe(true));
+  retrieve.mockRejectedValue(Object.assign(new Error('deleted'), { status: 404 }));
+  act(() => {
+    void client.invalidateQueries([QueryKeys.assistant, EModelEndpoint.assistants, 'asst-one']);
+  });
+  expect(isTargetReady(client, result.current.value)).toBe(false);
+  await waitFor(() => expect(result.current.target.failed).toBe(true));
+  expect(result.current.target.ready).toBe(false);
+  expect(
+    client.getQueryData(assistantKey(EModelEndpoint.assistants, 'asst-one', 2, 'model')),
+  ).toBeDefined();
+  expect(result.current.value?.assistant_id).toBe('asst-one');
 });

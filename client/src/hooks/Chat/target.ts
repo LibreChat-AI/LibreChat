@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useCallback, useRef } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useGetEndpointModelsQuery } from 'librechat-data-provider/react-query';
 import {
   dataService,
@@ -38,6 +38,7 @@ export default function useTarget(
   conversation: TConversation | null,
   setConversation: Dispatch<SetStateAction<TConversation | null>>,
 ) {
+  const queryClient = useQueryClient();
   const startup = useGetStartupConfig();
   const config = startup.data;
   const endpoints = useGetEndpointsQuery();
@@ -49,8 +50,9 @@ export default function useTarget(
   const isSavedAgent = !!agentId && !isEphemeralAgentId(agentId);
   const agent = useGetAgentByIdQuery(agentId, { enabled: isSavedAgent });
   const version = endpoints.data?.[endpoint]?.version ?? defaultAssistantsVersion[endpoint];
+  const selectedAssistantKey = assistantKey(endpoint, assistantId, version, conversation?.model);
   const assistant = useQuery(
-    assistantKey(endpoint, assistantId, version, conversation?.model),
+    selectedAssistantKey,
     () =>
       dataService.getAssistantById({
         endpoint: endpoint as AssistantsEndpoint,
@@ -58,7 +60,12 @@ export default function useTarget(
         version,
         model: conversation?.model,
       }),
-    { enabled: !!assistantId && !!endpoints.data?.[endpoint], retry: false, staleTime: 5000 },
+    {
+      enabled: !!assistantId && !!endpoints.data?.[endpoint],
+      retry: false,
+      staleTime: 5000,
+      notifyOnChangeProps: 'all',
+    },
   );
   const needsAgent = isAgent && !agentId;
   const needsAssistant = isAssistant && !assistantId;
@@ -93,16 +100,21 @@ export default function useTarget(
 
   let targetReady = !!conversation?.model && (!isAgent || !!agentId);
   if (isSavedAgent) targetReady = agent.data != null && !agent.isError;
-  if (isAssistant) targetReady = assistant.data != null && !assistant.isError;
+  if (isAssistant)
+    targetReady =
+      assistant.data != null &&
+      !assistant.isError &&
+      queryClient.getQueryState(selectedAssistantKey)?.isInvalidated !== true;
   const empty =
     (needsModel && models.isSuccess && !defaultModel) ||
     (needsAgent && agents.isSuccess && !defaultAgent) ||
     (needsAssistant && assistants.isSuccess && !defaultAssistant);
+  const missingEndpoint = endpoints.isSuccess && !!endpoint && !endpoints.data?.[endpoint];
   const failed =
     empty ||
     startup.isError ||
     endpoints.isError ||
-    (endpoints.isSuccess && !!endpoint && !endpoints.data?.[endpoint]) ||
+    missingEndpoint ||
     (isSavedAgent && agent.isError) ||
     (isAssistant && !!assistantId && assistant.isError) ||
     (needsAgent && agents.isError) ||
@@ -112,7 +124,7 @@ export default function useTarget(
   const retryRef = useRef(() => {});
   retryRef.current = () => {
     if (startup.isError) void startup.refetch();
-    if (endpoints.isError) void endpoints.refetch();
+    if (endpoints.isError || missingEndpoint) void endpoints.refetch();
     if (isSavedAgent) void agent.refetch();
     if (assistantId) void assistant.refetch();
     if (needsAgent) void agents.refetch();

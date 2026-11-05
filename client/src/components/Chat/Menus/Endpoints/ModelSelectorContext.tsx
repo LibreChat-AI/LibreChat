@@ -15,6 +15,7 @@ import { useGetEndpointsQuery, useListAgentsQuery } from '~/data-provider';
 import { useModelSelectorChatContext } from './ModelSelectorChatContext';
 import useSelectMention from '~/hooks/Input/useSelectMention';
 import { useCatalogReady } from '~/hooks/useCatalogWarmup';
+import useModelSpecs from '~/hooks/Agents/specs';
 import { filterItems } from './utils';
 
 type ModelSelectorContextType = {
@@ -64,7 +65,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
     useModelSelectorChatContext();
   const localize = useLocalize();
   const { announcePolite } = useLiveAnnouncer();
-  const modelSpecs = useMemo(() => startupConfig?.modelSpecs?.list ?? [], [startupConfig]);
+  const modelSpecs = useModelSpecs(startupConfig);
 
   const permissionLevel = useAgentDefaultPermissionLevel();
   /**
