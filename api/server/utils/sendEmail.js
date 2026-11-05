@@ -4,7 +4,12 @@ const FormData = require('form-data');
 const nodemailer = require('nodemailer');
 const handlebars = require('handlebars');
 const { logger } = require('@librechat/data-schemas');
-const { isEnabled, readFileAsString, serviceRequestBudget } = require('@librechat/api');
+const {
+  isEnabled,
+  handleEmailError,
+  readFileAsString,
+  serviceRequestBudget,
+} = require('@librechat/api');
 
 /**
  * Sends an email using Mailgun API.
@@ -165,11 +170,7 @@ const sendEmail = async ({ email, subject, payload, template, throwError = true 
 
     return await sendEmailViaSMTP({ transporterOptions, mailOptions });
   } catch (error) {
-    if (throwError) {
-      throw error;
-    }
-    logger.error('[sendEmail]', error);
-    return error;
+    return handleEmailError(error, throwError);
   }
 };
 

@@ -6,6 +6,7 @@ jest.mock('@librechat/data-schemas', () => ({
   logger: { debug: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('../../../../packages/api/src/utils/email'),
   logAxiosError: jest.fn(),
   isEnabled: jest.fn((val) => val === 'true' || val === true),
   readFileAsString: jest.fn(),
@@ -50,6 +51,7 @@ function loadSendEmail() {
     logger: { debug: jest.fn(), warn: jest.fn(), error: jest.fn() },
   }));
   jest.mock('@librechat/api', () => ({
+    ...jest.requireActual('../../../../packages/api/src/utils/email'),
     logAxiosError: jest.fn(),
     isEnabled: jest.fn((val) => val === 'true' || val === true),
     readFileAsString: jest.fn().mockResolvedValue({ content: '<p>{{name}}</p>' }),
@@ -158,7 +160,7 @@ describe('sendEmail SMTP encryption options', () => {
 });
 
 describe('sendEmail Mailgun failures', () => {
-  it('leaves diagnostics to the caller without logging recovery secrets', async () => {
+  it.each([true, false])('sanitizes provider errors (throwError: %s)', async (throwError) => {
     process.env.MAILGUN_API_KEY = 'test-key';
     process.env.MAILGUN_DOMAIN = 'mail.example.com';
     const sendEmail = loadSendEmail();
@@ -172,9 +174,25 @@ describe('sendEmail Mailgun failures', () => {
     });
     const post = jest.spyOn(axios, 'post').mockRejectedValueOnce(error);
     try {
-      await expect(sendEmail(baseParams)).rejects.toBe(error);
+      let failure;
+      try {
+        failure = await sendEmail({ ...baseParams, throwError });
+        expect(throwError).toBe(false);
+      } catch (caught) {
+        failure = caught;
+        expect(throwError).toBe(true);
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBe(error);
+      expect(failure.message).toBe('Email delivery failed');
+      expect(failure.status).toBe(503);
+      expect(failure).not.toHaveProperty('cause');
+      expect(failure).not.toHaveProperty('response');
+      expect(failure).not.toHaveProperty('config');
+      expect(JSON.stringify(failure)).not.toContain(secret);
+      expect(failure.stack).not.toContain(secret);
       expect(logAxiosError).not.toHaveBeenCalled();
-      expect(logger.error).not.toHaveBeenCalled();
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain(secret);
       expect(JSON.stringify(logger.debug.mock.calls)).not.toContain(secret);
     } finally {
       post.mockRestore();

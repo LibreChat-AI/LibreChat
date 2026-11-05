@@ -7,7 +7,13 @@ import type {
   CDPSession,
   Page,
 } from '@playwright/test';
-import { seedPasskey, deleteUserByEmail, countUserPasskeys, enableTwoFactorFlag } from '../db';
+import {
+  seedPasskey,
+  deleteUserByEmail,
+  countUserPasskeys,
+  enableTwoFactorFlag,
+  seedPasswordReset,
+} from '../db';
 import { NEW_CHAT_PATH } from '../helpers';
 import { getPrimaryE2EUser } from '../../../setup/users.mock';
 
@@ -426,14 +432,15 @@ test.describe('passkeys', () => {
         data: { email: user.email },
       });
       expect(resetRequest.ok()).toBeTruthy();
-      const { link } = (await resetRequest.json()) as { link?: string };
-      expect(link).toBeTruthy();
-      const resetUrl = new URL(link as string);
+      expect(await resetRequest.json()).toEqual({
+        message: 'If an account with that email exists, a password reset link has been sent to it.',
+      });
+      const resetToken = await seedPasswordReset(user.email);
       const newPassword = 'passkey-e2e-password-2';
       const reset = await request.post('/api/auth/resetPassword', {
         data: {
-          userId: resetUrl.searchParams.get('userId'),
-          token: resetUrl.searchParams.get('token'),
+          userId: user.id,
+          token: resetToken,
           password: newPassword,
           confirm_password: newPassword,
         },

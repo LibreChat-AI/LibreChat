@@ -468,6 +468,7 @@
   "com_auth_reset_password_if_email_exists": "If an account with that email exists, an email with password reset instructions has been sent. Please make sure to check your spam folder.",
   "com_auth_reset_password_link_sent": "Email Sent",
   "com_auth_reset_password_success": "Password Reset Success",
+  "com_auth_reset_password_unavailable": "Email delivery is not configured. Contact your administrator to reset your password.",
   "com_auth_saml_login": "Continue with SAML",
   "com_auth_sign_in": "Sign in",
   "com_auth_sign_up": "Sign up",
