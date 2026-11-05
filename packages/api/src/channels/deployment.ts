@@ -21,20 +21,14 @@ export function applySlackWorkspaceEnvironment(
   const agents = config.endpoints?.agents;
   const previous = agents?.channels;
   try {
-    const publicServer = env.DOMAIN_SERVER?.trim();
-    if (!publicServer) throw new Error('Missing DOMAIN_SERVER');
-    const channels = channelConfigSchema.parse({
-      ...previous,
-      enabled: true,
-      transport: 'webhook',
-      gatewayUrl: env.SLACK_GATEWAY_URL || previous?.gatewayUrl,
-      slackApp: {
-        ...previous?.slackApp,
-        enabled: true,
-      },
-    });
-    for (const value of [publicServer, env.DOMAIN_CLIENT || publicServer, channels.gatewayUrl]) {
+    const publicServer = env.DOMAIN_SERVER;
+    const publicClient = env.DOMAIN_CLIENT;
+    if (!publicServer || !publicClient) throw new Error('Missing public application URLs');
+    const gatewayUrl = env.SLACK_GATEWAY_URL || previous?.gatewayUrl;
+    for (const value of [publicServer, publicClient, gatewayUrl]) {
       if (!value) continue;
+      if (value !== value.trim())
+        throw new Error('Public URLs must not contain surrounding whitespace');
       const url = slackPublicURL(value);
       const host = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
       if (
@@ -46,6 +40,16 @@ export function applySlackWorkspaceEnvironment(
       )
         throw new Error('Shared deployment requires public HTTPS URLs');
     }
+    const channels = channelConfigSchema.parse({
+      ...previous,
+      enabled: true,
+      transport: 'webhook',
+      gatewayUrl,
+      slackApp: {
+        ...previous?.slackApp,
+        enabled: true,
+      },
+    });
     return {
       ...config,
       endpoints: {
@@ -61,9 +65,9 @@ export function applySlackWorkspaceEnvironment(
       },
     };
   } catch {
-    // Schema diagnostics can contain submitted values, including submitted values.
+    // Schema diagnostics can contain submitted configuration values.
     throw new Error(
-      'Invalid shared Slack setup. Configure a public HTTPS DOMAIN_SERVER; DOMAIN_CLIENT and SLACK_GATEWAY_URL must also use public HTTPS when set. Replace the localhost defaults.',
+      'Invalid shared Slack setup. Configure public HTTPS DOMAIN_SERVER and DOMAIN_CLIENT without surrounding whitespace. SLACK_GATEWAY_URL must also use public HTTPS when set. Replace the localhost defaults.',
     );
   }
 }

@@ -33,14 +33,13 @@ describe('shared Slack deployment setup', () => {
     expect(applySlackWorkspaceEnvironment(ordinary, defaults)).toBe(ordinary);
   });
 
-  it('accepts a public hostname starting with an IP-range prefix and an omitted client origin', () => {
+  it('accepts a public hostname starting with an IP-range prefix', () => {
     expect(() =>
       applySlackWorkspaceEnvironment(
         {},
         {
           ...environment,
           DOMAIN_SERVER: 'https://fc.example.com/librechat',
-          DOMAIN_CLIENT: undefined,
         },
       ),
     ).not.toThrow();
@@ -57,6 +56,9 @@ describe('shared Slack deployment setup', () => {
       'https://[::1]',
       'https://[::ffff:127.0.0.1]',
       'https://10.0.0.1',
+      ' https://chat.example.com',
+      'https://chat.example.com ',
+      'https://chat.example.com\n',
     ])('rejects a nonpublic installation URL: %s', (value) => {
       expect(() => applySlackWorkspaceEnvironment({}, { ...environment, [field]: value })).toThrow(
         'public HTTPS',
@@ -117,6 +119,7 @@ describe('shared Slack deployment setup', () => {
     const second = applySlackWorkspaceEnvironment(first, {
       SLACK_WORKSPACES_ENABLED: 'true',
       DOMAIN_SERVER: environment.DOMAIN_SERVER,
+      DOMAIN_CLIENT: environment.DOMAIN_CLIENT,
     });
     expect(second.endpoints?.agents?.channels?.slackApp).toEqual(
       first.endpoints?.agents?.channels?.slackApp,
@@ -128,6 +131,8 @@ describe('shared Slack deployment setup', () => {
     { DOMAIN_SERVER: undefined },
     { DOMAIN_SERVER: '' },
     { DOMAIN_SERVER: '   ' },
+    { DOMAIN_CLIENT: undefined },
+    { DOMAIN_CLIENT: '' },
     { DOMAIN_SERVER: 'https://user:sensitive-secret@chat.example.com' },
     { SLACK_GATEWAY_URL: 'https://user:sensitive-secret@slack.example.com' },
   ])('rejects incomplete or invalid setup without echoing values', (override) => {

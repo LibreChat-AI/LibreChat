@@ -12,6 +12,13 @@ const fixture = mkdtempSync(join(tmpdir(), 'channel-gateway-chart-'));
 try {
   // Render the real gateway and main Service without downloading unrelated subcharts.
   mkdirSync(join(fixture, 'templates'));
+  writeFileSync(
+    join(fixture, 'templates', '_mongodb.tpl'),
+    `
+{{- define "mongodb.secretName" -}}fixture-mongodb{{- end -}}
+{{- define "mongodb.service.nameOverride" -}}fixture-mongodb{{- end -}}
+`,
+  );
   const metadata = yaml.load(readFileSync(resolve(chart, 'Chart.yaml'), 'utf8'));
   delete metadata.dependencies;
   writeFileSync(join(fixture, 'Chart.yaml'), yaml.dump(metadata));
@@ -83,6 +90,34 @@ try {
     'channelGateway.mode': 'shared',
     'channelGateway.channelId': '',
   };
+  assert.throws(
+    () => render({ ...shared, 'mongodb.enabled': true }),
+    /transaction-capable MongoDB/,
+  );
+  assert.throws(
+    () => render({ ...shared, 'mongodb.enabled': true, 'mongodb.architecture': 'standalone' }),
+    /transaction-capable MongoDB/,
+  );
+  assert.doesNotThrow(() =>
+    render({ ...shared, 'mongodb.enabled': true, 'mongodb.architecture': 'replicaset' }),
+  );
+  for (const platform of [
+    { librechat: { configEnv: { MONGO_URI: 'mongodb://external/LibreChat' } } },
+    {
+      global: {
+        librechat: {
+          env: [
+            { name: 'MONGO_URI', valueFrom: { secretKeyRef: { name: 'external-db', key: 'uri' } } },
+          ],
+        },
+      },
+    },
+    {
+      librechat: { injectBundledCredentials: { mongodb: false } },
+      global: { librechat: { existingSecretName: 'external-db' } },
+    },
+  ])
+    assert.doesNotThrow(() => render({ ...shared, 'mongodb.enabled': true }, platform));
   assert.throws(
     () => render({ ...shared, 'channelGateway.tenantId': 'org.a' }),
     /default tenantId/,

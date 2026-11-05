@@ -20,7 +20,7 @@ for (const file of [
 copyFileSync(join(root, '.env.example'), join(fixture, '.env'));
 process.on('exit', () => rmSync(fixture, { recursive: true, force: true }));
 
-function configuration(tag, source = false, shared = false) {
+function configuration(tag, source = false, shared = false, gatewayPort) {
   const files = ['docker-compose.yml', 'docker-compose.channels.yml'];
   if (shared) files.push('docker-compose.slack-workspaces.yml');
   if (source) {
@@ -57,6 +57,7 @@ function configuration(tag, source = false, shared = false) {
           CHANNEL_ID: 'legacy-connection',
           CHANNEL_TENANT_ID: 'org.a',
           SLACK_APP_TOKEN: 'xapp-fixture',
+          CHANNEL_GATEWAY_PORT: gatewayPort ?? '',
         },
       },
     ),
@@ -105,5 +106,18 @@ for (const source of [false, true]) {
   assert.equal(gateway.environment.CHANNEL_TENANT_ID, '_');
   assert.equal(gateway.environment.SLACK_APP_TOKEN, '');
   assert.equal(gateway.depends_on.api.condition, 'service_healthy');
+  assert.deepEqual(gateway.ports, [
+    {
+      mode: 'ingress',
+      host_ip: '127.0.0.1',
+      target: 8080,
+      published: '3081',
+      protocol: 'tcp',
+    },
+  ]);
 }
+assert.equal(
+  configuration('v1.2.3', false, true, '3999')['channel-gateway'].ports[0].published,
+  '3999',
+);
 console.log('PASS: shared Compose needs no app credentials and clears all bound-gateway settings');
