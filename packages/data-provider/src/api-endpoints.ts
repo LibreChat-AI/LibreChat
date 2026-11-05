@@ -266,12 +266,14 @@ export const deletePreset = () => `${BASE_URL}/api/presets/delete`;
 
 export const aiEndpoints = () => `${BASE_URL}/api/endpoints`;
 
-export const tokenConfig = () => `${BASE_URL}/api/endpoints/token-config`;
+export const tokenConfig = (endpoint?: string) =>
+  `${BASE_URL}/api/endpoints/token-config${endpoint == null ? '' : `?endpoint=${encodeURIComponent(endpoint)}`}`;
 
 export const reasoningCapabilities = (endpoint: string) =>
   `${BASE_URL}/api/endpoints/reasoning-capabilities?endpoint=${encodeURIComponent(endpoint)}`;
 
-export const models = () => `${BASE_URL}/api/models`;
+export const models = (endpoint?: string) =>
+  `${BASE_URL}/api/models${endpoint == null ? '' : `?endpoint=${encodeURIComponent(endpoint)}`}`;
 
 export const login = () => `${BASE_URL}/api/auth/login`;
 

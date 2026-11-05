@@ -24,6 +24,7 @@ import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useUserKey from '~/hooks/Input/useUserKey';
+import { isTargetReady } from './ask/guards';
 
 /** The app's side of a pane's turns: its catalogs, router, composer files, code workspace and
  *  logger, for the package's `useTurns`. */
@@ -66,6 +67,13 @@ export default function useTurnServices({
     getRouteProjectId: getRouteChatProjectId,
     resolveCode: (submitted) => {
       const latest = getConversation();
+      if (
+        config.loaded === false ||
+        !isTargetReady(queryClient, submitted) ||
+        (addedConversation != null && !isTargetReady(queryClient, addedConversation))
+      ) {
+        return null;
+      }
       const latestApprovalMode = latest?.codeApprovalMode;
       const workspaceSubmission = codeWorkspaceState.resolveSubmission(
         latest?.codeWorkspaces ?? submitted?.codeWorkspaces,

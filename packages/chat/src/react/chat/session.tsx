@@ -30,18 +30,22 @@ export type ChatSessionMessages = {
 export function ChatSessionProvider({
   index = 0,
   conversationId,
+  historyReady = true,
   children,
 }: {
   /** The pane: `0` is the root pane, `1` the added (multi-convo) pane. */
   index?: number;
   /** The route's conversation id, which can run ahead of the pane's conversation. */
   conversationId?: string;
+  /** The host has loaded the record whose reply stamp must precede history. */
+  historyReady?: boolean;
   children: (session: ChatSessionMessages) => ReactNode;
 }): ReactNode {
   const host = useChatHost();
   const isSubmitting = useIsSubmitting(index);
   const { messages, isLoading, isFetching } = host.useMessages(conversationId, {
     isStreaming: isSubmitting,
+    enabled: historyReady,
   });
 
   const chat = useChatHelpers(index, conversationId);
@@ -52,7 +56,12 @@ export function ChatSessionProvider({
   /** Resume waits for messages to load AND the warm-cache background revalidation to settle:
    *  a stale invalidated cache mounts with isLoading false while the refetch is in flight, and
    *  resume must not build from (or race) it. */
-  useResumeOnLoad(conversationId, chat.getMessages, index, !isLoading && !isFetching);
+  useResumeOnLoad(
+    conversationId,
+    chat.getMessages,
+    index,
+    historyReady && !isLoading && !isFetching,
+  );
 
   /** Shows a server-owned queued follow-up as the next user turn as soon as its predecessor
    *  completes, ahead of the receipt and active-job polls. */

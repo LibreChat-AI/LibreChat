@@ -18,6 +18,7 @@ import store from '~/store';
 /** No `useGetStartupConfig`: a hook that still read the deployment config directly would throw. */
 jest.mock('~/data-provider', () => ({
   useTokenConfigQuery: () => ({ data: undefined }),
+  useGetEndpointsQuery: () => ({ data: undefined }),
   useGetAgentByIdQuery: () => ({ data: undefined }),
   useAbortStreamMutation: () => ({ mutateAsync: jest.fn() }),
   supportsGenerationProtocolV2: () => false,

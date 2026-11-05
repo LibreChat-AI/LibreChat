@@ -54,7 +54,6 @@ import {
   useChatContext,
   useChatFormContext,
   useAddedChatContext,
-  useAssistantsMapContext,
   BadgeRowProvider,
 } from '~/Providers';
 import {
@@ -67,6 +66,7 @@ import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskUserQuestionPopover from './AskUserQuestionPopover';
 import useComposerItems from '~/hooks/Input/useComposerItems';
+import { useTargetContext } from '~/Providers/TargetContext';
 import useAttachTarget from '~/hooks/Input/useAttachTarget';
 import { chatDirectionAtom } from '~/store/chatDirection';
 import ProjectLandingChip from '../ProjectLandingChip';
@@ -170,13 +170,13 @@ const ChatForm = memo(function ChatForm({
   const mentionPopoverAtom = useMemo(() => store.showMentionPopoverFamily(index), [index]);
 
   const { requiresKey } = useRequiresKey();
+  const target = useTargetContext();
   const methods = useChatFormContext();
   const {
     generateConversation,
     conversation: addedConvo,
     setConversation: setAddedConvo,
   } = useAddedChatContext();
-  const assistantMap = useAssistantsMapContext();
   const { data: startupConfig } = useGetStartupConfig();
 
   const endpoint = useMemo(
@@ -211,17 +211,7 @@ const ChatForm = memo(function ChatForm({
    */
   const quotesEnabled = useMemo(() => !isAssistantsEndpoint(endpoint), [endpoint]);
 
-  const invalidAssistant = useMemo(
-    () =>
-      isAssistantsEndpoint(endpoint) &&
-      (!(conversation?.assistant_id ?? '') ||
-        !assistantMap?.[endpoint ?? '']?.[conversation?.assistant_id ?? '']),
-    [conversation?.assistant_id, endpoint, assistantMap],
-  );
-  const disableInputs = useMemo(
-    () => requiresKey || invalidAssistant,
-    [requiresKey, invalidAssistant],
-  );
+  const disableInputs = !!requiresKey;
 
   /** Skipped on touchscreens so a tap does not raise the keyboard. */
   const focusTextArea = useCallback(() => {
@@ -276,6 +266,7 @@ const ChatForm = memo(function ChatForm({
   } = useQueryParams({
     textAreaRef,
     routePending,
+    targetReady: target.ready,
     onBeforePrompt: preserveText,
     onPromptSettled: settleText,
   });
@@ -534,6 +525,8 @@ const ChatForm = memo(function ChatForm({
           filesLoading ||
           isPreparingFromUrl ||
           disableInputs ||
+          !target.ready ||
+          routePending ||
           !codeWorkspace.canSubmit ||
           isNotAppendable ||
           answerMode.composerLocked
@@ -561,6 +554,8 @@ const ChatForm = memo(function ChatForm({
       filesLoading,
       isPreparingFromUrl,
       disableInputs,
+      target.ready,
+      routePending,
       codeWorkspace.canSubmit,
       isNotAppendable,
       showStopButton,
@@ -581,22 +576,24 @@ const ChatForm = memo(function ChatForm({
    *  for typed, dictated, and shortcut-bound submissions. */
   const submitComposerText = useCallback(
     (data: { text: string }): false | void =>
-      submitFromComposer(
-        {
-          answerMode,
-          steering,
-          submitMessage: (message) => {
-            const result = submitMessage(message);
-            if (result !== false) {
-              clearAllDrafts(getPendingDraftId(index));
-            }
-            return result;
-          },
-          reset: () => methods.reset(),
-        },
-        data,
-      ),
-    [answerMode, steering, submitMessage, methods, index],
+      !target.ready || routePending
+        ? false
+        : submitFromComposer(
+            {
+              answerMode,
+              steering,
+              submitMessage: (message) => {
+                const result = submitMessage(message);
+                if (result !== false) {
+                  clearAllDrafts(getPendingDraftId(index));
+                }
+                return result;
+              },
+              reset: () => methods.reset(),
+            },
+            data,
+          ),
+    [answerMode, steering, submitMessage, methods, index, target.ready, routePending],
   );
 
   return (
@@ -752,6 +749,14 @@ const ChatForm = memo(function ChatForm({
             ),
           }}
         />
+      )}
+      {target.failed && (
+        <p role="alert" className="text-text-secondary px-5 pb-2 text-sm">
+          {localize('com_ui_chat_target_failed')}{' '}
+          <button type="button" className="underline" onClick={target.retry}>
+            {localize('com_ui_retry')}
+          </button>
+        </p>
       )}
       {(isPreparingFromUrl || urlSettingsError) && (
         <p role="status" className="text-text-secondary px-5 pb-2 text-sm">
