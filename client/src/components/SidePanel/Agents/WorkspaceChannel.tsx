@@ -399,7 +399,13 @@ export default function WorkspaceChannel({
               <Alert variant="warning">{localize('com_ui_channels_workspace_route_owned')}</Alert>
             )}
             {replacesOther && !blocked && (
-              <Alert variant="warning">{localize('com_ui_channels_workspace_occupied')}</Alert>
+              <Alert variant="warning">
+                {target.data?.assignedAgentName
+                  ? localize('com_ui_channels_workspace_occupied_named', {
+                      0: target.data.assignedAgentName,
+                    })
+                  : localize('com_ui_channels_workspace_occupied')}
+              </Alert>
             )}
             <p className="text-text-secondary text-xs">
               {localize('com_ui_channels_workspace_identity')}
@@ -476,7 +482,13 @@ export default function WorkspaceChannel({
         <OGDialogTemplate
           className="max-w-md"
           footerClassName="sm:justify-between"
-          title={localize(confirmationTitle)}
+          title={
+            confirm?.kind === 'assign' && target.data?.assignedAgentName
+              ? localize('com_ui_channels_workspace_replace_named', {
+                  0: target.data.assignedAgentName,
+                })
+              : localize(confirmationTitle)
+          }
           description={workspace.data?.workspace.teamName}
           cancelDisabled={mutation.isLoading}
           onCloseAutoFocus={(event) => {

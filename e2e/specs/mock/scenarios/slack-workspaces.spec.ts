@@ -304,6 +304,7 @@ for (const theme of ['light', 'dark']) {
           json: url.searchParams.has('target')
             ? {
                 canReplace: true,
+                assignedAgentName: occupied ? 'Research Assistant' : undefined,
                 occupied,
                 assignedToThisChannel: assigned,
                 revision: routeRevision,
@@ -362,7 +363,10 @@ for (const theme of ['light', 'dark']) {
           path: `${process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX}-target-${theme}.png`,
         });
       await setup.getByRole('button', { name: 'Replace default agent', exact: true }).click();
-      const replacement = page.getByRole('dialog', { name: 'Replace default agent', exact: true });
+      const replacement = page.getByRole('dialog', {
+        name: 'Replace Research Assistant?',
+        exact: true,
+      });
       expect(activations).toBe(0);
       if (process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX)
         await page.screenshot({

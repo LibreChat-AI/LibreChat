@@ -3920,6 +3920,8 @@
   "com_ui_channels_workspace_replace_channel_help": "This agent will replace the bot’s current agent for new conversations in this Slack channel. Existing conversations and other channels won’t change.",
   "com_ui_channels_workspace_add_assignment": "Add assignment",
   "com_ui_channels_workspace_replacement_changed": "The assignment changed. Cancel and review the latest assignment before replacing it.",
+  "com_ui_channels_workspace_replace_named": "Replace {{0}}?",
+  "com_ui_channels_workspace_occupied_named": "{{0}} is assigned here. Continue to replace it.",
   "com_ui_channels_workspace_occupied": "Another agent is assigned here. Continuing will ask you to confirm replacement.",
   "com_ui_channels_workspace_delete_connection": "Delete connection",
   "com_ui_channels_workspace_remove_assignment": "Remove assignment",

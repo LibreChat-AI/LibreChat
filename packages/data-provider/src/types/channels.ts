@@ -80,6 +80,8 @@ export interface SlackWorkspaceRoutePage {
   next?: string;
 }
 export interface SlackWorkspaceRouteStatus {
+  /** Only present when the requesting user has VIEW access to the assigned agent. */
+  assignedAgentName?: string;
   canReplace: boolean;
   occupied: boolean;
   assignedToThisChannel: boolean;
