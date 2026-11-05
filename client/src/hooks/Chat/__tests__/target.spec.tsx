@@ -457,6 +457,54 @@ describe('selected assistant credentials', () => {
     },
   );
 
+  it.each(['mutate', 'mutateAsync'] as const)(
+    'keeps %s bound to the original name before the first request',
+    async (method) => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      client.setQueryData([QueryKeys.endpoints], configured);
+      const originalKey = assistantKey(EModelEndpoint.assistants, 'same-id', '2', 'model-one');
+      const nextKey = assistantKey(EModelEndpoint.azureAssistants, 'same-id', '2', 'model-one');
+      client.setQueryData(originalKey, { id: 'same-id' });
+      client.setQueryData(nextKey, { id: 'same-id' });
+      const response = deferred<{ data: object }>();
+      const transport = jest.spyOn(axios, 'delete').mockReturnValue(response.promise);
+      const { result, rerender, unmount } = renderHook(
+        ({ name }: { name: string }) => useRevokeUserKeyMutation(name),
+        {
+          initialProps: { name: EModelEndpoint.assistants },
+          wrapper: ({ children }: { children: React.ReactNode }) => (
+            <QueryClientProvider client={client}>{children}</QueryClientProvider>
+          ),
+        },
+      );
+      const input = { request: 'original' };
+      const onSuccess = jest.fn();
+      let mutation: Promise<unknown> | void = undefined;
+      act(() => {
+        mutation = result.current[method](input, { onSuccess });
+        rerender({ name: EModelEndpoint.azureAssistants });
+      });
+      expect(transport).not.toHaveBeenCalled();
+      await waitFor(() => expect(transport).toHaveBeenCalledTimes(1));
+      const requestedName = transport.mock.calls[0][0];
+      await act(async () => {
+        response.resolve({ data: {} });
+        await mutation;
+      });
+      await waitFor(() => expect(onSuccess).toHaveBeenCalledWith({}, input, undefined));
+      expect(result.current.variables).toBe(input);
+      const originalInvalidated = client.getQueryState(originalKey)?.isInvalidated;
+      const nextInvalidated = client.getQueryState(nextKey)?.isInvalidated;
+      unmount();
+      client.clear();
+      expect({ requestedName, originalInvalidated, nextInvalidated }).toEqual({
+        requestedName: '/api/keys/assistants',
+        originalInvalidated: true,
+        nextInvalidated: false,
+      });
+    },
+  );
+
   it('does not reuse Azure details across deployment models or API versions', async () => {
     const { result, client } = setup(selected(EModelEndpoint.azureAssistants), configured);
     await waitFor(() => expect(result.current.target.ready).toBe(true));

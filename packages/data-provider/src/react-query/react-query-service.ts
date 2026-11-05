@@ -1,6 +1,8 @@
+import { useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type {
   QueryClient,
+  MutateOptions,
   UseQueryOptions,
   UseMutationResult,
   QueryObserverResult,
@@ -168,23 +170,53 @@ export const useClearConversationsMutation = (): UseMutationResult<unknown> => {
   });
 };
 
-export const useRevokeUserKeyMutation = (
-  name: string,
-): UseMutationResult<unknown, unknown, unknown, string> => {
+type KeyRevocation = { name: string; input: unknown };
+type RevokeOptions = MutateOptions<unknown, unknown, unknown>;
+
+function revokeOptions(
+  options?: RevokeOptions,
+): MutateOptions<unknown, unknown, KeyRevocation> | undefined {
+  if (!options) return undefined;
+  const { onSuccess, onError, onSettled } = options;
+  return {
+    onSuccess:
+      onSuccess && ((data, variables, context) => onSuccess(data, variables.input, context)),
+    onError: onError && ((error, variables, context) => onError(error, variables.input, context)),
+    onSettled:
+      onSettled &&
+      ((data, error, variables, context) => onSettled(data, error, variables.input, context)),
+  };
+}
+
+export const useRevokeUserKeyMutation = (name: string): UseMutationResult<unknown> => {
   const queryClient = useQueryClient();
-  return useMutation(() => dataService.revokeUserKey(name), {
-    onMutate: () => name,
-    onSuccess: (_data, _variables, keyName) => {
-      const invalidated = invalidateUserKey(queryClient, keyName ?? name);
-      if (s.isAssistantsEndpoint(keyName ?? name)) {
-        queryClient.invalidateQueries([QueryKeys.assistantDocs]);
-        queryClient.invalidateQueries([QueryKeys.mcpTools]);
-        queryClient.invalidateQueries([QueryKeys.actions]);
-        queryClient.invalidateQueries([QueryKeys.tools]);
-      }
-      return invalidated;
+  const mutation = useMutation<unknown, unknown, KeyRevocation>(
+    (variables) => dataService.revokeUserKey(variables.name),
+    {
+      onSuccess: (_data, variables) => {
+        const invalidated = invalidateUserKey(queryClient, variables.name);
+        if (s.isAssistantsEndpoint(variables.name)) {
+          queryClient.invalidateQueries([QueryKeys.assistantDocs]);
+          queryClient.invalidateQueries([QueryKeys.mcpTools]);
+          queryClient.invalidateQueries([QueryKeys.actions]);
+          queryClient.invalidateQueries([QueryKeys.tools]);
+        }
+        return invalidated;
+      },
     },
-  });
+  );
+  const { mutate: revoke, mutateAsync: revokeAsync } = mutation;
+  // Options can change before React Query starts the request; variables cannot.
+  const mutate = useCallback(
+    (input: unknown, options?: RevokeOptions) => revoke({ name, input }, revokeOptions(options)),
+    [name, revoke],
+  );
+  const mutateAsync = useCallback(
+    (input: unknown, options?: RevokeOptions) =>
+      revokeAsync({ name, input }, revokeOptions(options)),
+    [name, revokeAsync],
+  );
+  return { ...mutation, variables: mutation.variables?.input, mutate, mutateAsync };
 };
 
 export const useRevokeAllUserKeysMutation = (): UseMutationResult<unknown> => {
