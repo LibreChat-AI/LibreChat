@@ -29,11 +29,11 @@ function setup(emailEnabled: boolean | null = true, isLoading = false) {
     failureCount: 0,
     failureReason: null,
     isError: false,
-    isIdle: !isLoading,
-    isLoading,
+    ...(isLoading
+      ? { isIdle: false, isLoading: true, status: 'loading' as const }
+      : { isIdle: true, isLoading: false, status: 'idle' as const }),
     isPaused: false,
     isSuccess: false,
-    status: isLoading ? 'loading' : 'idle',
     variables: undefined,
     reset: jest.fn(),
     mutate: mockMutate,
