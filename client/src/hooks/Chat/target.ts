@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useCallback, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useGetEndpointModelsQuery } from 'librechat-data-provider/react-query';
+import { useGetEndpointModelsQuery, useUserKeyQuery } from 'librechat-data-provider/react-query';
 import {
   dataService,
+  QueryKeys,
+  defaultOrderQuery,
   PermissionBits,
   isAgentsEndpoint,
   isEphemeralAgentId,
@@ -49,7 +51,30 @@ export default function useTarget(
   const assistantId = isAssistant ? conversation?.assistant_id : undefined;
   const isSavedAgent = !!agentId && !isEphemeralAgentId(agentId);
   const agent = useGetAgentByIdQuery(agentId, { enabled: isSavedAgent });
-  const version = endpoints.data?.[endpoint]?.version ?? defaultAssistantsVersion[endpoint];
+  const endpointConfig = endpoints.data?.[endpoint];
+  const userProvidesCredentials =
+    isAssistant && !!(endpointConfig?.userProvide || endpointConfig?.userProvideURL);
+  const checkUserKey = useUserKeyQuery(endpoint, {
+    enabled: userProvidesCredentials,
+    staleTime: Infinity,
+    notifyOnChangeProps: 'all',
+  });
+  const expiresAt = checkUserKey.data?.expiresAt;
+  const credentialsReady =
+    !userProvidesCredentials ||
+    (checkUserKey.isSuccess &&
+      !checkUserKey.isStale &&
+      !!expiresAt &&
+      (expiresAt === 'never' || new Date(expiresAt).getTime() > Date.now()));
+  const assistantEnabled = isAssistant && !!endpointConfig && credentialsReady;
+  useEffect(() => {
+    if (!userProvidesCredentials || credentialsReady) return;
+    void queryClient.cancelQueries([QueryKeys.assistant, endpoint]);
+    void queryClient.cancelQueries([QueryKeys.assistants, endpoint]);
+    void queryClient.invalidateQueries([QueryKeys.assistant, endpoint], { refetchType: 'none' });
+    void queryClient.invalidateQueries([QueryKeys.assistants, endpoint], { refetchType: 'none' });
+  }, [queryClient, endpoint, userProvidesCredentials, credentialsReady]);
+  const version = endpointConfig?.version ?? defaultAssistantsVersion[endpoint];
   const selectedAssistantKey = assistantKey(endpoint, assistantId, version, conversation?.model);
   const assistant = useQuery(
     selectedAssistantKey,
@@ -61,7 +86,7 @@ export default function useTarget(
         model: conversation?.model,
       }),
     {
-      enabled: !!assistantId && !!endpoints.data?.[endpoint],
+      enabled: !!assistantId && assistantEnabled,
       retry: false,
       staleTime: 5000,
       notifyOnChangeProps: 'all',
@@ -72,18 +97,29 @@ export default function useTarget(
   const needsModel = !!endpoint && !isSavedAgent && !isAssistant && !conversation?.model;
   const agents = useListAgentsQuery(viewAgents, { enabled: needsAgent });
   const assistants = useListAssistantsQuery(endpoint as AssistantsEndpoint, undefined, {
-    enabled: needsAssistant,
+    enabled: needsAssistant && assistantEnabled,
   });
   const models = useGetEndpointModelsQuery(endpoint, {
     enabled: needsModel && !needsAgent && !!endpoints.data?.[endpoint],
   });
   const identity = targetIdentity(conversation);
   const defaultAgent = needsAgent ? agents.data?.data[0]?.id : undefined;
-  const defaultAssistant = needsAssistant ? assistants.data?.data[0] : undefined;
+  const assistantDetailsReady =
+    assistantEnabled &&
+    !assistant.isError &&
+    queryClient.getQueryState(selectedAssistantKey)?.isInvalidated !== true;
+  const defaultAssistant =
+    needsAssistant &&
+    assistantEnabled &&
+    !assistants.isError &&
+    queryClient.getQueryState([QueryKeys.assistants, endpoint, defaultOrderQuery])
+      ?.isInvalidated !== true
+      ? assistants.data?.data[0]
+      : undefined;
   const defaultModel = needsModel ? models.data?.[endpoint]?.[0] : undefined;
   const assistantModel = conversation?.model
     ? undefined
-    : (assistant.data?.model ?? defaultAssistant?.model);
+    : ((assistantDetailsReady ? assistant.data?.model : undefined) ?? defaultAssistant?.model);
 
   useEffect(() => {
     const patch: Partial<TConversation> = {};
@@ -100,25 +136,26 @@ export default function useTarget(
 
   let targetReady = !!conversation?.model && (!isAgent || !!agentId);
   if (isSavedAgent) targetReady = agent.data != null && !agent.isError;
-  if (isAssistant)
-    targetReady =
-      assistant.data != null &&
-      !assistant.isError &&
-      queryClient.getQueryState(selectedAssistantKey)?.isInvalidated !== true;
+  if (isAssistant) targetReady = assistantDetailsReady && assistant.data != null;
   const empty =
     (needsModel && models.isSuccess && !defaultModel) ||
     (needsAgent && agents.isSuccess && !defaultAgent) ||
-    (needsAssistant && assistants.isSuccess && !defaultAssistant);
+    (assistantEnabled &&
+      needsAssistant &&
+      assistants.isSuccess &&
+      !assistants.isFetching &&
+      !defaultAssistant);
   const missingEndpoint = endpoints.isSuccess && !!endpoint && !endpoints.data?.[endpoint];
   const failed =
     empty ||
     startup.isError ||
     endpoints.isError ||
     missingEndpoint ||
+    (userProvidesCredentials && checkUserKey.isError) ||
     (isSavedAgent && agent.isError) ||
-    (isAssistant && !!assistantId && assistant.isError) ||
+    (assistantEnabled && !!assistantId && assistant.isError) ||
     (needsAgent && agents.isError) ||
-    (needsAssistant && assistants.isError) ||
+    (assistantEnabled && needsAssistant && assistants.isError) ||
     (needsModel && models.isError);
   const ready = !!config && !!endpoints.data?.[endpoint] && targetReady;
   const retryRef = useRef(() => {});
@@ -126,9 +163,10 @@ export default function useTarget(
     if (startup.isError) void startup.refetch();
     if (endpoints.isError || missingEndpoint) void endpoints.refetch();
     if (isSavedAgent) void agent.refetch();
-    if (assistantId) void assistant.refetch();
+    if (userProvidesCredentials && !credentialsReady) void checkUserKey.refetch();
+    if (assistantId && assistantEnabled) void assistant.refetch();
     if (needsAgent) void agents.refetch();
-    if (needsAssistant) void assistants.refetch();
+    if (needsAssistant && assistantEnabled) void assistants.refetch();
     if (needsModel) void models.refetch();
   };
   const retry = useCallback(() => retryRef.current(), []);
@@ -139,8 +177,8 @@ export default function useTarget(
       pending: !ready && !failed,
       retry,
       agent: agent.data,
-      assistant: assistant.data,
+      assistant: assistantDetailsReady ? assistant.data : undefined,
     }),
-    [ready, failed, retry, agent.data, assistant.data],
+    [ready, failed, retry, agent.data, assistant.data, assistantDetailsReady],
   );
 }

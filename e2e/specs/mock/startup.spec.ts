@@ -204,6 +204,8 @@ test('cold history fetch starts while configuration is pending, without exposing
 }) => {
   const conversationId = '17692000-0000-4000-8000-000000000010';
   const marker = 'History started before configuration';
+  const requests: string[] = [];
+  page.on('request', (request) => requests.push(new URL(request.url()).pathname));
   await seedConversations(getPrimaryE2EUser().email, [
     { conversationId, title: marker, updatedAt: new Date() },
   ]);
@@ -230,6 +232,11 @@ test('cold history fetch starts while configuration is pending, without exposing
     );
     await page.goto(`/c/${conversationId}`, { waitUntil: 'domcontentloaded' });
     expect((await history).ok()).toBeTruthy();
+    await expect.poll(() => requests.includes('/api/files')).toBe(true);
+    expect(requests.indexOf(`/api/convos/${conversationId}`)).toBeLessThan(
+      requests.indexOf('/api/files'),
+    );
+    expect(requests.filter((path) => path === `/api/messages/${conversationId}`)).toHaveLength(1);
     await expect(page.getByRole('textbox', { name: 'Message input' })).toBeHidden();
     release();
     await expect(page.getByText(marker, { exact: true }).last()).toBeVisible();
