@@ -120,7 +120,6 @@ try {
     {
       channelGateway: {
         existingSecretName: 'service-credentials',
-        slackAppSecretName: 'slack-app',
         ingress: { enabled: true, host: 'slack.example.test' },
       },
     },
@@ -141,7 +140,11 @@ try {
     'SLACK_CLIENT_SECRET',
     'SLACK_SIGNING_SECRET',
   ])
-    assert.deepEqual(apiEnv[key].valueFrom.secretKeyRef, { name: 'slack-app', key });
+    assert.equal(
+      apiEnv[key],
+      undefined,
+      'organization app credentials must not be injected by the chart',
+    );
   const appDefaults = sharedDocs.find(
     (doc) => doc.kind === 'ConfigMap' && doc.metadata.name.endsWith('-configenv'),
   ).data;
@@ -155,13 +158,12 @@ try {
     ['CHANNEL_SERVICE_TOKEN'],
   );
   const explicit = render(shared, {
-    librechat: { configEnv: { SLACK_APP_ID: 'AEXPLICIT' } },
     global: {
       librechat: {
         env: [
           {
-            name: 'SLACK_CLIENT_SECRET',
-            valueFrom: { secretKeyRef: { name: 'explicit', key: 'client' } },
+            name: 'CHANNEL_SERVICE_TOKEN',
+            valueFrom: { secretKeyRef: { name: 'explicit', key: 'service' } },
           },
         ],
       },
@@ -170,10 +172,9 @@ try {
     (doc) => doc.kind === 'Deployment' && doc.metadata.name !== sharedDeployment.metadata.name,
   );
   const explicitEnv = explicit.spec.template.spec.containers[0].env;
-  assert(!explicitEnv.some((entry) => entry.name === 'SLACK_APP_ID'));
-  assert.equal(explicitEnv.filter((entry) => entry.name === 'SLACK_CLIENT_SECRET').length, 1);
+  assert.equal(explicitEnv.filter((entry) => entry.name === 'CHANNEL_SERVICE_TOKEN').length, 1);
   assert.equal(
-    explicitEnv.find((entry) => entry.name === 'SLACK_CLIENT_SECRET').valueFrom.secretKeyRef.name,
+    explicitEnv.find((entry) => entry.name === 'CHANNEL_SERVICE_TOKEN').valueFrom.secretKeyRef.name,
     'explicit',
   );
   assert.throws(

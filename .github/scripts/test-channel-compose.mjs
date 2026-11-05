@@ -91,18 +91,19 @@ for (const source of [false, true]) {
   const shared = configuration('v1.2.3-rc1', source, true);
   assert.equal(shared.api.environment.SLACK_WORKSPACES_ENABLED, 'true');
   assert.equal(shared.api.environment.SLACK_GATEWAY_URL, 'https://slack.example.test');
-  assert.equal(shared.api.environment.SLACK_CLIENT_SECRET, 'fixture-client-secret');
   const gateway = shared['channel-gateway'];
   for (const name of [
     'SLACK_APP_ID',
     'SLACK_CLIENT_ID',
     'SLACK_CLIENT_SECRET',
     'SLACK_SIGNING_SECRET',
-  ])
-    assert.equal(gateway.environment[name], undefined, `${name} belongs only to the application`);
+  ]) {
+    assert.equal(shared.api.environment[name], undefined, `${name} is configured in the UI`);
+    assert.equal(gateway.environment[name], undefined, `${name} is configured in the UI`);
+  }
   assert.equal(gateway.environment.CHANNEL_ID, '');
   assert.equal(gateway.environment.CHANNEL_TENANT_ID, '_');
   assert.equal(gateway.environment.SLACK_APP_TOKEN, '');
   assert.equal(gateway.depends_on.api.condition, 'service_healthy');
 }
-console.log('PASS: shared Compose configures the app once and clears all bound-gateway settings');
+console.log('PASS: shared Compose needs no app credentials and clears all bound-gateway settings');

@@ -1,25 +1,13 @@
 import { isIP } from 'node:net';
 import { agentsEndpointSchema, channelConfigSchema } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
-import {
-  resolveSlackWorkspaceApp,
-  slackPublicURL,
-  SLACK_WORKSPACE_CALLBACK_PATH,
-} from './workspaces';
-import { getOAuthCallbackUrl } from '~/oauth/url';
+import { slackPublicURL } from './workspaces';
 import { isPrivateIP } from '~/auth/ip';
 import { isEnabled } from '~/utils';
 
 type DeploymentEnvironment = Partial<
   Record<
-    | 'SLACK_WORKSPACES_ENABLED'
-    | 'SLACK_APP_ID'
-    | 'SLACK_CLIENT_ID'
-    | 'SLACK_CLIENT_SECRET'
-    | 'SLACK_SIGNING_SECRET'
-    | 'SLACK_GATEWAY_URL'
-    | 'DOMAIN_SERVER'
-    | 'DOMAIN_CLIENT',
+    'SLACK_WORKSPACES_ENABLED' | 'SLACK_GATEWAY_URL' | 'DOMAIN_SERVER' | 'DOMAIN_CLIENT',
     string
   >
 >;
@@ -43,10 +31,6 @@ export function applySlackWorkspaceEnvironment(
       slackApp: {
         ...previous?.slackApp,
         enabled: true,
-        appId: env.SLACK_APP_ID || previous?.slackApp?.appId,
-        clientId: env.SLACK_CLIENT_ID || previous?.slackApp?.clientId,
-        clientSecret: env.SLACK_CLIENT_SECRET || previous?.slackApp?.clientSecret,
-        signingSecret: env.SLACK_SIGNING_SECRET || previous?.slackApp?.signingSecret,
       },
     });
     for (const value of [publicServer, env.DOMAIN_CLIENT || publicServer, channels.gatewayUrl]) {
@@ -62,10 +46,6 @@ export function applySlackWorkspaceEnvironment(
       )
         throw new Error('Shared deployment requires public HTTPS URLs');
     }
-    resolveSlackWorkspaceApp(
-      channels,
-      getOAuthCallbackUrl(publicServer, SLACK_WORKSPACE_CALLBACK_PATH),
-    );
     return {
       ...config,
       endpoints: {
@@ -81,9 +61,9 @@ export function applySlackWorkspaceEnvironment(
       },
     };
   } catch {
-    // Schema diagnostics can contain submitted values, including deployment secrets.
+    // Schema diagnostics can contain submitted values, including submitted values.
     throw new Error(
-      'Invalid shared Slack setup. Configure app credentials and a public HTTPS DOMAIN_SERVER; DOMAIN_CLIENT and SLACK_GATEWAY_URL must also use public HTTPS when set. Replace the localhost defaults.',
+      'Invalid shared Slack setup. Configure a public HTTPS DOMAIN_SERVER; DOMAIN_CLIENT and SLACK_GATEWAY_URL must also use public HTTPS when set. Replace the localhost defaults.',
     );
   }
 }
