@@ -6,11 +6,14 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createSlackWorkspaceStorage, tenantStorage, runAsSystem } from '@librechat/data-schemas';
 import {
   FileSources,
+  PrincipalType,
   channelConfigSchema,
   SLACK_CHANNEL_BOT_SCOPES,
 } from 'librechat-data-provider';
 import type { AppConfig, SlackWorkspaceStorage } from '@librechat/data-schemas';
 import type { SlackWorkspaceApp, SlackWorkspaceService } from './workspaces';
+import type { ServerRequest } from '~/types/http';
+import { capabilityContextMiddleware, generateCapabilityCheck } from '~/middleware/capabilities';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceRuntime } from './workspaceRuntime';
 import { createSlackWorkspaceHandlers } from './workspaceHttp';
@@ -260,6 +263,7 @@ describe('Slack workspace installation', () => {
   function http(runtime?: ReturnType<typeof createSlackWorkspaceHandlers>) {
     const server = express();
     server.use(express.json());
+    server.use((req, res, next) => capabilityContextMiddleware(req as ServerRequest, res, next));
     server.use((req, _res, next) => {
       const pairs = (req.get('cookie') ?? '').split(';').map((pair) => pair.trim().split('='));
       req.cookies = Object.fromEntries(pairs.filter(([name]) => name));
@@ -429,6 +433,75 @@ describe('Slack workspace installation', () => {
     expect(hasCapability).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   });
+
+  it.each(['capability', 'principal'])(
+    'honors %s revocation during Slack exchange despite an ambient request cache',
+    async (revocation) => {
+      await scoped(async () =>
+        storage.configureApp(
+          {
+            appId: 'A123',
+            clientId: '123.456',
+            encryptedClientSecret: await encryptCredential('test-client-secret'),
+            encryptedSigningSecret: await encryptCredential('test-signing-secret'),
+          },
+          principal.id,
+        ),
+      );
+      let revoked = false;
+      const checks = generateCapabilityCheck({
+        getUserPrincipals: async () => [
+          {
+            principalType: PrincipalType.USER,
+            principalId: revocation === 'principal' && revoked ? 'revoked-principal' : principal.id,
+          },
+        ],
+        hasCapabilityForPrincipals: async ({ principals }) =>
+          !(revocation === 'capability' && revoked) &&
+          principals.some((entry) => entry.principalId === principal.id),
+      });
+      const runtime = createSlackWorkspaceRuntime({
+        storage,
+        readAppConfig: async () =>
+          ({
+            endpoints: {
+              agents: {
+                channels: {
+                  enabled: true,
+                  transport: 'webhook',
+                  slackApp: { enabled: true },
+                },
+              },
+            },
+          }) as AppConfig,
+        findUser: async () => ({ tenantId: 'org-a', role: 'ADMIN' }),
+        isPrincipalActive: async () => true,
+        hasCapability: checks.hasCapability,
+        publicBaseUrl: 'https://chat.example/base',
+        clientBaseUrl: 'https://client.example/librechat',
+        fetch: request,
+        logError: jest.fn(),
+      });
+      const started = await http(runtime)
+        .post('/workspaces/connect')
+        .set('x-test-user', 'yes')
+        .set('x-test-tenant', 'org-a')
+        .send({ appId: 'A123' })
+        .expect(200);
+      request.mockImplementationOnce(async () => {
+        revoked = true;
+        return reply();
+      });
+      const result = await http(runtime)
+        .get('/api/channels/workspaces/oauth/callback')
+        .set('Cookie', browserCookie(started, 'oauth_csrf'))
+        .query({ state: new URL(started.body.url).searchParams.get('state'), code: 'test-code' })
+        .expect(302);
+      expect(result.headers.location).toContain('error=slack_forbidden');
+      expect(request).toHaveBeenCalledTimes(1);
+      expect((await scoped(() => storage.list())).workspaces).toEqual([]);
+    },
+  );
 
   it('cancels through the authenticated browser route before a late callback can install', async () => {
     const started = await start();
