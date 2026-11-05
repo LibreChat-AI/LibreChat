@@ -155,7 +155,8 @@ export const DEFAULT_CATALOG_MODELS_TTL_MS = 120_000;
  * Why a deployment-only path is set in librechat.yaml only:
  * - `startup`: read once when the server starts, so a stored value would never apply.
  * - `operator`: an operator boundary (signed access, rate limits, permission leases, code
- *   modules, which tools load), read from librechat.yaml itself.
+ *   modules, which tools load, the limits and telemetry every browser is sent, list filter
+ *   bounds, cleanup concurrency), read from librechat.yaml itself.
  * - `unused`: nothing reads it any more.
  */
 export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
@@ -169,13 +170,19 @@ export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
  */
 export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnlyConfigReason>> = {
   'telemetry.stackTraceLimit': 'operator',
+  'telemetry.rum': 'operator',
+  clientLimits: 'operator',
   rateLimits: 'operator',
   cloudfront: 'operator',
   permissions: 'operator',
   openapi: 'operator',
+  conversationList: 'operator',
   skillDeletion: 'startup',
+  passwordHashing: 'startup',
   includedTools: 'operator',
   filteredTools: 'operator',
+  'interface.colorModeFromUrl': 'startup',
+  'fileConfig.skills.deletionCleanupConcurrency': 'operator',
   'registration.openidDiscovery': 'startup',
   'registration.oauthStateTtlMs': 'startup',
   'endpoints.agents.subagentActivity': 'startup',
@@ -184,6 +191,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
   'endpoints.agents.backgroundTasks.completionReceiptBatching': 'startup',
   'endpoints.agents.toolApproval.hooks': 'operator',
+  'endpoints.agents.managementApi': 'operator',
   'mcpSettings.oauthFailureRetentionMs': 'startup',
   'mcpSettings.catalogRecovery.maxStateEntries': 'startup',
   'mcpSettings.catalogRecovery.maxDetachedDiscoveries': 'startup',
