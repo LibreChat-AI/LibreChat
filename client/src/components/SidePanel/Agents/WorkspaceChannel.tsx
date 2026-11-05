@@ -80,7 +80,12 @@ export default function WorkspaceChannel({
   const available = Boolean(
     workspace.data?.configured && workspace.data.workspace.status === 'active',
   );
-  const mayRoute = enabled && ownsChannel && available && channel.status !== 'deleting';
+  const mayRoute =
+    enabled &&
+    ownsChannel &&
+    available &&
+    workspace.data?.workspace.canManageBot === true &&
+    channel.status !== 'deleting';
   const routes = useInfiniteQuery(
     routesKey,
     ({ pageParam }: { pageParam?: string }) =>
@@ -238,6 +243,9 @@ export default function WorkspaceChannel({
           <p role="status">{localize('com_ui_channels_workspace_unavailable')}</p>
         )}
         {!ownsChannel && <p>{localize('com_ui_channels_read_only')}</p>}
+        {ownsChannel && available && workspace.data?.workspace.canManageBot !== true && (
+          <Alert variant="info">{localize('com_ui_channels_bot_access_required')}</Alert>
+        )}
         {mutation.isError && (
           <p role="alert">
             {localize(channelErrorLabel(mutation.error, 'com_ui_channels_workspace_route_error'))}

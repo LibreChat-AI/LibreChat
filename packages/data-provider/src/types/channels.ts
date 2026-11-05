@@ -46,12 +46,27 @@ export interface SlackAppPage {
 }
 
 /** A tenant's Slack installation. Provider credentials are never part of browser metadata. */
+export interface SlackBotManager {
+  id: string;
+  name?: string;
+  email?: string;
+  avatar?: string;
+}
+
+export interface SlackBotManagers {
+  revision: string;
+  managers: SlackBotManager[];
+  maxManagers: number;
+}
+
 export interface SlackWorkspace {
   tenantId?: string;
   workspaceId: string;
   appId: string;
   teamId: string;
   teamName: string;
+  /** Only present in authenticated browser metadata. */
+  canManageBot?: boolean;
   botUserId: string;
   status: 'active' | 'disconnected';
   revision: string;

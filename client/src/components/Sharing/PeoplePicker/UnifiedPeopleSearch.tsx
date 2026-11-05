@@ -12,6 +12,9 @@ interface UnifiedPeopleSearchProps {
   className?: string;
   typeFilter?: Array<PrincipalType.USER | PrincipalType.GROUP | PrincipalType.ROLE> | null;
   excludeIds?: (string | undefined)[];
+  /** Require an existing LibreChat account rather than a directory-only principal. */
+  localOnly?: boolean;
+  principalKey?: string;
 }
 
 export default function UnifiedPeopleSearch({
@@ -21,6 +24,8 @@ export default function UnifiedPeopleSearch({
   className = '',
   typeFilter = null,
   excludeIds = [],
+  localOnly = false,
+  principalKey,
 }: UnifiedPeopleSearchProps) {
   const localize = useLocalize();
   const [searchQuery, setSearchQuery] = useState('');
@@ -38,9 +43,13 @@ export default function UnifiedPeopleSearch({
     data: searchResponse,
     isLoading: queryIsLoading,
     error,
-  } = useSearchPrincipalsQuery(searchParams, {
-    enabled: searchQuery.length >= 2,
-  });
+  } = useSearchPrincipalsQuery(
+    searchParams,
+    {
+      enabled: searchQuery.length >= 2,
+    },
+    principalKey,
+  );
 
   const isLoading = searchQuery.length >= 2 && queryIsLoading;
 
@@ -48,9 +57,13 @@ export default function UnifiedPeopleSearch({
     const results = searchResponse?.results || [];
 
     return results.filter(
-      (result) => result.idOnTheSource && !excludeIds.includes(result.idOnTheSource),
+      (result) =>
+        result.idOnTheSource &&
+        (!localOnly || (result.source === 'local' && result.id)) &&
+        !excludeIds.includes(result.idOnTheSource) &&
+        !excludeIds.includes(result.id ?? undefined),
     );
-  }, [searchResponse?.results, excludeIds]);
+  }, [searchResponse?.results, excludeIds, localOnly]);
 
   if (error) {
     console.error('Principal search error:', error);

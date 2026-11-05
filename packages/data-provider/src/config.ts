@@ -1251,6 +1251,7 @@ export const channelStorageConfigSchema = z.object({
     .max(CHANNEL_DELIVERY_PARTS_HARD_MAX)
     .default(CHANNEL_DELIVERY_PARTS_HARD_MAX),
   maxMetadataPageSize: z.number().int().min(1).max(100).default(100),
+  maxBotManagers: z.number().int().min(1).max(1000).default(50),
   projectionYieldMs: z.number().int().min(100).max(60_000).default(1000),
   maxPriorSummaryRows: z.number().int().min(1).max(10_000).default(1000),
 });

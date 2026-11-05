@@ -3,7 +3,12 @@ import express from 'express';
 import mongoose from 'mongoose';
 import supertest from 'supertest';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { createSlackWorkspaceStorage, tenantStorage, runAsSystem } from '@librechat/data-schemas';
+import {
+  createModels,
+  createSlackWorkspaceStorage,
+  tenantStorage,
+  runAsSystem,
+} from '@librechat/data-schemas';
 import {
   FileSources,
   PrincipalType,
@@ -62,6 +67,7 @@ describe('Slack workspace installation', () => {
   beforeAll(async () => {
     mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
     await db.connect(mongo.getUri());
+    createModels(db);
     storage = createSlackWorkspaceStorage(db);
   }, 60000);
   afterAll(async () => {
@@ -72,7 +78,15 @@ describe('Slack workspace installation', () => {
   });
   beforeEach(async () => {
     await runAsSystem(async () => {
-      for (const model of Object.values(db.models)) await model.deleteMany({});
+      for (const name of [
+        'SlackWorkspace',
+        'SlackInstall',
+        'SlackInstallGeneration',
+        'AclEntry',
+        'User',
+        'ResponseScope',
+      ])
+        await db.models[name]?.deleteMany({});
     });
     app = {
       appId: 'A123',
@@ -283,13 +297,20 @@ describe('Slack workspace installation', () => {
         storage,
         canManage,
         clientBaseUrl: 'https://client.example/librechat',
-        settings: async () => ({ configured: Boolean(app), appId: app?.appId, pageSize: 50 }),
+        settings: async () => ({
+          configured: Boolean(app),
+          appId: app?.appId,
+          pageSize: 50,
+          maxBotManagers: 50,
+        }),
         logError: jest.fn(),
       });
     server.get('/workspaces', handlers.list);
     server.get('/workspaces/apps', handlers.apps);
     server.put('/workspaces/apps', handlers.configureApp);
     server.post('/workspaces/apps/:appId/remove', handlers.removeApp);
+    server.get('/workspaces/:workspaceId/managers', handlers.managers);
+    server.put('/workspaces/:workspaceId/managers', handlers.updateManagers);
     server.get('/workspaces/:workspaceId', handlers.get);
     server.delete('/workspaces/:workspaceId', handlers.disconnect);
     server.post('/workspaces/:workspaceId/remove', handlers.remove);
@@ -298,6 +319,51 @@ describe('Slack workspace installation', () => {
     server.get('/api/channels/workspaces/oauth/callback', handlers.callback);
     return supertest(server);
   }
+
+  it('keeps manager grants admin-only, tenant-local, bounded and revision checked', async () => {
+    const { flow } = await start();
+    const installed = await scoped(() => service.finish(flow, 'code'));
+    if (!installed.ok) throw new Error(installed.error.code);
+    const id = installed.value.workspaceId;
+    const userId = '000000000000000000000002';
+    await scoped(async () => {
+      await db.models.User.create([
+        { _id: principal.id, email: 'admin@example.com' },
+        { _id: userId, email: 'member@example.com', name: 'Member' },
+      ]);
+    });
+    const get = () =>
+      http()
+        .get(`/workspaces/${id}/managers`)
+        .set('x-test-user', 'yes')
+        .set('x-test-tenant', 'org-a');
+    const put = (body: object) =>
+      http()
+        .put(`/workspaces/${id}/managers`)
+        .set('x-test-user', 'yes')
+        .set('x-test-tenant', 'org-a')
+        .send(body);
+    await http().get(`/workspaces/${id}/managers`).expect(401);
+    const initial = (await get().expect(200)).body;
+    expect(initial).toMatchObject({ managers: [], maxManagers: 50 });
+    canManage.mockResolvedValue(false);
+    await get().expect(403);
+    await put({ revision: initial.revision, userIds: [userId] }).expect(403);
+    canManage.mockResolvedValue(true);
+    await put({ revision: initial.revision, userIds: [userId], role: 'admin' }).expect(400);
+    await put({ revision: initial.revision, userIds: ['000000000000000000000099'] }).expect(409);
+    const saved = (await put({ revision: initial.revision, userIds: [userId] }).expect(200)).body;
+    expect(saved.revision).not.toBe(initial.revision);
+    await put({ revision: initial.revision, userIds: [] }).expect(409);
+    const listed = (await get().expect(200)).body;
+    expect(listed.managers).toEqual([{ id: userId, name: 'Member', email: 'member@example.com' }]);
+    expect(JSON.stringify(listed)).not.toMatch(/xoxb|encrypted|secret/);
+    await http()
+      .get(`/workspaces/${id}/managers`)
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-b')
+      .expect(403);
+  });
 
   it('requires fresh same-tenant admin authority to register an app and never echoes secrets', async () => {
     const input = {
