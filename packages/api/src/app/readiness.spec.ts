@@ -1,11 +1,13 @@
 import IoRedis from 'ioredis';
+import express from 'express';
+import request from 'supertest';
 import { createClient } from '@keyv/redis';
 import type { RedisClientType } from '@redis/client';
 import type { Request, Response } from 'express';
 import type { RespServer } from '~/cache/__tests__/resp.helper';
 import type { RedisReadinessClients } from './readiness';
+import { createReadinessHandler, createStartupReadiness, isRedisReady } from './readiness';
 import { startRespServer, waitFor } from '~/cache/__tests__/resp.helper';
-import { createReadinessHandler, isRedisReady } from './readiness';
 
 const clients = (overrides: Partial<RedisReadinessClients> = {}): RedisReadinessClients => ({
   useRedis: true,
@@ -127,5 +129,53 @@ describe('createReadinessHandler', () => {
     expect(respond(handler).code).toBe(503);
     keyv.isReady = true;
     expect(respond(handler).code).toBe(200);
+  });
+});
+
+describe('worker startup readiness', () => {
+  const worker = (redis: RedisReadinessClients = clients({ useRedis: false })) => {
+    const readiness = createStartupReadiness(redis);
+    const app = express();
+    app.get('/readyz', readiness.handler);
+    app.use('/api', readiness.gate);
+    app.get('/api/work', (_req, res) => {
+      res.sendStatus(200);
+    });
+    return { app, readiness };
+  };
+
+  it('refuses API work until post-listen initialization completes', async () => {
+    const { app, readiness } = worker();
+    await request(app).get('/readyz').expect(503);
+    await request(app)
+      .get('/api/work')
+      .expect('Retry-After', '1')
+      .expect(503)
+      .expect(({ body }) => expect(body.code).toBe('SERVER_NOT_READY'));
+    readiness.markReady();
+    await request(app).get('/readyz').expect(200);
+    await request(app).get('/api/work').expect(200);
+  });
+
+  it('keeps another starting worker closed when its sibling becomes ready', async () => {
+    const first = worker();
+    const second = worker();
+    first.readiness.markReady();
+    await request(first.app).get('/api/work').expect(200);
+    expect((await request(second.app).get('/readyz')).status).toBe(503);
+    await request(second.app).get('/api/work').expect(503);
+  });
+
+  it('rechecks Redis readiness for both the probe and API admission', async () => {
+    const keyv = { isReady: true };
+    const { app, readiness } = worker(clients({ keyv }));
+    readiness.markReady();
+    await request(app).get('/api/work').expect(200);
+    keyv.isReady = false;
+    expect((await request(app).get('/readyz')).status).toBe(503);
+    await request(app).get('/api/work').expect(503);
+    keyv.isReady = true;
+    await request(app).get('/readyz').expect(200);
+    await request(app).get('/api/work').expect(200);
   });
 });
