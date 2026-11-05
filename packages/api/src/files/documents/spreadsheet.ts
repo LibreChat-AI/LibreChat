@@ -1,10 +1,11 @@
 import path from 'node:path';
-import { Worker } from 'node:worker_threads';
+import { fork } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import type { ChildProcess } from 'node:child_process';
 import type { SpreadsheetReply } from './spreadsheet-worker';
 import { SPREADSHEET_LIMITS, SpreadsheetLimitError } from './workbook';
 
-/** No queue or main-thread fallback: even read() runs under a heap and time ceiling. */
+/** No queue or in-process fallback: read() shares neither the API heap nor its event loop. */
 export function createSpreadsheetParser(workerPath: string): (filePath: string) => Promise<string> {
   let active = 0;
   return async (filePath): Promise<string> => {
@@ -14,28 +15,32 @@ export function createSpreadsheetParser(workerPath: string): (filePath: string) 
     active++;
     try {
       const deadline = performance.now() + SPREADSHEET_LIMITS.timeoutMs;
-      let worker: Worker;
+      let worker: ChildProcess;
       try {
-        worker = new Worker(workerPath, {
-          workerData: filePath,
-          execArgv: [],
-          resourceLimits: {
-            maxOldGenerationSizeMb: SPREADSHEET_LIMITS.heapMb,
-            maxYoungGenerationSizeMb: 16,
-            stackSizeMb: 4,
-          },
+        worker = fork(workerPath, [filePath], {
+          // Worker-thread resourceLimits are overridden by the parent's V8 flags.
+          execArgv: [
+            `--max-old-space-size=${SPREADSHEET_LIMITS.heapMb}`,
+            '--max-semi-space-size=8',
+            '--stack-size=1024',
+          ],
+          env: { ...process.env, NODE_OPTIONS: '' },
+          serialization: 'advanced',
+          stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
         });
       } catch {
         throw new Error('Spreadsheet processing failed.');
       }
       return await new Promise<string>((resolve, reject) => {
         let settled = false;
+        const closed = new Promise<void>((done) => worker.once('close', () => done()));
         const finish = async (error?: Error, text?: string): Promise<void> => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
-          // Keep admission occupied until the worker and its input/output are gone.
-          await worker.terminate().catch(() => undefined);
+          // Kill even synchronous parser stalls. Hold admission until the process is reaped.
+          worker.kill('SIGKILL');
+          await closed;
           if (error) reject(error);
           else resolve(text ?? '');
         };
@@ -48,8 +53,8 @@ export function createSpreadsheetParser(workerPath: string): (filePath: string) 
           },
           Math.max(0, deadline - performance.now()),
         );
-        worker.once('error', failed);
-        worker.once('exit', failed);
+        worker.on('error', failed);
+        worker.once('close', failed);
         worker.once('message', (reply: SpreadsheetReply) => {
           if (performance.now() >= deadline) {
             void finish(new SpreadsheetLimitError());

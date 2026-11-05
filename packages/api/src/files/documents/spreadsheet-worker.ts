@@ -1,6 +1,5 @@
 import { read, utils } from 'xlsx';
 import { readFile, stat } from 'node:fs/promises';
-import { parentPort, workerData } from 'node:worker_threads';
 import { workbookToText, SPREADSHEET_LIMITS, SpreadsheetLimitError } from './workbook';
 import { assertSafeZipSize, ZipBombError } from './zipSafety';
 
@@ -32,7 +31,7 @@ async function run(filePath: string): Promise<void> {
       limited: error instanceof SpreadsheetLimitError || error instanceof ZipBombError,
     };
   }
-  parentPort?.postMessage(reply);
+  process.send?.(reply, () => process.disconnect());
 }
 
-void run(workerData as string);
+void run(process.argv[2]);
