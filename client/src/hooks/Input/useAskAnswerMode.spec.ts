@@ -26,7 +26,7 @@ const JotaiWrapper = ({ children }: { children: React.ReactNode }) =>
     React.createElement(AskAnswerHostProvider, { saveDrafts: mockSaveDrafts }, children),
   );
 
-jest.mock('~/data-provider', () => ({ useGetMessagesByConvoId: jest.fn() }));
+jest.mock('~/data-provider', () => ({ useCachedMessages: jest.fn() }));
 jest.mock('~/components/Chat/Messages/Content/ApprovalContext', () => ({
   useAskSubmitStatus: () => ({ getAskStatus: () => mockAskStatus }),
   useResumeSubmit: () => ({ submitAskAnswer: mockSubmitAskAnswer }),
@@ -44,11 +44,11 @@ jest.mock('~/utils', () => ({
   setDraft: (...args: unknown[]) => mockSetDraft(...args),
 }));
 
-import { useGetMessagesByConvoId } from '~/data-provider';
+import { useCachedMessages } from '~/data-provider';
 import useAskAnswerMode from './useAskAnswerMode';
 import { findLiveAskUserQuestion } from '@librechat/chat';
 
-const mockUseGetMessages = useGetMessagesByConvoId as jest.Mock;
+const mockUseGetMessages = useCachedMessages as jest.Mock;
 
 const liveAsk = {
   actionId: 'a1',
@@ -81,10 +81,7 @@ describe('useAskAnswerMode', () => {
       wrapper: JotaiWrapper,
     });
 
-    expect(mockUseGetMessages).toHaveBeenCalledWith(
-      'conversation-1',
-      expect.objectContaining({ enabled: true, select: findLiveAskUserQuestion }),
-    );
+    expect(mockUseGetMessages).toHaveBeenCalledWith('conversation-1', findLiveAskUserQuestion);
     expect(result.current.liveAsk).toBe(liveAsk);
     expect(result.current.active).toBe(true);
     expect(result.current.composerAnswers).toBe(true);
@@ -158,10 +155,7 @@ describe('useAskAnswerMode', () => {
     const { result } = renderHook(() => useAskAnswerMode('new'), {
       wrapper: JotaiWrapper,
     });
-    expect(mockUseGetMessages).toHaveBeenCalledWith(
-      '',
-      expect.objectContaining({ enabled: false, select: findLiveAskUserQuestion }),
-    );
+    expect(mockUseGetMessages).toHaveBeenCalledWith('', findLiveAskUserQuestion);
     expect(result.current.liveAsk).toBeNull();
     expect(result.current.active).toBe(false);
   });

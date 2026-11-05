@@ -90,7 +90,7 @@ function useMessageCache(): ChatMessageCache {
  *  the background instead of unmounting into a spinner. */
 function useMessages(
   conversationId: string | undefined,
-  { isStreaming }: { isStreaming: boolean },
+  { isStreaming, enabled = true }: { isStreaming: boolean; enabled?: boolean },
 ): ChatMessagesQuery {
   const {
     data = null,
@@ -99,7 +99,7 @@ function useMessages(
   } = useGetMessagesByConvoId(
     conversationId ?? '',
     {
-      enabled: !!conversationId && conversationId !== Constants.SEARCH,
+      enabled: enabled && !!conversationId && conversationId !== Constants.SEARCH,
       refetchOnMount: true,
     },
     { isStreaming },

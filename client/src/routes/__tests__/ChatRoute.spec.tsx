@@ -10,8 +10,19 @@ const mockFetchConversation = jest.fn();
 const mockHasSetConversation = { current: true };
 let mockConversation: Partial<TConversation> | null = { conversationId: 'chat-a' };
 const mockConfig = {};
-let mockStartupQuery = { data: mockConfig as object | undefined };
-let mockEndpointsQuery = { data: mockConfig as object | undefined, isLoading: false };
+const mockRefetchStartup = jest.fn();
+const mockRefetchEndpoints = jest.fn();
+let mockStartupQuery = {
+  data: mockConfig as object | undefined,
+  isError: false,
+  refetch: mockRefetchStartup,
+};
+let mockEndpointsQuery = {
+  data: mockConfig as object | undefined,
+  isLoading: false,
+  isError: false,
+  refetch: mockRefetchEndpoints,
+};
 const mockRoles = { USER: {} };
 let mockAssistantListMap = {};
 const mockNewConversation = jest.fn(({ template }: { template?: Partial<TConversation> }) => {
@@ -85,8 +96,8 @@ jest.mock('~/utils', () => ({
 }));
 jest.mock('~/components/Chat/ChatView', () => ({
   __esModule: true,
-  default: () => (
-    <div data-testid="composer">
+  default: ({ historyReady }: { historyReady: boolean }) => (
+    <div data-testid="composer" data-history-ready={historyReady}>
       {mockConversation?.conversationId}
       <input aria-label="Draft" />
     </div>
@@ -114,8 +125,15 @@ function setup(initialEntries = ['/c/chat-a'], initialIndex = initialEntries.len
 }
 
 beforeEach(() => {
-  mockStartupQuery = { data: mockConfig };
-  mockEndpointsQuery = { data: mockConfig, isLoading: false };
+  mockRefetchStartup.mockReset();
+  mockRefetchEndpoints.mockReset();
+  mockStartupQuery = { data: mockConfig, isError: false, refetch: mockRefetchStartup };
+  mockEndpointsQuery = {
+    data: mockConfig,
+    isLoading: false,
+    isError: false,
+    refetch: mockRefetchEndpoints,
+  };
   mockConversation = { conversationId: 'chat-a' };
   mockHasSetConversation.current = true;
   mockAssistantListMap = {};
@@ -247,16 +265,26 @@ it('reconciles a remounted chat route with conversation state retained by the sh
 it('renders a cold new-chat composer while configuration and endpoint metadata are pending', async () => {
   mockConversation = null;
   mockHasSetConversation.current = false;
-  mockStartupQuery = { data: undefined };
-  mockEndpointsQuery = { data: undefined, isLoading: true };
+  mockStartupQuery = { data: undefined, isError: false, refetch: mockRefetchStartup };
+  mockEndpointsQuery = {
+    data: undefined,
+    isLoading: true,
+    isError: false,
+    refetch: mockRefetchEndpoints,
+  };
   setup(['/c/new']);
   const input = screen.getByRole('textbox', { name: 'Draft' });
   fireEvent.change(input, { target: { value: 'Written before startup finishes' } });
   expect(input).toHaveValue('Written before startup finishes');
   expect(mockNewConversation).not.toHaveBeenCalled();
   act(() => {
-    mockStartupQuery = { data: mockConfig };
-    mockEndpointsQuery = { data: mockConfig, isLoading: false };
+    mockStartupQuery = { data: mockConfig, isError: false, refetch: mockRefetchStartup };
+    mockEndpointsQuery = {
+      data: mockConfig,
+      isLoading: false,
+      isError: false,
+      refetch: mockRefetchEndpoints,
+    };
     mockSetConversation();
   });
   await waitFor(() => expect(mockNewConversation).toHaveBeenCalledTimes(1));
@@ -265,17 +293,27 @@ it('renders a cold new-chat composer while configuration and endpoint metadata a
 });
 
 it('does not hide a restored chat behind unrelated catalog loading', () => {
-  mockEndpointsQuery = { data: mockConfig, isLoading: true };
+  mockEndpointsQuery = {
+    data: mockConfig,
+    isLoading: true,
+    isError: false,
+    refetch: mockRefetchEndpoints,
+  };
   setup(['/c/chat-a']);
   expect(screen.getByTestId('composer')).toBeVisible();
   expect(mockNewConversation).not.toHaveBeenCalled();
 });
 
-it('mounts the history subscriber on a cold route before configuration and the record settle', async () => {
+it('keeps the pane mounted and enables history after its record, before configuration', async () => {
   mockConversation = null;
   mockHasSetConversation.current = false;
-  mockStartupQuery = { data: undefined };
-  mockEndpointsQuery = { data: undefined, isLoading: true };
+  mockStartupQuery = { data: undefined, isError: false, refetch: mockRefetchStartup };
+  mockEndpointsQuery = {
+    data: undefined,
+    isLoading: true,
+    isError: false,
+    refetch: mockRefetchEndpoints,
+  };
   let resolveRecord!: (value: Partial<TConversation>) => void;
   mockFetchConversation.mockReturnValue(
     new Promise((resolve) => {
@@ -286,14 +324,48 @@ it('mounts the history subscriber on a cold route before configuration and the r
   const pane = screen.getByTestId('composer');
   expect(pane).not.toBeVisible();
   expect(mockFetchConversation).toHaveBeenCalledWith('cold-history');
+  expect(pane).toHaveAttribute('data-history-ready', 'false');
   await act(async () => resolveRecord({ conversationId: 'cold-history', model: 'saved-model' }));
+  await waitFor(() => expect(pane).toHaveAttribute('data-history-ready', 'true'));
+  expect(pane).not.toBeVisible();
   expect(mockNewConversation).not.toHaveBeenCalled();
   act(() => {
-    mockStartupQuery = { data: mockConfig };
-    mockEndpointsQuery = { data: mockConfig, isLoading: false };
+    mockStartupQuery = { data: mockConfig, isError: false, refetch: mockRefetchStartup };
+    mockEndpointsQuery = {
+      data: mockConfig,
+      isLoading: false,
+      isError: false,
+      refetch: mockRefetchEndpoints,
+    };
     mockSetConversation();
   });
   await waitFor(() => expect(pane).toBeVisible());
   expect(screen.getByTestId('composer')).toBe(pane);
   expect(mockConversation).toMatchObject({ conversationId: 'cold-history', model: 'saved-model' });
 });
+
+it.each(['startup', 'endpoints'] as const)(
+  'exposes retry for a failed %s query on a pending saved route',
+  async (failed) => {
+    mockConversation = null;
+    mockHasSetConversation.current = false;
+    if (failed === 'startup')
+      mockStartupQuery = { ...mockStartupQuery, data: undefined, isError: true };
+    else mockEndpointsQuery = { ...mockEndpointsQuery, data: undefined, isError: true };
+    setup(['/c/cold-failure']);
+    await waitFor(() => expect(mockFetchConversation).toHaveBeenCalledWith('cold-failure'));
+    expect(screen.getByRole('alert')).toBeVisible();
+    expect(screen.getByTestId('composer')).not.toBeVisible();
+    const retry = failed === 'startup' ? mockRefetchStartup : mockRefetchEndpoints;
+    retry.mockImplementation(() => {
+      if (failed === 'startup')
+        mockStartupQuery = { ...mockStartupQuery, data: mockConfig, isError: false };
+      else mockEndpointsQuery = { ...mockEndpointsQuery, data: mockConfig, isError: false };
+      mockSetConversation();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+    expect(retry).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByTestId('composer')).toBeVisible());
+    expect(mockConversation).toMatchObject({ conversationId: 'cold-failure' });
+  },
+);

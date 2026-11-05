@@ -6,6 +6,7 @@ import { QueryClient, focusManager, QueryClientProvider } from '@tanstack/react-
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
+  useCachedMessages,
   getStableMessages,
   shouldPreserveMessagesOnNotFound,
   useSubagentAttachmentCallsQueries,
@@ -711,6 +712,37 @@ describe('useSubagentAttachmentCallsQueries', () => {
       .mocked(dataService.getSubagentAttachmentCalls)
       .mock.calls.map(([params]) => params.files.length);
     expect(batches).toEqual([32, 8]);
+    unmount();
+    queryClient.clear();
+  });
+});
+
+describe('useCachedMessages', () => {
+  it('shares early history with readers whose conversation hydrates later', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const history = [message({ messageId: 'early-history' })];
+    jest.mocked(dataService.getMessagesByConvoId).mockResolvedValue(history);
+    const { result, rerender, unmount } = renderHook(
+      ({ selectedId }: { selectedId: string }) => ({
+        owner: useGetMessagesByConvoId('convo-id', { refetchOnMount: true }),
+        reader: useCachedMessages(selectedId, (messages) =>
+          messages.map((entry) => entry.messageId),
+        ),
+      }),
+      { initialProps: { selectedId: '' }, wrapper: createWrapper(queryClient, '/c/convo-id') },
+    );
+    await waitFor(() => expect(result.current.owner.data).toEqual(history));
+    rerender({ selectedId: 'convo-id' });
+    await waitFor(() => expect(result.current.reader.data).toEqual(['early-history']));
+    expect(dataService.getMessagesByConvoId).toHaveBeenCalledTimes(1);
+    act(() => {
+      queryClient.setQueryData(
+        [QueryKeys.messages, 'convo-id'],
+        [...history, message({ messageId: 'streamed' })],
+      );
+    });
+    await waitFor(() => expect(result.current.reader.data).toEqual(['early-history', 'streamed']));
+    expect(dataService.getMessagesByConvoId).toHaveBeenCalledTimes(1);
     unmount();
     queryClient.clear();
   });

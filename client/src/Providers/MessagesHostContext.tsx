@@ -25,7 +25,7 @@ import {
   getMessageClipboardSource,
   useCopyMessageToClipboard,
 } from '~/hooks';
-import { useForkConvoMutation, useGetMessagesByConvoId } from '~/data-provider';
+import { useForkConvoMutation, useCachedMessages } from '~/data-provider';
 import useConversationSeenSource from '~/hooks/Conversations/seenSource';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { useOptionalMessagesOperations } from './MessagesViewContext';
@@ -98,13 +98,8 @@ function useAppGetMessages(): () => TMessage[] | undefined {
 
 function useAppConversationMessages(
   conversationId: string | null | undefined,
-  isStreaming: boolean,
 ): TMessage[] | undefined {
-  return useGetMessagesByConvoId(
-    conversationId ?? '',
-    { enabled: !!conversationId },
-    { isStreaming },
-  ).data;
+  return useCachedMessages(conversationId ?? '').data;
 }
 
 function useAppAssistant(

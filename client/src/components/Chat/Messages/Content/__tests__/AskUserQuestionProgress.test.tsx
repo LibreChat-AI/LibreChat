@@ -26,7 +26,7 @@ let mockLivePauses: { ids: string[]; hasUnattributed: boolean } = {
 };
 
 jest.mock('~/data-provider', () => ({
-  useGetMessagesByConvoId: () => ({ data: mockLivePauses }),
+  useCachedMessages: () => ({ data: mockLivePauses }),
 }));
 
 describe('AskUserQuestionProgress', () => {
