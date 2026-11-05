@@ -288,7 +288,21 @@ describe('authorizeAgentRestore', () => {
     expect(plan.tools).toEqual([]);
   });
 
-  it('keeps a tool the agent already has without a further lookup', async () => {
+  it('rechecks a tool the agent holds without an index entry for its server', async () => {
+    const listAgentIdsForServer = jest.fn().mockResolvedValue([agentId]);
+    const plan = await authorizeAgentRestore({
+      agent: { _id: agentId, tools: [mcpTool('docs')], mcpServerNames: [], updatedAt },
+      versionTools: [mcpTool('docs')],
+      authorizeTools: authorizeThroughGate(),
+      listAgentIdsForServer,
+      getPermissions: noPermissions,
+    });
+    expect(listAgentIdsForServer).toHaveBeenCalledWith('docs');
+    expect(plan.tools).toEqual([]);
+    expect(plan.mcpServerNames).toEqual([]);
+  });
+
+  it('keeps an indexed tool the agent already has without a further lookup', async () => {
     const listAgentIdsForServer = jest.fn();
     const plan = await authorizeAgentRestore({
       agent: { _id: agentId, tools: [mcpTool('docs')], mcpServerNames: ['docs'], updatedAt },

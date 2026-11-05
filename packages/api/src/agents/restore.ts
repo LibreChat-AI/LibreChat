@@ -30,8 +30,8 @@ export interface RestoredToolsAuthorization {
   /** Filled with the raw server name of every approved MCP tool. */
   resolvedServerNames: Set<string>;
   /**
-   * Final gate for every MCP tool the registry approved. Re-checks newly restored tools
-   * on DB-backed servers live, without the target agent's own grant.
+   * Final gate for every MCP tool the registry approved. Re-checks tools on DB-backed servers
+   * the agent's current index does not cover, live and without the target agent's own grant.
    */
   admitMCPTool: (
     tool: string,
@@ -137,10 +137,10 @@ const canView = (permissions: Map<string, number>, id: ResourceId): boolean =>
  * Authorizes a version restore against the agent as it stands, before anything is written.
  *
  * Agent-scoped MCP access is granted from `mcpServerNames`, so the restore must not be
- * judged against the snapshot's index (it would vouch for itself), and a tool the agent
- * does not already have must not be admitted on a cached registry view or on the target
- * agent's own grant. A newly restored tool on a DB-backed server is admitted when the
- * agent still has a tool on that server, or when the user holds a live grant on the server
+ * judged against the snapshot's index (it would vouch for itself), and a tool whose server
+ * the agent's index does not already cover must not be admitted on a cached registry view
+ * or on the target agent's own grant. A tool on a DB-backed server is admitted when a current tool on that
+ * server is still indexed on the agent, or when the user holds a live grant on the server
  * itself or on another agent that uses it.
  */
 export async function authorizeAgentRestore({
@@ -162,8 +162,9 @@ export async function authorizeAgentRestore({
 
   const agentId = agent._id.toString();
   const priorNames = agent.mcpServerNames ?? [];
-  const existingToolSet = new Set(existingTools);
-  /** Servers the agent demonstrably uses now: a current tool still resolves to the name. */
+  /** Servers the agent demonstrably uses now: a current tool still resolves to the name.
+   *  Holding a tool is not enough on its own: an unindexed tool (a legacy agent) would
+   *  otherwise skip the live check and have its server added to the index. */
   const activeServerNames = matchPriorServerNames(existingTools, priorNames);
 
   const hasLiveServerAccess = async (
@@ -195,7 +196,7 @@ export async function authorizeAgentRestore({
     serverName: string,
     config: RestoredServerConfig | undefined,
   ): Promise<boolean> => {
-    if (existingToolSet.has(tool) || !config || !isUserSourced(config)) {
+    if (!config || !isUserSourced(config)) {
       return Promise.resolve(true);
     }
     let admission = admissions.get(serverName);
