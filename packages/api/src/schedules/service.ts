@@ -727,8 +727,11 @@ export function createSchedulesService(
             tokenCredits,
             allotment,
             allottedAt,
+            lastRefill,
             ...syncFields
           } = updateFields;
+          // The grant tuple is written only with the credit, so a racing creator keeps its period.
+          const grant = { allotment, allottedAt, lastRefill };
           if (record == null) {
             // ABSENT record: upsert. The credit rides `$setOnInsert` so a document created
             // by a concurrent charge keeps its charged balance; the refill-config sync is
@@ -737,7 +740,7 @@ export function createSchedulesService(
               set: syncFields,
               setOnInsert: {
                 ...(initUser != null ? { user: initUser } : {}),
-                ...(tokenCredits != null ? { tokenCredits, allotment, allottedAt } : {}),
+                ...(tokenCredits != null ? { tokenCredits, ...grant } : {}),
               },
             });
           } else if (tokenCredits != null) {
@@ -748,7 +751,7 @@ export function createSchedulesService(
             // The allotment rides the CAS so it is written only with the credit it describes.
             const initialized = await deps.initializeNullBalance(user.id, {
               tokenCredits,
-              sync: { ...syncFields, allotment, allottedAt },
+              sync: { ...syncFields, ...grant },
             });
             record =
               initialized ?? (await deps.findBalance(user.id, { applyReset: false })) ?? record;

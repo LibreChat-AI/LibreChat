@@ -66,8 +66,9 @@ export function getRefillEligibilityDate(
 }
 
 /**
- * The credits the current period was granted, or null when none is stored or a refill since
- * (by a server that predates the field) left it describing an earlier period.
+ * The credits the current period was granted, or null when none is stored, the period start is
+ * unknown, or a refill since (by a server that predates the field) left it describing an earlier
+ * period.
  */
 export function getGrantedAllotment(
   record: Pick<TBalanceResponse, 'allotment' | 'allottedAt' | 'lastRefill'>,
@@ -81,7 +82,7 @@ export function getGrantedAllotment(
     return null;
   }
   const refilled = lastRefill == null ? NaN : new Date(lastRefill).getTime();
-  return granted < refilled ? null : allotment;
+  return Number.isNaN(refilled) || granted < refilled ? null : allotment;
 }
 
 /** Whether the configured refill/reset period has elapsed. */

@@ -184,11 +184,13 @@ export function createSetBalanceConfig({
         }
 
         if (userBalanceRecord == null) {
-          const { tokenCredits, allotment, allottedAt, ...syncFields } = updateFields;
+          // The grant tuple is insert-only so a racing creator keeps its own period and allotment.
+          const { tokenCredits, allotment, allottedAt, lastRefill, ...syncFields } = updateFields;
           balanceLocals.balanceData = await upsertBalanceFields(userId, syncFields, {
             tokenCredits,
             allotment,
             allottedAt,
+            lastRefill,
           });
           return;
         }

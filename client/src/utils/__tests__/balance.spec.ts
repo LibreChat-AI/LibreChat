@@ -62,6 +62,15 @@ describe('summarizeBalance', () => {
     expect(summarizeBalance(stale).allotment).toBe(20_000);
   });
 
+  it('ignores an allotment it cannot place in a period', () => {
+    const unplaced = refilling({
+      allotment: 40_000,
+      allottedAt: '2026-07-01T00:00:00.000Z',
+      lastRefill: undefined,
+    });
+    expect(summarizeBalance(unplaced).allotment).toBe(20_000);
+  });
+
   it('reads 0% used when saved-up credits exceed the allotment', () => {
     const summary = summarizeBalance(refilling({ tokenCredits: 45_000 }));
     expect(summary.usedPercent).toBe(0);
