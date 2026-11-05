@@ -29,10 +29,12 @@ export type ChatPaneProps = {
   composer?: ReactNode;
   /** Replaces the composer with a note, for a conversation the reader cannot continue. */
   readOnlyNote?: string;
-  /** Directly under the composer on the welcome screen, in the flow of the band. */
-  fullFooter?: ReactNode;
+  /** Directly under the composer, in the flow of the band. */
+  composerFooter?: ReactNode;
   /** A bar in the composer band's clearance, positioned by the footer itself. */
   bandFooter?: ReactNode;
+  /** Below the whole column. */
+  footer?: ReactNode;
   /** Rendered beside the composer band, given the band to position against. */
   renderMascot?: (bandRef: RefObject<HTMLDivElement>) => ReactNode;
 };
@@ -69,8 +71,9 @@ export default function ChatPane(props: ChatPaneProps): ReactElement {
     starters,
     composer,
     readOnlyNote,
-    fullFooter,
+    composerFooter,
     bandFooter,
+    footer,
     renderMascot,
   } = props;
   const { isLanding } = view;
@@ -135,11 +138,12 @@ export default function ChatPane(props: ChatPaneProps): ReactElement {
           ) : (
             composer
           )}
-          {fullFooter}
+          {composerFooter}
           {bandFooter}
         </div>
         {renderMascot?.(bandRef)}
       </div>
+      {footer}
     </>
   );
 }

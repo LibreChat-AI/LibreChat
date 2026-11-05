@@ -74,9 +74,27 @@ test.describe('welcome screen heading and footer', () => {
       const main = await openAgentLanding(page, agentId);
 
       await expect(main.getByText(name, { exact: true }).last()).toBeVisible();
+      await expect(page.getByText(DISCLAIMER)).toBeVisible();
+      await expect.poll(() => composerClearance(page)).toBeGreaterThan(16);
+    } finally {
+      await cleanupAgent(page, agentId);
+    }
+  });
+
+  test('an opted-in deployment places the footer directly under the composer @scenario:landing-footer-under-the-composer', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    const name = uniqueAgentName('E2E Landing Composer Footer');
+    let agentId: string | undefined;
+
+    try {
+      agentId = (await createAgent(page, name)).id;
+      await serveInterface(page, { landingFooter: 'composer' });
+      await openAgentLanding(page, agentId);
+
       const disclaimer = page.getByText(DISCLAIMER);
       await expect(disclaimer).toBeVisible();
-      /** The footer sits directly under the composer, not at the bottom of the page. */
       await expect.poll(() => composerClearance(page)).toBe(16);
       const composerBox = await page.locator('form:has(#prompt-textarea)').boundingBox();
       const disclaimerBox = await disclaimer.boundingBox();

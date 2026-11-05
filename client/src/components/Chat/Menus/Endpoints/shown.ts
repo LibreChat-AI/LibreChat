@@ -11,7 +11,11 @@ export function isModelSelectorShown(startupConfig?: TStartupConfig | null): boo
   return interfaceConfig.modelSelect !== false || modelSpecs.length > 0;
 }
 
-export function useModelSelectorShown(): boolean {
+/** `interface.messageAuthor`: a response need not repeat the author a shown selector names. */
+export function useHideSelectedAuthor(): boolean {
   const { data: startupConfig } = useGetStartupConfig();
-  return isModelSelectorShown(startupConfig);
+  return (
+    startupConfig?.interface?.messageAuthor === 'whenDifferent' &&
+    isModelSelectorShown(startupConfig)
+  );
 }
