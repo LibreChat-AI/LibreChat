@@ -1297,14 +1297,10 @@ export const channelConfigSchema = channelStorageConfigSchema.extend({
   ),
   socketReconnectDelayMs: channelGatewayPolicySchema.shape.socketReconnectDelayMs,
   gatewayUrl: z.string().url().optional(),
-  /** Deployment-owned Slack app; shared installation never reads tenant credential overrides. */
+  /** Operator enablement and OAuth limits; app credentials are managed by organization admins. */
   slackApp: z
     .object({
       enabled: z.boolean().default(false),
-      appId: z.string().max(256).optional(),
-      clientId: z.string().max(512).optional(),
-      clientSecret: z.string().max(512).optional(),
-      signingSecret: z.string().max(512).optional(),
       flowLifetimeMs: z
         .number()
         .int()

@@ -1,10 +1,11 @@
 import { nanoid } from 'nanoid';
-import type { SlackWorkspace } from 'librechat-data-provider';
+import type { SlackWorkspace, SlackAppRegistration } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type {
   SlackInstallRecord,
   SlackWorkspaceRecord,
   SlackClaimedInstall,
+  SlackInstallGeneration,
 } from '~/models/slackWorkspace';
 import {
   createSlackInstallModel,
@@ -25,6 +26,23 @@ export type SlackWorkspaceInstallResult =
     };
 
 export interface SlackWorkspaceStorage {
+  /** Credentials and the OAuth installation fence share the same organization/app revision. */
+  app(appId: string): Promise<SlackInstallGeneration | null>;
+  apps(cursor?: string, limit?: number): Promise<{ apps: SlackAppRegistration[]; next?: string }>;
+  configureApp(
+    input: Required<
+      Pick<
+        SlackInstallGeneration,
+        'appId' | 'clientId' | 'encryptedClientSecret' | 'encryptedSigningSecret'
+      >
+    >,
+    userId: string,
+    expectedRevision?: string,
+  ): Promise<SlackAppRegistration | null>;
+  removeApp(
+    appId: string,
+    expectedRevision: string,
+  ): Promise<'removed' | 'conflict' | 'workspace_in_use'>;
   startInstall(
     input: Omit<SlackInstallRecord, 'tenantId' | 'generation' | 'installOrder' | 'callbackId'>,
   ): Promise<SlackInstallRecord>;
@@ -111,6 +129,88 @@ export function createSlackWorkspaceStorage(
   }
 
   return {
+    async app(appId) {
+      return generations
+        .findOne({
+          appId,
+          partition: tenant() || '_',
+          tenantId: tenant() ?? null,
+          encryptedClientSecret: { $exists: true },
+        })
+        .select('+encryptedClientSecret +encryptedSigningSecret')
+        .read('primary')
+        .lean();
+    },
+    async apps(cursor, limit = 100) {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+        throw new TypeError('Invalid Slack app page');
+      const records = await generations
+        .find({
+          partition: tenant() || '_',
+          tenantId: tenant() ?? null,
+          encryptedClientSecret: { $exists: true },
+          ...(cursor ? { appId: { $gt: cursor } } : {}),
+        })
+        .sort({ appId: 1 })
+        .limit(limit + 1)
+        .read('primary')
+        .lean();
+      const apps = records
+        .slice(0, limit)
+        .map(({ appId, clientId, revision }) => ({ appId, clientId: clientId!, revision }));
+      return { apps, ...(records.length > limit ? { next: apps[apps.length - 1].appId } : {}) };
+    },
+    async configureApp(input, userId, expectedRevision) {
+      const tenantId = tenant();
+      const admit = await prepareChannelOwnerAdmission(mongoose, { userId, tenantId });
+      return transaction(async (session) => {
+        if (!(await admit(session))) return null;
+        const current = await generation(input.appId, session);
+        if (
+          !current ||
+          (current.clientId ? current.revision !== expectedRevision : expectedRevision != null)
+        )
+          return null;
+        const revision = nanoid();
+        const changed = await generations.updateOne(
+          {
+            partition: tenantId || '_',
+            appId: input.appId,
+            tenantId: tenantId ?? null,
+            revision: current.revision,
+          },
+          { $set: { ...input, revision }, $inc: { writes: 1 } },
+          { session },
+        );
+        if (!changed.matchedCount) return null;
+        return { appId: input.appId, clientId: input.clientId!, revision };
+      });
+    },
+    async removeApp(appId, expectedRevision) {
+      const tenantId = tenant();
+      return transaction(async (session) => {
+        const current = await generations
+          .findOne({ appId, tenantId: tenantId ?? null, revision: expectedRevision })
+          .session(session)
+          .lean();
+        if (!current) return 'conflict';
+        if (
+          await workspaces
+            .exists({ appId, tenantId: tenantId ?? null, status: 'active' })
+            .session(session)
+        )
+          return 'workspace_in_use';
+        const changed = await generations.updateOne(
+          { appId, tenantId: tenantId ?? null, revision: expectedRevision },
+          {
+            $set: { revision: nanoid() },
+            $unset: { clientId: 1, encryptedClientSecret: 1, encryptedSigningSecret: 1 },
+          },
+          { session },
+        );
+        return changed.matchedCount ? 'removed' : 'conflict';
+      });
+    },
     async startInstall(input) {
       const tenantId = tenant();
       const admit = await prepareChannelOwnerAdmission(mongoose, {

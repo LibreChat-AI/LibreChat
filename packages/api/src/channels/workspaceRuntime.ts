@@ -1,7 +1,6 @@
 import { SystemCapabilities } from '@librechat/data-schemas';
 import { channelConfigSchema } from 'librechat-data-provider';
 import type { AppConfig, SlackWorkspaceStorage } from '@librechat/data-schemas';
-import type { ChannelConfig } from 'librechat-data-provider';
 import type { SlackWorkspacePrincipal, SlackWorkspaceFetch } from './workspaces';
 import type { SlackWorkspaceHandlers } from './workspaceHttp';
 import type { GetAppConfigOptions } from '~/app/service';
@@ -11,8 +10,8 @@ import {
   slackPublicURL,
   SLACK_WORKSPACE_CALLBACK_PATH,
 } from './workspaces';
+import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceHandlers } from './workspaceHttp';
-import { encryptCredential } from '~/crypto/credentials';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { getOAuthCallbackUrl } from '~/oauth/url';
 
@@ -41,12 +40,28 @@ export function createSlackWorkspaceRuntime(deps: {
     return channelConfigSchema.parse(app.endpoints?.agents?.channels ?? {});
   };
   const redirectUri = getOAuthCallbackUrl(deps.publicBaseUrl, SLACK_WORKSPACE_CALLBACK_PATH);
-  const appFromPolicy = (channels: ChannelConfig) => {
-    const app = resolveSlackWorkspaceApp(channels, redirectUri);
+  const config = async (appId?: string) => {
+    if (!appId) return undefined;
+    const [channels, registration] = await Promise.all([policy(), deps.storage.app(appId)]);
+    if (
+      !registration?.clientId ||
+      !registration.encryptedClientSecret ||
+      !registration.encryptedSigningSecret
+    )
+      return undefined;
+    const [clientSecret, signingSecret] = await Promise.all([
+      decryptCredential(registration.encryptedClientSecret),
+      decryptCredential(registration.encryptedSigningSecret),
+    ]);
+    const app = resolveSlackWorkspaceApp(channels, redirectUri, {
+      appId,
+      clientId: registration.clientId,
+      clientSecret,
+      signingSecret,
+    });
     if (app) slackPublicURL(deps.clientBaseUrl);
     return app;
   };
-  const config = async () => appFromPolicy(await policy());
   const canManage = async (principal: SlackWorkspacePrincipal) => {
     const [user, active] = await Promise.all([
       deps.findUser(principal.id),
@@ -78,8 +93,22 @@ export function createSlackWorkspaceRuntime(deps: {
     settings: async () => {
       const channels = await policy();
       return {
-        configured: Boolean(appFromPolicy(channels)),
+        configured:
+          channels.enabled &&
+          channels.transport === 'webhook' &&
+          channels.slackApp?.enabled === true,
         pageSize: channels.maxMetadataPageSize,
+        setup: {
+          redirectUri,
+          eventsBaseUrl: getOAuthCallbackUrl(
+            channels.gatewayUrl || deps.publicBaseUrl,
+            '/slack/events',
+          ),
+          interactionsBaseUrl: getOAuthCallbackUrl(
+            channels.gatewayUrl || deps.publicBaseUrl,
+            '/slack/interactions',
+          ),
+        },
       };
     },
   });

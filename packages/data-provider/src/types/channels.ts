@@ -17,6 +17,29 @@ export const SLACK_CHANNEL_BOT_EVENTS = [
   'reaction_removed',
 ] as const;
 
+/** Organization-owned app metadata. Submitted secrets are write-only. */
+export interface SlackAppRegistration {
+  appId: string;
+  clientId: string;
+  revision: string;
+}
+
+export interface ConfigureSlackApp {
+  appId: string;
+  clientId: string;
+  clientSecret: string;
+  signingSecret: string;
+  expectedRevision?: string;
+}
+
+export interface SlackAppPage {
+  configured: boolean;
+  canManage: boolean;
+  apps: SlackAppRegistration[];
+  next?: string;
+  setup?: { redirectUri: string; eventsBaseUrl: string; interactionsBaseUrl: string };
+}
+
 /** A tenant's Slack installation. Provider credentials are never part of browser metadata. */
 export interface SlackWorkspace {
   tenantId?: string;
