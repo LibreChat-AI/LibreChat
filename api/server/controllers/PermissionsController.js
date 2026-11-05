@@ -128,7 +128,7 @@ const updateResourcePermissions = async (req, res) => {
         } else if (principal.type === PrincipalType.ROLE) {
           principalId = principal.id; // Role principals use role name as ID
         } else if (principal.type === PrincipalType.USER) {
-          principalId = await ensurePrincipalExists(principal);
+          principalId = await ensurePrincipalExists(principal, authContext);
         } else if (principal.type === PrincipalType.GROUP) {
           // Pass authContext to enable member fetching for Entra ID groups when available
           principalId = await ensureGroupPrincipalExists(principal, authContext);

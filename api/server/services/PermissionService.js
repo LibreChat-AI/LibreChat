@@ -1,5 +1,11 @@
 const mongoose = require('mongoose');
-const { AccessControlService, isEnabled, ensureDirectoryPrincipalUser } = require('@librechat/api');
+const {
+  AccessControlService,
+  isEnabled,
+  ensureDirectoryPrincipalUser,
+  resolveDirectoryPrincipal,
+  validateLocalPrincipalId,
+} = require('@librechat/api');
 const {
   tenantStorage,
   getTenantId,
@@ -12,6 +18,7 @@ const {
   getUserOwnedEntraGroups,
   getUserEntraGroups,
   getEntraGroupDetailsBatch,
+  createGraphClient,
   getGroupMembers,
   getGroupOwners,
 } = require('~/server/services/GraphApiService');
@@ -30,7 +37,7 @@ const validateResourceType = (resourceType) => {
 };
 
 const ensureLocalUserPrincipalExists = async (principalId) => {
-  const user = await db.findUser({ _id: principalId }, '_id');
+  const user = await db.findUser({ _id: validateLocalPrincipalId(principalId) }, '_id');
   if (!user) {
     throw new Error('User principal not found');
   }
@@ -38,7 +45,7 @@ const ensureLocalUserPrincipalExists = async (principalId) => {
 };
 
 const ensureLocalGroupPrincipalExists = async (principalId) => {
-  const group = await db.findGroupById(principalId, { _id: 1 });
+  const group = await db.findGroupById(validateLocalPrincipalId(principalId), { _id: 1 });
   if (!group) {
     throw new Error('Group principal not found');
   }
@@ -325,9 +332,10 @@ const getAvailableRoles = async ({ resourceType }) => {
  * @param {string} [principal.email] - Email address
  * @param {string} [principal.source] - 'local' or 'entra'
  * @param {string} [principal.idOnTheSource] - Entra ID object ID for external principals
+ * @param {Object|null} [authContext] - Enabled integration authentication context
  * @returns {Promise<string|null>} Returns the principalId for database operations, null for public
  */
-const ensurePrincipalExists = async function (principal) {
+const ensurePrincipalExists = async function (principal, authContext = null) {
   if (principal.type === PrincipalType.PUBLIC) {
     return null;
   }
@@ -338,6 +346,8 @@ const ensurePrincipalExists = async function (principal) {
 
   if (principal.type === PrincipalType.USER && principal.source === 'entra') {
     return ensureDirectoryPrincipalUser(principal, {
+      resolvePrincipal: (identity) =>
+        resolveDirectoryPrincipal(identity, authContext, createGraphClient),
       findUserBySourceId: async (idOnTheSource) => {
         const user = await db.findUser({ idOnTheSource });
         return user ? { id: user._id.toString() } : null;
@@ -387,7 +397,8 @@ const ensureGroupPrincipalExists = async function (principal, authContext = null
   }
 
   if (principal.source === 'entra') {
-    if (!principal.name || !principal.idOnTheSource) {
+    principal = await resolveDirectoryPrincipal(principal, authContext, createGraphClient);
+    if (!principal?.name || !principal.idOnTheSource) {
       throw new Error('Entra ID group principals must have name and idOnTheSource');
     }
 
