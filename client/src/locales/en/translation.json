@@ -3945,6 +3945,7 @@
   "com_ui_channels_workspace_no_routes": "This agent is not assigned to new conversations.",
   "com_ui_channels_workspace_remove_confirm": "Remove this route for new conversations? A channel-specific conversation may use the workspace default instead. Existing conversations keep their agent.",
   "com_ui_channels_workspace_replace": "Use this agent instead",
+  "com_ui_channels_workspace_route_owned": "Another user’s agent is assigned here. Choose another Slack channel, or ask an administrator to change the assignment.",
   "com_ui_channels_workspace_replace_help": "Another agent is configured for new conversations here. Existing conversations will keep their agent.",
   "com_ui_channels_workspace_route_error": "Could not update the connection. Check its current settings and your permissions, then try again.",
   "com_ui_channels_workspace_remove_route": "Remove",

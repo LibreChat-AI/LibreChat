@@ -224,7 +224,7 @@ for (const theme of ['light', 'dark']) {
       await route.fulfill({
         json: {
           configured: true,
-          canManage: true,
+          canManage: false,
           ...(detail ? { workspace } : { workspaces: [workspace] }),
         },
       });
@@ -302,7 +302,12 @@ for (const theme of ['light', 'dark']) {
         }
         await route.fulfill({
           json: url.searchParams.has('target')
-            ? { occupied, assignedToThisChannel: assigned, revision: routeRevision }
+            ? {
+                canReplace: true,
+                occupied,
+                assignedToThisChannel: assigned,
+                revision: routeRevision,
+              }
             : { routes },
         });
         return;

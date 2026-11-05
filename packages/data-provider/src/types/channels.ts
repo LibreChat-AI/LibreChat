@@ -80,6 +80,7 @@ export interface SlackWorkspaceRoutePage {
   next?: string;
 }
 export interface SlackWorkspaceRouteStatus {
+  canReplace: boolean;
   occupied: boolean;
   assignedToThisChannel: boolean;
   revision?: string;

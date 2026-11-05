@@ -838,7 +838,7 @@ describe('organization workspace connections', () => {
     jest
       .mocked(dataService.getAgentChannelWorkspaceTarget)
       .mockReset()
-      .mockResolvedValue({ occupied: false, assignedToThisChannel: false });
+      .mockResolvedValue({ canReplace: true, occupied: false, assignedToThisChannel: false });
     jest
       .mocked(dataService.setAgentChannelWorkspaceRoute)
       .mockReset()
@@ -859,6 +859,7 @@ describe('organization workspace connections', () => {
   test('chooses a saved workspace and requires explicit confirmation before replacing another agent', async () => {
     const user = userEvent.setup();
     jest.mocked(dataService.getAgentChannelWorkspaceTarget).mockResolvedValue({
+      canReplace: true,
       occupied: true,
       assignedToThisChannel: false,
       revision: 'observed-route',
@@ -886,6 +887,33 @@ describe('organization workspace connections', () => {
     expect(dataService.activateAgentChannel).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
   });
+  test('members can choose an installed workspace while another user’s route stays protected', async () => {
+    jest
+      .mocked(dataService.getSlackWorkspaces)
+      .mockResolvedValue({ configured: true, canManage: false, workspaces: [workspace] });
+    jest
+      .mocked(dataService.getSlackWorkspace)
+      .mockResolvedValue({ configured: true, canManage: false, workspace });
+    jest.mocked(dataService.getAgentChannelWorkspaceTarget).mockResolvedValue({
+      occupied: true,
+      assignedToThisChannel: false,
+      canReplace: false,
+      revision: 'other-route',
+    });
+    const user = userEvent.setup();
+    renderChannels();
+    await openAdd(user);
+    await user.click(await screen.findByRole('button', { name: 'Engineering' }));
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    await screen.findByText('com_ui_channels_workspace_route_owned');
+    expect(screen.getByRole('button', { name: 'com_ui_channels_activate' })).toBeDisabled();
+    expect(
+      screen.queryByRole('checkbox', { name: 'com_ui_channels_workspace_replace' }),
+    ).not.toBeInTheDocument();
+    expect(dataService.createWorkspaceAgentChannel).toHaveBeenCalledWith('agent-1', 'workspace-1');
+    expect(dataService.setAgentChannelWorkspaceRoute).not.toHaveBeenCalled();
+  });
+
   test('refreshes a committed channel revision when an assignment response is lost', async () => {
     jest.mocked(dataService.setAgentChannelWorkspaceRoute).mockImplementationOnce(async () => {
       rows = [{ ...configured, status: 'active', revision: 'committed-revision' }];
@@ -928,7 +956,7 @@ describe('organization workspace connections', () => {
       expect.objectContaining({ externalChannelId: 'C999' }),
     );
   });
-  test('does not expose route management when integration administration is unavailable', async () => {
+  test('lets members manage their own routes without installation administration', async () => {
     rows = [{ ...configured, status: 'active' }];
     jest
       .mocked(dataService.getSlackWorkspace)
@@ -936,12 +964,10 @@ describe('organization workspace connections', () => {
     const user = userEvent.setup();
     renderChannels();
     await openConnection(user, 'active');
-    await screen.findByText('com_ui_slack_workspaces_admin');
-    expect(dataService.getAgentChannelWorkspaceRoutes).not.toHaveBeenCalled();
-    expect(dataService.getAgentChannelWorkspaceTarget).not.toHaveBeenCalled();
-    expect(
-      screen.queryByRole('button', { name: 'com_ui_channels_workspace_assign' }),
-    ).not.toBeInTheDocument();
+    await screen.findByRole('button', { name: 'com_ui_channels_workspace_assign' });
+    expect(dataService.getAgentChannelWorkspaceRoutes).toHaveBeenCalled();
+    expect(dataService.getAgentChannelWorkspaceTarget).toHaveBeenCalled();
+    expect(screen.queryByText('com_ui_slack_workspaces_admin')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'com_ui_delete' })).toBeEnabled();
   });
   test('removes a selected route only after confirmation and keeps the connection active', async () => {

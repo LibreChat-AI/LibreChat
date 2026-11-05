@@ -46,12 +46,13 @@ const queryInput = z.union([
     .strict(),
 ]);
 
-/** Agent SHARE middleware and fresh tenant administration jointly authorize shared bot routing. */
+/** Agent SHARE middleware and creator ownership authorize bindings; installation management stays separate. */
 export function createSlackWorkspaceBindingHandlers(deps: {
   channels: AgentChannelMethods;
   workspaces: SlackWorkspaceStorage;
   routes: SlackRouteStorage;
   canManage: (principal: SlackWorkspacePrincipal) => Promise<boolean>;
+  isPrincipalActive: (id: string) => Promise<boolean>;
   readSettings: ReturnType<typeof createSlackWorkspaceSettingsReader>;
   logError: (metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
 }): {
@@ -83,7 +84,7 @@ export function createSlackWorkspaceBindingHandlers(deps: {
         return;
       }
       try {
-        if (!(await deps.canManage(principal))) {
+        if (!(await deps.isPrincipalActive(principal.id))) {
           res.sendStatus(403);
           return;
         }
@@ -160,7 +161,13 @@ export function createSlackWorkspaceBindingHandlers(deps: {
           channel.workspaceId,
           input.data.target === 'default' ? undefined : input.data.target,
         );
+        const previous = route
+          ? await deps.channels.getAgentChannelMetadata(route.channelId)
+          : null;
+        const canReplace =
+          !route || previous?.createdBy === principal.id || (await deps.canManage(principal));
         res.json({
+          canReplace,
           occupied: Boolean(route),
           assignedToThisChannel: route?.channelId === channel.channelId,
           revision: route?.revision,
@@ -202,6 +209,7 @@ export function createSlackWorkspaceBindingHandlers(deps: {
         channelRevision: input.data.channelRevision,
         externalChannelId: input.data.externalChannelId,
         expectedRevision: input.data.expectedRevision,
+        allowReplaceOthers: input.data.expectedRevision ? await deps.canManage(principal) : false,
         activate: channel.status !== 'active',
       });
       if (!result.ok) {
