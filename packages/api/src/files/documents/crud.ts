@@ -3,6 +3,7 @@ import yauzl from 'yauzl';
 import { megabyte, excelMimeTypes, FileSources } from 'librechat-data-provider';
 import type { TextItem } from 'pdfjs-dist/types/src/display/api';
 import type { MistralOCRUploadResult } from '~/types';
+import { spreadsheetToText } from './spreadsheet';
 import { assertSafeZipSize } from './zipSafety';
 
 type FileParseFn = (file: Express.Multer.File) => Promise<string>;
@@ -62,7 +63,7 @@ function getParserForMimeType(mimetype: string): FileParseFn | undefined {
     excelMimeTypes.test(mimetype) ||
     mimetype === 'application/vnd.oasis.opendocument.spreadsheet'
   ) {
-    return excelSheetToText;
+    return spreadsheetToText;
   }
   if (mimetype === 'application/vnd.oasis.opendocument.text') {
     return odtToText;
@@ -103,30 +104,6 @@ async function wordDocToText(file: Express.Multer.File): Promise<string> {
   const { extractRawText } = await import('mammoth');
   const rawText = await extractRawText({ buffer });
   return rawText.value;
-}
-
-/** Parses Excel sheet, returns text inside. */
-async function excelSheetToText(file: Express.Multer.File): Promise<string> {
-  // xlsx CDN build (0.20.x) does not bind fs internally when dynamically imported;
-  // readFile() fails with "Cannot access file". read() takes a pre-loaded Buffer instead.
-  const { read, utils } = await import('xlsx');
-  const data = await fs.promises.readFile(file.path);
-  /* Reject zip-bomb XLSX/ODS before SheetJS's internal extractor runs.
-   * `.xls` (BIFF/CFB) is not a ZIP — magic-byte check skips the
-   * validator for it (yauzl would reject it as malformed anyway). */
-  if (data.length >= 4 && data[0] === 0x50 && data[1] === 0x4b) {
-    await assertSafeZipSize(data, { name: file.originalname ?? 'spreadsheet' });
-  }
-  const workbook = read(data, { type: 'buffer' });
-
-  let text = '';
-  for (const sheetName of workbook.SheetNames) {
-    const worksheet = workbook.Sheets[sheetName];
-    const worksheetAsCsvString = utils.sheet_to_csv(worksheet);
-    text += `${sheetName}:\n${worksheetAsCsvString}\n`;
-  }
-
-  return text;
 }
 
 /**
