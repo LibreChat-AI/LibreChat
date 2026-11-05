@@ -1,6 +1,11 @@
 const { maxWorkers, workerIdleMemoryLimit } = require('../config/jest.workers.cjs');
 
 const esModules = [
+  '@nearai/inference-sdk',
+  'hpke',
+  'ohttp-ts',
+  'bhttp-ts',
+  '@freedomofpress',
   '@librechat/agents',
   'openid-client',
   'oauth4webapi',

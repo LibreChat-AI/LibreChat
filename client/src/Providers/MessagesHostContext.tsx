@@ -23,6 +23,7 @@ import { useForkConvoMutation, useGetMessagesByConvoId } from '~/data-provider';
 import useConversationSeenSource from '~/hooks/Conversations/seenSource';
 import { useOptionalMessagesOperations } from './MessagesViewContext';
 import ThreadMessage from '~/components/Chat/Messages/Thread/Message';
+import ReplySignature from '~/components/Chat/Attestation/Signature';
 import MessageAudio from '~/components/Chat/Messages/MessageAudio';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { useFileMapContext } from '~/Providers/FileMapContext';
@@ -118,6 +119,7 @@ function AppMessageAudio(props: MessageAudioProps) {
  *  group. Registered as the default when this module loads, so rows read it on every route, the
  *  shared view included. */
 export const appMessagesHost: MessagesHost = {
+  renderMessageActions: (props) => <ReplySignature {...props} />,
   useHour12: useClockFormat,
   renderFiles: (message) => <Files message={message} />,
   useForkPreferences: useAppForkPreferences,

@@ -106,7 +106,7 @@ const HoverButtons = ({
    *  rerun controls on every row, and only this toolbar has to re-render for it. */
   const isSubmitting = useContext(ChatContext)?.isSubmitting === true;
   const [isCopied, setIsCopied] = useState(false);
-  const { useGetMessages, useHasPendingTurn } = useMessagesHost();
+  const { useGetMessages, useHasPendingTurn, renderMessageActions } = useMessagesHost();
   const getMessages = useGetMessages();
   const hasPendingTurn = useHasPendingTurn(conversation?.conversationId ?? '');
 
@@ -249,6 +249,8 @@ const HoverButtons = ({
           isLast={isLast}
         />
       )}
+
+      {!isActiveStreamingMessage && renderMessageActions?.({ message, isLast })}
 
       {/* Feedback Buttons */}
       {!error && !isActiveStreamingMessage && !isCreatedByUser && handleFeedback != null && (

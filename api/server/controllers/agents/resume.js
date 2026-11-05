@@ -1,3 +1,4 @@
+const { collectNearAIReply } = require('@librechat/api');
 const { randomUUID } = require('crypto');
 const { isDeepStrictEqual } = require('util');
 const { logger } = require('@librechat/data-schemas');
@@ -1988,25 +1989,30 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       }
 
       const resumeClient = () =>
-        client.resumeCompletion({
-          resumeValue: mapped.resumeValue,
-          reviewedToolApprovals: {
-            bindings: pendingAction.toolApprovalBindings,
-            decisions: req.body.decisions ?? [],
-          },
-          seedContent,
-          runSteps: resumeState?.runSteps ?? [],
-          storedMessages,
-          abortController: job.abortController,
-          // Carry the user's MCP auth so approved MCP tools run with their credentials.
-          userMCPAuthMap: result.userMCPAuthMap,
-          // Replay deferred tools discovered before the pause (captured at pause). The rebuilt
-          // graph passes `messages: []`, so without these the model would lose their schemas.
-          discoveredToolNames: job.metadata?.discoveredTools,
-          authoredSkills: job.metadata?.authoredSkills,
-          activityPhaseSnapshot: job.metadata?.activityPhaseSnapshot,
-          compactionSemanticIndex: job.metadata?.compactionSemanticIndex,
-        });
+        collectNearAIReply(
+          client,
+          () =>
+            client.resumeCompletion({
+              resumeValue: mapped.resumeValue,
+              reviewedToolApprovals: {
+                bindings: pendingAction.toolApprovalBindings,
+                decisions: req.body.decisions ?? [],
+              },
+              seedContent,
+              runSteps: resumeState?.runSteps ?? [],
+              storedMessages,
+              abortController: job.abortController,
+              // Carry the user's MCP auth so approved MCP tools run with their credentials.
+              userMCPAuthMap: result.userMCPAuthMap,
+              // Replay deferred tools discovered before the pause (captured at pause). The rebuilt
+              // graph passes `messages: []`, so without these the model would lose their schemas.
+              discoveredToolNames: job.metadata?.discoveredTools,
+              authoredSkills: job.metadata?.authoredSkills,
+              activityPhaseSnapshot: job.metadata?.activityPhaseSnapshot,
+              compactionSemanticIndex: job.metadata?.compactionSemanticIndex,
+            }),
+          req.config?.config?.nearai?.receiptTimeoutMs,
+        );
       if (
         !(await GenerationJobManager.beginProviderExecution(
           streamId,

@@ -182,6 +182,7 @@
     "protobufjs": "^7.6.5",
     "proxy-from-env": "^2.1.0",
     "re2js": "^2.9.1",
-    "@librechat/code": "file:../../vendor/code"
+    "@librechat/code": "file:../../vendor/code",
+    "@nearai/inference-sdk": "0.1.0"
   }
 }

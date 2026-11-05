@@ -1,3 +1,4 @@
+const { withoutNearAIReceipts } = require('@librechat/api');
 const { v4: uuidv4 } = require('uuid');
 const mongoose = require('mongoose');
 const {
@@ -66,7 +67,7 @@ function sanitizeImportedMessage(message) {
   const content = normalizeImportedArray(message.content);
   const attachments = normalizeImportedArray(message.attachments);
   /** Server-private run state and trace sampling records never come from an import. */
-  const importable = withoutTraceRefs({ ...message });
+  const importable = withoutTraceRefs(withoutNearAIReceipts({ ...message }));
   delete importable.contextMeta;
   delete importable.privateText;
   delete importable.privacyRevision;

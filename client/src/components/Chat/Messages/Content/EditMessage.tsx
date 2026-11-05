@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
+import omit from 'lodash/omit';
 import { useForm } from 'react-hook-form';
 import { findRerunParent } from '@librechat/chat';
 import { Alert, Button, TextareaAutosize } from '@librechat/client';
@@ -167,6 +168,7 @@ const EditMessage = ({
       );
       if (!isInMessages) {
         message.text = data.text;
+        message.metadata = omit(message.metadata, 'nearai');
         message.privacyRevision = undefined;
       } else {
         setMessages(
@@ -175,6 +177,7 @@ const EditMessage = ({
               ? {
                   ...msg,
                   text: data.text,
+                  metadata: omit(msg.metadata, 'nearai'),
                   privacyRevision: undefined,
                 }
               : msg,

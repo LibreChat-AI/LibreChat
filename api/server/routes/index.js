@@ -15,6 +15,7 @@ const adminAuditLog = require('./admin/audit');
 const endpoints = require('./endpoints');
 const staticRoute = require('./static');
 const messages = require('./messages');
+const nearai = require('./nearai');
 const memories = require('./memories');
 const presets = require('./presets');
 const projects = require('./projects');
@@ -91,5 +92,6 @@ module.exports = {
   assistants,
   categories,
   staticRoute,
+  nearai,
   accessPermissions,
 };

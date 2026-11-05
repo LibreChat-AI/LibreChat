@@ -18,6 +18,7 @@ import AgentError from './AgentError';
  * `errorRenderers` instead.
  */
 export const errorCopy: Record<string, TranslationKeys> = {
+  [ErrorTypes.NEAR_AI_ATTESTATION_FAILED]: 'com_error_nearai_attestation_failed',
   [ErrorTypes.MODERATION]: 'com_error_moderation',
   [ErrorTypes.INVALID_ACTION]: 'com_error_invalid_action_error',
   [ErrorTypes.MODELS_NOT_LOADED]: 'com_error_models_not_loaded',

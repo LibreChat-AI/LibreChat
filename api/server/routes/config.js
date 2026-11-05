@@ -1,3 +1,4 @@
+const { getNearAIVerificationConfig } = require('@librechat/api');
 const express = require('express');
 const {
   isEnabled,
@@ -316,6 +317,7 @@ router.get('/', async function (req, res) {
       ...preLoginPayload,
       ...publicSharePayload,
       ...buildPostLoginPayload(appConfig),
+      ...getNearAIVerificationConfig(appConfig),
       ...getConversationTitleCapabilities(appConfig?.interfaceConfig),
       conversationListLimits,
       sharedLinksSnapshotFilesEnabled: sharedLinksEnabled && isFileSnapshotEnabled(appConfig),

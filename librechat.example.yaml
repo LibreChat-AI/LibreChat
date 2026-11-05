@@ -1249,6 +1249,16 @@ endpoints:
   #     #     deploymentName: claude-3-5-haiku@20241022  # Override for this model
 
   custom:
+    # NEAR AI: SDK deployment checks, E2EE for private models, and reply signatures.
+    # - name: 'NEAR AI'
+    #   apiKey: '${NEAR_API_KEY}' # Or user_provided for per-user keys.
+    #   baseURL: 'https://cloud-api.near.ai/v1'
+    #   nearai: true
+    #   models:
+    #     default: ['Qwen/Qwen3.6-35B-A3B-FP8', 'z-ai/glm-5.3-flash']
+    #     fetch: false
+    #   modelDisplayLabel: 'NEAR AI'
+
     # xAI: Grok 4.7 uses the existing OpenAI-compatible chat and agent paths.
     # https://docs.x.ai/developers/grok-4-7
     # Set XAI_API_KEY in your environment. No separate SpaceXAI provider is needed.
@@ -1848,3 +1858,12 @@ endpoints:
 #   maxWriteAttempts: 3 # Integer 1-100, including the first attempt.
 #   leaseTtlMs: 30000 # Integer 1000-600000. Sharing updates on deployments without transactions hold a per-resource lease this long between renewals.
 #   leaseWaitMs: 3000 # Integer 0-60000. How long an update waits for a contended lease before answering 409.
+
+# Optional NEAR AI verification settings (only endpoints with `nearai: true`).
+# nearai:
+#   verifyUrl: 'https://cloud.near.ai/verify'
+#   verificationTimeoutMs: 45000
+#   receiptTimeoutMs: 15000
+#   sessionCacheMax: 256
+#   reportCacheMax: 128
+#   reportCacheTtlMs: 300000 # Display reports only; 0 disables reuse. Chat preflight is independent.

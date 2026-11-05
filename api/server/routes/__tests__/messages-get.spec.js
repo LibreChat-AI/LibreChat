@@ -57,6 +57,8 @@ jest.mock('@librechat/api', () => {
     rejectToolCallPreviewWrites: (_req, _res, next) => next(),
     withMessageToolCallPreviews: (_req, message) => message,
     /** The real helper, without loading the rest of the package this suite mocks around. */
+    withoutNearAIReceipts: jest.requireActual('../../../../packages/api/src/nearai/sanitize')
+      .withoutNearAIReceipts,
     withoutTraceRefs: jest.requireActual('../../../../packages/api/src/langfuse/trace.ts')
       .withoutTraceRefs,
     /** Mirrors the real parse (default 25, ceiling 1000) without loading the config service. */

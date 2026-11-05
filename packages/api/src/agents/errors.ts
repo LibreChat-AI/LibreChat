@@ -101,6 +101,8 @@ export function getLangChainErrorCode(error: unknown): string | undefined {
  * code has no localized copy and the provider's own message should be shown instead.
  */
 export function resolveLangChainError(error: unknown): string | undefined {
+  const verification = resolveNearAIAttestationError(error);
+  if (verification) return verification;
   const code = getLangChainErrorCode(error);
   const type = code == null ? undefined : LANGCHAIN_ERROR_TYPES[code];
   return type == null ? undefined : JSON.stringify({ type });
@@ -281,4 +283,31 @@ export function getAgentErrorMetadata(
       : {}),
     ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
   };
+}
+
+function isNearAIAttestationFailure(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current != null; depth++) {
+    if (typeof current !== 'object') {
+      return false;
+    }
+    const body = readErrorProperty(current, 'error');
+    if (
+      readErrorProperty(current, 'type') === ErrorTypes.NEAR_AI_ATTESTATION_FAILED ||
+      (body != null &&
+        typeof body === 'object' &&
+        readErrorProperty(body, 'type') === ErrorTypes.NEAR_AI_ATTESTATION_FAILED)
+    ) {
+      return true;
+    }
+    current = readErrorProperty(current, 'cause');
+  }
+  return false;
+}
+
+/** Typed payload for a request NEAR AI verification blocked; it carries no provider text. */
+export function resolveNearAIAttestationError(error: unknown): string | undefined {
+  return isNearAIAttestationFailure(error)
+    ? `NEAR AI hardware verification did not pass, so the message was not sent. Try again.\n${JSON.stringify({ type: ErrorTypes.NEAR_AI_ATTESTATION_FAILED })}`
+    : undefined;
 }

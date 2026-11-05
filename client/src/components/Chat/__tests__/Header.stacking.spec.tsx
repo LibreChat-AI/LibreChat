@@ -57,6 +57,9 @@ jest.mock('../TemporaryChat', () => ({
   TemporaryChatIndicator: () => null,
 }));
 jest.mock('../Trace', () => ({ useTraceControl: () => ({ show: false }) }));
+jest.mock('../Attestation', () => ({
+  AttestationShield: () => <button aria-label="NEAR AI verification" />,
+}));
 jest.mock('../BackgroundTasks', () => ({
   BackgroundTasksButton: jest.fn(() => <div data-testid="conversation-tasks" />),
 }));
@@ -89,6 +92,17 @@ describe('Header stacking', () => {
 
     expect(container.firstElementChild).toHaveClass('absolute', 'top-0', 'z-20');
     expect(backgroundTasks).toHaveBeenCalled();
+  });
+
+  test.each([false, true])('keeps model verification visible with small screen %s', (small) => {
+    mockSmallScreen.current = small;
+    render(<Header />);
+    expect(screen.getByRole('button', { name: 'NEAR AI verification' })).toBeVisible();
+  });
+
+  test('does not offer model verification on a read-only conversation', () => {
+    render(<Header readOnly />);
+    expect(screen.queryByRole('button', { name: 'NEAR AI verification' })).not.toBeInTheDocument();
   });
 
   test('keeps conversation task controls mounted across endpoint switches', () => {

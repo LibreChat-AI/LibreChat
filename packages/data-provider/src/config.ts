@@ -40,6 +40,7 @@ import {
   scheduledMCPReadOnlyPolicySchema,
 } from './types/scheduleConsent';
 import { partialWithoutDefaults } from './zod';
+import { nearAIConfigSchema } from './nearai';
 
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
@@ -2289,6 +2290,8 @@ export const paramDefinitionSchema = z.object({
 
 export const endpointSchema = baseEndpointSchema.merge(
   z.object({
+    /** Enable SDK verification for a trusted NEAR AI Cloud endpoint. */
+    nearai: z.boolean().optional(),
     name: z.string().refine((value) => !eModelEndpointSchema.safeParse(value).success, {
       message: `Value cannot be one of the default endpoint (EModelEndpoint) values: ${Object.values(
         EModelEndpoint,
@@ -3674,6 +3677,8 @@ export function supportsConversationTitleOwnership(config?: {
 }
 
 export type TStartupConfig = {
+  nearaiVerifyUrl?: string;
+  nearaiEndpoints?: string[];
   conversationTitleOwnershipVersion?: typeof CONVERSATION_TITLE_OWNERSHIP_VERSION;
   appTitle: string;
   socialLogins?: string[];
@@ -4451,6 +4456,7 @@ export const toolCallPreviewsConfigSchema = z.object({
 export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchema>;
 
 export const configSchema = z.object({
+  nearai: nearAIConfigSchema.optional(),
   version: z.string(),
   telemetry: telemetrySchema.optional(),
   clientLimits: clientLimitsSchema.optional(),
@@ -5367,6 +5373,7 @@ export enum ViolationTypes {
  * Enum for error message types that are not "violations" as above, used to identify client-facing errors.
  */
 export enum ErrorTypes {
+  NEAR_AI_ATTESTATION_FAILED = 'nearai_attestation_failed',
   /**
    * No User-provided Key.
    */
