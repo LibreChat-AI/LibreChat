@@ -66,17 +66,23 @@ export function readSetupConfig(config: AppConfig, requireEnabled = true): Setup
 
 /** Identity and authorization are reloaded independently of browser middleware. */
 export function createSetupPolicy(deps: SetupPolicyDependencies): {
-  deployment: (options?: { existing?: boolean }) => Promise<SetupPolicy>;
+  deployment: (options?: { existing?: boolean; refresh?: boolean }) => Promise<SetupPolicy>;
   user: (id: string, expectedTenantId?: string) => Promise<SetupPolicy>;
   frozen: (
     session: BrowserSetupSession,
     options?: { completed?: boolean },
   ) => Promise<ExistingSetupPolicy>;
 } {
-  async function deployment(options: { existing?: boolean } = {}): Promise<SetupPolicy> {
+  async function deployment(
+    options: { existing?: boolean; refresh?: boolean } = {},
+  ): Promise<SetupPolicy> {
     if (!deps.principalAuthEnabled()) throw new SetupPolicyError('SETUP_UNAVAILABLE');
     const [base] = await Promise.all([
-      deps.getAppConfig({ baseOnly: true, failClosed: true, refresh: true }),
+      deps.getAppConfig({
+        baseOnly: true,
+        failClosed: true,
+        refresh: options.refresh ?? true,
+      }),
       deps.principalAuthReady(),
     ]);
     const config = readSetupConfig(base, !options.existing);
