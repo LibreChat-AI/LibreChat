@@ -41,6 +41,9 @@ describe('shared Slack service routing', () => {
   let manageAllowed = true;
   let principalActive = true;
   let sequence = 0;
+  const readAgentName = jest.fn((...args: Parameters<typeof channels.getAgentName>) =>
+    channels.getAgentName(...args),
+  );
   const config = channelConfigSchema.parse({
     enabled: true,
     transport: 'webhook',
@@ -176,7 +179,7 @@ describe('shared Slack service routing', () => {
       readSettings,
       canManage: async () => manageAllowed,
       isPrincipalActive: async () => principalActive,
-      getAgentName: channels.getAgentName,
+      getAgentName: readAgentName,
       logError: jest.fn(),
     });
     app.use('/ui', (req, _res, next) => {
@@ -199,6 +202,7 @@ describe('shared Slack service routing', () => {
     enabled = true;
     manageAllowed = true;
     principalActive = true;
+    readAgentName.mockClear();
     provider
       .mockReset()
       .mockImplementation(
@@ -321,6 +325,7 @@ describe('shared Slack service routing', () => {
         .expect(200)
     ).body;
     expect(target).toMatchObject({ assignedToThisChannel: true, canReplace: true });
+    expect(readAgentName).not.toHaveBeenCalled();
     await request
       .delete(`/ui/member-agent/${channel.channelId}/routes`)
       .set('x-test-user', member)
