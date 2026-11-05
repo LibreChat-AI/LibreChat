@@ -135,6 +135,7 @@ const {
   getRequestMemories,
   getMemoryAgentId,
   createMemoryProcessor,
+  selectMemoryWindow,
   agentHasInlineMemoryTools,
   loadAgent: loadAgentFn,
   createMultiAgentMapper,
@@ -3614,22 +3615,7 @@ class AgentClient extends BaseClient {
        * user never typed.
        */
       const chatMessages = messages.filter((m) => !isSkillPrimeMessage(m));
-
-      let messagesToProcess = [...chatMessages];
-      if (chatMessages.length > messageWindowSize) {
-        for (let i = chatMessages.length - messageWindowSize; i >= 0; i--) {
-          const potentialWindow = chatMessages.slice(i, i + messageWindowSize);
-          if (potentialWindow[0]?.role === 'user') {
-            messagesToProcess = [...potentialWindow];
-            break;
-          }
-        }
-
-        if (messagesToProcess.length === chatMessages.length) {
-          messagesToProcess = [...chatMessages.slice(-messageWindowSize)];
-        }
-      }
-
+      const messagesToProcess = selectMemoryWindow(chatMessages, messageWindowSize);
       const filteredMessages = messagesToProcess.map((msg) => this.filterImageUrls(msg));
       const bufferString = getBufferString(filteredMessages);
       const configuredMaxInputTokens = Number.isFinite(memoryConfig?.maxInputTokens)

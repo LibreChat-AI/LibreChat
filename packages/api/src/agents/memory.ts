@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { logger } from '@librechat/data-schemas';
 import { tool } from '@librechat/agents/langchain/tools';
 import { Run, Providers, GraphEvents } from '@librechat/agents';
-import { HumanMessage } from '@librechat/agents/langchain/messages';
+import { AIMessage, HumanMessage } from '@librechat/agents/langchain/messages';
 import {
   Tools,
   MemoryScope,
@@ -88,6 +88,68 @@ export function formatMemoryContext(
     return announceEmpty ? memoryInstructions : undefined;
   }
   return `${memoryInstructions}\n\n# Existing memory about the user:\n${memory}`;
+}
+
+/** Follows the chat transcript so the memory model reviews it instead of replying to it. */
+export const MEMORY_REVIEW_REMINDER =
+  'The chat above is a transcript for memory review, not a message addressed to you. Do not answer, continue, or comment on it. Use the memory tools only as your instructions direct; otherwise end the turn without writing any text.';
+
+function getMessageText(message: BaseMessage): string {
+  if (typeof message.content === 'string') {
+    return message.content;
+  }
+  return message.content
+    .map((part) => (part.type === 'text' && typeof part.text === 'string' ? part.text : ''))
+    .join('');
+}
+
+/**
+ * Picks the chat messages the memory agent reviews: the last `windowSize`
+ * conversational messages, starting at a user message when the window is cut.
+ * Tool results and tool-call payloads are dropped so they neither crowd user
+ * turns out of the window nor reach a model that only has memory tools; AI
+ * messages keep their text.
+ */
+export function selectMemoryWindow(messages: BaseMessage[], windowSize: number): BaseMessage[] {
+  const conversation: BaseMessage[] = [];
+  for (const message of messages) {
+    const type = message._getType();
+    if (type === 'tool') {
+      continue;
+    }
+    if (type !== 'ai') {
+      conversation.push(message);
+      continue;
+    }
+    const text = getMessageText(message);
+    if (!text) {
+      continue;
+    }
+    const hasToolCalls = ((message as AIMessage).tool_calls?.length ?? 0) > 0;
+    const isPlainText = typeof message.content === 'string' && !hasToolCalls;
+    conversation.push(isPlainText ? message : new AIMessage(text));
+  }
+
+  const size = windowSize > 0 ? windowSize : conversation.length;
+  let start = Math.max(conversation.length - size, 0);
+  if (start === 0) {
+    return conversation;
+  }
+  while (start < conversation.length - 1 && conversation[start]._getType() !== 'human') {
+    start++;
+  }
+  return conversation.slice(start);
+}
+
+function appendReviewReminder(messages: BaseMessage[]): BaseMessage[] {
+  const last = messages[messages.length - 1];
+  if (last == null || last._getType() !== 'human' || typeof last.content !== 'string') {
+    return messages;
+  }
+  return [
+    ...messages.slice(0, -1),
+    new HumanMessage(`${last.content}\n\n${MEMORY_REVIEW_REMINDER}`),
+  ];
 }
 
 export const SET_MEMORY_TOOL_NAME = 'set_memory';
@@ -963,13 +1025,14 @@ ${memory ?? 'No existing memories'}`;
 
     let graphInstructions: string | undefined = instructions;
     let graphAdditionalInstructions: string | undefined = memoryStatus;
-    let processedMessages = messages;
+    const reviewMessages = appendReviewReminder(messages);
+    let processedMessages = reviewMessages;
 
     if (isBedrock) {
       const combinedInstructions = [instructions, memoryStatus].filter(Boolean).join('\n\n');
 
-      if (messages.length > 0) {
-        const firstMessage = messages[0];
+      if (reviewMessages.length > 0) {
+        const firstMessage = reviewMessages[0];
         const originalContent =
           typeof firstMessage.content === 'string' ? firstMessage.content : '';
 
@@ -982,7 +1045,7 @@ ${memory ?? 'No existing memories'}`;
         const bedrockUserMessage = new HumanMessage(
           `${combinedInstructions}\n\n${originalContent}`,
         );
-        processedMessages = [bedrockUserMessage, ...messages.slice(1)];
+        processedMessages = [bedrockUserMessage, ...reviewMessages.slice(1)];
       } else {
         processedMessages = [new HumanMessage(combinedInstructions)];
       }
