@@ -21,6 +21,7 @@ for (const theme of ['light', 'dark']) {
     baseURL,
   }) => {
     let workspaces: SlackWorkspace[] = [];
+    let registered = false;
     let attempt = 0;
     let cancelled = 0;
     let disconnected = 0;
@@ -34,7 +35,33 @@ for (const theme of ['light', 'dark']) {
     );
     await page.route('**/api/channels/workspaces**', async (route) => {
       const url = new URL(route.request().url());
+      if (url.pathname.endsWith('/apps')) {
+        if (route.request().method() === 'PUT') {
+          expect(route.request().postDataJSON()).toMatchObject({
+            appId: 'A123',
+            clientId: '123.456',
+            clientSecret: 'test-client',
+            signingSecret: 'test-signature',
+          });
+          registered = true;
+          await route.fulfill({ json: { appId: 'A123', clientId: '123.456', revision: 'r1' } });
+        } else
+          await route.fulfill({
+            json: {
+              configured: true,
+              canManage: true,
+              apps: registered ? [{ appId: 'A123', clientId: '123.456', revision: 'r1' }] : [],
+              setup: {
+                redirectUri: 'https://chat.example/api/channels/workspaces/oauth/callback',
+                eventsBaseUrl: 'https://gateway.example/slack/events',
+                interactionsBaseUrl: 'https://gateway.example/slack/interactions',
+              },
+            },
+          });
+        return;
+      }
       if (url.pathname.endsWith('/connect')) {
+        expect(route.request().postDataJSON()).toMatchObject({ appId: 'A123' });
         attempt++;
         await route.fulfill({
           json: {
@@ -55,7 +82,7 @@ for (const theme of ['light', 'dark']) {
         return;
       }
       await route.fulfill({
-        json: { configured: true, appId: 'A123', canManage: true, workspaces },
+        json: { configured: true, canManage: true, workspaces },
       });
     });
     await page.goto('/c/new');
@@ -66,6 +93,13 @@ for (const theme of ['light', 'dark']) {
     await settings.getByRole('tab', { name: 'Account', exact: true }).click();
     const workspacesPanel = settings.getByRole('region', { name: 'Organization Slack workspaces' });
     await expect(workspacesPanel.getByText('No Slack workspaces are connected.')).toBeVisible();
+    await workspacesPanel.getByRole('button', { name: 'Add Slack app', exact: true }).click();
+    await workspacesPanel.getByLabel('Slack app ID', { exact: true }).fill('A123');
+    await workspacesPanel.getByLabel('Client ID', { exact: true }).fill('123.456');
+    await workspacesPanel.getByLabel('Client secret', { exact: true }).fill('test-client');
+    await workspacesPanel.getByLabel('Signing secret', { exact: true }).fill('test-signature');
+    await workspacesPanel.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(workspacesPanel.getByLabel('Client secret', { exact: true })).toHaveCount(0);
     const cancelledPopup = context.waitForEvent('page');
     await workspacesPanel
       .getByRole('button', { name: 'Connect a Slack workspace', exact: true })
@@ -73,7 +107,11 @@ for (const theme of ['light', 'dark']) {
     const first = await cancelledPopup;
     await expect(first).toHaveURL(/slack\.com\/oauth\/v2\/authorize/);
     await workspacesPanel.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await expect(workspacesPanel.getByRole('status')).toHaveCount(0);
+    await expect(
+      workspacesPanel.getByText(
+        'Finish connecting in the Slack window. Your workspace list will update when you return.',
+      ),
+    ).toHaveCount(0);
     expect(cancelled).toBe(1);
     await first.close();
     const popupPromise = context.waitForEvent('page');
@@ -152,7 +190,6 @@ for (const theme of ['light', 'dark']) {
       await route.fulfill({
         json: {
           configured: true,
-          appId: 'A123',
           canManage: true,
           ...(detail ? { workspace } : { workspaces: [workspace] }),
         },

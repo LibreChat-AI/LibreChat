@@ -88,7 +88,11 @@ export function createSlackWorkspaceBindingHandlers(deps: {
           return;
         }
         const settings = await deps.readSettings();
-        if (!settings.app) {
+        if (
+          !settings.channels.enabled ||
+          settings.channels.transport !== 'webhook' ||
+          !settings.channels.slackApp?.enabled
+        ) {
           res.sendStatus(404);
           return;
         }
@@ -117,14 +121,14 @@ export function createSlackWorkspaceBindingHandlers(deps: {
       : null;
   }
   return {
-    create: protect(async (req, res, principal, { app }) => {
+    create: protect(async (req, res, principal) => {
       const input = createInput.safeParse(req.body);
       if (!input.success) {
         res.sendStatus(400);
         return;
       }
       const workspace = await deps.workspaces.read(input.data.workspaceId);
-      if (workspace?.status !== 'active' || workspace.appId !== app?.appId) {
+      if (workspace?.status !== 'active' || !(await deps.readSettings(workspace.appId)).app) {
         res.sendStatus(404);
         return;
       }
@@ -171,7 +175,7 @@ export function createSlackWorkspaceBindingHandlers(deps: {
         );
       }
     }),
-    assign: protect(async (req, res, principal, { app }) => {
+    assign: protect(async (req, res, principal) => {
       const channel = await owned(req, principal);
       if (!channel?.workspaceId) {
         res.sendStatus(404);
@@ -187,7 +191,7 @@ export function createSlackWorkspaceBindingHandlers(deps: {
         return;
       }
       const workspace = await deps.workspaces.metadata(channel.workspaceId);
-      if (workspace?.status !== 'active' || workspace.appId !== app?.appId) {
+      if (workspace?.status !== 'active' || !(await deps.readSettings(workspace.appId)).app) {
         res.status(409).json({ error: 'workspace_unavailable' });
         return;
       }

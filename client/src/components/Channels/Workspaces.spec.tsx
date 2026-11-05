@@ -13,6 +13,7 @@ jest.mock('librechat-data-provider', () => {
     dataService: {
       ...actual.dataService,
       getSlackWorkspaces: jest.fn(),
+      getSlackApps: jest.fn(),
       connectSlackWorkspace: jest.fn(),
       disconnectSlackWorkspace: jest.fn(),
       cancelSlackWorkspaceInstall: jest.fn(),
@@ -59,7 +60,12 @@ function page() {
 
 beforeEach(() => {
   mockUser = { id: 'admin', tenantId: 'org-a' };
-  response = { configured: true, appId: 'A123', canManage: true, workspaces: [workspace] };
+  response = { configured: true, canManage: true, workspaces: [workspace] };
+  jest.spyOn(dataService, 'getSlackApps').mockResolvedValue({
+    configured: true,
+    canManage: true,
+    apps: [{ appId: 'A123', clientId: '123.456', revision: 'r1' }],
+  });
   list = jest.spyOn(dataService, 'getSlackWorkspaces').mockImplementation(async () => response);
   disconnect = jest.spyOn(dataService, 'disconnectSlackWorkspace').mockImplementation(async () => {
     response = { ...response, workspaces: [{ ...workspace, status: 'disconnected' }] };
@@ -120,6 +126,7 @@ test('disconnect requires confirmation and refreshes the org workspace state', a
   const user = userEvent.setup();
   page();
   await screen.findByText('Engineering');
+  const appReads = jest.mocked(dataService.getSlackApps).mock.calls.length;
   await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_disconnect' }));
   expect(disconnect).not.toHaveBeenCalled();
   const confirmation = screen.getByRole('group', { name: 'com_ui_slack_workspaces_confirm' });
@@ -128,6 +135,12 @@ test('disconnect requires confirmation and refreshes the org workspace state', a
   );
   await screen.findByText('com_ui_slack_workspaces_disconnected');
   expect(disconnect).toHaveBeenCalledWith('workspace-1');
+  await waitFor(() =>
+    expect(jest.mocked(dataService.getSlackApps).mock.calls.length).toBeGreaterThan(appReads),
+  );
+  expect(
+    screen.queryByRole('button', { name: 'com_ui_slack_workspaces_reconnect' }),
+  ).not.toBeInTheDocument();
   expect(screen.queryByRole('group')).not.toBeInTheDocument();
 });
 
@@ -135,9 +148,9 @@ test('OAuth completion refreshes the list only for the flow this user started', 
   const user = userEvent.setup();
   page();
   await screen.findByText('Engineering');
-  await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
+  await user.click(await screen.findByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
   await screen.findByText('com_ui_slack_workspaces_waiting');
-  expect(connect).toHaveBeenCalledWith(undefined);
+  expect(connect).toHaveBeenCalledWith(undefined, 'A123');
   expect(popup.location.href).toMatch(/^https:\/\/slack.com\/oauth\/v2\/authorize/);
   act(() =>
     channels[0].onmessage?.(
@@ -163,7 +176,7 @@ test('observes only its callback storage notice when BroadcastChannel is unavail
   const user = userEvent.setup();
   const view = page();
   await screen.findByText('Engineering');
-  await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
+  await user.click(await screen.findByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
   await screen.findByText('com_ui_slack_workspaces_waiting');
   const settled = (flowId: string, outcome = 'succeeded') =>
     act(() =>
@@ -189,7 +202,7 @@ test('observes only its callback storage notice when BroadcastChannel is unavail
     flowId: 'next-flow',
     expiresInSeconds: 600,
   });
-  await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
+  await user.click(await screen.findByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
   await screen.findByText('com_ui_slack_workspaces_waiting');
   settled('this-flow', 'failed');
   expect(screen.getByText('com_ui_slack_workspaces_waiting')).toBeInTheDocument();
@@ -207,7 +220,7 @@ test('a blocked popup is actionable and does not create an installation attempt'
   jest.spyOn(window, 'open').mockReturnValue(null);
   page();
   await screen.findByText('Engineering');
-  await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
+  await user.click(await screen.findByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
   expect(screen.getByRole('alert')).toHaveTextContent('com_ui_slack_workspaces_error');
   expect(connect).not.toHaveBeenCalled();
 });
@@ -216,7 +229,7 @@ test('cancelling a pending installation invalidates the attempt on the server', 
   const user = userEvent.setup();
   page();
   await screen.findByText('Engineering');
-  await user.click(screen.getByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
+  await user.click(await screen.findByRole('button', { name: 'com_ui_slack_workspaces_connect' }));
   await screen.findByText('com_ui_slack_workspaces_waiting');
   await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
   await waitFor(() => expect(cancel).toHaveBeenCalledWith('this-flow'));
@@ -287,7 +300,7 @@ test('closing settings cancels the active attempt instead of leaving a hidden au
 });
 
 test('a grant for an app no longer configured remains removable and is not presented as usable', async () => {
-  response.appId = 'ANEW';
+  response.configured = false;
   page();
   await screen.findByText('com_ui_slack_workspaces_unavailable');
   expect(

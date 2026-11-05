@@ -3,11 +3,14 @@ import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { SlackWorkspaceRecord } from '~/models/slackWorkspace';
 import type { AgentChannelRecord } from '~/models/channel';
+import {
+  createSlackWorkspaceModel,
+  createSlackInstallGenerationModel,
+} from '~/models/slackWorkspace';
 import { retireAgentChannel, initializeChannelScope, touchChannelScope } from './channelScope';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
-import { createSlackWorkspaceModel } from '~/models/slackWorkspace';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { touchSlackWorkspace } from './slackWorkspaceScope';
 import { createChannelIndexGate } from './channelIndexes';
@@ -105,7 +108,21 @@ export function createAgentChannelMethods(
     const workspace = await (
       includeCredentials ? query.select('+encryptedBotToken') : query
     ).lean();
-    return withInstallation(record, workspace);
+    const resolved = withInstallation(record, workspace);
+    if (!includeCredentials || !workspace || resolved.status !== 'active') return resolved;
+    const app = await createSlackInstallGenerationModel(mongoose)
+      .findOne({
+        partition: record.tenantId || '_',
+        tenantId: record.tenantId ?? null,
+        appId: workspace.appId,
+        clientId: { $exists: true },
+      })
+      .select('+encryptedSigningSecret')
+      .read('primary')
+      .lean();
+    return app?.encryptedSigningSecret
+      ? { ...resolved, encryptedSigningSecret: app.encryptedSigningSecret }
+      : { ...resolved, status: 'disabled' };
   }
 
   function validWorkspaceBinding(record: AgentChannelRecord): void {

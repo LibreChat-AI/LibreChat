@@ -391,9 +391,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
           const config = channelConfigSchema.parse(loaded);
           if (
             channel.workspaceId &&
-            (!config.slackApp?.enabled ||
-              config.transport !== 'webhook' ||
-              config.slackApp.appId !== channel.slack?.appId)
+            (!config.slackApp?.enabled || config.transport !== 'webhook')
           ) {
             res.status(404).json({ error: 'channel_not_found' });
             return;
@@ -421,11 +419,9 @@ export function createChannelHandlers(deps: ChannelDependencies): {
       res.status(404).json({ error: 'channel_not_found' });
       return;
     }
-    let signing = Promise.resolve(config.slackApp?.signingSecret || '');
-    if (!channel.workspaceId)
-      signing = channel.encryptedSigningSecret
-        ? decryptCredential(channel.encryptedSigningSecret)
-        : Promise.resolve('');
+    const signing = channel.encryptedSigningSecret
+      ? decryptCredential(channel.encryptedSigningSecret)
+      : Promise.resolve('');
     const [botToken, signingSecret] = await Promise.all([
       decryptCredential(channel.encryptedBotToken),
       signing,

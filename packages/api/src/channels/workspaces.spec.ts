@@ -360,7 +360,6 @@ describe('Slack workspace installation', () => {
       .expect(200);
     expect(response.body).toMatchObject({
       configured: true,
-      appId: 'A123',
       canManage: true,
       workspace: { workspaceId: installed.value.workspaceId, teamName: 'Test workspace' },
     });

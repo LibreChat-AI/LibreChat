@@ -14,8 +14,6 @@ import { SharedGatewayApp } from './app';
 import { SlackClient } from '../slack';
 
 const settings: SharedSlackGatewayBootstrap = {
-  appId: 'A1',
-  signingSecret: 'test-signature',
   gateway: channelGatewayWirePolicySchema.parse({
     ...channelConfigSchema.parse({ transport: 'webhook' }),
     version: 1,
@@ -53,6 +51,12 @@ function fixture() {
       const tenant = new Headers(init?.headers).get('X-Tenant-Id');
       calls.push({ path, tenant, body });
       if (path.endsWith('/service/workspaces')) return json(settings);
+      if (path.endsWith('/app'))
+        return json({
+          tenantId: body.tenantId,
+          appId: body.appId,
+          signingSecret: body.appId === 'A1' ? 'test-signature' : 'second-signature',
+        });
       if (path.endsWith('/resolve')) {
         await routingGate;
         const suffix = body.teamId === 'T1' ? 'a' : 'b';
@@ -60,6 +64,7 @@ function fixture() {
           return json({
             kind: 'unmapped',
             workspace: {
+              tenantId: 'org.a',
               workspaceId: 'workspace-a',
               appId: 'A1',
               teamId: 'T1',
@@ -139,15 +144,16 @@ describe('shared signed Slack HTTP ingress', () => {
     );
     jest.restoreAllMocks();
   });
-  function send(body: object, valid = true) {
+  function send(body: object, valid = true, tenantId = 'org.a', appId = 'A1') {
     const bytes = JSON.stringify(body),
       timestamp = String(Math.floor(Date.now() / 1000));
+    const secret = appId === 'A1' ? 'test-signature' : 'second-signature';
     const signature =
       'v0=' +
-      createHmac('sha256', valid ? settings.signingSecret : 'wrong')
+      createHmac('sha256', valid ? secret : 'wrong')
         .update(`v0:${timestamp}:${bytes}`)
         .digest('hex');
-    return fetch(base + '/slack/events', {
+    return fetch(base + `/slack/events/${tenantId}/${appId}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -166,7 +172,7 @@ describe('shared signed Slack HTTP ingress', () => {
   });
   it('uses each resolved tenant/binding for durable admission without forwarding a caller tenant', async () => {
     expect((await send(envelope())).status).toBe(200);
-    expect((await send(envelope('T2'))).status).toBe(200);
+    expect((await send(envelope('T2'), true, 'org.b')).status).toBe(200);
     const admissions = current.calls.filter(({ path }) => path.endsWith('/runs'));
     expect(admissions.map(({ path, tenant }) => ({ path, tenant }))).toEqual([
       { path: '/api/channels/service/binding-a/runs', tenant: 'org.a' },
@@ -178,6 +184,20 @@ describe('shared signed Slack HTTP ingress', () => {
         .every(({ tenant }) => tenant === null),
     ).toBe(true);
   });
+  it('isolates callback tenants and validates each app with its own secret', async () => {
+    const wrongTenant = await send(envelope(), true, 'org.b');
+    expect(wrongTenant.status).toBe(503);
+    expect(current.calls.some(({ path }) => path.endsWith('/runs'))).toBe(false);
+    const challenge = await send(
+      { type: 'url_verification', challenge: 'second-app' },
+      true,
+      'org.b',
+      'A2',
+    );
+    expect(await challenge.json()).toEqual({ challenge: 'second-app' });
+    expect((await send(envelope(), true, 'org.a', 'A2')).status).toBe(503);
+    expect(current.calls.some(({ path }) => path.endsWith('/runs'))).toBe(false);
+  });
   it('leaves overload unacknowledged for redelivery rather than queueing another request', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -188,7 +208,7 @@ describe('shared signed Slack HTTP ingress', () => {
     while (!current.calls.some(({ path }) => path.endsWith('/resolve')))
       await new Promise((resolve) => setImmediate(resolve));
     try {
-      expect((await send(envelope('T2'))).status).toBe(503);
+      expect((await send(envelope('T2'), true, 'org.b')).status).toBe(503);
     } finally {
       release();
     }
@@ -235,6 +255,7 @@ describe('shared signed Slack HTTP ingress', () => {
   it('checks lifecycle notifications with the service instead of disconnecting from event timestamps', async () => {
     expect((await send({ ...envelope(), event: { type: 'app_uninstalled' } })).status).toBe(200);
     expect(current.calls.find(({ path }) => path.endsWith('/lifecycle'))?.body).toEqual({
+      tenantId: 'org.a',
       appId: 'A1',
       teamId: 'T1',
     });

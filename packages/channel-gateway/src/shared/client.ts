@@ -8,6 +8,7 @@ import type {
   SharedSlackGatewayBootstrap,
   SharedSlackRoute,
   SharedSlackRouteLookup,
+  SharedSlackAppSecurity,
 } from 'librechat-data-provider';
 import type { SharedGatewayConfig } from '../config';
 import { ServiceClient } from '../transport';
@@ -18,10 +19,13 @@ const identifier = z
   .max(256)
   .regex(/^[\w-]+$/);
 const bootstrapSchema = z.object({
-  appId: identifier,
-  signingSecret: z.string().min(1).max(512),
   gateway: channelGatewayWirePolicySchema,
   workers: sharedSlackGatewayWirePolicySchema,
+});
+const appSecuritySchema = z.object({
+  tenantId: tenantIdSchema,
+  appId: identifier,
+  signingSecret: z.string().min(1).max(512),
 });
 const scopeSchema = z.object({ tenantId: tenantIdSchema, channelId: identifier });
 const workspaceSchema = z.object({
@@ -61,8 +65,26 @@ export class WorkspaceClient extends ServiceClient {
       throw new Error('Shared Slack workspaces require webhook transport');
     return result;
   }
-  async route(lookup: SharedSlackRouteLookup, signal?: AbortSignal): Promise<SharedSlackRoute> {
-    return routeSchema.parse(await this.request<unknown>(`${root}/resolve`, lookup, signal));
+  async app(
+    tenantId: string,
+    appId: string,
+    signal?: AbortSignal,
+  ): Promise<SharedSlackAppSecurity> {
+    const result = appSecuritySchema.parse(
+      await this.request<unknown>(`${root}/app`, { tenantId, appId }, signal),
+    );
+    if (result.tenantId !== tenantId || result.appId !== appId)
+      throw new Error('Slack application scope changed');
+    return result;
+  }
+  async route(
+    tenantId: string,
+    lookup: SharedSlackRouteLookup,
+    signal?: AbortSignal,
+  ): Promise<SharedSlackRoute> {
+    return routeSchema.parse(
+      await this.request<unknown>(`${root}/resolve`, { ...lookup, tenantId }, signal),
+    );
   }
   async discover(
     limit: number,
@@ -73,7 +95,12 @@ export class WorkspaceClient extends ServiceClient {
       .max(limit)
       .parse(await this.request<unknown>(`${root}/discover`, { limit }, signal));
   }
-  async lifecycle(appId: string, teamId: string, signal?: AbortSignal): Promise<void> {
-    await this.request(`${root}/lifecycle`, { appId, teamId }, signal, true);
+  async lifecycle(
+    tenantId: string,
+    appId: string,
+    teamId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.request(`${root}/lifecycle`, { tenantId, appId, teamId }, signal, true);
   }
 }

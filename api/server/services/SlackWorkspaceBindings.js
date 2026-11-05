@@ -14,6 +14,7 @@ const { getAppConfig } = require('./Config');
 const db = require('~/models');
 
 const readSettings = createSlackWorkspaceSettingsReader({
+  storage: createSlackWorkspaceStorage(mongoose),
   readAppConfig: getAppConfig,
   publicBaseUrl: process.env.DOMAIN_SERVER || 'http://localhost:3080',
   clientBaseUrl: process.env.DOMAIN_CLIENT || process.env.DOMAIN_SERVER || 'http://localhost:3080',

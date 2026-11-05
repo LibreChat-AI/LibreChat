@@ -3,7 +3,7 @@ import express from 'express';
 import mongoose from 'mongoose';
 import supertest from 'supertest';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { channelConfigSchema } from 'librechat-data-provider';
+import { FileSources, channelConfigSchema } from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
@@ -15,6 +15,7 @@ import {
   TransactionUnavailableError,
 } from '@librechat/data-schemas';
 import { createSlackWorkspaceBindingHandlers } from './workspaceBindings';
+import { createSlackWorkspaceSettingsReader } from './workspaceRuntime';
 import { createSlackDispatchHandlers } from './slackDispatch';
 import { encryptCredential } from '~/crypto/credentials';
 import { resolveSlackWorkspaceApp } from './workspaces';
@@ -38,15 +39,13 @@ describe('shared Slack service routing', () => {
     maxMetadataPageSize: 2,
     slackApp: {
       enabled: true,
-      appId: 'A123',
-      clientId: '123.456',
-      clientSecret: 'oauth-secret',
-      signingSecret: 'signing-secret',
     },
   });
   const scoped = <T>(task: () => Promise<T>, tenantId = 'org-a') =>
     tenantStorage.run({ tenantId }, task);
   const query = (teamId = 'T123') => ({
+    tenantId:
+      ({ T456: 'org-b', TDOT: 'org.with.periods' } as Record<string, string>)[teamId] ?? 'org-a',
     appId: 'A123',
     teamId,
     target: {
@@ -59,6 +58,17 @@ describe('shared Slack service routing', () => {
   const post = (path: string, body: object) =>
     request.post(path).set('Authorization', `Bearer ${serviceToken}`).send(body);
   async function install(teamId = 'T123', token = 'xoxb-first') {
+    const registration = await storage.app('A123');
+    if (!registration?.clientId)
+      await storage.configureApp(
+        {
+          appId: 'A123',
+          clientId: '123.456',
+          encryptedClientSecret: await encryptCredential('oauth-secret'),
+          encryptedSigningSecret: await encryptCredential('signing-secret'),
+        },
+        'admin',
+      );
     const stateHash = `install-${++sequence}`;
     await storage.startInstall({
       stateHash,
@@ -113,9 +123,16 @@ describe('shared Slack service routing', () => {
     routes = createSlackRouteStorage(db);
     const dispatch = createSlackDispatchStorage(db, async () => config);
     await runAsSystem(() => dispatch.ready());
-    const readSettings = async () => ({
-      channels: config,
-      app: enabled ? resolveSlackWorkspaceApp(config, 'https://api.example/callback') : undefined,
+    const readSettings = createSlackWorkspaceSettingsReader({
+      storage,
+      publicBaseUrl: 'https://api.example',
+      clientBaseUrl: 'https://chat.example',
+      readAppConfig: async () => ({
+        config: {},
+        fileStrategy: FileSources.local,
+        imageOutputType: 'png',
+        endpoints: { agents: { channels: { ...config, enabled } } },
+      }),
     });
     const handlers = createSlackDispatchHandlers({
       workspaces: storage,
@@ -138,6 +155,7 @@ describe('shared Slack service routing', () => {
     const app = express();
     app.use(express.json());
     app.get('/bootstrap', handlers.bootstrap);
+    app.post('/app', handlers.app);
     app.post('/resolve', handlers.resolve);
     app.post('/discover', handlers.discover);
     app.post('/lifecycle', handlers.lifecycle);
@@ -415,7 +433,14 @@ describe('shared Slack service routing', () => {
       .get('/bootstrap')
       .set('Authorization', `Bearer ${serviceToken}`)
       .expect(200);
-    expect(bootstrap.body.signingSecret).toBe('signing-secret');
+    expect(bootstrap.body).not.toHaveProperty('signingSecret');
+    await request.post('/app').send({ tenantId: 'org-a', appId: 'A123' }).expect(401);
+    await post('/app', { tenantId: 'org-a', appId: 'A123' }).expect(404);
+    await scoped(() => install());
+    expect(
+      (await post('/app', { tenantId: 'org-a', appId: 'A123' }).expect(200)).body.signingSecret,
+    ).toBe('signing-secret');
+    await post('/app', { tenantId: 'org-b', appId: 'A123' }).expect(404);
     expect(bootstrap.body.workers.discoveryBatchSize).toBe(2);
     expect(JSON.stringify(bootstrap.body)).not.toContain('oauth-secret');
     enabled = false;
@@ -434,26 +459,38 @@ describe('shared Slack service routing', () => {
       routes,
       channels,
       dispatch,
-      readSettings: async () => {
+      readSettings: async (appId?: string) => {
         const current = channelConfigSchema.parse({
           ...config,
-          slackApp: { ...config.slackApp, signingSecret: secret },
+          slackApp: config.slackApp,
         });
         return {
-          channels: current,
-          app: configured
-            ? resolveSlackWorkspaceApp(
-                current,
-                'https://chat.example/api/channels/workspaces/oauth/callback',
-              )
-            : undefined,
+          channels: { ...current, enabled: configured },
+          app:
+            configured && appId === 'A123'
+              ? resolveSlackWorkspaceApp(
+                  current,
+                  'https://chat.example/api/channels/workspaces/oauth/callback',
+                  {
+                    appId: 'A123',
+                    clientId: '123.456',
+                    clientSecret: 'oauth-secret',
+                    signingSecret: secret,
+                  },
+                )
+              : undefined,
         };
       },
       serviceToken: () => serviceToken,
       fetch: provider,
       logError: jest.fn(),
     });
-    const server = supertest(express().get('/bootstrap', handlers.bootstrap));
+    const server = supertest(
+      express()
+        .use(express.json())
+        .get('/bootstrap', handlers.bootstrap)
+        .post('/app', handlers.app),
+    );
     const bootstrap = () => server.get('/bootstrap').set('Authorization', `Bearer ${serviceToken}`);
     await server.get('/bootstrap').expect(401);
     expect(ready).not.toHaveBeenCalled();
@@ -461,7 +498,15 @@ describe('shared Slack service routing', () => {
     await Promise.all([bootstrap().expect(200), bootstrap().expect(200), bootstrap().expect(200)]);
     expect(ready).toHaveBeenCalledTimes(2);
     secret = 'replacement-policy';
-    expect((await bootstrap().expect(200)).body.signingSecret).toBe(secret);
+    expect(
+      (
+        await server
+          .post('/app')
+          .set('Authorization', `Bearer ${serviceToken}`)
+          .send({ tenantId: 'org-a', appId: 'A123' })
+          .expect(200)
+      ).body.signingSecret,
+    ).toBe(secret);
     configured = false;
     await bootstrap().expect(404);
     expect(ready).toHaveBeenCalledTimes(2);
@@ -494,7 +539,7 @@ describe('shared Slack service routing', () => {
     });
     await post('/resolve', { ...query(), appId: 'AOTHER' }).expect(404);
     await post('/resolve', query('TUNKNOWN')).expect(404);
-    await post('/resolve', { ...query(), tenantId: 'org-b' }).expect(400);
+    await post('/resolve', { ...query(), tenantId: 'org-b' }).expect(404);
     expect(JSON.stringify([a.body, b.body])).not.toContain('xoxb');
   });
   it('reads the live credential for a binding and makes disconnect effective at the existing service guard', async () => {
@@ -520,6 +565,43 @@ describe('shared Slack service routing', () => {
     const replacement = await scoped(() => install());
     expect(replacement.workspaceId).not.toBe(workspace.workspaceId);
     await bundle().expect(404);
+  });
+  it('keeps different app secrets isolated and reads replacements immediately', async () => {
+    await scoped(() => install());
+    await scoped(
+      async () =>
+        storage.configureApp(
+          {
+            appId: 'A456',
+            clientId: '456.789',
+            encryptedClientSecret: await encryptCredential('second-oauth'),
+            encryptedSigningSecret: await encryptCredential('second-signature'),
+          },
+          'admin',
+        ),
+      'org-b',
+    );
+    const read = (tenantId: string, appId: string) => post('/app', { tenantId, appId });
+    expect((await read('org-a', 'A123').expect(200)).body.signingSecret).toBe('signing-secret');
+    expect((await read('org-b', 'A456').expect(200)).body.signingSecret).toBe('second-signature');
+    await read('org-a', 'A456').expect(404);
+    await read('org-b', 'A123').expect(404);
+    await scoped(async () => {
+      const app = await storage.app('A123');
+      await storage.configureApp(
+        {
+          appId: 'A123',
+          clientId: '123.456',
+          encryptedClientSecret: await encryptCredential('replacement-oauth'),
+          encryptedSigningSecret: await encryptCredential('replacement-signature'),
+        },
+        'admin',
+        app?.revision,
+      );
+    });
+    expect((await read('org-a', 'A123').expect(200)).body.signingSecret).toBe(
+      'replacement-signature',
+    );
   });
   it('deletes routes through the existing connection API while preserving retired thread identity', async () => {
     const workspace = await scoped(async () => {
@@ -598,7 +680,7 @@ describe('shared Slack service routing', () => {
             ? new Response('not json')
             : new Response(JSON.stringify({ ok: false, error: 'ratelimited' })),
         );
-      await post('/lifecycle', { appId: 'A123', teamId: 'T123' }).expect(503);
+      await post('/lifecycle', { tenantId: 'org-a', appId: 'A123', teamId: 'T123' }).expect(503);
       expect((await scoped(() => storage.read(workspace.workspaceId)))?.status).toBe('active');
     },
   );
@@ -608,12 +690,12 @@ describe('shared Slack service routing', () => {
       await scoped(() => install('T123', 'xoxb-new'));
       return new Response(JSON.stringify({ ok: false, error: 'token_revoked' }));
     });
-    await post('/lifecycle', { appId: 'A123', teamId: 'T123' }).expect(204);
+    await post('/lifecycle', { tenantId: 'org-a', appId: 'A123', teamId: 'T123' }).expect(204);
     expect((await scoped(() => storage.read(workspace.workspaceId)))?.status).toBe('active');
     provider.mockResolvedValueOnce(
       new Response(JSON.stringify({ ok: false, error: 'invalid_auth' })),
     );
-    await post('/lifecycle', { appId: 'A123', teamId: 'T123' }).expect(204);
+    await post('/lifecycle', { tenantId: 'org-a', appId: 'A123', teamId: 'T123' }).expect(204);
     const current = await scoped(() => storage.read(workspace.workspaceId));
     expect(current?.status).toBe('disconnected');
     expect(current).not.toHaveProperty('encryptedBotToken');

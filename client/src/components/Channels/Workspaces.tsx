@@ -7,10 +7,11 @@ import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
 import { useSlackWorkspaces } from './useSlackWorkspaces';
 import { channelErrorLabel } from '~/utils/channelErrors';
 import { useAuthContext, useLocalize } from '~/hooks';
+import Apps from './Apps';
 
-function workspaceStatusLabel(workspace: SlackWorkspace, appId?: string) {
+function workspaceStatusLabel(workspace: SlackWorkspace, configured?: boolean) {
   if (workspace.status === 'disconnected') return 'com_ui_slack_workspaces_disconnected';
-  if (workspace.appId === appId) return 'com_ui_slack_workspaces_active';
+  if (configured) return 'com_ui_slack_workspaces_active';
   return 'com_ui_slack_workspaces_unavailable';
 }
 
@@ -36,6 +37,7 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
     () =>
       Promise.all([
         client.invalidateQueries([QueryKeys.slackWorkspaces, principalKey]),
+        client.invalidateQueries([QueryKeys.slackApps, principalKey]),
         client.invalidateQueries([QueryKeys.agentChannels]),
       ]),
     [client, principalKey],
@@ -43,7 +45,8 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
   const status = useSlackWorkspaces(principalKey);
   const connect = useMutation({
     mutationKey: [MutationKeys.slackWorkspaces, principalKey, 'connect'],
-    mutationFn: (workspaceId?: string) => dataService.connectSlackWorkspace(workspaceId),
+    mutationFn: (input: { workspaceId?: string; appId?: string }) =>
+      dataService.connectSlackWorkspace(input.workspaceId, input.appId),
   });
   const disconnect = useMutation({
     mutationKey: [MutationKeys.slackWorkspaces, principalKey, 'disconnect'],
@@ -86,7 +89,7 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
     };
   }, [client, principalKey, refresh]);
 
-  const start = (workspaceId?: string) => {
+  const start = (workspaceId?: string, appId?: string) => {
     setFailed(false);
     const popup = window.open('', '_blank');
     if (!popup) {
@@ -94,7 +97,7 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
       return;
     }
     popup.opener = null;
-    connect.mutateAsync(workspaceId).then(
+    connect.mutateAsync({ workspaceId, appId }).then(
       (result) => {
         if (!mounted.current || popup.closed) {
           popup.close();
@@ -186,9 +189,11 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
         </div>
       )}
       {first?.configured && first.canManage && (
-        <Button disabled={busy} onClick={() => start()}>
-          {localize('com_ui_slack_workspaces_connect')}
-        </Button>
+        <Apps
+          principalKey={principalKey}
+          busy={busy}
+          onInstall={(appId) => start(undefined, appId)}
+        />
       )}
       {first && !first.canManage && <p>{localize('com_ui_slack_workspaces_admin')}</p>}
       {first && workspaces.length === 0 && <p>{localize('com_ui_slack_workspaces_empty')}</p>}
@@ -198,10 +203,10 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
           className="border-border-light space-y-2 rounded-lg border p-3"
         >
           <p className="font-medium break-words">{workspace.teamName}</p>
-          <p>{localize(workspaceStatusLabel(workspace, first?.appId))}</p>
+          <p>{localize(workspaceStatusLabel(workspace, first?.configured))}</p>
           {first?.canManage && (
             <div className="flex flex-wrap gap-2">
-              {first.configured && workspace.appId === first.appId && (
+              {first.configured && workspace.status === 'active' && (
                 <Button
                   variant="outline"
                   disabled={busy}

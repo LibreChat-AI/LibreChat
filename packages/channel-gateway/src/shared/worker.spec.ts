@@ -38,8 +38,6 @@ it('bounds simultaneous durable turns while allowing several turns for the same 
   if (bootstrap.mode !== 'shared') throw new Error('Expected shared config');
   const client = new WorkspaceClient(bootstrap.config);
   jest.spyOn(client, 'bootstrap').mockResolvedValue({
-    appId: 'A1',
-    signingSecret: 'signature',
     gateway: channelGatewayWirePolicySchema.parse({
       ...channelConfigSchema.parse({ transport: 'webhook' }),
       version: 1,
@@ -85,8 +83,6 @@ it('requires explicit server worker limits instead of silently defaulting an inc
     async () =>
       new Response(
         JSON.stringify({
-          appId: 'A1',
-          signingSecret: 'signature',
           gateway: channelGatewayWirePolicySchema.parse({
             ...channelConfigSchema.parse({ transport: 'webhook' }),
             version: 1,

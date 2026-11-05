@@ -58,9 +58,7 @@ export default function WorkspaceChannel({
   );
   const canManage = Boolean(workspace.data?.canManage);
   const available = Boolean(
-    workspace.data?.configured &&
-      workspace.data.workspace.status === 'active' &&
-      workspace.data.workspace.appId === workspace.data.appId,
+    workspace.data?.configured && workspace.data.workspace.status === 'active',
   );
   const mayRoute = enabled && canManage && available && channel.status !== 'deleting';
   const routes = useInfiniteQuery(
