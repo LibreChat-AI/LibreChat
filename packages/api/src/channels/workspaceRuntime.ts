@@ -12,6 +12,7 @@ import {
 } from './workspaces';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceHandlers } from './workspaceHttp';
+import { capabilityStore } from '~/middleware/capabilities';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { getOAuthCallbackUrl } from '~/oauth/url';
 
@@ -74,10 +75,14 @@ export function createSlackWorkspaceRuntime(deps: {
       tenantId: principal.tenantId,
       idOnTheSource: user.idOnTheSource ?? null,
     };
-    const permissions = await Promise.all([
-      deps.hasCapability(subject, SystemCapabilities.ACCESS_ADMIN),
-      deps.hasCapability(subject, SystemCapabilities.MANAGE_AGENTS),
-    ]);
+    const permissions = await capabilityStore.run(
+      { principals: new Map(), results: new Map() },
+      () =>
+        Promise.all([
+          deps.hasCapability(subject, SystemCapabilities.ACCESS_ADMIN),
+          deps.hasCapability(subject, SystemCapabilities.MANAGE_AGENTS),
+        ]),
+    );
     return permissions.every(Boolean);
   };
   const service = createSlackWorkspaceService({

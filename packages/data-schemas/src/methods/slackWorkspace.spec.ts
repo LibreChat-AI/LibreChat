@@ -56,7 +56,10 @@ describe('organization-owned Slack workspaces', () => {
 
   beforeAll(async () => {
     mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
-    await db.connect(mongo.getUri(), { readPreference: 'secondaryPreferred' });
+    await db.connect(mongo.getUri(), {
+      readPreference: 'secondaryPreferred',
+      monitorCommands: true,
+    });
     store = createSlackWorkspaceStorage(db);
   }, 60000);
   afterAll(async () => {
@@ -67,6 +70,26 @@ describe('organization-owned Slack workspaces', () => {
     await runAsSystem(async () => {
       for (const model of Object.values(db.models)) await model.deleteMany({});
     });
+  });
+
+  it('reads a just-created callback state from primary despite the connection read preference', async () => {
+    await scoped('org-a', () => start('primary-callback-state'));
+    const modes: string[] = [];
+    const collection = createSlackInstallModel(db).collection.collectionName;
+    const observe = (event: mongoose.mongo.CommandStartedEvent) => {
+      if (event.commandName === 'find' && event.command.find === collection)
+        modes.push(event.command.$readPreference?.mode ?? 'primary');
+    };
+    const client = db.connection.getClient();
+    client.on('commandStarted', observe);
+    try {
+      expect(await store.findInstall('primary-callback-state')).toMatchObject({
+        tenantId: 'org-a',
+      });
+      expect(modes).toEqual(['primary']);
+    } finally {
+      client.off('commandStarted', observe);
+    }
   });
 
   const appCredentials = {

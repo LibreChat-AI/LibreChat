@@ -238,7 +238,9 @@ export function createSlackWorkspaceStorage(
       });
     },
     async findInstall(stateHash) {
-      return runAsSystem(async () => flows.findOne({ stateHash }).select('+stateHash').lean());
+      return runAsSystem(async () =>
+        flows.findOne({ stateHash }).select('+stateHash').read('primary').lean(),
+      );
     },
     async cancelInstall(stateHash, userId) {
       await flows.deleteOne({ stateHash, userId, tenantId: tenant() ?? null });
