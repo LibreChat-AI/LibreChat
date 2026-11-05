@@ -11,7 +11,7 @@ services:
           'CMD',
           'node',
           '-e',
-          "fetch('http://127.0.0.1:${PORT:-3080}/health',{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)process.exitCode=1}).catch(()=>{process.exitCode=1})",
+          "fetch('http://127.0.0.1:${PORT:-3080}/readyz',{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)process.exitCode=1}).catch(()=>{process.exitCode=1})",
         ]
       interval: 10s
       timeout: 5s

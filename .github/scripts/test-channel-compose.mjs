@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fixture = mkdtempSync(join(tmpdir(), 'channel-compose-'));
@@ -121,3 +123,30 @@ assert.equal(
   '3999',
 );
 console.log('PASS: shared Compose needs no app credentials and clears all bound-gateway settings');
+
+// Run the shipped healthcheck against an API that listens before initialization completes.
+let ready = false;
+const server = createServer((req, res) => {
+  res.writeHead(req.url === '/health' || (req.url === '/readyz' && ready) ? 200 : 503);
+  res.end();
+});
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+try {
+  const { port } = server.address();
+  const [kind, command, flag, script] = configuration('').api.healthcheck.test;
+  assert.equal(kind, 'CMD');
+  assert.equal(command, 'node');
+  assert.equal(flag, '-e');
+  const probe = () =>
+    promisify(execFile)(process.execPath, [
+      flag,
+      script.replace('127.0.0.1:3080', `127.0.0.1:${port}`),
+    ]);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200);
+  await assert.rejects(probe(), { code: 1 });
+  ready = true;
+  await probe();
+  console.log('PASS: gateway dependency stays unhealthy until API readiness succeeds');
+} finally {
+  await new Promise((resolve) => server.close(resolve));
+}
