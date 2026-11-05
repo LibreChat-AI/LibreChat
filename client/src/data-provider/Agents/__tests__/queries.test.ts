@@ -84,9 +84,41 @@ describe('useListAgentsQuery', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(listAgents).toHaveBeenCalledTimes(1);
+    expect(listAgents.mock.calls[0][0]).not.toHaveProperty('cursor');
+    expect(
+      new URLSearchParams(
+        Object.entries(listAgents.mock.calls[0][0]).map(([key, value]) => [key, String(value)]),
+      ).has('cursor'),
+    ).toBe(false);
     expect(listAgents).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 100, requiredPermission: PermissionBits.VIEW }),
     );
+  });
+
+  it.each([undefined, ''])(
+    'omits an absent first-page cursor (%s) from the wire request',
+    async (cursor) => {
+      listAgents.mockResolvedValue(page(['a'], null));
+      const { result } = renderListAgents({ cursor, requiredPermission: PermissionBits.VIEW });
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      const request = listAgents.mock.calls[0][0];
+      expect(request).not.toHaveProperty('cursor');
+      expect(
+        new URLSearchParams(
+          Object.entries(request).map(([key, value]) => [key, String(value)]),
+        ).toString(),
+      ).not.toContain('cursor=');
+    },
+  );
+
+  it('preserves an explicitly supplied starting cursor', async () => {
+    listAgents.mockResolvedValue(page(['a'], null));
+    const { result } = renderListAgents({
+      cursor: 'existing-cursor',
+      requiredPermission: PermissionBits.VIEW,
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(listAgents).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'existing-cursor' }));
   });
 
   it('honors an explicit page size', async () => {

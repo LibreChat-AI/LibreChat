@@ -142,12 +142,15 @@ export const useListAgentsInfiniteQuery = (
     retry: retryTransientQuery,
     ...config,
     queryKey: [QueryKeys.agents, params],
-    queryFn: ({ pageParam }) =>
-      dataService.listAgents({
-        ...params,
+    queryFn: ({ pageParam }) => {
+      const { cursor: initialCursor, ...filters } = params;
+      const cursor = pageParam ?? initialCursor;
+      return dataService.listAgents({
+        ...filters,
         limit: params.limit ?? CATALOG_PAGE_SIZE,
-        cursor: pageParam ?? params.cursor,
-      }),
+        ...(cursor ? { cursor } : {}),
+      });
+    },
     getNextPageParam: (lastPage) => lastPage?.after || undefined,
     enabled: !!endpointsConfig?.[EModelEndpoint.agents] && (config?.enabled ?? true),
   });
