@@ -1,10 +1,17 @@
 import {
   Constants,
   isActionTool,
+  ResourceType,
   PermissionBits,
   splitMCPToolKey,
   buildServerNameAliases,
 } from 'librechat-data-provider';
+import type { ParsedServerConfig } from '~/mcp/types';
+
+type ResourceId = { toString(): string };
+
+/** The registry fields the restore gate reads for an approved MCP tool. */
+export type RestoredServerConfig = Pick<ParsedServerConfig, 'consumeOnly' | 'source' | 'dbId'>;
 
 /** The agent a version is restored onto, as read before the restore. */
 export interface AgentRestoreTarget {
@@ -22,10 +29,14 @@ export interface RestoredToolsAuthorization {
   /** Filled with the raw server name of every approved MCP tool. */
   resolvedServerNames: Set<string>;
   /**
-   * Gate for an approved MCP tool whose server the user reaches only through agents
-   * (`consumeOnly`). Resolves `false` when the target agent is the only such agent.
+   * Final gate for every MCP tool the registry approved. Re-checks newly restored tools
+   * on DB-backed servers live, without the target agent's own grant.
    */
-  admitAgentScopedTool: (tool: string, serverName: string) => Promise<boolean>;
+  admitMCPTool: (
+    tool: string,
+    serverName: string,
+    config: RestoredServerConfig | undefined,
+  ) => Promise<boolean>;
 }
 
 export interface AuthorizeAgentRestoreParams {
@@ -34,9 +45,12 @@ export interface AuthorizeAgentRestoreParams {
   versionTools: unknown;
   authorizeTools: (request: RestoredToolsAuthorization) => Promise<string[]>;
   /** Ids of agents whose `mcpServerNames` include the server, read fresh from the database. */
-  listAgentIdsForServer: (serverName: string) => Promise<Array<{ toString(): string }>>;
-  /** The requesting user's effective permission bits per agent id. */
-  getAgentPermissions: (agentIds: Array<{ toString(): string }>) => Promise<Map<string, number>>;
+  listAgentIdsForServer: (serverName: string) => Promise<ResourceId[]>;
+  /** The requesting user's live effective permission bits per resource id. */
+  getPermissions: (
+    resourceType: ResourceType,
+    resourceIds: ResourceId[],
+  ) => Promise<Map<string, number>>;
 }
 
 /** Options for `revertAgentVersion` that pin the restore to what was authorized. */
@@ -60,6 +74,30 @@ export interface RestoredMCPServerNamesParams {
 const isMCPToolKey = (tool: unknown): tool is string =>
   typeof tool === 'string' && tool.includes(Constants.mcp_delimiter) && !isActionTool(tool);
 
+/** Prior raw server names that some MCP tool in `tools` resolves to, via normalized aliases. */
+function matchPriorServerNames(
+  tools: readonly string[],
+  priorNames: readonly string[],
+): Set<string> {
+  const matched = new Set<string>();
+  const aliases = buildServerNameAliases(priorNames);
+  const aliasKeys = Array.from(aliases.keys());
+  if (aliasKeys.length === 0) {
+    return matched;
+  }
+  for (const tool of tools) {
+    if (!isMCPToolKey(tool)) {
+      continue;
+    }
+    const [, serverName] = splitMCPToolKey(tool, aliasKeys);
+    const rawName = serverName != null ? aliases.get(serverName) : undefined;
+    if (rawName) {
+      matched.add(rawName);
+    }
+  }
+  return matched;
+}
+
 /**
  * Builds the `mcpServerNames` index for a version restore from authorized sources only:
  * names resolved while authorizing the restored tools, plus the agent's pre-restore names
@@ -77,73 +115,94 @@ export function resolveRestoredMCPServerNames({
   resolvedServerNames,
   priorNames,
 }: RestoredMCPServerNamesParams): string[] {
-  const names = new Set(resolvedServerNames);
   const existingToolSet = new Set(existingTools);
-  const aliases = buildServerNameAliases(priorNames);
-  const aliasKeys = Array.from(aliases.keys());
-  let retainsMCPTools = false;
-
-  for (const tool of tools) {
-    if (!isMCPToolKey(tool)) {
-      continue;
-    }
-    retainsMCPTools = true;
-    if (aliasKeys.length === 0 || !existingToolSet.has(tool)) {
-      continue;
-    }
-    const [, serverName] = splitMCPToolKey(tool, aliasKeys);
-    const rawName = serverName != null ? aliases.get(serverName) : undefined;
-    if (rawName) {
-      names.add(rawName);
-    }
+  const names = new Set(resolvedServerNames);
+  for (const name of matchPriorServerNames(
+    tools.filter((tool) => existingToolSet.has(tool)),
+    priorNames,
+  )) {
+    names.add(name);
   }
-
-  if (names.size === 0 && retainsMCPTools) {
+  if (names.size === 0 && tools.some(isMCPToolKey)) {
     return [...priorNames];
   }
   return Array.from(names);
 }
 
+const canView = (permissions: Map<string, number>, id: ResourceId): boolean =>
+  ((permissions.get(id.toString()) ?? 0) & PermissionBits.VIEW) !== 0;
+
 /**
  * Authorizes a version restore against the agent as it stands, before anything is written.
  *
  * Agent-scoped MCP access is granted from `mcpServerNames`, so the restore must not be
- * judged against the snapshot's index (it would vouch for itself) nor against the target
- * agent's current or cached index for tools the agent does not already have: a newly
- * restored tool needs access the user holds independently of this agent.
+ * judged against the snapshot's index (it would vouch for itself), and a tool the agent
+ * does not already have must not be admitted on a cached registry view or on the target
+ * agent's own grant. A newly restored tool on a DB-backed server is admitted when the
+ * agent still has a tool on that server, or when the user holds a live grant on the server
+ * itself or on another agent that uses it.
  */
 export async function authorizeAgentRestore({
   agent,
   versionTools,
   authorizeTools,
   listAgentIdsForServer,
-  getAgentPermissions,
+  getPermissions,
 }: AuthorizeAgentRestoreParams): Promise<AgentRestorePlan> {
   const plan: AgentRestorePlan = { expectedUpdatedAt: agent.updatedAt };
   const existingTools = agent.tools ?? [];
-  const restoredTools = Array.isArray(versionTools)
+  const snapshotHasTools = Array.isArray(versionTools);
+  const restoredTools = snapshotHasTools
     ? versionTools.filter((tool): tool is string => typeof tool === 'string')
     : existingTools;
   if (restoredTools.length === 0) {
-    return plan;
+    return snapshotHasTools ? { ...plan, tools: [], mcpServerNames: [] } : plan;
   }
 
   const agentId = agent._id.toString();
+  const priorNames = agent.mcpServerNames ?? [];
   const existingToolSet = new Set(existingTools);
-  const admitAgentScopedTool = async (tool: string, serverName: string): Promise<boolean> => {
-    if (existingToolSet.has(tool)) {
+  /** Servers the agent demonstrably uses now: a current tool still resolves to the name. */
+  const activeServerNames = matchPriorServerNames(existingTools, priorNames);
+
+  const hasLiveServerAccess = async (
+    serverName: string,
+    dbId: string | undefined,
+  ): Promise<boolean> => {
+    if (activeServerNames.has(serverName)) {
       return true;
     }
-    const otherAgentIds = (await listAgentIdsForServer(serverName)).filter(
-      (id) => id.toString() !== agentId,
-    );
-    if (otherAgentIds.length === 0) {
-      return false;
+    const [direct, viaOtherAgent] = await Promise.all([
+      dbId
+        ? getPermissions(ResourceType.MCPSERVER, [dbId]).then((map) => canView(map, dbId))
+        : Promise.resolve(false),
+      listAgentIdsForServer(serverName).then(async (ids) => {
+        const otherIds = ids.filter((id) => id.toString() !== agentId);
+        if (otherIds.length === 0) {
+          return false;
+        }
+        const permissions = await getPermissions(ResourceType.AGENT, otherIds);
+        return otherIds.some((id) => canView(permissions, id));
+      }),
+    ]);
+    return direct || viaOtherAgent;
+  };
+
+  const admissions = new Map<string, Promise<boolean>>();
+  const admitMCPTool = (
+    tool: string,
+    serverName: string,
+    config: RestoredServerConfig | undefined,
+  ): Promise<boolean> => {
+    if (existingToolSet.has(tool) || config?.source !== 'user') {
+      return Promise.resolve(true);
     }
-    const permissions = await getAgentPermissions(otherAgentIds);
-    return otherAgentIds.some(
-      (id) => ((permissions.get(id.toString()) ?? 0) & PermissionBits.VIEW) !== 0,
-    );
+    let admission = admissions.get(serverName);
+    if (!admission) {
+      admission = hasLiveServerAccess(serverName, config.dbId);
+      admissions.set(serverName, admission);
+    }
+    return admission;
   };
 
   const resolvedServerNames = new Set<string>();
@@ -151,7 +210,7 @@ export async function authorizeAgentRestore({
     tools: restoredTools,
     existingTools,
     resolvedServerNames,
-    admitAgentScopedTool,
+    admitMCPTool,
   });
 
   return {
@@ -161,7 +220,7 @@ export async function authorizeAgentRestore({
       tools,
       existingTools,
       resolvedServerNames,
-      priorNames: agent.mcpServerNames ?? [],
+      priorNames,
     }),
   };
 }

@@ -545,7 +545,7 @@ const getSubagentReferenceError = async (subagents, req, allowedMissingIds = new
  * @param {Record<string, unknown>} params.availableTools - Global non-MCP tool cache
  * @param {string[]} [params.existingTools] - Tools already persisted on the agent document
  * @param {Record<string, unknown>} [params.configServers] - Config-source MCP servers resolved from appConfig overrides
- * @param {(tool: string, serverName: string) => Promise<boolean>} [params.admitAgentScopedTool] - Extra gate for a tool whose server the user reaches only through agents
+ * @param {(tool: string, serverName: string, config: object | undefined) => Promise<boolean>} [params.admitMCPTool] - Final gate for each MCP tool the registry approved
  * @returns {Promise<string[]>} Only the authorized subset of tools
  */
 const filterAuthorizedTools = async ({
@@ -558,7 +558,7 @@ const filterAuthorizedTools = async ({
   existingTools,
   configServers,
   resolvedServerNames,
-  admitAgentScopedTool,
+  admitMCPTool,
 }) => {
   const filteredTools = [];
   let mcpServerConfigs;
@@ -652,13 +652,9 @@ const filterAuthorizedTools = async ({
       continue;
     }
 
-    if (
-      admitAgentScopedTool &&
-      mcpServerConfigs[serverName]?.consumeOnly &&
-      !(await admitAgentScopedTool(tool, serverName))
-    ) {
+    if (admitMCPTool && !(await admitMCPTool(tool, serverName, mcpServerConfigs[serverName]))) {
       logger.warn(
-        `[filterAuthorizedTools] Rejected MCP tool "${tool}" — server "${serverName}" reachable by user ${userId} only through the agent being changed`,
+        `[filterAuthorizedTools] Rejected MCP tool "${tool}" — no live access to server "${serverName}" for user ${userId} outside the agent being changed`,
       );
       continue;
     }
@@ -2167,11 +2163,11 @@ const revertAgentVersionHandler = async (req, res) => {
         });
       },
       listAgentIdsForServer: db.getAgentIdsByMCPServerName,
-      getAgentPermissions: (resourceIds) =>
+      getPermissions: (resourceType, resourceIds) =>
         getResourcePermissionsMap({
           userId: req.user.id,
           role: req.user.role,
-          resourceType: ResourceType.AGENT,
+          resourceType,
           resourceIds,
         }),
     });

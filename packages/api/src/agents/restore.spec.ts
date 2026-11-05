@@ -1,5 +1,5 @@
-import { Constants, PermissionBits } from 'librechat-data-provider';
-import type { RestoredToolsAuthorization } from './restore';
+import { Constants, ResourceType, PermissionBits } from 'librechat-data-provider';
+import type { RestoredToolsAuthorization, RestoredServerConfig } from './restore';
 import { authorizeAgentRestore, resolveRestoredMCPServerNames } from './restore';
 
 const mcpTool = (serverName: string): string => `search${Constants.mcp_delimiter}${serverName}`;
@@ -89,39 +89,57 @@ describe('authorizeAgentRestore', () => {
   const agentId = 'agent-object-id';
   const otherAgentId = 'other-agent-object-id';
   const updatedAt = new Date('2026-11-05T00:00:00Z');
+  const dbConfig = (serverName: string): RestoredServerConfig => ({
+    source: 'user',
+    dbId: `server-${serverName}`,
+  });
+  const noPermissions = (): Promise<Map<string, number>> => Promise.resolve(new Map());
 
-  /** Approves every tool, routing each MCP tool through the agent-scoped gate. */
-  const authorizeThroughGate = async ({
-    tools,
-    resolvedServerNames,
-    admitAgentScopedTool,
-  }: RestoredToolsAuthorization): Promise<string[]> => {
-    const approved: string[] = [];
-    for (const tool of tools) {
-      if (!tool.includes(Constants.mcp_delimiter)) {
-        approved.push(tool);
-        continue;
+  /** Approves every tool, routing each MCP tool through the restore gate. */
+  const authorizeThroughGate =
+    (configFor: (serverName: string) => RestoredServerConfig = dbConfig) =>
+    async ({
+      tools,
+      resolvedServerNames,
+      admitMCPTool,
+    }: RestoredToolsAuthorization): Promise<string[]> => {
+      const approved: string[] = [];
+      for (const tool of tools) {
+        if (!tool.includes(Constants.mcp_delimiter)) {
+          approved.push(tool);
+          continue;
+        }
+        const serverName = tool.split(Constants.mcp_delimiter).pop() as string;
+        if (await admitMCPTool(tool, serverName, configFor(serverName))) {
+          resolvedServerNames.add(serverName);
+          approved.push(tool);
+        }
       }
-      const serverName = tool.split(Constants.mcp_delimiter).pop() as string;
-      if (await admitAgentScopedTool(tool, serverName)) {
-        resolvedServerNames.add(serverName);
-        approved.push(tool);
-      }
-    }
-    return approved;
-  };
+      return approved;
+    };
 
   it('pins the restore to the revision it read and skips authorization with no tools', async () => {
     const authorizeTools = jest.fn();
     const plan = await authorizeAgentRestore({
       agent: { _id: agentId, tools: [], updatedAt },
-      versionTools: [],
+      versionTools: undefined,
       authorizeTools,
       listAgentIdsForServer: jest.fn(),
-      getAgentPermissions: jest.fn(),
+      getPermissions: jest.fn(),
     });
     expect(plan).toEqual({ expectedUpdatedAt: updatedAt });
     expect(authorizeTools).not.toHaveBeenCalled();
+  });
+
+  it('restores an explicit empty set when the snapshot array holds no valid tools', async () => {
+    const plan = await authorizeAgentRestore({
+      agent: { _id: agentId, tools: [mcpTool('docs')], mcpServerNames: ['docs'], updatedAt },
+      versionTools: [42, null, { name: 'tool' }],
+      authorizeTools: jest.fn(),
+      listAgentIdsForServer: jest.fn(),
+      getPermissions: jest.fn(),
+    });
+    expect(plan).toEqual({ expectedUpdatedAt: updatedAt, tools: [], mcpServerNames: [] });
   });
 
   it('passes the current tools as existing, not the restored ones', async () => {
@@ -131,7 +149,7 @@ describe('authorizeAgentRestore', () => {
       versionTools: ['web_search', mcpTool('docs')],
       authorizeTools,
       listAgentIdsForServer: jest.fn(),
-      getAgentPermissions: jest.fn(),
+      getPermissions: jest.fn(),
     });
     expect(authorizeTools).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -141,43 +159,120 @@ describe('authorizeAgentRestore', () => {
     );
   });
 
-  it('rejects a new tool whose only agent-scoped grant is the target agent', async () => {
+  it('rejects a new tool whose only grant is the target agent', async () => {
     const plan = await authorizeAgentRestore({
       agent: { _id: agentId, tools: [], mcpServerNames: ['docs'], updatedAt },
       versionTools: [mcpTool('docs')],
-      authorizeTools: authorizeThroughGate,
+      authorizeTools: authorizeThroughGate(),
       listAgentIdsForServer: jest.fn().mockResolvedValue([agentId]),
-      getAgentPermissions: jest.fn(),
+      getPermissions: noPermissions,
     });
     expect(plan.tools).toEqual([]);
     expect(plan.mcpServerNames).toEqual([]);
   });
 
   it('admits a new tool the user reaches through another viewable agent', async () => {
-    const getAgentPermissions = jest
-      .fn()
-      .mockResolvedValue(new Map([[otherAgentId, PermissionBits.VIEW]]));
+    const getPermissions = jest.fn(async (resourceType: ResourceType) =>
+      resourceType === ResourceType.AGENT
+        ? new Map([[otherAgentId, PermissionBits.VIEW]])
+        : new Map<string, number>(),
+    );
     const plan = await authorizeAgentRestore({
       agent: { _id: agentId, tools: [], updatedAt },
       versionTools: [mcpTool('docs')],
-      authorizeTools: authorizeThroughGate,
+      authorizeTools: authorizeThroughGate(),
       listAgentIdsForServer: jest.fn().mockResolvedValue([agentId, otherAgentId]),
-      getAgentPermissions,
+      getPermissions,
     });
-    expect(getAgentPermissions).toHaveBeenCalledWith([otherAgentId]);
+    expect(getPermissions).toHaveBeenCalledWith(ResourceType.AGENT, [otherAgentId]);
     expect(plan.tools).toEqual([mcpTool('docs')]);
     expect(plan.mcpServerNames).toEqual(['docs']);
   });
 
-  it('rejects a new tool when the other agents referencing the server are not viewable', async () => {
+  it('admits a new tool on a live direct server grant', async () => {
     const plan = await authorizeAgentRestore({
       agent: { _id: agentId, tools: [], updatedAt },
       versionTools: [mcpTool('docs')],
-      authorizeTools: authorizeThroughGate,
+      authorizeTools: authorizeThroughGate(),
+      listAgentIdsForServer: jest.fn().mockResolvedValue([]),
+      getPermissions: async (resourceType) =>
+        resourceType === ResourceType.MCPSERVER
+          ? new Map([['server-docs', PermissionBits.VIEW]])
+          : new Map(),
+    });
+    expect(plan.tools).toEqual([mcpTool('docs')]);
+  });
+
+  it('rejects a new tool when no live grant remains, whatever the registry cached', async () => {
+    const plan = await authorizeAgentRestore({
+      agent: { _id: agentId, tools: [], updatedAt },
+      versionTools: [mcpTool('docs')],
+      authorizeTools: authorizeThroughGate(),
       listAgentIdsForServer: jest.fn().mockResolvedValue([otherAgentId]),
-      getAgentPermissions: jest.fn().mockResolvedValue(new Map()),
+      getPermissions: noPermissions,
     });
     expect(plan.tools).toEqual([]);
+  });
+
+  it('admits another tool from a server the agent still uses, without a lookup', async () => {
+    const listAgentIdsForServer = jest.fn();
+    const fetchTool = `fetch${Constants.mcp_delimiter}docs`;
+    const plan = await authorizeAgentRestore({
+      agent: { _id: agentId, tools: [mcpTool('docs')], mcpServerNames: ['docs'], updatedAt },
+      versionTools: [mcpTool('docs'), fetchTool],
+      authorizeTools: authorizeThroughGate(),
+      listAgentIdsForServer,
+      getPermissions: noPermissions,
+    });
+    expect(listAgentIdsForServer).not.toHaveBeenCalled();
+    expect(plan.tools).toEqual([mcpTool('docs'), fetchTool]);
+    expect(plan.mcpServerNames).toEqual(['docs']);
+  });
+
+  it('does not treat a stale index entry as a server the agent still uses', async () => {
+    const plan = await authorizeAgentRestore({
+      agent: { _id: agentId, tools: ['web_search'], mcpServerNames: ['docs'], updatedAt },
+      versionTools: [mcpTool('docs')],
+      authorizeTools: authorizeThroughGate(),
+      listAgentIdsForServer: jest.fn().mockResolvedValue([agentId]),
+      getPermissions: noPermissions,
+    });
+    expect(plan.tools).toEqual([]);
+  });
+
+  it('looks up each server once however many of its tools are restored', async () => {
+    const listAgentIdsForServer = jest.fn().mockResolvedValue([otherAgentId]);
+    const getPermissions = jest.fn(async (resourceType: ResourceType) =>
+      resourceType === ResourceType.AGENT
+        ? new Map([[otherAgentId, PermissionBits.VIEW]])
+        : new Map<string, number>(),
+    );
+    await authorizeAgentRestore({
+      agent: { _id: agentId, tools: [], updatedAt },
+      versionTools: [
+        mcpTool('docs'),
+        `fetch${Constants.mcp_delimiter}docs`,
+        `list${Constants.mcp_delimiter}docs`,
+      ],
+      authorizeTools: authorizeThroughGate(),
+      listAgentIdsForServer,
+      getPermissions,
+    });
+    expect(listAgentIdsForServer).toHaveBeenCalledTimes(1);
+    expect(getPermissions).toHaveBeenCalledTimes(2);
+  });
+
+  it('admits operator-managed servers without a database lookup', async () => {
+    const listAgentIdsForServer = jest.fn();
+    const plan = await authorizeAgentRestore({
+      agent: { _id: agentId, tools: [], updatedAt },
+      versionTools: [mcpTool('yamlServer')],
+      authorizeTools: authorizeThroughGate(() => ({ source: 'yaml' })),
+      listAgentIdsForServer,
+      getPermissions: noPermissions,
+    });
+    expect(listAgentIdsForServer).not.toHaveBeenCalled();
+    expect(plan.tools).toEqual([mcpTool('yamlServer')]);
   });
 
   it('keeps a tool the agent already has without a further lookup', async () => {
@@ -185,24 +280,12 @@ describe('authorizeAgentRestore', () => {
     const plan = await authorizeAgentRestore({
       agent: { _id: agentId, tools: [mcpTool('docs')], mcpServerNames: ['docs'], updatedAt },
       versionTools: [mcpTool('docs')],
-      authorizeTools: authorizeThroughGate,
+      authorizeTools: authorizeThroughGate(),
       listAgentIdsForServer,
-      getAgentPermissions: jest.fn(),
+      getPermissions: noPermissions,
     });
     expect(listAgentIdsForServer).not.toHaveBeenCalled();
     expect(plan.tools).toEqual([mcpTool('docs')]);
     expect(plan.mcpServerNames).toEqual(['docs']);
-  });
-
-  it('restores the current tools when the snapshot has none recorded', async () => {
-    const authorizeTools = jest.fn().mockResolvedValue(['web_search']);
-    await authorizeAgentRestore({
-      agent: { _id: agentId, tools: ['web_search'], updatedAt },
-      versionTools: undefined,
-      authorizeTools,
-      listAgentIdsForServer: jest.fn(),
-      getAgentPermissions: jest.fn(),
-    });
-    expect(authorizeTools).toHaveBeenCalledWith(expect.objectContaining({ tools: ['web_search'] }));
   });
 });

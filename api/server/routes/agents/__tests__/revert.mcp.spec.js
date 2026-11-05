@@ -295,4 +295,61 @@ describe('POST /agents/:id/revert - MCP server authorization', () => {
     expect(stored.tools).toEqual([mcpTool(serverName)]);
     expect(stored.mcpServerNames).toEqual([serverName]);
   });
+
+  it('a direct grant revoked while the registry still caches it does not authorize the restore', async () => {
+    const serverName = await createPrivateServer();
+    const server = await methods.findMCPServerByServerName(serverName);
+    await grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: bob._id,
+      resourceType: ResourceType.MCPSERVER,
+      resourceId: server._id,
+      accessRoleId: AccessRoleIds.MCPSERVER_VIEWER,
+      grantedBy: alice._id,
+    });
+    const agent = await createDetachedAgent('agent_revert_revoked', serverName);
+    expect(await bobsServers()).toContain(serverName);
+    await mongoose.models.AclEntry.deleteMany({
+      principalId: bob._id,
+      resourceType: ResourceType.MCPSERVER,
+    });
+
+    currentUser = asUser(bob);
+    const res = await request(app).post(`/agents/${agent.id}/revert`).send({ version_index: 0 });
+
+    expect(res.status).toBe(200);
+    const stored = await methods.getAgent({ id: agent.id });
+    expect(stored.tools).toEqual([]);
+    expect(stored.mcpServerNames).toEqual([]);
+  });
+
+  it('an editor can restore another tool from a server the agent still uses', async () => {
+    const serverName = await createPrivateServer();
+    const kept = mcpTool(serverName);
+    const restored = `fetch${Constants.mcp_delimiter}${serverName}`;
+    const agent = await methods.createAgent({
+      id: 'agent_revert_still_used',
+      name: 'Shared',
+      provider: 'openai',
+      model: 'gpt-4o',
+      author: alice._id,
+      tools: [kept, restored],
+      mcpServerNames: [serverName],
+    });
+    await methods.updateAgent(
+      { id: agent.id },
+      { tools: [kept] },
+      { updatingUserId: alice._id.toString() },
+    );
+    await shareAgent(agent);
+    await waitForRegistryCache();
+
+    currentUser = asUser(bob);
+    const res = await request(app).post(`/agents/${agent.id}/revert`).send({ version_index: 0 });
+
+    expect(res.status).toBe(200);
+    const stored = await methods.getAgent({ id: agent.id });
+    expect(stored.tools).toEqual([kept, restored]);
+    expect(stored.mcpServerNames).toEqual([serverName]);
+  });
 });
