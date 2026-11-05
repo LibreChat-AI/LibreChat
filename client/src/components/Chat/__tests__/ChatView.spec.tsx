@@ -56,7 +56,7 @@ jest.mock('../Presentation', () => ({
 }));
 jest.mock('../Header', () => ({ __esModule: true, default: () => <div /> }));
 let mockConfiguredFooter = false;
-let mockLandingFooter = true;
+let mockLandingFooter: boolean | 'composer' = true;
 jest.mock('../Footer', () => ({
   __esModule: true,
   default: ({ configuredOnly }: { configuredOnly?: boolean }) => (
@@ -240,11 +240,22 @@ describe('ChatView landing footer', () => {
     mockChatFormProps.mockClear();
   });
 
-  test('renders the full footer under the composer by default, in its own room', () => {
+  test('renders the full footer beneath the welcome screen by default', () => {
     render(<ChatView />);
 
     expect(screen.getByTestId('landing-footer')).toBeInTheDocument();
     expect(screen.queryByTestId('configured-footer')).not.toBeInTheDocument();
+    expect(mockChatFormProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({ footerBelow: true }),
+    );
+  });
+
+  test('gives the footer its own room when the deployment places it under the composer', () => {
+    mockLandingFooter = 'composer';
+
+    render(<ChatView />);
+
+    expect(screen.getByTestId('landing-footer')).toBeInTheDocument();
     expect(mockChatFormProps).toHaveBeenLastCalledWith(
       expect.objectContaining({ footerBelow: false }),
     );

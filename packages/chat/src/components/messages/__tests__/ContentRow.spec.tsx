@@ -94,25 +94,32 @@ function renderRow(
 }
 
 describe('ContentRow', () => {
-  describe('the name the model selector already shows', () => {
+  describe('the author the model selector already shows', () => {
     const agent = { id: 'agent-1', name: 'Research Agent' } as Agent;
     const convo = { ...conversation, agent_id: 'agent-1' } as TConversation;
     const nameIsHidden = () => screen.getByText('Research Agent').closest('.sr-only') != null;
 
-    it('keeps the name for assistive technology when the selector names this agent', () => {
-      renderRow({ agent, conversation: convo, modelSelectorShown: true });
-      expect(screen.getByRole('heading', { name: /Research Agent/ })).toBeInTheDocument();
+    it('keeps only the assistive technology text when the deployment opts in', () => {
+      const parts = renderRow({
+        agent,
+        conversation: convo,
+        hideSelectedAuthor: true,
+        authorHeader: <span>Resume header</span>,
+      });
+      expect(screen.getByRole('heading', { name: /Research Agent/ })).toHaveClass('sr-only');
       expect(nameIsHidden()).toBe(true);
+      expect(screen.queryByTestId('icon')).not.toBeInTheDocument();
+      expect(parts.mock.calls[0][0].authorHeader).toBeUndefined();
     });
 
     it.each([
-      ['no selector is shown', { agent, conversation: convo, modelSelectorShown: false }],
+      ['the deployment has not opted in', { agent, conversation: convo }],
       [
         'another agent wrote the turn',
         {
           agent,
           conversation: { ...convo, agent_id: 'agent-2' } as TConversation,
-          modelSelectorShown: true,
+          hideSelectedAuthor: true,
         },
       ],
       [
@@ -123,13 +130,14 @@ describe('ContentRow', () => {
             ...convo,
             subagentThread: { parentConversationId: 'parent' },
           } as TConversation,
-          modelSelectorShown: true,
+          hideSelectedAuthor: true,
         },
       ],
-      ['the turn has no agent', { conversation: convo, modelSelectorShown: true }],
-    ])('shows the name when %s', (_case, props) => {
+      ['the turn has no agent', { conversation: convo, hideSelectedAuthor: true }],
+    ])('shows the author when %s', (_case, props) => {
       renderRow(props);
       expect(nameIsHidden()).toBe(false);
+      expect(screen.getByTestId('icon')).toBeInTheDocument();
     });
   });
 

@@ -15,7 +15,7 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
 }));
 
 jest.mock('~/components/Chat/Menus/Endpoints/shown', () => ({
-  useModelSelectorShown: () => true,
+  useHideSelectedAuthor: () => false,
 }));
 
 jest.mock('~/components/Chat/Messages/MessageIcon', () => ({

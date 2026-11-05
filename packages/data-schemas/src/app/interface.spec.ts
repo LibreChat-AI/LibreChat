@@ -517,15 +517,23 @@ describe('welcome screen heading and footer', () => {
     });
     expect(interfaceConfig?.landingHeading).toBe('entity');
     expect(interfaceConfig?.landingFooter).toBe(true);
+    expect(interfaceConfig?.messageAuthor).toBe('always');
   });
 
   it('copies the configured settings through', async () => {
     const interfaceConfig = await loadDefaultInterface({
-      config: { interface: { landingHeading: 'greeting', landingFooter: false } },
+      config: {
+        interface: {
+          landingHeading: 'greeting',
+          landingFooter: 'composer',
+          messageAuthor: 'whenDifferent',
+        },
+      },
       configDefaults: getConfigDefaults(),
     });
     expect(interfaceConfig?.landingHeading).toBe('greeting');
-    expect(interfaceConfig?.landingFooter).toBe(false);
+    expect(interfaceConfig?.landingFooter).toBe('composer');
+    expect(interfaceConfig?.messageAuthor).toBe('whenDifferent');
   });
 });
 
