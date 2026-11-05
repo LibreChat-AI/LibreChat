@@ -275,6 +275,19 @@ describe('authorizeAgentRestore', () => {
     expect(plan.tools).toEqual([mcpTool('yamlServer')]);
   });
 
+  it('rechecks a legacy cached DB config that carries a dbId but no source', async () => {
+    const listAgentIdsForServer = jest.fn().mockResolvedValue([]);
+    const plan = await authorizeAgentRestore({
+      agent: { _id: agentId, tools: [], updatedAt },
+      versionTools: [mcpTool('docs')],
+      authorizeTools: authorizeThroughGate(() => ({ dbId: 'server-docs' })),
+      listAgentIdsForServer,
+      getPermissions: noPermissions,
+    });
+    expect(listAgentIdsForServer).toHaveBeenCalledWith('docs');
+    expect(plan.tools).toEqual([]);
+  });
+
   it('keeps a tool the agent already has without a further lookup', async () => {
     const listAgentIdsForServer = jest.fn();
     const plan = await authorizeAgentRestore({

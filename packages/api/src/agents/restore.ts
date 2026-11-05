@@ -7,6 +7,7 @@ import {
   buildServerNameAliases,
 } from 'librechat-data-provider';
 import type { ParsedServerConfig } from '~/mcp/types';
+import { isUserSourced } from '~/mcp/utils';
 
 type ResourceId = { toString(): string };
 
@@ -194,7 +195,7 @@ export async function authorizeAgentRestore({
     serverName: string,
     config: RestoredServerConfig | undefined,
   ): Promise<boolean> => {
-    if (existingToolSet.has(tool) || config?.source !== 'user') {
+    if (existingToolSet.has(tool) || !config || !isUserSourced(config)) {
       return Promise.resolve(true);
     }
     let admission = admissions.get(serverName);
