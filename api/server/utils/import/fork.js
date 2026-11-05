@@ -542,11 +542,6 @@ async function duplicateConversation({
     '+privateTextTokens',
   );
 
-  const messagesToClone = getMessagesUpToTargetLevel(
-    originalMessages,
-    originalMessages[originalMessages.length - 1].messageId,
-  );
-
   const importBatchBuilder =
     legacyPii == null
       ? builderFactory(userId, interfaceConfig, filters)
@@ -554,7 +549,9 @@ async function duplicateConversation({
   importBatchBuilder.sourceIsTemporary = isTemporaryRecord(originalConvo);
   importBatchBuilder.startConversation(originalConvo.endpoint ?? EModelEndpoint.openAI);
 
-  cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder, { nativeCopy: true });
+  // Copy every branch. The newest message can be a shallow regenerate, and
+  // truncating to its depth would drop the original deeper thread.
+  cloneMessagesWithTimestamps(originalMessages, importBatchBuilder, { nativeCopy: true });
 
   const duplicateTitle = title || originalConvo.title;
   const result = importBatchBuilder.finishConversation(duplicateTitle, new Date(), originalConvo);
