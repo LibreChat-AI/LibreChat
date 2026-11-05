@@ -206,6 +206,10 @@ jobs:
             api/node_modules
           key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
 
+      - name: Test scoped dependency overrides
+        if: steps.cache-node-modules.outputs.cache-hit == 'true' || steps.install_dependencies.outcome == 'success'
+        run: npm run test:dependencies
+
       # The @shadcn/lint design rules read each primitive's `cva` variants through
       # the @librechat/client entry point, which resolves to packages/client/dist.
       # Without it they classify nothing and report strictly fewer violations than
