@@ -4,12 +4,7 @@ const FormData = require('form-data');
 const nodemailer = require('nodemailer');
 const handlebars = require('handlebars');
 const { logger } = require('@librechat/data-schemas');
-const {
-  isEnabled,
-  logAxiosError,
-  readFileAsString,
-  serviceRequestBudget,
-} = require('@librechat/api');
+const { isEnabled, readFileAsString, serviceRequestBudget } = require('@librechat/api');
 
 /**
  * Sends an email using Mailgun API.
@@ -39,19 +34,15 @@ const sendEmailViaMailgun = async ({ to, from, subject, html }) => {
   formData.append('html', html);
   formData.append('o:tracking-clicks', 'no');
 
-  try {
-    const response = await axios.post(`${mailgunHost}/v3/${mailgunDomain}/messages`, formData, {
-      ...serviceRequestBudget(),
-      headers: {
-        ...formData.getHeaders(),
-        Authorization: `Basic ${Buffer.from(`api:${mailgunApiKey}`).toString('base64')}`,
-      },
-    });
+  const response = await axios.post(`${mailgunHost}/v3/${mailgunDomain}/messages`, formData, {
+    ...serviceRequestBudget(),
+    headers: {
+      ...formData.getHeaders(),
+      Authorization: `Basic ${Buffer.from(`api:${mailgunApiKey}`).toString('base64')}`,
+    },
+  });
 
-    return response.data;
-  } catch (error) {
-    throw new Error(logAxiosError({ error, message: 'Failed to send email via Mailgun' }));
-  }
+  return response.data;
 };
 
 /**

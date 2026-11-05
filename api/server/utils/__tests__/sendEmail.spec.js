@@ -156,3 +156,28 @@ describe('sendEmail SMTP encryption options', () => {
     expect(transporterOptions).toMatchObject({ secure: false, requireTLS: true });
   });
 });
+
+describe('sendEmail Mailgun failures', () => {
+  it('leaves diagnostics to the caller without logging recovery secrets', async () => {
+    process.env.MAILGUN_API_KEY = 'test-key';
+    process.env.MAILGUN_DOMAIN = 'mail.example.com';
+    const sendEmail = loadSendEmail();
+    const axios = require('axios');
+    const { logger } = require('@librechat/data-schemas');
+    const { logAxiosError } = require('@librechat/api');
+    const secret = 'private-recovery-secret';
+    const error = Object.assign(new Error(secret), {
+      isAxiosError: true,
+      response: { status: 503, data: { html: secret } },
+    });
+    const post = jest.spyOn(axios, 'post').mockRejectedValueOnce(error);
+    try {
+      await expect(sendEmail(baseParams)).rejects.toBe(error);
+      expect(logAxiosError).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(JSON.stringify(logger.debug.mock.calls)).not.toContain(secret);
+    } finally {
+      post.mockRestore();
+    }
+  });
+});
