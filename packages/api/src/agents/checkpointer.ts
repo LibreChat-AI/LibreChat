@@ -60,6 +60,27 @@ function isEventActorInvocation(config: RunnableConfig): boolean {
   return typeof value === 'string' && value.length > 0;
 }
 
+/** Thread-ID prefix the agents SDK gives a subagent's child thread (`SUBAGENT_THREAD_ID_PREFIX`
+ * in its `SubagentExecutionRegistry`, not exported). */
+const SUBAGENT_THREAD_ID_PREFIX = 'subagent:';
+
+/**
+ * A subagent's child thread. The SDK's `SubagentExecutor` invokes the child workflow directly,
+ * without the exit durability `Run.processStream` uses, so its checkpoint `put` reaches the saver
+ * before the `putWrites` that would anchor it: under the lazy policy every child checkpoint was
+ * discarded, and a child paused for a tool approval restarted from its initial task on resume.
+ */
+function isSubagentThread(config: RunnableConfig): boolean {
+  const threadId = config.configurable?.thread_id;
+  return typeof threadId === 'string' && threadId.startsWith(SUBAGENT_THREAD_ID_PREFIX);
+}
+
+/** Threads whose every checkpoint and pending write is retained, outside the lazy policy:
+ * event-actor attempts and subagent children. */
+function retainsEveryCheckpoint(config: RunnableConfig): boolean {
+  return isEventActorInvocation(config) || isSubagentThread(config);
+}
+
 /** Prefix every root/subgraph storage namespace with the immutable generation. */
 function toStorageCheckpointConfig(config: RunnableConfig): RunnableConfig {
   const generationNamespace = generationCheckpointNamespace(config);
@@ -375,7 +396,7 @@ export class LazyMongoSaver extends OwnedMongoSaver {
     taskId: string,
   ): Promise<void> {
     const storageConfig = toStorageCheckpointConfig(config);
-    if (isEventActorInvocation(config)) {
+    if (retainsEveryCheckpoint(config)) {
       return super.putWrites(storageConfig, writes, taskId);
     }
     const checkpointId = config.configurable?.checkpoint_id as string | undefined;
@@ -433,7 +454,7 @@ export class LazyMongoSaver extends OwnedMongoSaver {
     checkpoint: Checkpoint,
     metadata: CheckpointMetadata,
   ): Promise<RunnableConfig> {
-    if (isEventActorInvocation(config)) {
+    if (retainsEveryCheckpoint(config)) {
       await this.assertCheckpointFitsDocument(config, checkpoint, metadata);
       const persisted = await super.put(toStorageCheckpointConfig(config), checkpoint, metadata);
       logger.debug(
@@ -509,7 +530,7 @@ export class LazyMongoSaver extends OwnedMongoSaver {
    * {@link hardLimitBytes} — BEFORE the write, so an oversize pause fails legibly rather than as a
    * raw `BSONObjectTooLarge`. Serializes with the same `serde` the base `put` uses, so the measured
    * bytes match what would be stored. The extra serialization runs only when a checkpoint is
-   * selected for durable retention: HITL pauses and event-actor invocation heads.
+   * selected for durable retention: HITL pauses, event-actor invocation heads and subagent threads.
    */
   private async assertCheckpointFitsDocument(
     config: RunnableConfig,

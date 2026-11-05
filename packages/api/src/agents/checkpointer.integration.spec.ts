@@ -1013,6 +1013,127 @@ describe('LazyMongoSaver (lazy persistence — mongodb-memory-server)', () => {
   });
 });
 
+describe('LazyMongoSaver subagent threads (mongodb-memory-server)', () => {
+  // The SDK's SubagentExecutor invokes a child workflow directly, without the exit durability
+  // Run.processStream uses: the child's `put` reaches the saver BEFORE the `putWrites` that would
+  // anchor it. Under the lazy policy every child checkpoint was discarded, so a child paused for a
+  // tool approval found no state on resume and restarted from its initial task (#17424).
+  const subagentThread = (label: string) =>
+    `subagent:${Buffer.from(JSON.stringify([label, 'root', 'agent_parent', 'toolu_1'])).toString('base64url')}`;
+
+  it('retains a subagent checkpoint whose interrupt write arrives after its put', async () => {
+    const saver = await getAgentCheckpointer(MONGO_CFG);
+    const threadId = subagentThread(new mongoose.Types.ObjectId().toString());
+    const { config, checkpoint, metadata } = putArgs(threadId);
+
+    await saver!.put(config, checkpoint, metadata);
+    await saver!.putWrites(
+      { configurable: { thread_id: threadId, checkpoint_ns: '', checkpoint_id: checkpoint.id } },
+      [[INTERRUPT, { id: 'interrupt-child', value: 'approve?' }]],
+      'task-1',
+    );
+
+    const tuple = await saver!.getTuple(readConfig(threadId));
+    expect(tuple?.checkpoint.id).toBe(checkpoint.id);
+    expect(tuple?.pendingWrites?.some(([, channel]) => channel === INTERRUPT)).toBe(true);
+  });
+
+  it('keeps the lazy policy for an ordinary thread written in the same order', async () => {
+    const saver = await getAgentCheckpointer(MONGO_CFG);
+    const threadId = `convo-${new mongoose.Types.ObjectId().toString()}`;
+    const { config, checkpoint, metadata } = putArgs(threadId);
+
+    await saver!.put(config, checkpoint, metadata);
+
+    expect(await saver!.getTuple(readConfig(threadId))).toBeUndefined();
+  });
+
+  it('maps a subagent thread into its generation namespace', async () => {
+    const saver = await getAgentCheckpointer(MONGO_CFG);
+    const threadId = subagentThread(new mongoose.Types.ObjectId().toString());
+    const namespace = createCheckpointNamespace('user-ns');
+    const { config, checkpoint, metadata } = putArgs(threadId);
+    const scoped = {
+      configurable: { ...config.configurable, [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: namespace },
+    };
+
+    await saver!.put(scoped, checkpoint, metadata);
+
+    const stored = await mongoose.connection
+      .db!.collection('agent_checkpoints')
+      .findOne({ thread_id: threadId });
+    expect(stored?.checkpoint_ns).toBe(namespace);
+    expect(await saver!.getTuple(scoped)).toBeDefined();
+  });
+
+  it('refuses a subagent checkpoint over the size limit', async () => {
+    const saver = new LazyMongoSaver({
+      client: mongoose.connection.getClient() as unknown as ConstructorParameters<
+        typeof MongoDBSaver
+      >[0]['client'],
+      checkpointCollectionName: 'agent_checkpoints',
+      checkpointWritesCollectionName: 'agent_checkpoint_writes',
+      ttl: 3600,
+      warnBytes: 500,
+      hardLimitBytes: 1_000,
+    });
+    await saver.setup();
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const threadId = subagentThread(new mongoose.Types.ObjectId().toString());
+    const { config, metadata } = putArgs(threadId);
+    const checkpoint = emptyCheckpoint();
+    checkpoint.channel_values = { messages: 'x'.repeat(5_000) };
+
+    await expect(saver.put(config, checkpoint, metadata)).rejects.toBeInstanceOf(
+      CheckpointTooLargeError,
+    );
+    jest.restoreAllMocks();
+  });
+
+  it('end-to-end: a child invoked without exit durability resumes after approval on a rebuilt graph', async () => {
+    // Shaped like the reported case: the child reads, then pauses before a write that needs
+    // approval. Each turn rebuilds the graph against the durable saver, as the host rebuilds
+    // the run on approval, and resumes only when the paused state can be read back.
+    const { StateGraph, START, END, interrupt, Annotation, Command } = await import(
+      '@langchain/langgraph'
+    );
+    const saver = await getAgentCheckpointer(MONGO_CFG);
+    const effects = { reads: 0, writes: 0 };
+    const State = Annotation.Root({
+      log: Annotation({ reducer: (a: string[], b: string[]) => (a ?? []).concat(b ?? []) }),
+    });
+    const build = () =>
+      new StateGraph(State)
+        .addNode('read', () => {
+          effects.reads += 1;
+          return { log: ['read'] };
+        })
+        .addNode('write', () => {
+          const decision = interrupt('approve write?') as { approved?: boolean };
+          if (decision?.approved !== true) {
+            return { log: ['rejected'] };
+          }
+          effects.writes += 1;
+          return { log: ['written'] };
+        })
+        .addEdge(START, 'read')
+        .addEdge('read', 'write')
+        .addEdge('write', END)
+        .compile({ checkpointer: saver as never });
+
+    const thread = subagentThread(new mongoose.Types.ObjectId().toString());
+    const cfg = { configurable: { thread_id: thread } };
+
+    await build().invoke({ log: ['task'] }, cfg);
+    const paused = await build().getState(cfg);
+    expect(paused.next).toEqual(['write']);
+
+    const out = await build().invoke(new Command({ resume: { approved: true } }), cfg);
+    expect(out.log).toEqual(['task', 'read', 'written']);
+    expect(effects).toEqual({ reads: 1, writes: 1 });
+  });
+});
+
 describe('LazyMongoSaver checkpoint size guard (mongodb-memory-server integration)', () => {
   // Guards the single-document ceiling: a checkpoint embeds the whole message history, so a
   // large conversation can serialize past MongoDB's 16 MB limit. The guard measures the
