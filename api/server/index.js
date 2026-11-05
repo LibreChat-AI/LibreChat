@@ -455,6 +455,7 @@ const startServer = async () => {
   app.use('/api/convos', routes.convos);
   app.use('/api/pull-requests', preAuthTenantMiddleware, routes.pullRequests);
   app.use('/api/traces', routes.traces);
+  app.use('/api/nearai', routes.nearai);
   app.use('/api/presets', routes.presets);
   app.use('/api/projects', routes.projects);
   app.use('/api/prompts', routes.prompts);

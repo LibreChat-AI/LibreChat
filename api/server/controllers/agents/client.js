@@ -1,3 +1,4 @@
+const { collectNearAIReply, withNearAIMetadata } = require('@librechat/api');
 const { GraphEvents } = require('@librechat/agents');
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 require('events').EventEmitter.defaultMaxListeners = 100;
@@ -3683,12 +3684,17 @@ class AgentClient extends BaseClient {
 
   /** @type {sendCompletion} */
   async sendCompletion(payload, opts = {}) {
-    await this.chatCompletion({
-      payload,
-      onProgress: opts.onProgress,
-      userMCPAuthMap: opts.userMCPAuthMap,
-      abortController: opts.abortController,
-    });
+    await collectNearAIReply(
+      this,
+      () =>
+        this.chatCompletion({
+          payload,
+          onProgress: opts.onProgress,
+          userMCPAuthMap: opts.userMCPAuthMap,
+          abortController: opts.abortController,
+        }),
+      this.options?.req?.config?.config?.nearai?.receiptTimeoutMs,
+    );
 
     const completion = filterMalformedContentParts(this.contentParts);
     if (this.isCompactionTurn()) {
@@ -3788,7 +3794,10 @@ class AgentClient extends BaseClient {
     if (usage) {
       metadata.usage = usage;
     }
-    return Object.keys(metadata).length > 0 ? metadata : undefined;
+    return withNearAIMetadata(
+      Object.keys(metadata).length > 0 ? metadata : undefined,
+      this.nearaiReceipts,
+    );
   }
 
   /**

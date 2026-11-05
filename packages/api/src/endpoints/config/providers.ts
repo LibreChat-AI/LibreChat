@@ -3,14 +3,17 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import type { TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { InitializeResultBase, ProviderInitializeParams } from '~/types';
+import type { NearAIService } from '~/nearai/attestation';
 import { resolveCustomEndpointSecrets } from '~/admin/secrets';
 import { initializeAnthropic } from '../anthropic/initialize';
+import { createNearAIService } from '~/nearai/attestation';
 import { initializeBedrock } from '../bedrock/initialize';
 import { getReasoningCapabilityDeps } from '../reasoning';
 import { initializeCustom } from '../custom/initialize';
 import { initializeGoogle } from '../google/initialize';
 import { initializeOpenAI } from '../openai/initialize';
 import { getCustomEndpointConfig } from '~/app/config';
+import { nearAISDK } from '~/nearai/sdk';
 
 /**
  * Type for initialize functions
@@ -32,9 +35,12 @@ export function isKnownCustomProvider(provider?: string): boolean {
  * Production wiring for custom endpoints: the initializer takes its reasoning catalog client
  * and cache from the caller, and this registry is where the real ones are supplied.
  */
+export const nearAIService: NearAIService = createNearAIService(nearAISDK);
+
 const initializeCustomWithReasoning: InitializeFn = (params) =>
   initializeCustom({
     ...params,
+    nearai: params.nearai ?? nearAIService,
     reasoningCapabilityDeps: params.reasoningCapabilityDeps ?? getReasoningCapabilityDeps(),
   });
 

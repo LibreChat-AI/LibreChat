@@ -3,6 +3,7 @@ import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { TConfig } from 'librechat-data-provider';
 import type { ReasoningCapabilityDeps } from './reasoning';
 import type { RequestBody, ServerRequest } from './http';
+import type { NearAIService } from '~/nearai/types';
 import type { EndpointTokenConfig } from './tokens';
 import type { AzureOptions } from './azure';
 
@@ -51,6 +52,7 @@ export interface EndpointRuntimeContext {
  * Base parameters for all endpoint initialization functions
  */
 interface InitializeParamsBase {
+  nearai?: NearAIService;
   /** The endpoint name/identifier (e.g., 'openAI', 'anthropic', 'custom-endpoint-name') */
   endpoint: string;
   /** Model parameters from the request (includes model, temperature, topP, etc.) */

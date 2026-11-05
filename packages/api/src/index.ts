@@ -154,3 +154,6 @@ export type * from './types';
 export * from './tools/approval';
 
 export * from './mcp/approval';
+
+export * from './nearai';
+export { nearAIService } from './endpoints/config/providers';

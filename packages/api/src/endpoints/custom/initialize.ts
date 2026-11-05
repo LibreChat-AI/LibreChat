@@ -22,6 +22,7 @@ import { withSupportedEffort } from '~/endpoints/reasoning';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { getScopedTokenConfigKey } from '~/endpoints/keys';
 import { resolveCustomEndpointParameters } from './config';
+import { isNearAIEndpoint } from '~/nearai/attestation';
 import { getCustomEndpointConfig } from '~/app/config';
 import { resolveEndpointRuntime } from '~/types';
 import { fetchModels } from '~/endpoints/models';
@@ -217,6 +218,12 @@ export async function initializeCustom(
   };
   const userProvidesKey = isUserProvided(CUSTOM_API_KEY);
   const userProvidesURL = isUserProvided(CUSTOM_BASE_URL);
+  const verification = endpointConfig.nearai === true;
+  if (verification && (!isNearAIEndpoint(endpointConfig) || !params.nearai)) {
+    throw new Error(
+      'NEAR AI verification requires a trusted OpenAI-compatible Cloud endpoint and a verifier',
+    );
+  }
 
   // Expiry is only checked when present: the Agents API sends an OpenAI-compatible
   // request body that does not include `key` (the expiry timestamp), so expiresAt
@@ -362,6 +369,10 @@ export async function initializeCustom(
     });
     options.endpointTokenConfig = endpointTokenConfig;
   } else {
+    const model = model_parameters?.model;
+    if (verification && typeof model === 'string' && model.startsWith('openai/')) {
+      clientOptions.dropParams = [...(endpointConfig.dropParams ?? []), 'user'];
+    }
     const finalClientOptions = {
       ...clientOptions,
       modelOptions,
@@ -371,6 +382,16 @@ export async function initializeCustom(
     if (options != null) {
       options.useLegacyContent = true;
       options.endpointTokenConfig = endpointTokenConfig;
+      if (verification && params.nearai) {
+        if (!options.configOptions) throw new Error('NEAR AI verified transport is unavailable');
+        options.configOptions.fetch = params.nearai.createFetch({
+          apiKey,
+          baseURL,
+          owner: JSON.stringify([user?.tenantId, user?.id]),
+          verificationTimeoutMs: appConfig?.config?.nearai?.verificationTimeoutMs,
+          sessionCacheMax: appConfig?.config?.nearai?.sessionCacheMax,
+        });
+      }
     }
   }
 

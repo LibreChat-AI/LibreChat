@@ -108,6 +108,7 @@ export const useUpdateUserKeysMutation = (): UseMutationResult<
   const queryClient = useQueryClient();
   return useMutation((payload: t.TUpdateUserKeyRequest) => dataService.updateUserKey(payload), {
     onSuccess: (data, variables) => {
+      void queryClient.resetQueries([QueryKeys.nearaiAttestation, variables.name]);
       queryClient.invalidateQueries([QueryKeys.name, variables.name]);
       queryClient.invalidateQueries([QueryKeys.models]);
       /** token-config is derived from the same per-user model fetch */
@@ -131,6 +132,7 @@ export const useRevokeUserKeyMutation = (name: string): UseMutationResult<unknow
   const queryClient = useQueryClient();
   return useMutation(() => dataService.revokeUserKey(name), {
     onSuccess: () => {
+      void queryClient.resetQueries([QueryKeys.nearaiAttestation, name]);
       queryClient.invalidateQueries([QueryKeys.name, name]);
       queryClient.invalidateQueries([QueryKeys.models]);
       queryClient.invalidateQueries([QueryKeys.tokenConfig]);
@@ -151,6 +153,7 @@ export const useRevokeAllUserKeysMutation = (): UseMutationResult<unknown> => {
   const queryClient = useQueryClient();
   return useMutation(() => dataService.revokeAllUserKeys(), {
     onSuccess: () => {
+      void queryClient.resetQueries([QueryKeys.nearaiAttestation]);
       queryClient.invalidateQueries([QueryKeys.name]);
       queryClient.invalidateQueries([QueryKeys.tokenConfig]);
       queryClient.invalidateQueries([

@@ -153,6 +153,8 @@ export type MessageAudioProps = {
  * yet, by augmenting `@librechat/chat/react`.
  */
 export interface MessagesHost {
+  /** Optional app-owned controls alongside the standard message actions. */
+  renderMessageActions?: (props: { message: TMessage; isLast: boolean }) => ReactNode;
   /** The viewer's clock preference as `hour12`; `undefined` follows the locale's convention. */
   useHour12: () => boolean | undefined;
   /** Renders the files attached to a user message, above its text. */

@@ -1,3 +1,4 @@
+const { withoutNearAIReceipts } = require('@librechat/api');
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { logger, CLIENT_MESSAGE_SELECT, MEILI_SEARCH_LIMIT } = require('@librechat/data-schemas');
@@ -586,7 +587,9 @@ router.post('/:conversationId', storedMessageMutationMiddleware, async (req, res
       return;
     }
     /** Trace sampling fields are ownership claims only the server writes. */
-    const message = withoutTraceRefs({ ...req.body, conversationId: req.params.conversationId });
+    const message = withoutTraceRefs(
+      withoutNearAIReceipts({ ...req.body, conversationId: req.params.conversationId }),
+    );
     delete message.isUserSubmitted;
     delete message.userSubmittedPaths;
     delete message.userSubmittedMessageFieldPaths;

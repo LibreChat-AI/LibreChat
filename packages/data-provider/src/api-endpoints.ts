@@ -1,3 +1,4 @@
+import type { TNearAIAttestationParams } from './nearai';
 import type { StartupConfigContext } from './config';
 import type { AssistantsEndpoint } from './schemas';
 import type * as t from './types';
@@ -713,3 +714,6 @@ export const graphToken = (scopes: string) =>
   `${BASE_URL}/api/auth/graph-token?scopes=${encodeURIComponent(scopes)}`;
 
 export const resetToolApprovalGrants = (): string => `${BASE_URL}/api/agents/tools/approvals/reset`;
+
+export const nearaiAttestation = (params: TNearAIAttestationParams) =>
+  `${BASE_URL}/api/nearai/attestation${buildQuery({ ...params, refresh: params.refresh ? '1' : undefined, force: params.force ? '1' : undefined, reports: params.reports ? '1' : undefined })}`;

@@ -8,12 +8,14 @@ import type {
 } from './types/traces';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
 import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
+import type { TNearAIAttestationParams, TNearAIAttestationResponse } from './nearai';
 import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
 import { codeSetupAttemptSchema, codeSetupApprovalRequestSchema } from './codeSetup';
 import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
+import { MAX_NEAR_AI_VERIFICATION_TIMEOUT_MS } from './nearai';
 import * as permissions from './accessPermissions';
 import { setClientLimits } from './clientLimits';
 import * as endpoints from './api-endpoints';
@@ -1966,3 +1968,12 @@ export function revokeScheduleMCPConsent(id: string, expectedRevision: string): 
     data: { expectedRevision },
   });
 }
+
+export const getNearAIAttestation = (
+  params: TNearAIAttestationParams,
+  signal?: AbortSignal,
+): Promise<TNearAIAttestationResponse> =>
+  request.get(endpoints.nearaiAttestation(params), {
+    signal,
+    timeout: MAX_NEAR_AI_VERIFICATION_TIMEOUT_MS + 5_000,
+  });

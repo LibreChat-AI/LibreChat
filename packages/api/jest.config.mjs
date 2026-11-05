@@ -1,6 +1,12 @@
 import { maxWorkers, workerIdleMemoryLimit } from '../../config/jest.workers.cjs';
 
 const esModules = [
+  '@nearai/inference-sdk',
+  'jose',
+  'hpke',
+  'ohttp-ts',
+  'bhttp-ts',
+  '@freedomofpress',
   '@librechat/agents',
   '@librechat/code',
   '@langchain/langgraph',
