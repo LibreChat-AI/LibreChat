@@ -71,7 +71,10 @@ test.describe('Native Azure reasoning effort', () => {
 
     await thinkingChip(page).click();
     const panel = page.getByRole('dialog', { name: /^Thinking: / });
-    await expect(panel.getByRole('radio', { name: 'Auto', exact: true })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Auto', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     await expect(panel.getByRole('radio', { name: 'Low', exact: true })).toBeVisible();
     await expect(panel.getByRole('radio', { name: 'High', exact: true })).toBeVisible();
     await expect(panel.getByRole('radio', { name: 'Medium', exact: true })).toHaveCount(0);
