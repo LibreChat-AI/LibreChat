@@ -347,31 +347,50 @@ for (const theme of ['light', 'dark']) {
       await picker.getByRole('button', { name: 'Continue', exact: true }).click();
       const setup = page.getByRole('dialog', { name: 'Connect to Slack', exact: true });
       await expect(
-        setup.getByRole('checkbox', {
-          name: 'Replace this bot’s current default agent',
-          exact: true,
-        }),
-      ).toBeVisible();
-      await expect(
         setup.getByRole('button', { name: 'Replace default agent', exact: true }),
-      ).toBeDisabled();
+      ).toBeEnabled();
+      await expect(
+        setup.getByRole('heading', { name: 'Current assignments', exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        setup.getByRole('button', { name: 'Delete connection', exact: true }),
+      ).toHaveCount(0);
       await expect(setup.getByLabel('Bot token', { exact: true })).toHaveCount(0);
       if (process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX)
         await page.screenshot({
           animations: 'disabled',
           path: `${process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX}-target-${theme}.png`,
         });
-      await setup
-        .getByRole('checkbox', { name: 'Replace this bot’s current default agent', exact: true })
-        .check();
       await setup.getByRole('button', { name: 'Replace default agent', exact: true }).click();
+      const replacement = page.getByRole('dialog', { name: 'Replace default agent', exact: true });
+      expect(activations).toBe(0);
+      if (process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX)
+        await page.screenshot({
+          animations: 'disabled',
+          path: `${process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX}-replacement-${theme}.png`,
+        });
+      await replacement.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(replacement).toHaveCount(0);
+      await expect(
+        setup.getByRole('button', { name: 'Replace default agent', exact: true }),
+      ).toBeFocused();
+      await setup.getByRole('button', { name: 'Replace default agent', exact: true }).click();
+      await replacement.getByRole('button', { name: 'Replace default agent', exact: true }).click();
       await expect(setup).toHaveCount(0);
       expect(activations).toBe(1);
       await expect(form.getByText('Active', { exact: true })).toBeVisible();
       await form.getByRole('button', { name: 'Manage connection', exact: true }).click();
       const manage = page.getByRole('dialog', { name: 'Manage connection', exact: true });
       await expect(manage.getByRole('button', { name: 'Remove', exact: true })).toBeVisible();
-      await expect(manage.getByText('Assigned to this agent', { exact: true })).toBeVisible();
+      await expect(
+        manage.getByRole('heading', { name: 'Current assignments', exact: true }),
+      ).toBeVisible();
+      await expect(
+        manage.getByRole('button', { name: 'Add assignment', exact: true }),
+      ).toBeVisible();
+      await expect(
+        manage.getByRole('group', { name: 'Where this bot uses this agent', exact: true }),
+      ).toHaveCount(0);
       await expect(manage.getByRole('button', { name: 'Assign agent', exact: true })).toHaveCount(
         0,
       );
@@ -382,25 +401,30 @@ for (const theme of ['light', 'dark']) {
         });
       await manage.getByRole('button', { name: 'Remove', exact: true }).click();
       expect(removed).toBe(0);
-      await manage
-        .getByRole('group', { name: 'Confirm connection change', exact: true })
-        .getByRole('button', { name: 'Confirm', exact: true })
-        .click();
+      const removal = page.getByRole('dialog', { name: 'Remove assignment', exact: true });
+      if (process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX)
+        await page.screenshot({
+          animations: 'disabled',
+          path: `${process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX}-remove-${theme}.png`,
+        });
+      await removal.getByRole('button', { name: 'Remove assignment', exact: true }).click();
+      await expect(manage.getByRole('button', { name: 'Remove', exact: true })).toHaveCount(0);
       await expect(
-        manage.getByText('This agent isn’t assigned to this bot for new conversations.', {
-          exact: true,
-        }),
-      ).toBeVisible();
+        manage.getByRole('heading', { name: 'Current assignments', exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        manage.getByRole('button', { name: 'Add assignment', exact: true }),
+      ).toBeFocused();
       expect(removed).toBe(1);
       await manage.getByRole('button', { name: 'Disable', exact: true }).click();
       await expect(form.getByText('Disabled', { exact: true })).toBeVisible();
       expect(disabled).toBe(1);
       await form.getByRole('button', { name: 'Manage connection', exact: true }).click();
-      await manage.getByRole('button', { name: 'Delete', exact: true }).click();
+      await manage.getByRole('button', { name: 'Delete connection', exact: true }).click();
       expect(deleted).toBe(0);
-      await manage
-        .getByRole('group', { name: 'Confirm connection change', exact: true })
-        .getByRole('button', { name: 'Confirm', exact: true })
+      await page
+        .getByRole('dialog', { name: 'Delete connection', exact: true })
+        .getByRole('button', { name: 'Delete connection', exact: true })
         .click();
       await expect(
         form.getByRole('button', { name: 'Manage connection', exact: true }),
