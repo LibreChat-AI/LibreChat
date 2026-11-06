@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { getContentFilterError } from '~/middleware/contentFilter';
+import { SpreadsheetBusyError } from './upload/errors';
 import { isEnabled } from '~/utils';
 
 const HEARTBEAT_INTERVAL_MS = 1000;
@@ -53,6 +54,22 @@ export function sendUploadPolicyError(
   error: unknown,
   context: UploadPolicyErrorContext = {},
 ): boolean {
+  if (error instanceof SpreadsheetBusyError) {
+    const body = { error: error.code, message: error.message, retryable: true, retry_after: 1 };
+    if (sseStream) {
+      sseStream.sendError({
+        ...body,
+        code: error.userErrorStatusCode,
+        temp_file_id: context.tempFileId,
+        tool_resource: context.toolResource,
+        display_to_user: true,
+      });
+    } else {
+      res.setHeader('Retry-After', '1');
+      res.status(error.userErrorStatusCode).json(body);
+    }
+    return true;
+  }
   const policyError = getContentFilterError(error);
   if (policyError == null) {
     return false;

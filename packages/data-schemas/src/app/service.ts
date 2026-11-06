@@ -222,6 +222,7 @@ export const AppService = async (params?: {
     webSearch,
     githubCompare: config.githubCompare,
     timeouts: config.timeouts,
+    spreadsheetParsing: config.spreadsheetParsing,
     violationLog: config.violationLog,
     messages: config.messages,
     concurrency: config.concurrency,
