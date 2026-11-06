@@ -127,6 +127,13 @@ module.exports = {
           '0%, 70%, 100%': { opacity: '0.35', transform: 'translateY(0)' },
           '35%': { opacity: '1', transform: 'translateY(-2px)' },
         },
+        /** A conversation starter fading in, staggered by position through `--starter-delay`.
+         *  Lives in the preset, like `loading-dot`, because the `starter` Button variant ships
+         *  from this package. */
+        'starter-in': {
+          from: { opacity: '0' },
+          to: { opacity: '1' },
+        },
         'accordion-down': {
           from: { height: '0' },
           to: { height: 'var(--radix-accordion-content-height)' },
@@ -155,6 +162,7 @@ module.exports = {
       },
       animation: {
         'loading-dot': 'loading-dot 1.2s ease-in-out var(--loading-dot-delay, 0ms) infinite',
+        'starter-in': 'starter-in 0.3s ease-in-out var(--starter-delay, 0ms) backwards',
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
         'caret-blink': 'caret-blink 1.25s ease-out infinite',
