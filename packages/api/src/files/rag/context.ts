@@ -1,15 +1,13 @@
+import type { TFile } from 'librechat-data-provider';
 import type { AxiosResponse } from 'axios';
 import type axios from 'axios';
+import type { EntityFile, TGetFileSearchAgents } from './entity';
 import type { logAxiosError } from '~/utils/axios';
 import type { isEnabled } from '~/utils/common';
 import { getOutboundTimeoutMs, outboundRequestBudget } from '~/utils/timeouts';
+import { createEntityResolver } from './entity';
 
-interface ContextFile {
-  embedded?: boolean;
-  file_id: string;
-  filename: string;
-  type?: string;
-}
+type ContextFile = EntityFile & Partial<Pick<TFile, 'embedded' | 'type'>>;
 
 interface SearchHit {
   page_content?: string;
@@ -27,6 +25,7 @@ interface RagContextOptions {
   generateShortLivedToken: (userId: string) => string;
   isEnabled: typeof isEnabled;
   logAxiosError: typeof logAxiosError;
+  getAgents?: TGetFileSearchAgents;
 }
 
 const footer = `Use the context as your learned knowledge to better answer the user.
@@ -47,6 +46,7 @@ export function createRagContextHandlers({
   generateShortLivedToken,
   isEnabled,
   logAxiosError,
+  getAgents,
 }: RagContextOptions):
   | {
       processFile: (file: ContextFile) => Promise<void>;
@@ -66,13 +66,19 @@ export function createRagContextHandlers({
     typeof userMessageContent === 'string' && userMessageContent.trim().length > 0;
 
   const timeout = getOutboundTimeoutMs(req.config, 'ragMs');
+  const candidatesFor = createEntityResolver({
+    getAgents,
+    onLookupError: (error) =>
+      logAxiosError({ message: 'Error resolving the RAG namespaces of agent files', error }),
+  });
 
-  const query = async (file: ContextFile): Promise<ContextResponse> => {
+  const request = (file: ContextFile, entity_id?: string): Promise<ContextResponse> => {
     if (useFullContext) {
       return httpClient.get<string>(`${ragApiUrl}/documents/${file.file_id}/context`, {
         headers: {
           Authorization: `Bearer ${jwtToken}`,
         },
+        ...(entity_id ? { params: { entity_id } } : {}),
         ...outboundRequestBudget(timeout, 'ragMs'),
       });
     }
@@ -83,6 +89,7 @@ export function createRagContextHandlers({
         file_id: file.file_id,
         query: userMessageContent,
         k: 4,
+        ...(entity_id ? { entity_id } : {}),
       },
       {
         headers: {
@@ -92,6 +99,33 @@ export function createRagContextHandlers({
         ...outboundRequestBudget(timeout, 'ragMs'),
       },
     );
+  };
+
+  const hasContent = ({ data }: ContextResponse): boolean =>
+    Array.isArray(data) ? data.length > 0 : Boolean(data);
+
+  /**
+   * RAG refuses a query unless the token's user or `entity_id` owns the top-ranked chunk, so
+   * each candidate namespace is tried with the real request before the plain one. A refusal
+   * is an empty answer; the first failed request is raised if no later request has content.
+   */
+  const query = async (file: ContextFile): Promise<ContextResponse> => {
+    let failure: { error: unknown } | undefined;
+    for (const entity_id of await candidatesFor(file)) {
+      try {
+        const response = await request(file, entity_id);
+        if (hasContent(response)) {
+          return response;
+        }
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+    const response = await request(file);
+    if (failure && !hasContent(response)) {
+      throw failure.error;
+    }
+    return response;
   };
 
   const processFile = async (file: ContextFile): Promise<void> => {
