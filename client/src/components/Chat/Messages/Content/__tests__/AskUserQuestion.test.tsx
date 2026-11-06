@@ -246,7 +246,17 @@ describe('AskUserQuestion', () => {
   });
 
   describe('arrival focus', () => {
+    /* jsdom has no layout, so without an observer `useArrivalFocus` arrives at once. The shared
+       inert observer never reports, so nothing would arrive and the negative cases would pass
+       without testing anything. */
+    const inertObserver = window.IntersectionObserver;
+
+    beforeEach(() => {
+      Reflect.deleteProperty(window, 'IntersectionObserver');
+    });
+
     afterEach(() => {
+      window.IntersectionObserver = inertObserver;
       document.getElementById('prompt-textarea')?.remove();
     });
 
