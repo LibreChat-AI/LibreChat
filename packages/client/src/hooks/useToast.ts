@@ -33,19 +33,31 @@ export default function useToast(showDelay = 100): {
     }
 
     const closeAfter = Number.isFinite(duration) && duration > 0 ? duration : Infinity;
+    const nextSeverity = (status as NotificationSeverity) ?? severity;
 
     // Timeout to show the toast
     showTimerRef.current = window.setTimeout(() => {
       /** A new `id` gives the toast its own Radix lifecycle, so its close deadline
        *  starts now even when it replaces a toast that is still open. */
-      setToast((prevToast: ToastState) => ({
-        open: true,
-        message,
-        severity: (status as NotificationSeverity) ?? severity,
-        showIcon,
-        duration: closeAfter,
-        id: prevToast.id + 1,
-      }));
+      setToast((prevToast: ToastState) => {
+        /** An open persistent error is replaced only by another error. */
+        if (
+          prevToast.open &&
+          prevToast.duration === Infinity &&
+          prevToast.severity === NotificationSeverity.ERROR &&
+          nextSeverity !== NotificationSeverity.ERROR
+        ) {
+          return prevToast;
+        }
+        return {
+          open: true,
+          message,
+          severity: nextSeverity,
+          showIcon,
+          duration: closeAfter,
+          id: prevToast.id + 1,
+        };
+      });
     }, showDelay);
   };
 
