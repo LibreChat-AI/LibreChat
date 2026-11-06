@@ -392,6 +392,7 @@ export async function getDeploymentSkillDownloadStream(
   if (!registry.hasFilePath(filepath)) {
     throw new Error('Deployment skill file is not registered');
   }
+  await fs.promises.access(filepath, fs.constants.R_OK);
   return fs.createReadStream(filepath);
 }
 

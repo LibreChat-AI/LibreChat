@@ -8,6 +8,7 @@ import type { DeploymentSkillBaseMethods } from '../deployment';
 import {
   DEPLOYMENT_SKILLS_DIR_ENV,
   createDeploymentSkillMethods,
+  getDeploymentSkillDownloadStream,
   getDeploymentSkillIds,
   initializeDeploymentSkills,
   loadDeploymentSkillsFromDirectory,
@@ -704,5 +705,32 @@ describe('createDeploymentSkillMethods', () => {
     expect(second?.skills.map((skill) => skill.name)).toEqual(['db-next', 'analysis-kit']);
     expect(second?.has_more).toBe(false);
     warnSpy.mockRestore();
+  });
+
+  describe('getDeploymentSkillDownloadStream', () => {
+    it('throws if file is deleted from disk after registration', async () => {
+      const root = await makeTempRoot();
+      const skillPath = await writeDeploymentSkill(root, { name: 'stream-test-skill' });
+      const filePath = path.join(skillPath, 'assets', 'icon.svg');
+      await fs.promises.writeFile(filePath, '<svg></svg>', 'utf-8');
+
+      await initializeDeploymentSkills({
+        projectRoot: root,
+        env: { [DEPLOYMENT_SKILLS_DIR_ENV]: 'skill' },
+      });
+
+      // Verify stream is returned when file exists
+      const stream = await getDeploymentSkillDownloadStream(filePath);
+      expect(stream).toBeDefined();
+      if ('destroy' in stream && typeof (stream as any).destroy === 'function') {
+        (stream as any).destroy();
+      }
+
+      // Delete file from disk while remaining registered
+      await fs.promises.unlink(filePath);
+
+      // Must reject before returning a broken stream
+      await expect(getDeploymentSkillDownloadStream(filePath)).rejects.toThrow();
+    });
   });
 });
