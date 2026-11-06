@@ -7140,3 +7140,39 @@ describe('initializeAgent — deferred system tools', () => {
     expect((result.toolDefinitions ?? []).map((d) => d.name)).not.toContain('tool_search');
   });
 });
+
+describe('initializeAgent — deferral without a loader registry', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('defers late registrations when the loader returned early with no capability or registry', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = [Tools.execute_code];
+    agent.tool_options = { '*': { defer_loading: true } };
+    (req as unknown as { config: unknown }).config = {
+      endpoints: { [EModelEndpoint.agents]: { capabilities: [AgentCapabilities.deferred_tools] } },
+    };
+    loadTools.mockResolvedValue({ toolDefinitions: [] });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+      },
+      db,
+    );
+
+    const bash = result.toolDefinitions?.find((d) => d.name === 'bash_tool');
+    expect(bash?.defer_loading).toBe(true);
+    expect(result.toolRegistry?.get('bash_tool')).toBe(bash);
+    expect(result.toolRegistry?.has('tool_search')).toBe(true);
+    expect(result.hasDeferredTools).toBe(true);
+  });
+});

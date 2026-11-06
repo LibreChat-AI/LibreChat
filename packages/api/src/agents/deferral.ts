@@ -17,7 +17,7 @@
  * @module packages/api/src/agents/deferral
  */
 
-import { Constants } from 'librechat-data-provider';
+import { Constants, AgentCapabilities } from 'librechat-data-provider';
 import {
   SkillToolDefinition,
   ToolSearchToolDefinition,
@@ -32,7 +32,6 @@ import {
   warnUnmatchedSelectionNames,
   synthesizeSelectionToolOptions,
 } from './selection';
-import { ASK_USER_QUESTION_TOOL_NAME } from './hitl/askUserQuestionTool';
 import { createToolSearchDefinition } from '~/tools/classification';
 
 const DEFERRAL_SELECTION_LABEL = '[deferral] Model spec deferLoading';
@@ -49,7 +48,8 @@ const NON_DEFERRABLE_TOOL_NAMES: ReadonlySet<string> = new Set([
   BashProgrammaticToolCallingDefinition.name,
   `${Constants.CHECK_BACKGROUND_TASK}`,
   SkillToolDefinition.name,
-  ASK_USER_QUESTION_TOOL_NAME,
+  /** The tool shares the capability's name; importing the tool module here would cycle. */
+  AgentCapabilities.ask_user_question,
 ]);
 
 /** Whether a tool may be deferred at all. */
@@ -93,6 +93,8 @@ function hasDeferralPolicy(toolOptions: AgentToolOptions | undefined): boolean {
 
 export interface DeferredToolLoadingResult {
   toolDefinitions: LCTool[];
+  /** The registry the definitions resolve against; created when the agent had none. */
+  toolRegistry: LCToolRegistry | undefined;
   /** True when any definition, MCP or system, is deferred after the pass. */
   hasDeferredTools: boolean;
 }
@@ -102,6 +104,13 @@ export interface DeferredToolLoadingResult {
  * definitions and registers `tool_search` when something is deferred and it is
  * not already present. Definitions are copied rather than mutated, since some
  * registrars hand out shared module-level objects.
+ *
+ * Every deferred tool leaves the pass as one object shared by its definition
+ * and registry entry, including MCP tools deferred upstream whose schema a
+ * background or intent pass later replaced with separate copies. An agent whose
+ * loader returned no registry (no configured tools, only late skill
+ * registrations) gets one built from its definitions, since `tool_search`
+ * searches the registry.
  */
 export function applyDeferredToolLoading(params: {
   toolDefinitions: LCTool[] | undefined;
@@ -112,12 +121,19 @@ export function applyDeferredToolLoading(params: {
   /** Deferral already decided upstream (MCP classification). */
   hasDeferredTools?: boolean;
 }): DeferredToolLoadingResult {
-  const { toolRegistry, toolOptions, capabilityToolNames, provider } = params;
+  const { toolOptions, capabilityToolNames, provider } = params;
   const defs = params.toolDefinitions ?? [];
   const upstreamDeferred = params.hasDeferredTools === true;
-  if (!toolRegistry || !hasDeferralPolicy(toolOptions)) {
-    return { toolDefinitions: defs, hasDeferredTools: upstreamDeferred };
+  const unchanged: DeferredToolLoadingResult = {
+    toolDefinitions: defs,
+    toolRegistry: params.toolRegistry,
+    hasDeferredTools: upstreamDeferred,
+  };
+  if (defs.length === 0 || !hasDeferralPolicy(toolOptions)) {
+    return unchanged;
   }
+  const toolRegistry: LCToolRegistry =
+    params.toolRegistry ?? new Map(defs.map((def) => [def.name, def]));
 
   const selectionNames = getSelectionNames(toolOptions, 'defer_loading');
   const effectiveSources = new Set<string>();
@@ -139,7 +155,14 @@ export function applyDeferredToolLoading(params: {
       if (resolved?.value === true) {
         effectiveSources.add(resolved.source);
       }
-      return def;
+      const entry = toolRegistry.get(def.name);
+      if (entry === def) {
+        return def;
+      }
+      const rejoined: LCTool = { ...entry, ...def, defer_loading: true };
+      toolRegistry.set(def.name, rejoined);
+      changed = true;
+      return rejoined;
     }
     if (resolved?.value !== true) {
       return def;
@@ -155,7 +178,7 @@ export function applyDeferredToolLoading(params: {
   warnUnmatchedSelectionNames(selectionNames, effectiveSources, DEFERRAL_SELECTION_LABEL);
 
   if (deferredCount === 0) {
-    return { toolDefinitions: defs, hasDeferredTools: upstreamDeferred };
+    return unchanged;
   }
   if (!hasToolSearch) {
     nextDefs.push(createToolSearchDefinition(provider));
@@ -165,5 +188,5 @@ export function applyDeferredToolLoading(params: {
     });
     changed = true;
   }
-  return { toolDefinitions: changed ? nextDefs : defs, hasDeferredTools: true };
+  return { toolDefinitions: changed ? nextDefs : defs, toolRegistry, hasDeferredTools: true };
 }

@@ -6,8 +6,8 @@ import {
   applyDeferredToolLoading,
   synthesizeDeferralToolOptions,
 } from './deferral';
+import { cloneSubagentToolSurface, overrideDeferLoadingForDiscoveredTools } from './run';
 import { createToolSearchDefinition } from '~/tools/classification';
-import { overrideDeferLoadingForDiscoveredTools } from './run';
 import { CHECK_BACKGROUND_TASK_NAME } from './background';
 import { TOOL_SELECTION_WILDCARD } from './selection';
 
@@ -223,15 +223,54 @@ describe('applyDeferredToolLoading', () => {
     warn.mockRestore();
   });
 
-  it('leaves the definitions alone without a registry to restore them from', () => {
-    const defs = [def('web_search')];
+  it('builds a registry for an agent whose loader returned none', () => {
     const result = applyDeferredToolLoading({
-      toolDefinitions: defs,
+      toolDefinitions: [def('read_file'), def(SkillToolDefinition.name)],
       toolRegistry: undefined,
       toolOptions: { [TOOL_SELECTION_WILDCARD]: { defer_loading: true } },
     });
-    expect(result.toolDefinitions).toBe(defs);
-    expect(result.hasDeferredTools).toBe(false);
+    const readFile = result.toolDefinitions.find((d) => d.name === 'read_file');
+
+    expect(readFile?.defer_loading).toBe(true);
+    expect(result.toolRegistry?.get('read_file')).toBe(readFile);
+    expect(result.toolRegistry?.has(SkillToolDefinition.name)).toBe(true);
+    expect(result.toolRegistry?.has(ToolSearchToolDefinition.name)).toBe(true);
+    expect(result.hasDeferredTools).toBe(true);
+  });
+
+  it('rejoins an already-deferred MCP tool a later pass split from its registry entry', () => {
+    const mcpDefinition: LCTool = {
+      ...def('lookup_mcp_docs'),
+      description: 'relabeled by the intent pass',
+      defer_loading: true,
+    };
+    const registry: LCToolRegistry = new Map([
+      [
+        mcpDefinition.name,
+        {
+          ...def('lookup_mcp_docs'),
+          serverName: 'docs',
+          allowed_callers: ['direct'],
+          defer_loading: true,
+        } as LCTool,
+      ],
+    ]);
+    const result = applyDeferredToolLoading({
+      toolDefinitions: [mcpDefinition],
+      toolRegistry: registry,
+      toolOptions: { lookup_mcp_docs: { defer_loading: true } },
+      hasDeferredTools: true,
+    });
+    const rejoined = result.toolDefinitions.find((d) => d.name === 'lookup_mcp_docs');
+
+    expect(rejoined).toBe(registry.get('lookup_mcp_docs'));
+    expect(rejoined).toMatchObject({
+      description: 'relabeled by the intent pass',
+      serverName: 'docs',
+      defer_loading: true,
+    });
+    overrideDeferLoadingForDiscoveredTools(registry, new Set(['lookup_mcp_docs']));
+    expect(rejoined?.defer_loading).toBe(false);
   });
 });
 
@@ -241,5 +280,27 @@ describe('isDeferrableToolName', () => {
     expect(isDeferrableToolName(SkillToolDefinition.name)).toBe(false);
     expect(isDeferrableToolName(CHECK_BACKGROUND_TASK_NAME)).toBe(false);
     expect(isDeferrableToolName('web_search')).toBe(true);
+  });
+});
+
+describe('cloneSubagentToolSurface', () => {
+  it('keeps a deferred tool one object on the child and isolates it from the parent', () => {
+    const deferred: LCTool = { ...def('web_search'), defer_loading: true };
+    const plain = def('file_search');
+    const parentRegistry: LCToolRegistry = new Map([
+      [deferred.name, deferred],
+      [plain.name, { name: plain.name, allowed_callers: ['direct'] } as LCTool],
+    ]);
+    const child = cloneSubagentToolSurface(parentRegistry, [deferred, plain]);
+    const childDeferred = child.toolDefinitions[0];
+
+    expect(childDeferred).toBe(child.toolRegistry.get('web_search'));
+    expect(childDeferred).not.toBe(deferred);
+    expect(child.toolDefinitions[1]).not.toBe(plain);
+    expect(child.toolDefinitions[1]).not.toBe(child.toolRegistry.get('file_search'));
+
+    overrideDeferLoadingForDiscoveredTools(child.toolRegistry, new Set(['web_search']));
+    expect(childDeferred.defer_loading).toBe(false);
+    expect(deferred.defer_loading).toBe(true);
   });
 });

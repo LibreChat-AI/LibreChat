@@ -2248,7 +2248,7 @@ export async function initializeAgent(
   }
 
   const {
-    toolRegistry,
+    toolRegistry: loadedToolRegistry,
     toolContextMap,
     dynamicToolContextMap,
     userMCPAuthMap,
@@ -2318,6 +2318,7 @@ export async function initializeAgent(
   }
 
   let toolDefinitions = loadedToolDefinitions;
+  let toolRegistry = loadedToolRegistry;
   let hasDeferredTools = loadedHasDeferredTools;
 
   /**
@@ -2736,10 +2737,17 @@ export async function initializeAgent(
 
   /**
    * Deferral runs on the final definition set so system tools registered above
-   * (code, memory, file authoring) can be deferred like MCP tools, and a
-   * definition the intent pass replaced is deferred in its final form.
+   * (code, memory, file authoring, the skill catalog) can be deferred like MCP
+   * tools, and a definition the intent pass replaced is deferred in its final
+   * form. A loader that returned early for an agent with no configured tools
+   * reports no capability, so the endpoint's capability list decides then.
    */
-  if (deferredToolsEnabled === true) {
+  const deferralEnabled =
+    deferredToolsEnabled ??
+    (appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? []).includes(
+      AgentCapabilities.deferred_tools,
+    );
+  if (deferralEnabled) {
     const deferral = applyDeferredToolLoading({
       toolDefinitions,
       toolRegistry,
@@ -2749,6 +2757,7 @@ export async function initializeAgent(
       hasDeferredTools,
     });
     toolDefinitions = deferral.toolDefinitions;
+    toolRegistry = deferral.toolRegistry;
     hasDeferredTools = deferral.hasDeferredTools;
   }
 
