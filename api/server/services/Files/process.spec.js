@@ -128,8 +128,10 @@ jest.mock('@librechat/api', () => {
     /** Grants both; these specs vary the capability set, not the role. */
     resolveToolRoleGrants: jest.fn(async () => ({ runCode: true, fileSearch: true })),
     parseText: jest.fn().mockResolvedValue({ text: '', bytes: 0 }),
+    parseTextNative: jest.fn().mockResolvedValue({ text: '', bytes: 0 }),
     /** Stores no fallback text unless a test opts in; its own rules are covered in packages/api. */
     resolveUploadFallbackText: jest.fn(async () => undefined),
+    measurePdf: jest.fn(async () => undefined),
     MAX_STORED_EXTRACTED_TEXT_BYTES: 15 * 1024 * 1024,
     processAudioFile: jest.fn(),
     extractInspectableFileText: jest.fn(async ({ extract }) => extract()),
@@ -3752,6 +3754,117 @@ describe('fallback text for uploads left to tools', () => {
     };
   };
 
+  const useAutomaticPolicy = () =>
+    mergeFileConfig.mockReturnValue({
+      ...makeFileConfig(),
+      endpoints: {
+        'Custom Provider': {
+          defaultLLMDeliveryPath: { fallback: 'none' },
+          textFallbackWithoutTools: true,
+          llmDeliveryPolicy: 'automatic',
+        },
+      },
+    });
+
+  const uploadPdf = () => {
+    const req = makeReq({ mimetype: PDF_MIME, ocrConfig: null });
+    req.body.endpoint = EModelEndpoint.agents;
+    return {
+      req,
+      upload: processAgentFileUpload({
+        req,
+        res: mockRes,
+        metadata: {
+          agent_id: 'agent-abc',
+          message_file: 'true',
+          file_id: 'file-uuid-pdf',
+          effectiveEndpoint: 'Custom Provider',
+        },
+      }),
+    };
+  };
+
+  test('records the pages and text size of a PDF without fallback text', async () => {
+    const { createFile } = require('~/models');
+    const { measurePdf } = require('@librechat/api');
+    useAutomaticPolicy();
+    setupStoredFileUpload();
+    measurePdf.mockResolvedValueOnce({ pageCount: 40, textChars: 271_780 });
+
+    const { req, upload } = uploadPdf();
+    await upload;
+
+    expect(measurePdf).toHaveBeenCalledWith(req.file);
+    expect(createFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ pageCount: 40, textChars: 271_780 }),
+      }),
+      true,
+    );
+  });
+
+  test('takes pages and characters from fallback text instead of parsing again', async () => {
+    const { createFile } = require('~/models');
+    const { measurePdf, resolveUploadFallbackText } = require('@librechat/api');
+    useAutomaticPolicy();
+    setupStoredFileUpload();
+    resolveUploadFallbackText.mockResolvedValueOnce('page one\n');
+
+    const { upload } = uploadPdf();
+    await upload;
+
+    expect(measurePdf).not.toHaveBeenCalled();
+    expect(createFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ pageCount: 1, textChars: 9 }),
+      }),
+      true,
+    );
+  });
+
+  test('does not measure a PDF on a classic endpoint', async () => {
+    const { createFile } = require('~/models');
+    const { measurePdf } = require('@librechat/api');
+    setupStoredFileUpload();
+
+    const { upload } = uploadPdf();
+    await upload;
+
+    expect(measurePdf).not.toHaveBeenCalled();
+    expect(createFile.mock.calls[0][0].metadata).not.toHaveProperty('pageCount');
+  });
+
+  test.each([
+    [
+      'a non-PDF',
+      { mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      'true',
+      undefined,
+    ],
+    ['a PDF whose destination was chosen', {}, 'true', 'execute_code'],
+  ])('does not measure %s', async (_name, fileOpts, messageFile, toolResource) => {
+    const { createFile } = require('~/models');
+    const { measurePdf } = require('@librechat/api');
+    useAutomaticPolicy();
+    setupStoredFileUpload();
+    const req = makeReq({ mimetype: PDF_MIME, ocrConfig: null, ...fileOpts });
+    req.body.endpoint = EModelEndpoint.agents;
+    await processAgentFileUpload({
+      req,
+      res: mockRes,
+      metadata: {
+        agent_id: 'agent-abc',
+        message_file: messageFile,
+        tool_resource: toolResource,
+        file_id: 'file-uuid-pdf',
+        effectiveEndpoint: 'Custom Provider',
+      },
+    });
+
+    expect(measurePdf).not.toHaveBeenCalled();
+    expect(createFile.mock.calls[0][0].metadata ?? {}).not.toHaveProperty('pageCount');
+  });
+
   test('stores the text a turn without a reading tool can fall back to', async () => {
     const { createFile } = require('~/models');
     const { resolveUploadFallbackText } = require('@librechat/api');
@@ -3815,6 +3928,262 @@ describe('fallback text for uploads left to tools', () => {
       expect.objectContaining({ llmDeliveryPath: 'none', text: 'region,total' }),
       true,
     );
+  });
+});
+
+describe('automatic reading: spreadsheets for Run Code skip upload extraction', () => {
+  const XLSX_TEXT_REGEX = [
+    /^application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet$/,
+  ];
+  let originalRagUrl;
+
+  const useAutomatic = (endpointExtras = {}, fileConfigExtras = {}) =>
+    mergeFileConfig.mockReturnValue({
+      ...makeFileConfig({ textSupportedMimeTypes: XLSX_TEXT_REGEX }),
+      ...fileConfigExtras,
+      endpoints: {
+        'Custom Provider': { llmDeliveryPolicy: 'automatic', ...endpointExtras },
+      },
+    });
+
+  const upload = ({ mimetype = XLSX_MIME, metadata, filters } = {}) => {
+    const req = makeReq({ mimetype, ocrConfig: null, filters });
+    req.body.endpoint = EModelEndpoint.agents;
+    return processAgentFileUpload({
+      req,
+      res: mockRes,
+      metadata: {
+        agent_id: 'agent-abc',
+        message_file: 'true',
+        file_id: 'file-uuid-xlsx',
+        effectiveEndpoint: 'Custom Provider',
+        ...metadata,
+      },
+    });
+  };
+
+  const stored = () => db.createFile.mock.calls[0][0];
+  const expectNoMarker = () => expect(stored().metadata?.textDerivation).toBeUndefined();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    originalRagUrl = process.env.RAG_API_URL;
+    process.env.RAG_API_URL = 'http://rag-api.test';
+    mockRes.status.mockReturnThis();
+    mockRes.json.mockReturnValue({});
+    checkCapability.mockResolvedValue(true);
+    require('@librechat/api').resolveUploadFallbackText.mockImplementation(async () => undefined);
+    require('@librechat/api').resolveToolRoleGrants.mockResolvedValue({
+      runCode: true,
+      fileSearch: true,
+    });
+    useAutomatic();
+    setupStoredFileUpload();
+  });
+
+  afterEach(() => {
+    if (originalRagUrl === undefined) {
+      delete process.env.RAG_API_URL;
+    } else {
+      process.env.RAG_API_URL = originalRagUrl;
+    }
+  });
+
+  const expectSkipped = () => {
+    const { parseText, resolveUploadFallbackText } = require('@librechat/api');
+    expect(resolveUploadFallbackText).not.toHaveBeenCalled();
+    expect(parseText).not.toHaveBeenCalled();
+    expect(db.createFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        llmDeliveryPath: 'none',
+        metadata: expect.objectContaining({ destinationChosen: false, textDerivation: 'deferred' }),
+      }),
+      true,
+    );
+    expect(stored().text).toBeUndefined();
+    expect(db.addAgentResourceFile).not.toHaveBeenCalled();
+  };
+
+  const expectToday = (storedPath = 'text') => {
+    const { parseText } = require('@librechat/api');
+    expectNoMarker();
+    expect(parseText).toHaveBeenCalled();
+    expect(db.createFile).toHaveBeenCalledWith(
+      expect.objectContaining({ llmDeliveryPath: storedPath }),
+      true,
+    );
+  };
+
+  test('stores the live case for Run Code with no extraction at all', async () => {
+    await upload();
+    expectSkipped();
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+  });
+
+  test('stores a 17.9 MB / 160k-row workbook without any reader or cap', async () => {
+    const { parseText, resolveUploadFallbackText } = require('@librechat/api');
+    parseText.mockRejectedValue(new Error('exceeds 15MB'));
+    resolveUploadFallbackText.mockRejectedValue(new Error('must not run'));
+    setupStoredFileUpload({ bytes: 18_769_510 });
+    const req = makeReq({ mimetype: XLSX_MIME, ocrConfig: null });
+    req.file.size = 18_769_510;
+    req.file.originalname = 'pivot-160k.xlsx';
+    req.body.endpoint = EModelEndpoint.agents;
+    await processAgentFileUpload({
+      req,
+      res: mockRes,
+      metadata: {
+        agent_id: 'agent-abc',
+        message_file: 'true',
+        file_id: 'file-uuid-xlsx',
+        effectiveEndpoint: 'Custom Provider',
+      },
+    });
+    expect(parseText).not.toHaveBeenCalled();
+    expect(resolveUploadFallbackText).not.toHaveBeenCalled();
+    expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.document_parser);
+    expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.execute_code);
+    expect(db.createFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        llmDeliveryPath: 'none',
+        bytes: 18_769_510,
+        metadata: expect.objectContaining({ destinationChosen: false, textDerivation: 'deferred' }),
+      }),
+      true,
+    );
+    expect(stored().text).toBeUndefined();
+  });
+
+  test('skips the fallback reader even with textFallbackWithoutTools', async () => {
+    useAutomatic({ textFallbackWithoutTools: true });
+    await upload();
+    expect(require('@librechat/api').resolveUploadFallbackText).not.toHaveBeenCalled();
+    expect(stored().text).toBeUndefined();
+  });
+
+  test('reads for a saved agent that has execute_code, with no sandbox upload', async () => {
+    await upload({ metadata: { agentTools: [EToolResources.execute_code] } });
+    expectSkipped();
+    expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.execute_code);
+  });
+
+  test.each([
+    [
+      'the run code grant is off',
+      () => {
+        require('@librechat/api').resolveToolRoleGrants.mockResolvedValue({
+          runCode: false,
+          fileSearch: true,
+        });
+      },
+      undefined,
+    ],
+    ['the capability is off', () => checkCapability.mockResolvedValue(false), undefined],
+    ['a saved agent has only file_search', () => {}, [EToolResources.file_search]],
+  ])('keeps RAG when %s', async (_name, arrange, agentTools) => {
+    require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
+    arrange();
+    await upload({ metadata: { agentTools } });
+    expectToday();
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
+  });
+
+  test('leaves a chosen context destination alone', async () => {
+    require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
+    await upload({ metadata: { tool_resource: EToolResources.context } });
+    expectToday();
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
+  });
+
+  test('leaves the legacy chooser alone', async () => {
+    useAutomatic({ legacyFileUploadUX: true });
+    require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
+    await upload();
+    expect(stored().metadata?.textDerivation).toBeUndefined();
+  });
+
+  test('leaves an admin delivery override for the type alone', async () => {
+    useAutomatic({ defaultLLMDeliveryPath: { overrides: { [XLSX_MIME]: 'text' } } });
+    require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
+    await upload();
+    expectToday();
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
+  });
+
+  test('keeps extraction under an active file policy', async () => {
+    require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
+    await upload({
+      filters: { files: { pii: { starterPatterns: ['email'], uninspectable: 'block' } } },
+    });
+    expectToday();
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
+  });
+
+  test('leaves an agent resource upload alone', async () => {
+    require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
+    await upload({
+      metadata: { message_file: undefined, agentTools: [EToolResources.execute_code] },
+    });
+    expect(stored().metadata?.textDerivation).toBeUndefined();
+    expect(require('@librechat/api').parseText).toHaveBeenCalled();
+  });
+
+  test('leaves a classic endpoint alone', async () => {
+    mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: XLSX_TEXT_REGEX }));
+    require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
+    await upload();
+    expectToday();
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
+  });
+
+  test('keeps RAG for a saved agent whose execute_code is stripped by the capability', async () => {
+    require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
+    checkCapability.mockImplementation(async (_req, cap) => cap !== AgentCapabilities.execute_code);
+    await upload({ metadata: { agentTools: [EToolResources.execute_code] } });
+    expectToday();
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
+  });
+
+  test('keeps RAG for a document type that is not a spreadsheet', async () => {
+    mergeFileConfig.mockReturnValue({
+      ...makeFileConfig({ textSupportedMimeTypes: [/^application\/vnd\.openxmlformats.*$/] }),
+      endpoints: { 'Custom Provider': { llmDeliveryPolicy: 'automatic' } },
+    });
+    require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
+    await upload({ mimetype: DOCX_MIME });
+    expect(stored().metadata?.textDerivation).toBeUndefined();
+  });
+
+  test('keeps today when the stored route is not text', async () => {
+    useAutomatic({ defaultLLMDeliveryPath: { fallback: 'provider' } });
+    await upload();
+    expect(stored().metadata?.textDerivation).toBeUndefined();
+    expect(db.createFile).toHaveBeenCalledWith(
+      expect.objectContaining({ llmDeliveryPath: 'provider' }),
+      true,
+    );
+  });
+
+  test('falls back to native text, not the document parser, for a CSV after a RAG failure', async () => {
+    const { parseText, parseTextNative, getUploadExtractedTextPlan } = require('@librechat/api');
+    getUploadExtractedTextPlan.mockReturnValueOnce('configured_rag');
+    mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: [/^text\/csv$/] }));
+    parseText.mockRejectedValueOnce(new Error('rag down'));
+    parseTextNative.mockResolvedValueOnce({ text: 'a,b', bytes: 3 });
+    const req = makeReq({ mimetype: 'text/csv', ocrConfig: null });
+    await processAgentFileUpload({
+      req,
+      res: mockRes,
+      metadata: { agent_id: 'agent-abc', tool_resource: EToolResources.context, file_id: 'f-csv' },
+    });
+    expect(parseTextNative).toHaveBeenCalledWith(req.file);
+    expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.document_parser);
   });
 });
 
