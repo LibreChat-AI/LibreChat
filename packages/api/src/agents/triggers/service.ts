@@ -27,6 +27,7 @@ import type {
   AgentTriggerExecutionResult,
 } from './host';
 import type { AgentTriggerEnqueueOptions, PreparedAgentTriggerDelivery } from './delivery';
+import type { AgentTriggerEnvelope } from './envelope';
 import type { BoundAddress } from '../../app/origin';
 import { AgentTriggerDeliveryDeferredError, createAgentTriggerDeliveryEngine } from './engine';
 import { BACKGROUND_TOOL_COMPLETION_SOURCE } from '../backgroundCompletionWakeup';
@@ -69,6 +70,16 @@ export type AgentTriggerCompletionExpedite =
   | { deliveryKeys: string[] };
 
 export interface AgentTriggerServiceDeps {
+  /** Protocol-owned execution handlers reuse this queue without going through chat ingress. */
+  sourceDispatchers?: ReadonlyMap<
+    string,
+    {
+      workerCapability: string;
+      dispatch: AgentTriggerExecutionHost['dispatch'];
+    }
+  >;
+  /** Source-owned live authority recheck immediately before queued dispatch. */
+  authorizeSource?: (envelope: AgentTriggerEnvelope) => Promise<void>;
   fetch?: AgentTriggerExecutionHostDeps['fetch'];
   getTimezone?: AgentTriggerExecutionHostDeps['getTimezone'];
   prepareContinue?: AgentTriggerExecutionHostDeps['prepareContinue'];
@@ -269,12 +280,14 @@ function createDeliveryStore(
   methods: AgentTriggerDeliveryPersistence,
   supportsDetachedActionCompletion: () => boolean,
   wakeMaintenance: () => void,
+  sourceCapabilities: string[] = [],
 ): AgentTriggerDeliveryStore {
   return {
     claimNext: (input) =>
       methods.claimNextAgentTriggerDelivery({
         ...input,
         workerCapabilities: [
+          ...sourceCapabilities,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
@@ -427,6 +440,9 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   ): Promise<AgentTriggerExecutionResult> => {
     const parsed = parseAgentTriggerEnvelope(envelope);
     await requireActivePrincipal(parsed.principal.userId);
+    await deps.authorizeSource?.(parsed);
+    const source = deps.sourceDispatchers?.get(parsed.event.source.type);
+    if (source) return source.dispatch(parsed, options);
     return host.dispatch(parsed, options);
   };
 
@@ -670,8 +686,13 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         }
         deliveryEngine = createAgentTriggerDeliveryEngine(
           {
-            store: createDeliveryStore(methods, supportsDetachedActionCompletion, () =>
-              purgeRecoveryLoop?.wake(),
+            store: createDeliveryStore(
+              methods,
+              supportsDetachedActionCompletion,
+              () => purgeRecoveryLoop?.wake(),
+              [...(deps.sourceDispatchers?.values() ?? [])].map(
+                (source) => source.workerCapability,
+              ),
             ),
             dispatch: dispatchForActivePrincipal,
             ...(deps.settleSourceBeforeDeadLetter != null && {
