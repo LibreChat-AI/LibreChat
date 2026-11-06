@@ -124,7 +124,7 @@ async function typeDuringRun(page: Page, text: string) {
 }
 
 test.describe('server-queued follow-up reveal', () => {
-  test('shows the queued follow-up as the next user turn the moment the run completes', async ({
+  test('shows the queued follow-up as the next user turn the moment the run completes @scenario:queued-follow-up-shows-as-the-next-turn', async ({
     page,
   }) => {
     test.setTimeout(120000);
