@@ -17,6 +17,7 @@ import { componentMapping } from '~/components/SidePanel/Parameters/components';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import Sections from '~/components/SidePanel/Parameters/Sections';
+import { isModelUnavailable } from '~/utils/availability';
 import { useLocalize, useHasAccess } from '~/hooks';
 import { useLiveAnnouncer } from '~/Providers';
 import { Panel } from '~/common';
@@ -159,6 +160,11 @@ export default function ModelPanel({
           className="size-theme-button min-h-theme-target min-w-theme-target"
         />
       </header>
+      {modelsReady && providers.length === 0 && (
+        <p role="status" className="text-text-secondary">
+          {localize('com_ui_no_models_available')}
+        </p>
+      )}
       <div>
         {/* Endpoint aka Provider for Agents */}
         <div className="mb-3" aria-busy={modelsPending}>
@@ -251,6 +257,15 @@ export default function ModelPanel({
                   <ControlCombobox
                     selectId="model"
                     selectedValue={field.value || ''}
+                    displayValue={
+                      isModelUnavailable(
+                        provider,
+                        field.value,
+                        modelsReady && !modelsError ? modelsData : undefined,
+                      )
+                        ? localize('com_ui_model_unavailable', { 0: field.value })
+                        : field.value || ''
+                    }
                     selectPlaceholder={localize(getModelPlaceholderKey(modelsPending, provider))}
                     searchPlaceholder={localize('com_ui_select_model')}
                     setValue={(value) => {

@@ -1,0 +1,12 @@
+version: 1.3.6
+cache: true
+endpoints:
+  custom:
+    - name: Recovery
+      apiKey: e2e-recovery-key
+      baseURL: ${E2E_RECOVERY_PROVIDER_URL}
+      models:
+        default: []
+        fetch: true
+        userIdQuery: true
+      titleConvo: false

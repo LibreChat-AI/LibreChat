@@ -1,6 +1,7 @@
 import React, { Profiler, useMemo, useState } from 'react';
 import { filesFamily, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
+import axios from 'axios';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
 import { getDefaultStore, useAtom } from 'jotai';
@@ -11,9 +12,9 @@ import { BrowserRouter as Router } from 'react-router-dom';
 import { FileContainer } from '@librechat/chat/components';
 import { pendingQuotesByConvoId } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { QueryKeys, FileSources, EModelEndpoint } from 'librechat-data-provider';
-import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
-import type { TFile, TFileUpload, TConversation } from 'librechat-data-provider';
+import { act, render, screen, within, waitFor, fireEvent } from '@testing-library/react';
+import { QueryKeys, FileSources, EModelEndpoint, dataService } from 'librechat-data-provider';
+import type { TFile, TFileUpload, TConversation, TModelsConfig } from 'librechat-data-provider';
 import type { ChatFormValues, TAskFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import { getDraft, getPendingDraftId, setDraft } from '~/utils';
@@ -25,6 +26,8 @@ import store from '~/store';
 
 const mockUpload = jest.fn();
 const mockAsk = jest.fn();
+const mockSetConversation = jest.fn();
+const mockSetMessages = jest.fn();
 
 // Production keeps `t` stable between language changes; the global test double does not.
 jest.mock('@librechat/chat/components', () => {
@@ -109,7 +112,7 @@ function Harness() {
       ({
         index: 0,
         conversation,
-        setConversation: () => undefined,
+        setConversation: mockSetConversation,
         files,
         setFiles,
         isSubmitting,
@@ -120,7 +123,7 @@ function Harness() {
         handleStopGenerating: () => undefined,
         stopGenerating: () => undefined,
         getMessages: () => undefined,
-        setMessages: () => undefined,
+        setMessages: mockSetMessages,
         ask: (...args: Parameters<TAskFunction>) => {
           const result = mockAsk(...args);
           if (result !== false) {
@@ -163,10 +166,18 @@ function renderComposer({
   submitting = false,
   quotes = [],
   speechSettingsInitialized = false,
-}: { submitting?: boolean; quotes?: string[]; speechSettingsInitialized?: boolean } = {}) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
+  queryClient: suppliedClient,
+}: {
+  submitting?: boolean;
+  quotes?: string[];
+  speechSettingsInitialized?: boolean;
+  queryClient?: QueryClient;
+} = {}) {
+  const queryClient =
+    suppliedClient ??
+    new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
   /* These interaction tests exercise the destination menu. Unified-mode control
    * behavior has its own focused coverage, so opt this harness into the legacy menu
    * instead of depending on the product default. */
@@ -174,6 +185,9 @@ function renderComposer({
     endpoints: { default: { legacyFileUploadUX: true } },
   });
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
+  if (!suppliedClient) {
+    queryClient.setQueryData([QueryKeys.models], { openAI: ['gpt-4o'] });
+  }
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
 
   getDefaultStore().set(pendingQuotesByConvoId(conversation.conversationId ?? ''), quotes);
@@ -224,6 +238,108 @@ describe('ChatForm attachments', () => {
     /** The server echoes the id the client sent back as `temp_file_id`. */
     mockUpload.mockImplementation((body: FormData) =>
       Promise.resolve({ ...uploadResponse, temp_file_id: body.get('file_id') as string }),
+    );
+  });
+
+  describe('model discovery refresh', () => {
+    let queryClient: QueryClient;
+    let modelResponse: jest.Mock<Promise<TModelsConfig>, []>;
+
+    beforeEach(() => {
+      queryClient = new QueryClient({
+        defaultOptions: { queries: { enabled: false, retry: false, cacheTime: 0 } },
+        logger: { log: console.log, warn: console.warn, error: jest.fn() },
+      });
+      modelResponse = jest.fn();
+      const get = axios.get;
+      jest.spyOn(axios, 'get').mockImplementation(async (url, config) => {
+        if (url === '/api/models') {
+          return { data: await modelResponse() };
+        }
+        return get(url, config);
+      });
+    });
+
+    afterEach(() => {
+      queryClient.clear();
+    });
+
+    const discover = () =>
+      queryClient.fetchQuery({ queryKey: [QueryKeys.models], queryFn: dataService.getModels });
+
+    test('refreshes an empty catalog and enables sending without replacing staged input', async () => {
+      modelResponse.mockResolvedValueOnce({ openAI: [] });
+      await discover();
+      const { container } = renderComposer({ queryClient, quotes: ['saved quote'] });
+      const textarea = await screen.findByTestId('text-input');
+      await userEvent.type(textarea, 'keep this draft');
+      await attach(container, image());
+      await waitFor(() => expect(mockUpload).toHaveBeenCalled());
+      await waitFor(() =>
+        expect([...getDefaultStore().get(filesFamily(0)).values()][0]?.progress).toBe(1),
+      );
+      const stagedFiles = getDefaultStore().get(filesFamily(0));
+      expect(sendButton()).toBeDisabled();
+
+      let finish: (models: TModelsConfig) => void = () => undefined;
+      modelResponse.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const refresh = screen.getByRole('button', { name: /Refresh models/ });
+      await userEvent.click(refresh);
+      await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'true'));
+      expect(refresh).toBeDisabled();
+      expect(sendButton()).toBeDisabled();
+      expect(textarea).toHaveValue('keep this draft');
+      expect(mockAsk).not.toHaveBeenCalled();
+      await userEvent.click(refresh);
+      expect(modelResponse).toHaveBeenCalledTimes(2);
+
+      await act(async () => finish({ openAI: ['gpt-4o'] }));
+      await waitFor(() => expect(sendButton()).toBeEnabled());
+      expect(screen.queryByRole('button', { name: /Refresh models/ })).not.toBeInTheDocument();
+      expect(textarea).toHaveValue('keep this draft');
+      expect(getDefaultStore().get(filesFamily(0))).toEqual(stagedFiles);
+      expect(getDefaultStore().get(pendingQuotesByConvoId('new'))).toEqual(['saved quote']);
+      expect(mockSetConversation).not.toHaveBeenCalled();
+      expect(mockSetMessages).not.toHaveBeenCalled();
+      await userEvent.click(sendButton());
+      expect(mockAsk).toHaveBeenCalledTimes(1);
+    }, 20000);
+
+    test.each([{ models: [] }, { models: ['another-model'] }])(
+      'keeps the previous catalog $models and staged input when the refresh request fails',
+      async ({ models }) => {
+        modelResponse.mockResolvedValueOnce({ openAI: models });
+        await discover();
+        const { container } = renderComposer({ queryClient, quotes: ['saved quote'] });
+        const textarea = await screen.findByTestId('text-input');
+        await userEvent.type(textarea, 'keep this draft');
+        await attach(container, image());
+        await waitFor(() =>
+          expect([...getDefaultStore().get(filesFamily(0)).values()][0]?.progress).toBe(1),
+        );
+        const stagedFiles = getDefaultStore().get(filesFamily(0));
+        modelResponse.mockRejectedValueOnce(new Error('offline'));
+        await userEvent.click(screen.getByRole('button', { name: /Refresh models/ }));
+        await waitFor(() =>
+          expect(queryClient.getQueryState([QueryKeys.models])?.status).toBe('error'),
+        );
+        expect(queryClient.getQueryData([QueryKeys.models])).toEqual({ openAI: models });
+        expect(modelResponse).toHaveBeenCalledTimes(2);
+        expect(screen.getByRole('button', { name: /Refresh models/ })).toBeEnabled();
+        expect(sendButton()).toBeDisabled();
+        expect(textarea).toHaveValue('keep this draft');
+        expect(getDefaultStore().get(filesFamily(0))).toEqual(stagedFiles);
+        expect(getDefaultStore().get(pendingQuotesByConvoId('new'))).toEqual(['saved quote']);
+        expect(mockSetConversation).not.toHaveBeenCalled();
+        expect(mockSetMessages).not.toHaveBeenCalled();
+        expect(mockAsk).not.toHaveBeenCalled();
+      },
+      20000,
     );
   });
 

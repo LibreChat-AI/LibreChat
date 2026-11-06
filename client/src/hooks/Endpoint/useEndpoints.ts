@@ -1,7 +1,6 @@
 import React, { useMemo, useCallback } from 'react';
 import { Feather } from 'lucide-react';
 import { Sparkles, ProviderIcon } from '@librechat/client';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
   Permissions,
   alternateName,
@@ -19,7 +18,9 @@ import type {
 } from 'librechat-data-provider';
 import type { ProviderIconResolution } from './useProviderIcon';
 import type { Endpoint } from '~/common';
+import useModelCatalog from '~/hooks/Endpoint/useModelCatalog';
 import { useHasAccess, useShowMarketplace } from '~/hooks';
+import { isProviderAvailable } from '~/utils/availability';
 import { resolveProviderIcon } from './useProviderIcon';
 import { useGetEndpointsQuery } from '~/data-provider';
 import { mapEndpoints } from '~/utils';
@@ -71,7 +72,7 @@ export const useEndpoints = ({
   endpointsConfig: TEndpointsConfig;
   startupConfig: TStartupConfig | undefined;
 }) => {
-  const modelsQuery = useGetModelsQuery();
+  const modelsQuery = useModelCatalog();
   const { data: endpoints = [] } = useGetEndpointsQuery({ select: mapEndpoints });
   const interfaceConfig = startupConfig?.interface ?? defaultInterface;
   const includedEndpoints = useMemo(
@@ -107,11 +108,14 @@ export const useEndpoints = ({
       if (includedEndpoints.size > 0 && !includedEndpoints.has(endpoints[i])) {
         continue;
       }
+      if (!isProviderAvailable(endpoints[i], modelsQuery.data)) {
+        continue;
+      }
       result.push(endpoints[i]);
     }
 
     return result;
-  }, [endpoints, hasAgentAccess, includedEndpoints, interfaceConfig.modelSelect]);
+  }, [endpoints, hasAgentAccess, includedEndpoints, interfaceConfig.modelSelect, modelsQuery.data]);
 
   const endpointRequiresUserKey = useCallback(
     (ep: string) => {

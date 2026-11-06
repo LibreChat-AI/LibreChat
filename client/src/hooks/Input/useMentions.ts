@@ -1,5 +1,4 @@
 import { useMemo } from 'react';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
   Permissions,
   alternateName,
@@ -19,8 +18,10 @@ import {
   useListAgentsQuery,
   useGetStartupConfig,
 } from '~/data-provider';
+import { isModelSpecAvailable, isProviderAvailable } from '~/utils/availability';
 import useAssistantListMap from '~/hooks/Assistants/useAssistantListMap';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import useModelCatalog from '~/hooks/Endpoint/useModelCatalog';
 import { mapEndpoints, getPresetTitle } from '~/utils';
 import { EndpointIcon } from '~/components/Endpoints';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
@@ -67,7 +68,9 @@ export default function useMentions({
 
   const agentsMap = useAgentsMapContext();
   const { data: presets, isLoading: isLoadingPresets } = useGetPresetsQuery();
-  const { data: modelsConfig, isLoading: isLoadingModels } = useGetModelsQuery();
+  const modelsQuery = useModelCatalog();
+  const { isLoading: isLoadingModels } = modelsQuery;
+  const modelsConfig = modelsQuery.data;
   const { data: startupConfig, isLoading: isLoadingStartup } = useGetStartupConfig();
   const { data: endpointsConfig, isLoading: isLoadingEndpoints } = useGetEndpointsQuery();
   const { data: endpoints = [] } = useGetEndpointsQuery({
@@ -95,8 +98,8 @@ export default function useMentions({
         includedEndpoints,
         includeAssistants,
         hasAgentAccess,
-      }),
-    [endpoints, includedEndpoints, includeAssistants, hasAgentAccess],
+      }).filter((endpoint) => isProviderAvailable(endpoint, modelsConfig)),
+    [endpoints, includedEndpoints, includeAssistants, hasAgentAccess, modelsConfig],
   );
   const validEndpointSet = useMemo(() => new Set(validEndpoints), [validEndpoints]);
   const agentQueryEnabled =
@@ -153,7 +156,9 @@ export default function useMentions({
   );
 
   const modelSpecs = useMemo(() => {
-    const specs = startupConfig?.modelSpecs?.list ?? [];
+    const specs = (startupConfig?.modelSpecs?.list ?? []).filter((spec) =>
+      isModelSpecAvailable(spec, modelsConfig),
+    );
     if (!agentsMap) {
       return specs;
     }
@@ -169,7 +174,7 @@ export default function useMentions({
       /** Keep non-agent modelSpecs */
       return true;
     });
-  }, [startupConfig, agentsMap]);
+  }, [startupConfig, agentsMap, modelsConfig]);
 
   const options: MentionOption[] = useMemo(() => {
     const modelOptions = validEndpoints.flatMap((endpoint) => {

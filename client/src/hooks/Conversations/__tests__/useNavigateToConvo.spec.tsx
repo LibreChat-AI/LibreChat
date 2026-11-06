@@ -1,5 +1,5 @@
 import { RecoilRoot, useRecoilValue } from 'recoil';
-import { QueryKeys } from 'librechat-data-provider';
+import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { render, screen, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, useLocation, useNavigate } from 'react-router-dom';
@@ -73,7 +73,13 @@ const endpointsConfig = { openAI: {} } as unknown as TEndpointsConfig;
 
 const notFound = () => ({ status: 404, message: 'not found' });
 
-function Harness({ runningIds = [] }: { runningIds?: string[] }) {
+function Harness({
+  runningIds = [],
+  selectedRow = rowB,
+}: {
+  runningIds?: string[];
+  selectedRow?: TConversation;
+}) {
   const runningRows = useRunningConversationsQuery(runningIds);
   const { navigateToConvo } = useNavigateToConvo();
   const conversation = useRecoilValue(store.conversationByIndex(0));
@@ -85,7 +91,7 @@ function Harness({ runningIds = [] }: { runningIds?: string[] }) {
     <div>
       <button
         data-testid="go-b"
-        onClick={() => navigateToConvo(rowB, { currentConvoId: 'convo-a' })}
+        onClick={() => navigateToConvo(selectedRow, { currentConvoId: 'convo-a' })}
       />
       <button data-testid="go-c" onClick={() => navigateToConvo(rowC, { currentConvoId: B })} />
       <button
@@ -133,7 +139,11 @@ function Harness({ runningIds = [] }: { runningIds?: string[] }) {
 
 /** A real history, not `MemoryRouter`: the hook abandons superseded work by
  *  reading the browser's own location, so the test has to move it for real. */
-function renderHarness(cached: TConversation[] = [], runningIds: string[] = []) {
+function renderHarness(
+  cached: TConversation[] = [],
+  runningIds: string[] = [],
+  selectedRow = rowB,
+) {
   window.history.pushState({}, '', '/c/convo-a');
 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -151,7 +161,7 @@ function renderHarness(cached: TConversation[] = [], runningIds: string[] = []) 
       <RecoilRoot>
         <QueryClientProvider client={queryClient}>
           <SetConvoProvider>
-            <Harness runningIds={runningIds} />
+            <Harness runningIds={runningIds} selectedRow={selectedRow} />
           </SetConvoProvider>
         </QueryClientProvider>
       </RecoilRoot>
@@ -191,6 +201,68 @@ const settle = async (id: string, outcome: TConversation | { status: number }) =
 };
 
 describe('useNavigateToConvo', () => {
+  describe('existing unavailable-provider fallback', () => {
+    beforeEach(() => localStorage.clear());
+
+    it.each([EModelEndpoint.anthropic, null])(
+      'applies fallback on a warm navigation from %s',
+      async (endpoint) => {
+        const saved = { ...recordB, endpoint, model: 'removed-model' };
+        const client = renderHarness([saved], [], saved);
+        client.setQueryData([QueryKeys.models], { openAI: ['available-model'] });
+        const messages = [{ messageId: 'original', text: 'Keep history' }];
+        client.setQueryData([QueryKeys.messages, B], messages);
+        click('go-b');
+        expect(currentConvo()).toMatchObject({
+          conversationId: B,
+          endpoint: EModelEndpoint.openAI,
+          model: 'available-model',
+          promptPrefix: recordB.promptPrefix,
+        });
+        expect(currentPath()).toBe(`/c/${B}`);
+        expect(client.getQueryData([QueryKeys.messages, B])).toEqual(messages);
+        await settle(B, saved);
+        expect(currentConvo()?.model).toBe('available-model');
+      },
+    );
+
+    it('keeps the original empty-model result on a warm navigation with an empty catalog', () => {
+      const saved = { ...recordB, endpoint: null, model: undefined };
+      const client = renderHarness([saved], [], saved);
+      client.setQueryData([QueryKeys.models], { openAI: [] });
+      click('go-b');
+      expect(currentConvo()?.endpoint).toBe(EModelEndpoint.openAI);
+      expect(currentConvo()?.model).toBeUndefined();
+      expect(client.getQueryData([QueryKeys.models])).toEqual({ openAI: [] });
+    });
+
+    it('uses the fallback row when the cold record request fails', async () => {
+      const saved = { ...recordB, endpoint: EModelEndpoint.anthropic, model: 'removed-model' };
+      const client = renderHarness([], [], saved);
+      client.setQueryData([QueryKeys.models], { openAI: ['available-model'] });
+      click('go-b');
+      await settle(B, { status: 503 });
+      expect(currentConvo()).toMatchObject({
+        conversationId: B,
+        endpoint: EModelEndpoint.openAI,
+        model: 'available-model',
+      });
+    });
+
+    it('keeps the authoritative record on a successful cold fetch, as before', async () => {
+      const saved = { ...recordB, endpoint: EModelEndpoint.anthropic, model: 'saved-model' };
+      const client = renderHarness([], [], saved);
+      client.setQueryData([QueryKeys.models], { openAI: ['available-model'] });
+      click('go-b');
+      await settle(B, saved);
+      expect(currentConvo()).toMatchObject({
+        endpoint: EModelEndpoint.anthropic,
+        model: 'saved-model',
+      });
+      expect(currentPath()).toBe(`/c/${B}`);
+    });
+  });
+
   afterEach(() => {
     mockGetConversationById.mockClear();
     mockPending.clear();

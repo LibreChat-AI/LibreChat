@@ -91,6 +91,7 @@ archive
 .vscode/settings.json
 src/style - official.css
 /e2e/specs/.test-results/
+/e2e/recovery/.test-results/
 /e2e/benchmarks/.test-results/
 /e2e/benchmarks-tree/.test-results/
 /e2e/.generated/

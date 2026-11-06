@@ -17,6 +17,7 @@ import {
   withSubmittedCodeDecision,
   resolveSubmittedCodeApprovalMode,
 } from '~/hooks/Agents/codeDecision';
+import { getModelCatalog, isConversationModelAvailable } from '~/utils/availability';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
@@ -61,6 +62,12 @@ export default function useTurnServices({
     modelSpecs: config.modelSpecs,
     getEndpointsConfig: () => queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]),
     agentsMap,
+    canSubmitModel: (selection) =>
+      isConversationModelAvailable({
+        conversation: selection,
+        endpoints: queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]),
+        models: getModelCatalog(queryClient),
+      }),
     getEphemeralAgent,
     getUserKey: getExpiry,
     getRouteProjectId: getRouteChatProjectId,

@@ -697,6 +697,18 @@ describe('validateAgentModel', () => {
     logViolation.mockClear();
   });
 
+  it('rejects a direct request for a model when discovery is empty', async () => {
+    const result = await validateAgentModel({
+      req: request,
+      res: response,
+      agent: { provider: 'gateway', model: 'saved-model' } as Agent,
+      modelsConfig: { gateway: [] },
+      logViolation,
+    });
+    expect(result.isValid).toBe(false);
+    expect(logViolation).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the Google catalog for a Vertex AI agent', async () => {
     const result = await validateAgentModel({
       req: request,

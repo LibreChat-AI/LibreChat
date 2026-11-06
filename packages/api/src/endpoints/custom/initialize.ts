@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import {
   ErrorTypes,
   envVarRegex,
@@ -15,6 +16,7 @@ import type {
   ProviderInitializeParams,
 } from '~/types';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
+import { fetchModels, getModelDiscoveryErrorMetadata } from '~/endpoints/models';
 import { resolveModelTransportTimeouts } from '~/agents/config';
 import { extractDefaultParams } from '~/endpoints/openai/llm';
 import { isUserProvided, checkUserKeyExpiry } from '~/utils';
@@ -24,7 +26,6 @@ import { getScopedTokenConfigKey } from '~/endpoints/keys';
 import { resolveCustomEndpointParameters } from './config';
 import { getCustomEndpointConfig } from '~/app/config';
 import { resolveEndpointRuntime } from '~/types';
-import { fetchModels } from '~/endpoints/models';
 import { validateEndpointURL } from '~/auth';
 import { tokenConfigCache } from '~/cache';
 
@@ -305,26 +306,30 @@ export async function initializeCustom(
     endpointConfig.models?.fetch &&
     !endpointTokenConfig
   ) {
-    await fetchModels({
-      apiKey,
-      baseURL,
-      baseURLIsUserProvided: userProvidesURL,
-      allowedAddresses: appConfig?.endpoints?.allowedAddresses,
-      name: endpoint,
-      user: userId,
-      tokenKey,
-      userObject: user,
-      // Mirror the security guard in `loadConfigModels`: never forward
-      // header overrides when the base URL is user-supplied — configured
-      // templates like {{LIBRECHAT_OPENID_ID_TOKEN}} would otherwise resolve
-      // and leak the user's identity token to a destination the user controls.
-      headers: userProvidesURL ? undefined : endpointConfig.headers,
-      // Note: when both `headers` and `userObject` are supplied below, the
-      // MODEL_QUERIES cache inside `fetchModels` is automatically skipped,
-      // which prevents a per-user filtered model list from leaking across
-      // users. The token-config cache key (`tokenKey`) is also user-scoped
-      // above when these headers will be forwarded.
-    });
+    try {
+      await fetchModels({
+        apiKey,
+        baseURL,
+        baseURLIsUserProvided: userProvidesURL,
+        allowedAddresses: appConfig?.endpoints?.allowedAddresses,
+        name: endpoint,
+        user: userId,
+        tokenKey,
+        userObject: user,
+        // Mirror the security guard in `loadConfigModels`: never forward
+        // header overrides when the base URL is user-supplied — configured
+        // templates like {{LIBRECHAT_OPENID_ID_TOKEN}} would otherwise resolve
+        // and leak the user's identity token to a destination the user controls.
+        headers: userProvidesURL ? undefined : endpointConfig.headers,
+        // Note: when both `headers` and `userObject` are supplied below, the
+        // MODEL_QUERIES cache inside `fetchModels` is automatically skipped,
+        // which prevents a per-user filtered model list from leaking across
+        // users. The token-config cache key (`tokenKey`) is also user-scoped
+        // above when these headers will be forwarded.
+      });
+    } catch (error) {
+      logger.warn('Token metadata discovery failed', getModelDiscoveryErrorMetadata(error));
+    }
     endpointTokenConfig = (await cache.get(tokenKey)) as EndpointTokenConfig | undefined;
   }
 

@@ -12,7 +12,7 @@ jest.mock('~/server/services/Config', () => ({
   loadConfigModels: (...args) => mockLoadConfigModels(...args),
 }));
 
-const { loadModels } = require('./ModelController');
+const { getModelsConfig } = require('./ModelController');
 
 function deferred() {
   let resolve;
@@ -22,7 +22,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-describe('loadModels', () => {
+describe('getModelsConfig', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -34,7 +34,7 @@ describe('loadModels', () => {
     mockLoadDefaultModels.mockReturnValue(defaultModels.promise);
     mockLoadConfigModels.mockReturnValue(configuredModels.promise);
 
-    const resultPromise = loadModels(req);
+    const resultPromise = getModelsConfig(req);
 
     expect(mockLoadDefaultModels).toHaveBeenCalledWith(req);
     expect(mockLoadConfigModels).toHaveBeenCalledWith(req);

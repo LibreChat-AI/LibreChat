@@ -3,6 +3,7 @@ import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
 import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
+import { Button, Spinner } from '@librechat/client';
 import { useDirection } from '@radix-ui/react-direction';
 import { useSteering, showStopButtonByIndex, useComposerRestoreHost } from '@librechat/chat/react';
 import {
@@ -61,6 +62,7 @@ import {
   PendingToolApprovalButton,
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
+import useModelAvailability from '~/hooks/Endpoint/useModelAvailability';
 import useComposerRestore from '~/hooks/Input/useComposerRestore';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
@@ -177,6 +179,7 @@ const ChatForm = memo(function ChatForm({
     setConversation: setAddedConvo,
   } = useAddedChatContext();
   const assistantMap = useAssistantsMapContext();
+  const modelAvailability = useModelAvailability(conversation, addedConvo);
   const { data: startupConfig } = useGetStartupConfig();
 
   const endpoint = useMemo(
@@ -535,6 +538,7 @@ const ChatForm = memo(function ChatForm({
           isPreparingFromUrl ||
           disableInputs ||
           !codeWorkspace.canSubmit ||
+          (!answerMode.composerAnswers && !modelAvailability.canSubmit) ||
           isNotAppendable ||
           answerMode.composerLocked
         }
@@ -562,6 +566,7 @@ const ChatForm = memo(function ChatForm({
       isPreparingFromUrl,
       disableInputs,
       codeWorkspace.canSubmit,
+      modelAvailability.canSubmit,
       isNotAppendable,
       showStopButton,
       setShowStopButton,
@@ -747,6 +752,9 @@ const ChatForm = memo(function ChatForm({
             onBlur: handleTextareaBlur,
             'aria-describedby': cn(
               composerHintId(index),
+              modelAvailability.showSelectionHint &&
+                !answerMode.composerAnswers &&
+                `model-selection-hint-${index}`,
               (codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') &&
                 `code-workspace-hint-${index}`,
             ),
@@ -765,6 +773,27 @@ const ChatForm = memo(function ChatForm({
           className="text-text-secondary px-5 pb-2 text-sm"
         >
           {localize('com_error_code_workspace_required')}
+        </p>
+      )}
+      {modelAvailability.showSelectionHint && !answerMode.composerAnswers && (
+        <p
+          id={`model-selection-hint-${index}`}
+          role="status"
+          className="text-text-secondary px-5 pb-2 text-sm"
+        >
+          {localize('com_ui_select_model_to_continue')}
+          {!modelAvailability.hasModels && <> {localize('com_ui_models_unavailable_wait')}</>}{' '}
+          <Button
+            type="button"
+            variant="hyperlink"
+            size="bare"
+            disabled={modelAvailability.isRefreshingModels}
+            aria-busy={modelAvailability.isRefreshingModels}
+            onClick={() => void modelAvailability.refreshModels({ cancelRefetch: false })}
+          >
+            {modelAvailability.isRefreshingModels && <Spinner className="size-3" />}
+            {localize('com_ui_refresh_models')}
+          </Button>
         </p>
       )}
       {/* The composer is what keeps MCP connection and authorization state

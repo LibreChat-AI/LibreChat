@@ -317,7 +317,7 @@ describe('loadConfigModels', () => {
     );
   });
 
-  it('falls back to default models if fetching returns an empty array', async () => {
+  it('keeps an empty successful fetch even when defaults exist', async () => {
     getAppConfig.mockResolvedValue({
       endpoints: {
         custom: [
@@ -347,10 +347,11 @@ describe('loadConfigModels', () => {
 
     const result = await loadConfigModels(mockRequest);
     expect(fetchModels).toHaveBeenCalledTimes(1);
-    expect(result.EmptyFetchModel).toEqual(['defaultModel1', 'defaultModel2']);
+    expect(result.EmptyFetchModel).toEqual([]);
+    expect(result.EndpointWithSameFetchKey).toEqual([]);
   });
 
-  it('falls back to default models if fetching returns a falsy value', async () => {
+  it('falls back to default models if fetching fails', async () => {
     getAppConfig.mockResolvedValue({
       endpoints: {
         custom: [
@@ -367,7 +368,7 @@ describe('loadConfigModels', () => {
       },
     });
 
-    fetchModels.mockResolvedValue(false);
+    fetchModels.mockRejectedValue(new Error('provider failure'));
 
     const result = await loadConfigModels(mockRequest);
 
@@ -459,9 +460,8 @@ describe('loadConfigModels', () => {
       expect(fetchModels).not.toHaveBeenCalled();
       expect(result.ErrorEndpoint).toEqual(['fallback']);
       expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'Failed to retrieve user key for "ErrorEndpoint": DB connection timeout',
-        ),
+        expect.stringContaining('Failed to retrieve user key for "ErrorEndpoint"'),
+        { type: 'Error' },
       );
       expect(logger.debug).not.toHaveBeenCalledWith(expect.stringContaining('No user key stored'));
     });

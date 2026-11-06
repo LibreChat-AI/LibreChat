@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { TooltipAnchor } from '@librechat/client';
-import { getConfigDefaults } from 'librechat-data-provider';
+import { getConfigDefaults, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { ModelSelectorProps } from '~/common';
 import {
   renderModelSpecs,
@@ -11,7 +11,9 @@ import {
 import { ModelSelectorProvider, useModelSelectorContext } from './ModelSelectorContext';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
 import { ModelSelectorChatProvider } from './ModelSelectorChatContext';
+import useModelCatalog from '~/hooks/Endpoint/useModelCatalog';
 import { getSelectedIcon, getDisplayValue } from './utils';
+import { isModelUnavailable } from '~/utils/availability';
 import { CustomMenu as Menu } from './CustomMenu';
 import DialogManager from './DialogManager';
 import { useLocalize } from '~/hooks';
@@ -20,6 +22,8 @@ const defaultInterface = getConfigDefaults().interface;
 
 function ModelSelectorContent() {
   const localize = useLocalize();
+  const modelsQuery = useModelCatalog();
+  const modelsConfig = modelsQuery.data;
   const modelSelectorHint = useShortcutHint('openModelSelector', localize('com_ui_select_model'));
   const modelSelectorAriaKey = useShortcutAriaKey('openModelSelector');
 
@@ -65,6 +69,11 @@ function ModelSelectorContent() {
     [localize, agentsMap, modelSpecs, selectedValues, mappedEndpoints],
   );
 
+  const unavailable =
+    !isAgentsEndpoint(selectedValues.endpoint) &&
+    !isAssistantsEndpoint(selectedValues.endpoint) &&
+    isModelUnavailable(selectedValues.endpoint, selectedValues.model, modelsConfig);
+
   const trigger = (
     <TooltipAnchor
       aria-label={localize('com_ui_select_model')}
@@ -81,7 +90,11 @@ function ModelSelectorContent() {
               {selectedIcon}
             </div>
           )}
-          <span className="truncate text-start">{selectedDisplayValue}</span>
+          <span className="truncate text-start">
+            {unavailable
+              ? localize('com_ui_model_unavailable', { 0: selectedValues.model })
+              : selectedDisplayValue}
+          </span>
         </button>
       }
     />
@@ -103,6 +116,11 @@ function ModelSelectorContent() {
         comboboxLabel={localize('com_endpoint_search_models')}
         trigger={trigger}
       >
+        {modelsConfig != null && mappedEndpoints.length === 0 && modelSpecs.length === 0 && (
+          <div role="status" className="text-text-secondary px-3 py-2 text-sm">
+            {localize('com_ui_no_models_available')}
+          </div>
+        )}
         {searchResults ? (
           renderSearchResults(searchResults, localize, searchValue)
         ) : (

@@ -825,10 +825,12 @@ describe('chat transport boundary', () => {
       set(store.conversationByIndex(0), {
         conversationId: 'convo-1',
         endpoint: 'agents',
+        agent_id: 'agent_transport_test',
       } as TConversation);
 
     const seedCache = (queryClient: QueryClient) => {
       queryClient.setQueryData(startupConfigKey(false), {});
+      queryClient.setQueryData([QueryKeys.endpoints], { agents: { order: 0 } });
       queryClient.setQueryData([QueryKeys.messages, 'convo-1'], []);
     };
 

@@ -17,6 +17,7 @@ import type {
   Agent,
   CodeEnvironmentMode,
   CodeWorkspaceSelection,
+  TModelsConfig,
   TConversation,
   TMessage,
   TSubmission,
@@ -40,26 +41,44 @@ const mockSetFilesToDelete = jest.fn();
 const mockGetSender = jest.fn(() => 'Assistant');
 const mockGetExpiry = jest.fn(() => 'expiry-key');
 const mockAgentQueryData: { current?: Agent } = {};
+let mockModelFetchCount = 1;
+const mockModelsQueryData: { current?: TModelsConfig } = {};
 const mockEndpointsQueryData: { current?: Record<string, unknown> } = {};
 const mockCapabilitiesData: { current?: Record<string, unknown> } = {};
 const mockCapabilitiesState: {
   current?: { status: string; fetchStatus?: string; dataUpdatedAt?: number };
 } = {};
 /** A query that holds data always has a timestamp: loaded data is fresh unless a test says otherwise. */
-const mockGetQueryState = jest.fn((queryKey: readonly unknown[]) =>
-  queryKey[0] === QueryKeys.reasoningCapabilities
-    ? { dataUpdatedAt: Date.now(), ...mockCapabilitiesState.current }
-    : undefined,
-);
+const mockGetQueryState = jest.fn((queryKey: readonly unknown[]) => {
+  if (queryKey[0] === QueryKeys.reasoningCapabilities) {
+    return { dataUpdatedAt: Date.now(), ...mockCapabilitiesState.current };
+  }
+  return queryKey[0] === QueryKeys.models ? { dataUpdateCount: mockModelFetchCount } : undefined;
+});
 const mockGetQueryData = jest.fn((queryKey: readonly unknown[]) => {
   if (queryKey[0] === QueryKeys.reasoningCapabilities) {
     return mockCapabilitiesData.current;
+  }
+  if (queryKey[0] === QueryKeys.models) {
+    return (
+      mockModelsQueryData.current ?? {
+        openAI: ['gpt-4o', 'gpt-5.1', 'gpt-5', 'openai/gpt-6.1-sol'],
+        OpenRouter: ['gpt-4o', 'gpt-5.1', 'gpt-5', 'openai/gpt-6.1-sol'],
+        'Mock Provider A': ['mock-model-a'],
+      }
+    );
   }
   if (queryKey[0] === QueryKeys.agent) {
     return mockAgentQueryData.current;
   }
   if (queryKey[0] === QueryKeys.endpoints) {
-    return mockEndpointsQueryData.current ?? {};
+    return {
+      agents: {},
+      openAI: {},
+      OpenRouter: {},
+      'Mock Provider A': {},
+      ...mockEndpointsQueryData.current,
+    };
   }
   return {};
 });
@@ -118,7 +137,7 @@ jest.mock('~/hooks', () => ({
 }));
 jest.mock('~/Providers/AgentsMapContext', () => ({
   useAgentsMapContext: () => ({
-    'agent-1': {
+    agent_1: {
       provider: 'openAI',
       model: 'gpt-5.1',
     },
@@ -168,7 +187,7 @@ const conversation = (conversationId: string) =>
     conversationId,
     endpoint: EModelEndpoint.agents,
     model: 'gpt-4o',
-    agent_id: 'agent-1',
+    agent_id: 'agent_1',
   }) as TConversation;
 
 const settingsWrapper = ({ children }: { children: ReactNode }) => (
@@ -236,6 +255,8 @@ function renderAsk(
 describe('useChatFunctions ask', () => {
   beforeEach(() => {
     mockEndpointsQueryData.current = undefined;
+    mockModelsQueryData.current = undefined;
+    mockModelFetchCount = 1;
     mockCapabilitiesData.current = undefined;
     mockCapabilitiesState.current = undefined;
     localStorage.clear();
@@ -595,6 +616,70 @@ describe('useChatFunctions ask', () => {
     expect(setSubmission).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['send', {}],
+    ['regenerate', { isRegenerate: true }],
+    ['edit', { isEdited: true }],
+    ['continue', { isContinued: true, isRegenerate: true }],
+  ])('allows %s when model discovery has never succeeded', (_name, options) => {
+    mockModelFetchCount = 0;
+    const parent = userMessage('user-1');
+    const response = assistantMessage('answer-1', parent.messageId);
+    const { result, setSubmission } = renderAsk([parent, response], 'conversation-1', {
+      endpoint: EModelEndpoint.openAI,
+    });
+    act(() => {
+      expect(result.current.ask({ ...parent, text: 'Try this model' }, options)).not.toBe(false);
+    });
+    expect(setSubmission).toHaveBeenCalled();
+  });
+
+  it.each(['Personal' as EModelEndpoint, EModelEndpoint.agents])(
+    'refuses unavailable personal-key sends through %s before consuming staged inputs',
+    (endpoint) => {
+      mockEndpointsQueryData.current = {
+        Personal: { userProvide: true, order: 0, type: EModelEndpoint.custom },
+      };
+      mockModelsQueryData.current = { Personal: [] };
+      const files = new Map<string, ExtendedFile>([
+        [
+          'staged-file',
+          {
+            file_id: 'staged-file',
+            filename: 'draft.txt',
+            type: 'text/plain',
+            filepath: '/uploads/draft.txt',
+            size: 10,
+            progress: 1,
+          },
+        ],
+      ]);
+      const { result, setMessages, setSubmission, setFiles } = renderAsk([], 'conversation-1', {
+        endpoint,
+        model: 'personal-model',
+        agentId: 'Personal__personal-model',
+        files,
+      });
+      let accepted: ReturnType<typeof result.current.ask>;
+      act(() => {
+        accepted = result.current.ask({ text: 'Keep this draft' });
+      });
+      expect(accepted!).toBe(false);
+      expect(setMessages).not.toHaveBeenCalled();
+      expect(setSubmission).not.toHaveBeenCalled();
+      expect(setFiles).not.toHaveBeenCalled();
+      expect(mockSetFilesToDelete).not.toHaveBeenCalled();
+      expect(mockResolveCodeWorkspaceSubmission).not.toHaveBeenCalled();
+
+      mockModelsQueryData.current = { Personal: ['personal-model'] };
+      act(() => {
+        result.current.ask({ text: 'Keep this draft' });
+      });
+      expect(setSubmission).toHaveBeenCalledTimes(1);
+      expect(setMessages).toHaveBeenCalled();
+    },
+  );
+
   it('allows an existing conversation whose loaded history is empty', () => {
     const { result, setMessages, setSubmission } = renderAsk([]);
 
@@ -940,7 +1025,7 @@ describe('useChatFunctions ask', () => {
   });
 
   it('uses hydrated per-agent query data when the agent catalog is unavailable', () => {
-    const agentId = 'agent-uncatalogued';
+    const agentId = 'agent_uncatalogued';
     const override = { key: 'reasoning_effort', value: 'high' } as TReasoningOverride;
     mockAgentQueryData.current = {
       id: agentId,
@@ -988,7 +1073,7 @@ describe('useChatFunctions regenerate', () => {
       conversationId: 'conversation-1',
       endpoint: EModelEndpoint.agents,
       model: 'gpt-4o',
-      agent_id: 'agent-1',
+      agent_id: 'agent_1',
     } as TConversation;
 
     const { result } = renderHook(() =>
@@ -1328,7 +1413,6 @@ describe('useChatFunctions ask attachments', () => {
 describe('useChatFunctions ask compaction', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockGetQueryData.mockReturnValue({});
   });
 
   it('submits a summarize-only turn hung off the leaf without a new user bubble', () => {
