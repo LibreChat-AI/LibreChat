@@ -9,6 +9,7 @@ export { createResponseStorage } from './methods/response';
 export type {
   ResponseOwner,
   ResponseStorage,
+  ResponseTerminalGuard,
   ResponseCleanupIdentity,
   ResponseReservation,
   ResponseReservationResult,
