@@ -46,6 +46,8 @@ export type MCPServerDBObjectResponse = {
   consumeOnly?: boolean;
   /** True when chat request fields are required before the server can connect. */
   requestScoped?: boolean;
+  /** Names of the custom headers the server sends; values are never returned. */
+  headerNames?: string[];
 } & MCPOptions;
 
 export type MCPServersListResponse = Record<string, MCPServerDBObjectResponse>;
