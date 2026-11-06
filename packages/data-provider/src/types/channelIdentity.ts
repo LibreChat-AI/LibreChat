@@ -20,7 +20,8 @@ export interface ChannelLinkView {
   identity: ChannelExternalIdentity;
   linkId: string;
   revision: string;
-  state: 'pending' | 'accepted' | 'active' | 'revoked' | 'expired';
+  /** Unavailable is a current-authority projection; the owner can still revoke stored consent. */
+  state: 'pending' | 'accepted' | 'active' | 'revoked' | 'expired' | 'unavailable';
   expiresAtMs: number;
   /** Populated only for the signed-in owner or verified external actor. */
   accountLabel?: string;
