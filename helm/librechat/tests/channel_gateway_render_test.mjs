@@ -12,6 +12,13 @@ const fixture = mkdtempSync(join(tmpdir(), 'channel-gateway-chart-'));
 try {
   // Render the real gateway and main Service without downloading unrelated subcharts.
   mkdirSync(join(fixture, 'templates'));
+  writeFileSync(
+    join(fixture, 'templates', '_mongodb.tpl'),
+    `
+{{- define "mongodb.secretName" -}}fixture-mongodb{{- end -}}
+{{- define "mongodb.service.nameOverride" -}}fixture-mongodb{{- end -}}
+`,
+  );
   const metadata = yaml.load(readFileSync(resolve(chart, 'Chart.yaml'), 'utf8'));
   delete metadata.dependencies;
   writeFileSync(join(fixture, 'Chart.yaml'), yaml.dump(metadata));
@@ -84,6 +91,34 @@ try {
     'channelGateway.channelId': '',
   };
   assert.throws(
+    () => render({ ...shared, 'mongodb.enabled': true }),
+    /transaction-capable MongoDB/,
+  );
+  assert.throws(
+    () => render({ ...shared, 'mongodb.enabled': true, 'mongodb.architecture': 'standalone' }),
+    /transaction-capable MongoDB/,
+  );
+  assert.doesNotThrow(() =>
+    render({ ...shared, 'mongodb.enabled': true, 'mongodb.architecture': 'replicaset' }),
+  );
+  for (const platform of [
+    { librechat: { configEnv: { MONGO_URI: 'mongodb://external/LibreChat' } } },
+    {
+      global: {
+        librechat: {
+          env: [
+            { name: 'MONGO_URI', valueFrom: { secretKeyRef: { name: 'external-db', key: 'uri' } } },
+          ],
+        },
+      },
+    },
+    {
+      librechat: { injectBundledCredentials: { mongodb: false } },
+      global: { librechat: { existingSecretName: 'external-db' } },
+    },
+  ])
+    assert.doesNotThrow(() => render({ ...shared, 'mongodb.enabled': true }, platform));
+  assert.throws(
     () => render({ ...shared, 'channelGateway.tenantId': 'org.a' }),
     /default tenantId/,
   );
@@ -104,6 +139,78 @@ try {
     bootstrap.mode,
     'shared',
     'rendered shared pods must select the actual shared runtime',
+  );
+  assert.equal(sharedDeployment.spec.strategy.type, 'RollingUpdate');
+  for (const count of ['0', '-1', '1.5', 'invalid'])
+    assert.throws(
+      () => render({ ...shared, 'channelGateway.replicaCount': count }),
+      /positive integer/,
+    );
+  assert.throws(
+    () => render({ ...enabled, 'channelGateway.replicaCount': '2' }),
+    /Single gateway mode/,
+  );
+  const sharedDocs = render(
+    { ...shared, 'channelGateway.replicaCount': '2' },
+    {
+      channelGateway: {
+        existingSecretName: 'service-credentials',
+        ingress: { enabled: true, host: 'slack.example.test' },
+      },
+    },
+  );
+  const gatewayPod = sharedDocs.find(
+    (doc) => doc.kind === 'Deployment' && doc.metadata.name === sharedDeployment.metadata.name,
+  );
+  assert.equal(gatewayPod.spec.replicas, 2);
+  assert.deepEqual(gatewayPod.spec.strategy.rollingUpdate, { maxSurge: 1, maxUnavailable: 0 });
+  const apiPod = sharedDocs.find((doc) => doc.kind === 'Deployment' && doc !== gatewayPod);
+  const apiEnv = Object.fromEntries(
+    apiPod.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
+  );
+  assert.equal(apiEnv.CHANNEL_SERVICE_TOKEN.valueFrom.secretKeyRef.name, 'service-credentials');
+  for (const key of [
+    'SLACK_APP_ID',
+    'SLACK_CLIENT_ID',
+    'SLACK_CLIENT_SECRET',
+    'SLACK_SIGNING_SECRET',
+  ])
+    assert.equal(
+      apiEnv[key],
+      undefined,
+      'organization app credentials must not be injected by the chart',
+    );
+  const appDefaults = sharedDocs.find(
+    (doc) => doc.kind === 'ConfigMap' && doc.metadata.name.endsWith('-configenv'),
+  ).data;
+  assert.equal(appDefaults.SLACK_WORKSPACES_ENABLED, 'true');
+  assert.equal(appDefaults.SLACK_GATEWAY_URL, 'https://slack.example.test');
+  const gatewaySecrets = gatewayPod.spec.template.spec.containers[0].env.filter(
+    (entry) => entry.valueFrom,
+  );
+  assert.deepEqual(
+    gatewaySecrets.map((entry) => entry.name),
+    ['CHANNEL_SERVICE_TOKEN'],
+  );
+  const explicit = render(shared, {
+    global: {
+      librechat: {
+        env: [
+          {
+            name: 'CHANNEL_SERVICE_TOKEN',
+            valueFrom: { secretKeyRef: { name: 'explicit', key: 'service' } },
+          },
+        ],
+      },
+    },
+  }).find(
+    (doc) => doc.kind === 'Deployment' && doc.metadata.name !== sharedDeployment.metadata.name,
+  );
+  const explicitEnv = explicit.spec.template.spec.containers[0].env;
+  assert.equal(explicitEnv.filter((entry) => entry.name === 'CHANNEL_SERVICE_TOKEN').length, 1);
+  assert.equal(
+    explicitEnv.find((entry) => entry.name === 'CHANNEL_SERVICE_TOKEN').valueFrom.secretKeyRef.name,
+    'explicit',
   );
   assert.throws(
     () => render({ ...enabled, 'global.librechat.existingSecretName': '' }),

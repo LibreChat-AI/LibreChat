@@ -298,8 +298,10 @@ updateStrategy:
 channelGateway:
   enabled: false
   # single binds a manually configured connection; shared serves installed workspaces.
-  # Shared mode requires webhook transport and slackApp configuration in librechat.yaml.
+  # Shared mode enables webhook transport; organization admins register apps in the UI.
   mode: single
+  # Shared workers use durable leases and may run across replicas; single mode requires 1.
+  replicaCount: 1
   image:
     repository: ghcr.io/librechat-ai/librechat-channel-gateway
     # Defaults to image.tag, which must explicitly select a release containing Channels.
