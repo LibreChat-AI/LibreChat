@@ -21,7 +21,7 @@ function message(
     completionId: id,
     report: {
       ...receipt.report!,
-      kind: 'reply',
+      kind: 'response',
       model,
       completionId: id,
       scope,

@@ -24,7 +24,9 @@ export function getReceipts(message: TMessage): TNearAIReceipt[] {
 }
 
 export function replyReport(receipt: TNearAIReceipt) {
-  return receipt.report?.kind === 'reply' && receipt.report.completionId === receipt.completionId
+  return receipt.report &&
+    ['response', 'reply'].includes(receipt.report.kind) &&
+    receipt.report.completionId === receipt.completionId
     ? receipt.report
     : undefined;
 }

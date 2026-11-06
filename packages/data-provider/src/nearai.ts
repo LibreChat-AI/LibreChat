@@ -103,17 +103,24 @@ const report = z.object({
     .optional(),
 });
 
-export const nearAIVerificationReportSchema = z
-  .discriminatedUnion('kind', [
-    report.extend({ kind: z.literal('reply'), completionId: text }),
-    report.extend({ kind: z.literal('model'), model: text }),
-  ])
-  .refine(
-    (report) => new TextEncoder().encode(JSON.stringify([report])).length <= MAX_REPORT_BYTES,
-    {
-      message: 'Verification report exceeds the viewer limit',
-    },
-  );
+/** Normalize saved reports written before Cloud UI renamed reply to response. */
+export const nearAIVerificationReportSchema = z.preprocess(
+  (value) =>
+    value != null && typeof value === 'object' && 'kind' in value && value.kind === 'reply'
+      ? { ...value, kind: 'response' }
+      : value,
+  z
+    .discriminatedUnion('kind', [
+      report.extend({ kind: z.literal('response'), completionId: text }),
+      report.extend({ kind: z.literal('model'), model: text }),
+    ])
+    .refine(
+      (report) => new TextEncoder().encode(JSON.stringify([report])).length <= MAX_REPORT_BYTES,
+      {
+        message: 'Verification report exceeds the viewer limit',
+      },
+    ),
+);
 
 export type TNearAIVerificationReport = z.infer<typeof nearAIVerificationReportSchema>;
 

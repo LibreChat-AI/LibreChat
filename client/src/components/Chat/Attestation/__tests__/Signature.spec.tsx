@@ -68,27 +68,30 @@ afterEach(() => {
   localStorage.clear();
 });
 
-it('opens the real dialog on click, sends the report, closes from the iframe and restores focus', async () => {
-  setup();
-  expect(request.get).not.toHaveBeenCalled();
-  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  const iframe = await openFrame();
-  expect(screen.getByRole('dialog')).toBeVisible();
-  expect(iframe).toHaveAttribute('referrerpolicy', 'no-referrer');
-  expect(new URL(iframe.src).searchParams.get('model')).toBe(receipt.model);
-  expect(new URL(iframe.src).searchParams.get('showHeader')).toBe('false');
-  expect(new URL(iframe.src).searchParams.has('layout')).toBe(false);
-  expect(screen.getByRole('dialog', { name: 'Response verification' })).toBeVisible();
-  const post = jest.spyOn(iframe.contentWindow!, 'postMessage');
-  receive(iframe, 'NEAR_AI_VERIFICATION_CENTER_READY');
-  expect(post).toHaveBeenCalledWith(
-    expect.objectContaining({ reports: [receipt.report, gatewayReport] }),
-    'https://cloud-stg.near.ai',
-  );
-  receive(iframe, 'NEAR_AI_VERIFICATION_CLOSE');
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-  await waitFor(() => expect(screen.getByTestId('nearai-signature-button')).toHaveFocus());
-});
+it.each(['response', 'reply'])(
+  'opens a saved %s report, sends response to the iframe, closes and restores focus',
+  async (kind) => {
+    setup([{ ...receipt, report: JSON.parse(JSON.stringify({ ...receipt.report, kind })) }]);
+    expect(request.get).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    const iframe = await openFrame();
+    expect(screen.getByRole('dialog')).toBeVisible();
+    expect(iframe).toHaveAttribute('referrerpolicy', 'no-referrer');
+    expect(new URL(iframe.src).searchParams.get('model')).toBe(receipt.model);
+    expect(new URL(iframe.src).searchParams.get('showHeader')).toBe('false');
+    expect(new URL(iframe.src).searchParams.has('layout')).toBe(false);
+    expect(screen.getByRole('dialog', { name: 'Response verification' })).toBeVisible();
+    const post = jest.spyOn(iframe.contentWindow!, 'postMessage');
+    receive(iframe, 'NEAR_AI_VERIFICATION_CENTER_READY');
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ reports: [receipt.report, gatewayReport] }),
+      'https://cloud-stg.near.ai',
+    );
+    receive(iframe, 'NEAR_AI_VERIFICATION_CLOSE');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('nearai-signature-button')).toHaveFocus());
+  },
+);
 
 it('links old receipts to the standalone viewer', async () => {
   setup([{ ...receipt, report: undefined }]);
@@ -375,7 +378,7 @@ it('replaces previously successful hardware reports with unavailable reports whe
 });
 
 it('requests Gateway evidence only for a Gateway-signed reply and keeps it partial', async () => {
-  if (!receipt.report || receipt.report.kind !== 'reply' || !gatewayReport.attestation)
+  if (!receipt.report || receipt.report.kind !== 'response' || !gatewayReport.attestation)
     throw new Error('Missing report fixture');
   const saved = {
     ...receipt.report,
@@ -410,7 +413,7 @@ it('does not request current hardware when the saved response signature could no
     status: 'failed',
     report: {
       schemaVersion: 1,
-      kind: 'reply',
+      kind: 'response',
       model: receipt.model,
       completionId: receipt.completionId,
       verifiedAt: receipt.verifiedAt,
@@ -427,7 +430,7 @@ it('does not request current hardware when the saved response signature could no
 });
 
 it('accepts restored Gateway reports whose absent model was stored as BSON null', async () => {
-  if (!receipt.report || receipt.report.kind !== 'reply' || !gatewayReport.attestation)
+  if (!receipt.report || receipt.report.kind !== 'response' || !gatewayReport.attestation)
     throw new Error('Missing fixture');
   const saved = {
     ...receipt.report,
@@ -451,7 +454,7 @@ it('accepts restored Gateway reports whose absent model was stored as BSON null'
     expect.objectContaining({
       reports: [
         expect.objectContaining({
-          kind: 'reply',
+          kind: 'response',
           scope: 'gateway',
           status: 'partial',
           model: undefined,
@@ -471,7 +474,7 @@ it('shows an unverifiable reply signature as unverified rather than rejected', a
     errorCode: 'nearai_verification_timeout',
     report: {
       schemaVersion: 1,
-      kind: 'reply',
+      kind: 'response',
       completionId: receipt.completionId,
       model: receipt.model,
       scope: 'unknown',

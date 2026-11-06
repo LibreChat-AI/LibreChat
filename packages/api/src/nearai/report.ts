@@ -28,7 +28,7 @@ export function createReplyReport(
   const modelScope = result.signatureKind === 'provider_tee';
   const parsed = nearAIVerificationReportSchema.safeParse({
     schemaVersion: 1,
-    kind: 'reply',
+    kind: 'response',
     completionId: result.completionId,
     model: modelScope
       ? /^(.*):[a-f0-9]{64}:[a-f0-9]{64}$/i.exec(result.signature.signedText)?.[1]
@@ -71,7 +71,7 @@ export function createFailureReport(
     schemaVersion: 1,
     ...(completionId === undefined
       ? { kind: 'model' as const, model }
-      : { kind: 'reply' as const, completionId, model }),
+      : { kind: 'response' as const, completionId, model }),
     verifiedAt,
     scope: 'unknown',
     status: failed ? 'failed' : 'unverifiable',

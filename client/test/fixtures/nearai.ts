@@ -3,7 +3,7 @@ import type { TMessage, TNearAIReceipt, TNearAIVerificationReport } from 'librec
 export const viewerUrl = 'https://cloud-stg.near.ai/verify?model=z-ai/glm-5.3-flash';
 export const report: TNearAIVerificationReport = {
   schemaVersion: 1,
-  kind: 'reply',
+  kind: 'response',
   completionId: 'completion-1',
   model: 'z-ai/glm-5.3-flash',
   scope: 'model',

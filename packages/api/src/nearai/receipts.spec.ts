@@ -52,7 +52,7 @@ it('collects report snapshots and restores them through the real message databas
     errorCode: 'api.completion_not_found',
     report: {
       schemaVersion: 1,
-      kind: 'reply',
+      kind: 'response',
       scope: 'unknown',
       status: 'unverifiable',
       completionId: 'completion-1',

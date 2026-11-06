@@ -804,7 +804,7 @@ it('shares an in-progress refresh with a reply opened after switching models', a
   expect(post).toHaveBeenCalledWith(
     expect.objectContaining({
       reports: expect.arrayContaining([
-        expect.objectContaining({ kind: 'reply', status: 'verified' }),
+        expect.objectContaining({ kind: 'response', status: 'verified' }),
         expect.objectContaining({ kind: 'model', status: 'failed' }),
       ]),
     }),

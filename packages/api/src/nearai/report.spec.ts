@@ -65,7 +65,7 @@ describe('reply verification reports', () => {
       nearAIVerificationReportSchema.safeParse({ ...base, kind: 'model', model }).success,
     ).toBe(true);
     expect(
-      nearAIVerificationReportSchema.safeParse({ ...base, kind: 'reply', model }).success,
+      nearAIVerificationReportSchema.safeParse({ ...base, kind: 'response', model }).success,
     ).toBe(false);
   });
 
@@ -78,7 +78,7 @@ describe('reply verification reports', () => {
       throw new Error('Expected a report');
     }
     expect(report.value).toMatchObject({
-      kind: 'reply',
+      kind: 'response',
       scope: 'model',
       status: 'verified',
       completionId: result.completionId,
