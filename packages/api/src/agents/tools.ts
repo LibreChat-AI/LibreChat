@@ -29,6 +29,7 @@ import {
   buildAttachedWorkspaceBashDescription,
 } from '~/code/command';
 import { toolkitExpansion } from '~/tools/toolkits/mapping';
+import { TOOL_SELECTION_WILDCARD } from './selection';
 import { normalizeAgentToolKeys } from '~/mcp/utils';
 import { collectReachableAgents } from './traversal';
 
@@ -211,7 +212,9 @@ export function buildHistoricalToolNames(config: BuildHistoricalToolNamesConfig)
   }
 
   const options = normalizedOptions;
-  const hasDeferredTool = [...toolNames].some((name) => options[name]?.defer_loading === true);
+  const hasDeferredTool =
+    config.toolOptions?.[TOOL_SELECTION_WILDCARD]?.defer_loading === true ||
+    [...toolNames].some((name) => options[name]?.defer_loading === true);
   if (config.deferredToolsAvailable === true && hasDeferredTool) {
     toolNames.add('tool_search');
   }

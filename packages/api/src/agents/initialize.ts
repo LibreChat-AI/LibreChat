@@ -147,6 +147,7 @@ import { resolveAgentCodeExecution } from '~/code/agent';
 import { hasActiveFileFieldPolicy } from '~/protection';
 import { applyBackgroundToolCalls } from './background';
 import { admitCurrentFileBudget } from './files/budget';
+import { applyDeferredToolLoading } from './deferral';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
 import { getAgentInferencePolicy } from './input';
@@ -988,6 +989,8 @@ export interface InitializeAgentParams {
     /** Serializable tool definitions for event-driven mode */
     toolDefinitions?: LCTool[];
     hasDeferredTools?: boolean;
+    /** Whether the `deferred_tools` capability is enabled for this agent's run. */
+    deferredToolsEnabled?: boolean;
     mcpToolAliases?: MCPToolAlias[];
     actionsEnabled?: boolean;
     /** Action tool names backed by OAuth — excluded from background dispatch. */
@@ -2252,7 +2255,8 @@ export async function initializeAgent(
     toolDefinitions: loadedToolDefinitions,
     mcpAvailableTools,
     requestScopedConnections,
-    hasDeferredTools,
+    hasDeferredTools: loadedHasDeferredTools,
+    deferredToolsEnabled,
     mcpToolAliases,
     actionsEnabled,
     oauthActionToolNames,
@@ -2271,6 +2275,7 @@ export async function initializeAgent(
     requestScopedConnections: undefined,
     toolDefinitions: [],
     hasDeferredTools: false,
+    deferredToolsEnabled: false,
     mcpToolAliases: [],
     actionsEnabled: undefined,
     oauthActionToolNames: undefined,
@@ -2313,6 +2318,7 @@ export async function initializeAgent(
   }
 
   let toolDefinitions = loadedToolDefinitions;
+  let hasDeferredTools = loadedHasDeferredTools;
 
   /**
    * Tolerant filter: anything `loadTools` couldn't resolve (capability
@@ -2726,6 +2732,24 @@ export async function initializeAgent(
   }
   if (intentSanitized.semanticIntentBlockedToolNames.length > 0) {
     semanticIntentBlockedToolNames = intentSanitized.semanticIntentBlockedToolNames;
+  }
+
+  /**
+   * Deferral runs on the final definition set so system tools registered above
+   * (code, memory, file authoring) can be deferred like MCP tools, and a
+   * definition the intent pass replaced is deferred in its final form.
+   */
+  if (deferredToolsEnabled === true) {
+    const deferral = applyDeferredToolLoading({
+      toolDefinitions,
+      toolRegistry,
+      toolOptions: agent.tool_options,
+      capabilityToolNames,
+      provider: agent.provider,
+      hasDeferredTools,
+    });
+    toolDefinitions = deferral.toolDefinitions;
+    hasDeferredTools = deferral.hasDeferredTools;
   }
 
   const hasFinalAgentTools =
