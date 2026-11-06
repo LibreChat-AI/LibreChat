@@ -444,7 +444,13 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 { $eq: ['$isCreatedByUser', false] },
                 {
                   $cond: [
-                    { $eq: ['$error', true] },
+                    {
+                      // Provider failures mid-answer are saved as an error content block with error: false.
+                      $or: [
+                        { $eq: ['$error', true] },
+                        { $in: ['error', { $ifNull: ['$content.type', []] }] },
+                      ],
+                    },
                     'failed',
                     {
                       $cond: [{ $eq: ['$unfinished', true] }, 'interrupted', 'completed'],
