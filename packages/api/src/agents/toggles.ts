@@ -11,10 +11,21 @@
  */
 
 import { Tools } from 'librechat-data-provider';
-import type { TEphemeralAgent, TModelSpec } from 'librechat-data-provider';
+import type { AgentToolOptions, TEphemeralAgent, TModelSpec } from 'librechat-data-provider';
 import { ASK_USER_QUESTION_TOOL_NAME } from './hitl/askUserQuestionTool';
+import { synthesizeBackgroundToolOptions } from './background';
+import { synthesizeDeferralToolOptions } from './deferral';
+import { mergeSynthesizedToolOptions } from './selection';
+import { synthesizeIntentToolOptions } from './intent';
 
-type ToggleFields = 'execute_code' | 'file_search' | 'web_search' | 'memory' | 'ask_user_question';
+type ToggleFields =
+  | 'execute_code'
+  | 'file_search'
+  | 'web_search'
+  | 'memory'
+  | 'ask_user_question'
+  | 'run_in_background'
+  | 'describe_intent';
 
 interface ToggleSources {
   ephemeralAgent?: Pick<TEphemeralAgent, ToggleFields> | null;
@@ -49,4 +60,19 @@ export function getToggleToolNames({ ephemeralAgent, modelSpec }: ToggleSources)
     }
   }
   return tools;
+}
+
+/**
+ * Per-tool options an ephemeral or model-spec agent carries in place of saved
+ * `tool_options`: its background, intent and deferral selections, composed.
+ */
+export function synthesizeToggleToolOptions({
+  ephemeralAgent,
+  modelSpec,
+}: ToggleSources): AgentToolOptions | undefined {
+  const toolOptions = mergeSynthesizedToolOptions(
+    synthesizeBackgroundToolOptions({ ephemeralAgent, modelSpec }),
+    synthesizeIntentToolOptions({ ephemeralAgent, modelSpec }),
+  );
+  return mergeSynthesizedToolOptions(toolOptions, synthesizeDeferralToolOptions({ modelSpec }));
 }

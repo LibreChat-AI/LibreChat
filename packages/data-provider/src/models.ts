@@ -78,6 +78,17 @@ export type TModelSpec = {
    * agent capability to be enabled by the admin.
    */
   describeIntent?: boolean | string[];
+  /**
+   * Defer tool schemas until the model finds them with `tool_search`, so
+   * equipped tools cost nothing in context until they are needed. Covers
+   * system tools (web search, file search, code execution, memory) as well as
+   * MCP tools. `true` defers every eligible tool; a string array defers only
+   * the named ones, matched against the spec's resolved tool ids or a
+   * capability (`['execute_code', 'web_search']`). `tool_search`, the
+   * `skill` tool and the background poll tool always stay loaded. Requires
+   * the `deferred_tools` agent capability.
+   */
+  deferLoading?: boolean | string[];
   artifacts?: string | boolean;
   mcpServers?: string[];
   skills?: boolean | string[];
@@ -201,6 +212,7 @@ export const tModelSpecSchema = z.object({
   askUserQuestion: z.boolean().optional(),
   runInBackground: z.union([z.boolean(), z.array(z.string())]).optional(),
   describeIntent: z.union([z.boolean(), z.array(z.string())]).optional(),
+  deferLoading: z.union([z.boolean(), z.array(z.string())]).optional(),
   artifacts: z.union([z.string(), z.boolean()]).optional(),
   mcpServers: z.array(z.string()).optional(),
   skills: z.union([z.boolean(), z.array(z.string())]).optional(),

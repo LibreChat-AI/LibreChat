@@ -148,4 +148,12 @@ describe('loadEphemeralAgent model spec tool toggles', () => {
     const agent = await load(specReq({ execute_code: false }, { hideBadgeRow: true }));
     expect(agent?.tools).toContain('execute_code');
   });
+
+  it('carries the spec deferLoading selection as tool options', async () => {
+    const agent = await load(specReq(undefined, { deferLoading: ['execute_code'] }));
+    expect(agent?.tool_options).toEqual({
+      '*': { defer_loading: false },
+      execute_code: { defer_loading: true },
+    });
+  });
 });

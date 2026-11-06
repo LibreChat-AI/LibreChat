@@ -1,7 +1,8 @@
 import { Tools } from 'librechat-data-provider';
 import type { TModelSpec } from 'librechat-data-provider';
+import { getToggleToolNames, resolveToolToggle, synthesizeToggleToolOptions } from './toggles';
 import { ASK_USER_QUESTION_TOOL_NAME } from './hitl/askUserQuestionTool';
-import { getToggleToolNames, resolveToolToggle } from './toggles';
+import { TOOL_SELECTION_WILDCARD } from './selection';
 
 const spec = (overrides: Partial<TModelSpec>): TModelSpec =>
   ({
@@ -70,5 +71,21 @@ describe('getToggleToolNames', () => {
     expect(getToggleToolNames({ ephemeralAgent: { web_search: true } })).toEqual([
       Tools.web_search,
     ]);
+  });
+});
+
+describe('synthesizeToggleToolOptions', () => {
+  it('composes the deferral selection with background and intent selections', () => {
+    const toolOptions = synthesizeToggleToolOptions({
+      modelSpec: spec({ deferLoading: ['web_search'], runInBackground: true }),
+    });
+    expect(toolOptions).toEqual({
+      [TOOL_SELECTION_WILDCARD]: { run_in_background: true, defer_loading: false },
+      web_search: { defer_loading: true },
+    });
+  });
+
+  it('returns nothing when no selection applies', () => {
+    expect(synthesizeToggleToolOptions({ modelSpec: spec({}) })).toBeUndefined();
   });
 });

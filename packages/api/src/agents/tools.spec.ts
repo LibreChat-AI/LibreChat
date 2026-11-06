@@ -315,6 +315,15 @@ describe('buildRunToolSet', () => {
 });
 
 describe('buildHistoricalToolNames', () => {
+  it('predicts tool_search for a wildcard deferral selection', () => {
+    const names = buildHistoricalToolNames({
+      configuredToolNames: ['web_search'],
+      toolOptions: { '*': { defer_loading: true } },
+      deferredToolsAvailable: true,
+    });
+    expect(names.has('tool_search')).toBe(true);
+  });
+
   it('normalizes MCP names and expands toolkits and deferred search', () => {
     expect(
       buildHistoricalToolNames({
