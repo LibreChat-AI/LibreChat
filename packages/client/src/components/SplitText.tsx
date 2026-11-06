@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useSprings, animated, SpringConfig } from '@react-spring/web';
+import { useSprings, animated } from '@react-spring/web';
+import type { SpringConfig } from '@react-spring/web';
 import useRemScale from '~/hooks/useRemScale';
 
 const TEXT_ALIGN: Record<NonNullable<SplitTextProps['textAlign']>, string> = {
@@ -90,8 +91,9 @@ const SplitText: React.FC<SplitTextProps> = ({
   onLetterAnimationComplete,
   onLineCountChange,
 }) => {
+  const containsRtl = /[\p{Script=Arabic}\p{Script=Hebrew}]/u.test(text);
   const { words, letterCount, offsets } = useMemo(() => {
-    const split = text.split(' ').map(splitGraphemes);
+    const split = containsRtl ? [[text]] : text.split(' ').map(splitGraphemes);
     const starts: number[] = [];
     let total = 0;
     for (const w of split) {
@@ -99,7 +101,7 @@ const SplitText: React.FC<SplitTextProps> = ({
       total += w.length;
     }
     return { words: split, letterCount: total, offsets: starts };
-  }, [text]);
+  }, [text, containsRtl]);
   const [inView, setInView] = useState(false);
   const ref = useRef<HTMLParagraphElement>(null);
   const animatedCount = useRef(0);
@@ -171,7 +173,7 @@ const SplitText: React.FC<SplitTextProps> = ({
             key={wordIndex}
             dir="auto"
             aria-hidden="true"
-            className="inline-block whitespace-nowrap"
+            className={`inline-block ${containsRtl ? 'whitespace-normal' : 'whitespace-nowrap'}`}
           >
             {word.map((letter, letterIndex) => {
               const index = offsets[wordIndex] + letterIndex;
