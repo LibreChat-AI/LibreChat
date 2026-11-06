@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import type { ProviderSessionRef } from 'librechat-data-provider';
 import type {
   RefreshTokenBridgeDeleteInput,
   RefreshTokenBridgeIdentity,
@@ -13,6 +14,7 @@ interface StoredRefreshTokenBridge {
   openidIssuer?: string;
   version?: string;
   createdAt: Date | string;
+  providerSession?: ProviderSessionRef;
 }
 
 interface BridgeQuery {
@@ -24,6 +26,13 @@ interface BridgeQuery {
   openidIssuer?: string;
   version?: string;
   expiresAt?: Date;
+  providerSession?: ProviderSessionRef;
+}
+
+/** A resolved recovery bridge, including the provider session it was stored under, if any. */
+export interface ResolvedRefreshTokenBridge {
+  refreshToken: string;
+  providerSession?: ProviderSessionRef;
 }
 
 type IdentityInput = Partial<RefreshTokenBridgeIdentity>;
@@ -47,7 +56,7 @@ export interface RefreshTokenBridgeService {
     userId?: string;
     tenantId?: string;
     openidIssuer?: string;
-  }) => Promise<string | null>;
+  }) => Promise<ResolvedRefreshTokenBridge | null>;
   __internals: {
     hashRefreshToken: (refreshToken: string) => string;
     getBridgeTtlMs: () => number;
@@ -114,6 +123,7 @@ export function createRefreshTokenBridgeService(
     tenantId,
     openidIssuer,
     ttl,
+    providerSession,
   }: RefreshTokenBridgeInput): Promise<string | null> {
     const identity = resolveBridgeIdentity({ userId, tenantId, openidIssuer });
     if (!oldRefreshToken || !newRefreshToken || !identity) {
@@ -131,6 +141,7 @@ export function createRefreshTokenBridgeService(
       openidIssuer: identity.openidIssuer,
       version,
       expiresAt: new Date(Date.now() + bridgeTtl),
+      ...(providerSession ? { providerSession } : {}),
     });
     logger.debug('[RefreshTokenBridge] Stored recovery bridge', {
       tokenHash: oldRefreshTokenHash,
@@ -150,7 +161,7 @@ export function createRefreshTokenBridgeService(
     userId?: string;
     tenantId?: string;
     openidIssuer?: string;
-  }): Promise<string | null> {
+  }): Promise<ResolvedRefreshTokenBridge | null> {
     const identity = resolveBridgeIdentity({ userId, tenantId, openidIssuer });
     if (!oldRefreshToken || !identity) return null;
     const oldRefreshTokenHash = hashRefreshToken(oldRefreshToken);
@@ -176,7 +187,10 @@ export function createRefreshTokenBridgeService(
       userId: identity.userId,
       age: Date.now() - new Date(bridge.createdAt).getTime(),
     });
-    return decrypt(bridge.encryptedNewRefreshToken);
+    return {
+      refreshToken: await decrypt(bridge.encryptedNewRefreshToken),
+      providerSession: bridge.providerSession,
+    };
   }
 
   async function deleteRefreshTokenBridges({

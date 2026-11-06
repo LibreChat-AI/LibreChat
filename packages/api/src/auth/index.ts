@@ -1,4 +1,5 @@
 export * from './domain';
+export * from './authMethod';
 export * from './openid';
 export * from './saml';
 export * from './ldap';
@@ -7,6 +8,7 @@ export * from './provision';
 export * from './proxy';
 export * from './exchange';
 export * from './refresh';
+export * from './adminAuthErrors';
 export * from './googleRefresh';
 export * from './agent';
 export * from './password';

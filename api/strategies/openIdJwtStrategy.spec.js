@@ -39,7 +39,7 @@ jest.mock('@librechat/api', () => ({
   findOpenIDUser: jest.fn(),
   getOpenIdEmail: jest.requireActual('@librechat/api').getOpenIdEmail,
   getOpenIdIssuer: jest.fn(() => 'https://issuer.example.com'),
-  normalizeOpenIdIssuer: jest.requireActual('@librechat/api').normalizeOpenIdIssuer,
+  isOpenIdIssuerMatch: jest.requireActual('@librechat/api').isOpenIdIssuerMatch,
   buildAuthUserDocCacheKey: jest.fn(() => 'auth-user-doc-key'),
   getAuthUserDocCacheMode: jest.fn(() => 'off'),
   getCurrentCachedAuthUserDoc: jest.fn(),
@@ -54,10 +54,21 @@ jest.mock('@librechat/api', () => ({
   getOpenIDBearerAudiences: jest.requireActual('@librechat/api').getOpenIDBearerAudiences,
   math: jest.fn((val, fallback) => fallback),
 }));
+/** Ordinary OpenID-JWT auth must never reach these; asserted directly in the tests below. */
+const mockEstablishProviderSession = jest.fn();
+const mockAuthorizeProviderSession = jest.fn();
+
 jest.mock('~/models', () => ({
   findUser: jest.fn(),
   updateUser: jest.fn(),
   isAgentTriggerPrincipalActive: jest.fn(() => true),
+  establishProviderSession: (...args) => mockEstablishProviderSession(...args),
+  authorizeProviderSession: (...args) => mockAuthorizeProviderSession(...args),
+}));
+
+const mockGetProviderSessionAuthorizer = jest.fn();
+jest.mock('~/server/services/ProviderSession', () => ({
+  getProviderSessionAuthorizer: (...args) => mockGetProviderSessionAuthorizer(...args),
 }));
 jest.mock('~/server/services/Files/strategies', () => ({
   getStrategyFunctions: jest.fn(() => ({
@@ -347,6 +358,19 @@ describe('openIdJwtStrategy – token source handling', () => {
       refresh_token: 'session-refresh',
       expires_at: undefined,
     });
+  });
+
+  it('performs no ProviderSession lookup for ordinary OpenID-JWT authentication', async () => {
+    const req = {
+      headers: { authorization: 'Bearer raw-bearer-token' },
+      session: { openidTokens: { accessToken: 'session-access' } },
+    };
+
+    await invokeVerify(req, payload);
+
+    expect(mockEstablishProviderSession).not.toHaveBeenCalled();
+    expect(mockAuthorizeProviderSession).not.toHaveBeenCalled();
+    expect(mockGetProviderSessionAuthorizer).not.toHaveBeenCalled();
   });
 
   it('should fall back to cookies when session is absent', async () => {

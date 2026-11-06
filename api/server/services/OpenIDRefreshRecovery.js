@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 const cookies = require('cookie');
 const api = require('@librechat/api');
-const { logger } = require('@librechat/data-schemas');
+const { logger, DEFAULT_REFRESH_TOKEN_EXPIRY } = require('@librechat/data-schemas');
 const { deleteSession, findUser } = require('~/models');
 const { getOpenIdConfig, getOpenIdEmail } = require('~/strategies');
 const {
@@ -13,6 +13,7 @@ const {
 const bridge = require('./RefreshTokenBridge');
 const flight = require('./OpenIDRefreshFlight');
 const { refreshOpenIDSession } = require('./OpenIDSessionRefresh');
+const { providerSessionAuthorizer, getProviderSessionClient } = require('./ProviderSession');
 
 module.exports = api.createOpenIDRefreshRecoveryService({
   jwt,
@@ -45,4 +46,8 @@ module.exports = api.createOpenIDRefreshRecoveryService({
   revokeOpenIDRefreshFlights: flight.revokeOpenIDRefreshFlights,
   withOpenIDRefreshFlightLease: flight.withOpenIDRefreshFlightLease,
   bridgeGraceMs: bridge.OPENID_REFRESH_BRIDGE_GRACE_MS,
+  math: api.math,
+  defaultRefreshTokenExpiry: DEFAULT_REFRESH_TOKEN_EXPIRY,
+  providerSessionAuthorizer,
+  getProviderSessionClient,
 });
