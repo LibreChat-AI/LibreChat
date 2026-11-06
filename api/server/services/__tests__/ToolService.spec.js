@@ -2002,6 +2002,50 @@ describe('ToolService - Action Capability Gating', () => {
       });
     });
 
+    it.each([
+      [true, 'authentication_required'],
+      [false, 'tools_unavailable'],
+    ])(
+      'retains the OAuth outcome when selected MCP tools remain unavailable (%s)',
+      async (oauthRequired, reason) => {
+        const req = createMockReq([AgentCapabilities.tools]);
+        const serverName = 'Protected';
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig([AgentCapabilities.tools]));
+        mockResolveConfigServers.mockResolvedValue({
+          [serverName]: {
+            type: 'streamable-http',
+            url: 'https://mcp.example.com/protected',
+            requiresOAuth: true,
+          },
+        });
+        mockGetMCPServerTools.mockResolvedValue(null);
+        mockFlowManager.getFlowState.mockResolvedValue(null);
+        mockLoadToolDefinitions.mockImplementationOnce(async (params, deps) => {
+          await deps.getOrFetchMCPServerTools(params.userId, serverName);
+          return {
+            toolDefinitions: [],
+            toolRegistry: new Map(),
+            hasDeferredTools: false,
+            mcpResolution: { expectedToolCount: 1, resolvedToolCount: 0 },
+          };
+        });
+        reinitMCPServer
+          .mockImplementationOnce(async ({ oauthStart }) => {
+            await oauthStart('https://auth.example.com/authorize');
+            return { availableTools: null, oauthRequired: true };
+          })
+          .mockResolvedValueOnce({ availableTools: null, oauthRequired });
+        await expect(
+          loadAgentTools({
+            req,
+            res: { writableEnded: false },
+            agent: { id: 'agent_123', tools: [`search${Constants.mcp_delimiter}${serverName}`] },
+            definitionsOnly: true,
+          }),
+        ).rejects.toMatchObject({ code: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE', reason });
+      },
+    );
+
     it('fences resumable MCP OAuth definition events to the owning job epoch', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       const res = { writableEnded: false };
