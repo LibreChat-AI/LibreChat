@@ -2,9 +2,10 @@
  * @jest-environment jsdom
  */
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { readFileSync } from 'node:fs';
 import { Chat } from '@librechat/chat';
 import { createInstance } from 'i18next';
-import { ContentTypes } from 'librechat-data-provider';
+import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Part,
@@ -12,6 +13,12 @@ import {
   MessageRow,
   MentionPopover,
   ChatScreen,
+  HoverButtons,
+  MessagesView,
+  SiblingSwitch,
+  ComposerField,
+  ComposerFrame,
+  ComposerActions,
   getHeaderHoverLabel,
   EventSubagentActivityGroup,
 } from '@librechat/chat/components';
@@ -32,6 +39,7 @@ import type {
   ChatEvent,
   TMessage,
   ParentSubagentIndex,
+  TConversation,
   TMessageContentParts,
 } from 'librechat-data-provider';
 import type { ChatState, ChatStream, ChatTransport } from '@librechat/chat';
@@ -41,6 +49,7 @@ import type {
   ChatSurface,
   ChatContract,
   MessagesHost,
+  SteeringControls,
   MessagePartsHost,
 } from '@librechat/chat/react';
 import type { ReactElement } from 'react';
@@ -217,18 +226,26 @@ const messagesHost: MessagesHost = {
   }),
   useForkConversation: () => null,
   useMessageCopy: () => ({ copyToClipboard: () => undefined, canCopy: false }),
-  useScrolling: () => ({
-    contentRef: { current: null },
-    scrollableRef: { current: null },
-    messagesEndRef: { current: null },
-    handleSmoothToRef: () => undefined,
-    debouncedHandleScroll: () => undefined,
-    handleNearBottomChange: () => undefined,
-  }),
+  useGetMessages: () => () => undefined,
+  useHasPendingTurn: () => false,
+  renderMessageAudio: () => null,
   useScreenshotTarget: () => undefined,
   useAutoScroll: () => false,
-  useConversationSeen: () => () => undefined,
+  useConversationMessages: () => undefined,
+  useAssistant: () => undefined,
+  useGetAddedConvo: () => () => null,
+  useStreamedAttachments: () => undefined,
+  useMessageFeedback: () => () => undefined,
+  useSeenSource: () => ({
+    readReply: () => undefined,
+    hasReplyProof: () => false,
+    markSeen: () => undefined,
+    consumeFocusSuppression: () => false,
+  }),
   renderMessageIcon: () => null,
+  renderMessageRow: () => null,
+  renderActivity: () => null,
+  useFileMap: () => undefined,
 };
 
 const renderers: PartRenderers = {
@@ -249,6 +266,9 @@ const partsOf = (message: TMessage): TMessageContentParts[] =>
   message.content?.length
     ? message.content
     : [{ type: ContentTypes.TEXT, text: message.text ?? '' }];
+
+const conversation = { conversationId: 'convo', endpoint: EModelEndpoint.agents } as TConversation;
+const noop = (): void => undefined;
 
 function ChatView({ chat }: { chat: Chat }): ReactElement {
   const subscribe = useMemo(() => chat.subscribe.bind(chat), [chat]);
@@ -273,7 +293,20 @@ function ChatView({ chat }: { chat: Chat }): ReactElement {
                   ariaLabel={label}
                   hoverLabel={getHeaderHoverLabel(false, message.model)}
                   icon={null}
-                  footer={null}
+                  footer={
+                    <HoverButtons
+                      index={0}
+                      isLast={false}
+                      isEditing={false}
+                      message={message}
+                      conversation={conversation}
+                      enterEdit={noop}
+                      regenerate={noop}
+                      handleContinue={noop}
+                      copyToClipboard={noop}
+                      getCanCopy={() => status === 'ready'}
+                    />
+                  }
                   timestamp={message.createdAt}
                   isCreatedByUser={message.isCreatedByUser}
                 >
@@ -386,6 +419,8 @@ describe('a consumer built on the public entries', () => {
     expect(await within(list).findByText('Hello there.')).toBeInTheDocument();
     expect(within(list).getAllByRole('listitem')).toHaveLength(2);
     expect(await screen.findByText('ready')).toBeInTheDocument();
+    const settled = within(list).getByRole('group', { name: 'Assistant' });
+    expect(within(settled).getByRole('button', { name: 'com_ui_copy_to_clipboard' })).toBeEnabled();
     expect(document.documentElement.style.getPropertyValue('--theme-mono-font-family')).toContain(
       'Inconsolata',
     );
@@ -465,6 +500,64 @@ describe('a consumer built on the public entries', () => {
       within(screen.getByRole('list', { name: 'Messages' })).getByText('Question'),
     ).toBeInTheDocument();
   });
+
+  it('drafts in the composer frame and offers send once there is text', () => {
+    const textAreaRef = { current: null as HTMLTextAreaElement | null };
+    function Composer(): ReactElement {
+      const [text, setText] = useState('');
+      return (
+        <ThemeProvider themeDefinition={clickHouseTheme} persistThemeDefinition={false}>
+          <ComposerFrame
+            onSubmit={(event) => event.preventDefault()}
+            direction="auto"
+            maximizeChatSpace={false}
+            focused={false}
+            isTemporary={false}
+            onFocusDraft={() => textAreaRef.current?.focus()}
+          >
+            <ComposerField
+              textAreaRef={textAreaRef}
+              ariaLabel="Message"
+              textareaProps={{ value: text, onChange: (event) => setText(event.target.value) }}
+              value={text}
+              listening={false}
+              dictationActive={false}
+              locked={false}
+            />
+            <ComposerActions
+              text={text}
+              submitButtonRef={{ current: null }}
+              isSubmitting={false}
+              answersAsk={false}
+              hasEndpoint
+              steering={{ duringRunActive: false } as SteeringControls}
+              isNewConversation
+              getText={() => text}
+              onConsumed={() => undefined}
+              enterToSend
+              fileCount={0}
+              sendDisabled={false}
+              duringRunDisabled={false}
+              showStopButton={false}
+              setShowStopButton={() => undefined}
+              stop={() => undefined}
+              canStop
+              isPreparingFromUrl={false}
+            />
+          </ComposerFrame>
+        </ThemeProvider>
+      );
+    }
+    render(<Composer />);
+
+    const field = screen.getByRole('textbox', { name: 'Message' });
+    expect(textAreaRef.current).toBe(field);
+    expect(screen.getByTestId('send-button')).toBeDisabled();
+    fireEvent.change(field, { target: { value: 'Hello' } });
+    expect(screen.getByTestId('send-button')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('composer-surface'));
+    expect(document.activeElement).toBe(field);
+  });
 });
 
 describe('a consumer rendering subagent activity', () => {
@@ -492,7 +585,7 @@ describe('a consumer rendering subagent activity', () => {
   };
   const streamHost: StreamHost = {
     useResumableServices: unused,
-    useLegacyStream: unused,
+    useLegacyServices: unused,
     useTransport: () => null,
     useQueuedTurnReceipts: unused,
     useActiveJobs: unused,
@@ -546,5 +639,101 @@ describe('a consumer rendering subagent activity', () => {
     expect(child).toHaveTextContent('researcher-a');
     fireEvent.click(child as HTMLElement);
     expect(claimForeground).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders a branched conversation through the package message list and its default thread', () => {
+    const root = '00000000-0000-0000-0000-000000000000';
+    const base = { conversationId: 'convo', createdAt: new Date().toISOString() };
+    const messages: TMessage[] = [
+      { ...base, messageId: 'u1', parentMessageId: root, isCreatedByUser: true, text: 'Question' },
+      { ...base, messageId: 'a1', parentMessageId: 'u1', isCreatedByUser: false, text: 'First' },
+      { ...base, messageId: 'a2', parentMessageId: 'u1', isCreatedByUser: false, text: 'Second' },
+    ];
+    const threadHost: MessagesHost = {
+      ...messagesHost,
+      renderMessageRow: ({ message, siblingIdx, siblingCount, setSiblingIdx }) => {
+        const label = message.isCreatedByUser ? 'You' : 'Assistant';
+        return (
+          <MessageRow
+            message={message}
+            label={label}
+            ariaLabel={label}
+            icon={null}
+            footer={
+              <SiblingSwitch
+                siblingIdx={siblingIdx}
+                siblingCount={siblingCount}
+                setSiblingIdx={setSiblingIdx}
+              />
+            }
+            isCreatedByUser={message.isCreatedByUser}
+          >
+            <p>{message.text}</p>
+          </MessageRow>
+        );
+      },
+    };
+    const contract = {
+      index: 0,
+      isSubmitting: false,
+      latestMessageDepth: 0,
+      messagesKey: 'convo',
+    } as ChatContract;
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatContext.Provider value={contract}>
+            <MessagesHostProvider host={threadHost}>
+              <MessagePartsHostProvider host={host}>
+                <MessagesView
+                  messages={messages}
+                  messagesTree={messages}
+                  showScrollButton={false}
+                  maximizeChatSpace={false}
+                />
+              </MessagePartsHostProvider>
+            </MessagesHostProvider>
+          </ChatContext.Provider>
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+
+    const reply = screen.getByRole('group', { name: 'Assistant' });
+    expect(screen.getByRole('group', { name: 'You' })).toHaveTextContent('Question');
+    expect(reply).toHaveTextContent('Second');
+    expect(within(reply).getByRole('status')).toHaveTextContent('2 / 2');
+
+    fireEvent.click(within(reply).getByRole('button', { name: 'com_ui_previous_sibling' }));
+    const older = screen.getByRole('group', { name: 'Assistant' });
+    expect(older).toHaveTextContent('First');
+    expect(within(older).getByRole('status')).toHaveTextContent('1 / 2');
+  });
+});
+
+describe('a consumer styled by the published stylesheet alone', () => {
+  /** What `@librechat/client/style.css` declares for an element's own classes. jsdom cannot load
+   *  the whole file (`@layer`, `:dir()`), so the rendered class list is matched by hand. */
+  const stylesheet = readFileSync(require.resolve('@librechat/client/style.css'), 'utf8');
+  const declaredFor = (element: Element): string =>
+    Array.from(stylesheet.matchAll(/([^{}]+)\{([^{}]*)\}/g))
+      .filter(([, selectors]) =>
+        selectors
+          .split(',')
+          .some((selector) =>
+            Array.from(element.classList).some((name) => selector.trim() === `.${name}`),
+          ),
+      )
+      .map(([, , declarations]) => declarations)
+      .join('');
+
+  it('sets the tool row type from a chain that ends in a length', () => {
+    render(<div data-testid="row" className="progress-text-wrapper" />);
+
+    const rule = declaredFor(screen.getByTestId('row'));
+    expect(rule).toMatch(
+      /font-size:[^;]*--markdown-font-size[^;]*;\s*line-height:[^;]*--markdown-font-size/,
+    );
+    /** Neither custom property is defined by the published theme, so each chain ends in a length. */
+    expect(rule.match(/var\(--font-size-base, 1rem\)/g)).toHaveLength(2);
   });
 });

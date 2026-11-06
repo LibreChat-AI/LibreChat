@@ -13,16 +13,20 @@ import {
   ComposerRestoreProvider,
   pendingApprovalActionFamily,
 } from '@librechat/chat/react';
+import type { ChatScreenMessagesSlots } from '@librechat/chat/components';
 import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
+import PendingSteers from './Messages/Content/Parts/PendingSteers';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { OwnerTextProvider } from './Messages/PrivateText';
-import MessagesView from './Messages/MessagesView';
+import ScrollButton from './Messages/ScrollButton';
+import PendingTurn from './Messages/PendingTurn';
+import { FLAT_THREAD } from './Messages/Thread';
 import { useAddedResponse } from '~/hooks';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
@@ -31,6 +35,14 @@ import Lia from '~/components/Lia';
 import Landing from './Landing';
 import Header from './Header';
 import store from '~/store';
+
+/** The app's pieces of the package message list. */
+const messagesSlots: ChatScreenMessagesSlots = {
+  flatThread: FLAT_THREAD,
+  renderPendingTurn: (props) => <PendingTurn {...props} />,
+  renderPendingSteers: (props) => <PendingSteers {...props} />,
+  renderScrollButton: (props) => <ScrollButton {...props} />,
+};
 
 type ChatViewProps = {
   index?: number;
@@ -101,7 +113,7 @@ function ChatViewPane({
                         <Header parentConversationId={parentConversationId} readOnly={readOnly} />
                       )}
                       renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
-                      renderMessages={(thread) => <MessagesView {...thread} />}
+                      messagesSlots={messagesSlots}
                       landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
                       renderColumn={(column) => (
                         <OwnerTextProvider

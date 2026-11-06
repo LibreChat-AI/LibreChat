@@ -1,7 +1,9 @@
+import { useEffect } from 'react';
 import { useStore } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
+import { launchedConversationFamily } from '@librechat/chat/react';
 import type { ChatTurnsParams, TurnServices } from '@librechat/chat/react';
 import type { TEndpointsConfig } from 'librechat-data-provider';
 import {
@@ -15,17 +17,12 @@ import {
   withSubmittedCodeDecision,
   resolveSubmittedCodeApprovalMode,
 } from '~/hooks/Agents/codeDecision';
-import { activeUsageResponseIdFamily } from '~/components/Chat/Input/TokenUsage/store';
-import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
-import useGetSender from '~/hooks/Conversations/useGetSender';
-import { resolveSubmittedReasoning } from './ask/reasoning';
-import { isHistoryRevalidating } from './ask/guards';
 import useUserKey from '~/hooks/Input/useUserKey';
 
 /** The app's side of a pane's turns: its catalogs, router, composer files, code workspace and
@@ -34,15 +31,12 @@ export default function useTurnServices({
   index,
   conversation,
 }: Pick<ChatTurnsParams, 'index' | 'conversation'>): TurnServices {
-  const store = useStore();
   const navigate = useNavigate();
-  const getSender = useGetSender();
   const queryClient = useQueryClient();
   const setFilesToDelete = useSetFilesToDelete();
   const agentsMap = useAgentsMapContext();
   const { isTemporary, config, auth, getEphemeralAgent, addedConversation } = useChatSettings();
   const { getExpiry } = useUserKey(conversation?.endpoint ?? '');
-  const focusResponse = useFocusRegeneratedResponse();
   const getConversation = useGetConversation(index);
   const codeWorkspaceState = useCodeWorkspace(conversation, addedConversation);
   const { modes: codeApprovalModes, selected: fallbackCodeApprovalMode } = useCodeApprovalMode(
@@ -51,17 +45,25 @@ export default function useTurnServices({
     codeWorkspaceState.mode,
   );
 
+  const store = useStore();
+  /** The composer draft follows the conversation a submission launches; the package writes the
+   *  launch just before it publishes the submission, and the subscription binds it inside that
+   *  write. */
+  useEffect(() => {
+    const launched = launchedConversationFamily(index);
+    return store.sub(launched, () => bindComposerLaunch(store.get(launched), index));
+  }, [store, index]);
+
   return {
     logger,
     isTemporary,
     user: auth.user,
     modelSpecs: config.modelSpecs,
     getEndpointsConfig: () => queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]),
+    agentsMap,
     getEphemeralAgent,
-    getSender,
     getUserKey: getExpiry,
     getRouteProjectId: getRouteChatProjectId,
-    isHistoryRevalidating: (conversationId) => isHistoryRevalidating(queryClient, conversationId),
     resolveCode: (submitted) => {
       const latest = getConversation();
       const latestApprovalMode = latest?.codeApprovalMode;
@@ -88,28 +90,11 @@ export default function useTurnServices({
         apply: (current) => withSubmittedCodeDecision(current, workspaceSubmission),
       };
     },
-    resolveReasoning: ({ endpoint, conversation, endpointsConfig, reasoningOverride }) => {
-      const resolved = resolveSubmittedReasoning({
-        queryClient,
-        agentsMap,
-        endpoint,
-        conversation,
-        endpointsConfig,
-        reasoningOverride,
-        drainedReasoning: true,
-        stagedReasoning: reasoningOverride,
-      });
-      return { reasoningOverride: resolved.reasoningOverride, retryable: resolved.restoreStaged };
-    },
     openNewChat: (path) => {
       requestChatFocus();
       navigate(path);
     },
     releaseFiles: (fileIds) => markPasteSubmitted(...fileIds),
     clearFilesToDelete: () => setFilesToDelete({}),
-    bindResponse: (conversationKey, responseMessageId) =>
-      store.set(activeUsageResponseIdFamily(conversationKey), responseMessageId),
-    focusResponse,
-    bindLaunch: bindComposerLaunch,
   };
 }

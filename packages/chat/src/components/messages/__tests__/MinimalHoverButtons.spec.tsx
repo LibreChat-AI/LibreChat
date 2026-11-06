@@ -6,12 +6,10 @@ import type { TMessage } from 'librechat-data-provider';
 import type { MessageCopy, MessageCopyInput } from '../../../react/messages/host';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../react/messages/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import MinimalHoverButtons from '../MinimalHoverButtons';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 const message = { messageId: 'm1', text: 'Shared result.', isCreatedByUser: false } as TMessage;
 
@@ -37,13 +35,13 @@ describe('MinimalHoverButtons', () => {
       searchResults: undefined,
       variant: 'lite',
     });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_copy_to_clipboard' }));
-    expect(screen.getByRole('button', { name: 'com_ui_copied_to_clipboard' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }));
+    expect(screen.getByRole('button', { name: 'Copied to clipboard' })).toBeInTheDocument();
   });
 
   it('disables the copy control when the host cannot copy', () => {
     renderWithCopy(() => ({ copyToClipboard: jest.fn(), canCopy: false }));
 
-    expect(screen.getByRole('button', { name: 'com_ui_copy_to_clipboard' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeDisabled();
   });
 });

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { AGENT_STYLE_TOOLS } from '.';
 import { PixelCard } from '@librechat/client';
 import { useToolCallIntent } from '@librechat/chat/react';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
+import { ROW_GLYPH_SLOT, useToolPreparation } from '@librechat/chat/components';
 import type {
   TAttachment,
   TFile,
@@ -11,7 +11,6 @@ import type {
 } from 'librechat-data-provider';
 import { ToolIcon, isError } from '~/components/Chat/Messages/Content/ToolOutput';
 import Image from '~/components/Chat/Messages/Content/Image';
-import { useToolPreparation } from '../../preparation';
 import { useProgress, useLocalize } from '~/hooks';
 import ProgressText from './ProgressText';
 import { scaleImage } from '~/utils';

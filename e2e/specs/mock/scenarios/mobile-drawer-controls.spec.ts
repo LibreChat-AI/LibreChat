@@ -143,7 +143,9 @@ test.describe('mobile drawer controls', () => {
     page,
   }) => {
     const drawer = await openDrawer(page);
-    const newChat = drawer.getByRole('link', { name: 'New chat' });
+    /** Exact, because a name matches by case-insensitive substring: conversations that other
+     *  specs leave titled "New Chat" in the shared drawer list would all match the header control. */
+    const newChat = drawer.getByRole('link', { name: 'New chat', exact: true });
     await expect(newChat).toHaveCount(1);
     await expect(newChat).toBeVisible();
 
@@ -223,7 +225,7 @@ test.describe('mobile drawer controls', () => {
   }) => {
     const drawer = await openDrawer(page);
     /** New chat left the footer for the header strip: one copy in the drawer, not two. */
-    await expect(drawer.getByRole('link', { name: 'New chat' })).toHaveCount(1);
+    await expect(drawer.getByRole('link', { name: 'New chat', exact: true })).toHaveCount(1);
     await expect(drawer.getByTestId('nav-new-chat-fab')).toHaveCount(1);
 
     await drawer.getByTestId('panel-switcher-button').click();

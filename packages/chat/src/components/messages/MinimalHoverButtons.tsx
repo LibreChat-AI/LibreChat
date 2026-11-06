@@ -1,11 +1,10 @@
 import { useState } from 'react';
 import { Copy, Check } from 'lucide';
-import { cn, Button, MorphIcon, useLocalize, TooltipAnchor } from '@librechat/client';
+import { Button, MorphIcon, useLocalize, TooltipAnchor } from '@librechat/client';
 import type { TMessage, SearchResultData } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { MarkdownVariant } from '../../react/messages/host';
 import { useMessagesHost } from '../../react/messages/host';
-import { revealOnRowHoverClasses } from './styles';
 
 type THoverButtons = {
   message: TMessage;
@@ -32,13 +31,12 @@ export default function MinimalHoverButtons({
         }
         render={
           <Button
-            variant="message-action"
+            variant="message-hover-reveal"
             aria-label={
               isCopied
                 ? localize('com_ui_copied_to_clipboard')
                 : localize('com_ui_copy_to_clipboard')
             }
-            className={cn('ms-0 flex items-center gap-1.5 text-xs', revealOnRowHoverClasses)}
             disabled={!canCopy}
             onClick={() => copyToClipboard(setIsCopied)}
           >

@@ -1,6 +1,10 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { MessagesHostTestProvider } from 'test/messagesHost';
+import { ChatSurfaceHarness } from 'test/harness';
 import ChatView from '../ChatView';
+/** The app registers its parts host at boot (App.jsx); the child's list reads it. */
+import '~/Providers/MessagePartsHostContext';
 
 let mockConversation: Record<string, unknown> | null;
 
@@ -22,6 +26,7 @@ jest.mock('@librechat/client', () => ({
   Spinner: () => <div data-testid="spinner" />,
   cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
   useLocalize: () => (key: string) => key,
+  useRemScale: () => 1,
 }));
 
 jest.mock('librechat-data-provider', () => ({
@@ -72,7 +77,10 @@ jest.mock('~/data-provider', () => ({
 }));
 
 jest.mock('../Input/ConversationStarters', () => () => null);
-jest.mock('../Messages/MessagesView', () => () => <div data-testid="messages" />);
+/** The package list renders the child's messages; the app's pieces of it are not under test. */
+jest.mock('../Messages/PendingTurn', () => () => null);
+jest.mock('../Messages/ScrollButton', () => () => null);
+jest.mock('../Messages/Content/Parts/PendingSteers', () => () => null);
 jest.mock('../Presentation', () => ({ children }: { children: React.ReactNode }) => (
   <>{children}</>
 ));
@@ -117,7 +125,13 @@ describe('ChatView child-thread execution identity', () => {
       },
     };
 
-    render(<ChatView />);
+    render(
+      <ChatSurfaceHarness>
+        <MessagesHostTestProvider>
+          <ChatView />
+        </MessagesHostTestProvider>
+      </ChatSurfaceHarness>,
+    );
 
     expect(screen.queryByTestId('chat-form')).not.toBeInTheDocument();
     expect(screen.getByRole('note')).toHaveTextContent('com_ui_subagent_thread_read_only');

@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
 import { ClassProp } from 'class-variance-authority/types';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { disabledFillClasses } from '~/utils/theme';
+import { disabledFillClasses, revealOnRowHoverClasses } from '~/utils/theme';
 import { cn } from '~/utils';
 
 type ButtonVariantOptions =
@@ -24,6 +24,9 @@ type ButtonVariantOptions =
         | 'ghost'
         | 'quiet'
         | 'message-action'
+        | 'message-hover'
+        | 'message-hover-reveal'
+        | 'popover-option'
         | 'inline-link'
         | 'carousel-nav'
         | 'toolbar'
@@ -37,6 +40,8 @@ type ButtonVariantOptions =
         | 'inline-edit'
         | 'card'
         | 'disclosure'
+        | 'disclosure-line'
+        | 'disclosure-panel'
         | 'option'
         | 'text-action'
         | 'hint'
@@ -46,6 +51,7 @@ type ButtonVariantOptions =
         | 'composer-pill'
         | 'composer-trigger'
         | 'hit-area'
+        | 'field-import'
         | null
         | undefined;
       size?:
@@ -64,6 +70,7 @@ type ButtonVariantOptions =
         | 'wide'
         | 'snug'
         | 'bare'
+        | 'bare-xs'
         | 'theme'
         | 'row'
         | 'tile'
@@ -72,6 +79,17 @@ type ButtonVariantOptions =
       shape?: 'default' | 'soft' | 'auth-action' | 'theme' | 'round' | null | undefined;
     } & ClassProp)
   | undefined;
+
+/**
+ * A button in the hover toolbar under a message (copy, edit, fork, rate): a small padded square in
+ * the alt secondary ink. `data-hover-active` marks a button whose surface (the editor, the fork
+ * popover, a rating) is open; it lights that button and holds the whole toolbar opaque until the
+ * surface closes, so the pointer can leave the row without the actions vanishing from under it.
+ * The marker is not the legacy `active` class, which other toolbar buttons carry at rest.
+ * `hover-button` is the marker the app's narrow-screen stylesheet keeps visible.
+ */
+const messageHoverClasses =
+  'hover-button size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-text-primary group-has-[[data-hover-active]]:opacity-100 data-[hover-active]:bg-surface-hover data-[hover-active]:text-text-primary';
 
 const buttonVariantRecipe = cva(
   [
@@ -97,10 +115,11 @@ const buttonVariantRecipe = cva(
         /**
          * A control floating over scrolling content, such as the scroll-to-bottom chip. A theme that
          * draws no chrome outline gives it an opaque fill and a lift instead, so it never reads as a
-         * bare glyph over the thread.
+         * bare glyph over the thread. Its own enter and exit own its visibility, and it is
+         * disabled only while that runs, so being disabled never dims it on top of the fade.
          */
         floating:
-          'border border-border-chrome bg-surface-chat/90 text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed theme-chrome-quiet:bg-surface-chat theme-chrome-quiet:shadow-md theme-chrome-quiet:hover:bg-surface-hover theme-chrome-quiet:hover:active:bg-surface-pressed',
+          'disabled:opacity-100 border border-border-chrome bg-surface-chat/90 text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed theme-chrome-quiet:bg-surface-chat theme-chrome-quiet:shadow-md theme-chrome-quiet:hover:bg-surface-hover theme-chrome-quiet:hover:active:bg-surface-pressed',
         /** An outlined filter whose pressed state stays visible between activations. */
         'outline-toggle':
           'text-text-primary border border-border-control bg-transparent transition-none hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:border-border-heavy aria-pressed:bg-surface-active-alt aria-pressed:hover:bg-surface-active-alt',
@@ -126,6 +145,15 @@ const buttonVariantRecipe = cva(
         /** An icon action under a message: a small padded square that rests in the alt secondary ink. */
         'message-action':
           'size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+        /** A message toolbar action that stays visible, such as the latest message's. */
+        'message-hover': messageHoverClasses,
+        /** A message toolbar action that fades in with its row; see `revealOnRowHoverClasses`. */
+        'message-hover-reveal': `${messageHoverClasses} ${revealOnRowHoverClasses}`,
+        /** An entry in a small action popover, such as a rating's reasons: it rests in the
+         *  secondary ink, and the chosen entry, marked with `aria-pressed`, keeps the hover fill
+         *  in the primary ink at semibold weight. */
+        'popover-option':
+          'w-full justify-start gap-3 rounded-xl text-text-secondary duration-theme-normal hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:bg-surface-hover aria-pressed:font-semibold aria-pressed:text-text-primary',
         /** A text action that reads as a link in a list or footer: no fill at rest or under the pointer,
          *  and a ring flush against the control. */
         'inline-link':
@@ -221,6 +249,16 @@ const buttonVariantRecipe = cva(
          */
         disclosure:
           'w-full justify-start focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
+        /** A disclosure that reads as one line of body text, such as a compacted summary's
+         *  header: normal weight on an 18px line, its glyph slot spacing itself, and the default
+         *  corner so its focus ring stays rounded. */
+        /** The header row of a bordered panel that folds the panel's body open, such as a turn's
+         *  subagent activity: the quiet ink rising to primary with a hover fill, and the control
+         *  focus ring inset in the row because it sits flush against the panel's edge. */
+        'disclosure-panel':
+          'w-full justify-start text-start text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-focus-control focus-visible:ring-inset focus-visible:ring-offset-0',
+        'disclosure-line':
+          'w-full justify-start gap-0 font-normal leading-4.5 focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
         /**
          * A full-width answer row in an option list, such as the choices of an
          * `ask_user_question`. The fill follows the pointer instantly rather than
@@ -265,6 +303,11 @@ const buttonVariantRecipe = cva(
          *  it draws only its focus ring, inside its own box. */
         'hit-area':
           'rounded-full bg-transparent focus-visible:ring-inset focus-visible:ring-offset-0',
+        /** A field-height control that fills a value by importing a file, such as a service
+         *  account key: a quiet field in the secondary ink that turns to the success ink under the
+         *  pointer, and reports the import's outcome through `data-status`. */
+        'field-import':
+          'rounded-sm bg-surface-secondary text-xs font-normal text-text-secondary hover:bg-surface-hover hover:text-status-success focus-visible:ring-text-primary data-[status=invalid]:text-text-destructive data-[status=success]:text-status-success',
       },
       size: {
         default: 'h-theme-button px-theme-button-x py-2',
@@ -290,6 +333,9 @@ const buttonVariantRecipe = cva(
         snug: 'h-theme-button p-1',
         /** Sized by its own text with no pad, for an action set inside a sentence. */
         bare: 'h-auto p-0',
+        /** `bare` at the small text size with a tight gap, for an inline toggle beside its glyph
+         *  such as a clipped text's Show more. */
+        'bare-xs': 'h-auto gap-1 p-0 text-xs',
         icon: 'size-theme-button',
         'icon-sm': 'size-theme-icon-button-sm p-0',
         'icon-xs': 'size-theme-button-xs',
@@ -339,6 +385,12 @@ const buttonVariantRecipe = cva(
       },
       /* These carry their own box, which the default size's height and padding would otherwise win. */
       { variant: 'message-action', size: 'default', class: 'size-auto p-1.5' },
+      {
+        variant: ['message-hover', 'message-hover-reveal'],
+        size: 'default',
+        class: 'size-auto p-1.5',
+      },
+      { variant: 'popover-option', size: 'default', class: 'h-auto p-2' },
       { variant: 'inline-link', size: 'default', class: 'h-auto p-0' },
       { variant: 'carousel-nav', size: 'default', class: 'h-auto p-2' },
       { variant: 'toolbar', size: 'default', class: 'h-auto px-2 py-1' },
@@ -382,6 +434,9 @@ const buttonVariantRecipe = cva(
       { variant: 'composer-pill', size: 'default', class: 'h-theme-button-compact px-2.5 py-0' },
       { variant: 'composer-trigger', size: 'default', class: 'h-theme-button-compact px-2 py-0' },
       { variant: 'hit-area', size: 'default', class: 'h-auto p-0' },
+      { variant: 'disclosure-line', size: 'default', class: 'h-auto p-0' },
+      { variant: 'disclosure-panel', size: 'default', class: 'h-auto px-3' },
+      { variant: 'field-import', size: 'default', class: 'h-theme-field px-2 py-2' },
     ],
     defaultVariants: {
       variant: 'default',

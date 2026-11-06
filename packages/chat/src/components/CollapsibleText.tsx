@@ -118,14 +118,14 @@ const CollapsibleText: NamedExoticComponent<CollapsibleTextProps> = memo(functio
         <Button
           type="button"
           variant="link"
-          size="bare"
+          size="bare-xs"
           onClick={() => {
             if (!expanded) onExpand?.();
             setExpanded((prev) => !prev);
           }}
           aria-expanded={expanded}
           aria-controls={contentId}
-          className="mt-1 gap-1 text-xs"
+          className="mt-1"
         >
           {expanded ? (
             <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />

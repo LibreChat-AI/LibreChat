@@ -6,6 +6,7 @@ import type {
   OpenIDSessionIdentitySource,
   RefreshTokenBridgeIdentity,
 } from '~/utils/identity';
+import type { TokenRetirementSignals } from '../twoFactor';
 
 export type TokenPreference = 'access_token' | 'id_token';
 export type AsyncVoidCallback = (error?: Error | null) => void;
@@ -91,7 +92,7 @@ export interface OpenIDResponse {
   clearCookie?: (name: string) => void;
 }
 
-export interface OpenIDUser extends AuthIdentitySource {
+export interface OpenIDUser extends AuthIdentitySource, TokenRetirementSignals {
   _id?: string | number | { toString(): string };
   id?: string;
   email?: string;

@@ -228,6 +228,7 @@ export const AppService = async (params?: {
     mcpSettings,
     mcpAppSandbox,
     fileStrategy,
+    fileListLimit: config.fileListLimit,
     projects,
     registration,
     emailChange,

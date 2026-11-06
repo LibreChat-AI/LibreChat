@@ -1,13 +1,13 @@
 import { createContext, useContext } from 'react';
 import type {
   TUser,
+  Agent,
   TMessage,
   TModelSpec,
   TSubmission,
   TAttachment,
   TConversation,
   TPendingSteer,
-  TEndpointOption,
   TEphemeralAgent,
   TEndpointsConfig,
   TAgentQueuedTurnReceipt,
@@ -83,40 +83,26 @@ export type TurnServices = {
   user?: TUser;
   modelSpecs?: TModelSpec[];
   getEndpointsConfig: () => TEndpointsConfig | undefined;
+  /** The agents a send resolves a saved agent's provider and model from, when the agent query
+   *  has not cached it. */
+  agentsMap?: Record<string, Agent | undefined> | null;
+  /**
+   * Storage read: the ephemeral agent settings the app stored for a conversation key, returned
+   * as stored (no defaults or derivation), or `null` when none are stored.
+   */
   getEphemeralAgent: (conversationId: string) => TEphemeralAgent | null;
-  /** The response sender label for an endpoint option. */
-  getSender: (endpointOption: TEndpointOption) => string;
   /** The stored user key expiry of the pane's endpoint, sent with non-agent endpoints. */
   getUserKey: () => string | undefined;
   /** The project the route scopes a new chat to. */
   getRouteProjectId: () => string | null;
-  /** Whether cached history is mid-refetch and old enough that a send could fork from it. */
-  isHistoryRevalidating: (conversationId: string | null) => boolean;
   /** The send's code decision; `null` refuses the send. */
   resolveCode: (conversation: TConversation | null) => TurnCodeDecision | null;
-  /**
-   * Checks a request-scoped reasoning override against the endpoint's loaded capabilities. An
-   * unsupported one is dropped; `retryable` says it was refused only because the capabilities
-   * are not known yet.
-   */
-  resolveReasoning: (args: {
-    endpoint?: string | null;
-    conversation: TConversation | null;
-    endpointsConfig?: TEndpointsConfig;
-    reasoningOverride: NonNullable<TMessage['reasoningOverride']>;
-  }) => { reasoningOverride: TMessage['reasoningOverride']; retryable: boolean };
   /** Moves the pane to the route a new chat starts from. */
   openNewChat: (path: string) => void;
   /** Marks composer files as submitted, so draft cleanup keeps them. */
   releaseFiles: (fileIds: (string | undefined)[]) => void;
   /** Forgets the files queued for deletion once the composer is cleared. */
   clearFilesToDelete: () => void;
-  /** Binds the conversation's usage display to the response it is waiting on. */
-  bindResponse: (conversationKey: string, responseMessageId: string) => void;
-  /** Brings a regenerated response into view. */
-  focusResponse: (parentMessageId?: string | null) => void;
-  /** Ties the composer launch to the conversation the submission starts. */
-  bindLaunch: (conversation: TSubmission['conversation'], index: number) => void;
 };
 
 /** The conversation a pane shows, and the setter that replaces or updates it. */

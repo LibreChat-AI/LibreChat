@@ -343,15 +343,15 @@ function QuoteButton({ conversationId }: QuoteButtonProps): React.ReactPortal | 
       return;
     }
     if (!next) {
-      button.style.display = 'none';
+      button.hidden = true;
       return;
     }
     const touch = String(next.viaTouch);
     if (button.dataset.touch !== touch) {
       button.dataset.touch = touch;
     }
-    if (button.style.display === 'none') {
-      button.style.display = 'inline-flex';
+    if (button.hidden) {
+      button.hidden = false;
     }
     const { width, height } = button.getBoundingClientRect();
     const maxLeft = Math.max(EDGE_MARGIN, window.innerWidth - width - EDGE_MARGIN);
@@ -629,10 +629,10 @@ function QuoteButton({ conversationId }: QuoteButtonProps): React.ReactPortal | 
       onClick={addQuote}
       aria-label={localize('com_ui_add_to_chat')}
       data-testid="add-to-chat-button"
+      hidden
       style={{
         top: 0,
         left: 0,
-        display: 'none',
       }}
       className={cn(
         'border-border-chrome bg-surface-secondary text-text-primary hover:bg-surface-tertiary fixed z-50 inline-flex items-center gap-1.5 rounded-full border text-sm font-medium shadow-lg transition-colors',

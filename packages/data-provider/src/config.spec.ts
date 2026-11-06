@@ -3296,6 +3296,18 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
     expect(DEPLOYMENT_ONLY_CONFIG_PATHS['telemetry.stackTraceLimit']).toBe('operator');
   });
 
+  it('declares the settings read from librechat.yaml itself or only at startup', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS).toMatchObject({
+      'telemetry.rum': 'operator',
+      clientLimits: 'operator',
+      conversationList: 'operator',
+      passwordHashing: 'startup',
+      'interface.colorModeFromUrl': 'startup',
+      'fileConfig.skills.deletionCleanupConcurrency': 'operator',
+      'endpoints.agents.managementApi': 'operator',
+    });
+  });
+
   it('overlaps neither the base-only sections nor the base-only paths', () => {
     const baseOnly = new Set<string>([...BASE_ONLY_CONFIG_SECTIONS, ...BASE_ONLY_CONFIG_PATHS]);
     for (const path of Object.keys(DEPLOYMENT_ONLY_CONFIG_PATHS)) {

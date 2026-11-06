@@ -1,11 +1,15 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { ToolAuthWarningContext } from '@librechat/chat/components';
 import { Tools, Constants, dataService } from 'librechat-data-provider';
-import { LoneGroupContext, SoleToolContext } from '@librechat/chat/react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import {
+  LoneGroupContext,
+  SoleToolContext,
+  GeneratedToolLabelContext,
+} from '@librechat/chat/react';
 import type { TStartupConfig } from 'librechat-data-provider';
 import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
-import { ToolAuthWarningContext } from '../auth';
 import ToolCall from '../ToolCall';
 import { logger } from '~/utils';
 import store from '~/store';
@@ -94,6 +98,7 @@ jest.mock('../Parts', () => ({
 }));
 
 jest.mock('@librechat/client', () => {
+  const actual = jest.requireActual('@librechat/client');
   const DialogPart = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
   const DialogButton = ({
     children,
@@ -103,6 +108,8 @@ jest.mock('@librechat/client', () => {
     onClick?: () => void;
   }) => <button onClick={onClick}>{children}</button>;
   return {
+    cn: actual.cn,
+    useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
     Button: ({ children, onClick, ...props }: any) => (
       <button onClick={onClick} {...props}>
         {children}
@@ -1250,5 +1257,43 @@ describe('ToolCall sole tool disclosure', () => {
     );
     const panel = container.querySelector('[style*="grid-template-rows"]') as HTMLElement;
     expect(panel.style.gridTemplateRows).toBe('0fr');
+  });
+});
+
+describe('generated single-tool label', () => {
+  it.each(['search_documents_mcp_Workspace', 'get_weather_action_api---example---com', 'lookup'])(
+    'replaces the completed %s row with its panel',
+    (name) => {
+      render(
+        <RecoilRoot>
+          <GeneratedToolLabelContext.Provider value>
+            <ToolCall
+              name={name}
+              args='{"intent":"Check weather","query":"weather"}'
+              output="sunny"
+              initialProgress={1}
+              isSubmitting={false}
+            />
+          </GeneratedToolLabelContext.Provider>
+        </RecoilRoot>,
+      );
+      expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+    },
+  );
+  it('keeps the output available without a second disclosure', () => {
+    render(
+      <RecoilRoot>
+        <GeneratedToolLabelContext.Provider value>
+          <ToolCall
+            name="search_documents_mcp_Workspace"
+            args='{"query":"weather"}'
+            output="sunny"
+            initialProgress={1}
+            isSubmitting={false}
+          />
+        </GeneratedToolLabelContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call-info')).toBeInTheDocument();
   });
 });

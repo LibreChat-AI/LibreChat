@@ -13,17 +13,11 @@ import StructuredMessage from '~/components/Messages/MessageContent';
 import MessageParts from '~/components/Chat/Messages/MessageParts';
 import Message from '~/components/Chat/Messages/Message';
 import store from '~/store';
+import '~/components/Chat/Messages/Content/register';
+import '~/Providers/MessagesHostContext';
 
 let mockHoverButtonsRenderCount = 0;
 let mockContentRenderCount = 0;
-
-jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
-  __esModule: true,
-  default: () => {
-    mockHoverButtonsRenderCount += 1;
-    return <div data-testid="hover-buttons" />;
-  },
-}));
 
 jest.mock('~/components/Chat/Messages/Content/MessageContent', () => ({
   __esModule: true,
@@ -51,6 +45,10 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => {
 
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
+  HoverButtons: () => {
+    mockHoverButtonsRenderCount += 1;
+    return <div data-testid="hover-buttons" />;
+  },
   AuthorHeader: () => <div data-testid="author-header" />,
 }));
 
@@ -65,12 +63,14 @@ jest.mock('@librechat/client', () => ({
 }));
 
 jest.mock('~/hooks', () => {
-  const useMessageProcess = jest.requireActual('~/hooks/Messages/useMessageProcess').default;
-  const useMemoizedChatContext = jest.requireActual(
-    '~/hooks/Messages/useMemoizedChatContext',
-  ).default;
-  const useMessageHelpers = jest.requireActual('~/hooks/Messages/useMessageHelpers').default;
+  const { useMessageProcess, useMemoizedChatContext } = jest.requireActual('@librechat/chat/react');
+  const { useMessageHelpers } = jest.requireActual('@librechat/chat/components');
+  const { getMessageClipboardSource, hasCopyableText, useCopyMessageToClipboard } =
+    jest.requireActual('~/hooks/Messages/useCopyToClipboard');
   return {
+    getMessageClipboardSource,
+    hasCopyableText,
+    useCopyMessageToClipboard,
     useMessageProcess,
     useMessageHelpers,
     useMemoizedChatContext,

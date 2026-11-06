@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useOutletContext } from 'react-router-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Spinner, Button, SecretInput, Alert } from '@librechat/client';
 import { useResetPasswordMutation } from 'librechat-data-provider/react-query';
+import { CREDENTIAL_RETIREMENT_INCOMPLETE_CODE } from 'librechat-data-provider';
 import type { TResetPassword } from 'librechat-data-provider';
 import type { TLoginLayoutContext } from '~/common';
 import { useLocalize } from '~/hooks';
@@ -19,11 +21,19 @@ function ResetPassword() {
   const [params] = useSearchParams();
   const password = watch('password');
   const resetPassword = useResetPasswordMutation();
+  /** The password changed, but not every earlier session could be signed out. */
+  const [retirementIncomplete, setRetirementIncomplete] = useState(false);
   const { setError, setHeaderText, startupConfig } = useOutletContext<TLoginLayoutContext>();
 
   const onSubmit = (data: TResetPassword) => {
     resetPassword.mutate(data, {
-      onError: () => {
+      onError: (error) => {
+        const code = (error as { response?: { data?: { code?: string } } })?.response?.data?.code;
+        if (code === CREDENTIAL_RETIREMENT_INCOMPLETE_CODE) {
+          setHeaderText('com_auth_reset_password_success');
+          setRetirementIncomplete(true);
+          return;
+        }
         setError('com_auth_error_invalid_reset_token');
       },
       onSuccess: () => {
@@ -32,12 +42,24 @@ function ResetPassword() {
     });
   };
 
-  if (resetPassword.isSuccess) {
+  if (resetPassword.isSuccess || retirementIncomplete) {
     return (
       <>
-        <Alert variant="success" icon={false} elevation="raised" size="roomy" className="mt-6">
+        <Alert
+          variant={retirementIncomplete ? 'warning' : 'success'}
+          icon={retirementIncomplete}
+          elevation="raised"
+          size="roomy"
+          className="mt-6"
+        >
           <div className="flex flex-col space-y-4">
-            <p>{localize('com_auth_login_with_new_password')}</p>
+            <p>
+              {localize(
+                retirementIncomplete
+                  ? 'com_auth_reset_password_incomplete'
+                  : 'com_auth_login_with_new_password',
+              )}
+            </p>
             <Button
               onClick={() => navigate('/login')}
               aria-label={localize('com_auth_sign_in')}

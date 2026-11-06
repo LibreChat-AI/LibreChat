@@ -1879,8 +1879,7 @@ html {
 
 /* iOS zooms into a focused field under 16px and the installed PWA never zooms back out. */
 @media (any-pointer: coarse) {
-  .message-editor-text,
-  .composer-text {
+  .message-editor-text {
     font-size: max(16px, var(--markdown-font-size, var(--font-size-base)));
   }
 }
@@ -1902,21 +1901,6 @@ html {
 .tool-status-text {
   font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
   line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base)));
-}
-
-.progress-text-wrapper {
-  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
-  line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base)));
-}
-
-.progress-text-content {
-  font-size: inherit;
-  line-height: inherit;
-}
-
-.progress-text-wrapper button {
-  font-size: inherit;
-  line-height: inherit;
 }
 
 .tooltip {

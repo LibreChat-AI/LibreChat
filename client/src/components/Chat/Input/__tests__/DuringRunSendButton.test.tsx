@@ -1,11 +1,10 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { useForm } from 'react-hook-form';
+import { ComposerActions } from '@librechat/chat/components';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { SteeringControls } from '@librechat/chat/react';
 import type { ShortcutOverride } from '~/store/misc';
 import { ComposerHostTestProvider } from 'test/composerHost';
-import { WatchedDuringRunSendButton } from '../watched';
 import store from '~/store';
 
 jest.mock('@librechat/client', () => ({
@@ -50,6 +49,7 @@ const steeringStub = ({
     canSteer,
     canControlGeneration,
     pausedOnApproval,
+    duringRunActive: true,
     interruptSteer: mockInterruptSteer,
     steerFromComposer: mockSteerFromComposer,
     queueFromComposer: mockQueueFromComposer,
@@ -68,17 +68,27 @@ function Harness({
   enterToSend: boolean;
   disabled?: boolean;
 }) {
-  const methods = useForm<{ text: string }>({ defaultValues: { text: TEXT } });
   return (
     <ComposerHostTestProvider>
-      <WatchedDuringRunSendButton
-        control={methods.control}
+      <ComposerActions
+        text={TEXT}
+        submitButtonRef={React.createRef<HTMLButtonElement>()}
+        isSubmitting
+        answersAsk={false}
+        hasEndpoint
         steering={steering}
         isNewConversation={isNewConversation}
         getText={() => TEXT}
         onConsumed={mockOnConsumed}
         enterToSend={enterToSend}
-        disabled={disabled}
+        fileCount={0}
+        sendDisabled={false}
+        duringRunDisabled={disabled}
+        showStopButton={false}
+        setShowStopButton={jest.fn()}
+        stop={jest.fn()}
+        canStop
+        isPreparingFromUrl={false}
       />
     </ComposerHostTestProvider>
   );

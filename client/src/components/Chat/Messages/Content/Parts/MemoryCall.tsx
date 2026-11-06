@@ -1,28 +1,16 @@
 import { useMemo } from 'react';
 import { Brain } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
-import { parseJsonField } from '@librechat/chat';
-import { BareStatus } from '@librechat/chat/components';
 import { toolPanelSpacingClassName } from '@librechat/chat/react';
+import { BareStatus, MemoryInfo } from '@librechat/chat/components';
+import { parseJsonField, isMemoryFailureOutput } from '@librechat/chat';
 import type { PartMetadata, TAttachment, MemoryArtifact } from 'librechat-data-provider';
+import type { MemoryToolName } from '@librechat/chat';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
-import MemoryInfo from '../MemoryInfo';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-
-type MemoryToolName = 'set_memory' | 'delete_memory';
-
-export function isMemoryFailureOutput(toolName: MemoryToolName, output: string): boolean {
-  const trimmed = output.trim();
-  if (!trimmed) {
-    return false;
-  }
-  return toolName === 'set_memory'
-    ? !/^(?:Memory set for key|Memory saved\b)/i.test(trimmed)
-    : !/^Memory deleted(?: for key|\.)/i.test(trimmed);
-}
 
 export default function MemoryCall({
   toolName,
@@ -83,7 +71,7 @@ export default function MemoryCall({
 
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
         <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5" ref={rowRef}>
           <ProgressText
@@ -108,7 +96,7 @@ export default function MemoryCall({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {(hasPanel || phase === 'failed') && (
             <div
               className={cn(
@@ -126,12 +114,12 @@ export default function MemoryCall({
               ) : (
                 <>
                   {memoryKey && (
-                    <div className="text-text-secondary mb-1 text-xs font-bold tracking-wide uppercase">
+                    <div className="text-text-secondary text-3xs mb-1.5 font-medium tracking-wide break-all uppercase">
                       {memoryKey}
                     </div>
                   )}
                   {isSave && memoryValue && (
-                    <div className="text-text-primary text-sm whitespace-pre-wrap">
+                    <div className="text-text-primary text-sm leading-6 break-words whitespace-pre-wrap">
                       {memoryValue}
                     </div>
                   )}
@@ -141,7 +129,7 @@ export default function MemoryCall({
                       claimed the memory was gone while the header said
                       Cancelled. The key above already shows what was tried. */}
                   {!isSave && phase === 'completed' && (
-                    <div className="text-text-secondary text-sm italic">
+                    <div className="text-text-secondary text-sm leading-6">
                       {localize('com_ui_memory_deleted')}
                     </div>
                   )}

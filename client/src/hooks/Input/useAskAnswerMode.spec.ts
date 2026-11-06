@@ -3,7 +3,7 @@ import { Provider, createStore } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
 import {
   AskAnswerHostProvider,
-  collapsedAskActionsAtom,
+  expandedAskActionsAtom,
   askAnswerSelectionAtom,
   askAnswerCheckedAtom,
   askAnswerTextAtom,
@@ -15,6 +15,7 @@ const mockResetComposer = jest.fn();
 const mockGetComposerText = jest.fn(() => 'answer from A');
 const mockSetComposerText = jest.fn();
 const mockSetDraft = jest.fn();
+const mockGetDraft = jest.fn((_id: string): string | null => null);
 let mockSaveDrafts = false;
 let mockAskStatus = 'idle';
 let jotaiStore = createStore();
@@ -42,11 +43,12 @@ jest.mock('~/utils', () => ({
   getAskAnswerDraftId: (id: string) => `draft-${id}`,
   morphTransition: (update: () => void) => update(),
   setDraft: (...args: unknown[]) => mockSetDraft(...args),
+  getDraft: (id: string) => mockGetDraft(id),
 }));
 
 import { useGetMessagesByConvoId } from '~/data-provider';
-import { findLiveAskUserQuestion } from '~/utils/approval';
 import useAskAnswerMode from './useAskAnswerMode';
+import { findLiveAskUserQuestion } from '@librechat/chat';
 
 const mockUseGetMessages = useGetMessagesByConvoId as jest.Mock;
 
@@ -69,12 +71,138 @@ describe('useAskAnswerMode', () => {
     mockSaveDrafts = false;
     mockAskStatus = 'idle';
     jotaiStore = createStore();
+    /** Most cases exercise answer mode, which the card's chevron opts into. */
+    jotaiStore.set(expandedAskActionsAtom, ['a1']);
     mockGetComposerText.mockReturnValue('answer from A');
     mockSetComposerText.mockReset();
     mockSubmitAskAnswer.mockReset();
+    mockGetDraft.mockReset();
+    mockGetDraft.mockImplementation(() => null);
   });
 
-  it('is active when a live ask is available', () => {
+  it('starts a live ask in the chat card and leaves the composer alone', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockUseGetMessages.mockReturnValue({ data: liveAsk });
+
+    const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+
+    expect(result.current.liveAsk).toBe(liveAsk);
+    expect(result.current.collapsed).toBe(true);
+    expect(result.current.active).toBe(false);
+    expect(result.current.popoverVisible).toBe(false);
+    expect(result.current.composerAnswers).toBe(false);
+    expect(result.current.draftId).toBeNull();
+
+    act(() => result.current.expand());
+
+    expect(result.current.collapsed).toBe(false);
+    expect(result.current.popoverVisible).toBe(true);
+    expect(result.current.composerAnswers).toBe(true);
+  });
+
+  it('shows a saved answer in the chat card after a reload', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockSaveDrafts = true;
+    mockGetDraft.mockImplementation((id) => (id === 'draft-a1' ? 'typed before reload' : null));
+    mockUseGetMessages.mockReturnValue({ data: liveAsk });
+
+    const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+
+    expect(result.current.collapsed).toBe(true);
+    expect(result.current.answerText).toBe('typed before reload');
+
+    act(() => result.current.setAnswerText('edited in the card'));
+
+    expect(result.current.answerText).toBe('edited in the card');
+  });
+
+  it('keeps a restored answer when draft saving is turned off', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockSaveDrafts = true;
+    mockGetDraft.mockImplementation((id) => (id === 'draft-a1' ? 'typed before reload' : null));
+    mockUseGetMessages.mockReturnValue({ data: liveAsk });
+
+    const { result, rerender } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+    expect(result.current.answerText).toBe('typed before reload');
+
+    mockSaveDrafts = false;
+    rerender();
+
+    expect(result.current.answerText).toBe('typed before reload');
+    expect(jotaiStore.get(askAnswerTextAtom)).toEqual({ a1: 'typed before reload' });
+  });
+
+  it('leaves the saved answer alone while drafts are off', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockGetDraft.mockImplementation(() => 'should not load');
+    mockUseGetMessages.mockReturnValue({ data: liveAsk });
+
+    const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+
+    expect(result.current.answerText).toBe('');
+  });
+
+  it('clears the saved answer once an answer from the card is accepted', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockSaveDrafts = true;
+    mockUseGetMessages.mockReturnValue({
+      data: {
+        ...liveAsk,
+        question: { question: 'Pick one', options: [{ label: 'Yes', value: 'yes' }] },
+      },
+    });
+    mockSubmitAskAnswer.mockImplementation((_id, _answer, callbacks) => callbacks?.onSuccess?.());
+
+    const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+    act(() => result.current.setAnswerText('typed in the card'));
+    mockSetDraft.mockClear();
+
+    act(() => {
+      result.current.submitAnswer(['typed in the card']);
+    });
+
+    expect(mockSubmitAskAnswer).toHaveBeenCalledWith(
+      'a1',
+      'typed in the card',
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'draft-a1', value: '' });
+  });
+
+  it('clears the saved answer of a question that expires', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockAskStatus = 'expired';
+    mockUseGetMessages.mockReturnValue({ data: liveAsk });
+
+    renderHook(() => useAskAnswerMode('conversation-1'), { wrapper: JotaiWrapper });
+
+    expect(mockSetDraft).toHaveBeenCalledWith({ id: 'draft-a1', value: '' });
+  });
+
+  it('starts a live batch in the chat card without locking the composer', () => {
+    jotaiStore.set(expandedAskActionsAtom, []);
+    mockUseGetMessages.mockReturnValue({ data: batchAsk });
+
+    const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
+      wrapper: JotaiWrapper,
+    });
+
+    expect(result.current.collapsed).toBe(true);
+    expect(result.current.popoverVisible).toBe(false);
+    expect(result.current.composerLocked).toBe(false);
+  });
+
+  it('is active once a live ask is moved to the composer', () => {
     mockUseGetMessages.mockReturnValue({ data: liveAsk });
 
     const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
@@ -140,7 +268,7 @@ describe('useAskAnswerMode', () => {
   });
 
   it('does not overwrite normal composer text when expanding a batch', () => {
-    jotaiStore.set(collapsedAskActionsAtom, ['a1']);
+    jotaiStore.set(expandedAskActionsAtom, []);
     jotaiStore.set(askAnswerTextAtom, { a1: 'stale batch handoff' });
     mockUseGetMessages.mockReturnValue({ data: batchAsk });
     const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {
@@ -216,7 +344,7 @@ describe('useAskAnswerMode', () => {
   });
 
   it('restores the card answer into the composer when drafts are disabled', () => {
-    jotaiStore.set(collapsedAskActionsAtom, ['a1']);
+    jotaiStore.set(expandedAskActionsAtom, []);
     jotaiStore.set(askAnswerTextAtom, { a1: 'answer edited in the card' });
     mockUseGetMessages.mockReturnValue({ data: liveAsk });
     const { result } = renderHook(() => useAskAnswerMode('conversation-1'), {

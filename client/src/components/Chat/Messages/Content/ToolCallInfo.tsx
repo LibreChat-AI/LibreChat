@@ -100,7 +100,7 @@ export default function ToolCallInfo({ input, output }: { input: string; output?
   const hasParams = useMemo(() => hasToolParams(input), [input]);
 
   return (
-    <div className="w-full px-3 py-3.5">
+    <div className="w-full p-3">
       {output && <OutputRenderer text={output} />}
       {output && hasParams && <div className="border-border-inset my-2 border-t" />}
       {hasParams && (

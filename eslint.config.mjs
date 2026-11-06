@@ -330,6 +330,8 @@ export default [
             'slow-pulse',
             'hide-scrollbar',
             'scrollbar-gutter-spacer',
+            'progress-text-wrapper',
+            'progress-text-content',
             'active',
             // put in the DOM by a dependency, not by Tailwind
             'lucide',
@@ -366,6 +368,14 @@ export default [
             'composer-effort-glide',
             'composer-effort-thumb',
             'composer-effort-fill',
+            // The thinking button's label roll and the composer popover clock it resizes on.
+            'composer-slot-resize',
+            'composer-label-in-up',
+            'composer-label-in-down',
+            'composer-label-out-up',
+            'composer-label-out-down',
+            'animate-composer-icon',
+            'animate-composer-popover',
           ],
         },
       ],
