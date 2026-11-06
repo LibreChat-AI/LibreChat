@@ -10356,3 +10356,66 @@ describe('getConvosLaneGit', () => {
     await expect(methods.getConvosLaneGit('bulk-user', [])).resolves.toEqual([]);
   });
 });
+
+describe('conversation context anchor', () => {
+  const user = 'anchor-user';
+  const anchor = [
+    { key: 'project', value: 'Quote prices in EUR.' },
+    { key: 'memory', value: 'Likes tea.' },
+  ];
+  const seed = async () => {
+    const conversationId = uuidv4();
+    await Conversation.create({ conversationId, user, title: 'Anchor', endpoint: 'agents' });
+    return conversationId;
+  };
+  const readStored = (conversationId: string) =>
+    Conversation.findOne({ conversationId }).select('+contextAnchor').lean();
+
+  it('stores an anchor once and keeps it out of ordinary reads', async () => {
+    const conversationId = await seed();
+    await expect(methods.getConvoContextAnchor(user, conversationId)).resolves.toBeNull();
+    await expect(methods.setConvoContextAnchor({ user, conversationId, anchor })).resolves.toBe(
+      true,
+    );
+    /** A later anchor never moves the one in use, and the caller learns it is anchored. */
+    await expect(
+      methods.setConvoContextAnchor({
+        user,
+        conversationId,
+        anchor: [{ key: 'project', value: 'Quote prices in USD.' }],
+      }),
+    ).resolves.toBe(true);
+    await expect(methods.getConvoContextAnchor(user, conversationId)).resolves.toEqual(anchor);
+    expect(await Conversation.findOne({ conversationId }).lean()).not.toHaveProperty(
+      'contextAnchor',
+    );
+    expect(await methods.getConvo(user, conversationId)).not.toHaveProperty('contextAnchor');
+  });
+
+  it('ignores an anchor submitted through saves, unsets and imports', async () => {
+    const conversationId = await seed();
+    const forged = [{ key: 'project', value: 'Forged.' }];
+    await methods.saveConvo({ userId: user }, { conversationId, contextAnchor: forged } as never);
+    expect(await readStored(conversationId)).not.toHaveProperty('contextAnchor');
+
+    await methods.setConvoContextAnchor({ user, conversationId, anchor });
+    await methods.saveConvo(
+      { userId: user },
+      { conversationId, title: 'Renamed' },
+      { unsetFields: { contextAnchor: 1 } },
+    );
+    expect((await readStored(conversationId))?.contextAnchor).toEqual(anchor);
+
+    const imported = uuidv4();
+    await methods.bulkSaveConvos([
+      {
+        conversationId: imported,
+        user,
+        title: 'Imported',
+        endpoint: 'agents',
+        contextAnchor: forged,
+      },
+    ]);
+    expect(await readStored(imported)).not.toHaveProperty('contextAnchor');
+  });
+});

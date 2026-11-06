@@ -31,6 +31,28 @@ import {
 } from '../regenerate';
 import { createDualMessageContent, stripStreamedIndexStamps } from '../content';
 
+/**
+ * Prompt prefix as sent in the request payload. With `stableContext` the Agents route
+ * receives the template and resolves it against the conversation start, so the text is
+ * the same on every turn; otherwise, and on the Assistants routes, the browser resolves it.
+ */
+export function resolvePayloadPromptPrefix({
+  promptPrefix,
+  endpoint,
+  user,
+  stableContext,
+}: {
+  promptPrefix: string;
+  endpoint?: string | null;
+  user?: TUser | null;
+  stableContext?: boolean;
+}): string {
+  if (stableContext === true && !isAssistantsEndpoint(endpoint)) {
+    return promptPrefix;
+  }
+  return replaceSpecialVars({ text: promptPrefix, user });
+}
+
 /** What `ask` hands the turn builder once it has decided the send may go ahead. */
 export type BuildTurnInput = {
   text: string;
@@ -146,9 +168,11 @@ export function buildTurn({
   let currentMessages: TMessage[] = overrideMessages ?? cachedMessages ?? [];
 
   if (conversation?.promptPrefix) {
-    conversation.promptPrefix = replaceSpecialVars({
-      text: conversation.promptPrefix,
+    conversation.promptPrefix = resolvePayloadPromptPrefix({
+      promptPrefix: conversation.promptPrefix,
+      endpoint,
       user,
+      stableContext: endpointsConfig?.[EModelEndpoint.agents]?.stableContext,
     });
   }
 
