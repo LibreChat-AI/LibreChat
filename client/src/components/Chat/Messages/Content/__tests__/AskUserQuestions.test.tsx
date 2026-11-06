@@ -5,6 +5,7 @@ import { ChatSurfaceProvider } from '@librechat/chat/react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
 import AskUserQuestions from '../AskUserQuestions';
+import { mockVisibility } from 'test/visibility';
 
 const mockSubmitAskAnswer = jest.fn();
 let mockStatus = 'idle';
@@ -360,17 +361,26 @@ describe('AskUserQuestions', () => {
   });
 
   describe('focus on arrival', () => {
+    let visibility: ReturnType<typeof mockVisibility>;
+
+    beforeEach(() => {
+      visibility = mockVisibility();
+    });
+
     afterEach(() => {
+      visibility.restore();
       document.getElementById('prompt-textarea')?.remove();
     });
 
     test('lands on the first option when the question offers choices', () => {
       renderBatch('ask-focus-option');
+      act(() => visibility.notify());
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
     });
 
     test('lands in the answer field when the question has no choices', () => {
       renderBatch('ask-focus-field', [{ id: 'window', question: 'Which time window?' }]);
+      act(() => visibility.notify());
       expect(screen.getByRole('textbox', { name: /Which time window/ })).toHaveFocus();
     });
 
@@ -381,20 +391,24 @@ describe('AskUserQuestions', () => {
       composer.focus();
 
       renderBatch('ask-focus-composer');
+      act(() => visibility.notify());
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
     });
 
     test('stays put on a surface that is not the live pause', () => {
       renderBatch('ask-focus-not-live', questions, false);
+      act(() => visibility.notify());
       expect(document.body).toHaveFocus();
     });
 
     test('happens once per batch, not again when it moves between surfaces', () => {
       const view = renderBatch('ask-focus-once');
+      act(() => visibility.notify());
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
       view.unmount();
 
       renderBatch('ask-focus-once');
+      act(() => visibility.notify());
       expect(document.body).toHaveFocus();
     });
 
@@ -406,6 +420,7 @@ describe('AskUserQuestions', () => {
       composer.focus();
 
       renderBatch('ask-focus-draft');
+      act(() => visibility.notify());
       expect(composer).toHaveFocus();
     });
 
@@ -415,6 +430,7 @@ describe('AskUserQuestions', () => {
           <AskUserQuestions actionId="ask-focus-handoff" questions={questions} focusOnArrival />
         </RecoilRoot>,
       );
+      act(() => visibility.notify());
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
       view.unmount();
 
@@ -423,6 +439,7 @@ describe('AskUserQuestions', () => {
           <AskUserQuestions actionId="ask-focus-handoff" questions={questions} focusOnHandoff />
         </RecoilRoot>,
       );
+      act(() => visibility.notify());
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
     });
 
@@ -438,56 +455,37 @@ describe('AskUserQuestions', () => {
           <AskUserQuestions actionId="ask-focus-left-behind" questions={questions} focusOnHandoff />
         </RecoilRoot>,
       );
+      act(() => visibility.notify());
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
       leftBehind.remove();
     });
 
     describe('below a reader who has scrolled up', () => {
-      const originalObserver = global.IntersectionObserver;
-      let notify: () => void = () => undefined;
-      let onScreen = false;
-      let rectSpy: jest.SpyInstance;
-
       beforeEach(() => {
-        onScreen = false;
-        global.IntersectionObserver = jest.fn((callback: IntersectionObserverCallback) => {
-          notify = () => callback([], {} as IntersectionObserver);
-          return { observe: jest.fn(), disconnect: jest.fn() };
-        }) as unknown as typeof IntersectionObserver;
-        rectSpy = jest
-          .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-          .mockImplementation(() =>
-            onScreen
-              ? ({ top: 100, bottom: 300 } as DOMRect)
-              : ({ top: window.innerHeight + 200, bottom: window.innerHeight + 400 } as DOMRect),
-          );
-      });
-
-      afterEach(() => {
-        global.IntersectionObserver = originalObserver;
-        rectSpy.mockRestore();
+        visibility.setVisible(false);
       });
 
       test('waits until the card is on screen before taking focus', () => {
         renderBatch('ask-focus-offscreen');
-        act(() => notify());
+        act(() => visibility.notify());
         expect(document.body).toHaveFocus();
 
-        onScreen = true;
-        act(() => notify());
+        visibility.setVisible(true);
+        act(() => visibility.notify());
         expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
       });
 
       test('does not take focus once the reader has started typing elsewhere', () => {
         renderBatch('ask-focus-offscreen-busy');
+        act(() => visibility.notify());
         const composer = document.createElement('textarea');
         composer.id = 'prompt-textarea';
         composer.value = 'typing while it arrived';
         document.body.appendChild(composer);
         composer.focus();
 
-        onScreen = true;
-        act(() => notify());
+        visibility.setVisible(true);
+        act(() => visibility.notify());
         expect(composer).toHaveFocus();
       });
     });
