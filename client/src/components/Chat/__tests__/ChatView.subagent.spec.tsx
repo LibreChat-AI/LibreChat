@@ -23,6 +23,7 @@ jest.mock('react-hook-form', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   Spinner: () => <div data-testid="spinner" />,
   cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
   useLocalize: () => (key: string) => key,
@@ -69,6 +70,7 @@ jest.mock('~/Providers', () => {
     ChatFormProvider: Passthrough,
     ComposerRestoreProvider: Passthrough,
     useFileMapContext: () => new Map(),
+    useAgentsMapContext: () => undefined,
   };
 });
 
