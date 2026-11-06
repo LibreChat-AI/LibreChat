@@ -1,4 +1,5 @@
 export * from './state';
+export * from './redaction';
 export * from './stream';
 export * from './status';
 export * from './prompt';

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { CSSTransition } from 'react-transition-group';
 import { setDefaultSubagentsHost } from '@librechat/chat/react';
@@ -6,10 +6,17 @@ import { QueryKeys, dataService } from 'librechat-data-provider';
 import { SteerPart, ScrollToBottom } from '@librechat/chat/components';
 import type {
   SubagentsHost,
+  MessagePartsHost,
   TaskContentScope,
+  SubagentTaskContent,
   SubagentRetainedControl,
   SubagentJumpToLatestProps,
 } from '@librechat/chat/react';
+import {
+  useSubagentTaskContentQuery,
+  useSubagentToolContentQuery,
+} from '~/data-provider/Subagents/content';
+import { useAgentsMapContext } from './AgentsMapContext';
 
 /** Reads a shortened guidance message's full receipt, once the reader asks for it. */
 function useRetainedControl(
@@ -46,6 +53,28 @@ function useRetainedControl(
   };
 }
 
+/** A task's recovered content, read only while `enabled`. */
+function useTaskContent(
+  scope: TaskContentScope,
+  { enabled }: { enabled: boolean },
+): SubagentTaskContent {
+  const query = useSubagentTaskContentQuery(scope, { enabled });
+  return {
+    data: query.data,
+    isError: query.isError,
+    isUnavailable: query.isUnavailable,
+    refetch: () => void query.refetch(),
+  };
+}
+
+const ignoreMessage: ReturnType<MessagePartsHost['useMessagesAsk']> = () => undefined;
+const useNoMessagesAsk: MessagePartsHost['useMessagesAsk'] = () => ignoreMessage;
+
+/** A child conversation's parts host: an ask inside it never reaches the parent's messages view. */
+function useChildPartsHost(host: MessagePartsHost): MessagePartsHost {
+  return useMemo(() => ({ ...host, useMessagesAsk: useNoMessagesAsk }), [host]);
+}
+
 /** The transcript's jump-to-latest control with the app's fade: the button takes pointers and
  *  focus only once the enter transition has settled. */
 function JumpToLatest({ visible, onClick, maximizeChatSpace }: SubagentJumpToLatestProps) {
@@ -73,11 +102,16 @@ function JumpToLatest({ visible, onClick, maximizeChatSpace }: SubagentJumpToLat
 }
 
 /** What subagent transcripts read from the app: the steer renderer and the jump-to-latest fade
- *  that still live here, and the receipt read. Registered as the default when this module loads. */
+ *  that still live here, the task-scoped reads and the agents map. Registered as the default when
+ *  this module loads. */
 export const appSubagentsHost: SubagentsHost = {
   renderSteer: (props) => <SteerPart {...props} />,
   renderJumpToLatest: (props) => <JumpToLatest {...props} />,
   useRetainedControl,
+  useTaskContent,
+  useToolContent: useSubagentToolContentQuery,
+  useAgentsMap: useAgentsMapContext,
+  useChildPartsHost,
 };
 
 setDefaultSubagentsHost(appSubagentsHost);

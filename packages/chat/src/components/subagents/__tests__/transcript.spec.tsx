@@ -183,6 +183,9 @@ const useRetainedControl: SubagentsHost['useRetainedControl'] = (scope, invocati
 const subagentsHost: SubagentsHost = {
   renderSteer: (props) => <MockSteerPart {...props} />,
   useRetainedControl,
+  useTaskContent: () => ({ isError: false, isUnavailable: false, refetch: () => undefined }),
+  useAgentsMap: () => undefined,
+  useChildPartsHost: (host) => host,
 };
 
 const partsHost: Partial<MessagePartsHost> = {

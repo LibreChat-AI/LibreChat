@@ -365,16 +365,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Subagents/SharedSubagentActivityDialog.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Subagents/SubagentConversation.tsx": {
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Subagents/SubagentThreadPanel.tsx": {
     "shadcn/no-restyle": {
       "count": 7

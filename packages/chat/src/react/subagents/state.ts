@@ -24,6 +24,7 @@ import {
   initSubagentAggregatorState,
   initSubagentTickerState,
 } from '../../core';
+import { REDACTED_REASONING_MARKER } from './redaction';
 
 /**
  * Progress bucket captured per subagent tool call. Populated as
@@ -103,9 +104,6 @@ const MAX_EVICTED_TOOL_CALLS = 500;
 const MAX_LIVE_ACTIVITY_BYTES = 64 * 1024;
 const MAX_SINGLE_ACTIVITY_ENCODED_BYTES = MAX_LIVE_ACTIVITY_BYTES - 2;
 const MAX_SINGLE_ACTIVITY_TEXT_BYTES = 60 * 1024;
-/** Substituted for reasoning text by pre-retention servers; current servers
- *  transport the bounded reasoning text itself. */
-export const REDACTED_REASONING_MARKER: string = '…';
 
 const encodedBytes = (value: unknown): number =>
   new TextEncoder().encode(JSON.stringify(value)).byteLength;

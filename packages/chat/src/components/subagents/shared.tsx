@@ -1,35 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useAtom } from 'jotai';
-import { SubagentActivityScrollSurface } from '@librechat/chat/components';
-import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '@librechat/client';
 import {
-  activeSubagentPanel,
-  adaptLivePersistedActivity,
-  resolveSubagentAgentId,
-  isSelfSpawn as isSelfSpawnType,
+  OGDialog,
+  useLocalize,
+  OGDialogTitle,
+  OGDialogHeader,
+  OGDialogContent,
+} from '@librechat/client';
+import type { TMessage } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
+import type { ActiveSubagentPanel } from '../../react/subagents/state';
+import {
   messageAuthor,
   findAgentLaneId,
   resolveSubagentAuthor,
   findAgentAuthorMessage,
-} from '@librechat/chat/react';
-import type { TMessage } from 'librechat-data-provider';
-import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
-import SubagentConversation from './SubagentConversation';
-import { useAgentsMapContext } from '~/Providers';
-import { useLocalize } from '~/hooks';
+  isSelfSpawn as isSelfSpawnType,
+} from '../../react/subagents/author';
+import { adaptLivePersistedActivity } from '../../react/subagents/adapters';
+import { resolveSubagentAgentId } from '../../react/subagents/identity';
+import { MessageSurfaceContext } from '../../react/messages/surface';
+import { useSubagentsHost } from '../../react/subagents/host';
+import { SubagentActivityScrollSurface } from './transcript';
+import SubagentConversation from './conversation';
 
 /** Public-share fallback for subagent activity already embedded in the shared message payload. */
 export default function SharedSubagentActivityDialog({
   shareId,
   messages,
+  selected,
+  setSelected,
 }: {
   shareId?: string;
   /** The shared thread, which names the agent that dispatched the child. */
   messages?: TMessage[];
-}) {
+  /** The app's open subagent panel selection; the dialog shows it when it belongs to this share. */
+  selected: ActiveSubagentPanel | null;
+  setSelected: (selection: ActiveSubagentPanel | null) => void;
+}): ReactNode {
   const localize = useLocalize();
-  const agentsMap = useAgentsMapContext();
-  const [selected, setSelected] = useAtom(activeSubagentPanel);
+  const agentsMap = useSubagentsHost().useAgentsMap();
   const resetSelection = useCallback(() => setSelected(null), [setSelected]);
   const selection = selected?.host === 'share' && selected.shareId === shareId ? selected : null;
   const restoreSelectionRef = useRef(selection);
@@ -120,19 +129,21 @@ export default function SharedSubagentActivityDialog({
         className="flex h-[min(90vh,48rem)] w-11/12 max-w-3xl flex-col gap-0 overflow-hidden p-0"
         onCloseAutoFocus={restoreTriggerFocus}
       >
-        <OGDialogHeader className="border-border-light shrink-0 border-b px-5 py-4 pe-14">
-          <div className="flex min-w-0 items-center gap-2">
-            <span
-              aria-hidden="true"
-              className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full"
-            >
-              {childAuthor.icon}
-            </span>
-            <OGDialogTitle className="truncate text-start text-base" title={title}>
-              {title}
-            </OGDialogTitle>
-          </div>
-        </OGDialogHeader>
+        <div className="border-border-light shrink-0 border-b">
+          <OGDialogHeader className="px-5 py-4 pe-14">
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                aria-hidden="true"
+                className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full"
+              >
+                {childAuthor.icon}
+              </span>
+              <OGDialogTitle className="truncate text-start text-base" title={title}>
+                {title}
+              </OGDialogTitle>
+            </div>
+          </OGDialogHeader>
+        </div>
         <MessageSurfaceContext.Provider value="bg-surface-dialog">
           <SubagentActivityScrollSurface padded={false}>
             <SubagentConversation
