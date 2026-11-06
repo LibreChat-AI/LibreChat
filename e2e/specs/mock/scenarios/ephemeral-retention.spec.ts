@@ -2,7 +2,12 @@ import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { AgentDetail } from '../agents.helpers';
-import { cleanupAgent, openAgentBuilder, uniqueAgentName } from '../agents.helpers';
+import {
+  cleanupAgent,
+  closeMobileDrawer,
+  openAgentBuilder,
+  uniqueAgentName,
+} from '../agents.helpers';
 import { getE2EUser } from '../../../setup/user';
 import { loginAdmin, requestResult } from '../content-filters.helpers';
 import { deleteConversations, deleteMessagesByConversation, withMongo } from '../db';
@@ -234,10 +239,7 @@ test.describe('ephemeral retention', () => {
       await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
       await page.getByRole('option', { name: agentName }).click();
       await form.getByRole('button', { name: 'Select Agent' }).click();
-      if ((page.viewportSize()?.width ?? 1280) <= 768) {
-        await page.getByTestId('close-sidebar-button').click();
-        await expect(page.locator('#mobile-drawer')).toHaveAttribute('inert', '');
-      }
+      await closeMobileDrawer(page);
 
       const response = await sendMessage(page, `E2E_TOOL_APPROVAL:retention-${randomUUID()}`);
       expect(response.ok()).toBe(true);
