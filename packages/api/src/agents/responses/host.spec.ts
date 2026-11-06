@@ -11,6 +11,7 @@ import {
   tenantStorage,
   runAsSystem,
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
+  AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
 } from '@librechat/data-schemas';
 import type { AppConfig, IUser, ResponseStorage } from '@librechat/data-schemas';
 import type { RequestHandler } from 'express';
@@ -29,12 +30,14 @@ import {
 import { createAgentTriggerService, createAgentTriggerProducerBinding } from '../triggers/service';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { prepareAgentTriggerDelivery } from '../triggers/delivery';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createRequireApiKeyAuth } from '~/apiKeys/middleware';
 import { buildPendingBackgroundResponse } from './background';
 import { mintBackgroundResponseWorkerToken } from './worker';
 import { enrollAgentExecution } from '../remote/lifecycle';
 import { createResponseExecutionRuntime } from './runtime';
+import { createBackgroundResponseEnvelope } from './queue';
 import { buildResponseInputChain } from './persistence';
 import { createBackgroundResponsesHost } from './host';
 import { getSafeErrorMetadata } from '~/utils/errors';
@@ -128,6 +131,7 @@ async function fixture(
     phase: 'unbound' | 'queue-starting',
     client: ReturnType<typeof request>,
     key: string,
+    credentialId: string,
   ) => Promise<void>,
 ) {
   const config: AppConfig = {
@@ -313,7 +317,7 @@ async function fixture(
   const origin = selfOriginFromAddress(server.address());
   if (!origin) throw new Error('Missing initialized HTTP listener');
   const client = request(origin);
-  await startupProbe?.('unbound', client, credential.key);
+  await startupProbe?.('unbound', client, credential.key, credential.id);
   host.initialize(server.address());
   const service = createAgentTriggerService({
     methods: persistence(),
@@ -322,7 +326,7 @@ async function fixture(
   });
   cleanup.push(() => service.stop());
   producer.bind(service);
-  await startupProbe?.('queue-starting', client, credential.key);
+  await startupProbe?.('queue-starting', client, credential.key, credential.id);
   await service.initialize({ address: server.address() });
   async function readUntil(id: string, status: string) {
     let observed: { httpStatus: number; status?: string; errorCode?: string } | undefined;
@@ -564,6 +568,45 @@ it('reuses canonical decision receipts and source preflight for a trusted native
     ok: false,
     status: 404,
   });
+});
+
+it('drains the original V2 delivery after interactive worker activation without rewriting its identity or capability', async () => {
+  let deliveryKey = '';
+  const f = await fixture(
+    undefined,
+    {
+      validate: async () => true,
+      admitResume: async () => ({ ok: false, code: 'response_resume_unavailable' }),
+    },
+    '127.0.0.1',
+    async (phase, _client, _key, credentialId) => {
+      if (phase !== 'queue-starting') return;
+      const record = await reserveUnstarted(credentialId, '7aa6f6cc-0eef-4df4-9103-4205ed190804');
+      const prepared = prepareAgentTriggerDelivery(createBackgroundResponseEnvelope(record), {
+        requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
+      });
+      deliveryKey = prepared.deliveryKey;
+      const attached = await scoped(() =>
+        storage.attachDelivery(record, record.responseId, deliveryKey),
+      );
+      expect(attached.ok).toBe(true);
+      await runAsSystem(() => db.enqueueAgentTriggerDelivery(prepared));
+    },
+  );
+  await f.readUntil('resp_delayed_worker', 'completed');
+  expect(f.inputs).toHaveLength(1);
+  await f.stopQueue();
+  const deliveries = await runAsSystem(() => mongoose.models.AgentTriggerDelivery.find({}).lean());
+  expect(deliveries).toHaveLength(1);
+  expect(deliveries[0]).toMatchObject({
+    deliveryKey,
+    requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
+  });
+  const dispatcher = f.host.sourceDispatchers.get('responses')!;
+  expect(dispatcher.workerCapability).toBe(AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1);
+  expect(dispatcher.compatibleWorkerCapabilities).toEqual([
+    AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
+  ]);
 });
 
 it('registers only resume-capable initial/resume workers and dispatches saved intent through signed Responses ingress', async () => {
@@ -1293,7 +1336,7 @@ it('preserves ordinary synchronous Responses and defaults background execution o
   expect(f.inputs).toHaveLength(1);
 });
 
-async function reserveUnstarted(credentialId: string) {
+async function reserveUnstarted(credentialId: string, conversationId = 'delayed-conversation') {
   const result = await scoped(() =>
     storage.reserve({
       userId: String(user._id),
@@ -1309,7 +1352,7 @@ async function reserveUnstarted(credentialId: string) {
         background: true,
         store: true,
       }),
-      conversationId: 'delayed-conversation',
+      conversationId,
       parentMessageId: 'root',
     }),
   );
