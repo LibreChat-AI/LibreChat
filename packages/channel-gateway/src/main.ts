@@ -2,19 +2,22 @@ import { createServer } from 'node:http';
 import { Registry, collectDefaultMetrics, Counter } from 'prom-client';
 import type { Server } from 'node:http';
 import type { SocketConnection } from './socket';
-import { loadConfig, resolveGatewayConfig } from './config';
+import { loadBootstrap, resolveGatewayConfig } from './config';
+import { ChannelWorker, recoveryEvent } from './worker';
+import { runSharedWorkers } from './shared/worker';
+import { WorkspaceClient } from './shared/client';
+import { SharedGatewayApp } from './shared/app';
+import { ServiceError } from './transport';
 import { connectSocket } from './socket';
-import { ChannelWorker } from './worker';
 import { ChannelClient } from './client';
 import { SlackClient } from './slack';
 import { GatewayApp } from './app';
 import { logger } from './types';
 
 async function main(): Promise<void> {
-  const bootstrap = loadConfig(process.env);
+  const bootstrap = loadBootstrap(process.env);
   const controller = new AbortController();
-  const client = new ChannelClient(bootstrap);
-  let app: GatewayApp | undefined;
+  let app: GatewayApp | SharedGatewayApp | undefined;
   let server: Server | undefined;
   let connection: SocketConnection | undefined;
   let worker: Promise<void> | undefined;
@@ -34,8 +37,27 @@ async function main(): Promise<void> {
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
   try {
-    const bundle = await client.channel(controller.signal);
-    const config = resolveGatewayConfig(bootstrap, bundle.gateway);
+    const config = bootstrap.config;
+    let application: GatewayApp | SharedGatewayApp;
+    let startWorker: () => Promise<void>;
+    let startSocket: (() => Promise<SocketConnection>) | undefined;
+    if (bootstrap.mode === 'shared') {
+      const client = new WorkspaceClient(bootstrap.config);
+      const settings = await client.bootstrap(controller.signal);
+      application = new SharedGatewayApp(bootstrap.config, client, settings, logger);
+      startWorker = () => runSharedWorkers(bootstrap.config, client, logger, controller.signal);
+    } else {
+      const client = new ChannelClient(bootstrap.config);
+      const bundle = await client.channel(controller.signal);
+      const runtime = resolveGatewayConfig(bootstrap.config, bundle.gateway);
+      const slack = new SlackClient(runtime, logger);
+      const boundApp = new GatewayApp(runtime, client, slack, logger);
+      application = boundApp;
+      if (runtime.SLACK_TRANSPORT === 'socket_mode')
+        startSocket = () =>
+          connectSocket(runtime, boundApp, bundle.channel.slack.appId, logger, controller.signal);
+      startWorker = () => new ChannelWorker(runtime, client, slack, logger).run(controller.signal);
+    }
     const registry = new Registry();
     collectDefaultMetrics({ register: registry, prefix: 'channel_gateway_' });
     const httpRequests = new Counter({
@@ -44,8 +66,6 @@ async function main(): Promise<void> {
       labelNames: ['status'],
       registers: [registry],
     });
-    const slack = new SlackClient(config, logger);
-    const application = new GatewayApp(config, client, slack, logger);
     app = application;
     const listener = createServer((request, response) => {
       response.on('finish', () => httpRequests.labels(String(response.statusCode)).inc());
@@ -77,17 +97,10 @@ async function main(): Promise<void> {
       listener.listen(config.PORT, config.LISTEN_HOST, resolve);
     });
     controller.signal.throwIfAborted();
-    if (config.SLACK_TRANSPORT === 'socket_mode')
-      connection = await connectSocket(
-        config,
-        application,
-        bundle.channel.slack.appId,
-        logger,
-        controller.signal,
-      );
+    if (startSocket) connection = await startSocket();
     application.ready = true;
     logger.info('channel_gateway_started');
-    worker = new ChannelWorker(config, client, slack, logger).run(controller.signal);
+    worker = startWorker();
     if (connection)
       await Promise.race([
         worker,
@@ -106,7 +119,8 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch(() => {
+void main().catch((error: unknown) => {
+  if (error instanceof ServiceError) logger.error(recoveryEvent(error));
   logger.error('channel_gateway_startup_failed');
   process.exitCode = 1;
 });

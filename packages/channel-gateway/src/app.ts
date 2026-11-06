@@ -4,15 +4,11 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ChannelBundle, Logger } from './types';
 import type { GatewayRuntimeConfig } from './config';
 import type { ReviewInteraction } from './review';
-import {
-  eventTimestampUs,
-  normalizeEvent,
-  parseEnvelope,
-  parseWebhookRequest,
-  SLACK_REQUEST_MAX_BYTES,
-} from './events';
-import { ChannelClient, ServiceError } from './client';
+import { eventTimestampUs, normalizeEvent, parseEnvelope, parseWebhookRequest } from './events';
+import { ServiceError } from './transport';
 import { IdentityFlow } from './identity';
+import { ChannelClient } from './client';
+import { SlackHTTPServer } from './http';
 import { ReviewFlow } from './review';
 import { SlackClient } from './slack';
 
@@ -31,7 +27,7 @@ const stateValue = z
     selected_option: value.selected_option ?? undefined,
     selected_options: value.selected_options ?? undefined,
   }));
-const interactionSchema = z.object({
+export const interactionSchema = z.object({
   type: z.enum(['block_actions', 'view_submission', 'view_closed']),
   team: z.object({ id }),
   api_app_id: id,
@@ -61,7 +57,7 @@ export class GatewayApp {
   ready = false;
   connected = false;
   private active = 0;
-  private httpActive = 0;
+  private readonly ingress: SlackHTTPServer;
   private socketAppId?: string;
   private readonly identity: IdentityFlow;
   private readonly review: ReviewFlow;
@@ -73,6 +69,40 @@ export class GatewayApp {
   ) {
     this.identity = new IdentityFlow(client, slack);
     this.review = new ReviewFlow(client, slack);
+    this.ingress = new SlackHTTPServer({
+      ready: () =>
+        this.ready &&
+        (this.config.SLACK_TRANSPORT !== 'socket_mode' ||
+          (this.connected && this.socketAppId !== undefined)),
+      capacity: 64,
+      log,
+      match: (path) => {
+        const route = path.match(/^\/slack\/(events|interactions)\/([^/]+)\/([^/]+)$/);
+        if (
+          !route ||
+          this.config.SLACK_TRANSPORT !== 'webhook' ||
+          route[2] !== encodeURIComponent(this.config.CHANNEL_TENANT_ID) ||
+          route[3] !== encodeURIComponent(this.config.CHANNEL_ID)
+        )
+          return undefined;
+        return route[1] === 'interactions';
+      },
+      dispatch: async (body, headers, interactive, signal) => {
+        const bundle = await this.client.channel(signal);
+        signal.throwIfAborted();
+        this.assertPolicy(bundle);
+        const parsed = parseWebhookRequest(body, headers, bundle, interactive);
+        if (!parsed.ok) return { status: parsed.status, body: { error: parsed.code } };
+        if (parsed.request.kind === 'challenge')
+          return { status: 200, body: { challenge: parsed.request.challenge } };
+        const payload =
+          parsed.request.kind === 'event' ? parsed.request.envelope : parsed.request.payload;
+        return {
+          status: 200,
+          body: (await this.dispatch(payload, interactive, signal, bundle)) ?? {},
+        };
+      },
+    });
   }
 
   /** No queue before admission: overload is left unacknowledged for Slack redelivery. */
@@ -297,94 +327,6 @@ export class GatewayApp {
   }
 
   async http(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const path = request.url?.split('?')[0];
-    const send = (status: number, body: object) => {
-      response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-      response.end(JSON.stringify(body));
-    };
-    if (request.method === 'GET' && path === '/livez') {
-      send(200, { status: 'ok' });
-      return;
-    }
-    if (request.method === 'GET' && (path === '/healthz' || path === '/readyz')) {
-      const ready =
-        this.ready &&
-        (this.config.SLACK_TRANSPORT !== 'socket_mode' ||
-          (this.connected && this.socketAppId !== undefined));
-      send(ready ? 200 : 503, { status: ready ? 'ready' : 'not_ready' });
-      return;
-    }
-    const route = path?.match(/^\/slack\/(events|interactions)\/([^/]+)\/([^/]+)$/);
-    if (
-      !route ||
-      request.method !== 'POST' ||
-      this.config.SLACK_TRANSPORT !== 'webhook' ||
-      route[2] !== encodeURIComponent(this.config.CHANNEL_TENANT_ID) ||
-      route[3] !== encodeURIComponent(this.config.CHANNEL_ID)
-    ) {
-      send(404, { error: 'not_found' });
-      return;
-    }
-    if (this.httpActive >= 64) {
-      send(503, { error: 'capacity_exhausted' });
-      return;
-    }
-    this.httpActive++;
-    const controller = new AbortController();
-    const stopReading = () => {
-      if (!request.complete) request.destroy();
-    };
-    controller.signal.addEventListener('abort', stopReading, { once: true });
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    request.on('aborted', () => controller.abort());
-    try {
-      const chunks: Buffer[] = [];
-      let size = 0;
-      for await (const chunk of request) {
-        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        size += bytes.length;
-        if (size > SLACK_REQUEST_MAX_BYTES) {
-          send(413, { error: 'payload_too_large' });
-          return;
-        }
-        chunks.push(bytes);
-        controller.signal.throwIfAborted();
-      }
-      const body = Buffer.concat(chunks);
-      const interactive = route[1] === 'interactions';
-      const bundle = await this.client.channel(controller.signal);
-      controller.signal.throwIfAborted();
-      this.assertPolicy(bundle);
-      const parsed = parseWebhookRequest(
-        body,
-        {
-          signature: request.headers['x-slack-signature'],
-          timestamp: request.headers['x-slack-request-timestamp'],
-          contentType: request.headers['content-type'],
-        },
-        bundle,
-        interactive,
-      );
-      if (!parsed.ok) {
-        send(parsed.status, { error: parsed.code });
-        return;
-      }
-      if (parsed.request.kind === 'challenge') {
-        send(200, { challenge: parsed.request.challenge });
-        return;
-      }
-      const payload =
-        parsed.request.kind === 'event' ? parsed.request.envelope : parsed.request.payload;
-      const ack = await this.dispatch(payload, interactive, controller.signal, bundle);
-      controller.signal.throwIfAborted();
-      send(200, ack ?? {});
-    } catch {
-      this.log.warn('slack_delivery_not_accepted');
-      if (!response.headersSent) send(503, { error: 'delivery_not_accepted' });
-    } finally {
-      clearTimeout(timeout);
-      controller.signal.removeEventListener('abort', stopReading);
-      this.httpActive--;
-    }
+    await this.ingress.http(request, response);
   }
 }

@@ -3,7 +3,7 @@ import type { ChannelLinkView, ChannelLinkTicket } from 'librechat-data-provider
 import type { SlackClient, SlackBlocks } from './slack';
 import type { ChannelClient } from './client';
 import type { ChannelBundle } from './types';
-import { expectedServiceFailure } from './client';
+import { expectedServiceFailure } from './transport';
 
 const confirmationSchema = z
   .object({ linkId: z.string().min(1), revision: z.string().min(1) })

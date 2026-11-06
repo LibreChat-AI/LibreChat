@@ -5,6 +5,7 @@ import { createChannelRunModel, createChannelLaneModel } from '~/models/channelR
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createSlackInstallModel } from '~/models/slackWorkspace';
+import { createSlackThreadRouteModel } from '~/models/slackRoute';
 import { createAgentApiKeyModel } from '~/models/agentApiKey';
 import { createAgentChannelModel } from '~/models/channel';
 import { createIndexesWithRetry } from '~/utils/retry';
@@ -36,6 +37,10 @@ export async function eraseChannelPersistenceForUser(
   await runs.deleteMany(filter);
   await createChannelIdentityModel(mongoose).deleteMany({ tenantId, userId: owner.userId });
   await createSlackInstallModel(mongoose).deleteMany({
+    tenantId: owner.tenantId || { $in: [null, ''] },
+    userId: owner.userId,
+  });
+  await createSlackThreadRouteModel(mongoose).deleteMany({
     tenantId: owner.tenantId || { $in: [null, ''] },
     userId: owner.userId,
   });

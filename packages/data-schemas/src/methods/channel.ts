@@ -1,12 +1,18 @@
 import { channelStorageConfigSchema } from 'librechat-data-provider';
 import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
+import type { SlackWorkspaceRecord } from '~/models/slackWorkspace';
 import type { AgentChannelRecord } from '~/models/channel';
+import {
+  createSlackWorkspaceModel,
+  createSlackInstallGenerationModel,
+} from '~/models/slackWorkspace';
 import { retireAgentChannel, initializeChannelScope, touchChannelScope } from './channelScope';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { startRequiredTransactionSession } from '~/utils/transactions';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { prepareChannelOwnerAdmission } from './channelOwner';
+import { touchSlackWorkspace } from './slackWorkspaceScope';
 import { createChannelIndexGate } from './channelIndexes';
 
 export type { AgentChannelRecord } from '~/models/channel';
@@ -20,6 +26,7 @@ export type AgentChannelMetadata = Pick<
   | 'status'
   | 'credentialMode'
   | 'revision'
+  | 'workspaceId'
   | 'slack'
 >;
 
@@ -36,6 +43,8 @@ export interface AgentChannelMethods {
     limit: number,
   ): Promise<{ channels: Array<{ tenantId?: string }>; next?: string }>;
   getAgentChannel(channelId: string): Promise<AgentChannelRecord | null>;
+  /** Resolve workspace credentials and current installation status for service execution. */
+  getActiveAgentChannel(channelId: string): Promise<AgentChannelRecord | null>;
   getAgentChannelMetadata(channelId: string): Promise<AgentChannelMetadata | null>;
   listDeletingAgentChannels(
     cursor: string | undefined,
@@ -66,6 +75,67 @@ export function createAgentChannelMethods(
   const channel = () => mongoose.model<AgentChannelRecord>('AgentChannel');
   const ensureIndexes = createChannelIndexGate(() => [channel()]);
   const secrets = '+encryptedBotToken +encryptedSigningSecret';
+
+  function withInstallation(
+    record: AgentChannelRecord,
+    workspace?: SlackWorkspaceRecord | null,
+  ): AgentChannelRecord {
+    if (
+      !workspace ||
+      record.credentialMode !== 'per_user' ||
+      (workspace.tenantId || undefined) !== (record.tenantId || undefined)
+    )
+      return { ...record, status: 'disabled' };
+    return {
+      ...record,
+      slack: { teamId: workspace.teamId, appId: workspace.appId, botUserId: workspace.botUserId },
+      ...(workspace.encryptedBotToken ? { encryptedBotToken: workspace.encryptedBotToken } : {}),
+    };
+  }
+
+  async function installed(
+    record: AgentChannelRecord | null,
+    includeCredentials: boolean,
+  ): Promise<AgentChannelRecord | null> {
+    if (!record?.workspaceId || record.status !== 'active') return record;
+    const query = createSlackWorkspaceModel(mongoose)
+      .findOne({
+        workspaceId: record.workspaceId,
+        tenantId: record.tenantId ?? null,
+        status: 'active',
+      })
+      .read('primary');
+    const workspace = await (
+      includeCredentials ? query.select('+encryptedBotToken') : query
+    ).lean();
+    const resolved = withInstallation(record, workspace);
+    if (!includeCredentials || !workspace || resolved.status !== 'active') return resolved;
+    const app = await createSlackInstallGenerationModel(mongoose)
+      .findOne({
+        partition: record.tenantId || '_',
+        tenantId: record.tenantId ?? null,
+        appId: workspace.appId,
+        clientId: { $exists: true },
+      })
+      .select('+encryptedSigningSecret')
+      .read('primary')
+      .lean();
+    return app?.encryptedSigningSecret
+      ? { ...resolved, encryptedSigningSecret: app.encryptedSigningSecret }
+      : { ...resolved, status: 'disabled' };
+  }
+
+  function validWorkspaceBinding(record: AgentChannelRecord): void {
+    if (
+      record.workspaceId &&
+      (record.credentialMode !== 'per_user' ||
+        record.encryptedBotToken ||
+        record.encryptedSigningSecret)
+    )
+      throw new TypeError(
+        'Workspace channels require personal identities and installation-owned credentials',
+      );
+  }
 
   async function ownerWrite<T>(
     createdBy: string,
@@ -112,18 +182,51 @@ export function createAgentChannelMethods(
         tenantId:
           input.tenantId ?? (currentTenant === SYSTEM_TENANT_ID ? undefined : currentTenant),
       };
+      validWorkspaceBinding(input);
       if (input.status === 'deleting') throw new TypeError('Channel deletion requires retirement');
       await ensureIndexes();
       await initializeChannelScope(mongoose, input.tenantId, input.channelId);
       return ownerWrite(input.createdBy, input.tenantId, async (session) => {
         if (!(await touchChannelScope(mongoose, input.tenantId, input.channelId, session)))
           throw new Error('Channel admission closed');
+        if (
+          input.workspaceId &&
+          input.status === 'active' &&
+          !(await touchSlackWorkspace(
+            mongoose,
+            { workspaceId: input.workspaceId, tenantId: input.tenantId },
+            session,
+          ))
+        )
+          throw new Error('Slack installation unavailable');
         const [record] = await channel().create([input], { session });
         return record.toObject();
       });
     },
     async listAgentChannels(agentId: string): Promise<AgentChannelRecord[]> {
-      return channel().find({ agentId }).sort({ createdAt: 1 }).lean();
+      const records = await channel()
+        .find({ agentId })
+        .sort({ createdAt: 1 })
+        .read('primary')
+        .lean();
+      const workspaceIds = [
+        ...new Set(
+          records
+            .filter((record) => record.status === 'active')
+            .flatMap((record) => (record.workspaceId ? [record.workspaceId] : [])),
+        ),
+      ];
+      if (!workspaceIds.length) return records;
+      const workspaces = await createSlackWorkspaceModel(mongoose)
+        .find({ workspaceId: { $in: workspaceIds }, status: 'active' })
+        .read('primary')
+        .lean();
+      const byId = new Map(workspaces.map((workspace) => [workspace.workspaceId, workspace]));
+      return records.map((record) =>
+        record.workspaceId && record.status === 'active'
+          ? withInstallation(record, byId.get(record.workspaceId))
+          : record,
+      );
     },
     async listAgentChannelTenants(cursor, limit) {
       await validateMetadataPage(cursor, limit);
@@ -142,8 +245,15 @@ export function createAgentChannelMethods(
     async getAgentChannel(channelId: string): Promise<AgentChannelRecord | null> {
       return channel().findOne({ channelId }).select(secrets).lean();
     },
+    async getActiveAgentChannel(channelId) {
+      const record = await installed(
+        await channel().findOne({ channelId }).select(secrets).read('primary').lean(),
+        true,
+      );
+      return record?.status === 'active' ? record : null;
+    },
     async getAgentChannelMetadata(channelId) {
-      return channel()
+      const record = await channel()
         .findOne({ channelId })
         .select({
           _id: 0,
@@ -155,11 +265,14 @@ export function createAgentChannelMethods(
           status: 1,
           credentialMode: 1,
           revision: 1,
+          workspaceId: 1,
           'slack.teamId': 1,
           'slack.appId': 1,
           'slack.botUserId': 1,
         })
+        .read('primary')
         .lean();
+      return installed(record, false);
     },
     async listDeletingAgentChannels(cursor, limit) {
       await validateMetadataPage(cursor, limit);
@@ -204,6 +317,24 @@ export function createAgentChannelMethods(
       await initializeChannelScope(mongoose, parent.tenantId, channelId);
       return ownerWrite(createdBy, parent.tenantId, async (session) => {
         if (!(await touchChannelScope(mongoose, parent.tenantId, channelId, session))) return null;
+        const current = await channel()
+          .findOne({ channelId, createdBy })
+          .select(secrets)
+          .session(session)
+          .lean();
+        if (!current) return null;
+        const next = { ...current, ...update };
+        validWorkspaceBinding(next);
+        if (
+          next.workspaceId &&
+          next.status === 'active' &&
+          !(await touchSlackWorkspace(
+            mongoose,
+            { workspaceId: next.workspaceId, tenantId: parent.tenantId },
+            session,
+          ))
+        )
+          return null;
         return write(session);
       });
     },

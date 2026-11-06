@@ -14,7 +14,7 @@ import {
 } from '~/models/slackWorkspace';
 import { prepareChannelOwnerAdmission, touchChannelOwnerAdmission } from './channelOwner';
 import { getTenantId, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
-import { startRequiredTransactionSession } from '~/utils/transactions';
+import { withRequiredTransaction } from '~/utils/transactions';
 import { createChannelIndexGate } from './channelIndexes';
 
 export type SlackWorkspaceMetadata = SlackWorkspace;
@@ -70,7 +70,8 @@ export interface SlackWorkspaceStorage {
     next?: string;
   }>;
   read(workspaceId: string): Promise<SlackWorkspaceRecord | null>;
-  disconnect(workspaceId: string): Promise<boolean>;
+  metadata(workspaceId: string): Promise<SlackWorkspaceMetadata | null>;
+  disconnect(workspaceId: string, expectedRevision?: string): Promise<boolean>;
   /** Trusted routing metadata, read only after authenticating the Slack request. */
   route(appId: string, teamId: string): Promise<SlackWorkspaceMetadata | null>;
 }
@@ -105,18 +106,7 @@ export function createSlackWorkspaceStorage(
   }
 
   async function transaction<T>(write: (session: ClientSession) => Promise<T>): Promise<T> {
-    const session = await startRequiredTransactionSession(mongoose);
-    try {
-      await ensureIndexes();
-      let result: T | undefined;
-      await session.withTransaction(async () => {
-        result = await write(session);
-      });
-      if (result === undefined) throw new Error('Slack workspace transaction did not commit');
-      return result;
-    } finally {
-      await session.endSession();
-    }
+    return withRequiredTransaction(mongoose, write, ensureIndexes);
   }
 
   async function generation(appId: string, session: ClientSession) {
@@ -342,6 +332,7 @@ export function createSlackWorkspaceStorage(
         .find({ tenantId: tenantId ?? null, ...(cursor ? { workspaceId: { $gt: cursor } } : {}) })
         .sort({ workspaceId: 1 })
         .limit(limit + 1)
+        .read('primary')
         .lean();
       const page = records.slice(0, limit);
       return {
@@ -349,17 +340,29 @@ export function createSlackWorkspaceStorage(
         ...(records.length > limit ? { next: page[page.length - 1].workspaceId } : {}),
       };
     },
+    async metadata(workspaceId) {
+      const record = await workspaces
+        .findOne({ workspaceId, tenantId: tenant() ?? null })
+        .read('primary')
+        .lean();
+      return record ? metadata(record) : null;
+    },
     async read(workspaceId) {
       return workspaces
         .findOne({ workspaceId, tenantId: tenant() ?? null })
         .select('+encryptedBotToken')
+        .read('primary')
         .lean();
     },
-    async disconnect(workspaceId) {
+    async disconnect(workspaceId, expectedRevision) {
       const tenantId = tenant();
       return transaction(async (session) => {
         const current = await workspaces
-          .findOne({ workspaceId, tenantId: tenantId ?? null })
+          .findOne({
+            workspaceId,
+            tenantId: tenantId ?? null,
+            ...(expectedRevision ? { revision: expectedRevision } : {}),
+          })
           .session(session)
           .lean();
         if (!current) return false;
@@ -386,7 +389,10 @@ export function createSlackWorkspaceStorage(
     },
     async route(appId, teamId) {
       return runAsSystem(async () => {
-        const record = await workspaces.findOne({ appId, teamId, status: 'active' }).lean();
+        const record = await workspaces
+          .findOne({ appId, teamId, status: 'active' })
+          .read('primary')
+          .lean();
         return record ? metadata(record) : null;
       });
     },

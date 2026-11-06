@@ -283,13 +283,15 @@ describe('Slack workspace installation', () => {
         storage,
         canManage,
         clientBaseUrl: 'https://client.example/librechat',
-        settings: async () => ({ configured: Boolean(app), pageSize: 50 }),
+        settings: async () => ({ configured: Boolean(app), appId: app?.appId, pageSize: 50 }),
         logError: jest.fn(),
       });
     server.get('/workspaces', handlers.list);
     server.get('/workspaces/apps', handlers.apps);
     server.put('/workspaces/apps', handlers.configureApp);
     server.post('/workspaces/apps/:appId/remove', handlers.removeApp);
+    server.get('/workspaces/:workspaceId', handlers.get);
+    server.delete('/workspaces/:workspaceId', handlers.disconnect);
     server.post('/workspaces/connect', setOAuthSession, handlers.connect);
     server.delete('/workspaces/attempts/:flowId', handlers.cancel);
     server.get('/api/channels/workspaces/oauth/callback', handlers.callback);
@@ -346,6 +348,55 @@ describe('Slack workspace installation', () => {
       .send({ revision: saved.body.revision })
       .expect(204);
     expect(await scoped(() => storage.app('A123'))).toBeNull();
+  });
+
+  it('refuses a stale disconnect confirmation after another administrator reconnects', async () => {
+    const { flow } = await start();
+    const first = await scoped(() => service.finish(flow, 'first-code'));
+    if (!first.ok) throw new Error(first.error.code);
+    const secondFlow = await start();
+    const second = await scoped(() => service.finish(secondFlow.flow, 'second-code'));
+    if (!second.ok) throw new Error(second.error.code);
+    expect(second.value.workspaceId).toBe(first.value.workspaceId);
+    const disconnect = (revision?: string) =>
+      http()
+        .delete(`/workspaces/${first.value.workspaceId}`)
+        .set('x-test-user', 'yes')
+        .set('x-test-tenant', 'org-a')
+        .send(revision ? { revision } : {});
+    await disconnect().expect(400);
+    await disconnect(first.value.revision).expect(409);
+    expect((await scoped(() => storage.metadata(first.value.workspaceId)))?.revision).toBe(
+      second.value.revision,
+    );
+    expect((await scoped(() => storage.metadata(first.value.workspaceId)))?.status).toBe('active');
+    await disconnect(second.value.revision).expect(204);
+    expect((await scoped(() => storage.metadata(first.value.workspaceId)))?.status).toBe(
+      'disconnected',
+    );
+  });
+
+  it('returns one saved workspace as credential-free tenant metadata', async () => {
+    const { flow } = await start();
+    const installed = await scoped(() => service.finish(flow, 'test-code'));
+    if (!installed.ok) throw new Error(installed.error.code);
+    const response = await http()
+      .get(`/workspaces/${installed.value.workspaceId}`)
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-a')
+      .expect(200);
+    expect(response.body).toMatchObject({
+      configured: true,
+      canManage: true,
+      workspace: { workspaceId: installed.value.workspaceId, teamName: 'Test workspace' },
+    });
+    expect(JSON.stringify(response.body)).not.toMatch(/xoxb|encrypted|clientSecret|signingSecret/);
+    await http()
+      .get(`/workspaces/${installed.value.workspaceId}`)
+      .set('x-test-user', 'yes')
+      .set('x-test-user-tenant', 'org-b')
+      .set('x-test-tenant', 'org-b')
+      .expect(404);
   });
 
   it('requires a signed-in same-tenant principal on browser management routes', async () => {

@@ -1,6 +1,20 @@
 import { isAxiosError } from 'axios';
 import type { AxiosResponse } from 'axios';
 import type {
+  AgentChannel,
+  ActivateAgentChannel,
+  SlackChannelManifest,
+  SlackAppPage,
+  SlackAppRegistration,
+  ConfigureSlackApp,
+  SlackWorkspaceStatus,
+  SlackWorkspaceConnect,
+  SlackWorkspaceDetail,
+  SlackWorkspaceRoutePage,
+  SlackWorkspaceRouteStatus,
+  SetSlackWorkspaceRoute,
+} from './types/channels';
+import type {
   ResponseReviewView,
   ResponseCancelReceipt,
   ResponseReviewDecision,
@@ -19,7 +33,6 @@ import type {
   ChannelLinkView,
 } from './types/channelIdentity';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
-import type { AgentChannel, ActivateAgentChannel, SlackChannelManifest } from './types/channels';
 import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
 import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { TFileConfig } from './file-config';
@@ -94,6 +107,19 @@ export function getAgentChannelManifest(
   return request.get(`${endpoints.agentChannels(agentId, channelId)}/manifest`);
 }
 
+function channelCredentialFailure(error: unknown): never {
+  const failure = isAxiosError<{ error?: unknown }>(error)
+    ? error.response?.data?.error
+    : undefined;
+  const code =
+    typeof failure === 'object' && failure !== null && 'code' in failure ? failure.code : failure;
+  // Axios failures retain serialized secrets. Only this supported setup code may escape.
+  throw Object.assign(
+    new Error('Channel credential update failed'),
+    code === 'transactions_unavailable' ? { code } : {},
+  );
+}
+
 export function activateAgentChannel(
   agentId: string,
   channelId: string,
@@ -101,16 +127,7 @@ export function activateAgentChannel(
 ): Promise<AgentChannel> {
   return request
     .patch(endpoints.agentChannels(agentId, channelId), input)
-    .catch((error: unknown) => {
-      // Axios failures carry serialized credentials; copy only the approved setup code.
-      const unavailable =
-        isAxiosError<{ error?: unknown }>(error) &&
-        error.response?.data?.error === 'transactions_unavailable';
-      throw Object.assign(
-        new Error('Channel activation failed'),
-        unavailable ? { code: 'transactions_unavailable' } : {},
-      );
-    });
+    .catch(channelCredentialFailure);
 }
 
 export function disableAgentChannel(agentId: string, channelId: string): Promise<AgentChannel> {
@@ -128,6 +145,93 @@ export function changeAgentChannelMode(
 
 export function deleteAgentChannel(agentId: string, channelId: string): Promise<void> {
   return request.delete(endpoints.agentChannels(agentId, channelId));
+}
+
+export function createWorkspaceAgentChannel(
+  agentId: string,
+  workspaceId: string,
+): Promise<AgentChannel> {
+  return request.post(`${endpoints.agentChannels(agentId)}/workspace-connections`, { workspaceId });
+}
+
+export function getAgentChannelWorkspaceRoutes(
+  agentId: string,
+  channelId: string,
+  cursor?: string,
+): Promise<SlackWorkspaceRoutePage> {
+  return request.get(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function getAgentChannelWorkspaceTarget(
+  agentId: string,
+  channelId: string,
+  externalChannelId?: string,
+): Promise<SlackWorkspaceRouteStatus> {
+  return request.get(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes?target=${encodeURIComponent(externalChannelId || 'default')}`,
+  );
+}
+
+export function setAgentChannelWorkspaceRoute(
+  agentId: string,
+  channelId: string,
+  input: SetSlackWorkspaceRoute,
+): Promise<AgentChannel> {
+  return request.post(`${endpoints.agentChannels(agentId, channelId)}/workspace-routes`, input);
+}
+
+export function removeAgentChannelWorkspaceRoute(
+  agentId: string,
+  channelId: string,
+  input: { externalChannelId?: string; expectedRevision: string },
+): Promise<void> {
+  return request.deleteWithOptions(
+    `${endpoints.agentChannels(agentId, channelId)}/workspace-routes`,
+    { data: input },
+  );
+}
+
+export function getSlackWorkspaces(cursor?: string): Promise<SlackWorkspaceStatus> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function getSlackWorkspace(workspaceId: string): Promise<SlackWorkspaceDetail> {
+  return request.get(endpoints.slackWorkspaces(workspaceId));
+}
+
+export function getSlackApps(cursor?: string): Promise<SlackAppPage> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}/apps${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+  );
+}
+
+export function configureSlackApp(input: ConfigureSlackApp): Promise<SlackAppRegistration> {
+  return request.put(`${endpoints.slackWorkspaces()}/apps`, input).catch(channelCredentialFailure);
+}
+
+export function removeSlackApp(appId: string, revision: string): Promise<void> {
+  return request.post(`${endpoints.slackWorkspaces()}/apps/${encodeURIComponent(appId)}/remove`, {
+    revision,
+  });
+}
+
+export function connectSlackWorkspace(
+  workspaceId?: string,
+  appId?: string,
+): Promise<SlackWorkspaceConnect> {
+  return request.post(`${endpoints.slackWorkspaces()}/connect`, { workspaceId, appId });
+}
+
+export function disconnectSlackWorkspace(workspaceId: string, revision: string): Promise<void> {
+  return request.deleteWithOptions(endpoints.slackWorkspaces(workspaceId), { data: { revision } });
+}
+
+export function cancelSlackWorkspaceInstall(flowId: string): Promise<void> {
+  return request.delete(`${endpoints.slackWorkspaces()}/attempts/${encodeURIComponent(flowId)}`);
 }
 
 export const channelIdentityClient: ChannelIdentityClient = {

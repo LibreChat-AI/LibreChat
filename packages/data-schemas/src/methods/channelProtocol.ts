@@ -17,12 +17,18 @@ export interface ChannelLaneScope {
 }
 
 export interface ChannelRunEnrollment extends ChannelLaneScope {
+  workspaceId?: string;
   admission: ChannelRunAdmission;
 }
 
 export class ChannelRunConflict extends Error {
   constructor(
-    readonly code: 'event_conflict' | 'stale_fence' | 'invalid_transition' | 'delivery_incomplete',
+    readonly code:
+      | 'event_conflict'
+      | 'stale_fence'
+      | 'invalid_transition'
+      | 'delivery_incomplete'
+      | 'thread_route_changed',
   ) {
     super(code);
     this.name = 'ChannelRunConflict';

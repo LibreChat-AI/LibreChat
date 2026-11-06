@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
-import { loadConfig } from '../../../packages/channel-gateway/src/config.ts';
+import { loadConfig, loadBootstrap } from '../../../packages/channel-gateway/src/config.ts';
 
 const chart = fileURLToPath(new URL('..', import.meta.url));
 const fixture = mkdtempSync(join(tmpdir(), 'channel-gateway-chart-'));
@@ -72,6 +72,38 @@ try {
   assert.throws(
     () => render({ ...enabled, 'channelGateway.channelId': '' }),
     /channelGateway.channelId/,
+  );
+  assert.throws(
+    () => render({ ...enabled, 'channelGateway.mode': 'invalid' }),
+    /channelGateway.mode/,
+  );
+  assert.throws(() => render({ ...enabled, 'channelGateway.mode': 'shared' }), /empty channelId/);
+  const shared = {
+    ...enabled,
+    'channelGateway.mode': 'shared',
+    'channelGateway.channelId': '',
+  };
+  assert.throws(
+    () => render({ ...shared, 'channelGateway.tenantId': 'org.a' }),
+    /default tenantId/,
+  );
+  const sharedDeployment = render(shared).find(
+    (doc) =>
+      doc.kind === 'Deployment' && doc.spec.template.spec.containers[0].name === 'channel-gateway',
+  );
+  const sharedEnv = sharedDeployment.spec.template.spec.containers[0].env;
+  for (const name of ['CHANNEL_ID', 'CHANNEL_TENANT_ID', 'SLACK_APP_TOKEN'])
+    assert(!sharedEnv.some((entry) => entry.name === name), `shared pods must not import ${name}`);
+  const bootstrap = loadBootstrap({
+    ...Object.fromEntries(
+      sharedEnv.filter((entry) => 'value' in entry).map((entry) => [entry.name, entry.value]),
+    ),
+    CHANNEL_SERVICE_TOKEN: 'fixture',
+  });
+  assert.equal(
+    bootstrap.mode,
+    'shared',
+    'rendered shared pods must select the actual shared runtime',
   );
   assert.throws(
     () => render({ ...enabled, 'global.librechat.existingSecretName': '' }),
