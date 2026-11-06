@@ -68,6 +68,51 @@ describe('Agent execution enrollment', () => {
     );
   }
 
+  it.each(['complete', 'signal-only', 'aborted'] as const)(
+    'captures %s before default cleanup aborts the runtime signal',
+    async (outcome) => {
+      manager.configure({
+        jobStore: new InMemoryJobStore(),
+        eventTransport: new InMemoryEventTransport(),
+      });
+      const execution = await enrollAgentExecution(
+        { ...enrollmentParams('render-outcome'), captureTerminalOutcome: true },
+        { manager },
+      );
+      expect(execution.terminalOutcome).toBeUndefined();
+      await execution.beginProviderExecution();
+      if (outcome === 'signal-only') execution.abort();
+      if (outcome === 'aborted')
+        await manager.abortJob(execution.runId, {
+          expectedCreatedAt: execution.createdAt,
+          awaitProviderDrain: false,
+        });
+      await execution.settle();
+      expect(execution.terminalOutcome).toBe(outcome === 'aborted' ? 'aborted' : 'complete');
+      expect(await manager.getJob('render-outcome')).toBeUndefined();
+    },
+  );
+
+  it('drains and releases the provider tracker even when rendering outcome readback fails', async () => {
+    const execution = await enrollAgentExecution(
+      { ...enrollmentParams('render-readback'), captureTerminalOutcome: true },
+      { manager },
+    );
+    await execution.beginProviderExecution();
+    const complete = manager.completeJob.bind(manager);
+    jest.spyOn(manager, 'completeJob').mockImplementationOnce(async (...args) => {
+      const result = await complete(...args);
+      jest
+        .spyOn(manager, 'getJob')
+        .mockRejectedValueOnce(new Error('outcome readback unavailable'));
+      return result;
+    });
+    await expect(execution.settle()).rejects.toThrow('outcome readback unavailable');
+    expect(execution.terminalOutcome).toBeUndefined();
+    expect((await manager.getJob('render-readback'))?.metadata.providerDrained).toBe(true);
+    expect(await manager.getCleanupBlockingJobIdsForUser('user-1')).toEqual([]);
+  });
+
   it('retains a drained paused Stop when its required journal write fails with default cleanup', async () => {
     manager.configure({
       jobStore: new InMemoryJobStore({ ttlAfterComplete: 60_000 }),
