@@ -49,17 +49,18 @@ export interface InputTextContent {
 /** Image input content */
 export interface InputImageContent {
   type: 'input_image';
-  image_url?: string;
-  file_id?: string;
-  detail?: 'auto' | 'low' | 'high';
+  image_url?: string | null;
+  file_id?: string | null;
+  detail?: 'auto' | 'low' | 'high' | null;
 }
 
 /** File input content */
 export interface InputFileContent {
   type: 'input_file';
-  file_id?: string;
-  file_data?: string;
-  filename?: string;
+  file_id?: string | null;
+  file_data?: string | null;
+  file_url?: string | null;
+  filename?: string | null;
 }
 
 /** Union of all input content types */
@@ -190,7 +191,7 @@ export interface FunctionCallItemParam {
 export interface FunctionCallOutputItemParam {
   type: 'function_call_output';
   call_id: string;
-  output: string;
+  output: string | InputContent[];
   status?: ItemStatus;
 }
 

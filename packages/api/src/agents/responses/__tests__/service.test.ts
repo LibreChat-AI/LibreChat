@@ -1166,6 +1166,288 @@ describe('client tool continuation replay', () => {
   });
 });
 
+describe('multimodal client tool continuation', () => {
+  const call = {
+    type: 'function_call' as const,
+    id: 'fc_media',
+    call_id: 'call_media',
+    name: 'read_media',
+    arguments: '{"query":"inspect"}',
+  };
+  const parts = [
+    { type: 'input_text' as const, text: 'first result' },
+    {
+      type: 'input_image' as const,
+      image_url: 'https://example.com/image.png',
+      detail: 'high' as const,
+      file_id: null,
+    },
+    {
+      type: 'input_file' as const,
+      filename: 'report.pdf',
+      file_data: 'data:application/pdf;base64,JVBERg==',
+      file_url: null,
+      file_id: null,
+    },
+    { type: 'input_file' as const, file_url: 'https://example.com/report.pdf', filename: null },
+    { type: 'input_text' as const, text: 'last result' },
+  ];
+  const mapped = [
+    { type: 'text', text: 'first result' },
+    { type: 'image_url', image_url: { url: 'https://example.com/image.png', detail: 'high' } },
+    {
+      type: 'file',
+      file: { filename: 'report.pdf', file_data: 'data:application/pdf;base64,JVBERg==' },
+    },
+    { type: 'file', file: { file_url: 'https://example.com/report.pdf' } },
+    { type: 'text', text: 'last result' },
+  ];
+  const inputFor = (output: unknown) => [
+    call,
+    { type: 'function_call_output', call_id: call.call_id, output },
+  ];
+
+  it.each(
+    ['legacy string', '', [], [{ type: 'input_text', text: '' }], parts].map((output) => ({
+      output,
+    })),
+  )('accepts a supported output %#', ({ output }) => {
+    expect(validateResponseRequest({ model: 'agent_test', input: inputFor(output) }).valid).toBe(
+      true,
+    );
+  });
+
+  it.each(
+    [
+      undefined,
+      null,
+      42,
+      {},
+      [null],
+      ['text'],
+      [[]],
+      [{ type: 'input_text' }],
+      [{ type: 'input_text', text: 42 }],
+      [{ type: 'output_text', text: 'wrong discriminator' }],
+      [{ type: 'input_video', video_url: 'https://example.com/video.mp4' }],
+      [{ type: 'input_image' }],
+      [{ type: 'input_image', image_url: '' }],
+      [{ type: 'input_image', image_url: 42 }],
+      [{ type: 'input_image', image_url: 'https://example.com/i.png', detail: 'invalid' }],
+      [{ type: 'input_image', file_id: 'another-users-file' }],
+      [{ type: 'input_image', image_url: 'https://example.com/i.png', file_id: 'file_1' }],
+      [{ type: 'input_file' }],
+      [{ type: 'input_file', file_id: 'another-tenants-file' }],
+      [{ type: 'input_file', file_url: 42 }],
+      [{ type: 'input_file', file_url: 'https://example.com/f.pdf', filename: 42 }],
+      [{ type: 'input_file', file_data: 'bytes', file_url: 'https://example.com/f.pdf' }],
+    ].map((output) => ({ output })),
+  )('rejects malformed or unsupported output %# before conversion', ({ output }) => {
+    const result = validateResponseRequest({ model: 'agent_test', input: inputFor(output) });
+    expect(result.valid).toBe(false);
+    expect((result as { error: string }).error).toContain('function_call_output call_media');
+  });
+
+  it.each([
+    { type: 'input_file', file_data: 'data:application/pdf;base64,JVBERg==' },
+    { type: 'input_file', file_data: 'data:application/pdf;base64,JVBERg==', filename: null },
+    { type: 'input_file', file_data: 'data:application/pdf;base64,JVBERg==', filename: '' },
+  ])('accepts and maps inline file data with optional/nullable filename %#', (part) => {
+    const input = inputFor([part]) as InputItem[];
+    expect(validateResponseRequest({ model: 'agent_test', input }).valid).toBe(true);
+    const { filename, file_data } = part;
+    expect(convertInputToMessages(input)[0].content).toEqual([
+      expect.objectContaining({
+        tool_call: expect.objectContaining({
+          output: [
+            { type: 'file', file: { file_data, ...(filename != null ? { filename } : {}) } },
+          ],
+        }),
+      }),
+    ]);
+  });
+
+  it.each([
+    { type: 'input_file' },
+    { type: 'input_file', file_data: null, file_url: null },
+    { type: 'input_file', file_data: 'bytes', file_url: 'https://example.com/f.pdf' },
+  ])(
+    'enforces exactly one file source as a semantic boundary, not a filename requirement %#',
+    (part) => {
+      expect(validateResponseRequest({ model: 'agent_test', input: inputFor([part]) })).toEqual({
+        valid: false,
+        error: expect.stringContaining('requires exactly one of file_data or file_url'),
+      });
+    },
+  );
+
+  it.each(['file_data', 'file_url'])(
+    'rejects an empty %s source without restricting filename',
+    (field) => {
+      expect(
+        validateResponseRequest({
+          model: 'agent_test',
+          input: inputFor([{ type: 'input_file', [field]: '', filename: '' }]),
+        }),
+      ).toEqual({
+        valid: false,
+        error: expect.stringContaining(`${field} must be a non-empty string`),
+      });
+    },
+  );
+
+  it.each([
+    'not a URL',
+    'file:///tmp/image.png',
+    'javascript:alert(1)',
+    'data:text/plain;base64,AA==',
+  ])('rejects an unsupported image source %#', (image_url) => {
+    expect(
+      validateResponseRequest({
+        model: 'agent_test',
+        input: inputFor([{ type: 'input_image', image_url }]),
+      }).valid,
+    ).toBe(false);
+  });
+
+  it.each([
+    'http://example.com/image.png',
+    'https://example.com/image.png',
+    'data:image/png;base64,AA==',
+    `https://example.com/image.png?token=${'a'.repeat(17000)}`,
+  ])('preserves supported image sources including long HTTP URLs %#', (image_url) => {
+    const input = inputFor([{ type: 'input_image', image_url }]) as InputItem[];
+    expect(validateResponseRequest({ model: 'agent_test', input }).valid).toBe(true);
+    expect(convertInputToMessages(input)[0].content).toEqual([
+      expect.objectContaining({
+        tool_call: expect.objectContaining({
+          output: [{ type: 'image_url', image_url: { url: image_url } }],
+        }),
+      }),
+    ]);
+  });
+
+  it('maps every part into one complete assistant tool_call output, without placeholders', () => {
+    const messages = convertInputToMessages(inputFor(parts) as InputItem[]);
+    expect(messages).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_call',
+            tool_call: {
+              id: call.call_id,
+              name: call.name,
+              args: call.arguments,
+              output: mapped,
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('normalizes nullable image detail without inventing a media placeholder', () => {
+    const messages = convertInputToMessages(
+      inputFor([
+        { type: 'input_image', image_url: 'data:image/png;base64,AA==', detail: null },
+      ]) as InputItem[],
+    );
+    expect(messages[0].content).toEqual([
+      expect.objectContaining({
+        tool_call: expect.objectContaining({
+          output: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }],
+        }),
+      }),
+    ]);
+  });
+
+  it.each([[], parts].map((output) => ({ output })))(
+    'formats one complete ToolMessage per call, also in a mixed parallel batch %#',
+    ({ output }) => {
+      const input = [
+        { type: 'message', role: 'user', content: 'Inspect both results' },
+        call,
+        { ...call, id: 'fc_text', call_id: 'call_text' },
+        { type: 'function_call_output', call_id: 'call_text', output: 'plain result' },
+        { type: 'function_call_output', call_id: call.call_id, output },
+      ] as InputItem[];
+      expect(validateResponseRequest({ model: 'agent_test', input }).valid).toBe(true);
+      const converted = convertInputToMessages(input);
+      expect(converted).toHaveLength(2);
+      const { messages } = formatAgentMessages(
+        converted as never,
+        {},
+        new Set([call.name]),
+        undefined,
+        {
+          provider: Providers.OPENAI,
+        },
+      );
+      expect(messages.map((message) => message._getType())).toEqual([
+        'human',
+        'ai',
+        'tool',
+        'tool',
+      ]);
+      const results = messages.slice(2) as unknown as Array<{
+        tool_call_id: string;
+        content: unknown;
+      }>;
+      expect(results).toEqual([
+        expect.objectContaining({
+          tool_call_id: call.call_id,
+          content: output.length ? mapped : [],
+        }),
+        expect.objectContaining({ tool_call_id: 'call_text', content: 'plain result' }),
+      ]);
+    },
+  );
+
+  it('retains duplicate-output and orphan-output rejection for arrays', () => {
+    expect(
+      validateResponseRequest({
+        model: 'agent_test',
+        input: [...inputFor(parts), inputFor([])[1]],
+      }),
+    ).toEqual({
+      valid: false,
+      error: 'duplicate function_call_output call_id: call_media',
+    });
+    expect(validateResponseRequest({ model: 'agent_test', input: [inputFor(parts)[1]] })).toEqual({
+      valid: false,
+      error: expect.stringContaining('has no matching function_call'),
+    });
+  });
+
+  it('keeps inline file text reachable by protection traversal', () => {
+    const input = inputFor([
+      { type: 'input_file', filename: 'notes.txt', file_data: 'submitted file text' },
+    ]) as InputItem[];
+    expect(validateResponseRequest({ model: 'agent_test', input }).valid).toBe(true);
+    const fragments = [...extractMessageContent(convertInputToMessages(input) as never)].map(
+      (fragment) => fragment.text,
+    );
+    expect(fragments).toContain('submitted file text');
+  });
+
+  it('keeps all nested tool text and media references reachable by protection traversal', () => {
+    const fragments = [
+      ...extractMessageContent(convertInputToMessages(inputFor(parts) as InputItem[]) as never),
+    ].map((fragment) => fragment.text);
+    expect(fragments).toEqual(
+      expect.arrayContaining([
+        call.arguments,
+        'first result',
+        'last result',
+        'https://example.com/image.png',
+        'report.pdf',
+        'https://example.com/report.pdf',
+      ]),
+    );
+  });
+});
+
 describe('reported tools and tool_choice', () => {
   const context: ResponseContext = {
     responseId: 'resp_test',
