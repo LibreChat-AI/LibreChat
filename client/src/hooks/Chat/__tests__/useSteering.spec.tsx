@@ -70,15 +70,51 @@ const mockShowToast = jest.fn();
 const mockMarkUsage = jest.fn();
 let mockMessages: TMessage[] | undefined;
 let mockLatestMessage: TMessage | null | undefined;
+let mockRouteParams: { conversationId?: string } = {};
+const mockTailQueryKeys: unknown[] = [];
 let mockServerQueuedTurns: unknown[] | undefined;
 let mockFileMap: Record<string, Pick<TFile, 'llmDeliveryPath'>> = {};
 const mockUseAgentQueuedTurns = jest.fn((..._args: unknown[]) => ({ data: mockServerQueuedTurns }));
 
-const mockCodeApprovalMode = jest.fn((..._args: unknown[]) => ({ selected: mockApprovalMode }));
+/** Raw inputs under which the package selects `mockApprovalMode`; `undefined` turns approvals off. */
+const mockCodeApprovalMode = jest.fn((conversation?: unknown, _added?: unknown) => ({
+  readInputs: () => ({
+    conversation,
+    preferred: mockApprovalMode,
+    statefulCodeSessions: {
+      approvalsEnabled: mockApprovalMode != null,
+      approvalModes: ['ask', 'acceptEdits', 'fullAccess'],
+      environments: [
+        {
+          id: 'personal-vm',
+          name: 'Personal VM',
+          type: 'attached',
+          configSchema: {
+            permissions: {
+              fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+              commandExecution: { allowed: ['ask', 'allow'], default: 'ask' },
+            },
+          },
+        },
+      ],
+    },
+    reachable: {
+      agents: [
+        {
+          id: 'agent_primary',
+          stateful_code_sessions: true,
+          tools: ['execute_code'],
+          code_environment_id: 'personal-vm',
+        },
+      ],
+      complete: true,
+    },
+  }),
+}));
 
 jest.mock('~/hooks/Agents/useCodeApprovalMode', () => ({
   __esModule: true,
-  default: (...args: unknown[]) => mockCodeApprovalMode(...args),
+  default: (conversation?: unknown, added?: unknown) => mockCodeApprovalMode(conversation, added),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -129,11 +165,24 @@ jest.mock('~/data-provider', () => ({
     (value as { generationProtocolVersion?: unknown }).generationProtocolVersion === 2,
 }));
 
-jest.mock('~/hooks/Messages', () => ({
-  useLatestMessage: () =>
-    mockLatestMessage === undefined
-      ? (mockMessages?.[mockMessages.length - 1] ?? null)
-      : mockLatestMessage,
+/** The package selects the branch tail through the message query; flat fixtures end on it. */
+jest.mock('@tanstack/react-query', () => ({
+  ...jest.requireActual('@tanstack/react-query'),
+  useQueryClient: () => ({ getQueryData: () => undefined }),
+  useQuery: (
+    key: unknown[],
+    _fetch: unknown,
+    { select }: { select: (messages: TMessage[]) => unknown },
+  ) => {
+    mockTailQueryKeys.push(key[1]);
+    const tail = mockLatestMessage == null ? [] : [mockLatestMessage];
+    return { data: select(mockLatestMessage === undefined ? (mockMessages ?? []) : tail) };
+  },
+}));
+
+jest.mock('react-router-dom', () => ({
+  ...jest.requireActual('react-router-dom'),
+  useParams: () => mockRouteParams,
 }));
 
 jest.mock('@librechat/client', () => ({
@@ -246,6 +295,8 @@ describe('useSteering', () => {
     getDefaultStore().set(revealedQueuedTurnFamily(CONVO_ID), null);
     mockMessages = undefined;
     mockLatestMessage = undefined;
+    mockRouteParams = {};
+    mockTailQueryKeys.length = 0;
     mockServerQueuedTurns = undefined;
     mockFileMap = {};
   });
@@ -756,21 +807,24 @@ describe('useSteering', () => {
         result.current.steering.queueFromComposer('run later');
         await Promise.resolve();
       });
-      expect(mockCodeApprovalMode).toHaveBeenLastCalledWith(
-        agentsConversation,
-        addedConversation,
-        undefined,
-      );
+      expect(mockCodeApprovalMode).toHaveBeenLastCalledWith(agentsConversation, addedConversation);
       expect(mockEnqueueQueuedTurn.mock.calls[0]?.[0].codeApprovalMode).toBe('ask');
     });
 
-    it('gates the queued mode on the workspace mode the composer resolved', () => {
-      setupServerQueue(withActiveGeneration(), undefined, 'without_attached');
-      expect(mockCodeApprovalMode).toHaveBeenLastCalledWith(
-        agentsConversation,
-        undefined,
-        'without_attached',
-      );
+    it('reads the branch tail under the saved conversation, ignoring the route', () => {
+      mockRouteParams = { conversationId: 'route-conversation' };
+      setupServerQueue();
+      expect(mockTailQueryKeys.at(-1)).toBe(CONVO_ID);
+    });
+
+    it('gates the queued mode on the workspace mode the composer resolved', async () => {
+      mockApprovalMode = 'acceptEdits';
+      const { result } = setupServerQueue(withActiveGeneration(), undefined, 'without_attached');
+      await act(async () => {
+        result.current.steering.queueFromComposer('run later');
+        await Promise.resolve();
+      });
+      expect(mockEnqueueQueuedTurn.mock.calls[0]?.[0].codeApprovalMode).toBe('ask');
     });
 
     it('keeps startup turns local until the server generation epoch exists', async () => {

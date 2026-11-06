@@ -1,16 +1,12 @@
 import { useMemo } from 'react';
-import { useSetAtom } from 'jotai';
 import { Constants, QueryKeys } from 'librechat-data-provider';
 import { hashQueryKey, useQueryClient } from '@tanstack/react-query';
 import type { ChatHost, ChatMessageCache, ChatMessagesQuery } from '@librechat/chat/react';
 import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueryClient, QueryCacheNotifyEvent } from '@tanstack/react-query';
-import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
-import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { useAbortStreamMutation, useGetMessagesByConvoId } from '~/data-provider';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { getMappingOptions } from '~/hooks/Chat/outcomes';
 import useTurnServices from '~/hooks/Chat/services';
 import useNewConvo from '~/hooks/useNewConvo';
 
@@ -113,15 +109,11 @@ export const appChatHost: ChatHost = {
   usePaneConversation: (index) => useChatSettings().usePaneConversationState(index),
   useNewConversation: (index) => useNewConvo(index).newConversation,
   useTurnServices,
-  useLatestMessage: (index, key) => useLatestMessage(index, key),
-  useLatestMessageId: (index, key) => useLatestMessageId(index, key),
-  useSetSiblingIdx: (parentMessageId) => useSetAtom(siblingIdxFamily(siblingKey(parentMessageId))),
   /** `mutateAsync` is bound once per observer; the mutation result object is fresh every
    *  render and would defeat the contract's memo. */
   useAbortStream: () => useAbortStreamMutation().mutateAsync,
   useMessageCache,
   useFeedbackEnabled: () => useChatSettings().config.feedbackEnabled,
-  getMappingOptions,
   useMessages,
 };
 
