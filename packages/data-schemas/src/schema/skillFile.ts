@@ -14,7 +14,6 @@ const skillFileSchema: Schema<ISkillFileDocument> = new Schema(
       type: Schema.Types.ObjectId,
       ref: 'Skill',
       required: true,
-      index: true,
     },
     relativePath: {
       type: String,

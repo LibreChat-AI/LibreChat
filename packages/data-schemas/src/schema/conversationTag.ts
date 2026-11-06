@@ -13,7 +13,6 @@ const conversationTag: Schema<IConversationTag> = new Schema<IConversationTag>(
   {
     tag: {
       type: String,
-      index: true,
     },
     user: {
       type: String,

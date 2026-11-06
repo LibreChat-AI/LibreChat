@@ -51,7 +51,6 @@ const skillSchema: Schema<ISkillDocument> = new Schema(
     name: {
       type: String,
       required: true,
-      index: true,
       maxlength: [SKILL_NAME_MAX_LENGTH, `Name cannot exceed ${SKILL_NAME_MAX_LENGTH} characters`],
       validate: {
         validator: function (value: string): boolean {
@@ -161,13 +160,11 @@ const skillSchema: Schema<ISkillDocument> = new Schema(
     category: {
       type: String,
       default: '',
-      index: true,
     },
     author: {
       type: Schema.Types.ObjectId,
       ref: 'User',
       required: true,
-      index: true,
     },
     authorName: {
       type: String,

@@ -18,7 +18,6 @@ const agentApiKeySchema: Schema<IAgentApiKey> = new Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
-      index: true,
     },
     name: {
       type: String,

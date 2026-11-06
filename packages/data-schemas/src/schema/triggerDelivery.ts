@@ -121,7 +121,7 @@ const triggerDeliverySchema: Schema<IAgentTriggerDeliveryDocument> = new Schema(
     // Zero is reserved for a staging row that is visible before sequence allocation.
     laneSequence: { type: Number, required: true, min: 0 },
     envelope: { type: Schema.Types.Mixed, required: true },
-    user: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     tenantId: { type: String, index: true },
     status: {
       type: String,

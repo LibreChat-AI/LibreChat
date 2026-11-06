@@ -8,7 +8,6 @@ const toolFavoriteSchema: Schema<IToolFavorite> = new Schema(
       type: Schema.Types.ObjectId,
       ref: 'User',
       required: true,
-      index: true,
     },
     itemType: {
       type: String,

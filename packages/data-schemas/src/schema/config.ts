@@ -8,7 +8,6 @@ const configSchema: Schema<IConfig> = new Schema<IConfig>(
       type: String,
       enum: Object.values(PrincipalType),
       required: true,
-      index: true,
     },
     principalId: {
       type: String,
@@ -24,7 +23,6 @@ const configSchema: Schema<IConfig> = new Schema<IConfig>(
     priority: {
       type: Number,
       required: true,
-      index: true,
     },
     overrides: {
       type: Schema.Types.Mixed,

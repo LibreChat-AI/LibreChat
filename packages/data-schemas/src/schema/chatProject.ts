@@ -37,7 +37,6 @@ const chatProjectSchema: Schema<IChatProjectDocument> = new Schema<IChatProjectD
     user: {
       type: String,
       required: true,
-      index: true,
     },
     conversationCount: {
       type: Number,
