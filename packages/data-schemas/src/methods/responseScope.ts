@@ -29,7 +29,9 @@ export function createResponseConversationReplacement(
     }
     const key = responseScopeKeys(owner, conversationId)[1];
     await initializeResponseScopes(mongoose, [key]);
-    const session = await mongoose.startSession();
+    const session = await mongoose.startSession({
+      defaultTransactionOptions: { readPreference: 'primary' },
+    });
     try {
       let allowed = false;
       await session.withTransaction(async () => {
@@ -123,7 +125,9 @@ export function createResponseRetention(
     };
     if (parentSession) return apply(parentSession);
     if (!supported) return apply();
-    const session = await mongoose.startSession();
+    const session = await mongoose.startSession({
+      defaultTransactionOptions: { readPreference: 'primary' },
+    });
     try {
       await session.withTransaction(() => apply(session));
     } finally {

@@ -20,7 +20,8 @@ export function createResponseScopeModel(
       revision: { type: Number, required: true, default: 0 },
       expiredAt: Date,
     },
-    { versionKey: false },
+    // Closure and retention must be observed before any durable data is disclosed or mutated.
+    { versionKey: false, read: 'primary' },
   );
   return mongoose.model<ResponseScope>('ResponseScope', schema);
 }
