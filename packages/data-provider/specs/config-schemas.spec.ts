@@ -532,6 +532,14 @@ describe('endpointSchema addParams validation', () => {
 });
 
 describe('agentsEndpointSchema', () => {
+  it('parses the stable prompt context setting, off by default', () => {
+    expect(agentsEndpointSchema.parse({ promptCache: {} }).promptCache?.stableContext).toBe(false);
+    expect(
+      agentsEndpointSchema.parse({ promptCache: { stableContext: true } }).promptCache
+        ?.stableContext,
+    ).toBe(true);
+  });
+
   it('defaults and bounds Code API upload recovery controls', () => {
     expect(agentsEndpointSchema.parse({}).codeApiUploadConcurrency).toBe(3);
     expect(

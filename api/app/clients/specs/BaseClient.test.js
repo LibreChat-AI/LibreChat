@@ -2595,6 +2595,53 @@ describe('BaseClient', () => {
       expect(getConvo).not.toHaveBeenCalled();
     });
 
+    test('saveMessageToDatabase inserts the turn user message at the turn start time', async () => {
+      const user = { id: 'user-id' };
+      const turnStartedAt = Date.parse('2026-03-10T09:00:00.000Z');
+      const req = {
+        user,
+        body: {},
+        turnStartedAt,
+        config: { endpoints: { agents: { promptCache: { stableContext: true } } } },
+      };
+      saveMessage.mockReset().mockResolvedValue({ messageId: 'msg-1' });
+      saveConvo.mockReset().mockResolvedValue({ conversationId: 'convo-id' });
+
+      TestClient = initializeFakeClient(apiKey, { ...options, endpoint: 'openai', req }, []);
+
+      await TestClient.saveMessageToDatabase(
+        { messageId: 'msg-1', conversationId: 'convo-id', isCreatedByUser: true, text: 'hi' },
+        { endpoint: 'openai' },
+        user,
+      );
+      expect(saveMessage).toHaveBeenLastCalledWith(
+        expect.any(Object),
+        expect.any(Object),
+        expect.objectContaining({ createdAtOnInsert: new Date(turnStartedAt) }),
+      );
+
+      await TestClient.saveMessageToDatabase(
+        { messageId: 'response-1', conversationId: 'convo-id', text: 'reply' },
+        { endpoint: 'openai' },
+        user,
+      );
+      expect(saveMessage.mock.lastCall[2]).not.toHaveProperty('createdAtOnInsert');
+
+      TestClient = initializeFakeClient(
+        apiKey,
+        { ...options, endpoint: 'openai', req: { ...req, config: {} } },
+        [],
+      );
+      await TestClient.saveMessageToDatabase(
+        { messageId: 'msg-2', conversationId: 'convo-id', isCreatedByUser: true, text: 'hi' },
+        { endpoint: 'openai' },
+        user,
+      );
+      expect(saveMessage.mock.lastCall[2]).not.toHaveProperty('createdAtOnInsert');
+      saveMessage.mockReset();
+      saveConvo.mockReset();
+    });
+
     test('userMessagePromise is awaited before saving response message', async () => {
       // Mock the saveMessageToDatabase method
       TestClient.saveMessageToDatabase = jest.fn().mockImplementation(() => {
