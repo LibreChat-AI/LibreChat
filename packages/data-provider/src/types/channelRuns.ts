@@ -1,5 +1,14 @@
 import type { AccountingBasis, ResponseAccounting } from './responseAccounting';
 
+export const CHANNEL_DELIVERY_TEXT_MAX_CHARS = 40_000;
+export const CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES = 64_000;
+/**
+ * A run is stored in one document (at most 16 MiB). JSON escaping can expand
+ * strings sixfold; eightfold leaves room for the service's lease envelope.
+ * This is a protocol safety ceiling, not an operator rendering preference.
+ */
+export const CHANNEL_RUN_MAX_JSON_BYTES = 128 * 1024 * 1024;
+
 /** Verified transport identities are supplied by the gateway, never by Agent output. */
 export interface ChannelRunActor {
   teamId: string;
@@ -162,3 +171,27 @@ export interface ChannelRunView {
   receipts: ChannelDeliveryReceipt[];
   cancellationRequested: boolean;
 }
+
+/** Renewal extends a fence's lifetime without returning another run snapshot. */
+export interface ChannelRunLeaseRenewal {
+  fence: ChannelRunFence;
+  leaseExpiresAt: number;
+}
+export interface ChannelRunLease extends ChannelRunLeaseRenewal {
+  run: ChannelRunView;
+}
+/** Credentials are absent when cancellation settles before execution starts. */
+export interface ChannelResponseGrant {
+  settled?: never;
+  apiKey: string;
+  requestKey: string;
+  responseId?: string;
+  request: {
+    model: string;
+    input: string;
+    background: true;
+    store: true;
+    previous_response_id?: string;
+  };
+}
+export type ChannelResponsePreparation = ChannelResponseGrant | { settled: ChannelRunView };

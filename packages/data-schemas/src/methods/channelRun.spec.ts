@@ -221,6 +221,198 @@ it('deduplicates equivalent nested event fields regardless of object constructio
     expect(await mongoose.models.ChannelRun.countDocuments({ tenantId })).toBe(1);
   }));
 
+it('pins a skewed Stop to its first cutoff and epoch across retries and replicas', () =>
+  scope(async () => {
+    const input = event();
+    await storage.admit(input, 100);
+    const first = (await storage.claim(tenantId, 'channel', 'first', 101, 10))!;
+    const observed = await storage.observeThreadStop(input, 120, 105);
+    expect(observed).toMatchObject({
+      before: 105,
+      run: { runId: first.runId, leaseEpoch: first.leaseEpoch },
+    });
+    const replica = createChannelRunStorage(mongoose);
+    expect(await replica.observeThreadStop(input, 120, 110)).toMatchObject({
+      before: 105,
+      run: { leaseEpoch: first.leaseEpoch },
+    });
+    const replacement = (await storage.claim(tenantId, 'channel', 'second', 112, 1000))!;
+    expect(replacement.leaseEpoch).toBeGreaterThan(first.leaseEpoch);
+    expect(await replica.observeThreadStop(input, 120, 118)).toBeNull();
+    expect(
+      await storage.requestCancel(input, first.runId, { epoch: first.leaseEpoch, before: 105 }),
+    ).toBe(false);
+    expect(await replica.observeThreadStop(input, 119, 121)).toBeNull();
+    const fresh = await replica.observeThreadStop(input, 122, 123);
+    expect(fresh).toMatchObject({
+      before: 122,
+      run: { runId: replacement.runId, leaseEpoch: replacement.leaseEpoch },
+    });
+    expect(
+      await storage.requestCancel(input, fresh!.run.runId, {
+        epoch: fresh!.run.leaseEpoch,
+        before: fresh!.before,
+      }),
+    ).toBe(true);
+  }));
+
+it('retains an empty Stop observation before lane creation and never targets a later run', () =>
+  scope(async () => {
+    const input = event();
+    expect(await storage.observeThreadStop(input, 120, 100)).toBeNull();
+    const admitted = await storage.admit(input, 101);
+    expect(admitted.run.sequence).toBe(1);
+    const first = (await storage.claim(tenantId, 'channel', 'first', 102, 1000))!;
+    expect(await createChannelRunStorage(mongoose).observeThreadStop(input, 120, 110)).toBeNull();
+    expect(await storage.observeThreadStop(input, 119, 121)).toBeNull();
+    expect((await storage.read(tenantId, 'channel', first.runId))?.cancellationRequested).toBe(
+      false,
+    );
+    expect(await storage.observeThreadStop(input, 122, 123)).toMatchObject({
+      run: { runId: first.runId },
+      before: 122,
+    });
+  }));
+
+it('retains the first run target after it completes instead of cancelling the next actor turn', () =>
+  scope(async () => {
+    const input = event();
+    await storage.admit(input, 100);
+    const first = (await storage.claim(tenantId, 'channel', 'first', 101, 1000))!;
+    expect(await storage.observeThreadStop(input, 120, 105)).toMatchObject({
+      run: { runId: first.runId },
+    });
+    // Model the atomic finish transition; the assertion concerns durable Stop replay, not execution.
+    await mongoose.models.ChannelRun.updateOne(
+      { runId: first.runId },
+      { $set: { state: 'delivered' } },
+    );
+    await mongoose.models.ChannelLane.updateOne(
+      { activeRunId: first.runId },
+      { $unset: { activeRunId: '' } },
+    );
+    await storage.admit(event('next'), 106);
+    const next = (await storage.claim(tenantId, 'channel', 'second', 107, 1000))!;
+    expect(next.runId).not.toBe(first.runId);
+    expect(await storage.observeThreadStop(input, 120, 115)).toBeNull();
+    expect((await storage.read(tenantId, 'channel', next.runId))?.cancellationRequested).toBe(
+      false,
+    );
+  }));
+
+it('keeps one external Stop observation across changes to the linked execution principal', () =>
+  scope(async () => {
+    const first = event('first');
+    const second = { ...event('second'), principal: { ...first.principal, userId: 'new-account' } };
+    await storage.admit(first, 100);
+    const a = (await storage.claim(tenantId, 'channel', 'a', 101, 1000))!;
+    expect(await storage.observeThreadStop(first, 120, 105)).toMatchObject({
+      run: { runId: a.runId },
+    });
+    await storage.admit(second, 106);
+    const b = (await storage.claim(tenantId, 'channel', 'b', 107, 1000))!;
+    expect(await storage.observeThreadStop(second, 120, 110)).toBeNull();
+    expect(await storage.observeThreadStop(second, 119, 110)).toBeNull();
+    expect((await storage.read(tenantId, 'channel', b.runId))?.cancellationRequested).toBe(false);
+    expect(await storage.observeThreadStop(second, 121, 111)).toMatchObject({
+      run: { runId: b.runId },
+      before: 111,
+    });
+    expect(
+      await mongoose.models.ChannelLane.countDocuments({
+        tenantId,
+        stopObservation: { $exists: true },
+      }),
+    ).toBe(1);
+    expect(await storage.observeThreadStop(first, 120, 112)).toBeNull();
+  }));
+
+it('serializes duplicate Stop observations across principal lanes without rebinding either target', () =>
+  scope(async () => {
+    const first = event('first');
+    const second = { ...event('second'), principal: { ...first.principal, userId: 'new-account' } };
+    await storage.admit(first, 100);
+    await storage.claim(tenantId, 'channel', 'a', 101, 1000);
+    await storage.admit(second, 102);
+    await storage.claim(tenantId, 'channel', 'b', 103, 1000);
+    const replica = createChannelRunStorage(mongoose);
+    const observations = await Promise.all([
+      storage.observeThreadStop(first, 120, 105),
+      replica.observeThreadStop(second, 120, 106),
+    ]);
+    expect(observations.filter(Boolean)).toHaveLength(1);
+    expect(
+      await mongoose.models.ChannelLane.countDocuments({
+        tenantId,
+        stopObservation: { $exists: true },
+      }),
+    ).toBe(1);
+    const replay = await Promise.all([
+      storage.observeThreadStop(first, 120, 108),
+      replica.observeThreadStop(second, 120, 109),
+    ]);
+    expect(replay.filter(Boolean)).toHaveLength(1);
+    expect(replay.find(Boolean)?.run.runId).toBe(observations.find(Boolean)?.run.runId);
+    expect(replay.find(Boolean)?.before).toBe(observations.find(Boolean)?.before);
+  }));
+
+it('preserves an absent Stop target through a principal transition', () =>
+  scope(async () => {
+    const first = event();
+    expect(await storage.observeThreadStop(first, 120, 100)).toBeNull();
+    const second = { ...event('next'), principal: { ...first.principal, userId: 'new-account' } };
+    await storage.admit(second, 101);
+    const claimed = (await storage.claim(tenantId, 'channel', 'b', 102, 1000))!;
+    expect(await storage.observeThreadStop(second, 120, 110)).toBeNull();
+    expect((await storage.read(tenantId, 'channel', claimed.runId))?.cancellationRequested).toBe(
+      false,
+    );
+    expect(await storage.observeThreadStop(second, 121, 111)).toMatchObject({
+      run: { runId: claimed.runId },
+    });
+  }));
+
+it('does not couple Stop occurrences for distinct external actors', () =>
+  scope(async () => {
+    const first = event('first', 'one');
+    const second = event('second', 'two');
+    await storage.admit(first, 100);
+    const a = (await storage.claim(tenantId, 'channel', 'a', 101, 1000))!;
+    await storage.admit(second, 102);
+    const b = (await storage.claim(tenantId, 'channel', 'b', 103, 1000))!;
+    const observations = await Promise.all([
+      storage.observeThreadStop(first, 120, 105),
+      storage.observeThreadStop(second, 120, 106),
+    ]);
+    expect(observations.map((o) => o?.run.runId)).toEqual([a.runId, b.runId]);
+  }));
+
+it('owns legacy empty Stop lanes for erasure and cannot recreate them after account deletion', () =>
+  scope(async () => {
+    const user = await mongoose.models.User.create({
+      email: 'stop-erasure@example.com',
+      provider: 'local',
+      tenantId,
+    });
+    const input = { ...event(), principal: { ...event().principal, userId: String(user._id) } };
+    await storage.admit(input, 100);
+    // Retained legacy lane after run cleanup, before lane ownership was recorded.
+    await mongoose.models.ChannelRun.deleteMany({ tenantId });
+    await mongoose.models.ChannelLane.updateMany(
+      { userId: input.principal.userId },
+      { $unset: { userId: 1 } },
+    );
+    await storage.observeThreadStop(input, 120, 101);
+    await createUserMethods(mongoose).deleteUserById(input.principal.userId);
+    expect(await storage.observeThreadStop(input, 121, 110)).toBeNull();
+    expect(
+      await mongoose.models.ChannelLane.countDocuments({
+        tenantId,
+        userId: input.principal.userId,
+      }),
+    ).toBe(0);
+  }));
+
 it('atomically rejects a delayed cancellation after the observed run is reclaimed', () =>
   scope(async () => {
     await storage.admit(event(), 100);
@@ -1277,6 +1469,7 @@ it('refuses every named underscore context before it can read or mutate tenantle
     () => storage.listPendingMetadata(undefined, 10),
     () => storage.requestCancel(input, run.runId),
     () => storage.readActiveThread(input, 101),
+    () => storage.observeThreadStop(input, 101, 102),
     () => storage.findDeliveredReply(input, 'C1:reply'),
   ])
     await expect(tenantStorage.run({ tenantId: '_' }, async () => action())).rejects.toThrow(

@@ -2,7 +2,13 @@ import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { timingSafeEqual } from 'node:crypto';
 import { runAsSystem, tenantStorage } from '@librechat/data-schemas';
+import {
+  channelConfigSchema,
+  channelGatewayWirePolicySchema,
+  CHANNEL_GATEWAY_POLICY_VERSION,
+} from 'librechat-data-provider';
 import type { AgentChannelMethods, AgentChannelRecord } from '@librechat/data-schemas';
+import type { ChannelConfig, ChannelServiceBundle } from 'librechat-data-provider';
 import type { Request, Response, RequestHandler } from 'express';
 import type { ChannelServiceGuard } from './types';
 import { encryptCredential, decryptCredential } from '~/crypto/credentials';
@@ -21,12 +27,6 @@ function authenticatedUserId(req: Request): string | undefined {
   return undefined;
 }
 
-interface ChannelConfig {
-  enabled: boolean;
-  gatewayUrl?: string;
-  transport?: 'socket_mode' | 'webhook';
-}
-
 function validSigningSecret(config: ChannelConfig, secret?: string): boolean {
   return config.transport !== 'webhook' || Boolean(secret?.trim());
 }
@@ -34,7 +34,10 @@ function validSigningSecret(config: ChannelConfig, secret?: string): boolean {
 export interface ChannelDependencies {
   db: AgentChannelMethods;
   serviceToken: () => string | undefined;
-  config: (req: Request, channel?: AgentChannelRecord) => Promise<ChannelConfig | undefined>;
+  config: (
+    req: Request,
+    channel?: AgentChannelRecord,
+  ) => Promise<Partial<ChannelConfig> | undefined>;
   getAgent: (agentId: string) => Promise<{ id: string; name?: string | null } | null>;
   deleteApiKey: (id: string, userId: string) => Promise<boolean>;
   verifySlackToken: (token: string) => Promise<SlackIdentity | null>;
@@ -154,12 +157,12 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     ): RequestHandler =>
     async (req, res) => {
       try {
-        const config = await deps.config(req);
-        if (!config?.enabled) {
+        const loaded = await deps.config(req);
+        if (!loaded?.enabled) {
           res.status(404).json({ error: 'channels_disabled' });
           return;
         }
-        await handler(req, res, config);
+        await handler(req, res, channelConfigSchema.parse(loaded));
       } catch (error) {
         deps.logError(getSafeErrorMetadata(error));
         res.status(503).json({ error: 'channel_operation_failed' });
@@ -378,12 +381,12 @@ export function createChannelHandlers(deps: ChannelDependencies): {
           return;
         }
         await tenantStorage.run({ tenantId: channel.tenantId || undefined }, async () => {
-          const config = await deps.config(req, channel);
-          if (!config?.enabled) {
+          const loaded = await deps.config(req, channel);
+          if (!loaded?.enabled) {
             res.status(404).json({ error: 'channels_disabled' });
             return;
           }
-          await handler(req, res, channel, config);
+          await handler(req, res, channel, channelConfigSchema.parse(loaded));
         });
       } catch (error) {
         deps.logError(getSafeErrorMetadata(error));
@@ -392,11 +395,18 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     };
 
   const service: ChannelServiceGuard = (handler) =>
-    serviceWithConfig((req, res, channel) => handler(req, res, channel));
+    serviceWithConfig((req, res, channel, config) => handler(req, res, channel, config));
 
   const bundle = serviceWithConfig(async (_req, res, channel, config) => {
     const agent = await deps.getAgent(channel.agentId);
-    if (!agent || !channel.encryptedBotToken) {
+    const slack = channel.slack;
+    if (
+      !agent ||
+      !channel.encryptedBotToken ||
+      !slack?.teamId ||
+      !slack.appId ||
+      !slack.botUserId
+    ) {
       res.status(404).json({ error: 'channel_not_found' });
       return;
     }
@@ -412,10 +422,18 @@ export function createChannelHandlers(deps: ChannelDependencies): {
       return;
     }
     res.json({
-      channel: publicChannel(channel),
+      channel: {
+        ...publicChannel(channel),
+        revision: channel.revision ?? channel.channelId,
+        slack,
+      },
       credentials: { botToken, signingSecret },
       agent: { id: agent.id, name: agent.name ?? 'Agent' },
-    });
+      gateway: channelGatewayWirePolicySchema.parse({
+        version: CHANNEL_GATEWAY_POLICY_VERSION,
+        ...config,
+      }),
+    } satisfies ChannelServiceBundle);
   });
 
   const getThread = service(async (_req, res) => {

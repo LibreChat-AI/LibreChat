@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { dataService, request, QueryKeys, MutationKeys } from 'librechat-data-provider';
+import { SLACK_CHANNEL_BOT_SCOPES, SLACK_CHANNEL_BOT_EVENTS } from 'librechat-data-provider';
 import type { AgentChannel, SlackChannelManifest } from 'librechat-data-provider';
 import Channels from '../Channels';
 
@@ -30,11 +31,16 @@ const pending: AgentChannel = {
 };
 const manifest: SlackChannelManifest = {
   display_information: { name: 'Test agent' },
-  features: { bot_user: { display_name: 'Test agent' } },
-  oauth_config: { scopes: { bot: ['app_mentions:read'] } },
+  features: {
+    bot_user: { display_name: 'test_agent' },
+    agent_view: { agent_description: 'Test agent' },
+    app_home: { messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+  },
+  oauth_config: { scopes: { bot: [...SLACK_CHANNEL_BOT_SCOPES] } },
   settings: {
     socket_mode_enabled: true,
-    event_subscriptions: { bot_events: ['app_mention'] },
+    event_subscriptions: { bot_events: [...SLACK_CHANNEL_BOT_EVENTS] },
+    interactivity: { is_enabled: true },
     org_deploy_enabled: false,
     token_rotation_enabled: false,
   },
