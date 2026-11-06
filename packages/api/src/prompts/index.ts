@@ -1,4 +1,5 @@
 export * from './access';
+export * from './categories';
 export * from './artifacts';
 export * from './errors';
 export * from './format';
