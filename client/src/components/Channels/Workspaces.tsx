@@ -7,6 +7,7 @@ import { watchOAuthSettlements } from '~/data-provider/PullRequest/signIn';
 import { useSlackWorkspaces } from './useSlackWorkspaces';
 import { channelErrorLabel } from '~/utils/channelErrors';
 import { useAuthContext, useLocalize } from '~/hooks';
+import BotManagers from './BotManagers';
 import Apps from './Apps';
 
 function workspaceStatusLabel(workspace: SlackWorkspace, configured?: boolean) {
@@ -231,6 +232,9 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
           </div>
           {first?.canManage && (
             <div className="flex flex-wrap gap-2">
+              {first.configured && workspace.status === 'active' && (
+                <BotManagers workspace={workspace} principalKey={principalKey} disabled={busy} />
+              )}
               {first.configured && workspace.status === 'active' && (
                 <Button
                   variant="outline"
