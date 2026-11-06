@@ -275,3 +275,43 @@ test('a lost acknowledgement reconciles successful acceptance without offering a
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
 });
+
+test('shows the account and agent name while keeping identifiers in expandable details', async () => {
+  const user = userEvent.setup();
+  renderPage(
+    <Link
+      api={api}
+      accountLabel="reader@example.com"
+      agentLabel="Forecast assistant"
+      principalKey="tenant:user-a"
+      ticket="ticket"
+    />,
+  );
+  expect(await screen.findByText('Forecast assistant')).toBeVisible();
+  expect(screen.getByText('reader@example.com')).toBeVisible();
+  const details = screen.getByText('com_ui_channel_link_details').closest('details');
+  expect(details).not.toHaveAttribute('open');
+  expect(within(details!).getByText('U1')).not.toBeVisible();
+  await user.click(screen.getByText('com_ui_channel_link_details'));
+  expect(within(details!).getByText('U1')).toBeVisible();
+  expect(
+    screen.queryByRole('link', { name: 'com_ui_channel_link_open_slack' }),
+  ).not.toBeInTheDocument();
+});
+
+test('accepted consent clearly points back to the verified Slack workspace without activating the link', async () => {
+  const user = userEvent.setup();
+  renderPage(
+    <Link api={api} accountLabel="Account A" principalKey="tenant:user-a" ticket="ticket" />,
+  );
+  await user.click(await screen.findByRole('button', { name: 'com_ui_channel_link_accept' }));
+  expect(
+    await screen.findByRole('heading', { name: 'com_ui_channel_link_finish_title' }),
+  ).toBeVisible();
+  expect(screen.getByRole('link', { name: 'com_ui_channel_link_open_slack' })).toHaveAttribute(
+    'href',
+    'slack://open?team=T1',
+  );
+  expect(screen.getByRole('status')).toHaveTextContent('com_ui_channel_link_confirm_slack');
+  expect(screen.queryByText('com_ui_channel_link_active')).not.toBeInTheDocument();
+});

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { ChannelLinkView } from 'librechat-data-provider';
+import { appURL } from '../../../setup/authenticate';
 import { openAgentBuilder } from '../agents.helpers';
 import { openSidebar } from './sidebar';
 
@@ -8,7 +9,9 @@ test.use({ viewport: { width: 1280, height: 860 }, hasTouch: false, isMobile: fa
 for (const mode of ['light', 'dark']) {
   test(`channel confirmation and personal withdrawal use current state (${mode})`, async ({
     page,
+    baseURL,
   }) => {
+    if (!baseURL) throw new Error('Channel lifecycle requires a configured app URL');
     const ticket = 'Ab_-09'.repeat(8).slice(0, 43);
     let state: ChannelLinkView['state'] = 'pending';
     let accepts = 0;
@@ -44,15 +47,23 @@ for (const mode of ['light', 'dark']) {
         state = 'revoked';
       }
       await route.fulfill({
-        json: url.pathname === '/api/channels/links' ? [view()] : { ok: true, value: view() },
+        json: url.pathname.endsWith('/api/channels/links') ? [view()] : { ok: true, value: view() },
       });
     });
-    await page.goto(`/channels/link#${ticket}`);
+    await page.goto(`${appURL(baseURL, 'channels/link')}#${ticket}`);
     await page.waitForTimeout(400);
-    expect(new URL(page.url()).pathname).toBe('/channels/link');
+    expect(new URL(page.url()).pathname).toBe(new URL(appURL(baseURL, 'channels/link')).pathname);
     expect(page.url()).not.toContain(ticket);
-    await page.getByRole('button', { name: 'Accept this account link', exact: true }).click();
-    await expect(page.getByRole('status')).toContainText('Return to Slack and confirm');
+    await page.getByRole('button', { name: 'Link account', exact: true }).click();
+    await expect(page.locator('main img')).toBeVisible();
+    await expect
+      .poll(() =>
+        page
+          .locator('main img')
+          .evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0),
+      )
+      .toBe(true);
+    await expect(page.getByRole('status')).toContainText('Back in Slack, confirm this account');
     state = 'active';
     // A real focus transition refetches the active query without remounting the route.
     await page.evaluate(() => window.dispatchEvent(new Event('blur')));
@@ -63,7 +74,7 @@ for (const mode of ['light', 'dark']) {
       await page.screenshot({ path: `${process.env.E2E_CHANNEL_VISUAL_PREFIX}-link-${mode}.png` });
     }
     state = 'unavailable';
-    await page.goto('/c/new');
+    await page.goto(appURL(baseURL, 'c/new'));
     await openSidebar(page);
     await page.getByTestId('nav-user').filter({ visible: true }).first().click();
     await page.getByRole('menuitem', { name: 'Settings', exact: true }).click();

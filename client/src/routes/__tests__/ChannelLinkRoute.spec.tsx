@@ -11,6 +11,10 @@ import ChannelLinkRoute from '../ChannelLinkRoute';
 import { useAuthContext } from '~/hooks';
 import store from '~/store';
 
+jest.mock('~/data-provider/Agents', () => ({
+  useGetAgentByIdQuery: () => ({ data: { name: 'Forecast assistant' } }),
+}));
+
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
   return {
