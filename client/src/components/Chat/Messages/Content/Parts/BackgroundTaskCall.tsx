@@ -1,20 +1,22 @@
 import { useMemo, useState, useCallback } from 'react';
+import { backgroundTaskOutcome, parseBackgroundTaskOutput } from '@librechat/chat';
+import { toolPanelSpacingClassName, useToolCallIntent } from '@librechat/chat/react';
+import {
+  TOOL_ROW_CLASSES,
+  backgroundListGuidanceKeys,
+  backgroundTaskNoticeKey,
+  useToolPreparation,
+} from '@librechat/chat/components';
 import type { PartMetadata, TAttachment } from 'librechat-data-provider';
-import { backgroundListGuidanceKeys, backgroundTaskNoticeKey } from './guidance';
-import { backgroundTaskOutcome, parseBackgroundTaskOutput } from './background';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { useLocalize, useLazyCollapseBody } from '~/hooks';
-import { toolPanelSpacingClassName } from '../disclosure';
 import { ToolIcon, OutputRenderer } from '../ToolOutput';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import BackgroundTaskCard from '../BackgroundTaskCard';
-import { useToolPreparation } from '../preparation';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
-import { useToolCallIntent } from './intent';
 import ToolCallInfo from '../ToolCallInfo';
-import { TOOL_ROW_CLASSES } from '../rows';
 import { cn } from '~/utils';
 import './BackgroundTaskCall.css';
 
@@ -68,11 +70,13 @@ export default function BackgroundTaskCall({
     () => (display?.kind === 'list' ? backgroundListGuidanceKeys(display) : []),
     [display],
   );
-  const { showCode, toggleCode, expandRef, phase, hasContent } = useToolCallState({
+  const { showCode, toggleCode, expandRef, phase, hasContent, bare, rowRef } = useToolCallState({
     initialProgress,
     isSubmitting,
     output,
     hasInput: hasParams || (attachments?.length ?? 0) > 0,
+    panelReady: display != null,
+    keepLabelRow: intent != null,
     onExpand,
     runStepStatus,
     extraError: outcome === 'failed',
@@ -111,29 +115,32 @@ export default function BackgroundTaskCall({
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {announcedText}
       </span>
-      <div
-        className={TOOL_ROW_CLASSES}
-        data-testid="background-task-call"
-        data-tool-call-id={toolCallId}
-      >
-        <ProgressText
-          phase={phase}
-          onClick={handleToggle}
-          inProgressText={intent ?? localize('com_ui_background_tasks_checking')}
-          finishedText={finishedText}
-          durationMs={runStepDurationMs}
-          icon={<ToolIcon type="background_tasks" isAnimating={phase === 'running'} />}
-          hasInput={hasContent}
-          isExpanded={showCode}
-        />
-      </div>
+      {!bare && (
+        <div
+          className={TOOL_ROW_CLASSES}
+          ref={rowRef}
+          data-testid="background-task-call"
+          data-tool-call-id={toolCallId}
+        >
+          <ProgressText
+            phase={phase}
+            onClick={handleToggle}
+            inProgressText={intent ?? localize('com_ui_background_tasks_checking')}
+            finishedText={finishedText}
+            durationMs={runStepDurationMs}
+            icon={<ToolIcon type="background_tasks" isAnimating={phase === 'running'} />}
+            hasInput={hasContent}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div
         data-background-task-fold
         data-expanded={showCode}
         onTransitionEnd={handleTransitionEnd}
         data-tool-call-output-id={toolCallId}
       >
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasContent && shouldRenderBody && (
             <div
               className={cn(
@@ -162,7 +169,7 @@ export default function BackgroundTaskCall({
                     <ul
                       tabIndex={0}
                       aria-label={localize('com_ui_background_tasks')}
-                      className="focus-visible:ring-border-heavy flex max-h-96 flex-col gap-2 overflow-y-auto pr-1 focus-visible:ring-2 focus-visible:outline-none"
+                      className="focus-visible:ring-focus-subtle flex max-h-96 flex-col gap-2 overflow-y-auto pe-1 focus-visible:ring-2 focus-visible:outline-none"
                     >
                       {display.tasks.map((task) => (
                         <li key={task.taskId}>
@@ -204,16 +211,16 @@ export default function BackgroundTaskCall({
                 </p>
               )}
               {(display == null || hasParams) && (
-                <div className={cn(display != null && 'border-border-light border-t')}>
+                <div className={cn(display != null && 'border-border-inset border-t')}>
                   <ToolCallInfo input={input} output={display == null ? output : undefined} />
                 </div>
               )}
               {display != null && (
                 <details
-                  className="border-border-light border-t px-3 py-2"
+                  className="border-border-inset border-t px-3 py-2"
                   onToggle={(event) => setShowRaw(event.currentTarget.open)}
                 >
-                  <summary className="text-text-secondary hover:text-text-primary focus-visible:ring-border-heavy cursor-pointer rounded text-xs focus-visible:ring-2 focus-visible:outline-none">
+                  <summary className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle cursor-pointer rounded text-xs focus-visible:ring-2 focus-visible:outline-none">
                     {localize('com_ui_background_tasks_raw_details')}
                   </summary>
                   {showRaw && (

@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Button } from '@librechat/client';
 import { Check, Clock, Code2, Captions, Info, Zap } from 'lucide-react';
-import type { AgentToolType } from 'librechat-data-provider';
+import type { AgentToolType, AgentToolApprovalMode } from 'librechat-data-provider';
+import ApprovalOption from './ApprovalOption';
 import OptionToggle from './OptionToggle';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -26,6 +27,11 @@ interface MCPToolItemProps {
   onToggleProgrammatic: () => void;
   onToggleBackground: () => void;
   onToggleIntent: () => void;
+  approvalConstraint?: 'ask' | 'deny';
+  approvalAgentId?: string;
+  approvalMode?: AgentToolApprovalMode;
+  approvalsEnabled?: boolean;
+  onApprovalModeChange?: (mode?: AgentToolApprovalMode) => void;
 }
 
 const iconButton = 'size-6 rounded-md';
@@ -48,6 +54,11 @@ export default function MCPToolItem({
   programmaticToolsAvailable,
   backgroundToolsEnabled,
   toolIntentsEnabled,
+  approvalMode,
+  approvalConstraint,
+  approvalAgentId,
+  approvalsEnabled,
+  onApprovalModeChange,
 }: MCPToolItemProps) {
   const localize = useLocalize();
   const [expanded, setExpanded] = useState(false);
@@ -57,14 +68,14 @@ export default function MCPToolItem({
 
   return (
     <div className="overflow-hidden rounded-lg">
-      <div className="hover:bg-surface-secondary flex items-center gap-1 rounded-lg pr-1 transition-colors">
+      <div className="hover:bg-surface-secondary flex items-center gap-1 rounded-lg pe-1 transition-colors">
         <button
           type="button"
           onClick={onToggleSelect}
           aria-pressed={isSelected}
           aria-label={tool.metadata.name}
           className={cn(
-            'flex min-w-0 flex-1 items-center gap-2.5 rounded-lg p-2 text-left',
+            'flex min-w-0 flex-1 items-center gap-2.5 rounded-lg p-2 text-start',
             'focus-visible:ring-ring-primary focus:outline-hidden focus-visible:ring-2',
           )}
         >
@@ -130,17 +141,24 @@ export default function MCPToolItem({
               onToggle={onToggleIntent}
             />
           )}
+          {onApprovalModeChange && (
+            <ApprovalOption
+              constraint={approvalConstraint}
+              agentId={approvalAgentId}
+              toolName={tool.tool_id}
+              mode={approvalMode}
+              onChange={onApprovalModeChange}
+              disabled={!approvalsEnabled}
+            />
+          )}
           <Button
-            variant="ghost"
+            variant="quiet"
             size="icon"
             onClick={() => setExpanded((value) => !value)}
             aria-expanded={expanded}
             aria-controls={detailsId}
             aria-label={localize('com_ui_tools_info')}
-            className={cn(
-              iconButton,
-              expanded ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary',
-            )}
+            className={cn(iconButton, expanded && 'text-text-primary')}
           >
             <Info className="size-4" aria-hidden="true" />
           </Button>
@@ -151,7 +169,7 @@ export default function MCPToolItem({
       <div
         id={detailsId}
         className={cn(
-          'grid transition-[grid-template-rows] [transition-duration:var(--resize-dur)] [transition-timing-function:var(--resize-ease)] motion-reduce:transition-none',
+          'resize-rows grid motion-reduce:transition-none',
           expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
         )}
       >

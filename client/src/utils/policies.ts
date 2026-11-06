@@ -1,3 +1,4 @@
+import { isSafeLinkUrl } from 'librechat-data-provider';
 import type { TStartupConfig } from 'librechat-data-provider';
 
 /**
@@ -5,11 +6,14 @@ import type { TStartupConfig } from 'librechat-data-provider';
  * agree to read it. `externalUrl` is an optional string, so an operator can
  * leave it blank; a blank one is not a published policy, because rendered as a
  * link it points back at the page the reader is on and names a document that
- * does not exist.
+ * does not exist. Nor is one that is not an http(s), `mailto:`, `tel:` or
+ * relative URL: rendered as a link, a `javascript:` or `data:` URL runs script
+ * on the page that shows it, the sign-in page included. The server refuses to
+ * store or serve one; this check also covers a server that predates it.
  */
 export function publishedPolicyUrl(externalUrl?: string): string | undefined {
   const url = externalUrl?.trim();
-  return url != null && url !== '' ? url : undefined;
+  return url != null && url !== '' && isSafeLinkUrl(url) ? url : undefined;
 }
 
 type PolicySource = {

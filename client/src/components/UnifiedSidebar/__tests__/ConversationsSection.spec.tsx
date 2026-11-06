@@ -310,32 +310,30 @@ describe('ConversationsSection project chats', () => {
   });
 
   afterEach(() => {
-    act(() => getDefaultStore().set(showProjectChatsAtom, true));
+    act(() => getDefaultStore().set(showProjectChatsAtom, false));
   });
 
-  /** Chats is where recent work is looked for first, so a chat filed in a project is
-   *  listed there too, carrying its folder badge. */
-  it('lists project chats under Chats by default', async () => {
+  /** A project chat is shown only under its project, not twice, unless the user opts in. */
+  it('asks only for chats that belong to no project by default', async () => {
     renderSection();
     await settleRenders();
 
     expect(mockListParams).toHaveBeenCalled();
-    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: undefined });
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: 'unassigned' });
   });
 
-  /** Turned off, a project chat is shown only under its project, not twice. */
-  it('asks only for chats that belong to no project once project chats are hidden', async () => {
-    act(() => getDefaultStore().set(showProjectChatsAtom, false));
+  /** Turned on, a chat filed in a project is listed under Chats too, with its folder badge. */
+  it('lists project chats under Chats once they are shown', async () => {
+    act(() => getDefaultStore().set(showProjectChatsAtom, true));
     renderSection();
     await settleRenders();
 
-    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: 'unassigned' });
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: undefined });
   });
 
   /** Searching is how a chat is found, and Projects is not rendered while a search
    *  is on: excluding project chats there would make them unreachable. */
   it('searches across every chat, project or not', async () => {
-    act(() => getDefaultStore().set(showProjectChatsAtom, false));
     let setSearch: SetterOrUpdater<SearchState>;
 
     function SearchController() {
@@ -388,7 +386,7 @@ describe('ConversationsSection empty Chats wording', () => {
   });
 
   afterEach(() => {
-    act(() => getDefaultStore().set(showProjectChatsAtom, true));
+    act(() => getDefaultStore().set(showProjectChatsAtom, false));
   });
 
   it('calls the account empty only once its projects have loaded and there are none', async () => {

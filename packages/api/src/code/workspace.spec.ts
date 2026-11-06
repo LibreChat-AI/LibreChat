@@ -1970,6 +1970,76 @@ describe('executeWorkspaceTool', () => {
     ).resolves.toMatchObject({ exitCode: 2, stderr: 'not found' });
   });
 
+  describe('lane git on command results', () => {
+    const commandResult = {
+      protocolVersion: 1,
+      operation: 'execute_command',
+      workspaceId: 'primary',
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      timedOut: false,
+    };
+    const run = (extra: Record<string, unknown>) =>
+      executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: {},
+        request: {
+          protocolVersion: 1,
+          operation: 'execute_command',
+          workspaceId: 'primary',
+          command: 'git status',
+        },
+        fetchImpl: jest.fn(async () => Response.json({ ...commandResult, ...extra })),
+      });
+    const head40 = 'a'.repeat(40);
+    const head64 = 'b'.repeat(64);
+
+    test('passes a branch and head through unchanged', async () => {
+      await expect(
+        run({ laneGit: { branch: 'feat/pr-chip', head: head40 } }),
+      ).resolves.toMatchObject({ laneGit: { branch: 'feat/pr-chip', head: head40 } });
+    });
+
+    test('accepts a null branch and head for a detached or empty lane', async () => {
+      await expect(run({ laneGit: { branch: null, head: null } })).resolves.toMatchObject({
+        laneGit: { branch: null, head: null },
+      });
+    });
+
+    test('accepts a 64 character head and a 256 character branch', async () => {
+      const branch = 'x'.repeat(256);
+      await expect(run({ laneGit: { branch, head: head64 } })).resolves.toMatchObject({
+        laneGit: { branch, head: head64 },
+      });
+    });
+
+    test('leaves laneGit absent when the worker did not send it', async () => {
+      const result = await run({});
+      expect(result).not.toHaveProperty('laneGit');
+    });
+
+    test.each<[string, unknown]>([
+      ['an extra key', { branch: 'main', head: head40, path: '/srv/repo' }],
+      ['a missing head', { branch: 'main' }],
+      ['a missing branch', { head: head40 }],
+      ['an empty branch', { branch: '', head: head40 }],
+      ['a branch over 256 characters', { branch: 'x'.repeat(257), head: head40 }],
+      ['a control character in the branch', { branch: 'main\nrm', head: head40 }],
+      ['a DEL character in the branch', { branch: 'main\x7f', head: head40 }],
+      ['an uppercase head', { branch: 'main', head: 'A'.repeat(40) }],
+      ['a short head', { branch: 'main', head: 'a'.repeat(39) }],
+      ['a non-hex head', { branch: 'main', head: 'g'.repeat(40) }],
+      ['a numeric branch', { branch: 7, head: head40 }],
+      ['an array', [null, null]],
+      ['a string', 'main'],
+      ['null', null],
+    ])('rejects the result when laneGit has %s', async (_label, laneGit) => {
+      await expect(run({ laneGit })).rejects.toMatchObject({ reason: 'invalid' });
+    });
+  });
+
   test('rejects command requests and results outside protocol limits', async () => {
     const fetchImpl: CodeBridgeFetch = jest.fn(async () =>
       Response.json({

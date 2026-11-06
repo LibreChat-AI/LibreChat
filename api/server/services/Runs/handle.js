@@ -1,9 +1,8 @@
 const { sleep } = require('@librechat/agents');
 const { logger } = require('@librechat/data-schemas');
-const { RunStatus, defaultOrderQuery, CacheKeys } = require('librechat-data-provider');
+const { RunStatus, CacheKeys } = require('librechat-data-provider');
 const getLogStores = require('~/cache/getLogStores');
 const { retrieveRun } = require('./methods');
-const RunManager = require('./RunManager');
 
 async function withTimeout(promise, timeoutMs, timeoutMessage) {
   let timeoutHandle;
@@ -168,97 +167,7 @@ async function waitForRun({
   return run;
 }
 
-/**
- * Retrieves all steps of a run.
- *
- * @deprecated: Steps are handled with runAssistant now.
- * @param {Object} params - The parameters for the retrieveRunSteps function.
- * @param {OpenAIClient} params.openai - The OpenAI client instance.
- * @param {string} params.thread_id - The ID of the thread associated with the run.
- * @param {string} params.run_id - The ID of the run to retrieve steps for.
- * @return {Promise<RunStep[]>} A promise that resolves to an array of RunStep objects.
- */
-async function _retrieveRunSteps({ openai, thread_id, run_id }) {
-  const runSteps = await openai.beta.threads.runs.steps.list(run_id, { thread_id });
-  return runSteps;
-}
-
-/**
- * Initializes a RunManager with handlers, then invokes waitForRun to monitor and manage an OpenAI run.
- *
- * @deprecated Use runAssistant instead.
- * @param {Object} params - The parameters for managing and monitoring the run.
- * @param {OpenAIClient} params.openai - The OpenAI client instance.
- * @param {string} params.run_id - The ID of the run to manage and monitor.
- * @param {string} params.thread_id - The ID of the thread associated with the run.
- * @return {Promise<Object>} A promise that resolves to an object containing the run and managed steps.
- */
-async function _handleRun({ openai, run_id, thread_id }) {
-  let steps = [];
-  let messages = [];
-  const runManager = new RunManager({
-    // 'in_progress': async ({ step, final, isLast }) => {
-    //   // Define logic for handling steps with 'in_progress' status
-    // },
-    // 'queued': async ({ step, final, isLast }) => {
-    //   // Define logic for handling steps with 'queued' status
-    // },
-    final: async ({ step, runStatus, stepsByStatus }) => {
-      console.log(`Final step for ${run_id} with status ${runStatus}`);
-      console.dir(step, { depth: null });
-
-      const promises = [];
-      promises.push(openai.beta.threads.messages.list(thread_id, defaultOrderQuery));
-
-      // const finalSteps = stepsByStatus[runStatus];
-      // for (const stepPromise of finalSteps) {
-      //   promises.push(stepPromise);
-      // }
-
-      // loop across all statuses
-      for (const [_status, stepsPromises] of Object.entries(stepsByStatus)) {
-        promises.push(...stepsPromises);
-      }
-
-      const resolved = await Promise.all(promises);
-      const res = resolved.shift();
-      messages = res.data.filter((msg) => msg.run_id === run_id);
-      resolved.push(step);
-      steps = resolved;
-    },
-  });
-
-  const run = await waitForRun({
-    openai,
-    run_id,
-    thread_id,
-    runManager,
-    pollIntervalMs: 2000,
-    timeout: 60000,
-  });
-  const actions = [];
-  if (run.required_action) {
-    const { submit_tool_outputs } = run.required_action;
-    submit_tool_outputs.tool_calls.forEach((item) => {
-      const functionCall = item.function;
-      const args = JSON.parse(functionCall.arguments);
-      actions.push({
-        tool: functionCall.name,
-        toolInput: args,
-        toolCallId: item.id,
-        run_id,
-        thread_id,
-      });
-    });
-  }
-
-  return { run, steps, messages, actions };
-}
-
 module.exports = {
-  sleep,
   createRun,
   waitForRun,
-  // _handleRun,
-  // retrieveRunSteps,
 };

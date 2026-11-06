@@ -10,15 +10,6 @@ import type { ToolPolicyConfig } from '@librechat/agents';
 import type { MCPToolAlias } from '~/tools/classification';
 
 /**
- * Default decisions offered to the user for a paused tool call.
- *
- * `'respond'` is intentionally NOT in the default set: it represents the agent
- * substituting a synthetic tool result, which is rarely the right ergonomic for
- * a stock approval prompt. Hosts that want it can pass an override.
- */
-const DEFAULT_REVIEW_DECISIONS: Agents.ToolApprovalDecisionType[] = ['approve', 'reject', 'edit'];
-
-/**
  * Layered sources that combine into the effective tool-approval policy for a turn.
  *
  * Endpoint policy remains the administrative baseline. Attached code environments
@@ -132,7 +123,7 @@ export function isToolApprovalPauseCapable(
     const matches = (patterns: string[] | undefined, name: string): boolean =>
       patterns?.some((pattern) => globToRegex(pattern).test(name)) === true;
     return names.some((name) => {
-      if (matches(enabledPolicy.deny, name)) {
+      if (isToolBlockedByApprovalPolicy(enabledPolicy, name)) {
         return false;
       }
       if (hasProgrammaticHooks || matches(enabledPolicy.ask, name)) {
@@ -180,6 +171,19 @@ export function isToolDeniedByApprovalPolicy(
   );
 }
 
+/** Static deny, including the unmatched `dontAsk` fallback, cannot be tightened into review. */
+export function isToolBlockedByApprovalPolicy(
+  policy: TToolApprovalPolicy | undefined,
+  toolName: string,
+): boolean {
+  if (!isHITLEnabled(policy)) return false;
+  if (isToolDeniedByApprovalPolicy(policy, toolName)) return true;
+  if (policy.mode !== 'dontAsk') return false;
+  const matches = (patterns?: readonly string[]) =>
+    patterns?.some((pattern) => globToRegex(pattern).test(toolName)) === true;
+  return !matches(policy.ask) && !matches(policy.allow);
+}
+
 /**
  * Extends each `toolApproval` pattern list with the names of tools whose
  * OTHER spelling matches, so admin YAML keeps applying when a tool's key
@@ -222,45 +226,6 @@ export function healToolApprovalPolicy(
   };
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Names whose OTHER spelling matches a programmatic hook's regex matcher
- * while their own name does not — the hook must also fire for these or its
- * argument-, user-, or tenant-specific deny/ask decisions are silently
- * skipped for renamed tools. Mirrors the SDK's unanchored `new RegExp(pattern)`
- * matcher semantics; an invalid pattern matches nothing there, so it aliases
- * nothing here.
- */
-export function collectAliasMatcherNames(
-  matcher: string | undefined,
-  aliases: readonly MCPToolAlias[],
-): string[] {
-  if (!matcher || aliases.length === 0) {
-    return [];
-  }
-  let regex: RegExp;
-  try {
-    regex = new RegExp(matcher);
-  } catch {
-    return [];
-  }
-  const names: string[] = [];
-  for (const { name, aliasName } of aliases) {
-    if (name !== aliasName && !regex.test(name) && regex.test(aliasName)) {
-      names.push(name);
-    }
-  }
-  return names;
-}
-
-/** Anchored exact-name pattern for the alias-matched names of one hook matcher. */
-export function buildAliasMatcherPattern(names: readonly string[]): string {
-  return `^(?:${names.map(escapeRegExp).join('|')})$`;
-}
-
 export function mapToolApprovalPolicy(
   policy: TToolApprovalPolicy | undefined,
 ): ToolPolicyConfig | undefined {
@@ -284,40 +249,6 @@ export function mapToolApprovalPolicy(
     config.reason = policy.reason;
   }
   return Object.keys(config).length > 0 ? config : undefined;
-}
-
-/** Tool-call shape consumed by {@link buildToolApprovalPayload}. */
-export interface ToolApprovalCallInput {
-  name: string;
-  arguments: string | Record<string, unknown>;
-  tool_call_id: string;
-  description?: string;
-}
-
-/**
- * Build a tool-approval interrupt payload from one or more paused tool calls.
- *
- * Mirrors the SDK's `ToolApprovalInterruptPayload` shape so this can be used
- * to synthesize payloads in tests, or by the host before the SDK upgrade ships.
- */
-export function buildToolApprovalPayload(
-  toolCalls: ToolApprovalCallInput[],
-  decisionsByToolName?: Record<string, Agents.ToolApprovalDecisionType[]>,
-): Agents.ToolApprovalInterruptPayload {
-  return {
-    type: 'tool_approval',
-    action_requests: toolCalls.map((tc) => ({
-      name: tc.name,
-      arguments: tc.arguments,
-      tool_call_id: tc.tool_call_id,
-      description: tc.description,
-    })),
-    review_configs: toolCalls.map((tc) => ({
-      action_name: tc.name,
-      tool_call_id: tc.tool_call_id,
-      allowed_decisions: decisionsByToolName?.[tc.name] ?? DEFAULT_REVIEW_DECISIONS,
-    })),
-  };
 }
 
 /** Require one uniquely identified review policy for every paused tool call. */
@@ -354,16 +285,6 @@ export function isToolApprovalPayloadValid(payload: Agents.ToolApprovalInterrupt
   }
 
   return true;
-}
-
-/** Build an ask-user-question interrupt payload. */
-export function buildAskUserQuestionPayload(
-  question: Agents.AskUserQuestionRequest,
-): Agents.AskUserQuestionInterruptPayload {
-  return {
-    type: 'ask_user_question',
-    question,
-  };
 }
 
 /** Job-context fields wrapped around a {@link Agents.HumanInterruptPayload}. */
@@ -952,6 +873,7 @@ export function toClientPendingAction(
     requestFingerprintV2: _requestFingerprintV2,
     resumeContext: _resumeContext,
     codeExecutionBinding: _codeExecutionBinding,
+    toolApprovalBindings: _toolApprovalBindings,
     toolApprovalAliases: _toolApprovalAliases,
     ...clientSafe
   } = pendingAction;

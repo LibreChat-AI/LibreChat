@@ -10,6 +10,8 @@ import type {
   StatefulCodeEnvironment,
   GraphEdge,
   Agent,
+  AgentInstructionsPrompt,
+  RestrictedAgentInstructionsPrompt,
 } from 'librechat-data-provider';
 import type { OptionWithIcon, ExtendedFile } from './types';
 
@@ -37,6 +39,10 @@ export type AgentForm = {
   name: string | null;
   description: string | null;
   instructions: string | null;
+  /** Whether instructions come from the inline editor or a linked native prompt group. */
+  instructionsSource: 'inline' | 'prompt';
+  /** The linked prompt group revision, or the restricted stub when the editor cannot view it. */
+  instructionsPrompt: AgentInstructionsPrompt | RestrictedAgentInstructionsPrompt | null;
   model: string | null;
   model_parameters: AgentModelParameters;
   tools?: string[];

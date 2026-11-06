@@ -3,6 +3,7 @@ import {
   CODE_ENVIRONMENT_MOVE_VERSION,
   CODE_ENVIRONMENT_TRANSITION_VERSION,
   CODE_WORKSPACE_RECOVERY_VERSION,
+  CODE_WORKSPACE_INHERITANCE_VERSION,
   EModelEndpoint,
 } from 'librechat-data-provider';
 import type { TStartupConfig } from 'librechat-data-provider';
@@ -68,6 +69,15 @@ export function resolveCodeEnvironmentMoveCapabilities(
     codeEnvironmentMoveVersion,
     codeWorkspaceRecoveryVersion: CODE_WORKSPACE_RECOVERY_VERSION,
   };
+}
+
+/** Subagent machine inheritance rides on the decision protocol that records the selections. */
+export function resolveCodeWorkspaceInheritanceCapability(
+  configuredDecisionVersion?: string,
+): Pick<TStartupConfig, 'codeWorkspaceInheritanceVersion'> {
+  return resolveCodeEnvironmentDecisionVersion(configuredDecisionVersion) == null
+    ? {}
+    : { codeWorkspaceInheritanceVersion: CODE_WORKSPACE_INHERITANCE_VERSION };
 }
 
 /** Enables the implicit managed route only after the versioned rollout is complete. */

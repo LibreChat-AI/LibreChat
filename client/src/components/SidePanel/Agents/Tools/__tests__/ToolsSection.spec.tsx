@@ -304,3 +304,26 @@ describe('ToolsSection', () => {
     );
   });
 });
+
+test.each(['subagents', 'handoffs'] as const)(
+  'removing %s only writes that tool’s fields',
+  (id) => {
+    mockSelected = [{ kind: 'builtin', id, name: '', description: '', iconKey: id }];
+    const subagents = {
+      enabled: true,
+      allowSelf: false,
+      shareFiles: true,
+      agent_ids: ['reviewer'],
+    };
+    const handoff = { from: 'parent', to: 'reviewer' };
+    const direct = { from: 'parent', to: ['left', 'right'] };
+    mockFormValues = { subagents, edges: [handoff, direct] };
+    render(<ToolsSection agentId="a" />);
+    fireEvent.click(screen.getByRole('button', { name: `remove-${id}` }));
+    expect(mockSetValue.mock.calls).toEqual(
+      id === 'subagents'
+        ? [['subagents', { ...subagents, enabled: false }, { shouldDirty: true }]]
+        : [['edges', [direct], { shouldDirty: true }]],
+    );
+  },
+);

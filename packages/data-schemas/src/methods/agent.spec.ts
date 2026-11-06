@@ -552,6 +552,109 @@ describe('Agent Methods', () => {
       expect(retrievedAgent!.description).toBe('Test description');
     });
 
+    test('should persist a linked native prompt-group instructions selection on create', async () => {
+      const { agentId, authorId } = createTestIds();
+      const instructionsPrompt = {
+        source: 'native',
+        groupId: new mongoose.Types.ObjectId().toString(),
+        selection: { type: 'production' },
+      };
+
+      const newAgent = await createAgent({
+        id: agentId,
+        name: 'Linked Instructions Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        instructionsPrompt,
+      });
+
+      expect(newAgent.instructionsPrompt).toEqual(instructionsPrompt);
+
+      const retrievedAgent = await getAgent({ id: agentId });
+      expect(retrievedAgent!.instructionsPrompt).toEqual(instructionsPrompt);
+    });
+
+    test('should persist a linked Langfuse prompt-group exact-version selection on create', async () => {
+      const { agentId, authorId } = createTestIds();
+      const instructionsPrompt = {
+        source: 'langfuse',
+        groupId: new mongoose.Types.ObjectId().toString(),
+        selection: { type: 'exact', version: 3 },
+      };
+
+      const newAgent = await createAgent({
+        id: agentId,
+        name: 'Linked Langfuse Instructions Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        instructionsPrompt,
+      });
+
+      expect(newAgent.instructionsPrompt).toEqual(instructionsPrompt);
+
+      const retrievedAgent = await getAgent({ id: agentId });
+      expect(retrievedAgent!.instructionsPrompt).toEqual(instructionsPrompt);
+    });
+
+    test('rejects an instructionsPrompt with an unknown source', async () => {
+      const { agentId, authorId } = createTestIds();
+
+      await expect(
+        createAgent({
+          id: agentId,
+          name: 'Invalid Source Agent',
+          provider: 'test',
+          model: 'test-model',
+          author: authorId,
+          instructionsPrompt: {
+            source: 'other',
+            groupId: new mongoose.Types.ObjectId().toString(),
+            selection: { type: 'production' },
+          },
+        }),
+      ).rejects.toMatchObject({ name: 'ValidationError' });
+    });
+
+    test('rejects an instructionsPrompt selection with an unknown type', async () => {
+      const { agentId, authorId } = createTestIds();
+
+      await expect(
+        createAgent({
+          id: agentId,
+          name: 'Invalid Selection Agent',
+          provider: 'test',
+          model: 'test-model',
+          author: authorId,
+          instructionsPrompt: {
+            source: 'native',
+            groupId: new mongoose.Types.ObjectId().toString(),
+            selection: { type: 'latest' },
+          },
+        }),
+      ).rejects.toMatchObject({ name: 'ValidationError' });
+    });
+
+    test('rejects a Langfuse instructionsPrompt selection using the retired "version" type', async () => {
+      const { agentId, authorId } = createTestIds();
+
+      await expect(
+        createAgent({
+          id: agentId,
+          name: 'Retired Selection Type Agent',
+          provider: 'test',
+          model: 'test-model',
+          author: authorId,
+          instructionsPrompt: {
+            source: 'langfuse',
+            groupId: new mongoose.Types.ObjectId().toString(),
+            selection: { type: 'version', version: 3 },
+          },
+        }),
+      ).rejects.toMatchObject({ name: 'ValidationError' });
+    });
+
     test('should derive mcpServerNames only from MCP tools on create', async () => {
       const { agentId, authorId } = createTestIds();
       const actionTool = `sync${Constants.mcp_delimiter}state${actionDelimiter}api---example---com`;
@@ -605,6 +708,31 @@ describe('Agent Methods', () => {
         expect.objectContaining({ id: visible.id, mcpServerNames: ['docs'] }),
       ]);
       expect(nodes[0]).not.toHaveProperty('_id');
+    });
+
+    test('getAgentModelSummaries loads only the models list fields', async () => {
+      const { agentId, authorId } = createTestIds();
+      const agent = await createAgent({
+        id: agentId,
+        name: 'Listed Agent',
+        description: 'shown in the models list',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+      });
+
+      const summaries = await methods.getAgentModelSummaries([agent._id]);
+
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).toMatchObject({
+        id: agentId,
+        name: 'Listed Agent',
+        description: 'shown in the models list',
+        provider: 'test',
+      });
+      expect(Object.keys(summaries[0]).sort()).toEqual(
+        ['_id', 'author', 'createdAt', 'description', 'id', 'name', 'provider'].sort(),
+      );
     });
 
     describe('MCP server name candidate lookups', () => {
@@ -1315,6 +1443,116 @@ describe('Agent Methods', () => {
           description: 'Unrelated bulk edge',
         },
       ]);
+    });
+
+    test('keeps a sole-owned agent discoverable when the agent delete fails, so a retry erases it', async () => {
+      const ownerId = new mongoose.Types.ObjectId();
+      const authorId = new mongoose.Types.ObjectId();
+      const agent = await createAgent({
+        id: `agent_${uuidv4()}`,
+        name: 'Owned But Authored Elsewhere',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+      });
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: ownerId,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: agent._id,
+        permBits:
+          PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
+        grantedBy: ownerId,
+      });
+
+      const failure = jest
+        .spyOn(mongoose.models.Agent, 'deleteMany')
+        .mockRejectedValueOnce(new Error('transient outage'));
+      await expect(deleteUserAgents(ownerId.toString())).rejects.toThrow('transient outage');
+      failure.mockRestore();
+
+      expect(await AclEntry.countDocuments({ resourceId: agent._id })).toBe(1);
+
+      await deleteUserAgents(ownerId.toString());
+
+      expect(await getAgent({ id: agent.id })).toBeNull();
+      expect(await AclEntry.countDocuments({ resourceId: agent._id })).toBe(0);
+    });
+
+    test('keeps the agent when reference cleanup fails, so a retry erases it', async () => {
+      const ownerId = new mongoose.Types.ObjectId();
+      const agent = await createAgent({
+        id: `agent_${uuidv4()}`,
+        name: 'Owned',
+        provider: 'test',
+        model: 'test-model',
+        author: ownerId,
+      });
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: ownerId,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: agent._id,
+        permBits:
+          PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
+        grantedBy: ownerId,
+      });
+
+      const failure = jest
+        .spyOn(mongoose.models.User, 'updateMany')
+        .mockRejectedValueOnce(new Error('favorites outage'));
+      await expect(deleteUserAgents(ownerId.toString())).rejects.toThrow('favorites outage');
+      failure.mockRestore();
+
+      expect(await getAgent({ id: agent.id })).not.toBeNull();
+
+      await deleteUserAgents(ownerId.toString());
+
+      expect(await getAgent({ id: agent.id })).toBeNull();
+    });
+
+    test('does not touch same-id references in another tenant when the author is tenantless', async () => {
+      const authorId = new mongoose.Types.ObjectId();
+      const sharedAgentId = `agent_${uuidv4()}`;
+      const otherGraphId = `agent_${uuidv4()}`;
+      const otherTargetId = `agent_${uuidv4()}`;
+      await createAgent({
+        id: sharedAgentId,
+        name: 'Tenantless Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+      });
+      const Agent = mongoose.models.Agent;
+      await Agent.collection.insertOne({
+        id: otherGraphId,
+        name: 'Other Tenant Graph',
+        provider: 'test',
+        model: 'test-model',
+        author: new mongoose.Types.ObjectId(),
+        tenantId: 'tenant-2',
+        edges: [
+          { from: otherGraphId, to: sharedAgentId, edgeType: 'handoff' },
+          { from: otherGraphId, to: otherTargetId, edgeType: 'handoff' },
+        ],
+      });
+      await mongoose.models.User.collection.insertOne({
+        email: 'tenant2@example.com',
+        tenantId: 'tenant-2',
+        favorites: [{ agentId: sharedAgentId }],
+      });
+
+      await deleteUserAgents(authorId.toString());
+
+      expect(await getAgent({ id: sharedAgentId })).toBeNull();
+      const graph = await Agent.collection.findOne({ id: otherGraphId });
+      expect(graph?.edges).toHaveLength(2);
+      const otherUser = await mongoose.models.User.collection.findOne({
+        email: 'tenant2@example.com',
+      });
+      expect(otherUser?.favorites).toEqual([{ agentId: sharedAgentId }]);
     });
 
     test('keeps an edge added to the graph while the cleanup was running', async () => {
@@ -2990,6 +3228,81 @@ describe('Agent Methods', () => {
       expect(revertedAgent.code_environment_id).toBeUndefined();
     });
 
+    test('should unset a linked prompt-group instructions selection absent from the restored version', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      const authorId = new mongoose.Types.ObjectId();
+
+      await createAgent({
+        id: agentId,
+        name: 'Unlinked Instructions Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+      });
+      await updateAgent(
+        { id: agentId },
+        {
+          instructionsPrompt: {
+            source: 'native',
+            groupId: new mongoose.Types.ObjectId().toString(),
+            selection: { type: 'production' },
+          },
+        },
+      );
+
+      const revertedAgent = await revertAgentVersion({ id: agentId }, 0);
+
+      expect(revertedAgent.instructionsPrompt).toBeUndefined();
+    });
+
+    test('should restore a linked prompt-group instructions selection present in the reverted version', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      const authorId = new mongoose.Types.ObjectId();
+      const instructionsPrompt = {
+        source: 'native',
+        groupId: new mongoose.Types.ObjectId().toString(),
+        selection: { type: 'production' },
+      };
+
+      await createAgent({
+        id: agentId,
+        name: 'Linked Instructions Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        instructionsPrompt,
+      });
+      await updateAgent({ id: agentId }, { instructionsPrompt: null });
+
+      const revertedAgent = await revertAgentVersion({ id: agentId }, 0);
+
+      expect(revertedAgent.instructionsPrompt).toEqual(instructionsPrompt);
+    });
+
+    test('should restore a linked Langfuse prompt-group exact-version selection present in the reverted version', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      const authorId = new mongoose.Types.ObjectId();
+      const instructionsPrompt = {
+        source: 'langfuse',
+        groupId: new mongoose.Types.ObjectId().toString(),
+        selection: { type: 'exact', version: 5 },
+      };
+
+      await createAgent({
+        id: agentId,
+        name: 'Linked Langfuse Instructions Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        instructionsPrompt,
+      });
+      await updateAgent({ id: agentId }, { instructionsPrompt: null });
+
+      const revertedAgent = await revertAgentVersion({ id: agentId }, 0);
+
+      expect(revertedAgent.instructionsPrompt).toEqual(instructionsPrompt);
+    });
+
     test('should clear a Git identity absent from the restored version', async () => {
       const agentId = `agent_${uuidv4()}`;
       const authorId = new mongoose.Types.ObjectId();
@@ -3498,6 +3811,76 @@ describe('Agent Methods', () => {
 
       // Should create new version as order matters for arrays
       expect(updatedAgent!.versions).toHaveLength(2);
+    });
+
+    test('should create a new version when the linked prompt-group selection changes', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      const authorId = new mongoose.Types.ObjectId();
+      const groupId = new mongoose.Types.ObjectId().toString();
+
+      await createAgent({
+        id: agentId,
+        name: 'Test Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+      });
+
+      const updatedAgent = await updateAgent(
+        { id: agentId },
+        {
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'exact', promptId: new mongoose.Types.ObjectId().toString() },
+          },
+        },
+      );
+
+      expect(updatedAgent!.versions).toHaveLength(2);
+      expect(updatedAgent!.instructionsPrompt).toMatchObject({
+        source: 'native',
+        groupId,
+        selection: { type: 'exact' },
+      });
+    });
+
+    test('should create a new version when the linked Langfuse prompt-group exact-version selection changes', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      const authorId = new mongoose.Types.ObjectId();
+      const groupId = new mongoose.Types.ObjectId().toString();
+
+      await createAgent({
+        id: agentId,
+        name: 'Test Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        instructionsPrompt: {
+          source: 'langfuse',
+          groupId,
+          selection: { type: 'exact', version: 1 },
+        },
+      });
+
+      const updatedAgent = await updateAgent(
+        { id: agentId },
+        {
+          instructionsPrompt: {
+            source: 'langfuse',
+            groupId,
+            selection: { type: 'exact', version: 2 },
+          },
+        },
+      );
+
+      expect(updatedAgent!.versions).toHaveLength(2);
+      expect(updatedAgent!.instructionsPrompt).toMatchObject({
+        source: 'langfuse',
+        groupId,
+        selection: { type: 'exact', version: 2 },
+      });
     });
 
     test('should handle isDuplicateVersion with mixed primitive and object arrays', async () => {

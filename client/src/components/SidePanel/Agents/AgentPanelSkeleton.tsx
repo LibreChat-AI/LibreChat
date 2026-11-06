@@ -27,7 +27,7 @@ export default function AgentPanelSkeleton() {
       {/* INSTRUCTIONS */}
       <div className="mb-3 flex flex-col">
         <Skeleton className="mb-1 h-3 w-20 rounded" />
-        <Skeleton className="h-[88px] w-full rounded-xl" />
+        <Skeleton className="h-[5.5rem] w-full rounded-xl" />
       </div>
 
       {/* TOOLS — header + a couple of rows */}

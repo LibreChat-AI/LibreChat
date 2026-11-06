@@ -1,5 +1,6 @@
 import React from 'react';
 import copy from 'copy-to-clipboard';
+import { ToolContentPendingContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import OutputRenderer, { isError } from '../OutputRenderer';
 
@@ -11,20 +12,38 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/components/Messages/Content/CopyButton', () => ({
   __esModule: true,
-  default: ({ onClick, className }: { onClick: () => void; className?: string }) => (
-    <button type="button" data-testid="copy-output" className={className} onClick={onClick} />
+  default: ({
+    onClick,
+    className,
+    disabled,
+  }: {
+    onClick: () => void;
+    className?: string;
+    disabled?: boolean;
+  }) => (
+    <button
+      type="button"
+      data-testid="copy-output"
+      className={className}
+      onClick={onClick}
+      disabled={disabled}
+    />
   ),
 }));
 
 describe('OutputRenderer', () => {
-  it('lays the copy control over the bottom right of the output without reserving width', () => {
+  beforeEach(() => {
+    (copy as jest.Mock).mockClear();
+  });
+
+  it('pins the copy control to the top corner and keeps text clear of it', () => {
     render(<OutputRenderer text={'First line\nSecond line'} />);
 
     const copyButton = screen.getByTestId('copy-output');
-    expect(copyButton).toHaveClass('absolute', 'right-0', 'bottom-0');
-    expect(copyButton).toHaveClass('[@media(hover:hover)]:group-hover/copy:opacity-100');
+    expect(copyButton).toHaveClass('absolute', '-inset-e-1', '-top-1');
+    expect(copyButton).toHaveClass('no-touch:group-hover/copy:opacity-100');
     expect(copyButton.parentElement).toHaveClass('group/copy', 'relative');
-    expect(copyButton.parentElement).not.toHaveClass('pr-10');
+    expect(screen.getByText(/First line/).closest('pre')).toHaveClass('pe-6');
   });
 
   it('copies original bytes when a code result has been formatted for display', () => {
@@ -32,6 +51,18 @@ describe('OutputRenderer', () => {
     render(<OutputRenderer text={'stdout:\n{\n  "ok": true\n}'} copyText={raw} />);
     fireEvent.click(screen.getByTestId('copy-output'));
     expect(copy).toHaveBeenCalledWith(raw, { format: 'text/plain' });
+  });
+
+  it('will not copy a server preview before the stored output arrives', () => {
+    render(
+      <ToolContentPendingContext.Provider value={true}>
+        <OutputRenderer text={'head\n…\ntail'} copyText={'head\n…\ntail'} />
+      </ToolContentPendingContext.Provider>,
+    );
+    const button = screen.getByTestId('copy-output');
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(copy).not.toHaveBeenCalled();
   });
 
   it('renders long output in full with no show more toggle', () => {
@@ -44,7 +75,7 @@ describe('OutputRenderer', () => {
     render(<OutputRenderer text={text} variant="terminal" />);
     const pre = screen.getByText(/line 30/);
     expect(pre.textContent).toBe(text);
-    expect(pre).toHaveClass('max-h-[300px]', 'overflow-auto');
+    expect(pre).toHaveClass('max-h-[18.75rem]', 'overflow-auto');
     expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
   });
 

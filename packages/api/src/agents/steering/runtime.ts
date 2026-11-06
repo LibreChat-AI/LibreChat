@@ -338,9 +338,22 @@ export function createSteerTerminalContinuationHook(
  * is: a run wired to a generation that has since been replaced must not be
  * woken by the replacement's arms.
  */
-export function createSteerPreemptPoll(streamId: string, jobCreatedAt?: number): StreamPreemption {
+export interface SteerPreemption extends StreamPreemption {
+  /** Restrict owner-recorded capability before a provider-hosted tool can start. */
+  disable: () => Promise<void>;
+}
+
+export function createSteerPreemptPoll(streamId: string, jobCreatedAt?: number): SteerPreemption {
+  let enabled = true;
   return {
-    shouldPreempt: () => GenerationJobManager.isPreemptRequested(streamId),
+    shouldPreempt: () => enabled && GenerationJobManager.isPreemptRequested(streamId),
+    disable: async () => {
+      enabled = false;
+      await GenerationJobManager.updateMetadata(streamId, { preemptCapable: false }, jobCreatedAt);
+      if (jobCreatedAt != null) {
+        await GenerationJobManager.rearmQueuedPreempts(streamId, jobCreatedAt);
+      }
+    },
     ...(isSteerPreemptRestartSupported() && {
       subscribe: (wake: () => void) =>
         GenerationJobManager.subscribePreempt(streamId, wake, jobCreatedAt),

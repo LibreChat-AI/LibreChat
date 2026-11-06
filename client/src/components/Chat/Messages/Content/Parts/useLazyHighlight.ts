@@ -1,18 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS } from 'librechat-data-provider';
+
+export { normalizeCodeHighlightThrottleMs } from 'librechat-data-provider';
 
 /** Quiet period before re-highlighting streaming code. */
-export const HIGHLIGHT_THROTTLE_MS = 300;
+export const HIGHLIGHT_THROTTLE_MS = DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS;
 export const CodeHighlightThrottleContext = React.createContext(HIGHLIGHT_THROTTLE_MS);
-
-export function normalizeCodeHighlightThrottleMs(value: unknown): number {
-  return typeof value === 'number' &&
-    Number.isFinite(value) &&
-    Number.isInteger(value) &&
-    value >= 0 &&
-    value <= 60000
-    ? value
-    : HIGHLIGHT_THROTTLE_MS;
-}
 
 interface HastText {
   type: 'text';

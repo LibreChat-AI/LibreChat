@@ -1,12 +1,15 @@
 import { FileContext } from 'librechat-data-provider';
 import type { AgentInputs, SubagentTaskConfig, SubagentResolveContext } from '@librechat/agents';
+import type { FileProvisionCommit } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
+import type { ProvisionCallbackDeps, ProvisionToolContext } from '~/files/provision/callback';
 import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
-import type { ProvisionToolContext } from '~/files/provision/callback';
 import type { ServerRequest } from '~/types';
+import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createProvisionFilesCallback } from '~/files/provision/callback';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
+import { createFileProvisionRecovery } from '../../files/operations';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
 import { createRun } from '~/agents/run';
 
@@ -66,7 +69,13 @@ jest.mock('~/agents/checkpointer', () => ({
   getAgentCheckpointer: jest.fn().mockResolvedValue({}),
 }));
 
-import { HookRegistry, InMemorySubagentTaskStore, Run } from '@librechat/agents';
+import {
+  Constants,
+  HookRegistry,
+  InMemorySubagentTaskStore,
+  Run,
+  executeHooks,
+} from '@librechat/agents';
 
 function makeAgent(overrides?: Record<string, unknown>) {
   return {
@@ -209,6 +218,62 @@ describe('createRun code-tool eager/session wiring', () => {
     expect(childInput.additional_instructions).toContain('/mnt/data/data.csv');
     expect(childInput.additional_instructions).not.toContain('draft-alias.csv');
     expect(childInput.additional_instructions?.match(/\/mnt\/data\/data\.csv/g)).toHaveLength(1);
+  });
+
+  it('settles a lazy child only after the run has its inputs, so a late cancel is given back', async () => {
+    const controller = new AbortController();
+    const outcomes: string[] = [];
+    const settle = jest.fn(<T>(_context: unknown, resolveInputs: () => Promise<T>) =>
+      resolveInputs().then(
+        (inputs) => {
+          outcomes.push('kept');
+          return inputs;
+        },
+        (error: unknown) => {
+          outcomes.push('given back');
+          throw error;
+        },
+      ),
+    );
+    const resolve = jest.fn(async () => {
+      controller.abort(new Error('canceled after resolving'));
+      return makeAgent({ id: 'child' });
+    });
+    const config = await captureRunConfig(
+      makeAgent({
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        lazySubagentConfigs: [{ id: 'child', configId: 'child:1', resolve, settle }],
+      }),
+    );
+    const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+    const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+
+    await expect(
+      resolveInputs({ signal: controller.signal } as SubagentResolveContext),
+    ).rejects.toThrow('canceled after resolving');
+    expect(outcomes).toEqual(['given back']);
+  });
+
+  it('declares per-call machine choices only on lazy children that have them', async () => {
+    const resolve = jest.fn().mockResolvedValue(makeAgent({ id: 'child' }));
+    const subagentHostArgs = {
+      machine: { description: 'Machine the subagent runs on.', enum: ['laptop'] },
+    };
+    const config = await captureRunConfig(
+      makeAgent({
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child', 'plain'] },
+        lazySubagentConfigs: [
+          { id: 'child', configId: 'child:1', resolve, subagentHostArgs },
+          { id: 'plain', configId: 'plain:1', resolve },
+        ],
+      }),
+    );
+    const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+    const [routed, plain] = parentInput.subagentConfigs ?? [];
+
+    expect(routed).toHaveProperty('hostArgs', subagentHostArgs);
+    expect(plain).not.toHaveProperty('hostArgs');
   });
 
   it.each([false, true])(
@@ -379,14 +444,43 @@ describe('createRun code-tool eager/session wiring', () => {
           };
         },
       );
+      const updateFile = jest.fn(
+        async (_update: Parameters<ProvisionCallbackDeps['updateFile']>[0]): Promise<unknown> =>
+          undefined,
+      );
+      const updateCodeEnvRef = jest.fn(
+        async (
+          _update: Parameters<ProvisionCallbackDeps['updateCodeEnvRef']>[0],
+        ): Promise<unknown> => undefined,
+      );
+      const addEmbeddedEntity = jest.fn(
+        async (
+          _update: Parameters<ProvisionCallbackDeps['addEmbeddedEntity']>[0],
+        ): Promise<unknown> => undefined,
+      );
       const provision = createProvisionFilesCallback({
         req: { user: { id: 'user-1' } } as ServerRequest,
         agentToolContexts: contexts,
+        fileStorage: {
+          recovery: createFileProvisionRecovery(),
+          acquireFileProvision: jest.fn(async () => true),
+          releaseFileProvision: jest.fn(async () => true),
+          commitFileProvision: jest.fn(
+            async ({ claim, code, entityId, embedded }: FileProvisionCommit) => {
+              let result: unknown;
+              if (code) result = await updateCodeEnvRef({ file_id: claim.file_id, ...code });
+              else if (entityId != null)
+                result = await addEmbeddedEntity({ file_id: claim.file_id, entityId });
+              else result = await updateFile({ file_id: claim.file_id, embedded });
+              return result !== null && result !== false;
+            },
+          ),
+        },
         provisionToCodeEnv,
         provisionToVectorDB: jest.fn(),
-        updateFile: jest.fn(),
-        updateCodeEnvRef: jest.fn(),
-        addEmbeddedEntity: jest.fn(),
+        updateFile,
+        updateCodeEnvRef,
+        addEmbeddedEntity,
       });
       for (const child of children) {
         contexts.set(child.id, child);
@@ -433,6 +527,11 @@ describe('createRun code-tool eager/session wiring', () => {
     expect(runConfig.codeSessionToolNames).toEqual(
       expect.arrayContaining(['create_file', 'edit_file', 'read_file']),
     );
+  });
+
+  it('reports why a subagent could not start instead of leaving the SDK to guess', async () => {
+    const runConfig = await captureRunConfig();
+    expect(runConfig.onSubagentResolutionFailure).toBe(reportSubagentResolutionFailure);
   });
 
   it('passes the trusted per-agent code-session partition to the SDK', async () => {
@@ -568,5 +667,141 @@ describe('createRun code-tool eager/session wiring', () => {
         new AbortController().signal,
       ),
     ).resolves.toEqual(expect.objectContaining({ updatedOutput: expect.any(String) }));
+  });
+});
+
+describe('attached-machine policy for lazily initialized graph members', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const attachedOn = (environmentId: string, commandExecution: 'allow' | 'deny') => ({
+    environmentType: 'attached',
+    environmentId,
+    codeEnvironmentConfigSchema: {
+      permissions: { commandExecution: { allowed: ['allow', 'ask', 'deny'], default: 'ask' } },
+    },
+    codeEnvironmentSettings: { permissions: { commandExecution } },
+  });
+
+  it('stops applying attached-machine policy to a routable child that resolved on managed code', async () => {
+    const choice = { ...attachedOn('buildbox', 'deny'), statefulSessions: true };
+    const resolve = jest
+      .fn()
+      .mockResolvedValue(
+        makeAgent({ id: 'child', codeExecutionContext: { environmentType: 'managed' } }),
+      );
+    await createRun({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+          lazySubagentConfigs: [
+            { id: 'child', configId: 'child:1', resolve, codeExecutionChoices: [choice] },
+          ],
+        }),
+      ] as never,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+      hitlCapable: true,
+    });
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    /** The attached-machine policy's own verdict, apart from the run's other approval hooks. */
+    const attachedVerdicts = async () => {
+      const verdicts: unknown[] = [];
+      for (const matcher of (runConfig.hooks as HookRegistry).getMatchers('PreToolUse')) {
+        for (const hook of matcher.hooks) {
+          const result = await hook(
+            {
+              hook_event_name: 'PreToolUse',
+              runId: 'run-1',
+              toolName: Constants.BASH_TOOL,
+              toolInput: { command: 'touch out.txt' },
+              toolUseId: 'call-1',
+              executingAgentId: 'child',
+            },
+            new AbortController().signal,
+          );
+          if (String(result.reason ?? '').includes('attached code environment')) {
+            verdicts.push(result.decision);
+          }
+        }
+      }
+      return verdicts;
+    };
+
+    expect(await attachedVerdicts()).toEqual(['ask']);
+
+    const [parentInput] = (runConfig.graphConfig as { agents: AgentInputs[] }).agents;
+    const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+    await resolveInputs({ signal: new AbortController().signal } as SubagentResolveContext);
+
+    expect(await attachedVerdicts()).toEqual([]);
+  });
+
+  it('applies the policy of the machine a routed child sent its graph member to', async () => {
+    const definition = {
+      type: 'review_team',
+      name: 'Review team',
+      description: 'A one-member team',
+      agent_ids: ['member'],
+      edges: [],
+      entry_agent_id: 'member',
+      result_agent_id: 'member',
+    };
+    const routedMember = makeAgent({
+      id: 'member',
+      codeExecutionContext: attachedOn('buildbox', 'deny'),
+    });
+    const child = makeAgent({
+      id: 'child',
+      subagentGraphConfigs: [{ definition, memberConfigs: [routedMember] }],
+    });
+    const resolve = jest.fn().mockResolvedValue(child);
+    await createRun({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+          lazySubagentConfigs: [
+            {
+              id: 'child',
+              configId: 'child:1',
+              resolve,
+              subagentGraphMemberMetadata: [
+                { id: 'member', codeExecutionContext: attachedOn('laptop', 'allow') },
+              ],
+            },
+          ],
+        }),
+      ] as never,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+      hitlCapable: true,
+    });
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    const decide = async () =>
+      (
+        await executeHooks({
+          registry: runConfig.hooks as HookRegistry,
+          input: {
+            hook_event_name: 'PreToolUse',
+            runId: 'run-1',
+            toolName: Constants.BASH_TOOL,
+            toolInput: { command: 'ls' },
+            toolUseId: 'call-1',
+            executingAgentId: 'member',
+          },
+          matchQuery: Constants.BASH_TOOL,
+        })
+      ).decision;
+
+    expect(await decide()).toBe('allow');
+
+    const [parentInput] = (runConfig.graphConfig as { agents: AgentInputs[] }).agents;
+    const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+    await resolveInputs({ signal: new AbortController().signal } as SubagentResolveContext);
+
+    expect(await decide()).toBe('deny');
   });
 });

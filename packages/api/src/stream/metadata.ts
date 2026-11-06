@@ -14,6 +14,9 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   if (metadata.isRegenerate !== undefined) {
     patch.isRegenerate = metadata.isRegenerate;
   }
+  if (metadata.compact !== undefined) {
+    patch.compact = metadata.compact;
+  }
   if (metadata.mcpRequestBody) {
     patch.mcpRequestBody = metadata.mcpRequestBody;
   }
@@ -116,6 +119,9 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   }
   if (metadata.discoveredTools) {
     patch.discoveredTools = metadata.discoveredTools;
+  }
+  if (metadata.authoredSkills) {
+    patch.authoredSkills = metadata.authoredSkills;
   }
   if (metadata.activityPhaseSnapshot) {
     patch.activityPhaseSnapshot = metadata.activityPhaseSnapshot;

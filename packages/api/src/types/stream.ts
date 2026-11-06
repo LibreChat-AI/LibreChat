@@ -13,6 +13,7 @@ import type {
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { EarlyBufferOverflowState } from './earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '../agents/hitl/resume';
+import type { AuthoredSkillBinding } from '~/agents/authored';
 import type { MCPRuntimeRequestBody } from '../mcp/types';
 import type { ServerSentEvent } from './events';
 
@@ -32,6 +33,9 @@ export interface GenerationJobMetadata {
   responseMessageId?: string;
   /** Whether this generation replaces an existing assistant branch. */
   isRegenerate?: boolean;
+  /** Whether this generation is a manual context compaction; the abort paths
+   * read it to stamp the stopped row with the compaction's identity. */
+  compact?: boolean;
   /** Exact normalized MCP placeholder identity for this turn. Persisted so HITL
    * resume does not reconstruct a different parent or overridden conversation. */
   mcpRequestBody?: MCPRuntimeRequestBody;
@@ -97,6 +101,7 @@ export interface GenerationJobMetadata {
    * without them the rebuilt model would lose the discovered tool schemas.
    */
   discoveredTools?: string[];
+  authoredSkills?: AuthoredSkillBinding[];
   /** Bounded collector state for continuing a phase across HITL resume. */
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   /** Exact bounded compaction guidance captured atomically with a HITL pause. */

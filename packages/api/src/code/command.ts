@@ -14,7 +14,11 @@ import type {
 import type { createBashProgrammaticToolCallingSchema } from '@librechat/agents';
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { LCTool } from '@librechat/agents';
-import type { WorkspaceAdmissionOptions, WorkspaceExecuteCommandResult } from './workspace';
+import type {
+  WorkspaceAdmissionOptions,
+  WorkspaceExecuteCommandResult,
+  WorkspaceLaneGit,
+} from './workspace';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeBridgeFetch } from './bridge';
 import {
@@ -174,7 +178,9 @@ export function resolveAttachedWorkspaceCommandTimeoutMax(
   return fitCommandTimeoutMaxToBudget(
     Math.min(requested, upstream),
     Math.min(
-      resolveAttachedWorkspaceRequestTimeoutMs(configSchema) ?? Infinity,
+      configSchema?.admission?.durableRequests === true
+        ? Infinity
+        : (resolveAttachedWorkspaceRequestTimeoutMs(configSchema) ?? Infinity),
       configSchema?.limits?.maxRunTimeoutMs ?? Infinity,
     ),
     configSchema?.limits?.minCommandAdmissionMs,
@@ -205,7 +211,15 @@ export function resolveAttachedWorkspaceProgrammaticTimeout(
 ): number {
   const defaultTimeoutMs = configSchema?.limits?.defaultCommandTimeoutMs;
   if (defaultTimeoutMs != null) {
-    return resolveAttachedWorkspaceCommandTimeoutMax(configSchema, upstreamMaxTimeoutMs);
+    // Programmatic execution still uses the synchronous SDK transport.
+    return fitCommandTimeoutMaxToBudget(
+      resolveAttachedWorkspaceCommandTimeoutMax(configSchema, upstreamMaxTimeoutMs),
+      Math.min(
+        resolveAttachedWorkspaceRequestTimeoutMs(configSchema) ?? Infinity,
+        configSchema?.limits?.maxRunTimeoutMs ?? Infinity,
+      ),
+      configSchema?.limits?.minCommandAdmissionMs,
+    );
   }
   const configured = configSchema?.limits?.maxCommandTimeoutMs;
   const requested =
@@ -458,11 +472,15 @@ export function createAttachedWorkspaceBashTool({
   minCommandAdmissionMs,
   linkedWorktrees = false,
   nativeSandbox = false,
+  onLaneGit,
   fetchImpl,
 }: {
   baseUrl: string;
   authHeaders: () => Promise<Record<string, string>> | Record<string, string>;
   workspaceId: string;
+  /** Receives the lane's branch and head when a finished command reports them, with the command's
+   *  output. It is not awaited and must not throw: a failure here never changes the result. */
+  onLaneGit?: (laneGit: WorkspaceLaneGit, output: string) => void;
   workspaceInstanceId?: string;
   /** The worker runs each `.worktrees/<name>` in its own lane; a matching `cwd` is routed there. */
   linkedWorktrees?: boolean;
@@ -485,7 +503,10 @@ export function createAttachedWorkspaceBashTool({
 } & WorkspaceAdmissionOptions): DynamicStructuredTool {
   const effectiveMaxTimeoutMs = fitCommandTimeoutMaxToBudget(
     normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs),
-    Math.min(maxRequestTimeoutMs ?? Infinity, maxRunTimeoutMs ?? Infinity),
+    Math.min(
+      admission?.durableRequests === true ? Infinity : (maxRequestTimeoutMs ?? Infinity),
+      maxRunTimeoutMs ?? Infinity,
+    ),
     minCommandAdmissionMs,
   );
   const effectiveDefaultTimeoutMs = resolveAttachedWorkspaceCommandTimeoutDefault(
@@ -540,6 +561,8 @@ export function createAttachedWorkspaceBashTool({
         (config?.configurable?.[BACKGROUND_TOOL_INVOCATION_CONFIG_KEY] === true
           ? effectiveMaxTimeoutMs
           : effectiveDefaultTimeoutMs);
+      let selectedTimeoutMs = timeoutMs;
+      let selectedMaxTimeoutMs = effectiveMaxTimeoutMs;
       const signal = config?.signal;
       const trace = {
         runId: config?.metadata?.run_id,
@@ -570,6 +593,18 @@ export function createAttachedWorkspaceBashTool({
             timeoutMs,
             maxOutputBytes: DEFAULT_OUTPUT_BYTES,
           },
+          ...(admission?.durableRequests === true && rawInput.timeoutMs == null
+            ? {
+                synchronousCommandFallback: {
+                  timeoutMs,
+                  minAdmissionMs: minCommandAdmissionMs,
+                  onSelected: (fallbackTimeoutMs) => {
+                    selectedTimeoutMs = fallbackTimeoutMs;
+                    selectedMaxTimeoutMs = fallbackTimeoutMs;
+                  },
+                },
+              }
+            : {}),
           signal,
           fetchImpl,
           ...(maxQueueWaitMs == null ? {} : { maxQueueWaitMs }),
@@ -582,7 +617,15 @@ export function createAttachedWorkspaceBashTool({
           throw new Error('Attached workspace returned an unexpected command result.');
         }
         logger.debug('[BYOMCommand] transport completed', trace);
-        let content = formatCommandResult(result, timeoutMs, effectiveMaxTimeoutMs, rawInput.cwd);
+        if (result.laneGit != null) {
+          onLaneGit?.(result.laneGit, `${result.stdout}\n${result.stderr}`);
+        }
+        let content = formatCommandResult(
+          result,
+          selectedTimeoutMs,
+          selectedMaxTimeoutMs,
+          rawInput.cwd,
+        );
         if (action === undefined && /^\s*cd(?:\s|$)/.test(rawInput.command!)) {
           content +=
             '\n[directory hint: For future commands scoped to a workspace subdirectory, pass cwd instead of a leading cd.' +
@@ -602,7 +645,11 @@ export function createAttachedWorkspaceBashTool({
     },
     {
       name: BashExecutionToolDefinition.name,
-      description: buildAttachedWorkspaceBashDescription(false, environment, nativeSandbox),
+      description:
+        buildAttachedWorkspaceBashDescription(false, environment, nativeSandbox) +
+        (admission?.durableRequests === true
+          ? '\nOlder servers may lower omitted timeouts to fit their synchronous transport budget. Explicit timeoutMs is never lowered.'
+          : ''),
       schema,
       responseFormat: 'content_and_artifact',
     },

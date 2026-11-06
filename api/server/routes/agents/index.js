@@ -6,6 +6,7 @@ const {
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
   announceStoppedReply,
+  resolveAbortedTurnPersistence,
   buildAbortedResponseMetadata,
   isPendingActionStale,
   toClientPendingAction,
@@ -28,6 +29,7 @@ const {
   isConfirmedGenerationRetry,
   generationRetryProbeLimiter,
   generationRetryLimiter,
+  startSseKeepalive,
 } = require('@librechat/api');
 const { createSseStreamTelemetry } = require('@librechat/api/telemetry');
 const { logger } = require('@librechat/data-schemas');
@@ -39,6 +41,7 @@ const {
   messageIpLimiter,
   configMiddleware,
   messageUserLimiter,
+  loadStreamKeepaliveMs,
 } = require('~/server/middleware');
 const SteerController = require('~/server/controllers/agents/steer');
 const {
@@ -56,6 +59,7 @@ const {
 } = require('~/server/controllers/agents/protocol');
 const {
   getFiles,
+  getMessages,
   saveMessage,
   saveConvo,
   getPersistedPrivateTextId,
@@ -284,6 +288,9 @@ router.get('/chat/stream/:streamId', async (req, res) => {
   res.setHeader(GENERATION_PROTOCOL_HEADER, String(generationProtocolVersion));
   res.flushHeaders();
   streamTelemetry.recordHeadersFlushed();
+  /** Started only for an authorized attachment, and never awaited: the keepalive runs at
+   * the default interval until the narrow config read resolves. */
+  startSseKeepalive(res, loadStreamKeepaliveMs(req));
 
   logger.debug(`[AgentStream] Client subscribed to ${streamId}, resume: ${isResume}`);
 
@@ -789,11 +796,21 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
            * its parent and the preliminary-parent fence correctly rejects it. */
           const shouldPersistAbortedTurn =
             hasPersistableAbortContent(content) || jobData?.createdEventEmitted === true;
+          /** The stopped turn's persistence plan (which rows to write, and
+           *  whether the normal FINAL must be withheld for a reconciliation
+           *  frame instead) comes from @librechat/api, decided from the
+           *  compaction anchor this route reads. */
+          const abortPersistencePlan = await resolveAbortedTurnPersistence(
+            jobData,
+            shouldPersistAbortedTurn,
+            { userId: req?.user?.id, getMessages },
+          );
+          persistenceErrors.push(...abortPersistencePlan.persistenceErrors);
 
           if (
             jobData?.userMessage?.messageId &&
             jobData?.responseMessageId &&
-            shouldPersistAbortedTurn
+            abortPersistencePlan.writeResponseRow
           ) {
             const messageContext = {
               userId: req?.user?.id,
@@ -823,7 +840,7 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
               endpoint: jobData.endpoint,
               iconURL: jobData.iconURL,
               model: jobData.model,
-              unfinished: true,
+              unfinished: abortPersistencePlan.responseUnfinished,
               error: false,
               isCreatedByUser: false,
               ...(Array.isArray(jobData.userSubmittedPaths) &&
@@ -852,23 +869,26 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
              * with neither row stored. Both writes are idempotent upserts;
              * await the user prerequisite first, but still attempt the child
              * write and checkpoint cleanup so every independently useful
-             * operation gets a chance to succeed. */
+             * operation gets a chance to succeed. A compaction skips the
+             * prerequisite: its anchor is the persisted leaf itself. */
             let persistedRequestId;
-            try {
-              const persistedRequest = await saveAbortedUserMessage(
-                { saveMessage, getPersistedPrivateTextId, getPrivateMessageTexts },
-                messageContext,
-                requestMessage,
-                { context: 'api/server/routes/agents/index.js - abort user prerequisite' },
-                req.user?.tenantId,
-                pendingAbortResult.finalEvent,
-              );
-              if (!persistedRequest) {
-                throw new Error('Abort user prerequisite was not persisted');
+            if (abortPersistencePlan.writeUserRow) {
+              try {
+                const persistedRequest = await saveAbortedUserMessage(
+                  { saveMessage, getPersistedPrivateTextId, getPrivateMessageTexts },
+                  messageContext,
+                  requestMessage,
+                  { context: 'api/server/routes/agents/index.js - abort user prerequisite' },
+                  req.user?.tenantId,
+                  pendingAbortResult.finalEvent,
+                );
+                if (!persistedRequest) {
+                  throw new Error('Abort user prerequisite was not persisted');
+                }
+                persistedRequestId = persistedRequest._id;
+              } catch (error) {
+                persistenceErrors.push(error);
               }
-              persistedRequestId = persistedRequest._id;
-            } catch (error) {
-              persistenceErrors.push(error);
             }
 
             try {

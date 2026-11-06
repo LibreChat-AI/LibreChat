@@ -1,11 +1,15 @@
-import type { BackgroundTaskStatus, BackgroundTaskView } from './Parts/background';
+import { useMemo } from 'react';
+import { Button } from '@librechat/client';
+import { useSubagentTaskPanel } from '@librechat/chat/react';
+import { backgroundTaskMessageKey, backgroundTaskNoteKey } from '@librechat/chat/components';
+import { formatBackgroundCodeOutput, parseToolName, getToolDisplayLabel } from '@librechat/chat';
+import type { BackgroundTaskStatus, BackgroundTaskView } from '@librechat/chat';
 import type { TranslationKeys } from '~/hooks';
-import { backgroundTaskMessageKey, backgroundTaskNoteKey } from './Parts/guidance';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { ToolIcon, getToolIconType, OutputRenderer } from './ToolOutput';
-import { formatBackgroundCodeOutput } from './Parts/background';
-import { parseToolName } from '~/utils/toolLabels';
-import { getToolDisplayLabel, cn } from '~/utils';
+import SubagentProgress from './SubagentProgress';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 const STATUS: Record<BackgroundTaskStatus, { label: TranslationKeys; dot: string }> = {
   dispatched: { label: 'com_ui_subagent_thread_status_dispatched', dot: 'bg-text-tertiary' },
@@ -35,7 +39,21 @@ export default function BackgroundTaskCard({
   mcpServerNames?: readonly string[];
 }) {
   const localize = useLocalize();
+  const { conversationId } = useMessagePartsHost().useMessage();
   const isSubagent = task.toolName === 'subagent';
+  const durableTask = useMemo(
+    () =>
+      isSubagent && task.threadId != null
+        ? {
+            threadId: task.threadId,
+            taskId: task.taskId,
+            subagentType: task.subagentType,
+            settled: task.status !== 'running',
+          }
+        : null,
+    [isSubagent, task.status, task.subagentType, task.taskId, task.threadId],
+  );
+  const { selection, open: openActivity } = useSubagentTaskPanel(durableTask, conversationId);
   const parsedName = parseToolName(task.toolName, mcpServerNames);
   const serverName = parsedName.mcpServer;
   let title = getToolDisplayLabel(task.toolName, localize, mcpServerNames);
@@ -63,12 +81,9 @@ export default function BackgroundTaskCard({
   }
 
   return (
-    <div
-      className="border-border-light bg-surface-secondary/50 min-w-0 rounded-lg border p-3"
-      data-testid="background-task-card"
-    >
+    <div className="min-w-0" data-testid="background-task-card">
       <div className="flex min-w-0 items-start gap-2.5">
-        <span className="bg-surface-tertiary flex size-8 shrink-0 items-center justify-center rounded-md">
+        <span className="text-text-secondary flex size-5 shrink-0 items-center justify-center">
           <ToolIcon type={iconType} iconUrl={iconUrl} />
         </span>
         <div className="min-w-0 flex-1 pt-0.5">
@@ -89,7 +104,7 @@ export default function BackgroundTaskCard({
         </div>
         <span
           className={cn(
-            'bg-surface-tertiary text-text-secondary inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-xs',
+            'text-text-secondary inline-flex shrink-0 items-center gap-1.5 text-xs',
             failed && 'text-status-error',
           )}
         >
@@ -97,8 +112,26 @@ export default function BackgroundTaskCard({
           {localize(state.label)}
         </span>
       </div>
+      {task.activity != null && (
+        <SubagentProgress digest={task.activity} serverNames={mcpServerNames} />
+      )}
+      {selection != null && openActivity != null && (
+        <div className="mt-2 flex justify-end">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={openActivity}
+            data-subagent-tool-call={selection.toolCallId}
+            data-subagent-parent-message={selection.parentMessageId}
+            data-subagent-part-index={selection.partIndex}
+          >
+            {localize('com_ui_wakeup_view_activity')}
+          </Button>
+        </div>
+      )}
       {result && (
-        <div className="border-border-light mt-3 border-t pt-2.5">
+        <div className="mt-3">
           <div
             className={cn(
               'mb-1.5 text-xs font-medium',
@@ -107,7 +140,7 @@ export default function BackgroundTaskCard({
           >
             {localize(failed && !error ? 'com_ui_error' : 'com_ui_output')}
           </div>
-          <div className="bg-surface-primary min-w-0 rounded-md p-2.5">
+          <div className="border-border-light bg-surface-code min-w-0 rounded-lg border p-3">
             <OutputRenderer
               text={isCode ? formatBackgroundCodeOutput(result) : result}
               copyText={result}
@@ -116,11 +149,11 @@ export default function BackgroundTaskCard({
         </div>
       )}
       {error && (
-        <div className="border-border-light mt-3 border-t pt-2.5">
+        <div className="mt-3">
           <div className="text-status-error mb-1.5 text-xs font-medium">
             {localize('com_ui_error')}
           </div>
-          <div className="bg-surface-primary min-w-0 rounded-md p-2.5">
+          <div className="border-border-light bg-surface-code min-w-0 rounded-lg border p-3">
             <OutputRenderer
               text={isCode ? formatBackgroundCodeOutput(error) : error}
               copyText={error}

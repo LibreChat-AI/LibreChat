@@ -97,6 +97,27 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
     code_workspace_id: { type: String },
     code_environment_ids: { type: [String], default: undefined },
     repositoryInstructions: { type: String, enum: ['prefer', 'defer', 'off'] },
+    instructionsPrompt: {
+      type: new Schema(
+        {
+          source: { type: String, enum: ['native', 'langfuse'], required: true },
+          groupId: { type: String, required: true },
+          selection: {
+            type: new Schema(
+              {
+                type: { type: String, enum: ['production', 'exact'], required: true },
+                promptId: { type: String },
+                version: { type: Number },
+              },
+              { _id: false },
+            ),
+            required: true,
+          },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     git_identity: {
       type: new Schema(
         {
@@ -181,5 +202,20 @@ agentSchema.index({ tenantId: 1, updatedAt: -1, _id: 1 });
 agentSchema.index({ createdAt: -1, _id: 1 });
 agentSchema.index({ tenantId: 1, createdAt: -1, _id: 1 });
 agentSchema.index({ 'edges.to': 1 });
+/** Reference checks before code environment removal match either field; each `$or` branch needs its own index. */
+agentSchema.index(
+  { code_environment_id: 1 },
+  {
+    name: 'agent_code_environment_id',
+    partialFilterExpression: { code_environment_id: { $exists: true } },
+  },
+);
+agentSchema.index(
+  { code_environment_ids: 1 },
+  {
+    name: 'agent_code_environment_ids',
+    partialFilterExpression: { code_environment_ids: { $exists: true } },
+  },
+);
 
 export default agentSchema;

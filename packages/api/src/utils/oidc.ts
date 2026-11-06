@@ -39,6 +39,27 @@ export type OpenIDTokenField = (typeof OPENID_TOKEN_FIELDS)[number];
 export const GRAPH_TOKEN_PLACEHOLDER = '{{LIBRECHAT_GRAPH_ACCESS_TOKEN}}';
 
 /**
+ * The subset of OpenID placeholders that cannot resolve without a usable token
+ * set. Identity metadata (`USER_ID`, `USER_EMAIL`, `USER_NAME`) comes from the
+ * user document and `EXPIRES_AT` is only ever a hint, so those must keep their
+ * pre-existing literal-then-strip behaviour when the token set is invalid
+ * rather than raising re-auth. Non-global so `exec` stays stateless, and
+ * unknown names are excluded so a typo stays literal and diagnosable.
+ */
+export const OPENID_CREDENTIAL_PLACEHOLDER_PATTERN: RegExp =
+  /\{\{LIBRECHAT_OPENID_(?:ACCESS_TOKEN|ID_TOKEN|TOKEN)\}\}/;
+
+/**
+ * Whether a value names a credential LibreChat fills in for each user: an OpenID token, or the
+ * Microsoft Graph token the OBO flow obtains. Identity and request placeholders are not.
+ */
+export function hasUserCredentialPlaceholder(value: string): boolean {
+  return (
+    OPENID_CREDENTIAL_PLACEHOLDER_PATTERN.test(value) || value.includes(GRAPH_TOKEN_PLACEHOLDER)
+  );
+}
+
+/**
  * Default Microsoft Graph API scopes for OBO token exchange.
  * Can be overridden via GRAPH_API_SCOPES environment variable.
  */
@@ -302,20 +323,4 @@ export function processOpenIDPlaceholders(
   }
 
   return processedValue;
-}
-
-export function createBearerAuthHeader(tokenInfo: OpenIDTokenInfo | null): string {
-  if (!tokenInfo || !tokenInfo.accessToken) {
-    return '';
-  }
-
-  return `Bearer ${tokenInfo.accessToken}`;
-}
-
-export function isOpenIDAvailable(): boolean {
-  const openidClientId = process.env.OPENID_CLIENT_ID;
-  const openidClientSecret = process.env.OPENID_CLIENT_SECRET;
-  const openidIssuer = process.env.OPENID_ISSUER;
-
-  return !!(openidClientId && openidClientSecret && openidIssuer);
 }

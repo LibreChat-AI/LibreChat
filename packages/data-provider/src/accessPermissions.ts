@@ -30,16 +30,6 @@ export enum PrincipalModel {
 }
 
 /**
- * Source of the principal (local LibreChat or external Entra ID)
- */
-export type TPrincipalSource = 'local' | 'entra';
-
-/**
- * Access levels for agents
- */
-export type TAccessLevel = 'none' | 'viewer' | 'editor' | 'owner';
-
-/**
  * Resource types for permission system
  */
 export enum ResourceType {
@@ -126,30 +116,6 @@ export const accessRoleSchema = z.object({
 });
 
 /**
- * Permission entry schema - represents a single ACL entry
- */
-export const permissionEntrySchema = z.object({
-  id: z.string(),
-  principalType: z.nativeEnum(PrincipalType),
-  principalId: z.string().optional(), // undefined for 'public'
-  principalName: z.string().optional(),
-  role: accessRoleSchema,
-  grantedBy: z.string(),
-  grantedAt: z.string(), // ISO date string
-  inheritedFrom: z.string().optional(), // for project-level inheritance
-  source: z.enum(['local', 'entra']).optional(),
-});
-
-/**
- * Resource permissions response schema
- */
-export const resourcePermissionsResponseSchema = z.object({
-  resourceType: z.nativeEnum(ResourceType),
-  resourceId: z.string(),
-  permissions: z.array(permissionEntrySchema),
-});
-
-/**
  * Update resource permissions request schema
  * This matches the user's requirement for the frontend DTO structure
  */
@@ -186,16 +152,6 @@ export type TPrincipal = z.infer<typeof principalSchema>;
 export type TAccessRole = z.infer<typeof accessRoleSchema>;
 
 /**
- * Permission entry - represents a single ACL entry
- */
-export type TPermissionEntry = z.infer<typeof permissionEntrySchema>;
-
-/**
- * Resource permissions response
- */
-export type TResourcePermissionsResponse = z.infer<typeof resourcePermissionsResponseSchema>;
-
-/**
  * Update resource permissions request
  * This matches the user's requirement for the frontend DTO structure
  */
@@ -210,15 +166,6 @@ export type TUpdateResourcePermissionsRequest = z.infer<
 export type TUpdateResourcePermissionsResponse = z.infer<
   typeof updateResourcePermissionsResponseSchema
 >;
-
-/**
- * Principal search request parameters
- */
-export type TPrincipalSearchParams = {
-  q: string;
-  limit?: number;
-  types?: Array<PrincipalType.USER | PrincipalType.GROUP | PrincipalType.ROLE>;
-};
 
 /**
  * Principal search result item
@@ -251,14 +198,6 @@ export type TPrincipalSearchResponse = {
     local: number;
     entra: number;
   };
-};
-
-/**
- * Available roles response
- */
-export type TAvailableRolesResponse = {
-  resourceType: ResourceType;
-  roles: TAccessRole[];
 };
 
 /**
@@ -299,65 +238,7 @@ export type TEffectivePermissionsResponse = z.infer<typeof effectivePermissionsR
  */
 export type TAllEffectivePermissionsResponse = Record<string, number>;
 
-// ===== UTILITY TYPES =====
-
-/**
- * Permission check result
- */
-export interface TPermissionCheck {
-  canView: boolean;
-  canEdit: boolean;
-  canDelete: boolean;
-  canShare: boolean;
-  accessLevel: TAccessLevel;
-}
-
 // ===== HELPER FUNCTIONS =====
-
-/**
- * Convert permission bits to access level
- */
-export function permBitsToAccessLevel(permBits: number): TAccessLevel {
-  if ((permBits & PermissionBits.DELETE) > 0) return 'owner';
-  if ((permBits & PermissionBits.EDIT) > 0) return 'editor';
-  if ((permBits & PermissionBits.VIEW) > 0) return 'viewer';
-  return 'none';
-}
-
-/**
- * Convert access role ID to permission bits
- */
-export function accessRoleToPermBits(accessRoleId: string): number {
-  switch (accessRoleId) {
-    case AccessRoleIds.AGENT_VIEWER:
-    case AccessRoleIds.CODE_ENVIRONMENT_VIEWER:
-    case AccessRoleIds.PROMPTGROUP_VIEWER:
-    case AccessRoleIds.MCPSERVER_VIEWER:
-    case AccessRoleIds.REMOTE_AGENT_VIEWER:
-    case AccessRoleIds.SKILL_VIEWER:
-    case AccessRoleIds.SHARED_LINK_VIEWER:
-      return PermissionBits.VIEW;
-    case AccessRoleIds.AGENT_EDITOR:
-    case AccessRoleIds.CODE_ENVIRONMENT_EDITOR:
-    case AccessRoleIds.PROMPTGROUP_EDITOR:
-    case AccessRoleIds.MCPSERVER_EDITOR:
-    case AccessRoleIds.REMOTE_AGENT_EDITOR:
-    case AccessRoleIds.SKILL_EDITOR:
-      return PermissionBits.VIEW | PermissionBits.EDIT;
-    case AccessRoleIds.AGENT_OWNER:
-    case AccessRoleIds.CODE_ENVIRONMENT_OWNER:
-    case AccessRoleIds.PROMPTGROUP_OWNER:
-    case AccessRoleIds.MCPSERVER_OWNER:
-    case AccessRoleIds.REMOTE_AGENT_OWNER:
-    case AccessRoleIds.SKILL_OWNER:
-    case AccessRoleIds.SHARED_LINK_OWNER:
-      return (
-        PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE
-      );
-    default:
-      return PermissionBits.VIEW;
-  }
-}
 
 /**
  * Check if permission bitmask contains other bitmask

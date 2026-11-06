@@ -3,11 +3,11 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import { KnownEndpoints, EModelEndpoint, ReasoningParameterFormat } from 'librechat-data-provider';
 import type { Dispatcher } from 'undici';
 import type * as t from '~/types';
+import { getOpenAILLMConfig, extractDefaultParams, removeReasoningPayload } from './llm';
 import { getGoogleConfig, stripGeminiFlashBlockedParams } from '~/endpoints/google/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { createSSRFSafeAgents, createSSRFSafeUndiciConnect } from '~/auth';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
-import { getOpenAILLMConfig, extractDefaultParams } from './llm';
 import { constructAzureResponsesURL } from '~/utils/azure';
 import { transformToOpenAIConfig } from './transform';
 import { createFetch } from '~/utils/generators';
@@ -103,6 +103,7 @@ export function getOpenAIConfig(
     directEndpoint,
     streaming = true,
     modelOptions = {},
+    inferenceParameters,
     reverseProxyUrl: baseURL,
   } = options;
   const shouldProtectUserBaseURL = options.baseURLIsUserProvided === true && !!baseURL;
@@ -135,6 +136,7 @@ export function getOpenAIConfig(
   if (isAnthropic) {
     const anthropicResult = getAnthropicLLMConfig(apiKey, {
       modelOptions,
+      inferenceParameters,
       proxy: options.proxy,
       reverseProxyUrl: baseURL,
       addParams,
@@ -184,6 +186,7 @@ export function getOpenAIConfig(
       ),
       dropParams,
       defaultParams,
+      inferenceParameters,
       tools: googleResult.tools,
       llmConfig: googleResult.llmConfig,
       fromEndpoint: EModelEndpoint.google,
@@ -200,6 +203,7 @@ export function getOpenAIConfig(
       addParams,
       dropParams,
       defaultParams,
+      inferenceParameters,
       modelOptions,
       useOpenRouter,
       reasoningFormat: getReasoningFormat({
@@ -210,6 +214,13 @@ export function getOpenAIConfig(
     llmConfig = openaiResult.llmConfig;
     azure = openaiResult.azure;
     tools = openaiResult.tools;
+  }
+
+  if (options.customParams?.reasoningFormat === ReasoningParameterFormat.disabled) {
+    removeReasoningPayload(llmConfig as Record<string, unknown>);
+    if (llmConfig.modelKwargs) {
+      removeReasoningPayload(llmConfig.modelKwargs);
+    }
   }
 
   /**

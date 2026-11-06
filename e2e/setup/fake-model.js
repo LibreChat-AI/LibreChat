@@ -15,6 +15,7 @@ const { AIMessageChunk } = require('@langchain/core/messages');
 const { tryBindReplay } = require('./model-replay');
 const { runFileDeliveryResponses } = require('./run-files-model');
 const { createRunFileLifecycleResponses } = require('./run-files-lifecycle-model');
+const subagentHistory = require('../fixtures/subagent-history.cjs');
 
 const runFileLifecycle = createRunFileLifecycleResponses({
   findLastToolMessage,
@@ -32,6 +33,7 @@ const ASSERT_MANUAL_SKILL_MARKER = 'E2E_ASSERT_MANUAL_SKILL:';
 const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
+const REPORT_LLM_CONFIG_MARKER = 'E2E_REPORT_LLM_CONFIG';
 const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
 const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
@@ -45,21 +47,59 @@ const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
 const ORDERED_REPLY_MARKER = 'E2E_ORDERED_REPLY:';
 const SLOW_REPLY_MARKER = 'E2E_SLOW_REPLY:';
 const EMPTY_SLOW_REPLY_MARKER = 'E2E_EMPTY_SLOW_REPLY:';
+const PRE_TOKEN_REPLY_MARKER = 'E2E_PRE_TOKEN_REPLY:';
 /** A run that completes having produced no content at all: the shape a
  *  summarizer takes when it returns nothing for a manual compaction. */
 const EMPTY_REPLY_MARKER = 'E2E_EMPTY_REPLY:';
 const SLOW_COUNTED_REPLY_MARKER = 'E2E_SLOW_COUNTED_REPLY:';
 const STEER_TOOL_REPLY_MARKER = 'E2E_STEER_TOOL_REPLY:';
+const INTERRUPT_TOOL_REPLY_MARKER = 'E2E_INTERRUPT_TOOL_REPLY:';
 const MCP_APP_MARKER = 'E2E_MCP_APP:';
 const MCP_APP_PHASE_MARKER = 'E2E_MCP_APP_PHASE:';
 const MCP_LINK_APP_MARKER = 'E2E_MCP_LINK_APP:';
 const MCP_LEGACY_MARKER = 'E2E_MCP_LEGACY:';
 const MCP_LEGACY_MIMELESS_MARKER = 'E2E_MCP_LEGACY_MIMELESS:';
 const MCP_LEGACY_ACTION_MARKER = 'E2E_LEGACY_ACTION';
+/** `E2E_CACHE_USAGE: 1h` or `5m`: the final usage reports Anthropic-style cache
+ *  writes (3000, of which 2000 are 1-hour for `1h`) and 500 cache reads, with
+ *  the TTL split on `response_metadata.usage` where the agents SDK leaves it. */
+const CACHE_USAGE_MARKER = 'E2E_CACHE_USAGE:';
+const CACHE_USAGE_WRITES = 3000;
+const CACHE_USAGE_READS = 500;
+
+function cacheUsageFields(messages, input_tokens, output_tokens) {
+  const ttl = getMarkerValue(getLatestUserText(messages), CACHE_USAGE_MARKER);
+  if (ttl !== '1h' && ttl !== '5m') {
+    return {
+      usage_metadata: { input_tokens, output_tokens, total_tokens: input_tokens + output_tokens },
+    };
+  }
+  const oneHour = ttl === '1h' ? 2000 : 0;
+  const cachedInput = input_tokens + CACHE_USAGE_WRITES + CACHE_USAGE_READS;
+  return {
+    usage_metadata: {
+      input_tokens: cachedInput,
+      output_tokens,
+      total_tokens: cachedInput + output_tokens,
+      input_token_details: { cache_creation: CACHE_USAGE_WRITES, cache_read: CACHE_USAGE_READS },
+    },
+    response_metadata: {
+      usage: {
+        cache_creation_input_tokens: CACHE_USAGE_WRITES,
+        cache_read_input_tokens: CACHE_USAGE_READS,
+        cache_creation: {
+          ephemeral_5m_input_tokens: CACHE_USAGE_WRITES - oneHour,
+          ephemeral_1h_input_tokens: oneHour,
+        },
+      },
+    },
+  };
+}
 const STEER_SPLIT_REPLY_MARKER = 'E2E_STEER_SPLIT_REPLY:';
 const STEER_LATE_REPLY_MARKER = 'E2E_STEER_LATE_REPLY:';
 const ACTIVITY_REPLY_MARKER = 'E2E_ACTIVITY_REPLY:';
 const ACTIVITY_PHASE_REPLY_MARKER = 'E2E_ACTIVITY_PHASE_REPLY:';
+const TOOL_THEN_THINK_REPLY_MARKER = 'E2E_TOOL_THEN_THINK_REPLY:';
 const ACTIVITY_FAILED_REPLY_MARKER = 'E2E_ACTIVITY_FAILED_REPLY:';
 const ACTIVITY_PROSE_REPLY_MARKER = 'E2E_ACTIVITY_PROSE_REPLY:';
 const ASK_USER_QUESTION_MARKER = 'E2E_ASK_USER_QUESTION:';
@@ -85,6 +125,7 @@ const TOOL_APPROVAL_BATCH_MARKER = 'E2E_TOOL_APPROVAL_BATCH:';
 const TOOL_APPROVAL_RESTRICTED_MARKER = 'E2E_TOOL_APPROVAL_RESTRICTED:';
 const TOOL_APPROVAL_REWRITE_MARKER = 'E2E_TOOL_APPROVAL_REWRITE:';
 const DEFERRED_HITL_MARKER = 'E2E_DEFERRED_HITL:';
+const DEFERRED_OAUTH_MARKER = 'E2E_DEFERRED_OAUTH:';
 const HANDOFF_MARKER = 'E2E_HANDOFF:';
 const SUBAGENT_RESULT_MARKER = 'E2E_SUBAGENT_RESULT:';
 const SUBAGENT_CHILD_MARKER = 'E2E_SUBAGENT_CHILD:';
@@ -147,6 +188,7 @@ const BACKGROUND_TOOL_NAME = 'slow_echo_mcp_e2e-memory';
 const DEFERRED_HITL_TOOL_NAME = BACKGROUND_TOOL_NAME;
 const DEFERRED_HITL_CONTROL_TOOL_NAME = 'recall_fact_mcp_e2e-memory';
 const TOOL_SEARCH_NAME = 'tool_search';
+const DEFERRED_OAUTH_TOOL_NAME = 'echo_mcp_e2e-oauth-deferred';
 const ASK_USER_QUESTION_NAME = 'ask_user_question';
 const CHECK_BACKGROUND_TASK_TOOL_NAME = 'check_background_task';
 const APPROVAL_TOOL_NAME = 'approval_probe_mcp_e2e-memory';
@@ -454,6 +496,29 @@ function agentContextAssertionResponses({ messages, text }) {
   };
 }
 
+const SAMPLING_PARAM_KEYS = ['temperature', 'topP', 'topK', 'presencePenalty', 'frequencyPenalty'];
+
+/**
+ * Reports the provider request the primary agent resolved, before the fake
+ * model replaced it: the model, which sampling params survived (top level or
+ * `modelKwargs`), and the context budget left for input. Reads the graph's
+ * agent context because the hook's `agents` are the unresolved agent configs.
+ */
+function llmConfigReportResponses(graph) {
+  const agent = graph?.agentContexts?.values().next().value;
+  const clientOptions = agent?.clientOptions ?? {};
+  const modelKwargs = clientOptions.modelKwargs ?? {};
+  const sampling = SAMPLING_PARAM_KEYS.filter(
+    (key) => clientOptions[key] != null || modelKwargs[key] != null,
+  );
+  const report = {
+    model: clientOptions.model ?? clientOptions.modelName ?? null,
+    sampling,
+    maxContextTokens: agent?.maxContextTokens ?? null,
+  };
+  return { responses: [`E2E llm config: ${JSON.stringify(report)}`] };
+}
+
 function collectSystemPromptText(messages) {
   return (messages ?? [])
     .filter((message) => messageType(message) === 'system')
@@ -752,14 +817,29 @@ function replyResponses(text) {
     return slowReplyResponses(slowName);
   }
 
+  const preTokenName = getMarkerValue(text, PRE_TOKEN_REPLY_MARKER);
+  if (preTokenName) {
+    return { responses: [`E2E pre-token reply ${preTokenName}`], sleep: 10_000 };
+  }
+
   /** Keep a generation live after `created` without producing any content
    * that the abort persistence filter accepts. The browser regression waits
    * for the user row, then interrupts this whitespace-only stream. */
   const emptySlowName = getMarkerValue(text, EMPTY_SLOW_REPLY_MARKER);
   if (emptySlowName) {
+    let invocation = 0;
     return {
-      responses: [' '.repeat(EMPTY_SLOW_REPLY_CHUNKS)],
+      responses: [''],
       sleep: SLOW_CHUNK_DELAY_MS,
+      resolveInvocation: async (messages) => {
+        invocation += 1;
+        return {
+          response:
+            invocation === 1
+              ? ' '.repeat(EMPTY_SLOW_REPLY_CHUNKS)
+              : `E2E empty reply continued ${emptySlowName} ${steerEchoSuffix(messages)}`,
+        };
+      },
     };
   }
 
@@ -946,7 +1026,7 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
       text: '',
       message: new AIMessageChunk({
         content: '',
-        usage_metadata: { input_tokens, output_tokens, total_tokens: input_tokens + output_tokens },
+        ...cacheUsageFields(messages, input_tokens, output_tokens),
       }),
     });
   }
@@ -1726,6 +1806,49 @@ function activityPhaseReplyResponses(label, toolNames) {
   };
 }
 
+/**
+ * One tool call, then a slowly streamed `<think>` of several sentences and the
+ * final text. The thought streams after a tool batch, which is the state the
+ * live thought peek must stay hidden in.
+ */
+function toolThenThinkReplyResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return {
+      responses: [
+        `E2E tool then think reply unavailable: no ${STEER_TOOL_NAME_PREFIX} tool advertised.`,
+      ],
+    };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    sleep: 200,
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_tool_then_think_${label}`,
+              name: toolName,
+              args: { fact: `tool then think ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return {
+        response:
+          '<think>First I read the tool result slowly. Then I weigh what it changes with care. ' +
+          'Next I compare it against the original request. Afterwards I check the edge cases once more. ' +
+          `Finally I decide how to answer it.</think>\n\nE2E tool then think reply done ${label}`,
+      };
+    },
+  };
+}
+
 /** Short prose remains visible while the real tool/label pipeline forms and
  * dissolves folds. The pause before calls lets the browser finish the initial
  * word fade and install its identity/animation observer before that transition. */
@@ -1759,6 +1882,39 @@ function activityProseReplyResponses(label, toolNames) {
         };
       }
       return { response: `E2E activity prose complete ${label}` };
+    },
+  };
+}
+
+function interruptToolReplyResponses(label, toolNames) {
+  const remember = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  const slow = Array.from(toolNames).find((name) => name.startsWith(SLOW_ECHO_TOOL_NAME_PREFIX));
+  if (!remember || !slow) return { responses: ['E2E interrupt tools unavailable'] };
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async (messages) => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: `E2E interrupt tools running ${label}`,
+          toolCalls: [
+            {
+              id: `call_interrupt_fast_${label}`,
+              name: remember,
+              args: { fact: `completed ${label}` },
+              type: 'tool_call',
+            },
+            {
+              id: `call_interrupt_slow_${label}`,
+              name: slow,
+              args: { text: `late ${label}`, delay_ms: 5000 },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `E2E interrupt tool reply done ${label} ${steerEchoSuffix(messages)}` };
     },
   };
 }
@@ -2930,6 +3086,59 @@ function deferredHitlInvocationResponse({ graph, messages, options, runManager }
   };
 }
 
+/**
+ * An `oauthPrompt: on_use` server must not hold the turn for sign-in: the model runs first,
+ * discovers the server's deferred tool, and only its call asks the user to sign in.
+ */
+function deferredOAuthInvocationResponse(messages) {
+  const label = getMarkerValue(getLatestUserText(messages), DEFERRED_OAUTH_MARKER);
+  if (!label) {
+    return null;
+  }
+
+  const searchCallId = `call_e2e_deferred_oauth_search_${label}`;
+  const echoCallId = `call_e2e_deferred_oauth_echo_${label}`;
+  const echoResult = findToolMessage(messages, echoCallId);
+  if (echoResult) {
+    return {
+      response: `E2E deferred OAuth tool returned ${label}: ${getContentText(echoResult.content)}`,
+    };
+  }
+
+  const searchResult = findToolMessage(messages, searchCallId);
+  if (searchResult) {
+    const searchOutput = getContentText(searchResult.content);
+    if (!searchOutput.includes(DEFERRED_OAUTH_TOOL_NAME)) {
+      return {
+        response: `E2E deferred OAuth failed ${label}: ${TOOL_SEARCH_NAME} did not find ${DEFERRED_OAUTH_TOOL_NAME}`,
+      };
+    }
+    return {
+      response: '',
+      toolCalls: [
+        {
+          id: echoCallId,
+          name: DEFERRED_OAUTH_TOOL_NAME,
+          args: { text: label },
+          type: 'tool_call',
+        },
+      ],
+    };
+  }
+
+  return {
+    response: '',
+    toolCalls: [
+      {
+        id: searchCallId,
+        name: TOOL_SEARCH_NAME,
+        args: { query: DEFERRED_OAUTH_TOOL_NAME, max_results: 1 },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
 function validateHandoffTool(route, tool, toolName) {
   const failures = [];
   const expectedDescription = route.description ?? `Transfer control to agent '${route.to}'`;
@@ -3322,6 +3531,13 @@ function codeExecResponses({ filename, toolCallId, finalText, code }, toolNames)
 }
 
 function resolveResponses({ graph, messages, text, toolNames }) {
+  const history = subagentHistory.responsesForText(text, {
+    getLatestUserText,
+    messageType,
+    getContentText,
+  });
+  if (history) return history;
+
   const lifecycle = runFileLifecycle.responsesForText(text);
   if (lifecycle) return lifecycle;
 
@@ -3383,6 +3599,9 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return statefulCodeResponses(statefulCodeOperation, toolNames);
   }
 
+  const interruptToolLabel = getMarkerValue(text, INTERRUPT_TOOL_REPLY_MARKER);
+  if (interruptToolLabel) return interruptToolReplyResponses(interruptToolLabel, toolNames);
+
   const steerToolLabel = getMarkerValue(text, STEER_TOOL_REPLY_MARKER);
   if (steerToolLabel) {
     return steerToolReplyResponses(steerToolLabel, toolNames);
@@ -3442,6 +3661,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return activityPhaseReplyResponses(activityPhaseLabel, toolNames);
   }
 
+  const toolThenThinkLabel = getMarkerValue(text, TOOL_THEN_THINK_REPLY_MARKER);
+  if (toolThenThinkLabel) {
+    return toolThenThinkReplyResponses(toolThenThinkLabel, toolNames);
+  }
+
   const activityProseLabel = getMarkerValue(text, ACTIVITY_PROSE_REPLY_MARKER);
   if (activityProseLabel) {
     return activityProseReplyResponses(activityProseLabel, toolNames);
@@ -3494,6 +3718,10 @@ function resolveResponses({ graph, messages, text, toolNames }) {
         return projectContextAssertionResponses({ messages: agentView.messages, text });
       },
     };
+  }
+
+  if (text.includes(REPORT_LLM_CONFIG_MARKER)) {
+    return llmConfigReportResponses(graph);
   }
 
   if (text.includes(ASSERT_AGENT_CONTEXT_MARKER)) {
@@ -3669,6 +3897,7 @@ module.exports = function fakeModelHook(run, context) {
         options: streamOptions,
         runManager,
       }) ??
+      deferredOAuthInvocationResponse(streamMessages) ??
       resolveInvocation?.(streamMessages, streamOptions, runManager) ??
       null,
     resolveOnStream: (streamMessages, streamOptions, runManager) =>

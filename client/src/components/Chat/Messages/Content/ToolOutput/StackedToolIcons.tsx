@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { TriangleAlert, X } from 'lucide-react';
+import { CircleX, X } from 'lucide-react';
 import type { ToolIconType } from './ToolIcon';
 import ToolIcon, { getToolIconType, getMCPServerName } from './ToolIcon';
 import { FaviconImage } from '~/components/Web/SourceHovercard';
@@ -61,9 +61,11 @@ export default function StackedToolIcons({
     return result;
   }, [toolNames, mcpIconMap, mcpServerNames, sourceDomains]);
 
-  if (status != null) {
-    const StatusIcon = status === 'failed' ? TriangleAlert : X;
-    return <StatusIcon className="text-text-warning size-4 shrink-0" aria-hidden="true" />;
+  if (status === 'failed') {
+    return <CircleX className="text-status-error size-4 shrink-0" aria-hidden="true" />;
+  }
+  if (status === 'cancelled') {
+    return <X className="text-text-warning size-4 shrink-0" aria-hidden="true" />;
   }
 
   const visibleIcons = uniqueIcons.slice(0, maxIcons);
@@ -83,8 +85,8 @@ export default function StackedToolIcons({
           key={icon.key}
           className={cn(
             'border-border-medium bg-surface-secondary relative flex items-center justify-center rounded-full border',
-            'h-[22px] w-[22px]',
-            index > 0 && '-ml-2.5',
+            'h-[1.375rem] w-[1.375rem]',
+            index > 0 && '-ms-2.5',
           )}
           style={{ zIndex: visibleIcons.length - index }}
         >
@@ -104,7 +106,7 @@ export default function StackedToolIcons({
         <div
           className={cn(
             'border-border-medium bg-surface-tertiary relative flex items-center justify-center rounded-full border',
-            'text-text-secondary -ml-2.5 h-[22px] w-[22px] text-xs font-medium',
+            'text-text-secondary -ms-2.5 h-[1.375rem] w-[1.375rem] text-xs font-medium',
           )}
           style={{ zIndex: 0 }}
         >

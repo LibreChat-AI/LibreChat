@@ -10,10 +10,13 @@ interface ActionButtonProps {
   label: string;
   activeLabel: string;
   iconOnly?: boolean;
+  /** A smaller icon-only button for controls laid inside a tool panel. */
+  compact?: boolean;
   onClick: () => void;
   tabIndex?: number;
   className?: string;
   portalElement?: HTMLElement | null;
+  disabled?: boolean;
 }
 
 const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
@@ -24,10 +27,12 @@ const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
       label,
       activeLabel,
       iconOnly = false,
+      compact = false,
       onClick,
       tabIndex,
       className,
       portalElement,
+      disabled = false,
     },
     ref,
   ) => {
@@ -38,17 +43,28 @@ const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
         ref={ref}
         type="button"
         onClick={onClick}
+        disabled={disabled}
         tabIndex={tabIndex}
         aria-label={currentLabel}
         className={cn(
-          'inline-flex select-none items-center justify-center text-text-secondary transition-all duration-200 ease-out',
+          'text-text-secondary inline-flex items-center justify-center transition-all duration-200 ease-out select-none',
           'hover:bg-surface-hover hover:text-text-primary',
-          'focus-visible:outline focus-visible:outline-2 focus-visible:outline-border-heavy',
-          iconOnly ? 'rounded-lg p-1.5' : 'ml-auto gap-2 rounded-md px-2 py-1',
+          'disabled:pointer-events-none disabled:opacity-50',
+          'focus-visible:outline-focus-subtle focus-visible:outline focus-visible:outline-2',
+          iconOnly && (compact ? 'rounded-md p-1' : 'rounded-lg p-1.5'),
+          !iconOnly && 'ms-auto gap-2 rounded-md px-2 py-1',
           className,
         )}
       >
-        <MorphIcon icon={isActive ? Check : icon} size={18} />
+        <span
+          className={cn(
+            'relative flex items-center justify-center',
+            compact ? 'size-3.5' : 'size-[1.125rem]',
+          )}
+          aria-hidden="true"
+        >
+          <MorphIcon icon={isActive ? Check : icon} size={compact ? '0.875rem' : '1.125rem'} />
+        </span>
         {!iconOnly && (
           <span className="relative overflow-hidden">
             <span

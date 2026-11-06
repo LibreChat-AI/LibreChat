@@ -68,6 +68,12 @@ const defaultAgentCapabilitiesWithoutMemory = defaultAgentCapabilities.filter(
 );
 
 describe('AppService', () => {
+  it('preserves comparison policy in the effective request configuration', async () => {
+    const githubCompare = { enabled: true, timeoutMs: 2000 };
+    expect((await AppService({ config: { githubCompare } })).githubCompare).toEqual(githubCompare);
+    expect((await AppService({ config: {} })).githubCompare).toBeUndefined();
+  });
+
   it('preserves the YAML passkey cap in the effective configuration', async () => {
     const result = await AppService({ config: { passkeys: { perUserMax: 2 } } });
     expect(result?.passkeys).toEqual({ perUserMax: 2 });

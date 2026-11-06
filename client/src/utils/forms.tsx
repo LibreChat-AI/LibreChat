@@ -53,6 +53,8 @@ export const getDefaultAgentFormValues = (
   avatar_preview: '',
   avatar_action: null,
   conversation_starter_draft: '',
+  instructionsSource: 'inline' as const,
+  instructionsPrompt: null,
 });
 
 export const processAgentOption = ({

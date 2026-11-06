@@ -1,13 +1,12 @@
 import { useEffect } from 'react';
 import { useToastContext } from '@librechat/client';
 import { EToolResources } from 'librechat-data-provider';
+import { FileContainer, AttachmentImage as Image } from '@librechat/chat/components';
 import type { ExtendedFile } from '~/common';
 import { useDeleteFilesMutation } from '~/data-provider';
 import { logger, getCachedPreview } from '~/utils';
 import { useFileDeletion } from '~/hooks/Files';
-import FileContainer from './FileContainer';
 import { useLocalize } from '~/hooks';
-import Image from './Image';
 
 /**
  * Shared wrapper with a stable module-scope identity. Passing an inline arrow as
@@ -28,7 +27,6 @@ export default function FileRow({
   tool_resource,
   index,
   fileFilter,
-  isRTL = false,
   Wrapper,
   isPastedTextFile,
   isPasteActionPending,
@@ -44,7 +42,6 @@ export default function FileRow({
   agent_id?: string;
   tool_resource?: EToolResources;
   index?: number;
-  isRTL?: boolean;
   Wrapper?: React.FC<{ children: React.ReactNode }>;
   /** Marks chips the composer generated from a long paste. Provenance comes from the caller's
    * marker registry rather than the filename, which a deliberate upload can share. */
@@ -111,27 +108,10 @@ export default function FileRow({
   }
 
   const renderFiles = () => {
-    const rowStyle = isRTL
-      ? {
-          display: 'flex',
-          flexDirection: 'row-reverse',
-          flexWrap: 'wrap',
-          gap: '6px',
-          width: '100%',
-          maxWidth: '100%',
-        }
-      : {
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '6px',
-          width: '100%',
-          maxWidth: '100%',
-        };
-
     return (
       /* `items-center` so a card and a thumbnail of different heights share
          one baseline instead of hanging from the top of the tallest row. */
-      <div className="items-center" style={rowStyle as React.CSSProperties}>
+      <div className="flex w-full max-w-full flex-wrap items-center gap-1.5">
         {files
           .reduce(
             (acc, current) => {

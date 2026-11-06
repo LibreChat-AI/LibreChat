@@ -58,7 +58,7 @@ function DynamicTextarea({
           <div className="flex w-full justify-between">
             <Label
               htmlFor={`${settingKey}-dynamic-textarea`}
-              className="text-left text-xs font-medium"
+              className="text-start text-xs font-medium"
             >
               {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
               {showDefault && (
@@ -94,7 +94,7 @@ function DynamicTextarea({
                 : placeholder
             }
             className={cn(
-              'border-border-light bg-surface-secondary flex max-h-[220px] min-h-[76px] w-full resize-none rounded-lg border px-3 py-2 text-sm',
+              'border-border-light bg-surface-secondary flex max-h-[13.75rem] min-h-[4.75rem] w-full resize-none rounded-lg border px-3 py-2 text-sm',
             )}
           />
         </HoverCardTrigger>

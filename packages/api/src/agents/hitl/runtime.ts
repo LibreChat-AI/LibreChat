@@ -122,25 +122,27 @@ export function buildHITLRunWiring(
       registry.register('PreToolUse', { hooks: [withNormalizedEdits(hook)] });
       continue;
     }
+    let regex: RegExp | null = null;
+    try {
+      regex = new RegExp(matcher);
+    } catch {
+      regex = null;
+    }
+    const compiled = regex;
     registry.register('PreToolUse', {
       hooks: [
         withNormalizedEdits(async (input, signal) => {
-          let regex: RegExp;
-          try {
-            regex = new RegExp(matcher);
-          } catch {
+          if (compiled == null) {
             return {};
           }
-          regex.lastIndex = 0;
-          if (regex.test(input.toolName)) {
+          if (compiled.test(input.toolName)) {
             return hook(input, signal);
           }
           for (const { name, aliasName } of aliases) {
             if (name !== input.toolName) {
               continue;
             }
-            regex.lastIndex = 0;
-            if (regex.test(aliasName)) {
+            if (compiled.test(aliasName)) {
               return hook(input, signal);
             }
           }

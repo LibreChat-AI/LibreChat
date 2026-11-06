@@ -1,13 +1,13 @@
 import { memo, useState, useEffect } from 'react';
 import { Ellipsis } from 'lucide-react';
-import { Button, useMediaQuery } from '@librechat/client';
+import { Button } from '@librechat/client';
 import type { MouseEvent } from 'react';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { ConvoOptions } from './ConvoOptions';
 import { useLocalize } from '~/hooks';
 
 export type ConvoActionsProps = {
   conversationId: string | null;
-  chatProjectId?: string | null;
   title: string | null;
   canRename?: boolean;
   isPinned?: boolean;
@@ -29,12 +29,12 @@ export type ConvoActionsProps = {
  * Owns the row's overflow control: which control is rendered, when it is
  * visible, and where focus lives across the swap between them.
  *
- * Two controls can represent this menu — `ConvoOptions`, which carries six
- * mutations and its own menu store, and a cheap placeholder that stands in
- * until the menu is wanted. Mounting the real one for every overscanned row is
- * wasteful, but the two must agree about identity, visibility, focus and
- * lifecycle, and splitting those decisions across the row is what made them
- * disagree. They are settled together here:
+ * Two controls can represent this menu: `ConvoOptions`, whose trigger and menu
+ * store mount here while its mutations wait until the menu is used, and a cheap
+ * placeholder that stands in until the menu is wanted. Mounting the real one
+ * for every overscanned row is wasteful, but the two must agree about
+ * identity, visibility, focus and lifecycle, and splitting those decisions
+ * across the row is what made them disagree. They are settled together here:
  *
  * - **Which.** A pointer device reveals the menu on hover, so hovering is
  *   enough to mount the real one. Touch has no hover, so the placeholder is
@@ -61,7 +61,7 @@ function ConvoActions({
   ...options
 }: ConvoActionsProps) {
   const localize = useLocalize();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   const [hasOpenedMenu, setHasOpenedMenu] = useState(false);
 
   useEffect(() => {

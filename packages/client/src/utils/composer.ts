@@ -8,7 +8,17 @@ import { cn } from './utils';
  * padding, and feature-specific overrides stay with each owner.
  */
 export const composerSurfaceClasses = (): string =>
-  cn('border border-border-light bg-surface-chat text-text-primary transition-all duration-200');
+  cn(
+    'border border-border-light bg-surface-composer text-text-primary transition-all duration-200',
+  );
+
+/**
+ * The composer's travel between placements: `margin-bottom` eases with `max-width`, carrying the
+ * composer between the landing clearance and the conversation one on the same form node, so the
+ * band slides instead of jumping. Reduced motion takes the new position outright.
+ */
+export const composerPlacementTransition = (): string =>
+  cn('transition-[max-width,margin-bottom] duration-300 motion-reduce:transition-none');
 
 /** Elevation states for the composer surface. `within` is the CSS-only
  *  equivalent of the managed focused/blurred pair for surfaces that do not
@@ -36,7 +46,7 @@ export const composerSubmitClasses = (): string =>
   cn(
     'flex items-center justify-center',
     'size-theme-control touch:size-theme-control-touch',
-    'rounded-theme-control-round bg-surface-inverted p-theme-compact text-text-inverted',
+    'rounded-theme-composer-action bg-surface-inverted p-theme-compact text-text-inverted',
     'outline-offset-4 transition-all duration-theme-normal',
     'disabled:cursor-not-allowed disabled:text-text-secondary disabled:opacity-10',
     disabledFillClasses,

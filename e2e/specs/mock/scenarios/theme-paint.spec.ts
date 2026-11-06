@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import type { IThemeRGB } from '../../../../packages/client/src/theme/types';
+import type { IThemeRGB } from '../../../../packages/data-provider/src/themes/types';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
-import { defaultTheme } from '../../../../packages/client/src/theme/themes/default';
-import { darkTheme } from '../../../../packages/client/src/theme/themes/dark';
+import { defaultTheme } from '../../../../packages/data-provider/src/themes/default';
+import { darkTheme } from '../../../../packages/data-provider/src/themes/dark';
 import {
   sendMessageAndWaitForCompletion,
   selectMockEndpoint,
@@ -228,9 +228,7 @@ test.describe('controlled theme paint', () => {
     const colors: IThemeRGB = clickHouseTheme.modes[dark ? 'dark' : 'light']?.colors ?? {};
     const roles = await paintRoles(page);
     expect(roles.link).toBe(rgb(colors['rgb-link-prose']));
-    expect(roles.codeFill).toBe(
-      rgb(dark ? colors['rgb-surface-hover-alt'] : colors['rgb-surface-active-alt']),
-    );
+    expect(roles.codeFill).toBe(rgb(colors['rgb-surface-code-inline']));
     expect(roles.qr).toBe(rgb(colors['rgb-surface-qr']));
   });
 

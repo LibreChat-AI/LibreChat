@@ -1,8 +1,14 @@
 /* eslint-disable @typescript-eslint/no-namespace */
 import { z } from 'zod';
+import type {
+  FunctionTool,
+  ToolResources,
+  AgentToolOptions,
+  ToolApprovalGrantBinding,
+} from './tools';
+import type { TPromptGroupSource, NativePromptSelection, LangfusePromptSelection } from '../types';
 import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
-import type { FunctionTool, ToolResources, AgentToolOptions } from './tools';
 import type { StatefulCodeEnvironment } from '../stateful-code';
 import type { SummaryContentPart } from './content';
 import type { TFile } from './files';
@@ -78,6 +84,9 @@ export namespace Agents {
   /**
    * A call to a tool.
    */
+  /** A tool call inside a subagent transcript, with the scope its saved files may carry. */
+  export type SubagentAttachmentCall = { id: string; agentId?: string; stepId?: string };
+
   export type ToolCall = {
     /** Type ("tool_call") according to Assistants Tool Call Structure; optional literal
      *  form included to mirror langchain's ToolCall, whose `type` is optional. */
@@ -116,6 +125,25 @@ export namespace Agents {
         generationId?: string;
       };
     };
+    /** The server sent a bounded preview of `output`; the full value loads on demand. */
+    outputTruncated?: true;
+    /** Length of the full `output` in UTF-16 code units, present with `outputTruncated`. */
+    outputLength?: number;
+    /** The server sent a bounded preview of `args`; the full value loads on demand. */
+    argsTruncated?: true;
+    /** Length of the full serialized `args`, present with `argsTruncated`. */
+    argsLength?: number;
+    /** The server left out `subagent_content`; the full value loads on demand. */
+    subagentContentOmitted?: true;
+    /** Number of top-level parts in the omitted `subagent_content`. */
+    subagentContentParts?: number;
+    /** Tool calls inside the omitted `subagent_content` that the message's attachments were
+     *  saved under, with their scope, so those files still route to this call before the
+     *  transcript loads. */
+    subagentAttachmentCalls?: SubagentAttachmentCall[];
+    /** When the stored message last changed, set on previews so a client cache of the full part
+     *  is keyed to the stored version it came from. */
+    previewRevision?: string;
     /** The tool call was rejected before execution because its input failed schema validation. */
     inputValidationError?: true;
     /** Server-stamped provenance; see `PartMetadata.executor`. */
@@ -133,8 +161,14 @@ export namespace Agents {
       actionId: string;
       allowed_decisions: ToolApprovalDecisionType[];
       description?: string;
+      remember_scope?: 'chat' | 'always';
+      remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
       /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
       allow_always?: boolean;
+      /** The reviewer's decision once submitted; absent while the call still awaits review. */
+      decision?: ToolApprovalDecisionType;
+      /** The reason the reviewer gave with the decision. */
+      reason?: string;
     };
   };
 
@@ -472,6 +506,8 @@ export namespace Agents {
    * by `tool_call_id`. `action_name` is retained for display only.
    */
   export interface ToolReviewConfig {
+    remember_scope?: 'chat' | 'always';
+    remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
     action_name: string;
     tool_call_id: string;
     allowed_decisions: ToolApprovalDecisionType[];
@@ -599,6 +635,7 @@ export namespace Agents {
      * tool execution so an approval cannot migrate to another VM or workspace.
      */
     codeExecutionBinding?: CodeExecutionApprovalBinding;
+    toolApprovalBindings?: Record<string, ToolApprovalGrantBinding>;
     /**
      * Server-only MCP key-spelling pairs the paused run knew for the tools it offered
      * "Always allow", including pairs lazily resolved subagents reported. Resume rechecks
@@ -1002,7 +1039,7 @@ export type AgentGitIdentity = {
 
 // GitHub App bot noreply addresses contain `[bot]`, which Zod's email validator rejects.
 const githubAppBotEmail =
-  /^\d+\+[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?\[bot\]@users\.noreply\.github\.com$/i;
+  /^\d+\+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\[bot\]@users\.noreply\.github\.com$/i;
 const standardGitEmail = z.string().email();
 
 export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
@@ -1019,11 +1056,56 @@ export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
       .max(254)
       .refine(
         (value) =>
+          // Zod still runs refinements after .max() fails.
+          value.length <= 254 &&
           !/[\0\r\n]/.test(value) &&
           (standardGitEmail.safeParse(value).success || githubAppBotEmail.test(value)),
       ),
   })
   .optional();
+
+export type AgentInstructionsPromptSelection = NativePromptSelection;
+
+/** A link from an agent to a native LibreChat prompt group used as its instructions. */
+export type NativeAgentInstructionsPrompt = {
+  source: 'native';
+  groupId: string;
+  selection: AgentInstructionsPromptSelection;
+};
+
+export type LangfuseAgentInstructionsPromptSelection = LangfusePromptSelection;
+
+export type LangfuseAgentInstructionsPrompt = {
+  source: 'langfuse';
+  groupId: string;
+  selection: LangfuseAgentInstructionsPromptSelection;
+};
+
+export type AgentInstructionsPrompt =
+  | NativeAgentInstructionsPrompt
+  | LangfuseAgentInstructionsPrompt;
+
+/** Returned to an editor who lacks VIEW on the linked group; hides its identity. */
+export type RestrictedAgentInstructionsPrompt = {
+  source: TPromptGroupSource;
+  restricted: true;
+  matchesCurrent?: boolean;
+};
+
+/** Stable, machine-readable error codes for agent-instructions-prompt link failures. */
+export const InstructionsPromptErrorCode = {
+  /** The selection does not resolve (missing group, missing Production, revision not in
+   *  group) or its content is blocked. */
+  UNAVAILABLE: 'instructions_prompt_unavailable',
+  /** The editor sets or changes a link to a group without PROMPTGROUP `VIEW`. */
+  FORBIDDEN: 'instructions_prompt_forbidden',
+  /** The role, ACL, or prompt-store lookup backing the write check failed unexpectedly
+   *  (not a content-policy rejection). No detail about the failure is disclosed. */
+  VALIDATION_FAILED: 'instructions_prompt_validation_failed',
+} as const;
+
+export type InstructionsPromptErrorCode =
+  (typeof InstructionsPromptErrorCode)[keyof typeof InstructionsPromptErrorCode];
 
 export type Agent = {
   _id?: string;
@@ -1038,6 +1120,8 @@ export type Agent = {
   avatar: AgentAvatar | null;
   instructions?: string | null;
   additional_instructions?: string | null;
+  /** Links these instructions to a native prompt group revision instead of inline text. */
+  instructionsPrompt?: AgentInstructionsPrompt | RestrictedAgentInstructionsPrompt | null;
   tools?: string[];
   tool_kwargs?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
@@ -1113,6 +1197,8 @@ export type AgentCreateParams = {
   avatar?: AgentAvatar | null;
   file_ids?: string[];
   instructions?: string | null;
+  /** Links these instructions to a native prompt group revision; `null` keeps inline text. */
+  instructionsPrompt?: AgentInstructionsPrompt | null;
   tools?: Array<FunctionTool | string>;
   provider: AgentProvider;
   model: string | null;
@@ -1149,6 +1235,8 @@ export type AgentUpdateParams = {
   avatar?: AgentAvatar | null;
   file_ids?: string[];
   instructions?: string | null;
+  /** Links these instructions to a native prompt group revision; `null` removes the link. */
+  instructionsPrompt?: AgentInstructionsPrompt | null;
   tools?: Array<FunctionTool | string>;
   tool_resources?: ToolResources;
   provider?: AgentProvider;

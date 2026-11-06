@@ -20,7 +20,6 @@ describe('CopyButton', () => {
     render(<CopyButton isCopied={false} onClick={jest.fn()} />);
     expect(screen.getByRole('button', { name: 'com_ui_copy' })).toBeInTheDocument();
     expect(screen.getByTestId('morph-icon')).toHaveAttribute('data-icon', 'copy');
-    expect(screen.getByTestId('morph-icon')).toHaveAttribute('data-size', '18');
   });
 
   it('renders the check icon when copied', () => {

@@ -71,7 +71,7 @@ export default function MemoryUsageBadge({
             className={cn(
               'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1',
               'text-xs font-medium hover:underline',
-              'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
+              'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
               getStatusColor(percentage),
             )}
           >

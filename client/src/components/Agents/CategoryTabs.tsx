@@ -19,6 +19,8 @@ interface CategoryTabsProps {
   onChange: (value: string) => void;
 }
 
+const ARROW_SWAP: Record<string, string> = { ArrowLeft: 'ArrowRight', ArrowRight: 'ArrowLeft' };
+
 /** Keyboard-accessible category filters with immediate selection feedback. */
 const CategoryTabs: React.FC<CategoryTabsProps> = ({
   categories,
@@ -49,18 +51,21 @@ const CategoryTabs: React.FC<CategoryTabsProps> = ({
     <div className="w-full">
       <div className="flex flex-wrap justify-start gap-1.5">
         {[...Array(6)].map((_, i) => (
-          <div key={i} className="bg-surface-tertiary h-8 min-w-[80px] rounded-full" />
+          <div key={i} className="bg-surface-tertiary h-8 min-w-[5rem] rounded-full" />
         ))}
       </div>
     </div>
   );
 
   // Handle keyboard navigation between tabs
-  const handleKeyDown = (e: React.KeyboardEvent, currentCategory: string) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLElement>, currentCategory: string) => {
     const currentIndex = categories.findIndex((cat) => cat.value === currentCategory);
     let newIndex = currentIndex;
 
-    switch (e.key) {
+    const isRtl = getComputedStyle(e.currentTarget).direction === 'rtl';
+    const key = isRtl ? (ARROW_SWAP[e.key] ?? e.key) : e.key;
+
+    switch (key) {
       case 'ArrowLeft':
         e.preventDefault();
         newIndex = currentIndex > 0 ? currentIndex - 1 : categories.length - 1;
@@ -123,15 +128,6 @@ const CategoryTabs: React.FC<CategoryTabsProps> = ({
         role="tablist"
         aria-label={localize('com_agents_category_tabs_label')}
         aria-orientation="horizontal"
-        style={
-          isSmallScreen
-            ? {
-                scrollbarWidth: 'none',
-                msOverflowStyle: 'none',
-                WebkitOverflowScrolling: 'touch',
-              }
-            : undefined
-        }
       >
         {categories.map((category, index) => (
           <button
@@ -143,8 +139,8 @@ const CategoryTabs: React.FC<CategoryTabsProps> = ({
               'focus-visible:ring-text-primary inline-flex h-8 cursor-pointer items-center justify-center rounded-full border px-2.5 text-xs font-medium whitespace-nowrap select-none focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset',
               isSmallScreen ? 'min-w-fit shrink-0' : '',
               activeTab === category.value
-                ? 'border-border-heavy bg-surface-active-alt text-text-primary'
-                : 'border-border-light bg-surface-secondary text-text-secondary hover:bg-surface-hover hover:text-text-primary',
+                ? 'border-border-chrome-heavy bg-surface-active-alt text-text-primary'
+                : 'border-border-chrome bg-surface-secondary text-text-secondary hover:bg-surface-hover hover:text-text-primary',
             )}
             role="tab"
             aria-selected={activeTab === category.value}

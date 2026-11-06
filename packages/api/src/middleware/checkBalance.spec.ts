@@ -533,6 +533,80 @@ describe('checkBalance', () => {
       expect(refills).toHaveLength(1);
     });
 
+    it.each([
+      ['increased', 2000, true, 'reset' as const, 2000],
+      ['decreased', 400, true, 'reset' as const, 400],
+      ['disabled', 1000, false, 'reset' as const, 500],
+      ['changed to additive', 1000, true, 'add' as const, 500],
+    ])(
+      'uses the %s current policy for direct admission without a balance read',
+      async (_case, refillAmount, autoRefillEnabled, refillMode, expectedCredits) => {
+        const user = new mongoose.Types.ObjectId().toString();
+        const lastRefill = new Date('2020-01-01');
+        await Balance.create({
+          user,
+          tokenCredits: 500,
+          autoRefillEnabled: true,
+          refillMode: 'reset',
+          refillAmount: 1000,
+          refillIntervalValue: 1,
+          refillIntervalUnit: 'weeks',
+          lastRefill,
+        });
+        const reservation = await checkBalance(
+          { req, res, txData: { ...baseTxData, user, amount: 100 } },
+          realDeps({
+            startBalance: 9999,
+            refillAmount,
+            autoRefillEnabled,
+            refillMode,
+            refillIntervalValue: 1,
+            refillIntervalUnit: 'weeks',
+          }),
+        );
+        await reservation.release();
+        expect((await Balance.findOne({ user }).lean())?.tokenCredits).toBe(expectedCredits);
+        const ledger = await methods.getTransactions({ user, context: 'balanceReset' });
+        expect(ledger).toHaveLength(autoRefillEnabled && refillMode === 'reset' ? 1 : 0);
+      },
+    );
+
+    it('preserves the period and held credits when policy is synchronized before concurrent admissions', async () => {
+      const user = new mongoose.Types.ObjectId().toString();
+      const lastRefill = new Date();
+      await Balance.create({
+        user,
+        tokenCredits: 500,
+        autoRefillEnabled: true,
+        refillMode: 'reset',
+        refillAmount: 1000,
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+        lastRefill,
+        reservations: [{ id: 'held', amount: 400, expiresAt: new Date(Date.now() + 60_000) }],
+        reservedCredits: 400,
+      });
+      const deps = realDeps({
+        startBalance: 9999,
+        autoRefillEnabled: true,
+        refillMode: 'reset',
+        refillAmount: 2000,
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+      });
+      const admitted = admittedOf(await admitConcurrently(user, 10, deps, 100));
+      expect(admitted).toHaveLength(1);
+      await Promise.all(admitted.map((reservation) => reservation.release()));
+      const record = await Balance.findOne({ user }).select('+reservedCredits').lean();
+      expect(record).toMatchObject({
+        tokenCredits: 500,
+        reservedCredits: 400,
+        refillAmount: 2000,
+        lastRefill,
+      });
+      expect(await methods.getTransactions({ user, context: 'balanceReset' })).toHaveLength(0);
+    });
+
     it('lazily initializes a missing record and reserves against it', async () => {
       const user = new mongoose.Types.ObjectId().toString();
       const deps = realDeps({ startBalance: 1000 });

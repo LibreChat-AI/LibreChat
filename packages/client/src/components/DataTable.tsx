@@ -46,7 +46,7 @@ const SelectionCheckbox = memo(
       role="button"
       tabIndex={0}
       onKeyDown={(e) => e.stopPropagation()}
-      className="flex h-full w-[30px] items-center justify-center"
+      className="flex h-full w-[1.875rem] items-center justify-center"
       onClick={(e) => e.stopPropagation()}
     >
       <Checkbox checked={checked} onCheckedChange={onChange} aria-label={ariaLabel} />
@@ -105,12 +105,16 @@ const TableRowComponent = <TData, TValue>({
       ref={measureRef}
       data-index={index}
       data-state={row.getIsSelected() ? 'selected' : undefined}
-      className="motion-safe:animate-fadeIn border-border-light hover:bg-surface-secondary border-b transition-all duration-300 ease-out"
-      style={{
-        animationDelay: `${index * 20}ms`,
-        transform: `translateY(${isSearching ? '4px' : '0'})`,
-        opacity: isSearching ? 0.5 : 1,
-      }}
+      className={cn(
+        'motion-safe:animate-fadeIn border-border-light hover:bg-surface-secondary border-b transition-all duration-300 ease-out [animation-delay:var(--row-delay)]',
+        isSearching && 'opacity-50',
+      )}
+      style={
+        {
+          '--row-delay': `${index * 20}ms`,
+          transform: `translateY(${isSearching ? '4px' : '0'})`,
+        } as React.CSSProperties
+      }
     >
       {row.getVisibleCells().map((cell) => {
         if (cell.column.id === 'select') {
@@ -201,7 +205,7 @@ const DeleteButton = memo(
         variant="outline"
         onClick={onDelete}
         disabled={disabled}
-        className={cn('min-w-[40px] transition-all duration-200', isSmallScreen && 'px-2 py-1')}
+        className={cn('min-w-[2.5rem] transition-all duration-200', isSmallScreen && 'px-2 py-1')}
         aria-label={ariaLabel}
       >
         {isDeleting ? (
@@ -209,7 +213,7 @@ const DeleteButton = memo(
         ) : (
           <>
             <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
-            {!isSmallScreen && <span className="ml-2">Delete</span>}
+            {!isSmallScreen && <span className="ms-2">Delete</span>}
           </>
         )}
       </Button>
@@ -254,7 +258,7 @@ export default function DataTable<TData, TValue>({
     const selectColumn = {
       id: 'select',
       header: ({ table }: { table: TTable<TData> }) => (
-        <div className="flex h-full w-[30px] items-center justify-center">
+        <div className="flex h-full w-[1.875rem] items-center justify-center">
           <Checkbox
             checked={table.getIsAllPageRowsSelected()}
             onCheckedChange={(value) => table.toggleAllPageRowsSelected(Boolean(value))}
@@ -269,7 +273,7 @@ export default function DataTable<TData, TValue>({
           ariaLabel="Select row"
         />
       ),
-      meta: { size: '50px' },
+      meta: { size: '3.125rem' },
     };
     return [selectColumn, ...columns];
   }, [columns, enableRowSelection, showCheckboxes]);
@@ -297,16 +301,9 @@ export default function DataTable<TData, TValue>({
   const { rows } = table.getRowModel();
 
   /** The first guess for a row that has not rendered yet, from the columns it will carry: a
-   *  title cell's height when there is one, a compact row otherwise. Both follow the theme's cell
-   *  space and row rule, and rendered rows are measured. */
-  const hasTitleColumn = useMemo(
-    () =>
-      columns.some(
-        (column) =>
-          column.id === 'title' || ('accessorKey' in column && column.accessorKey === 'title'),
-      ),
-    [columns],
-  );
+   *  title cell's height when a visible leaf column is the title, a compact row otherwise. Both
+   *  follow the theme's cell space and row rule, and rendered rows are measured. */
+  const hasTitleColumn = table.getVisibleLeafColumns().some((column) => column.id === 'title');
   const rowHeight = useTableRowHeight(hasTitleColumn ? 'titled' : 'compact');
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
@@ -464,7 +461,7 @@ export default function DataTable<TData, TValue>({
       >
         <Table
           unwrapped
-          className="w-full min-w-[300px] table-fixed border-separate border-spacing-0"
+          className="w-full min-w-[18.75rem] table-fixed border-separate border-spacing-0"
         >
           <TableHeader className="bg-surface-secondary sticky top-0 z-50">
             {table.getHeaderGroups().map((headerGroup) => (
@@ -472,7 +469,7 @@ export default function DataTable<TData, TValue>({
                 {headerGroup.headers.map((header) => (
                   <TableHead
                     key={header.id}
-                    className="bg-surface-secondary text-table-header-text px-2 text-left text-sm font-medium whitespace-nowrap sm:px-4"
+                    className="bg-surface-secondary text-table-header-text px-2 text-start text-sm font-medium whitespace-nowrap sm:px-4"
                     style={getColumnStyle(
                       header.column.columnDef as TableColumn<TData, TValue>,
                       isSmallScreen,

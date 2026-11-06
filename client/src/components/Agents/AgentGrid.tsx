@@ -361,7 +361,7 @@ const AgentGrid: React.FC<AgentGridProps> = ({
             and reading order reach it immediately; without rows it is the whole of the
             page. */}
         <div ref={recoveryCardRef} className="pointer-events-auto w-full max-w-xl pb-5">
-          <div className="rounded-theme-surface border-border-light bg-surface-secondary high-contrast:border-border-medium high-contrast:shadow-none border shadow-lg">
+          <div className="rounded-theme-surface border-border-light bg-surface-card high-contrast:border-border-medium high-contrast:shadow-none border shadow-lg">
             {errorCard}
           </div>
         </div>
@@ -431,7 +431,7 @@ const AgentGrid: React.FC<AgentGridProps> = ({
           aria-live="polite"
           aria-label={localize('com_agents_loading')}
         >
-          <Spinner className="text-text-primary h-6 w-6" />
+          <Spinner tone="primary" className="h-6 w-6" />
           <span className="sr-only">{localize('com_agents_loading')}</span>
         </div>
       )}

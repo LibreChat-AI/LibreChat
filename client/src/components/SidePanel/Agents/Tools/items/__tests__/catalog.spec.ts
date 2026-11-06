@@ -23,8 +23,8 @@ const askInputs: BuildCatalogInputs = {
 };
 
 describe('buildCatalog', () => {
-  test('returns empty when nothing is enabled', () => {
-    expect(buildCatalog(emptyInputs)).toEqual([]);
+  test('offers handoffs without the subagents capability', () => {
+    expect(buildCatalog(emptyInputs).map((item) => item.id)).toEqual(['handoffs']);
   });
 
   test('emits built-in items only for capabilities the admin enabled', () => {
@@ -35,9 +35,19 @@ describe('buildCatalog', () => {
       },
     });
     expect(items.filter((i) => i.kind === 'builtin').map((i) => i.id)).toEqual([
+      'handoffs',
       AgentCapabilities.execute_code,
       AgentCapabilities.web_search,
     ]);
+  });
+
+  test('offers two separate native tools when subagents are enabled', () => {
+    const items = buildCatalog({
+      ...emptyInputs,
+      agentsConfig: { capabilities: [AgentCapabilities.subagents] },
+    });
+    expect(items.map((item) => item.id)).toEqual(['subagents', 'handoffs']);
+    expect(items.map((item) => item.kind)).toEqual(['builtin', 'builtin']);
   });
 
   test('emits the memory builtin only when showMemory is set', () => {
@@ -203,7 +213,9 @@ describe('buildCatalog', () => {
       agentsConfig: { capabilities: [AgentCapabilities.web_search] },
       builtinAuthMap: new Map([[AgentCapabilities.web_search, true]]),
     });
-    const builtin = items.find((i) => i.kind === 'builtin');
+    const builtin = items.find(
+      (i) => i.kind === 'builtin' && i.id === AgentCapabilities.web_search,
+    );
     expect(builtin?.status).toBe('needs_setup');
   });
 
@@ -297,6 +309,13 @@ describe('buildCatalog', () => {
         makeAction({ action_id: 'a1', metadata: { domain: 'd' }, settings: { paths: {} } }),
       ],
     });
-    expect(items.map((i) => i.kind)).toEqual(['builtin', 'mcp', 'tool', 'skill', 'action']);
+    expect(items.map((i) => i.kind)).toEqual([
+      'builtin',
+      'builtin',
+      'mcp',
+      'tool',
+      'skill',
+      'action',
+    ]);
   });
 });

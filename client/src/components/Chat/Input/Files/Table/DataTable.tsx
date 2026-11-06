@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
-import { useSetRecoilState } from 'recoil';
+import { useSetAtom } from 'jotai';
+import { filesFamily } from '@librechat/chat/react';
 import { FileContext } from 'librechat-data-provider';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -33,7 +34,6 @@ import { ColumnVisibilityDropdown } from './ColumnVisibilityDropdown';
 import { useDeleteFilesFromTable } from '~/hooks/Files';
 import { useLocalize, TranslationKeys } from '~/hooks';
 import { cn } from '~/utils';
-import store from '~/store';
 
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
@@ -60,7 +60,7 @@ type Style = {
 export default function DataTable<TData, TValue>({ columns, data }: DataTableProps<TData, TValue>) {
   const localize = useLocalize();
   const [isDeleting, setIsDeleting] = useState(false);
-  const setFiles = useSetRecoilState(store.filesByIndex(0));
+  const setFiles = useSetAtom(filesFamily(0));
   const { deleteFiles } = useDeleteFilesFromTable(() => setIsDeleting(false));
 
   const [rowSelection, setRowSelection] = useState({});
@@ -132,14 +132,14 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
             setRowSelection({});
           }}
           disabled={!table.getFilteredSelectedRowModel().rows.length || isDeleting}
-          className={cn('min-w-[40px] transition-all duration-200', isSmallScreen && 'px-2 py-1')}
+          className={cn('min-w-[2.5rem] transition-all duration-200', isSmallScreen && 'px-2 py-1')}
         >
           {isDeleting ? (
             <Spinner className="size-3.5 sm:size-4" />
           ) : (
             <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
           )}
-          {!isSmallScreen && <span className="ml-2">{localize('com_ui_delete')}</span>}
+          {!isSmallScreen && <span className="ms-2">{localize('com_ui_delete')}</span>}
         </Button>
         <FilterInput
           inputId="files-filter"
@@ -166,7 +166,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
         <Table
           unwrapped
           aria-rowcount={rows.length > 0 ? rows.length + 1 : undefined}
-          className="w-full min-w-[300px] border-separate border-spacing-0"
+          className="w-full min-w-[18.75rem] border-separate border-spacing-0"
         >
           <TableHeader sticky>
             {table.getHeaderGroups().map((headerGroup) => (
@@ -225,7 +225,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
                             key={cell.id}
                             size="compact"
                             className={cn(
-                              'align-start px-2 text-xs sm:px-4 sm:text-sm [tr[data-disabled=true]_&]:opacity-50',
+                              'px-2 text-xs sm:px-4 sm:text-sm [tr[data-disabled=true]_&]:opacity-50',
                               cell.column.id === 'select' ? 'overflow-visible' : 'overflow-x-auto',
                             )}
                             style={style}
@@ -255,7 +255,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
       </div>
 
       <div className="flex items-center justify-end gap-2 py-4">
-        <div className="text-text-secondary ml-2 flex-1 truncate text-xs sm:ml-4 sm:text-sm">
+        <div className="text-text-secondary ms-2 flex-1 truncate text-xs sm:ms-4 sm:text-sm">
           <span className="hidden sm:inline">
             {localize('com_files_number_selected', {
               0: `${table.getFilteredSelectedRowModel().rows.length}`,

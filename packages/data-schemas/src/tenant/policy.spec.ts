@@ -1,6 +1,7 @@
 import type { TenantScope } from './policy';
 import {
   tenantFilter,
+  tenantPartition,
   scopeReplacement,
   currentTenantScope,
   resolveTenantScope,
@@ -111,6 +112,17 @@ describe('tenantFilter', () => {
   it('does not restrict system or unscoped reads', () => {
     expect(tenantFilter(SYSTEM)).toBeUndefined();
     expect(tenantFilter(UNSCOPED)).toBeUndefined();
+  });
+});
+
+describe('tenantPartition', () => {
+  it('names the active tenant when scoped', () => {
+    expect(tenantPartition(SCOPED)).toBe('tenant-a');
+  });
+
+  it('names the tenantless partition for system and unscoped reads', () => {
+    expect(tenantPartition(SYSTEM)).toBeNull();
+    expect(tenantPartition(UNSCOPED)).toBeNull();
   });
 });
 

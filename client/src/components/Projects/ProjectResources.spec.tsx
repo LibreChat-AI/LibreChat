@@ -237,7 +237,8 @@ describe('ProjectResources', () => {
       },
     });
     fireEvent.change(input, { target: { files: [new File(['d'], 'another-excess.txt')] } });
-    expect(mockUploadMutateAsync).toHaveBeenCalledTimes(1);
+    /** Uploads run concurrently, so the second file starts while the first is still in flight. */
+    expect(mockUploadMutateAsync).toHaveBeenCalledTimes(2);
     expect(mockShowToast).toHaveBeenCalledTimes(2);
     expect(mockShowToast).toHaveBeenLastCalledWith(
       expect.objectContaining({ message: 'Could not add 1 selected file(s)' }),
@@ -245,10 +246,9 @@ describe('ProjectResources', () => {
     finishFirstUpload(uploadedFile);
     await waitFor(() => expect(mockAddMutateAsync).toHaveBeenCalledTimes(2));
     expect(mockUploadMutateAsync).toHaveBeenCalledTimes(2);
-    expect(mockAddMutateAsync.mock.calls.map(([payload]) => payload.file_id)).toEqual([
-      uploadedFile.file_id,
-      'second-canonical-id',
-    ]);
+    expect(mockAddMutateAsync.mock.calls.map(([payload]) => payload.file_id).sort()).toEqual(
+      [uploadedFile.file_id, 'second-canonical-id'].sort(),
+    );
   });
 
   it('retries a failed association without uploading another binary', async () => {

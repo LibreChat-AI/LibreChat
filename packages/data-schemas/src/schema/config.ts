@@ -43,6 +43,10 @@ const configSchema: Schema<IConfig> = new Schema<IConfig>(
       type: Number,
       default: 0,
     },
+    /** Set once `overrides` keys are stored encoded; documents without it are read verbatim. */
+    keyEncoding: {
+      type: Number,
+    },
     tenantId: {
       type: String,
       index: true,

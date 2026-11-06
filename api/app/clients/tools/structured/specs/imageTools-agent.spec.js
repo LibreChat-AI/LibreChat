@@ -2,29 +2,21 @@
  * Regression tests for image tool agent mode — verifies that invoke() returns
  * a ToolMessage with base64 in artifact.content rather than serialized into content.
  *
- * Root cause: DALLE3/FluxAPI/StableDiffusion extend LangChain's Tool but did not
+ * Root cause: FluxAPI/StableDiffusion extend LangChain's Tool but did not
  * set responseFormat = 'content_and_artifact'. LangChain's invoke() would then
  * JSON.stringify the entire [content, artifact] tuple into ToolMessage.content,
  * dumping base64 into token counting and causing context exhaustion.
  */
 
 const axios = require('axios');
-const OpenAI = require('openai');
-const undici = require('undici');
 const fetch = require('node-fetch');
 const { ContentTypes } = require('librechat-data-provider');
 const { ToolMessage } = require('@librechat/agents/langchain/messages');
 const StableDiffusionAPI = require('../StableDiffusion');
 const FluxAPI = require('../FluxAPI');
-const DALLE3 = require('../DALLE3');
 
 jest.mock('axios');
-jest.mock('openai');
 jest.mock('node-fetch');
-jest.mock('undici', () => ({
-  ProxyAgent: jest.fn(),
-  fetch: jest.fn(),
-}));
 jest.mock('@librechat/data-schemas', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
 }));
@@ -50,7 +42,7 @@ const makeToolCall = (name, args) => ({
 });
 
 describe('image tools - agent mode ToolMessage format', () => {
-  const ENV_KEYS = ['DALLE_API_KEY', 'FLUX_API_KEY', 'SD_WEBUI_URL', 'PROXY'];
+  const ENV_KEYS = ['FLUX_API_KEY', 'SD_WEBUI_URL', 'PROXY'];
   let savedEnv = {};
 
   beforeEach(() => {
@@ -58,7 +50,6 @@ describe('image tools - agent mode ToolMessage format', () => {
     for (const key of ENV_KEYS) {
       savedEnv[key] = process.env[key];
     }
-    process.env.DALLE_API_KEY = 'test-dalle-key';
     process.env.FLUX_API_KEY = 'test-flux-key';
     process.env.SD_WEBUI_URL = 'http://localhost:7860';
     delete process.env.PROXY;
@@ -73,95 +64,6 @@ describe('image tools - agent mode ToolMessage format', () => {
       }
     }
     savedEnv = {};
-  });
-
-  describe('DALLE3', () => {
-    beforeEach(() => {
-      OpenAI.mockImplementation(() => ({
-        images: {
-          generate: jest.fn().mockResolvedValue({
-            data: [{ url: 'https://example.com/image.png' }],
-          }),
-        },
-      }));
-      undici.fetch.mockResolvedValue({
-        arrayBuffer: () => Promise.resolve(Buffer.from(FAKE_BASE64, 'base64')),
-      });
-    });
-
-    it('sets responseFormat to content_and_artifact when isAgent is true', () => {
-      const dalle = new DALLE3({ isAgent: true });
-      expect(dalle.responseFormat).toBe('content_and_artifact');
-    });
-
-    it('does not set responseFormat when isAgent is false', () => {
-      const dalle = new DALLE3({ isAgent: false, processFileURL: jest.fn() });
-      expect(dalle.responseFormat).not.toBe('content_and_artifact');
-    });
-
-    it('keeps tenant context without retaining the request object', () => {
-      const req = {
-        user: { id: 'user-1', tenantId: 'tenant-a' },
-        body: { conversationId: 'convo-1', isTemporary: 'true' },
-        config: { interfaceConfig: { retentionMode: 'all' } },
-        socket: {},
-      };
-      const dalle = new DALLE3({ isAgent: false, processFileURL: jest.fn(), req });
-
-      expect(dalle.tenantId).toBe('tenant-a');
-      expect(dalle.req).toBeUndefined();
-      expect(dalle.retentionRequest).toEqual({
-        user: { id: 'user-1', tenantId: 'tenant-a' },
-        body: { conversationId: 'convo-1', isTemporary: 'true' },
-        config: { interfaceConfig: { retentionMode: 'all' } },
-      });
-    });
-
-    it('invoke() returns ToolMessage with base64 in artifact, not serialized in content', async () => {
-      const dalle = new DALLE3({ isAgent: true });
-      const result = await dalle.invoke(
-        makeToolCall('dalle', {
-          prompt: 'a box',
-          quality: 'standard',
-          size: '1024x1024',
-          style: 'vivid',
-        }),
-      );
-
-      expect(result).toBeInstanceOf(ToolMessage);
-
-      const contentStr =
-        typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
-      expect(contentStr).not.toContain(FAKE_BASE64);
-
-      expect(result.artifact).toBeDefined();
-      const artifactContent = result.artifact?.content;
-      expect(Array.isArray(artifactContent)).toBe(true);
-      expect(artifactContent[0].type).toBe(ContentTypes.IMAGE_URL);
-      expect(artifactContent[0].image_url.url).toContain('base64');
-    });
-
-    it('invoke() returns ToolMessage with error string in content when API fails', async () => {
-      OpenAI.mockImplementation(() => ({
-        images: { generate: jest.fn().mockRejectedValue(new Error('API error')) },
-      }));
-
-      const dalle = new DALLE3({ isAgent: true });
-      const result = await dalle.invoke(
-        makeToolCall('dalle', {
-          prompt: 'a box',
-          quality: 'standard',
-          size: '1024x1024',
-          style: 'vivid',
-        }),
-      );
-
-      expect(result).toBeInstanceOf(ToolMessage);
-      const contentStr =
-        typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
-      expect(contentStr).toContain('Something went wrong');
-      expect(result.artifact).toBeDefined();
-    });
   });
 
   describe('FluxAPI', () => {

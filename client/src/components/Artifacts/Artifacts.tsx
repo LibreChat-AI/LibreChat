@@ -15,14 +15,22 @@ import {
   X,
 } from 'lucide-react';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react';
+import type { CSSProperties } from 'react';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
-import { TOOL_ARTIFACT_TYPES, isCodeOnlyArtifact, isPreviewOnlyArtifact } from '~/utils/artifacts';
+import {
+  TOOL_ARTIFACT_TYPES,
+  isCodeOnlyArtifact,
+  isPreviewOnlyArtifact,
+  normalizeArtifactType,
+} from '~/utils/artifacts';
 import { copyWithinDocument, openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
 import { artifactsOpenedArtifactId, artifactsPaneFocusRequest, undockedArtifacts } from './state';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
 import { useArtifactsContext, useShareContext, useMutationState } from '~/Providers';
 import CopyButton from '~/components/Messages/Content/CopyButton';
+import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import useArtifacts from '~/hooks/Artifacts/useArtifacts';
+import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import { useFocusTrap, useLocalize } from '~/hooks';
 import DownloadArtifact from './DownloadArtifact';
 import ArtifactVersion from './ArtifactVersion';
@@ -48,7 +56,7 @@ export default function Artifacts() {
   /* The undocked window is its own viewport: the host's width says nothing
    * about it, and a bottom sheet — backdrop, drag handle, no dock action — is
    * not what a window wants to be. */
-  const isMobile = useMediaQuery('(max-width: 868px)') && !isUndocked;
+  const isMobile = useScaledMaxWidth(ARTIFACTS_SHEET_MAX_WIDTH) && !isUndocked;
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const previewRef = useRef<SandpackPreviewRef>();
   const artifactContainerRef = useRef<HTMLDivElement>(null);
@@ -183,7 +191,8 @@ export default function Artifacts() {
     mermaidExportState != null && mermaidExportState.artifactId === currentArtifact?.id
       ? mermaidExportState.data
       : null;
-  const isMermaidArtifact = currentArtifact?.type === TOOL_ARTIFACT_TYPES.MERMAID;
+  const isMermaidArtifact =
+    normalizeArtifactType(currentArtifact?.type ?? '') === TOOL_ARTIFACT_TYPES.MERMAID;
 
   const closeArtifacts = useCallback(() => {
     if (isMobile) {
@@ -450,15 +459,16 @@ export default function Artifacts() {
             className={cn(
               'bg-surface-overlay fixed inset-0 z-[99] will-change-[opacity,backdrop-filter] motion-reduce:transition-none',
               isVisible && !isClosing
-                ? 'transition-all duration-300'
+                ? 'opacity-(--backdrop-opacity) backdrop-blur-(--backdrop-blur) transition-all duration-300'
                 : 'pointer-events-none opacity-0 backdrop-blur-none transition-opacity duration-150',
               blurAmount < 8 && isVisible && !isClosing ? 'pointer-events-none' : '',
             )}
-            style={{
-              opacity: isVisible && !isClosing ? backdropOpacity : 0,
-              backdropFilter: isVisible && !isClosing ? `blur(${blurAmount}px)` : 'none',
-              WebkitBackdropFilter: isVisible && !isClosing ? `blur(${blurAmount}px)` : 'none',
-            }}
+            style={
+              {
+                '--backdrop-opacity': backdropOpacity,
+                '--backdrop-blur': `${blurAmount}px`,
+              } as CSSProperties
+            }
             onClick={blurAmount >= 8 ? closeArtifacts : undefined}
             aria-hidden="true"
           />
@@ -477,19 +487,18 @@ export default function Artifacts() {
                   isFullscreen ? 'inset-0 rounded-none' : 'inset-x-0 bottom-0 rounded-t-[20px]',
                   isVisible && !isClosing
                     ? 'translate-y-0 opacity-100'
-                    : 'translate-y-full opacity-0 transition-all',
-                  isDragging ? '' : 'transition-all duration-300',
+                    : 'translate-y-full opacity-0',
+                  !isDragging && 'transition-all',
+                  !isDragging && (isClosing ? 'duration-250' : 'duration-300'),
                 )
               : cn(
-                  'h-full shadow-2xl',
+                  'h-full overflow-hidden shadow-2xl',
                   isVisible && !isClosing
-                    ? 'translate-x-0 opacity-100 transition-all duration-150'
-                    : 'translate-x-5 opacity-0 transition-all duration-300',
+                    ? 'translate-x-0 opacity-100 transition-all duration-350'
+                    : 'translate-x-5 opacity-0 transition-all duration-300 rtl:-translate-x-5',
                 ),
           )}
-          style={
-            isMobile ? { height: isFullscreen ? '100%' : `${height}vh` } : { overflow: 'hidden' }
-          }
+          style={isMobile ? { height: isFullscreen ? '100%' : `${height}vh` } : undefined}
         >
           {isMobile && !isFullscreen && (
             <div
@@ -500,7 +509,7 @@ export default function Artifacts() {
               aria-valuemin={10}
               aria-valuemax={100}
               aria-valuenow={Math.round(height)}
-              className="bg-surface-primary-alt focus-visible:ring-border-heavy flex shrink-0 cursor-grab items-center justify-center pt-2.5 pb-1.5 focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset active:cursor-grabbing"
+              className="bg-surface-primary-alt focus-visible:ring-focus-subtle flex shrink-0 cursor-grab items-center justify-center pt-2.5 pb-1.5 focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset active:cursor-grabbing"
               onPointerDown={handleDragStart}
               onPointerMove={handleDragMove}
               onPointerUp={handleDragEnd}
@@ -514,7 +523,7 @@ export default function Artifacts() {
           {/* Header */}
           <div
             className={cn(
-              'border-border-light bg-surface-primary-alt flex h-[52px] shrink-0 items-center justify-between gap-2 border-b p-2 transition-all duration-300 motion-reduce:transition-none',
+              'border-border-light bg-surface-primary-alt flex h-[3.25rem] shrink-0 items-center justify-between gap-2 border-b p-2 transition-all duration-300 motion-reduce:transition-none',
               isMobile ? 'justify-center' : 'overflow-hidden',
             )}
           >
@@ -524,7 +533,7 @@ export default function Artifacts() {
                   'flex items-center transition-all duration-500 motion-reduce:transition-none',
                   isVisible && !isClosing
                     ? 'translate-x-0 opacity-100'
-                    : '-translate-x-2 opacity-0',
+                    : '-translate-x-2 opacity-0 rtl:translate-x-2',
                 )}
               >
                 <Radio
@@ -557,11 +566,10 @@ export default function Artifacts() {
                   aria-label={localize('com_ui_refresh')}
                 >
                   {isRefreshing ? (
-                    <Spinner size={16} />
+                    <Spinner className="m-auto size-4" />
                   ) : (
                     <RefreshCw
-                      size={16}
-                      className="transition-transform duration-200 motion-reduce:transition-none"
+                      className="size-4 transition-transform duration-200 motion-reduce:transition-none"
                       aria-hidden="true"
                     />
                   )}
@@ -578,14 +586,14 @@ export default function Artifacts() {
                   )}
                 >
                   {isFullscreen ? (
-                    <Minimize2 size={16} aria-hidden="true" />
+                    <Minimize2 className="size-4" aria-hidden="true" />
                   ) : (
-                    <Maximize2 size={16} aria-hidden="true" />
+                    <Maximize2 className="size-4" aria-hidden="true" />
                   )}
                 </Button>
               )}
               {displayedTab !== 'preview' && isMutating && (
-                <RefreshCw size={16} className="text-text-secondary animate-spin" />
+                <RefreshCw className="text-text-secondary size-4 animate-spin" />
               )}
               {orderedArtifactIds.length > 1 && (
                 <ArtifactVersion
@@ -633,9 +641,9 @@ export default function Artifacts() {
                   )}
                 >
                   {isUndocked ? (
-                    <PanelRight size={16} aria-hidden="true" />
+                    <PanelRight className="size-4 rtl:-scale-x-100" aria-hidden="true" />
                   ) : (
-                    <PictureInPicture2 size={16} aria-hidden="true" />
+                    <PictureInPicture2 className="size-4" aria-hidden="true" />
                   )}
                 </Button>
               )}
@@ -646,7 +654,7 @@ export default function Artifacts() {
                 onClick={closeArtifacts}
                 aria-label={localize('com_ui_close')}
               >
-                <X size={16} aria-hidden="true" />
+                <X className="size-4" aria-hidden="true" />
               </Button>
             </div>
           </div>
@@ -675,7 +683,7 @@ export default function Artifacts() {
                   isRefreshing ? 'scale-100' : 'scale-95',
                 )}
               >
-                <Spinner size={24} />
+                <Spinner className="m-auto size-6" />
               </div>
             </div>
           </div>

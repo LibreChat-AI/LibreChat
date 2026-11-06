@@ -21,7 +21,7 @@ export const requireAdmin = (
   }
 
   if (!req.user.role || req.user.role !== SystemRoles.ADMIN) {
-    logger.debug(`[requireAdmin] Access denied for non-admin user: ${req.user.email}`);
+    logger.debug(`[requireAdmin] Access denied for non-admin user: ${req.user.id}`);
     return res.status(403).json({
       error: 'Access denied: Admin privileges required',
       error_code: 'ADMIN_REQUIRED',

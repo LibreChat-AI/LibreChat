@@ -4,6 +4,7 @@ import type {
   AgentTriggerDeliveryStatus,
   AgentTriggerDeliveryFailure,
 } from '@librechat/data-schemas';
+import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { AgentTriggerEnqueueOptions, AgentTriggerEnvelope } from '../agents/triggers';
@@ -181,6 +182,10 @@ export interface ScheduleFileRef {
 }
 
 export interface ScheduleEngineDeps {
+  /** Retried even when Mongo has no active/unbookkept run left to enumerate. */
+  reconcileRetainedJobs?: () => Promise<void>;
+  /** Host erasure fence for exact-generation receipt acknowledgements. */
+  eraseSettledSchedule?: ScheduleMethods['eraseScheduleIfDrained'];
   preflightMCP: ScheduleMCPPreflight;
   methods: ScheduleMethods;
   /** Resolves interface.schedules limits, per-principal when a user is given. */
@@ -280,12 +285,16 @@ export interface ScheduleEngineDeps {
 
 /** The immutable scheduled identity of a generation job, for reconcile/abort fencing. */
 export interface JobIdentity {
+  createdAt?: number;
   scheduleId: string;
   scheduledFor: string | Date;
 }
 
 /** Job-store state plus the job's scheduled identity (absent on a replacement turn). */
 export interface JobState {
+  providerDrained?: boolean;
+  terminalPersistencePending?: boolean;
+  terminalHostActionPending?: boolean;
   status: string;
   checkpointNamespace?: string;
   createdAt?: number;
@@ -341,3 +350,21 @@ export type ScheduleMCPPreflight = (
     manual?: boolean;
   },
 ) => Promise<ScheduleMCPOutcome[]>;
+
+/** Trusted occurrence attribution for a safe MCP authorization failure. */
+export interface ScheduleMCPFailureInput {
+  error: unknown;
+  streamId?: string;
+  jobCreatedAt?: number;
+  userId?: string;
+  serverName: string;
+  identity?: ScheduledMCPIdentity;
+}
+
+/** The trusted host retires this exact MCP request before occurrence settlement. */
+export interface ScheduleMCPSettlementBoundary {
+  identity: ScheduledMCPIdentity;
+  streamId: string;
+  jobCreatedAt: number;
+  quiesce: () => Promise<void>;
+}

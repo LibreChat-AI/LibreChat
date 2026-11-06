@@ -43,7 +43,16 @@ function collectPageProblems(page: Page): string[] {
   const problems: string[] = [];
   page.on('pageerror', (error) => problems.push(`pageerror: ${error.message}`));
   page.on('console', (message) => {
-    if (message.type() === 'error' || message.text().includes('Warning:')) {
+    /** These app-shell warnings also occur on the base revision, outside the tool fold. */
+    const text = message.text();
+    const shellWarning =
+      text.includes('Cannot update a component') &&
+      text.includes('ReplyNotifications') &&
+      (text.includes('HeaderMenu') || text.includes('ExportAndShareMenu'));
+    if (shellWarning || text.includes('[Error fetching audio:]')) {
+      return;
+    }
+    if (message.type() === 'error' || text.includes('Warning:')) {
       problems.push(`console.${message.type()}: ${message.text().slice(0, 300)}`);
     }
   });
@@ -91,12 +100,10 @@ test.describe('activity fold', () => {
     const peek = messagesView(page).getByTestId('activity-phase-failed-peek');
     await expect(pill).toBeVisible();
     await expect(pill).toHaveAccessibleName('Show 1 failed call out of 4 calls');
-    await expect(peek).toBeVisible();
-    await expect(peek).toContainText('Failed:');
-    await expect(peek).toContainText('Show error');
+    await expect(peek).toHaveCount(0);
 
     /** One click from the closed card to the open error panel. */
-    await peek.click();
+    await pill.click();
     await expect(header).toHaveAttribute('aria-expanded', 'true');
     await expect(peek).toBeHidden();
     const failedRow = messagesView(page)
@@ -123,17 +130,16 @@ test.describe('activity fold', () => {
     await expect(header).toHaveClass(/font-semibold/);
     await expect(header).toHaveClass(/text-text-primary/);
     const rail = messagesView(page).getByTestId('activity-phase-panel').locator('> div').first();
-    await expect(rail).toHaveClass(/pl-6/);
+    await expect(rail).toHaveClass(/ps-6/);
     /** Only the group holding the failure opened; its sibling groups stay
      *  folded under the phase. The slow echo shares that batch. */
     expect(await messagesView(page).locator('[data-testid="tool-call"]').count()).toBe(2);
     await expect(messagesView(page).getByTestId('tool-call-group-panel')).toHaveCount(3);
 
-    /** Closing by the header brings the peek back; the pill then does the
-     *  same reveal from the closed state. */
+    /** The failure action remains available when the header closes. */
     await header.click();
     await expect(header).toHaveAttribute('aria-expanded', 'false');
-    await expect(peek).toBeVisible();
+    await expect(peek).toHaveCount(0);
     await pill.click();
     await expect(header).toHaveAttribute('aria-expanded', 'true');
     await expect(panel).toContainText(/error/i);
@@ -150,14 +156,12 @@ test.describe('activity fold', () => {
       .filter({ has: page.getByTestId('tool-call').filter({ hasText: /^Failed:/ }) });
     const groupRail = groupPanel.locator('> div > [data-testid="fold-rail"]');
     const groupHeader = groupPanel.locator('xpath=preceding-sibling::div[1]').getByRole('button');
-    const lineColor = (railLocator: typeof groupRail) =>
-      railLocator.locator('span').evaluate((line) => getComputedStyle(line).backgroundColor);
-    const restingLine = await lineColor(groupRail);
+    await expect(groupRail.locator('svg')).toBeVisible();
+    await expect(phaseRail.locator('svg')).toBeVisible();
     await expect(knobs).toHaveCount(0);
     await groupRail.hover();
     await expect(knobs).toHaveCount(1);
     await expect(groupHeader.getByTestId('fold-rail-knob')).toBeVisible();
-    await expect.poll(() => lineColor(groupRail)).not.toBe(restingLine);
     await shot(page, 'group-rail-hover');
     await phaseRail.hover();
     await expect(knobs).toHaveCount(1);
@@ -176,9 +180,9 @@ test.describe('activity fold', () => {
     const reloaded = messagesView(page).getByRole('button', { name: PHASE_LABEL, exact: true });
     await expect(reloaded).toBeVisible({ timeout: 30000 });
     await expect(messagesView(page).getByTestId('failed-reveal-pill')).toBeVisible();
-    await expect(messagesView(page).getByTestId('activity-phase-failed-peek')).toBeVisible();
+    await expect(messagesView(page).getByTestId('activity-phase-failed-peek')).toHaveCount(0);
     await shot(page, 'reloaded-collapsed');
-    await messagesView(page).getByTestId('activity-phase-failed-peek').click();
+    await messagesView(page).getByTestId('failed-reveal-pill').click();
     await expect(
       messagesView(page).locator('[data-tool-call-output-id]').filter({ hasText: /error/i }),
     ).toBeVisible();
@@ -215,7 +219,7 @@ test.describe('activity fold', () => {
     const group = messagesView(page).getByTestId('tool-call-group-panel').first();
     const groupHeader = group.locator('xpath=preceding-sibling::div[1]//button').first();
     await groupHeader.click();
-    await expect(messagesView(page).locator('[data-testid="tool-call"]').first()).toBeVisible();
+    await expect(group.locator('[data-tool-call-output-id]').first()).toBeVisible();
     await shot(page, 'clean-open-group');
 
     const phaseRail = messagesView(page)

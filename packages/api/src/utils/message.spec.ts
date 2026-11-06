@@ -6,6 +6,9 @@ import {
   getThreadData,
   isPreliminaryMessageId,
   isUnpersistedPreliminaryParent,
+  getPreliminaryResponseMessageId,
+  isValidMessageId,
+  MAX_MESSAGE_ID_LENGTH,
 } from './message';
 
 /** Cast to string for type compatibility with ThreadMessage */
@@ -630,4 +633,118 @@ describe('getThreadData', () => {
       expect(endTime - startTime).toBeLessThan(100);
     });
   });
+});
+
+describe('bounded turn message identities', () => {
+  it.each([
+    '550e8400-e29b-41d4-a716-446655440000',
+    'nanoid_-.123',
+    'steer-recovery:turn:user',
+    'message__',
+    'a'.repeat(MAX_MESSAGE_ID_LENGTH),
+  ])('accepts supported identifier %s', (messageId) => {
+    expect(isValidMessageId(messageId)).toBe(true);
+  });
+
+  it.each([
+    undefined,
+    null,
+    '',
+    42,
+    {},
+    [],
+    'a b',
+    'a/b',
+    'a\n',
+    'a\0',
+    'é',
+    'a'.repeat(MAX_MESSAGE_ID_LENGTH + 1),
+    '_'.repeat(80_000) + 'X',
+  ])('rejects malformed or oversized identities', (messageId) => {
+    expect(isValidMessageId(messageId)).toBe(false);
+    expect(getPreliminaryResponseMessageId({ messageId })).toBeNull();
+  });
+
+  it.each([
+    ['message', 'message_'],
+    ['message_', 'message_'],
+    ['message___', 'message_'],
+    ['_', '_'],
+    ['____', '_'],
+    ['_'.repeat(MAX_MESSAGE_ID_LENGTH - 1) + 'X', '_'.repeat(MAX_MESSAGE_ID_LENGTH - 1) + 'X_'],
+  ])('normalizes trailing underscores without backtracking', (messageId, expected) => {
+    expect(getPreliminaryResponseMessageId({ messageId })).toBe(expected);
+  });
+
+  it('accepts a maximum-length user identity and its preliminary response on regeneration', () => {
+    const messageId = 'a'.repeat(MAX_MESSAGE_ID_LENGTH);
+    const responseMessageId = getPreliminaryResponseMessageId({ messageId });
+    expect(responseMessageId).toBe(`${messageId}_`);
+    expect(getPreliminaryResponseMessageId({ responseMessageId })).toBe(responseMessageId);
+    expect(
+      getPreliminaryResponseMessageId({ responseMessageId: `${responseMessageId}_` }),
+    ).toBeNull();
+  });
+
+  it('normalizes a maximum-length preliminary response used as a compaction anchor', () => {
+    const messageId = `${'a'.repeat(MAX_MESSAGE_ID_LENGTH)}_`;
+    expect(getPreliminaryResponseMessageId({ messageId, compact: true })).toBe(messageId);
+    expect(getPreliminaryResponseMessageId({ messageId })).toBeNull();
+    expect(
+      getPreliminaryResponseMessageId({ messageId: `${messageId}_`, compact: true }),
+    ).toBeNull();
+    expect(
+      getPreliminaryResponseMessageId({ messageId: '_'.repeat(80_000) + 'X', compact: true }),
+    ).toBeNull();
+  });
+
+  it('uses the live response when a compaction suffix would exceed the bound', () => {
+    const messageId = 'a'.repeat(MAX_MESSAGE_ID_LENGTH + 1);
+    expect(
+      getPreliminaryResponseMessageId({
+        compact: true,
+        messageId,
+        liveResponseMessageId: 'allocated-response',
+      }),
+    ).toBe('allocated-response');
+    for (const liveResponseMessageId of [undefined, '', messageId, 'b'.repeat(258), 'invalid/id']) {
+      expect(
+        getPreliminaryResponseMessageId({ compact: true, messageId, liveResponseMessageId }),
+      ).toBeNull();
+    }
+  });
+
+  it('keeps generated identities within the response contract across compaction retries', () => {
+    for (let length = 1; length <= MAX_MESSAGE_ID_LENGTH + 1; length++) {
+      for (const suffix of ['', '_', '___']) {
+        let messageId = `${'a'.repeat(length - 1)}X${suffix}`.slice(0, MAX_MESSAGE_ID_LENGTH + 1);
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const response = getPreliminaryResponseMessageId({
+            compact: true,
+            messageId,
+            liveResponseMessageId: `allocated-${attempt}`,
+          });
+          expect(response).not.toBeNull();
+          expect(isValidMessageId(response, MAX_MESSAGE_ID_LENGTH + 1)).toBe(true);
+          if (response == null) {
+            throw new Error('Missing compaction response identity');
+          }
+          messageId = response;
+        }
+      }
+    }
+  });
+
+  it('uses a valid explicit response identity', () => {
+    expect(
+      getPreliminaryResponseMessageId({ messageId: 'user', responseMessageId: 'response' }),
+    ).toBe('response');
+  });
+
+  it.each(['', {}, '_'.repeat(80_000) + 'X'])(
+    'rejects an invalid explicit response identity',
+    (responseMessageId) => {
+      expect(getPreliminaryResponseMessageId({ messageId: 'user', responseMessageId })).toBeNull();
+    },
+  );
 });

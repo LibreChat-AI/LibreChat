@@ -664,6 +664,38 @@ describe('collectCodeExecutionProfileRoutes', () => {
     expect(routes).toEqual([{ codeExecutionContext: graphContext, codeSessionKeys: [graphKey] }]);
   });
 
+  it('includes the per-call machines of a graph member a lazy child initializes later', () => {
+    const memberKey = 'execute_code:stateful:attached:buildbox:member';
+    const buildbox = {
+      baseUrl: 'https://bridge.example.com/v1',
+      codeSessionKey: memberKey,
+      executionProfile: 'stateful' as const,
+      executionRouteKey: 'attached:buildbox',
+      runtimeSessionHint: 'member',
+      statefulSessions: true,
+      environmentId: 'buildbox',
+      environmentType: 'attached' as const,
+    };
+
+    const routes = collectCodeExecutionProfileRoutes([
+      {
+        id: 'parent',
+        codeEnvAvailable: false,
+        lazySubagentConfigs: [
+          {
+            id: 'reviewer',
+            codeEnvAvailable: false,
+            subagentGraphMemberMetadata: [
+              { id: 'member', codeEnvAvailable: false, codeExecutionChoices: [buildbox] },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    expect(routes).toEqual([{ codeExecutionContext: buildbox, codeSessionKeys: [memberKey] }]);
+  });
+
   it('keeps configured stateful deployments in separate routing namespaces', () => {
     const context = (executionRouteKey: string, baseUrl: string) => ({
       baseUrl,

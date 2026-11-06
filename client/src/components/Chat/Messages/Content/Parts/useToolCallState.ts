@@ -1,10 +1,18 @@
-import { useCallback } from 'react';
+import { useCallback, useContext } from 'react';
+import { resolveToolCallPhase } from '@librechat/chat';
+import { useFailedReveal } from '@librechat/chat/components';
+import {
+  GeneratedToolLabelContext,
+  SoleToolContext,
+  LoneGroupContext,
+  useToolExpansion,
+  useToolContentRequest,
+  useRowHandoff,
+} from '@librechat/chat/react';
 import type { PartMetadata } from 'librechat-data-provider';
-import type { ToolCallPhase } from '~/utils/toolCallPhase';
+import type { ToolCallPhase } from '@librechat/chat';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
-import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
-import { useToolExpansion } from '../disclosure';
 
 interface ToolCallState {
   showCode: boolean;
@@ -19,6 +27,11 @@ interface ToolCallState {
   phase: ToolCallPhase;
   hasOutput: boolean;
   hasContent: boolean;
+  /** Goes on the card's row so focus can follow it out. */
+  rowRef: (node: HTMLElement | null) => void;
+  /** The only call of its group, with a panel to show: the group header is
+   *  already the row, so the card renders its panel alone, held open. */
+  bare: boolean;
 }
 
 export interface UseToolCallStateInput {
@@ -40,6 +53,15 @@ export interface UseToolCallStateInput {
    * cancelled ordinary background tool. Cancellation outranks error-shaped
    * output so the card never relabels an intentional stop as failure. */
   extraCancelled?: boolean;
+  /** Keep the card's own row even as the only call, for a state its phase does
+   *  not carry (a detached task still running after its dispatch step closed). */
+  keepRow?: boolean;
+  /** Preserve a descriptive row unless a generated title already names this call. */
+  keepLabelRow?: boolean;
+  /** Whether the panel has a body to show. Defaults to `hasContent`; a card
+   *  whose panel needs more than its input (a read file's output) passes its
+   *  own, so a sole call never loses its row to an empty panel. */
+  panelReady?: boolean;
 }
 
 export default function useToolCallState({
@@ -51,12 +73,12 @@ export default function useToolCallState({
   runStepStatus,
   extraError = false,
   extraCancelled = false,
+  keepRow = false,
+  keepLabelRow = false,
+  panelReady,
 }: UseToolCallStateInput): ToolCallState {
   const hasOutput = output.length > 0;
   const hasContent = hasInput || hasOutput;
-
-  const [showCode, setExpansionOverride] = useToolExpansion(hasContent);
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showCode);
 
   const isClosed = runStepStatus != null;
   /**
@@ -67,13 +89,6 @@ export default function useToolCallState({
    * 0.99 can no longer read as in-flight.
    */
   const rawProgress = useProgress(isClosed ? 1 : initialProgress);
-  const toggleCode = useCallback(() => {
-    const next = !showCode;
-    setExpansionOverride(next);
-    if (next) {
-      onExpand?.();
-    }
-  }, [onExpand, setExpansionOverride, showCode]);
 
   /**
    * One resolution; everything the card shows is a read of this value. The
@@ -88,6 +103,44 @@ export default function useToolCallState({
     hasError: (hasOutput && isError(output)) || extraError,
   });
 
+  /** The only call of its group, settled successfully: the group header is
+   *  already the row, so the card renders its panel alone, held open. While it
+   *  runs, or once it failed or was stopped, the row is the only place that
+   *  says so, and `keepRow` covers a state the phase cannot express. */
+  const lone = useContext(LoneGroupContext);
+  const generatedLabel = useContext(GeneratedToolLabelContext);
+  const solo = useContext(SoleToolContext) === true || lone || generatedLabel;
+  const bare =
+    solo &&
+    (panelReady ?? hasContent) &&
+    (phase === 'completed' || (generatedLabel && phase === 'failed')) &&
+    !keepRow &&
+    !(keepLabelRow && !generatedLabel);
+  const [expanded, setExpansionOverride] = useToolExpansion(hasContent);
+  const showCode = bare || expanded;
+  /** A bare panel is open without the reader expanding it, so it asks for the stored part too. */
+  useToolContentRequest(bare);
+  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showCode);
+  const rowRef = useRowHandoff(bare);
+  const revealBareFailure = useCallback(
+    (claimFocus: () => boolean) => {
+      if (!claimFocus()) return;
+      const panel = expandRef.current;
+      if (panel == null) return;
+      panel.setAttribute('tabindex', '-1');
+      panel.focus({ preventScroll: true });
+    },
+    [expandRef],
+  );
+  useFailedReveal(bare && phase === 'failed', revealBareFailure);
+  const toggleCode = useCallback(() => {
+    const next = !showCode;
+    setExpansionOverride(next);
+    if (next) {
+      onExpand?.();
+    }
+  }, [onExpand, setExpansionOverride, showCode]);
+
   return {
     showCode,
     toggleCode,
@@ -96,5 +149,7 @@ export default function useToolCallState({
     phase,
     hasOutput,
     hasContent,
+    rowRef,
+    bare,
   };
 }

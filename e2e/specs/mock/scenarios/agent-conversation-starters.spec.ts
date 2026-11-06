@@ -95,7 +95,9 @@ test.describe('agent conversation starters', () => {
       }
       form = builderForm(page);
       await form.getByLabel('Agent name').fill(name);
-      await form.getByLabel('Instructions').fill('Answer with the mock model.');
+      await form
+        .getByRole('textbox', { name: 'Instructions', exact: true })
+        .fill('Answer with the mock model.');
       await selectMockModel(page, true);
       form = builderForm(page);
 

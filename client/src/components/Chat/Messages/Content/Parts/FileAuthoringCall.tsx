@@ -1,23 +1,27 @@
 import { useMemo } from 'react';
 import { FilePenLine, FilePlus2 } from 'lucide-react';
-import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import DiffView, {
+import { parseJsonField, parseJsonFieldOccurrences } from '@librechat/chat';
+import {
+  toolPanelSpacingClassName,
+  useFollowScroll,
+  useToolCallIntent,
+} from '@librechat/chat/react';
+import {
+  DiffView,
+  BareStatus,
+  diffPreviewText,
+  TOOL_ROW_CLASSES,
   parseUnifiedDiff,
   buildEditPreviewDiff,
-  diffPreviewText,
-  type TextEditPreview,
-} from './DiffView';
-import parseJsonField, { parseJsonFieldOccurrences } from './parseJsonField';
+} from '@librechat/chat/components';
+import type { TAttachment, PartMetadata } from 'librechat-data-provider';
+import type { TextEditPreview } from '@librechat/chat/components';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
-import { toolPanelSpacingClassName } from '../disclosure';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
 import CodeWindowHeader from './CodeWindowHeader';
-import useFollowScroll from './useFollowScroll';
 import { AttachmentGroup } from './Attachment';
 import { langFromPath } from './ReadFileCall';
-import { useToolCallIntent } from './intent';
-import { TOOL_ROW_CLASSES } from '../rows';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -99,11 +103,13 @@ function buildEditArgsPreview(args: ToolCallArgs): TextEditPreview[] {
   })).filter((edit) => edit.oldText || edit.newText);
 }
 
+/** The host-authored summaries a successful create or edit returns. */
+const SUCCESS_SUMMARY = /^(?:Created|Updated|Edited)\b/;
+
 export default function FileAuthoringCall({
   toolName,
   isSubmitting,
   runStepStatus,
-  runStepDurationMs,
   initialProgress = 0.1,
   args,
   output = '',
@@ -115,7 +121,6 @@ export default function FileAuthoringCall({
   initialProgress: number;
   isSubmitting: boolean;
   runStepStatus?: PartMetadata['runStepStatus'];
-  runStepDurationMs?: PartMetadata['runStepDurationMs'];
   args?: string | Record<string, unknown>;
   output?: string;
   attachments?: TAttachment[];
@@ -163,17 +168,21 @@ export default function FileAuthoringCall({
     }
     return parsedDiff ? diffPreviewText(parsedDiff) : output;
   }, [isCreate, authoredContent, outputIsDiff, output, parsedDiff]);
-  const showOutputSection = !!output && preview !== output;
+  const hasOutputSection = !!output && preview !== output;
   let previewLang = 'plaintext';
   if (isCreate && authoredContent && preview === authoredContent) {
     previewLang = fileLang;
   }
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase } = useToolCallState({
+  const { showCode, toggleCode, expandStyle, expandRef, phase, bare, rowRef } = useToolCallState({
     initialProgress,
     isSubmitting,
     output,
     hasInput: !!filePath || !!preview,
+    /** An overwrite reads "Updated" on the row while the group header keeps the
+     *  `create_file` name, so the row stays the only place that says it. */
+    panelReady: !!preview && !overwrote,
+    keepLabelRow: intent != null,
     onExpand,
     runStepStatus,
   });
@@ -187,6 +196,10 @@ export default function FileAuthoringCall({
     phase === 'running',
     showCode,
   );
+  /** The row already says what happened, so a success summary is not repeated
+   *  under the preview. Anything else, an error above all, stays visible. */
+  const showOutputSection =
+    hasOutputSection && (phase === 'failed' || !SUCCESS_SUMMARY.test(output));
   const Icon = isCreate && !overwrote ? FilePlus2 : FilePenLine;
   let finishedKey: 'com_ui_created_file' | 'com_ui_updated_file' | 'com_ui_edited_file' =
     'com_ui_edited_file';
@@ -194,39 +207,42 @@ export default function FileAuthoringCall({
     finishedKey = overwrote ? 'com_ui_updated_file' : 'com_ui_created_file';
   }
 
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (intent ?? localize(finishedKey, { 0: fileName }));
+
   return (
     <>
-      <div className={TOOL_ROW_CLASSES}>
-        <ProgressText
-          phase={phase}
-          onClick={toggleCode}
-          inProgressText={
-            intent ??
-            localize(isCreate ? 'com_ui_creating_file' : 'com_ui_editing_file', {
-              0: fileName,
-            })
-          }
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (intent ?? localize(finishedKey, { 0: fileName }))
-          }
-          durationMs={runStepDurationMs}
-          icon={
-            <Icon
-              className={cn(
-                'text-text-secondary size-4 shrink-0',
-                phase === 'running' && 'animate-pulse',
-              )}
-              aria-hidden="true"
-            />
-          }
-          hasInput={!!filePath || !!preview}
-          isExpanded={showCode}
-        />
-      </div>
+      <BareStatus phase={phase} active={bare} text={finishedText} />
+      {!bare && (
+        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={
+              intent ??
+              localize(isCreate ? 'com_ui_creating_file' : 'com_ui_editing_file', {
+                0: fileName,
+              })
+            }
+            finishedText={finishedText}
+            icon={
+              <Icon
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+                aria-hidden="true"
+              />
+            }
+            hasInput={!!filePath || !!preview}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {!!preview && (
             <div
               className={cn(
@@ -236,6 +252,7 @@ export default function FileAuthoringCall({
             >
               <CodeWindowHeader
                 language={fileName}
+                label={filePath || undefined}
                 code={preview}
                 diffStats={
                   parsedDiff
@@ -247,9 +264,10 @@ export default function FileAuthoringCall({
                 <DiffView parsed={parsedDiff} />
               ) : (
                 <pre
+                  dir="ltr"
                   ref={previewPaneRef}
                   onScroll={onPreviewPaneScroll}
-                  className="bg-surface-code-body max-h-[300px] overflow-auto p-4 font-mono text-xs"
+                  className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
                 >
                   <code className={`hljs language-${previewLang} !whitespace-pre`}>
                     {highlighted ?? preview}
@@ -258,8 +276,9 @@ export default function FileAuthoringCall({
               )}
               {showOutputSection && (
                 <pre
+                  dir="ltr"
                   className={cn(
-                    'border-border-light max-h-[300px] overflow-auto border-t px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap',
+                    'border-border-inset max-h-[18.75rem] overflow-auto border-t px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap',
                     phase === 'failed' ? 'text-status-error' : 'text-text-secondary',
                   )}
                 >

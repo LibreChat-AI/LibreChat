@@ -14,14 +14,14 @@ interface StackedMCPIconsProps {
 
 const sizeConfig = {
   sm: {
-    icon: 'h-[18px] w-[18px]',
-    container: 'h-[22px] w-[22px]',
-    overlap: '-ml-2.5',
+    icon: 'h-[1.125rem] w-[1.125rem]',
+    container: 'h-[1.375rem] w-[1.375rem]',
+    overlap: '-ms-2.5',
   },
   md: {
     icon: 'h-5 w-5',
     container: 'h-6 w-6',
-    overlap: '-ml-3',
+    overlap: '-ms-3',
   },
 };
 
@@ -66,7 +66,7 @@ export default function StackedMCPIcons({
           key={icon.key}
           title={icon.displayName}
           className={cn(
-            'relative flex items-center justify-center rounded-full border',
+            'text-text-primary relative flex items-center justify-center rounded-full border',
             colors.border,
             colors.bg,
             sizes.container,
@@ -78,10 +78,10 @@ export default function StackedMCPIcons({
             <CustomIcon
               src={icon.iconPath}
               alt={icon.displayName}
-              className={cn('text-text-primary rounded-full object-cover', sizes.icon)}
+              className={cn('rounded-full object-cover', sizes.icon)}
             />
           ) : (
-            <MCPIcon className={cn('text-text-primary', sizes.icon)} />
+            <MCPIcon className={sizes.icon} />
           )}
         </div>
       ))}

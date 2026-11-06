@@ -1,10 +1,17 @@
 import { MemoryRouter } from 'react-router-dom';
-import { act, render } from '@testing-library/react';
 import { ErrorTypes } from 'librechat-data-provider';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import TwoFactorScreen from '../TwoFactorScreen';
 
 const mockShowToast = jest.fn();
-let mockVerifyOptions: { onError: (error: unknown) => void } | undefined;
+const mockVerify = jest.fn();
+const mockCompleteAuthentication = jest.fn();
+let mockVerifyOptions:
+  | {
+      onError: (error: unknown) => void;
+      onSuccess: (data: { token?: string; user?: { id: string } }) => void;
+    }
+  | undefined;
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
@@ -15,10 +22,14 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
+jest.mock('~/hooks/AuthContext', () => ({
+  useAuthContext: () => ({ completeAuthentication: mockCompleteAuthentication }),
+}));
+
 jest.mock('~/data-provider', () => ({
-  useVerifyTwoFactorTempMutation: (options: { onError: (error: unknown) => void }) => {
+  useVerifyTwoFactorTempMutation: (options: NonNullable<typeof mockVerifyOptions>) => {
     mockVerifyOptions = options;
-    return { mutate: jest.fn() };
+    return { mutate: mockVerify };
   },
 }));
 
@@ -35,6 +46,23 @@ describe('TwoFactorScreen verification errors', () => {
     jest.clearAllMocks();
     mockVerifyOptions = undefined;
   });
+
+  it.each(['deadbeef', '0123456789abcdef0123456789abcdef'])(
+    'submits the full legacy or new backup code: %s',
+    async (code) => {
+      renderScreen();
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_use_backup_code' }));
+      const input = screen.getByRole('textbox', {
+        name: 'com_ui_backup_code_verification_required',
+      });
+      expect(input).not.toHaveAttribute('maxlength');
+      fireEvent.change(input, { target: { value: code } });
+      fireEvent.click(screen.getByTestId('login-button'));
+      await waitFor(() =>
+        expect(mockVerify).toHaveBeenCalledWith({ tempToken: 'temp-token', backupCode: code }),
+      );
+    },
+  );
 
   it('shows a localized message when the server rejects a cross-origin submission', () => {
     renderScreen();
@@ -67,4 +95,16 @@ describe('TwoFactorScreen verification errors', () => {
       status: 'error',
     });
   });
+});
+
+it('completes normal authentication instead of navigating to the host root', () => {
+  renderScreen();
+  act(() => mockVerifyOptions?.onSuccess({ token: 'verified-token', user: { id: 'user-1' } }));
+  expect(mockCompleteAuthentication).toHaveBeenCalledWith('verified-token', { id: 'user-1' });
+});
+
+it('does not finish authentication without both the session token and user', () => {
+  renderScreen();
+  act(() => mockVerifyOptions?.onSuccess({ token: 'verified-token' }));
+  expect(mockCompleteAuthentication).not.toHaveBeenCalled();
 });

@@ -54,12 +54,17 @@ import type {
   SubagentTaskStore,
 } from '@librechat/agents';
 import type {
+  SubagentDigest,
+  AgentToolOptions,
+  BackgroundTaskDelivery,
+} from 'librechat-data-provider';
+import type {
   BackgroundToolResultClaim,
   BackgroundToolResultRecord,
 } from '@librechat/data-schemas';
-import type { AgentToolOptions, BackgroundTaskDelivery } from 'librechat-data-provider';
 import type { BackgroundToolResultState } from './harvest';
 import type { CapabilityToolNames } from './selection';
+import type { DigestRequest } from './digest';
 import {
   BACKGROUND_TASK_TIMEOUT_MS,
   BACKGROUND_TASK_SHUTDOWN_MESSAGE,
@@ -70,6 +75,20 @@ import {
   type BackgroundToolWakeupAdmission,
   type PendingBackgroundCompletionControls,
 } from './backgroundCompletion';
+import {
+  SUBAGENT_POLL_GUIDANCE,
+  SUBAGENT_WAKEUP_GUIDANCE,
+  SUBAGENT_POLL_WAKEUP_GUIDANCE,
+  agentUsesSubagentCompletionWakeups,
+} from './subagentDelivery';
+import {
+  renderDigest,
+  DIGEST_LIMITS,
+  snapshotActivity,
+  parseDigestRequest,
+  renderSummaryDigest,
+  snapshotActivitySummary,
+} from './digest';
 import {
   CREATE_FILE_TOOL_NAME,
   EDIT_FILE_TOOL_NAME,
@@ -82,7 +101,6 @@ import {
   warnUnmatchedSelectionNames,
   synthesizeSelectionToolOptions,
 } from './selection';
-import { SUBAGENT_WAKEUP_GUIDANCE, agentUsesSubagentCompletionWakeups } from './subagentDelivery';
 import { registerShutdownTask, getRemainingShutdownMs } from '~/app/shutdown';
 import { SubagentTaskOwnerUnavailableError } from './subagentTaskRouting';
 import { SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME } from './memory';
@@ -363,13 +381,18 @@ export function stripBackgroundFromToolRegistry(
   return next;
 }
 
-const CHECK_BACKGROUND_TASK_DESCRIPTION = `Check, control, and retrieve tool or subagent tasks previously dispatched in the background (with run_in_background: true).
+/** Shared by both descriptions; each stays under the 1,024-character ceiling that
+ * OpenAI-compatible validators enforce. */
+const SUBAGENT_ACTIVITY_DESCRIPTION =
+  'A subagent returns activity: its turns and tool calls folded to one line each, addressed by stable paths (3 is turn 3, 3.2 its second call). Pass since: activity.cursor for only newer nodes, or expand: a path or range ("3.2", "1-14") to unfold one node.';
 
-Provide a background_task_id to poll one task; omit it to list every background task in this thread. A task is only finished when its status is "completed", "error", or "cancelled" — never assume completion without polling. Results are not pushed to you; you must call this tool to collect them. The cancel action applies to subagents and to ordinary tools when enabled by the deployment; steer, queue, interrupt, and cancel_message apply only to subagents. Live controls route to process-local executors and do not survive an owning-process restart. A completed subagent thread may be continued later through the subagent tool's durable thread id.`;
+const CHECK_BACKGROUND_TASK_DESCRIPTION = `Check, control, and retrieve tasks dispatched with run_in_background: true.
 
-const CHECK_BACKGROUND_TASK_WAKEUP_DESCRIPTION = `Check, control, and retrieve tool or subagent tasks previously dispatched in the background (with run_in_background: true).
+Give a background_task_id to poll one task; omit it to list every task in this thread. A task is finished only when its status is "completed", "error", or "cancelled". Results are not pushed to you; call this tool to collect them. ${SUBAGENT_ACTIVITY_DESCRIPTION} Cancel applies to subagents, and to ordinary tools when the deployment allows; steer, queue, interrupt, and cancel_message apply only to subagents. Live controls do not survive a restart of the owning process. A completed subagent thread may be continued through the subagent tool's thread id.`;
 
-Provide a background_task_id to inspect one task; omit it to list every background task in this thread. Background tools and detached subagents use automatic completion delivery: continue independent work or end the turn instead of repeatedly polling an unchanged running task, and the host will resume you when one finishes. Use this tool for explicit status, steer, queue, interrupt, cancel, or cancel_message actions, or as a fallback if automatic delivery is unavailable. A task is outstanding until its result is delivered, not merely until it stops running: a finished task whose delivery is "pending" will still arrive as a new turn, so never report it as done or cancelled on the strength of its status alone. Polling or cancelling a finished task retires its pending delivery so it never arrives as a new turn: a poll returns the result now, and cancelling a result this turn can no longer poll discards it. Ordinary tool execution remains process-local and does not survive restart; once its result is persisted, completion delivery may continue on another replica. Live subagent controls route across API replicas but do not survive a restart of the process that owns the executor. A completed subagent thread may be continued later through the subagent tool's durable thread id.`;
+const CHECK_BACKGROUND_TASK_WAKEUP_DESCRIPTION = `Check, control, and retrieve tasks dispatched with run_in_background: true.
+
+Give a background_task_id to inspect one task; omit it to list every task in this thread. Background tools and detached subagents use automatic completion delivery: the host resumes you when one finishes, so continue other work or end the turn instead of polling. ${SUBAGENT_ACTIVITY_DESCRIPTION} A task is outstanding until its result is delivered: a finished task with delivery "pending" still arrives as a new turn, so never report it as done on status alone. Polling or cancelling a finished task retires its pending delivery: a poll returns the result now. Controls steer, queue, interrupt, cancel, and cancel_message apply to subagents. Ordinary tool execution remains process-local.`;
 
 function checkBackgroundTaskDescription(subagentCompletionWakeups: boolean): string {
   return subagentCompletionWakeups
@@ -395,6 +418,8 @@ interface CheckBackgroundTaskParameters {
     action: { type: 'string'; enum: string[]; description: string };
     message: BoundedStringSchema;
     control_id: BoundedStringSchema;
+    since: BoundedStringSchema;
+    expand: BoundedStringSchema;
   };
   required: string[];
 }
@@ -423,6 +448,18 @@ const CHECK_BACKGROUND_TASK_PARAMETERS = Object.freeze<CheckBackgroundTaskParame
       type: 'string',
       maxLength: MAX_BACKGROUND_CONTROL_ID_CHARS,
       description: 'Required for cancel_message; use the id returned by a prior control action.',
+    },
+    since: {
+      type: 'string',
+      maxLength: DIGEST_LIMITS.argChars,
+      description:
+        'Subagent poll: activity.cursor from an earlier check; returns only newer nodes.',
+    },
+    expand: {
+      type: 'string',
+      maxLength: DIGEST_LIMITS.argChars,
+      description:
+        'Subagent poll: a path or range from activity.nodes ("3", "3.2", "1-14"); returns that node with its children.',
     },
   },
   required: [],
@@ -2303,6 +2340,33 @@ interface SerializedSubagentTask {
   message?: string;
   /** A finished subagent whose result will still resume the parent turn. */
   delivery?: 'pending';
+  /** Navigable progress tree, folded to fit the output budget. */
+  activity?: SubagentDigest;
+  /** Seconds a caller should let pass before checking a running task again. */
+  next_check_s?: number;
+}
+
+/** Bounds of the suggested wait between checks of one running subagent. */
+const NEXT_CHECK_MIN_S = 30;
+const NEXT_CHECK_MAX_S = 300;
+
+/** Advisory only: half the task's age, so a long task is checked less often. */
+function suggestedNextCheck(task: SubagentTaskSnapshot): number {
+  const elapsedS = Math.max(0, Date.now() - task.createdAt) / 1000;
+  return Math.min(NEXT_CHECK_MAX_S, Math.max(NEXT_CHECK_MIN_S, Math.round(elapsedS / 2)));
+}
+
+function subagentActivity(
+  task: SubagentTaskSnapshot,
+  digest: DigestRequest | undefined,
+): SubagentDigest | undefined {
+  const running = task.status === 'running';
+  const tree = snapshotActivity(task);
+  if (tree != null) {
+    return renderDigest(tree, { now: Date.now(), running, request: digest });
+  }
+  const summary = snapshotActivitySummary(task);
+  return summary == null ? undefined : renderSummaryDigest(summary, { now: Date.now(), running });
 }
 
 function serializeSubagentSnapshot(
@@ -2312,8 +2376,19 @@ function serializeSubagentSnapshot(
     status?: string;
     controlId?: string;
     completionWakeups?: boolean;
+    /** Set for a single-task poll, which carries the navigation request and guidance. */
+    poll?: { digest?: DigestRequest };
   } = {},
 ): SerializedSubagentTask {
+  const activity = subagentActivity(task, options.poll?.digest);
+  const runningPoll = options.poll != null && task.status === 'running';
+  let message: string | undefined;
+  if (runningPoll) {
+    message =
+      options.completionWakeups === true ? SUBAGENT_POLL_WAKEUP_GUIDANCE : SUBAGENT_POLL_GUIDANCE;
+  } else if (options.completionWakeups === true && task.status === 'running') {
+    message = SUBAGENT_WAKEUP_GUIDANCE;
+  }
   return {
     background_task_id: task.taskId,
     ...(task.threadId == null ? {} : { subagent_thread_id: task.threadId }),
@@ -2321,7 +2396,8 @@ function serializeSubagentSnapshot(
     subagent_type: task.subagentType,
     status: options.status ?? task.status,
     progress: task.status === 'running' ? 0 : 1,
-    ...(task.progress == null ? {} : { progress_detail: task.progress }),
+    /** The digest supersedes the single latest-event label. */
+    ...(task.progress == null || activity != null ? {} : { progress_detail: task.progress }),
     /** Timings follow the task's own lifecycle, never a control receipt's status. */
     ...taskTimings(task),
     ...(options.includeResult == null ? {} : { result: options.includeResult }),
@@ -2330,29 +2406,31 @@ function serializeSubagentSnapshot(
     ...(task.pendingControls > 0 ? { pending_controls: task.pendingControls } : {}),
     ...(task.error == null ? {} : { error: task.error }),
     ...(options.controlId == null ? {} : { control_id: options.controlId }),
-    ...(options.completionWakeups === true && task.status === 'running'
-      ? { message: SUBAGENT_WAKEUP_GUIDANCE }
-      : {}),
+    ...(activity == null ? {} : { activity }),
+    ...(runningPoll ? { next_check_s: suggestedNextCheck(task) } : {}),
+    ...(message == null ? {} : { message }),
   };
 }
 
 function serializeSubagentClaim(
   claim: SubagentTaskClaim,
   completionWakeups: boolean,
+  digest?: DigestRequest,
 ): SerializedSubagentTask | undefined {
   if (claim.status === 'not_found') {
     return undefined;
   }
+  const poll = { digest };
   if (claim.status === 'completed') {
-    return serializeSubagentSnapshot(claim.task, { includeResult: claim.result });
+    return serializeSubagentSnapshot(claim.task, { includeResult: claim.result, poll });
   }
   if (claim.status === 'error' || claim.status === 'cancelled') {
     return {
-      ...serializeSubagentSnapshot(claim.task, { status: claim.status }),
+      ...serializeSubagentSnapshot(claim.task, { status: claim.status, poll }),
       error: claim.error,
     };
   }
-  return serializeSubagentSnapshot(claim.task, { status: claim.status, completionWakeups });
+  return serializeSubagentSnapshot(claim.task, { status: claim.status, completionWakeups, poll });
 }
 
 function serializeSubagentControl(
@@ -2478,6 +2556,15 @@ export async function runCheckBackgroundTask(params: {
   const taskId = typeof rawId === 'string' && rawId.trim() !== '' ? rawId.trim() : undefined;
   const action = typeof args.action === 'string' && args.action !== '' ? args.action : 'poll';
   const invocationId = controlInvocationId(params);
+  const navigation = parseDigestRequest(args);
+  if ('error' in navigation) {
+    return JSON.stringify({
+      status: 'invalid',
+      ...(taskId == null ? {} : { background_task_id: taskId }),
+      message: navigation.error,
+    });
+  }
+  const digest = navigation.request;
 
   if (taskId) {
     const task = backgroundTaskRegistry.get(userId, conversationId, taskId);
@@ -2827,6 +2914,7 @@ export async function runCheckBackgroundTask(params: {
         const claimed = serializeSubagentClaim(
           claim,
           agentUsesSubagentCompletionWakeups(subagentTasks, params.agentId),
+          digest,
         );
         if (claimed != null) {
           return JSON.stringify(claimed);
@@ -2947,6 +3035,7 @@ export async function runCheckBackgroundTask(params: {
             const claimed = serializeSubagentClaim(
               claim,
               agentUsesSubagentCompletionWakeups(subagentTasks, params.agentId),
+              digest,
             );
             if (claimed != null) {
               return JSON.stringify(claimed);

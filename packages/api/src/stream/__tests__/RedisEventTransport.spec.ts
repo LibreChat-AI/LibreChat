@@ -781,6 +781,10 @@ describe('RedisEventTransport', () => {
       isRedis: true,
       cleanupOnComplete: false,
     });
+    mockPublisher.publish.mockImplementation(async (channel: string, payload: string) => {
+      getMessageHandler(mockSubscriber)(channel, payload);
+      return 1;
+    });
     const onDone = jest.fn();
     const subscription = await manager.subscribe(streamId, () => undefined, onDone);
     const channel = `stream:{${streamId}}:events`;
@@ -1936,6 +1940,10 @@ describe('RedisEventTransport', () => {
       data: { delta: { content: [{ type: 'text', text: 'World' }] } },
     };
     const messageHandler = getMessageHandler(attachingSubscriber);
+    mockPublisher.publish.mockImplementation(async (channel: string, payload: string) => {
+      messageHandler(channel, payload);
+      return 1;
+    });
     const originalSync = attachingTransport.syncReorderBuffer.bind(attachingTransport);
     jest
       .spyOn(attachingTransport, 'syncReorderBuffer')

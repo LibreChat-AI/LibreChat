@@ -8,7 +8,6 @@ import {
   captureCodeExecutionApprovalBinding,
   codeExecutionAuthHeaders,
   codeExecutionHeaders,
-  getCodeWorkspaceSelections,
   resolveCodeExecutionContext,
   resolveCodeExecutionWorkspaceSelections,
 } from './execution';
@@ -222,6 +221,61 @@ describe('resolveCodeExecutionContext', () => {
       expect(
         resolveCodeExecutionContext({ ...params, environments: [environments[1]] }).environmentId,
       ).toBe('runtime-vm');
+    });
+
+    describe('subagent inheritance', () => {
+      const choices = [
+        { environmentId: 'application-vm', workspaceId: 'code-api' },
+        { environmentId: 'runtime-vm', workspaceId: 'agents', agentIds: ['lia'] },
+      ];
+      const inheritedEnvironments = new Map([['reviewer', 'runtime-vm']]);
+      const reviewer = { ...params, agentId: 'reviewer', workspaceSelections: choices };
+
+      it("shares the parent's machine and conversation workspace instance", () => {
+        const parent = resolveCodeExecutionContext({ ...params, workspaceSelections: choices });
+        const child = resolveCodeExecutionContext({ ...reviewer, inheritedEnvironments });
+        expect(resolveCodeExecutionContext(reviewer).environmentId).toBe('application-vm');
+        expect(child.environmentId).toBe('runtime-vm');
+        expect(child.conversationWorkspaceInstanceId).toBe(parent.conversationWorkspaceInstanceId);
+        expect(child.executionRouteKey).toBe(parent.executionRouteKey);
+      });
+
+      it('looks the inheritance up under the saved agent ID', () => {
+        expect(
+          resolveCodeExecutionContext({
+            ...reviewer,
+            agentId: 'reviewer____1',
+            inheritedEnvironments,
+          }).environmentId,
+        ).toBe('runtime-vm');
+      });
+
+      it('ignores an inherited machine the principal can no longer use', () => {
+        expect(
+          resolveCodeExecutionContext({
+            ...reviewer,
+            environments: [environments[0]],
+            inheritedEnvironments,
+          }).environmentId,
+        ).toBe('application-vm');
+      });
+
+      it('never lets inheritance override an explicit owner or widen the allowlist', () => {
+        expect(
+          resolveCodeExecutionContext({
+            ...reviewer,
+            workspaceSelections: [{ ...choices[0], agentIds: ['reviewer'] }, choices[1]],
+            inheritedEnvironments,
+          }).environmentId,
+        ).toBe('application-vm');
+        expect(
+          resolveCodeExecutionContext({
+            ...reviewer,
+            environmentIds: undefined,
+            inheritedEnvironments,
+          }).environmentId,
+        ).toBe('application-vm');
+      });
     });
   });
   const originalStatefulUrl = process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
@@ -770,31 +824,6 @@ describe('stateful code approval target binding', () => {
       ]),
     ).not.toThrow();
   });
-
-  it('persists only the environment/workspace pair, not live capabilities', () => {
-    expect(getCodeWorkspaceSelections([context()])).toEqual([
-      { environmentId: 'environment-a', workspaceId: 'project-a' },
-    ]);
-  });
-
-  it('retains graph ownership when removing live workspace capabilities', () => {
-    const owned = context();
-    owned.codeWorkspace!.agentIds = ['agent-a'];
-    expect(getCodeWorkspaceSelections([owned])).toEqual([
-      { environmentId: 'environment-a', workspaceId: 'project-a', agentIds: ['agent-a'] },
-    ]);
-  });
-
-  it.each(['source', 'isolated'] as const)(
-    'retains the %s checkout when stripping live capabilities',
-    (checkout) => {
-      const selected = context();
-      selected.codeWorkspace!.checkout = checkout;
-      expect(getCodeWorkspaceSelections([selected])).toEqual([
-        { environmentId: 'environment-a', workspaceId: 'project-a', checkout },
-      ]);
-    },
-  );
 });
 
 describe('codeExecutionAuthHeaders', () => {

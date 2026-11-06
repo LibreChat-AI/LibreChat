@@ -10,6 +10,7 @@ import {
 import type { AgentToolOptions, MCPOptions } from 'librechat-data-provider';
 import type { ParsedServerConfig } from '~/mcp/types';
 import type { RequestBody } from '~/types';
+import { capturePersistedToolOptions, retainToolOptionsLimits } from '~/agents/options';
 import { isApiKeyHeaderOverridden, isGeneratedUserApiKeyVariable } from './headers';
 import { isDirectOpenIDBearerRecoveryEnabled } from '~/mcp/openid';
 import { ALLOWED_BODY_FIELDS, isPluginSourced } from '~/utils/env';
@@ -162,6 +163,7 @@ export function normalizeAgentToolKeys(params: {
   let optionsChanged = false;
   let nextOptions: AgentToolOptions | undefined;
   if (toolOptions) {
+    capturePersistedToolOptions(toolOptions);
     nextOptions = {};
     for (const [key, options] of Object.entries(toolOptions)) {
       const rewritten = rewriteKey(key);
@@ -178,6 +180,7 @@ export function normalizeAgentToolKeys(params: {
     }
   }
 
+  if (optionsChanged && nextOptions) retainToolOptionsLimits(nextOptions, toolOptions);
   return {
     tools: toolsChanged ? nextTools : tools,
     toolOptions: optionsChanged ? nextOptions : toolOptions,
@@ -469,12 +472,6 @@ export function toCatalogConnectionConfig<T extends MCPOptions>(config: T): T {
   return catalogConfig;
 }
 
-export function getRuntimeBodyPlaceholderFields(
-  config: UserScopedConnectionConfig,
-): Array<keyof RequestBody> {
-  return getMCPRequestScope(config).requiredBodyFields;
-}
-
 export function getMissingRuntimeBodyPlaceholderFields(
   config: UserScopedConnectionConfig,
   requestBody?: RequestBody,
@@ -633,6 +630,27 @@ export function canUseAppConnection(config: UserScopedConnectionConfig): boolean
 }
 
 /**
+ * Whether a server defers sign-in to its first tool call, offering a user who has not signed in
+ * yet the tool catalog the operator declared. Limited to operator-owned servers whose tools
+ * cannot vary by request or user input. OAuth itself is not required up front: it is often only
+ * discovered when the connection is refused, and the caller only asks once a sign-in is pending.
+ * The declared catalog is required even for a user who holds a cached one from an earlier
+ * connection: one config then prompts every user at the same point, and a cache that may be stale
+ * against the server never decides on its own whether sign-in waits.
+ */
+export function canDeferOAuthSignIn(config: ParsedServerConfig): boolean {
+  return (
+    config.oauthPrompt === 'on_use' &&
+    (config.oauthToolCatalog?.length ?? 0) > 0 &&
+    !isUserSourced(config) &&
+    config.obo == null &&
+    !hasCustomUserVars(config) &&
+    !hasRuntimeContextPlaceholders(config) &&
+    !hasChatOnlyHeaders(config)
+  );
+}
+
+/**
  * Server instructions fetched from a connection are safe to retain in the
  * shared YAML registry only when the connection cannot vary by identity or
  * request. `startup: false` is the one context-independent reason startup
@@ -753,7 +771,11 @@ export function redactServerSecrets(
   }
 
   if (config.oauth) {
-    const { client_secret: _secret, ...safeOAuth } = config.oauth;
+    const {
+      client_secret: _secret,
+      client_secretPreview: _secretPreview,
+      ...safeOAuth
+    } = config.oauth;
     safe.oauth = safeOAuth;
   }
 

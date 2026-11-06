@@ -1,11 +1,15 @@
 import React, { Profiler, useMemo, useState } from 'react';
+import { filesFamily, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
+import { getDefaultStore, useAtom } from 'jotai';
 import { RecoilRoot, useRecoilState } from 'recoil';
 import userEvent from '@testing-library/user-event';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { BrowserRouter as Router } from 'react-router-dom';
+import { FileContainer } from '@librechat/chat/components';
+import { pendingQuotesByConvoId } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { QueryKeys, FileSources, EModelEndpoint } from 'librechat-data-provider';
 import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
@@ -13,16 +17,21 @@ import type { TFile, TFileUpload, TConversation } from 'librechat-data-provider'
 import type { ChatFormValues, TAskFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import { getDraft, getPendingDraftId, setDraft } from '~/utils';
-import ChatForm, { toRestoredComposerFile } from '../ChatForm';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
-import * as FileContainer from '../Files/FileContainer';
+import { SteerHostTestProvider } from 'test/steerHost';
+import ChatForm from '../ChatForm';
 import store from '~/store';
 
 const mockUpload = jest.fn();
 const mockAsk = jest.fn();
 
 // Production keeps `t` stable between language changes; the global test double does not.
+jest.mock('@librechat/chat/components', () => {
+  const actual = jest.requireActual('@librechat/chat/components');
+  return { ...actual, FileContainer: jest.fn(actual.FileContainer) };
+});
+
 jest.mock('react-i18next', () => {
   const actual = jest.requireActual<typeof import('react-i18next')>('react-i18next');
   const t = (key: TranslationKeys, options?: import('i18next').TOptions) =>
@@ -88,8 +97,8 @@ class StubImage {
 let commits = 0;
 
 function Harness() {
-  const [files, setFiles] = useRecoilState(store.filesByIndex(0));
-  const [isSubmitting, setIsSubmitting] = useRecoilState(store.isSubmittingFamily(0));
+  const [files, setFiles] = useAtom(filesFamily(0));
+  const [isSubmitting, setIsSubmitting] = useAtom(isSubmittingFamily(0));
   /* ChatView owns this read and passes it in; the harness stands in for it. */
   const [speechSettingsInitialized] = useRecoilState(store.speechSettingsInitialized);
   const [, setFilesLoading] = useState(false);
@@ -121,8 +130,6 @@ function Harness() {
         },
         regenerate: () => undefined,
         setSiblingIdx: () => undefined,
-        showPopover: false,
-        setShowPopover: () => undefined,
         abortScroll: false,
         setAbortScroll: () => undefined,
         preset: null,
@@ -169,24 +176,26 @@ function renderComposer({
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
 
+  getDefaultStore().set(pendingQuotesByConvoId(conversation.conversationId ?? ''), quotes);
   return render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot
         initializeState={({ set }) => {
-          set(store.isSubmittingFamily(0), submitting);
+          getDefaultStore().set(isSubmittingFamily(0), submitting);
           set(store.speechSettingsInitialized, speechSettingsInitialized);
-          set(store.pendingQuotesByConvoId(conversation.conversationId ?? ''), quotes);
         }}
       >
-        <Router>
-          <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-            <DndProvider backend={HTML5Backend}>
-              <main>
-                <Harness />
-              </main>
-            </DndProvider>
-          </AuthContextProvider>
-        </Router>
+        <SteerHostTestProvider>
+          <Router>
+            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+              <DndProvider backend={HTML5Backend}>
+                <main>
+                  <Harness />
+                </main>
+              </DndProvider>
+            </AuthContextProvider>
+          </Router>
+        </SteerHostTestProvider>
       </RecoilRoot>
     </QueryClientProvider>,
   );
@@ -196,6 +205,11 @@ const sendButton = () => screen.getByTestId('send-button');
 const attach = (container: HTMLElement, file: File) =>
   userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, file);
 const image = () => new File(['image-bytes'], 'cat.png', { type: 'image/png' });
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+  getDefaultStore().set(filesFamily(0), new Map());
+});
 
 describe('ChatForm attachments', () => {
   beforeEach(() => {
@@ -211,23 +225,6 @@ describe('ChatForm attachments', () => {
     mockUpload.mockImplementation((body: FormData) =>
       Promise.resolve({ ...uploadResponse, temp_file_id: body.get('file_id') as string }),
     );
-  });
-
-  test('preserves extracted-text delivery when restoring a queued attachment', () => {
-    expect(
-      toRestoredComposerFile({
-        file_id: 'stored-doc',
-        filename: 'report.docx',
-        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        llmDeliveryPath: 'text',
-      }),
-    ).toMatchObject({
-      file_id: 'stored-doc',
-      filename: 'report.docx',
-      progress: 1,
-      attached: true,
-      llmDeliveryPath: 'text',
-    });
   });
 
   test('keeps the mic disabled until speech settings hydrate', async () => {
@@ -481,7 +478,8 @@ describe('ChatForm attachments', () => {
     expect(await screen.findByRole('button', { name: 'report.pdf' })).toBeVisible();
     const textarea = screen.getByTestId('text-input');
     await userEvent.click(textarea);
-    const preview = jest.spyOn(FileContainer, 'default');
+    const preview = jest.mocked(FileContainer);
+    preview.mockClear();
 
     await userEvent.type(textarea, 'read this document');
 

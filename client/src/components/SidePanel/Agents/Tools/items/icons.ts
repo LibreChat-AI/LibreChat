@@ -11,6 +11,8 @@ import {
   Workflow,
   Zap,
   Layers,
+  Network,
+  Waypoints,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { AgentItem } from './types';
@@ -22,6 +24,14 @@ export interface ItemIcon {
 }
 
 const BUILTIN_ICONS: Record<string, ItemIcon> = {
+  subagents: {
+    Icon: Network,
+    colorClass: 'bg-series-2/15 text-series-2',
+  },
+  handoffs: {
+    Icon: Waypoints,
+    colorClass: 'bg-series-4/15 text-series-4',
+  },
   execute_code: {
     Icon: Code,
     colorClass: 'bg-series-7/15 text-series-7',

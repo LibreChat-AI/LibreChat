@@ -61,13 +61,28 @@ jest.mock('@librechat/client', () => ({
   ),
 }));
 
-jest.mock('~/components/SidePanel/Parameters/components', () => ({
-  componentMapping: {},
-}));
+jest.mock('~/components/SidePanel/Parameters/components', () => {
+  const Stub = ({ settingKey }: { settingKey: string }) => (
+    <div data-testid={`param-${settingKey}`} />
+  );
+  return {
+    componentMapping: {
+      slider: Stub,
+      switch: Stub,
+      input: Stub,
+      tags: Stub,
+      textarea: Stub,
+      combobox: Stub,
+      dropdown: Stub,
+      checkbox: Stub,
+    },
+  };
+});
 
 jest.mock('~/data-provider', () => ({
   useGetEndpointsQuery: () => ({ data: {} }),
   useGetStartupConfig: () => ({ data: mockStartupConfig() }),
+  useReasoningCapabilitiesQuery: () => ({ data: undefined }),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -433,6 +448,58 @@ describe('ModelPanel', () => {
       temperature: 0.5,
       top_p: 0.9,
     });
+  });
+
+  it('gives a numeric parameter one of the two columns', () => {
+    const { getByTestId } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByTestId('param-maxContextTokens').parentElement).toHaveClass('col-span-1');
+  });
+
+  it('gives a toggle one of the two columns', () => {
+    const { getByTestId } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByTestId('param-resendFiles').parentElement).toHaveClass('col-span-1');
+  });
+
+  it('gives free text the whole row', () => {
+    const { getByTestId } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByTestId('param-stop').parentElement).toHaveClass('col-span-2');
+  });
+
+  it('files the parameters under the same headings as the chat panel', () => {
+    const { getByRole } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByRole('heading', { name: 'com_ui_params_limits' })).toBeInTheDocument();
   });
 
   it('prunes saved model_parameters when every known setting is dropped', async () => {

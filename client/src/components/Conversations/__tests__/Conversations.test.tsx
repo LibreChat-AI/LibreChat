@@ -105,6 +105,7 @@ jest.mock('@librechat/client', () => ({
   Spinner: () => <div data-testid="spinner" />,
   useMediaQuery: () => false,
   useToastContext: () => ({ showToast: jest.fn() }),
+  useRemScale: () => 1,
 }));
 
 jest.mock('~/data-provider', () => ({

@@ -58,6 +58,36 @@ interface Disconnectable {
 }
 
 const contexts = new WeakMap<object, MCPRequestContext>();
+const contextRetentions = new WeakMap<
+  RequestScopedMCPConnectionStore,
+  { holds: number; cleanupRequested: boolean }
+>();
+const cleanupFlights = new WeakMap<RequestScopedMCPConnectionStore, Promise<void>>();
+const requestControllers = new WeakMap<RequestScopedMCPConnectionStore, AbortController>();
+
+/** Owned by the occurrence, not an individual connection or mint waiter. */
+export function getMCPRequestSignal(context: RequestScopedMCPConnectionStore): AbortSignal {
+  let controller = requestControllers.get(context);
+  if (!controller) {
+    controller = new AbortController();
+    requestControllers.set(context, controller);
+    if (context.cleanupStarted || context.quiesceStarted)
+      controller.abort(new MCPRequestQuiescedError());
+  }
+  return controller.signal;
+}
+
+function abortMCPRequest(context: RequestScopedMCPConnectionStore): void {
+  requestControllers.get(context)?.abort(new MCPRequestQuiescedError());
+}
+
+/** Completion cancellation is not evidence of withdrawn consent. */
+export class MCPRequestQuiescedError extends Error {
+  constructor() {
+    super('MCP request has settled.');
+    this.name = 'AbortError';
+  }
+}
 
 export function createMCPRequestContext(): MCPRequestContext {
   return {
@@ -66,6 +96,30 @@ export function createMCPRequestContext(): MCPRequestContext {
     cleanupStarted: false,
     cleanupOnResponse: true,
     responseCleanupAttached: false,
+  };
+}
+
+/** Keeps normal cleanup deferred while an admitted child task owns the context. */
+export function retainMCPRequestContext(context: RequestScopedMCPConnectionStore): () => void {
+  let retention = contextRetentions.get(context);
+  if (
+    context.cleanupStarted ||
+    context.quiesceStarted ||
+    (retention?.cleanupRequested && retention.holds === 0)
+  ) {
+    throw new MCPRequestQuiescedError();
+  }
+  if (!retention) {
+    retention = { holds: 0, cleanupRequested: false };
+    contextRetentions.set(context, retention);
+  }
+  retention.holds++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    retention.holds--;
+    if (retention.holds === 0 && retention.cleanupRequested) runCleanup(context);
   };
 }
 
@@ -78,55 +132,89 @@ function isDisconnectable(value: unknown): value is Disconnectable {
   );
 }
 
-export async function cleanupMCPRequestContext(context?: MCPRequestContext): Promise<void> {
-  if (!context || context.cleanupStarted) {
-    return;
-  }
+/** Stops occurrence work and exposes admission failure to the settlement owner. */
+export function quiesceMCPRequestContext(context?: RequestScopedMCPConnectionStore): Promise<void> {
+  if (!context) return Promise.resolve();
+  context.quiesceStarted = true;
   context.cleanupStarted = true;
-
-  const connections = new Map<Disconnectable, string>();
-  for (const [connectionKey, connection] of context.connections) {
-    if (isDisconnectable(connection)) {
-      connections.set(connection, connectionKey);
-    }
+  let flight = cleanupFlights.get(context);
+  if (!flight) {
+    flight = Promise.resolve().then(() => disposeContext(context, true));
+    cleanupFlights.set(context, flight);
   }
+  // Publish the cutoff and joinable flight before synchronous abort listeners run.
+  abortMCPRequest(context);
+  return flight;
+}
 
-  const pending = Array.from(context.pending.entries());
-  if (pending.length > 0) {
+async function disposeContext(
+  context: RequestScopedMCPConnectionStore,
+  strict = false,
+): Promise<void> {
+  const connections = new Map<Disconnectable, string>();
+  for (const [key, connection] of context.connections) {
+    if (isDisconnectable(connection)) connections.set(connection, key);
+  }
+  try {
+    const pending = Array.from(context.pending.entries());
     const settled = await Promise.allSettled(pending.map(([, promise]) => promise));
     for (let index = 0; index < settled.length; index++) {
       const result = settled[index];
-      if (result.status === 'fulfilled' && isDisconnectable(result.value)) {
+      if (result.status === 'fulfilled' && isDisconnectable(result.value))
         connections.set(result.value, pending[index][0]);
-      }
     }
+    const disposed = await Promise.allSettled(
+      Array.from(connections).map(async ([connection, key]) => {
+        // Pool eviction is best-effort. Settlement must observe the connection's admission result.
+        if (strict && connection.dispose) {
+          try {
+            await connection.dispose();
+          } finally {
+            await context.disposeConnection?.(key, connection);
+          }
+        } else if (context.disposeConnection) await context.disposeConnection(key, connection);
+        else if (connection.dispose) await connection.dispose();
+        else await connection.disconnect();
+      }),
+    );
+    const failed = disposed.find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
+  } finally {
+    context.connections.clear();
+    context.pending.clear();
   }
+}
 
-  await Promise.allSettled(
-    Array.from(connections).map(async ([connection, connectionKey]) => {
-      try {
-        if (context.disposeConnection) {
-          await context.disposeConnection(connectionKey, connection);
-        } else if (connection.dispose) {
-          await connection.dispose();
-        } else {
-          await connection.disconnect();
-        }
-      } catch {
-        logger.warn('[MCP Request Context] Failed to dispose request-scoped connection');
-      }
-    }),
-  );
-
-  context.connections.clear();
-  context.pending.clear();
+export async function cleanupMCPRequestContext(
+  context?: RequestScopedMCPConnectionStore,
+): Promise<void> {
+  if (!context) return;
+  const retention = contextRetentions.get(context);
+  if (retention) {
+    retention.cleanupRequested = true;
+    if (retention.holds > 0 && !context.cleanupStarted && !context.quiesceStarted) return;
+  }
+  let flight = cleanupFlights.get(context);
+  if (!flight) {
+    if (context.cleanupStarted) {
+      abortMCPRequest(context);
+      return;
+    }
+    context.cleanupStarted = true;
+    flight = Promise.resolve().then(() => disposeContext(context));
+    cleanupFlights.set(context, flight);
+  }
+  abortMCPRequest(context);
+  await flight.catch(() => {
+    logger.warn('[MCP Request Context] Failed to dispose request-scoped connection');
+  });
 }
 
 function isResponseFinished(res?: MCPResponseLike): boolean {
   return Boolean(res?.writableEnded || res?.finished || res?.destroyed);
 }
 
-function runCleanup(context: MCPRequestContext): void {
+function runCleanup(context: RequestScopedMCPConnectionStore): void {
   cleanupMCPRequestContext(context).catch(() => {
     logger.warn('[MCP Request Context] Cleanup failed');
   });
@@ -199,6 +287,7 @@ export async function cleanupMCPRequestContextForReq(req?: object): Promise<void
   try {
     await cleanupMCPRequestContext(context);
   } finally {
-    contexts.delete(req);
+    // Retained request closures must keep their original scope, including its final cutoff.
+    if (!contextRetentions.has(context)) contexts.delete(req);
   }
 }

@@ -158,23 +158,22 @@ async function flushRedisCache(dryRun = false, verbose = false) {
     if (dryRun) {
       console.log('🔍 [DRY RUN] Would flush Redis cache');
       try {
-        let allKeys = [];
+        let totalKeys = 0;
+        let sampleKeys = [];
+        const targets = useCluster ? redis.nodes('master') : [redis];
         if (useCluster) {
-          const nodes = redis.nodes('master');
-          console.log(`   Cluster detected: ${nodes.length} master nodes`);
-          for (const node of nodes) {
-            const keys = await node.keys('*');
-            allKeys = allKeys.concat(keys);
-          }
-        } else {
-          allKeys = await redis.keys('*');
+          console.log(`   Cluster detected: ${targets.length} master nodes`);
         }
-        console.log(`   Would delete ${allKeys.length} keys`);
-        if (verbose && allKeys.length > 0) {
-          console.log(
-            '   Sample keys:',
-            allKeys.slice(0, 10).join(', ') + (allKeys.length > 10 ? '...' : ''),
-          );
+        for (const node of targets) {
+          totalKeys += await node.dbsize();
+          if (verbose && sampleKeys.length < 10) {
+            const [, keys] = await node.scan('0', 'COUNT', 100);
+            sampleKeys = sampleKeys.concat(keys).slice(0, 10);
+          }
+        }
+        console.log(`   Would delete ${totalKeys} keys`);
+        if (verbose && totalKeys > 0) {
+          console.log('   Sample keys:', sampleKeys.join(', ') + (totalKeys > 10 ? '...' : ''));
         }
       } catch (error) {
         console.log('   Could not fetch keys for preview:', error.message);
@@ -186,15 +185,9 @@ async function flushRedisCache(dryRun = false, verbose = false) {
     // Get key count before flushing
     let keyCount = 0;
     try {
-      if (useCluster) {
-        const nodes = redis.nodes('master');
-        for (const node of nodes) {
-          const keys = await node.keys('*');
-          keyCount += keys.length;
-        }
-      } else {
-        const keys = await redis.keys('*');
-        keyCount = keys.length;
+      const targets = useCluster ? redis.nodes('master') : [redis];
+      for (const node of targets) {
+        keyCount += await node.dbsize();
       }
     } catch (_error) {
       // Continue with flush even if we can't count keys

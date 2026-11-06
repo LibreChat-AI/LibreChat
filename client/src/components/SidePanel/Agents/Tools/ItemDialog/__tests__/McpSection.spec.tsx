@@ -97,6 +97,11 @@ jest.mock('~/hooks', () => ({
   }),
 }));
 
+jest.mock('../../../ApprovalOption', () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
 jest.mock('../../../MCPToolItem', () => ({
   __esModule: true,
   default: ({

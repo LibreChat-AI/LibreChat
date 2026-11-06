@@ -6,6 +6,8 @@
  */
 
 import { Keyv } from 'keyv';
+import { inspect } from 'util';
+import { logger } from '@librechat/data-schemas';
 import type { TokenMethods } from '@librechat/data-schemas';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
 import type { FlowLease } from '~/flow/manager';
@@ -1363,6 +1365,51 @@ describe('MCPTokenStorage', () => {
       ).rejects.toMatchObject({
         name: 'MCPTokenRefreshUnavailableError',
       } satisfies Partial<MCPTokenRefreshUnavailableError>);
+    });
+
+    it('keeps refresh credentials out of downstream logs and wrapped failures', async () => {
+      const secret = 'sentinel-refresh-credential';
+      await createBoundToken(store, {
+        userId: 'u1',
+        type: 'mcp_oauth_refresh',
+        identifier: 'mcp:srv1:refresh',
+        token: `enc:${secret}`,
+        expiresIn: 86400,
+      });
+      const error = Object.assign(new Error(`Provider echoed ${secret}`), {
+        response: { status: 400, data: { refresh_token: secret } },
+        config: { headers: { Authorization: secret } },
+      });
+      const refreshTokens = jest.fn().mockRejectedValue(error);
+      const failure = await MCPTokenStorage.getTokens({
+        userId: 'u1',
+        serverName: 'srv1',
+        findToken: store.findToken,
+        createToken: store.createToken,
+        refreshTokens,
+      }).catch((error: unknown) => error);
+
+      expect(refreshTokens).toHaveBeenCalledTimes(1);
+      expect(failure).toBeInstanceOf(MCPTokenRefreshUnavailableError);
+      expect(failure).toMatchObject({
+        cause: { message: 'OAuth token refresh failed', status: 400 },
+      });
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to refresh tokens'),
+        {
+          type: 'Error',
+          status: 400,
+        },
+      );
+      expect(inspect(jest.mocked(logger.error).mock.calls, { depth: null })).not.toContain(secret);
+      expect(inspect(failure, { depth: null })).not.toContain(secret);
+      expect(
+        await store.findToken({
+          userId: 'u1',
+          type: 'mcp_oauth_refresh',
+          identifier: 'mcp:srv1:refresh',
+        }),
+      ).toMatchObject({ token: `enc:${secret}` });
     });
 
     it('should return null when no refreshTokens callback provided', async () => {

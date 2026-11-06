@@ -28,9 +28,14 @@ export const QRPhase: React.FC<QRPhaseProps> = ({ secret, otpauthUrl, onNext }) 
         <motion.div
           initial={{ scale: 0.8, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
-          className="bg-surface-fixed rounded-2xl p-4 shadow-lg"
+          className="bg-surface-fixed max-w-full min-w-0 rounded-2xl p-4 shadow-lg"
         >
-          <QRCodeSVG value={otpauthUrl} size={240} title={localize('com_ui_2fa_scan_qr')} />
+          <QRCodeSVG
+            value={otpauthUrl}
+            size={240}
+            className="h-auto w-60 max-w-full"
+            title={localize('com_ui_2fa_scan_qr')}
+          />
         </motion.div>
         <div className="w-full space-y-3">
           <p className="text-text-primary text-sm font-medium">{localize('com_ui_secret_key')}</p>

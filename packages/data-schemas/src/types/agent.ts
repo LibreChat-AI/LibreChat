@@ -7,6 +7,7 @@ import type {
   AgentToolResources,
   AgentSubagentsConfig,
   AgentGitIdentity,
+  AgentInstructionsPrompt,
 } from 'librechat-data-provider';
 
 export interface ISupportContact {
@@ -47,6 +48,8 @@ export interface IAgent extends Omit<Document, 'model'> {
   code_workspace_id?: string;
   repositoryInstructions?: 'prefer' | 'defer' | 'off';
   git_identity?: AgentGitIdentity | null;
+  /** Replaces inline instructions with a linked prompt group revision. */
+  instructionsPrompt?: AgentInstructionsPrompt | null;
   /** @deprecated Use edges instead */
   agent_ids?: string[];
   edges?: GraphEdge[];

@@ -1568,6 +1568,129 @@ describe('Balance Reservations', () => {
       lastRefill: new Date('2020-01-01T00:00:00.000Z'),
     };
 
+    describe('reset mode', () => {
+      const resettable = { ...refillable, refillMode: 'reset' as const };
+
+      test.each([500, 1500, -100])(
+        'replaces %s credits with one allowance on read',
+        async (credits) => {
+          const user = new mongoose.Types.ObjectId();
+          await Balance.create({ user, ...resettable, tokenCredits: credits });
+
+          const balance = await findBalanceByUser(user.toString());
+          expect(balance?.tokenCredits).toBe(1000);
+          expect(balance?.refillMode).toBe('reset');
+          expect(balance).not.toHaveProperty('pendingRefill');
+          expect(balance).not.toHaveProperty('reservations');
+          expect(balance).not.toHaveProperty('reservedCredits');
+          const resets = await Transaction.find({ user, context: 'balanceReset' }).lean();
+          expect(resets).toHaveLength(1);
+          expect(resets[0].rawAmount).toBe(1000 - credits);
+          expect(resets[0].tokenValue).toBe(1000 - credits);
+        },
+      );
+
+      test.each([0, -1, 0.0001, 0.5, 1.5])(
+        'does not grant repeated allowances for invalid interval %s',
+        async (refillIntervalValue) => {
+          const user = new mongoose.Types.ObjectId();
+          await Balance.create({ user, ...resettable, refillIntervalValue, tokenCredits: 500 });
+          await findBalanceByUser(user.toString());
+          await reserve(user.toString(), 100);
+          await findBalanceByUser(user.toString());
+          expect((await readState(user))?.tokenCredits).toBe(500);
+          expect(await Transaction.countDocuments({ user })).toBe(0);
+        },
+      );
+
+      test('disabled resets remain disabled on reads and admission', async () => {
+        const user = new mongoose.Types.ObjectId();
+        await Balance.create({ user, ...resettable, tokenCredits: 500 });
+        await upsertBalanceFields(user.toString(), { autoRefillEnabled: false });
+        expect((await findBalanceByUser(user.toString()))?.tokenCredits).toBe(500);
+        expect(await reserve(user.toString(), 100)).toEqual({ reserved: true, balance: 500 });
+        expect(await Transaction.countDocuments({ user })).toBe(0);
+      });
+
+      test('resets before admission even when the remaining balance covers the request', async () => {
+        const user = new mongoose.Types.ObjectId();
+        await Balance.create({ user, ...resettable, tokenCredits: 500 });
+        expect(await reserve(user.toString(), 100)).toEqual({ reserved: true, balance: 1000 });
+        expect((await readState(user))?.tokenCredits).toBe(1000);
+      });
+
+      test('preserves reservations and applies one reset across concurrent reads and admissions', async () => {
+        const user = new mongoose.Types.ObjectId();
+        const heldId = newId();
+        await Balance.create({
+          user,
+          ...resettable,
+          tokenCredits: 1500,
+          reservedCredits: 700,
+          reservations: [{ id: heldId, amount: 700, expiresAt: new Date(Date.now() + 60_000) }],
+        });
+        await Promise.all([
+          findBalanceByUser(user.toString()),
+          findBalanceByUser(user.toString()),
+          reserve(user.toString(), 200),
+        ]);
+        const stored = await readState(user);
+        expect(stored?.tokenCredits).toBe(1000);
+        expect(stored?.reservedCredits).toBe(900);
+        expect(stored?.reservations?.some((held) => held.id === heldId)).toBe(true);
+        expect(await Transaction.countDocuments({ user, context: 'balanceReset' })).toBe(1);
+      });
+
+      test('does not reset again before the next period or accumulate missed periods', async () => {
+        const user = new mongoose.Types.ObjectId();
+        await Balance.create({ user, ...resettable, tokenCredits: 400 });
+        await findBalanceByUser(user.toString());
+        await Balance.updateOne({ user }, { $set: { tokenCredits: 600 } });
+        expect((await findBalanceByUser(user.toString()))?.tokenCredits).toBe(600);
+        expect(await Transaction.countDocuments({ user, context: 'balanceReset' })).toBe(1);
+      });
+
+      test('replays a failed reset ledger write without resetting or duplicating the allowance', async () => {
+        const user = new mongoose.Types.ObjectId();
+        await Balance.create({ user, ...resettable, tokenCredits: 1500 });
+        const save = jest
+          .spyOn(Transaction.prototype, 'save')
+          .mockRejectedValue(new Error('ledger unavailable'));
+        expect((await findBalanceByUser(user.toString()))?.tokenCredits).toBe(1000);
+        save.mockRestore();
+        expect((await findBalanceByUser(user.toString()))?.tokenCredits).toBe(1000);
+        expect((await readState(user))?.pendingRefill).toBeUndefined();
+        const resets = await Transaction.find({ user, context: 'balanceReset' }).lean();
+        expect(resets).toHaveLength(1);
+        expect(resets[0].rawAmount).toBe(-500);
+      });
+
+      test('synchronizes a changed allowance before applying a due reset', async () => {
+        const user = new mongoose.Types.ObjectId();
+        await Balance.create({ user, ...resettable, tokenCredits: 500 });
+        expect(
+          (await findBalanceByUser(user.toString(), { applyReset: false }))?.tokenCredits,
+        ).toBe(500);
+        expect(await Transaction.countDocuments({ user })).toBe(0);
+        expect(
+          (await upsertBalanceFields(user.toString(), { refillAmount: 2000 }))?.tokenCredits,
+        ).toBe(2000);
+        const resets = await Transaction.find({ user, context: 'balanceReset' }).lean();
+        expect(resets).toHaveLength(1);
+        expect(resets[0].rawAmount).toBe(1500);
+      });
+
+      test('uses current settings if reset mode changes during its fenced write', async () => {
+        const user = new mongoose.Types.ObjectId();
+        await Balance.create({ user, ...resettable, tokenCredits: 500 });
+        interleaveBeforeNextWrite(() =>
+          Balance.collection.updateOne({ user }, { $set: { refillMode: 'add' } }),
+        );
+        expect(await reserve(user.toString(), 100)).toEqual({ reserved: true, balance: 500 });
+        expect(await Transaction.countDocuments({ user })).toBe(0);
+      });
+    });
+
     test('applies one refill per eligibility window across concurrent admissions', async () => {
       const user = new mongoose.Types.ObjectId();
       await Balance.create({ user, ...refillable });

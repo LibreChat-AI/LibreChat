@@ -225,7 +225,7 @@ export default function UploadSkillDialog({ isOpen, setIsOpen }: UploadSkillDial
               onDrop={handleDrop}
               disabled={importMutation.isLoading}
               className={cn(
-                'text-text-secondary flex h-[120px] w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-sm transition-colors',
+                'text-text-secondary flex h-[7.5rem] w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-sm transition-colors',
                 isDragging
                   ? 'border-border-heavy bg-surface-hover'
                   : 'border-border-medium hover:bg-surface-hover',

@@ -1,14 +1,23 @@
-import { useMemo, useState, useRef, memo, useEffect, MemoExoticComponent } from 'react';
+import {
+  useMemo,
+  useState,
+  useRef,
+  memo,
+  useEffect,
+  useLayoutEffect,
+  MemoExoticComponent,
+} from 'react';
 import * as Ariakit from '@ariakit/react';
 import { matchSorter } from 'match-sorter';
 import { Search, ChevronDown } from 'lucide-react';
 import { SelectRenderer } from '@ariakit/react-components/select/select-renderer';
 import type { OptionWithIcon } from '~/common';
 import { usePopoverZIndex } from './OriginalDialog';
+import useRemScale from '~/hooks/useRemScale';
 import { fieldControl } from './Field';
 import './AnimatePopover.css';
 import { JSX } from 'react/jsx-runtime';
-import { cn } from '~/utils';
+import { cn, pxToRem, resolveSide } from '~/utils';
 
 interface ControlComboboxProps {
   selectedValue: string;
@@ -20,6 +29,8 @@ interface ControlComboboxProps {
   ariaInvalid?: boolean;
   ariaDescribedBy?: string;
   searchPlaceholder?: string;
+  /** Optional controls beside the search field, outside the option list. */
+  searchActions?: React.ReactNode;
   selectPlaceholder?: string;
   isCollapsed: boolean;
   SelectIcon?: React.ReactNode;
@@ -50,6 +61,8 @@ interface ControlComboboxProps {
    * the popover is not clipped.
    */
   portal?: boolean;
+  /** Keep portaled options inside a modal without clipping its scroll region. */
+  portalElement?: Ariakit.SelectPopoverProps['portalElement'];
   /** Told when the popover opens and closes, for hosts that must behave
    *  differently while it is up — e.g. a focus-trapped panel whose own Escape
    *  handler must not fire while an open popover owns the key. */
@@ -68,6 +81,7 @@ function ControlCombobox({
   ariaInvalid,
   ariaDescribedBy,
   searchPlaceholder,
+  searchActions,
   selectPlaceholder,
   containerClassName,
   isCollapsed,
@@ -86,12 +100,14 @@ function ControlCombobox({
   variant = 'default',
   gutter = 4,
   portal = true,
+  portalElement,
   onOpenChange,
 }: ControlComboboxProps): JSX.Element {
   const [searchValue, setSearchValue] = useState('');
+  const remScale = useRemScale();
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [buttonWidth, setButtonWidth] = useState<number | null>(null);
-  const popoverWidth = isCollapsed ? '300px' : (buttonWidth ?? '300px');
+  const popoverWidth = isCollapsed ? '18.75rem' : (buttonWidth ?? '18.75rem');
   const popoverZIndex = usePopoverZIndex();
 
   const getItem = (option: OptionWithIcon) => ({
@@ -108,16 +124,24 @@ function ControlCombobox({
     setValue: setSearchValue,
   });
 
+  /** Ariakit syncs the `placement` option into its store on every render, so the mirrored side
+   *  has to be the option itself, or the next render (a keystroke in the search) restores it. */
+  const [resolvedPlacement, setResolvedPlacement] = useState(placement);
   const select = Ariakit.useSelectStore({
     combobox,
     defaultItems: items.map(getItem),
     value: selectedValue,
     setValue,
     setOpen: onOpenChange,
-    placement,
+    placement: resolvedPlacement,
   });
 
   const selectOpen = select.useState('open');
+  const selectAnchor = select.useState('anchorElement');
+  /** Re-resolved on each open: a language switch flips the direction without remounting. */
+  useLayoutEffect(() => {
+    setResolvedPlacement(placement ? resolveSide(placement, selectAnchor) : placement);
+  }, [placement, selectAnchor, selectOpen]);
   useEffect(() => {
     // The select owns the popover; hiding it does not hide the combobox store.
     if (!selectOpen) {
@@ -178,8 +202,10 @@ function ControlCombobox({
     'flex h-5 w-5 items-center justify-center overflow-hidden rounded-full',
     iconClassName,
   );
+  /** The gap sits between the icon and the label, whichever side of it the icon takes. */
   const optionIconClassName = cn(
-    'mr-2 flex h-5 w-5 items-center justify-center overflow-hidden rounded-full',
+    iconSide === 'right' ? 'ms-2' : 'me-2',
+    'flex h-5 w-5 items-center justify-center overflow-hidden rounded-full',
     iconClassName,
   );
 
@@ -217,7 +243,7 @@ function ControlCombobox({
         {!isCollapsed && (
           <>
             <span
-              className="grow truncate text-left"
+              className="grow truncate text-start"
               title={(displayValue != null ? displayValue : selectedValue) || undefined}
             >
               {displayValue != null
@@ -235,8 +261,9 @@ function ControlCombobox({
         store={select}
         gutter={gutter}
         portal={portal}
+        portalElement={portalElement}
         className={cn(
-          'border-border-light bg-surface-secondary overflow-hidden rounded-xl border shadow-lg',
+          'border-border-light bg-surface-secondary rounded-theme-menu-panel overflow-hidden border shadow-lg',
           popoverMaxHeight != null && 'flex flex-col',
           popoverClassName ?? 'animate-popover',
         )}
@@ -246,34 +273,44 @@ function ControlCombobox({
            * placement, so a short viewport shrinks the cap instead of pushing
            * lower options offscreen; the fallback keeps the cap when the
            * variable is absent. */
+          /** The preferred width is expressed in rem, so it grows with the UI scale
+           *  past narrow viewports. Cap it here rather than in each caller: a
+           *  min-width outranks a max-width, so the minimum has to carry the cap. */
+          maxWidth: '90vw',
           maxHeight:
             popoverMaxHeight != null
-              ? `min(${popoverMaxHeight}px, var(--popover-available-height, ${popoverMaxHeight}px))`
+              ? `min(${pxToRem(popoverMaxHeight)}, var(--popover-available-height, ${pxToRem(popoverMaxHeight)}))`
               : undefined,
           width: matchTriggerWidth ? popoverWidth : undefined,
-          minWidth: matchTriggerWidth ? undefined : '16rem',
+          minWidth: matchTriggerWidth ? undefined : 'min(16rem, 90vw)',
         }}
       >
-        <div className="shrink-0 py-1.5">
-          <div className="relative">
-            <Search className="text-text-primary absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+        <div className="flex shrink-0 items-center gap-2 py-1.5">
+          <div className="relative min-w-0 flex-1">
+            <Search className="text-text-primary absolute inset-s-3 top-1/2 h-4 w-4 -translate-y-1/2" />
             <Ariakit.Combobox
               store={combobox}
               autoSelect
               placeholder={searchPlaceholder}
-              className="bg-surface-secondary text-text-primary w-full rounded-md py-2 pr-3 pl-9 text-sm focus:outline-hidden"
+              className="bg-surface-secondary text-text-primary w-full rounded-md py-2 ps-9 pe-3 text-sm focus:outline-hidden"
             />
           </div>
+          {searchActions != null && <div className="shrink-0 pe-2">{searchActions}</div>}
         </div>
         <div
           className={cn(
             popoverMaxHeight != null
               ? 'min-h-0 flex-1 overflow-auto'
-              : 'max-h-[300px] overflow-auto',
+              : 'max-h-[18.75rem] overflow-auto',
           )}
         >
           <Ariakit.ComboboxList store={combobox}>
-            <SelectRenderer store={select} items={matches} itemSize={ROW_HEIGHT} overscan={5}>
+            <SelectRenderer
+              store={select}
+              items={matches}
+              itemSize={ROW_HEIGHT * remScale}
+              overscan={5}
+            >
               {({ value, icon, label, ...item }) => (
                 <Ariakit.ComboboxItem
                   key={item.id}
@@ -288,7 +325,7 @@ function ControlCombobox({
                   {icon != null && iconSide === 'left' && (
                     <div className={optionIconClassName}>{icon}</div>
                   )}
-                  <span className="grow truncate text-left">{label}</span>
+                  <span className="grow truncate text-start">{label}</span>
                   {icon != null && iconSide === 'right' && (
                     <div className={optionIconClassName}>{icon}</div>
                   )}

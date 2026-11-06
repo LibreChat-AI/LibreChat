@@ -1,11 +1,15 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { ToolAuthWarningContext } from '@librechat/chat/components';
 import { Tools, Constants, dataService } from 'librechat-data-provider';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import {
+  LoneGroupContext,
+  SoleToolContext,
+  GeneratedToolLabelContext,
+} from '@librechat/chat/react';
 import type { TStartupConfig } from 'librechat-data-provider';
 import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
-import { ToolAuthWarningContext } from '../auth';
-import { SoleToolContext } from '../disclosure';
 import ToolCall from '../ToolCall';
 import { logger } from '~/utils';
 import store from '~/store';
@@ -94,6 +98,7 @@ jest.mock('../Parts', () => ({
 }));
 
 jest.mock('@librechat/client', () => {
+  const actual = jest.requireActual('@librechat/client');
   const DialogPart = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
   const DialogButton = ({
     children,
@@ -103,6 +108,8 @@ jest.mock('@librechat/client', () => {
     onClick?: () => void;
   }) => <button onClick={onClick}>{children}</button>;
   return {
+    cn: actual.cn,
+    useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
     Button: ({ children, onClick, ...props }: any) => (
       <button onClick={onClick} {...props}>
         {children}
@@ -125,6 +132,7 @@ jest.mock('lucide-react', () => ({
   ChevronDown: () => <span>{'ChevronDown'}</span>,
   ChevronUp: () => <span>{'ChevronUp'}</span>,
   TriangleAlert: () => <span>{'TriangleAlert'}</span>,
+  CircleX: () => <span>{'CircleX'}</span>,
 }));
 
 jest.mock('~/utils', () => ({
@@ -987,6 +995,223 @@ describe('ToolCall failure fast path', () => {
 });
 
 describe('ToolCall sole tool disclosure', () => {
+  it('keeps the row of an only MCP call, the one place its function name shows', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args='{"query":"weather"}'
+              name="search_documents_mcp_Workspace"
+              output="sunny"
+              initialProgress={1}
+              isSubmitting={false}
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
+  it('drops its row when its group holds one call inside a phase of several', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value={false}>
+            <LoneGroupContext.Provider value>
+              <ToolCall
+                args='{"query":"weather"}'
+                name="lookup"
+                output="sunny"
+                initialProgress={1}
+                isSubmitting={false}
+              />
+            </LoneGroupContext.Provider>
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tool-call-info')).toBeInTheDocument();
+  });
+
+  it.each([['{}'], ['[]']])(
+    'keeps the row of an only call whose arguments are %s and output is empty',
+    (args) => {
+      render(
+        <RecoilRoot>
+          <MCPAppsPolicyProvider
+            startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+            ready
+            userId="user-1"
+          >
+            <SoleToolContext.Provider value>
+              <ToolCall
+                args={args}
+                name="lookup"
+                output=""
+                initialProgress={1}
+                isSubmitting={false}
+                runStepStatus="completed"
+              />
+            </SoleToolContext.Provider>
+          </MCPAppsPolicyProvider>
+        </RecoilRoot>,
+      );
+      expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+    },
+  );
+
+  it('keeps the row of an only call whose output is only whitespace', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args="{}"
+              name="lookup"
+              output={'  \n '}
+              initialProgress={1}
+              isSubmitting={false}
+              runStepStatus="completed"
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
+  it('keeps the row of an only call whose output blocks render as empty text', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args="{}"
+              name="lookup"
+              output={JSON.stringify([{ type: 'text', text: '  ' }])}
+              initialProgress={1}
+              isSubmitting={false}
+              runStepStatus="completed"
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
+  it('keeps the row of an only call that is still running', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args='{"query":"weather"}'
+              name="lookup"
+              output=""
+              initialProgress={0.5}
+              isSubmitting
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
+  it('keeps the row of an only call that carries a model-authored intent', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args='{"intent":"Look up the weather","query":"weather"}'
+              name="lookup"
+              output="sunny"
+              initialProgress={1}
+              isSubmitting={false}
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
+  it('keeps the row of an only action call, which names the operation and domain', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args='{"query":"weather"}'
+              name="get_weather_action_api---example---com"
+              output="sunny"
+              initialProgress={1}
+              isSubmitting={false}
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
+  it('drops its own row once the only call has settled, leaving the info panel', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args='{"query":"weather"}'
+              name="lookup"
+              output="sunny"
+              initialProgress={1}
+              isSubmitting={false}
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tool-call-info')).toBeInTheDocument();
+  });
+
   it('opens the only call of a group when it returned no output but has arguments', () => {
     const { container } = render(
       <RecoilRoot>
@@ -1032,5 +1257,43 @@ describe('ToolCall sole tool disclosure', () => {
     );
     const panel = container.querySelector('[style*="grid-template-rows"]') as HTMLElement;
     expect(panel.style.gridTemplateRows).toBe('0fr');
+  });
+});
+
+describe('generated single-tool label', () => {
+  it.each(['search_documents_mcp_Workspace', 'get_weather_action_api---example---com', 'lookup'])(
+    'replaces the completed %s row with its panel',
+    (name) => {
+      render(
+        <RecoilRoot>
+          <GeneratedToolLabelContext.Provider value>
+            <ToolCall
+              name={name}
+              args='{"intent":"Check weather","query":"weather"}'
+              output="sunny"
+              initialProgress={1}
+              isSubmitting={false}
+            />
+          </GeneratedToolLabelContext.Provider>
+        </RecoilRoot>,
+      );
+      expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+    },
+  );
+  it('keeps the output available without a second disclosure', () => {
+    render(
+      <RecoilRoot>
+        <GeneratedToolLabelContext.Provider value>
+          <ToolCall
+            name="search_documents_mcp_Workspace"
+            args='{"query":"weather"}'
+            output="sunny"
+            initialProgress={1}
+            isSubmitting={false}
+          />
+        </GeneratedToolLabelContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call-info')).toBeInTheDocument();
   });
 });

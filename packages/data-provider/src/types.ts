@@ -21,10 +21,10 @@ import type {
   CodeEnvironmentUserSettings,
   TAgentsEndpoint,
 } from './config';
+import type { BalanceRefillMode, RefillIntervalUnit } from './balance';
 import type { StatefulCodeEnvironment } from './stateful-code';
 import type { CodeApprovalMode } from './code/approval';
 import type { EToolResources } from './types/tools';
-import type { RefillIntervalUnit } from './balance';
 import type { SettingDefinition } from './generate';
 import type { TMinimalFeedback } from './feedback';
 import type { ContentTypes } from './types/runs';
@@ -34,6 +34,7 @@ import type { Agent } from './types/agents';
 export * from './schemas';
 export * from './types/subagents';
 export * from './types/background';
+export * from './types/pullRequest';
 
 export type TMessages = TMessage[];
 
@@ -343,13 +344,6 @@ export type TUpdateUserPreferencesResponse = {
   preferences: TUpdateUserPreferencesRequest;
 };
 
-export type TGetConversationsResponse = {
-  conversations: TConversation[];
-  pageNumber: string;
-  pageSize: string | number;
-  pages: string | number;
-};
-
 export type TUpdateMessageRequest = {
   conversationId: string;
   messageId: string;
@@ -576,6 +570,8 @@ export type TForkConvoRequest = {
   option?: string;
   splitAtTarget?: boolean;
   latestMessageId?: string;
+  /** Copy without uploads or code outputs, and without the conversation's file list. */
+  excludeFiles?: boolean;
 };
 
 export type TForkConvoResponse = {
@@ -593,15 +589,6 @@ export type TForkSharedConvoRequest = {
    *  owner update, so the server rejects a fork whose payload has since moved
    *  instead of resolving the index against different messages. */
   shareRevision?: string;
-};
-
-export type TSearchResults = {
-  conversations: TConversation[];
-  messages: TMessage[];
-  pageNumber: string;
-  pageSize: string | number;
-  pages: string | number;
-  filter: object;
 };
 
 export type TPublicCodeEnvironment = {
@@ -723,6 +710,10 @@ export type TConfig = {
   /** Effective subagents-per-agent cap served from `endpoints.agents.maxSubagents`. */
   maxSubagents?: number;
   fileSharing?: TAgentsEndpoint['fileSharing'];
+  /** Rollout switches served to the Builder from `endpoints.agents.linkedInstructions`. */
+  linkedInstructions?: {
+    langfuse?: { enabled?: boolean };
+  };
   /** Concurrent Code API uploads allowed per route and authenticated principal. */
   codeApiUploadConcurrency?: number;
   /** Milliseconds one operation may spend waiting on Code API rate limits. */
@@ -734,6 +725,10 @@ export type TConfig = {
     includeReasoningContent?: boolean;
     includeReasoningHistory?: boolean;
     paramDefinitions?: Partial<SettingDefinition>[];
+    reasoningCatalogTimeoutMs?: number;
+    reasoningCatalogMaxPages?: number;
+    reasoningCatalogFailureTtlMs?: number;
+    reasoningCatalogTtlMs?: number;
   };
 };
 
@@ -752,18 +747,35 @@ export type TModelTokenomics = {
   cacheRead?: number;
 };
 
-/** endpoint → model → resolved tokenomics, from GET /api/endpoints/token-config */
-export type TTokenConfigMap = Record<string, Record<string, TModelTokenomics>>;
-
-export type TUpdateTokenCountResponse = {
-  count: number;
+/**
+ * The reasoning efforts one model accepts, as the provider reports them
+ * (OpenRouter's per-model `reasoning.supported_efforts` and `reasoning.mandatory`).
+ */
+export type TModelReasoning = {
+  efforts: string[];
+  /** Reasoning cannot be turned off, so `none` is not a valid choice. */
+  mandatory?: boolean;
 };
 
-export type TMessageTreeNode = object;
+/**
+ * endpoint → model → reasoning efforts, from GET /api/endpoints/reasoning-capabilities. A model
+ * with an empty `efforts` list is listed by the provider and exposes no effort selection; a
+ * model absent from the map is unknown.
+ */
+export type TReasoningCapabilityMap = Record<string, Record<string, TModelReasoning>>;
 
-export type TSearchMessage = object;
+/**
+ * What the capabilities route returns: the efforts, and how long the server will keep the catalog
+ * they came from. The client revalidates when that time has passed, so it never holds a list longer
+ * than the server does, however old the server's entry was when it was fetched.
+ */
+export type TReasoningCapabilitiesResponse = {
+  capabilities: TReasoningCapabilityMap;
+  expiresInMs: number;
+};
 
-export type TSearchMessageTreeNode = object;
+/** endpoint → model → resolved tokenomics, from GET /api/endpoints/token-config */
+export type TTokenConfigMap = Record<string, Record<string, TModelTokenomics>>;
 
 export type TRegisterUserResponse = {
   message: string;
@@ -843,6 +855,12 @@ export type TVerify2FARequest = TOTPVerificationPayload;
 
 export type TVerify2FAResponse = {
   message: string;
+};
+
+/** Opt-in confirmation retires every earlier session and hands back the one that replaces them. */
+export type TConfirm2FAResponse = {
+  token: string;
+  user: TUser;
 };
 
 /** For verifying 2FA during login with a temporary token. */
@@ -1109,6 +1127,13 @@ export type TPrompt = {
   _id?: string;
 };
 
+export const PromptGroupSources = {
+  native: 'native',
+  langfuse: 'langfuse',
+} as const;
+
+export type TPromptGroupSource = (typeof PromptGroupSources)[keyof typeof PromptGroupSources];
+
 export type TPromptGroup = {
   name: string;
   numberOfGenerations?: number;
@@ -1123,6 +1148,10 @@ export type TPromptGroup = {
   createdAt?: Date;
   updatedAt?: Date;
   _id?: string;
+  source: TPromptGroupSource;
+  sourcePromptName?: string;
+  sourceProjectId?: string;
+  sourceDestination?: string;
 };
 
 export type TCreatePrompt = {
@@ -1168,7 +1197,10 @@ export type TCreatePromptResponse = {
   group?: TPromptGroup;
 };
 
-export type TUpdatePromptGroupPayload = Partial<TPromptGroup>;
+/** Source identity is set by the server and cannot be updated. */
+export type TUpdatePromptGroupPayload = Partial<
+  Omit<TPromptGroup, 'source' | 'sourcePromptName' | 'sourceProjectId' | 'sourceDestination'>
+>;
 
 export type TUpdatePromptGroupVariables = {
   id: string;
@@ -1225,6 +1257,68 @@ export type TGetRandomPromptsRequest = {
   skip: number;
 };
 
+export type NativePromptSelection = { type: 'production' } | { type: 'exact'; promptId: string };
+
+export type LangfusePromptSelection = { type: 'production' } | { type: 'exact'; version: number };
+
+export type PromptSelection = NativePromptSelection | LangfusePromptSelection;
+
+/** `GET /api/prompts/groups/:groupId/resolve`. Native resolves the group's
+ *  production; Langfuse fetches text content live, by label `production` or
+ *  an exact `version`, with no cache. */
+export type TResolvedNativePrompt = {
+  source: 'native';
+  groupId: string;
+  promptId: string;
+  prompt: string;
+  type: TPrompt['type'];
+};
+
+export type TResolvedLangfusePrompt = {
+  source: 'langfuse';
+  groupId: string;
+  prompt: string;
+  type: 'text';
+  version: number;
+  labels: string[];
+  /** Deep link to this prompt in the Langfuse console. Present only when the
+   *  requesting user is an admin. */
+  sourceUrl?: string;
+};
+
+export type TResolvedPromptResponse = TResolvedNativePrompt | TResolvedLangfusePrompt;
+
+/** One revision choice: metadata only, no prompt content. */
+export type TPromptRevisionChoice =
+  | { source: 'native'; promptId: string; version: number; isProduction: boolean }
+  | { source: 'langfuse'; version: number };
+
+/** Only a native revision marks `isProduction`; Langfuse resolves Production live. */
+export type TPromptRevisionChoicesResponse = {
+  source: TPromptGroupSource;
+  groupId: string;
+  revisions: TPromptRevisionChoice[];
+};
+
+/** `code` values the `/resolve` route returns, including the Langfuse request
+ *  failure codes relayed through `toLangfusePromptErrorResponse` (`unauthorized`,
+ *  `timeout`, `upstream`, `invalid_response`). A `blocked_content` rejection uses
+ *  `ContentFilterBlockResponse` instead, which has no `code` field. Not every
+ *  error response carries a `code`: a rate-limited 429 or an unexpected 500
+ *  returns only `{ message }`, and the resource-access middleware's 403/404
+ *  returns `{ error, message }`. */
+export type TPromptResolveErrorCode =
+  | 'invalid_request'
+  | 'not_found'
+  | 'unsupported_type'
+  | 'not_available'
+  | 'not_configured'
+  | 'source_changed'
+  | 'unauthorized'
+  | 'timeout'
+  | 'upstream'
+  | 'invalid_response';
+
 export type TCustomConfigSpeechResponse = { [key: string]: string };
 
 export type TUserTermsResponse = {
@@ -1257,6 +1351,7 @@ export type TBalanceResponse = {
   refillIntervalUnit?: RefillIntervalUnit;
   lastRefill?: Date | string;
   refillAmount?: number;
+  refillMode?: BalanceRefillMode;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -1312,6 +1407,8 @@ export type TUpdateSkillNodeRequest = {
 };
 
 export type TLangfuseConnectionStatus = {
+  /** Whether connection editing and testing are available. Omitted by older servers. */
+  connectionAvailable?: boolean;
   configured: boolean;
   enabled: boolean;
   destinations: TLangfuseDestinationOption[];
@@ -1319,6 +1416,36 @@ export type TLangfuseConnectionStatus = {
   publicKey?: string;
   secretKeyPreview?: string;
   updatedAt?: string;
+  promptSync: TLangfusePromptSyncStatus;
+};
+
+/** Whether DevOps made Langfuse prompt sync available, and whether the tenant admin turned it on. */
+export type TLangfusePromptSyncStatus = {
+  available: boolean;
+  enabled: boolean;
+};
+
+/**
+ * Why a deployment offers no Langfuse connection settings, from its environment:
+ * - `tracing_disabled`: `LANGFUSE_TRACING_ENABLED=false`, or `LANGFUSE_SAMPLE_RATE` is 0;
+ * - `env_credentials`: a single-tenant deployment traces with `LANGFUSE_PUBLIC_KEY` and
+ *   `LANGFUSE_SECRET_KEY`, which take the place of a stored connection;
+ * - `fanout_disabled`: traces route per tenant (`TENANT_ISOLATION_STRICT`) but the fanout
+ *   collector is off (`LANGFUSE_FANOUT_ENABLED` with `LANGFUSE_FANOUT_COLLECTOR_URL`);
+ * - `tenant_export_disabled`: the fanout collector runs, but
+ *   `LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED=true` stops the export to tenants' own projects.
+ */
+export type TLangfuseUnavailableReason =
+  | 'tracing_disabled'
+  | 'env_credentials'
+  | 'fanout_disabled'
+  | 'tenant_export_disabled';
+
+/** 404 from the admin Langfuse connection routes on a deployment that offers no connection. */
+export type TLangfuseUnavailableResponse = {
+  error: string;
+  code: 'LANGFUSE_UNAVAILABLE';
+  reason: TLangfuseUnavailableReason;
 };
 
 export type TLangfuseDestinationOption = {
@@ -1358,4 +1485,80 @@ export type TLangfuseSessionLinkResponse = {
   url: string | null;
   /** Opaque identity of the project `url` opens, so a caller can tell whether it holds what it showed. */
   destinationId?: string;
+};
+
+export type TUpdateLangfusePromptSyncRequest = {
+  enabled: boolean;
+};
+
+export type TLangfusePromptListParams = {
+  name?: string;
+  label?: string;
+  tag?: string;
+  page?: number;
+  limit?: number;
+  fromUpdatedAt?: string;
+  toUpdatedAt?: string;
+};
+
+export type TLangfusePromptListItem = {
+  name: string;
+  type: 'text' | 'chat';
+  versions: number[];
+  labels: string[];
+  tags: string[];
+  lastUpdatedAt: string;
+};
+
+export type TLangfusePromptListResponse = {
+  items: TLangfusePromptListItem[];
+  meta: {
+    page: number;
+    limit: number;
+    totalItems: number;
+    totalPages: number;
+  };
+};
+
+export type TLangfusePromptGetParams = {
+  name: string;
+  version?: number;
+};
+
+export type TLangfusePromptGetResponse = {
+  name: string;
+  version: number;
+  labels: string[];
+  prompt: string;
+};
+
+export type TLangfusePromptErrorCode =
+  | 'not_configured'
+  | 'unauthorized'
+  | 'timeout'
+  | 'upstream'
+  | 'invalid_response'
+  | 'not_found'
+  | 'unsupported_type'
+  | 'invalid_request'
+  | 'already_running'
+  | 'lock_lost'
+  | 'internal';
+
+export type TLangfusePromptErrorBody = {
+  code: TLangfusePromptErrorCode;
+  status?: number;
+};
+
+export type TLangfusePromptSyncResult = {
+  created: number;
+  unchanged: number;
+  skipped: number;
+  /** False when the server's page cap stopped the run before every upstream page was read,
+   *  so the counts above are partial. A re-run with the same page limit re-lists from page 1
+   *  and reads the same pages again; the server's `langfuse.promptSync.maxPages` config must
+   *  be raised to import the rest. Optional for compatibility with an older server that has
+   *  not added this field yet: treat a missing value as `true`, matching that server's only
+   *  possible outcome. */
+  complete?: boolean;
 };

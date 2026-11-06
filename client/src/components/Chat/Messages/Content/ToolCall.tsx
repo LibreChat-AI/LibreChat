@@ -1,27 +1,43 @@
 import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
 import {
+  hasToolParams,
+  resolveToolCallPhase,
+  getToolDisplayLabel,
+  isToolCallPreparing,
+} from '@librechat/chat';
+import {
+  TOOL_ROW_CLASSES,
+  useToolPreparation,
+  ToolAuthWarning,
+  useFailedReveal,
+} from '@librechat/chat/components';
+import {
   Constants,
   dataService,
   actionDelimiter,
   actionDomainSeparator,
   splitToolCallName,
 } from 'librechat-data-provider';
+import {
+  toolPanelSpacingClassName,
+  useToolContentRequest,
+  useToolExpansion,
+  GeneratedToolLabelContext,
+  LoneGroupContext,
+  SoleToolContext,
+  useToolCallIntent,
+  useRowHandoff,
+} from '@librechat/chat/react';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import { toolPanelSpacingClassName, useToolExpansion, SoleToolContext } from './disclosure';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
-import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
-import { isToolCallPreparing, useToolPreparation } from './preparation';
-import { ToolIcon, getToolIconType, isError } from './ToolOutput';
+import { ToolIcon, getToolIconType, isError, hasRenderableOutput } from './ToolOutput';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
-import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { useToolCallIntent } from './Parts/intent';
+import { cn, logger, openInNewTab } from '~/utils';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
-import { TOOL_ROW_CLASSES } from './rows';
-import { ToolAuthWarning } from './auth';
 import { firstErrorLine } from './live';
 
 export default function ToolCall({
@@ -29,6 +45,7 @@ export default function ToolCall({
   isLast = false,
   isSubmitting,
   toolCallId,
+  stepId,
   name,
   args: _args = '',
   output,
@@ -47,6 +64,7 @@ export default function ToolCall({
   isLast?: boolean;
   isSubmitting: boolean;
   toolCallId?: string;
+  stepId?: string;
   name: string;
   args: string | Record<string, unknown>;
   output?: string | null;
@@ -193,10 +211,6 @@ export default function ToolCall({
   /** The preference opens a card once it has output; a sole call opens on
    *  its arguments too, so a call that returned nothing still shows them. */
   const soleTool = useContext(SoleToolContext) === true;
-  const [showInfo, setShowInfo] = useToolExpansion(soleTool ? hasInfo : (output?.length ?? 0) > 0);
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
-  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
-
   const authDomain = useMemo(() => {
     return parsedAuthUrl?.hostname ?? '';
   }, [parsedAuthUrl]);
@@ -221,6 +235,41 @@ export default function ToolCall({
     hasError,
   });
   const showOAuth = Boolean(auth) && phase === 'running';
+
+  const [expandedInfo, setShowInfo] = useToolExpansion(
+    soleTool ? hasInfo : (output?.length ?? 0) > 0,
+  );
+  /** A generated title can replace even a named MCP or action row. */
+  const generatedLabel = useContext(GeneratedToolLabelContext);
+  const intent = useToolCallIntent(_args);
+  const isActionCall = domain != null && domain !== '';
+  const loneGroup = useContext(LoneGroupContext);
+  /** The cheap, identity and phase checks run first: a streaming call re-renders
+   *  on every argument delta, and the panel check parses its payload. */
+  const bare =
+    (phase === 'completed' || (generatedLabel && phase === 'failed')) &&
+    (generatedLabel ||
+      ((soleTool || loneGroup) && !isMCPToolCall && !isActionCall && intent == null)) &&
+    hasInfo &&
+    (hasToolParams(args) || hasRenderableOutput(output));
+  const showInfo = bare || expandedInfo;
+  /** A bare panel is open without the reader expanding it, so it asks for the stored part too. */
+  useToolContentRequest(bare);
+  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
+  const rowRef = useRowHandoff(bare);
+  const revealBareFailure = useCallback(
+    (claimFocus: () => boolean) => {
+      if (!claimFocus()) return;
+      const panel = expandRef.current;
+      if (panel == null) return;
+      panel.setAttribute('tabindex', '-1');
+      panel.focus({ preventScroll: true });
+    },
+    [expandRef],
+  );
+  useFailedReveal(bare && phase === 'failed', revealBareFailure);
+
+  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
   /**
    * Binds when the sign-in prompt appears instead of on tap, so the tap opens the provider
@@ -315,7 +364,6 @@ export default function ToolCall({
   /** Model-authored live label, streamed as the first args key (injected by
    *  the `tool_intents` capability); persists as the settled label —
    *  completion is a UI state, not a tense change. */
-  const intent = useToolCallIntent(_args);
   const preparationText = useToolPreparation();
   const preparing = useMemo(
     () =>
@@ -401,35 +449,48 @@ export default function ToolCall({
           return getFinishedText();
         })()}
       </span>
-      <div className={TOOL_ROW_CLASSES} data-testid="tool-call" data-tool-call-id={toolCallId}>
-        <ProgressText
-          phase={phase}
-          onClick={handleToggleInfo}
-          inProgressText={inProgressText}
-          authText={
-            phase === 'running' && authDomain.length > 0
-              ? localize('com_ui_requires_auth')
-              : undefined
-          }
-          finishedText={getFinishedText()}
-          subtitle={subtitle}
-          durationMs={runStepDurationMs}
-          toolPreparationDurationMs={toolPreparationDurationMs}
-          toolExecutionDurationMs={toolExecutionDurationMs}
-          phaseStartAt={toolDispatchedAt ?? toolPreparationStartedAt}
-          icon={
-            <ToolIcon type={toolIconType} iconUrl={mcpIconUrl} isAnimating={phase === 'running'} />
-          }
-          hasInput={hasInfo}
-          isExpanded={showInfo}
-        />
-      </div>
+      {!bare && (
+        <div
+          className={TOOL_ROW_CLASSES}
+          ref={rowRef}
+          data-testid="tool-call"
+          data-tool-call-id={toolCallId}
+          data-task-tool-call={toolCallId}
+          data-task-step={stepId}
+        >
+          <ProgressText
+            phase={phase}
+            onClick={handleToggleInfo}
+            inProgressText={inProgressText}
+            authText={
+              phase === 'running' && authDomain.length > 0
+                ? localize('com_ui_requires_auth')
+                : undefined
+            }
+            finishedText={getFinishedText()}
+            subtitle={subtitle}
+            durationMs={runStepDurationMs}
+            toolPreparationDurationMs={toolPreparationDurationMs}
+            toolExecutionDurationMs={toolExecutionDurationMs}
+            phaseStartAt={toolDispatchedAt ?? toolPreparationStartedAt}
+            icon={
+              <ToolIcon
+                type={toolIconType}
+                iconUrl={mcpIconUrl}
+                isAnimating={phase === 'running'}
+              />
+            }
+            hasInput={hasInfo}
+            isExpanded={showInfo}
+          />
+        </div>
+      )}
       <div
         style={expandStyle}
         onTransitionEnd={handleTransitionEnd}
         data-tool-call-output-id={toolCallId}
       >
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasInfo && shouldRenderBody && (
             <div
               className={cn(
@@ -446,7 +507,7 @@ export default function ToolCall({
         <div className="flex w-full flex-col gap-2.5">
           <div className="mt-2 mb-1">
             <Button
-              className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium"
+              className="inline-flex items-center justify-center rounded-xl font-medium"
               variant="default"
               rel="noopener noreferrer"
               disabled={oauthBinding === 'pending'}

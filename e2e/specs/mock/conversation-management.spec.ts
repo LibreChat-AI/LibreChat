@@ -123,9 +123,9 @@ test.describe('conversation management', () => {
       await expect(menu).toBeFocused();
       await page.keyboard.press('ArrowDown');
       await expect(menu.getByRole('menuitem').first()).toBeFocused();
-      const expectedOptions = ['Share', 'Pin'];
+      const expectedOptions = ['Pin'];
       if (background) expectedOptions.push('Mark as unread');
-      expectedOptions.push('Rename', 'Duplicate', 'Change project', 'Archive', 'Delete');
+      expectedOptions.push('Rename', 'Archive', 'Delete');
       await expect(menu.getByRole('menuitem')).toHaveText(expectedOptions);
       await test.info().attach('running-chat-menu', {
         body: await page.screenshot(),
@@ -244,8 +244,8 @@ test.describe('conversation management', () => {
   }) => {
     await openMockChat(page);
     await sendAndExpectReply(page, uniqueLabel('portal-context'));
-    await conversationRow(page).click({ button: 'right' });
-    await page.getByRole('menuitem', { name: 'Share', exact: true }).click();
+    await page.getByRole('button', { name: 'Chat options' }).click();
+    await page.getByTestId('share-conversation-menu-item').click();
     const dialog = page.getByRole('dialog', { name: 'Share link to chat' });
     await expect(dialog).toBeVisible();
     await dialog.getByRole('button', { name: 'Create a shared link' }).click();
@@ -373,6 +373,11 @@ test.describe('conversation management', () => {
           }),
         );
         await expect(row).toContainText(renamedTitle);
+        if (titleTiming === 'final') {
+          await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+            timeout: 30000,
+          });
+        }
         await expect.poll(async () => !!(await titleRequest())).toBe(true);
         const published = page.waitForResponse(
           (response) =>

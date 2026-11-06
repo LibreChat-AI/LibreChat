@@ -35,13 +35,3 @@ export interface AgentApiKeyListItem {
   expiresAt?: Date;
   createdAt: Date;
 }
-
-export interface AgentApiKeyQuery {
-  userId?: Types.ObjectId | string;
-  keyPrefix?: string;
-  id?: string;
-}
-
-export interface AgentApiKeyDeleteResult {
-  deletedCount?: number;
-}

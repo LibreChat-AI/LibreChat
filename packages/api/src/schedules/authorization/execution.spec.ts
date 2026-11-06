@@ -4,6 +4,7 @@ import { getScheduledMCPToolDefinitionDigest, isScheduledMCPToolReadOnly } from 
 import { executionFixture, readTool } from './execution.helper';
 import { bindScheduledMCPInvocation } from './execution';
 import { createMCPRequestContext } from '~/mcp/request';
+import { ScheduledMCPBearerError } from '~/mcp/errors';
 import { createScheduledMCPRunPolicy } from './run';
 import { ScheduledMCPPolicyError } from './policy';
 
@@ -411,3 +412,22 @@ it('does not hide a non-abort authorization failure when Stop races its rejectio
     }),
   ).rejects.toMatchObject({ failure: { reason: 'dependency_unavailable' } });
 });
+
+it.each(['consent_revoked', 'rbac_denied', 'binding_mismatch'] as const)(
+  'preserves the original catalog bearer %s through A3 authorization',
+  async (reason) => {
+    const f = await executionFixture();
+    const error = new ScheduledMCPBearerError(reason, 'warehouse', 'child');
+    await expect(
+      f.invocation('child').authorize({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: f.config,
+        toolName: 'query',
+        loadTools: async () => {
+          throw error;
+        },
+      }),
+    ).rejects.toBe(error);
+  },
+);

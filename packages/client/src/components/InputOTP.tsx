@@ -110,7 +110,7 @@ const InputOTPSlot: React.ForwardRefExoticComponent<
     <div
       ref={ref}
       className={cn(
-        'border-border-control relative flex h-11 w-11 items-center justify-center border-y border-r text-base shadow-xs transition-all first:rounded-l-xl first:border-l last:rounded-r-xl',
+        'border-border-control relative flex h-11 w-11 items-center justify-center border-y border-e text-base shadow-xs transition-all first:rounded-s-xl first:border-s last:rounded-e-xl',
         isActive && 'ring-focus-control z-10 ring-1',
         className,
       )}

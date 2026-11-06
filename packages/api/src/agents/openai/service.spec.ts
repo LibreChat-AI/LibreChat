@@ -523,6 +523,17 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
     expect(runArgs.appConfig).not.toHaveProperty('interfaceConfig');
   });
 
+  it('forwards only the retention mode so forced-temporary runs stay untraced', async () => {
+    deps.appConfig = {
+      interfaceConfig: { modelSelect: true, retentionMode: 'ephemeral' },
+    } as never;
+
+    await createAgentChatCompletion(createMockReq({ id: 'user-123' }), createMockRes(), deps);
+
+    const runArgs = createRun.mock.calls[0][0] as CreateRunArgs;
+    expect(runArgs.appConfig).toEqual({ interfaceConfig: { retentionMode: 'ephemeral' } });
+  });
+
   it('forwards the stateful environment allowlist from appConfig to agent initialization', async () => {
     deps.appConfig = {
       endpoints: {
@@ -609,6 +620,21 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
 
     expect(deps.initializeAgent).toHaveBeenCalledWith(
       expect.objectContaining({ resolveWebSearchGrant: undefined }),
+    );
+  });
+
+  /** Unlike `resolveWebSearchGrant`, there is no default DB-backed resolution path
+   *  for a linked agent — the embedder's resolver (and usage-recording flag) must
+   *  reach `initializeAgent` verbatim or a linked agent silently loses its instructions. */
+  it('forwards resolveLinkedInstructions and recordLinkedPromptUsage verbatim to initializeAgent', async () => {
+    const resolveLinkedInstructions = jest.fn();
+    deps.resolveLinkedInstructions = resolveLinkedInstructions as never;
+    deps.recordLinkedPromptUsage = false;
+
+    await createAgentChatCompletion(createMockReq({ id: 'user-123' }), createMockRes(), deps);
+
+    expect(deps.initializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ resolveLinkedInstructions, recordLinkedPromptUsage: false }),
     );
   });
 

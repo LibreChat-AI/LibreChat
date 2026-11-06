@@ -27,7 +27,7 @@ const card = (
       <Skeleton className="h-4 w-full" />
       <Skeleton className="h-4 w-5/6" />
     </div>
-    <div className="border-border-light mt-auto flex justify-between gap-3 border-t pt-4">
+    <div className="border-border-inset mt-auto flex justify-between gap-3 border-t pt-4">
       <Skeleton className="h-4 w-24" />
       <Skeleton className="h-4 w-20" />
     </div>
@@ -92,7 +92,7 @@ export default function GridSkeleton({ scrollElementRef, label }: GridSkeletonPr
         {Array.from({ length: count }, (_, index) => (
           <div
             key={index}
-            className="border-border-light bg-surface-secondary rounded-theme-surface flex min-h-[17.5rem] min-w-0 flex-col border p-5"
+            className="border-border-light bg-surface-card rounded-theme-surface flex min-h-[17.5rem] min-w-0 flex-col border p-5"
           >
             {card}
           </div>

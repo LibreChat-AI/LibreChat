@@ -124,6 +124,13 @@ describe('useCodeWorkspace', () => {
       return config;
     }
 
+    function enableInheritance() {
+      mockStartupConfig.mockReturnValue({
+        ...mockStartupConfig(),
+        codeWorkspaceInheritanceVersion: 1,
+      });
+    }
+
     it('names the reviewer whose separate machine still needs a workspace', () => {
       enableChoices();
       mockAgentPermissions().agent.name = 'Lia';
@@ -249,6 +256,168 @@ describe('useCodeWorkspace', () => {
       rerender({ saved: true });
       expect(result.current.canSubmit).toBe(true);
       expect(result.current.resolveSubmission(choices)?.codeWorkspaces).toEqual(choices);
+    });
+
+    it("routes a reviewer with Lia's chosen machine when an older client sealed only her", () => {
+      enableChoices();
+      enableInheritance();
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          name: 'PR Reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'personal-vm',
+          code_environment_ids: ['runtime-vm'],
+        },
+      });
+      mockStatus.mockImplementation((ids: string[]) =>
+        ids.map((id) => ({
+          data: { environmentId: id, status: 'ready', workspaces: [{ id: 'project-a' }] },
+        })),
+      );
+      const sealedChoice = [
+        { environmentId: 'runtime-vm', workspaceId: 'project-a', agentIds: ['agent_primary'] },
+      ];
+      const { result } = renderHook(() =>
+        useCodeWorkspace({
+          ...conversation(sealedChoice),
+          conversationId: 'saved',
+          codeEnvironmentMode: 'attached',
+        }),
+      );
+      expect(result.current.canSubmit).toBe(true);
+      expect(result.current.environments.map(({ environment }) => environment.id)).toEqual([
+        'runtime-vm',
+      ]);
+      expect(result.current.environments[0].requiredBy).toEqual(
+        expect.arrayContaining([{ id: 'reviewer', name: 'PR Reviewer' }]),
+      );
+      expect(result.current.resolveSubmission(sealedChoice)?.codeWorkspaces).toEqual(sealedChoice);
+    });
+
+    it("echoes the reviewer's former selection after it follows Lia, without gating on it", () => {
+      enableChoices();
+      mockStartupConfig.mockReturnValue({
+        codeEnvironmentDecisionVersion: 1,
+        codeEnvironmentMoveVersion: 1,
+        codeEnvironmentTransitionVersion: 2,
+        codeWorkspaceInheritanceVersion: 1,
+      });
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          name: 'PR Reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'personal-vm',
+          code_environment_ids: ['runtime-vm'],
+        },
+      });
+      mockStatus.mockImplementation((ids: string[]) =>
+        ids.map((id) => ({
+          data: { environmentId: id, status: 'ready', workspaces: [{ id: 'project-a' }] },
+        })),
+      );
+      /** The demo incident's sealed decision: the reviewer's Code API checkout plus Lia's machine. */
+      const incident = [
+        { environmentId: 'personal-vm', workspaceId: 'project-a' },
+        { environmentId: 'runtime-vm', workspaceId: 'project-a', agentIds: ['agent_primary'] },
+      ];
+      const { result } = renderHook(() =>
+        useCodeWorkspace({
+          ...conversation(incident),
+          conversationId: 'saved',
+          codeEnvironmentMode: 'attached',
+        }),
+      );
+      expect(result.current.canSubmit).toBe(true);
+      expect(result.current.transition?.kind).not.toBe('move');
+      /** Nothing runs on the former machine, so its readiness is never polled or required. */
+      expect(result.current.environments.map(({ environment }) => environment.id)).toEqual([
+        'runtime-vm',
+      ]);
+      expect(mockStatus).toHaveBeenLastCalledWith(['runtime-vm'], true, expect.anything());
+      expect(
+        result.current.environments.find(({ environment }) => environment.id === 'runtime-vm')
+          ?.requiredBy,
+      ).toEqual(expect.arrayContaining([{ id: 'reviewer', name: 'PR Reviewer' }]));
+      expect(result.current.resolveSubmission(incident)?.codeWorkspaces).toEqual(incident);
+    });
+
+    it("lets a new chat's reviewer follow Lia before any workspace is picked", () => {
+      enableChoices();
+      enableInheritance();
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          name: 'PR Reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'runtime-vm',
+          code_environment_ids: ['personal-vm'],
+        },
+      });
+      const { result } = renderHook(() => useCodeWorkspace(conversation()));
+      expect(result.current.environments.map(({ environment }) => environment.id)).toEqual([
+        'personal-vm',
+      ]);
+      expect(result.current.canSubmit).toBe(true);
+      expect(result.current.resolveSubmission()?.codeWorkspaces).toEqual([
+        { environmentId: 'personal-vm', workspaceId: 'project-a' },
+      ]);
+    });
+
+    it("still asks for the reviewer's own machine when the API predates inheritance", () => {
+      enableChoices();
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'runtime-vm',
+          code_environment_ids: ['personal-vm'],
+        },
+      });
+      const { result } = renderHook(() => useCodeWorkspace(conversation()));
+      expect(result.current.environments.map(({ environment }) => environment.id)).toEqual([
+        'personal-vm',
+        'runtime-vm',
+      ]);
+    });
+
+    it("keeps a reviewer that may not use Lia's machine on its own default", () => {
+      enableChoices();
+      mockAgentPermissions().agent.subagents = { enabled: true, agent_ids: ['reviewer'] };
+      mockAgentsMap.mockReturnValue({
+        reviewer: {
+          id: 'reviewer',
+          name: 'PR Reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'personal-vm',
+        },
+      });
+      mockStatus.mockImplementation((ids: string[]) =>
+        ids.map((id) => ({
+          data: { environmentId: id, status: 'ready', workspaces: [{ id: 'one' }, { id: 'two' }] },
+        })),
+      );
+      const { result } = renderHook(() =>
+        useCodeWorkspace(
+          conversation([
+            { environmentId: 'runtime-vm', workspaceId: 'one', agentIds: ['agent_primary'] },
+          ]),
+        ),
+      );
+      expect(result.current.canSubmit).toBe(false);
+      expect(
+        result.current.environments.find(({ environment }) => environment.id === 'personal-vm'),
+      ).toMatchObject({ state: 'choose', requiredBy: [{ id: 'reviewer', name: 'PR Reviewer' }] });
     });
 
     it('offers an explicit saved-chat recovery target when the selected default disappears', () => {

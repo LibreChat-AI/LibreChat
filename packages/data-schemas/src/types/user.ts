@@ -1,10 +1,10 @@
 import type {
   TUserFavorite,
   RefillIntervalUnit,
+  BalanceRefillMode,
   StatefulCodeEnvironment,
 } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
-import { CursorPaginationParams } from '~/common';
 
 export interface IUser extends Document {
   _id: Types.ObjectId;
@@ -65,6 +65,8 @@ export interface IUser extends Document {
   expiresAt?: Date;
   termsAccepted?: boolean;
   termsAcceptedAt?: Date | null;
+  /** Present only when termsAcceptedAt was backfilled by config/migrate-terms-timestamp.js. */
+  termsAcceptedSource?: 'migration';
   /** Internal fence that prevents agent-trigger admission during account deletion. */
   agentTriggerDeletionStartedAt?: Date;
   /** Expiring fences closing subagent admission while bulk deletions drain. */
@@ -87,6 +89,10 @@ export interface IUser extends Document {
   /** Field for external source identification (for consistency with TPrincipal schema) */
   idOnTheSource?: string;
   tenantId?: string;
+  /** Derived search tokens (see `~/utils/search`); `select: false`. */
+  nameTokens?: string[];
+  emailTokens?: string[];
+  usernameTokens?: string[];
   federatedTokens?: OIDCTokens;
   openidTokens?: OIDCTokens;
 }
@@ -129,6 +135,7 @@ export interface BalanceConfig {
   refillIntervalValue?: number;
   refillIntervalUnit?: RefillIntervalUnit;
   refillAmount?: number;
+  refillMode?: BalanceRefillMode;
   reservationTtlMs?: number;
 }
 
@@ -136,52 +143,24 @@ export interface CreateUserRequest extends Partial<IUser> {
   email: string;
 }
 
-export interface UpdateUserRequest {
-  name?: string;
-  username?: string;
-  email?: string;
-  role?: string;
-  emailVerified?: boolean;
-  avatar?: string;
-  plugins?: string[];
-  twoFactorEnabled?: boolean;
-  termsAccepted?: boolean;
-  termsAcceptedAt?: Date | null;
-  personalization?: {
-    memories?: boolean;
-    statefulCodeEnvironment?: StatefulCodeEnvironment;
-  };
-  skillStates?: Record<string, boolean>;
-}
+/** A user's own fields, without Mongoose document members. */
+type UserFields = Omit<IUser, keyof Document>;
+
+/**
+ * A stored user as plain data with a storage-neutral id: what `.lean()` queries and `.toObject()`
+ * return. New contracts take and return this rather than the `IUser` document type.
+ */
+export type UserRecord = UserFields & { _id: { toString(): string } };
+
+/** The fields a new user is created with, as plain data. */
+export type NewUserData = Partial<UserFields> & { email: string };
+
+/** The created user, or `user_exists` when an account already holds its email or provider identity. */
+export type CreateUserIfAbsentResult =
+  | { ok: true; value: UserRecord }
+  | { ok: false; error: { code: 'user_exists' } };
 
 export interface UserDeleteResult {
   deletedCount: number;
   message: string;
-}
-
-export interface UserFilterOptions extends CursorPaginationParams {
-  _id?: Types.ObjectId | string;
-  // Includes email, username and name
-  search?: string;
-  role?: string;
-  emailVerified?: boolean;
-  provider?: string;
-  twoFactorEnabled?: boolean;
-  // External IDs
-  googleId?: string;
-  facebookId?: string;
-  openidId?: string;
-  samlId?: string;
-  ldapId?: string;
-  githubId?: string;
-  discordId?: string;
-  appleId?: string;
-  // Date filters
-  createdAfter?: string;
-  createdBefore?: string;
-}
-
-export interface UserQueryOptions {
-  fieldsToSelect?: string | string[] | null;
-  lean?: boolean;
 }

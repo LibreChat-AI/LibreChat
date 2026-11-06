@@ -9,6 +9,7 @@ import type { ScheduledMCPAuthority } from './contract';
 import type { ScheduledTokenContext } from '../context';
 import { isScheduledMCPToolReadOnly, ScheduledMCPPolicyError } from './policy';
 import { getScheduledMCPConfigurationRevision } from './configuration';
+import { ScheduledMCPBearerError } from '~/mcp/errors';
 import { ScheduleMCPConsentError } from './service';
 import { isOwnedAbortError } from '~/utils/errors';
 import { waitUntilDeadline } from '~/mcp/utils';
@@ -31,6 +32,8 @@ export interface ScheduledMCPInvocation {
 export interface ScheduleMCPExecution {
   readonly identity: ScheduledMCPIdentity;
   readonly stage: 'activation' | 'invoke' | 'resume';
+  /** Trusted admission provenance retained through credential/session preparation. */
+  readonly manual?: boolean;
   readonly enrolled: boolean;
   /** Legacy admits only while enrollment is still absent; it never acquires a later grant. */
   readonly checkEnrollment: () => Promise<void>;
@@ -118,6 +121,7 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
     return Object.freeze({
       identity: capturedIdentity,
       stage,
+      ...(manual && { manual: true }),
       enrolled,
       checkEnrollment,
       bind(agentId: string | undefined, selectionName: string): ScheduledMCPInvocation {
@@ -209,7 +213,11 @@ export function createScheduleMCPExecution(deps: ScheduleMCPExecutionDeps): {
               }
               signal?.throwIfAborted();
             } catch (error) {
-              if (error instanceof ScheduledMCPPolicyError || isOwnedAbortError(error, signal))
+              if (
+                error instanceof ScheduledMCPPolicyError ||
+                error instanceof ScheduledMCPBearerError ||
+                isOwnedAbortError(error, signal)
+              )
                 throw error;
               deny('dependency_unavailable');
             }

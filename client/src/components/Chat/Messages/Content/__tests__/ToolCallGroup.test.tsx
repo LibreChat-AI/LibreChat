@@ -1,16 +1,26 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { RecoilRoot } from 'recoil';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import { LoneGroupContext, SoleToolContext, useToolAutoExpand } from '@librechat/chat/react';
+import {
+  FailedRevealContext,
+  useFailedReveal,
+  FoldHeaderContext,
+  ToolAuthWarning,
+} from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import { SoleToolContext, useToolAutoExpand } from '../disclosure';
-import { FailedRevealContext, useFailedReveal } from '../reveal';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
 import ToolCallGroup from '../ToolCallGroup';
-import { FoldHeaderContext } from '../rail';
-import { ToolAuthWarning } from '../auth';
 
 const mockMCPServerNames: string[] = [];
+
+/** Moved components read the localizer from the package, so it delegates to the `~/hooks` mock. */
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
+}));
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, values?: Record<string | number, string>) => {
@@ -88,13 +98,7 @@ jest.mock('~/hooks', () => ({
     }
     return key;
   },
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-    },
-    ref: { current: null },
-  }),
+  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
   scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
 }));
 
@@ -119,8 +123,8 @@ jest.mock('~/components/MCPUIResource', () => ({
 }));
 
 jest.mock('../ToolOutput', () => ({
-  StackedToolIcons: ({ toolNames }: { toolNames: string[] }) => (
-    <span data-testid="stacked-icons" data-tool-names={toolNames.join(',')} />
+  StackedToolIcons: ({ toolNames, status }: { toolNames: string[]; status?: string }) => (
+    <span data-testid="stacked-icons" data-tool-names={toolNames.join(',')} data-status={status} />
   ),
   getMCPServerName: () => '',
   isError: (output: string) => output.startsWith('Error processing tool'),
@@ -136,20 +140,17 @@ jest.mock('lucide-react', () => ({
   MessageCircleQuestion: () => <span data-testid="question-icon">{'question'}</span>,
   ListChecks: () => <span data-testid="task-check-icon">{'checks'}</span>,
   TriangleAlert: () => <span>{'warning'}</span>,
+  CircleX: () => <span>{'failed'}</span>,
   CircleMinus: () => <span>{'collapse'}</span>,
 }));
 
 const mockSubmittedAskAnswers = new Map<string, string>();
 
-jest.mock('~/utils/approval', () => ({
+jest.mock('@librechat/chat', () => ({
+  ...jest.requireActual('@librechat/chat'),
   ASK_USER_QUESTION: 'ask_user_question',
   getSubmittedAskAnswer: (toolCallId?: string) =>
     toolCallId != null ? mockSubmittedAskAnswers.get(toolCallId) : undefined,
-}));
-
-jest.mock('~/utils', () => ({
-  getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   getToolDisplayLabel: (name: string, _localize: unknown, knownServerNames?: readonly string[]) => {
     const configuredServer = knownServerNames?.find((server) => name.endsWith(`_mcp_${server}`));
     if (configuredServer) {
@@ -174,6 +175,11 @@ jest.mock('~/utils', () => ({
     };
     return friendlyNames[name] ?? name;
   },
+}));
+
+jest.mock('~/utils', () => ({
+  getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
+  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   /** Real implementations: the group header resolves its text through these,
    *  so stubbing them out would hide the header logic under test. */
   getBatchActivityLabelPart: jest.requireActual('~/utils/activityLabels').getBatchActivityLabelPart,
@@ -186,9 +192,7 @@ jest.mock('../Parts', () => ({
   AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="attachment-group" data-count={attachments?.length ?? 0} />
   ),
-  ReasoningCompact: ({ isAfterTool }: { isAfterTool?: boolean }) => (
-    <div data-testid="compact-reasoning" data-after-tool={String(isAfterTool)} />
-  ),
+  ReasoningCompact: () => <div data-testid="compact-reasoning" />,
 }));
 
 const makePart = (
@@ -204,6 +208,15 @@ const makePart = (
       name,
       args,
       output,
+    },
+  }) as unknown as TMessageContentParts;
+
+const completed = (part: TMessageContentParts): TMessageContentParts =>
+  ({
+    ...part,
+    [ContentTypes.TOOL_CALL]: {
+      ...(part as unknown as Record<string, object>)[ContentTypes.TOOL_CALL],
+      runStepStatus: 'completed',
     },
   }) as unknown as TMessageContentParts;
 
@@ -438,6 +451,21 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.queryByTestId('inner-0')).not.toBeInTheDocument();
   });
 
+  it('keeps an unnamed streaming batch open between consecutive calls', () => {
+    const parts = [{ part: makePart('first', '', 'lookup'), idx: 0 }];
+    const view = renderGroup({ ...baseProps, parts, isSubmitting: true });
+    view.rerender(
+      <RecoilRoot>
+        <ToolCallGroup
+          {...baseProps}
+          parts={[{ part: makePart('first', 'done', 'lookup'), idx: 0 }]}
+          isSubmitting
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { expanded: true })).toBeInTheDocument();
+  });
+
   it('keeps a pending-label group expanded while its tool has no output', () => {
     const voidToolParts = [{ part: makePart('t1', '', 'update_settings'), idx: 0 }];
     const labelPart = {
@@ -548,25 +576,6 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.getByTestId('inner-1')).toBeInTheDocument();
   });
 
-  it('removes the extra Thoughts top margin after a tool row', () => {
-    const reasoningPart = {
-      type: ContentTypes.THINK,
-      [ContentTypes.THINK]: 'A useful thought',
-    } as TMessageContentParts;
-
-    renderGroup({
-      ...baseProps,
-      parts: [
-        { part: makePart('t1'), idx: 0 },
-        { part: reasoningPart, idx: 1 },
-      ],
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
-
-    expect(screen.getByTestId('compact-reasoning')).toHaveAttribute('data-after-tool', 'true');
-  });
-
   it('delegates an unavailable-reasoning part to the standalone renderer', () => {
     /** A detached-subagent projection has no text to compact, so `Part`'s
      *  `ReasoningMarker` is the only thing that stands for it. Rendering it
@@ -582,6 +591,28 @@ describe('ToolCallGroup image hoisting', () => {
       parts: [
         { part: makePart('t1'), idx: 0 },
         { part: unavailablePart, idx: 1 },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
+
+    expect(screen.getByTestId('inner-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('compact-reasoning')).not.toBeInTheDocument();
+  });
+
+  it('delegates an encrypted-reasoning part to the standalone renderer', () => {
+    const encryptedPart = {
+      type: ContentTypes.THINK,
+      [ContentTypes.THINK]: Buffer.from(
+        Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256),
+      ).toString('base64'),
+    } as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [
+        { part: makePart('t1'), idx: 0 },
+        { part: encryptedPart, idx: 1 },
       ],
     });
 
@@ -641,9 +672,13 @@ describe('ToolCallGroup image hoisting', () => {
 
   it('clears a retained group rail when its containing phase collapses', () => {
     const phaseHeader = { current: document.createElement('div') };
+    /** Two calls: a lone call draws no rail at all. */
     const groupProps = {
       ...baseProps,
-      parts: [{ part: makeApprovalPart('t1'), idx: 0 }],
+      parts: [
+        { part: makeApprovalPart('t1'), idx: 0 },
+        { part: makePart('t2'), idx: 1 },
+      ],
     };
     const group = (expanded: boolean) => (
       <RecoilRoot>
@@ -662,6 +697,12 @@ describe('ToolCallGroup image hoisting', () => {
     rerender(group(true));
     expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
     expect(rail).not.toBeDisabled();
+  });
+
+  it('draws no rail for a lone call, titled or not', () => {
+    renderGroup({ ...baseProps, parts: [{ part: makePart('t1'), idx: 0 }] });
+
+    expect(screen.queryByTestId('fold-rail')).toBeNull();
   });
 
   it('keeps deeply nested unresolved approval bodies mounted while the group is collapsed', () => {
@@ -846,7 +887,7 @@ describe('ToolCallGroup image hoisting', () => {
       ],
     });
 
-    expect(screen.getByText('· Code ×2')).toBeInTheDocument();
+    expect(screen.getByText('· Code')).toBeInTheDocument();
     expect(screen.queryByText(/Code, bash_tool/)).not.toBeInTheDocument();
     expect(screen.getByTestId('stacked-icons')).toHaveAttribute(
       'data-tool-names',
@@ -941,6 +982,359 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.getByRole('button', { name: 'Create File' })).toBeInTheDocument();
   });
 
+  it('names a lone code call by what it did, not by the bare tool name', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: completed(makePart('code-1', 'done', 'execute_code')), idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('names a lone running code call by what it is doing', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: true,
+      parts: [{ part: makePart('code-1', '', 'execute_code'), idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
+  });
+
+  it('keeps a multi-call group in the running tense while one detached task runs', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [
+        { part: completed(makePart('plain-1', 'ok', 'fetch_image')), idx: 0 },
+        {
+          part: completed(
+            makePart(
+              'code-bg-2',
+              JSON.stringify({
+                background_task_id: 'task-2',
+                tool: 'bash_tool',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'bash_tool',
+            ),
+          ),
+          idx: 1,
+        },
+      ],
+      lastContentIdx: 1,
+    });
+
+    expect(screen.getByRole('button', { name: /^Running 2 actions/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Ran 2 actions/ })).not.toBeInTheDocument();
+  });
+
+  it('does not hold a group in the running tense for a detached MCP call its row reports as ran', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [
+        { part: completed(makePart('plain-1', 'ok', 'fetch_image')), idx: 0 },
+        {
+          part: completed(
+            makePart(
+              'mcp-bg',
+              JSON.stringify({
+                background_task_id: 'task-3',
+                tool: 'search',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'search_mcp_github',
+            ),
+          ),
+          idx: 1,
+        },
+      ],
+      lastContentIdx: 1,
+    });
+
+    expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
+  });
+
+  it('keeps the group open while a lone detached task is still running', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: completed(
+            makePart(
+              'code-bg',
+              JSON.stringify({
+                background_task_id: 'task-1',
+                tool: 'bash_tool',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'bash_tool',
+            ),
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('keeps a lone code call in the running tense while its detached task runs', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: completed(
+            makePart(
+              'code-1',
+              JSON.stringify({
+                background_task_id: 'task-1',
+                tool: 'bash_tool',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'bash_tool',
+            ),
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
+  });
+
+  const handleOutput = JSON.stringify({
+    background_task_id: 'task-1',
+    tool: 'bash_tool',
+    status: 'running',
+    message: 'Use check_background_task to follow it',
+  });
+  const detachedProps = (attachments: TAttachment[] = []) => ({
+    ...baseProps,
+    parts: [{ part: completed(makePart('code-1', handleOutput, 'bash_tool')), idx: 0 }],
+    lastContentIdx: 0,
+    groupAttachments: attachments,
+  });
+
+  it('does not keep a cancelled detached task open or live', () => {
+    const cancelled = completed(makePart('code-1', handleOutput, 'bash_tool'));
+    (cancelled as unknown as Record<string, Record<string, unknown>>)[
+      ContentTypes.TOOL_CALL
+    ].backgroundTask = { cancelled: true };
+    renderGroup({ ...baseProps, parts: [{ part: cancelled, idx: 0 }], lastContentIdx: 0 });
+
+    expect(screen.getByRole('button', { name: /^com_ui_cancelled/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('moves focus to the header when a focused detached task settles and the group collapses', () => {
+    const renderPart = (_p: TMessageContentParts, idx: number) => (
+      <button type="button" data-testid="row" key={idx}>
+        {'row'}
+      </button>
+    );
+    const settled = {
+      type: 'background_task_status',
+      status: 'finished',
+      toolCallId: 'code-1',
+      messageId: 'm1',
+    } as unknown as TAttachment;
+    const tree = (attachments: TAttachment[]) => (
+      <RecoilRoot>
+        <ToolCallGroup {...detachedProps(attachments)} renderPart={renderPart} />
+      </RecoilRoot>
+    );
+    const { rerender } = render(tree([]));
+    screen.getByTestId('row').focus();
+    expect(screen.getByTestId('row')).toHaveFocus();
+
+    rerender(tree([settled]));
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toHaveFocus();
+  });
+
+  it('does not call a failed lone code call "ran"', () => {
+    const failed = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-f',
+        name: 'execute_code',
+        args: '{}',
+        output: 'boom',
+        runStepStatus: 'failed',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: failed, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not call a failed lone code call "running"', () => {
+    const failed = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-f2',
+        name: 'execute_code',
+        args: '{}',
+        output: 'boom',
+        runStepStatus: 'failed',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: failed, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_running_var/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not claim a lone code call ran when an interrupted legacy record has no success signal', () => {
+    const interrupted = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-legacy',
+        name: 'execute_code',
+        args: '{}',
+        output: '',
+        progress: 0.5,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: interrupted, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not claim a lone code call ran when an interrupted legacy record kept partial output', () => {
+    const interrupted = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-partial',
+        name: 'execute_code',
+        args: '{}',
+        output: 'partial',
+        progress: 0.5,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: interrupted, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not claim a lone code call ran when a legacy record has output but no progress field', () => {
+    const noProgress = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-no-progress',
+        name: 'execute_code',
+        args: '{}',
+        output: 'done',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: noProgress, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('calls a lone legacy code call ran once its progress reaches 1', () => {
+    const finished = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-legacy-ok',
+        name: 'execute_code',
+        args: '{}',
+        output: 'done',
+        progress: 1,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: finished, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('does not call a stopped lone code call "ran"', () => {
+    const cancelled = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-c',
+        name: 'execute_code',
+        args: '{}',
+        output: '',
+        runStepStatus: 'cancelled',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: cancelled, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it('keeps repeated action counts and failed-call status in the compact summary', () => {
     renderGroup({
       ...baseProps,
@@ -957,7 +1351,7 @@ describe('ToolCallGroup image hoisting', () => {
 
     expect(
       screen.getByRole('button', {
-        name: 'Ran 3 actions, Create File ×2, Edit File · 1/3 failed',
+        name: 'Ran 3 actions, Create File, Edit File · 1/3 failed',
       }),
     ).toBeInTheDocument();
   });
@@ -1168,7 +1562,7 @@ describe('ToolCallGroup image hoisting', () => {
      *  settled (past tense while still submitting) and count it as a
      *  failure even though the empty output never parses as an error. */
     expect(
-      screen.getByRole('button', { name: 'Ran 2 actions, Create File ×2 · 1/2 failed' }),
+      screen.getByRole('button', { name: 'Ran 2 actions, Create File · 1/2 failed' }),
     ).toBeInTheDocument();
   });
 
@@ -1197,7 +1591,7 @@ describe('ToolCallGroup image hoisting', () => {
      *  over the only other notice, so the header must carry it and must not
      *  count it as a failure. */
     expect(
-      screen.getByRole('button', { name: 'Ran 2 actions, Create File ×2 · 1 cancelled' }),
+      screen.getByRole('button', { name: 'Ran 2 actions, Create File · 1 cancelled' }),
     ).toBeInTheDocument();
   });
 
@@ -1392,16 +1786,98 @@ describe('ToolCallGroup failure fast path', () => {
     expect(onReveal).toHaveBeenCalledTimes(failedParts.length);
   });
 
+  it('keeps the count quiet when the group contains both successful and failed calls', () => {
+    renderGroup(props(jest.fn()));
+    expect(
+      screen
+        .getByTestId('failed-reveal-pill')
+        .querySelector('span.text-text-secondary, span.text-status-error'),
+    ).toHaveClass('text-text-secondary');
+  });
+
+  it('keeps the count in the error tone when every call failed', () => {
+    renderGroup({
+      ...props(jest.fn()),
+      parts: [
+        failedParts[1],
+        { part: makePart('c3', 'Error processing tool: gone', 'create_file'), idx: 1 },
+      ],
+    });
+    expect(
+      screen
+        .getByTestId('failed-reveal-pill')
+        .querySelector('span.text-text-secondary, span.text-status-error'),
+    ).toHaveClass('text-status-error');
+  });
+
+  it.each(['created', 'Error processing tool: unavailable'])(
+    'preserves a sparse partial batch with output %s',
+    (output) => {
+      renderGroup({
+        ...props(jest.fn()),
+        parts: [{ part: makePart('remaining', output, 'create_file'), idx: 0 }],
+        labelPart: {
+          part: {
+            type: ContentTypes.ACTIVITY_LABEL,
+            activity_label: 'Created the config files',
+            pending: false,
+            status: 'partial',
+          } as TMessageContentParts,
+          idx: 1,
+        },
+      });
+      expect(screen.getByText('warning')).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    { type: ContentTypes.THINK, think: 'Remaining thought' },
+    { type: ContentTypes.TEXT, text: 'Remaining commentary' },
+  ])('preserves a failed batch marker with only a $type row', (part) => {
+    renderGroup({
+      ...props(jest.fn()),
+      parts: [{ part: part as TMessageContentParts, idx: 0 }],
+      labelPart: {
+        part: {
+          type: ContentTypes.ACTIVITY_LABEL,
+          activity_label: 'Could not finish',
+          pending: false,
+          status: 'failed',
+        } as TMessageContentParts,
+        idx: 1,
+      },
+    });
+    expect(screen.getByTestId('stacked-icons')).toHaveAttribute('data-status', 'failed');
+  });
+
+  it('does not tint the title of a partially failed labeled group', () => {
+    renderGroup({
+      ...props(jest.fn()),
+      labelPart: {
+        part: {
+          type: ContentTypes.ACTIVITY_LABEL,
+          [ContentTypes.ACTIVITY_LABEL]: 'Created the config files',
+          pending: false,
+          status: 'partial',
+        } as unknown as TMessageContentParts,
+        idx: 2,
+      },
+    });
+    expect(screen.getByText('Created the config files')).not.toHaveClass('text-text-warning');
+  });
+
   it('shows the failure count once, on the pill, when it stands alone', () => {
     renderGroup(props(jest.fn()));
     const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
     expect(header).not.toHaveTextContent('1/2 failed');
-    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1/2 failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
   });
 
-  it("keeps the count in text inside a phase, where the pill is the phase's", () => {
+  it('hides the redundant failure count inside a phase', () => {
     renderGroup({ ...props(jest.fn()), withinActivityPhase: true });
-    expect(screen.getByRole('button', { name: /· 1\/2 failed$/ })).toHaveTextContent('1/2 failed');
+    expect(screen.getByRole('button', { name: /· 1\/2 failed$/ })).not.toHaveTextContent(
+      '1/2 failed',
+    );
   });
 
   it('leaves the pill to a live phase without collapsing its running group', () => {
@@ -1415,7 +1891,7 @@ describe('ToolCallGroup failure fast path', () => {
 
     const group = screen.getByRole('button', { name: /1\/3 failed$/ });
     expect(group).toHaveAttribute('aria-expanded', 'true');
-    expect(group).toHaveTextContent('1/3 failed');
+    expect(group).not.toHaveTextContent('1/3 failed');
     expect(screen.queryByTestId('failed-reveal-pill')).not.toBeInTheDocument();
   });
 
@@ -1451,7 +1927,7 @@ describe('ToolCallGroup failure fast path', () => {
     expect(header).not.toHaveClass('text-text-primary');
     fireEvent.click(header);
     expect(header).toHaveClass('text-text-primary');
-    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('pl-6');
+    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('ps-6');
   });
 
   it('collapses from its rail, showing the knob on its header while the rail is hovered', () => {
@@ -1585,10 +2061,99 @@ describe('ToolCallGroup sole tool', () => {
       renderPart: (_p: TMessageContentParts, idx: number) => <Probe key={idx} idx={idx} />,
     }) satisfies React.ComponentProps<typeof ToolCallGroup>;
 
+  it('keeps a flattened result interactive rather than inert', () => {
+    render(
+      <RecoilRoot>
+        <GeneratedToolLabelContext.Provider value>
+          <ToolCallGroup {...props(['only'])} />
+        </GeneratedToolLabelContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('probe-0').closest('[inert]')).toBeNull();
+  });
+
+  it.each([['only'], ['first', 'second']])(
+    'only compresses a generated group containing one call: %j',
+    (...ids: string[]) => {
+      function LabelProbe() {
+        return (
+          <div data-testid="generated-label">{String(useContext(GeneratedToolLabelContext))}</div>
+        );
+      }
+      renderGroup({
+        ...props(ids),
+        labelPart: {
+          part: {
+            type: ContentTypes.ACTIVITY_LABEL,
+            activity_label: 'Checked weather',
+            pending: false,
+          } as TMessageContentParts,
+          idx: ids.length,
+        },
+        renderPart: (_part, idx) => <LabelProbe key={idx} />,
+      });
+      fireEvent.click(screen.getByRole('button', { expanded: false }));
+      expect(screen.getAllByTestId('generated-label')[0]).toHaveTextContent(
+        String(ids.length === 1),
+      );
+    },
+  );
+
+  it('keeps the tool header when Thoughts shares its group', () => {
+    function Probe() {
+      return <span data-testid="lone-with-thoughts">{String(useContext(LoneGroupContext))}</span>;
+    }
+    renderGroup({
+      ...props(['only']),
+      parts: [
+        { part: makePart('only'), idx: 0 },
+        { part: { type: ContentTypes.THINK, think: 'Checking' } as TMessageContentParts, idx: 1 },
+      ],
+      renderPart: () => <Probe />,
+    });
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone-with-thoughts')).toHaveTextContent('false');
+  });
+  it('lets the grid panel shrink below its content height', () => {
+    renderGroup(props(['first', 'second']));
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('min-h-0');
+  });
+
   it('opens the only tool call inside the group by default', () => {
     renderGroup(props(['only']));
     fireEvent.click(screen.getByRole('button', { expanded: false }));
     expect(screen.getByTestId('probe-0')).toHaveTextContent('true');
+  });
+
+  it('marks a one-call group as lone even when its phase holds several calls', () => {
+    function LoneProbe() {
+      return <div data-testid="lone">{String(useContext(LoneGroupContext))}</div>;
+    }
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <ToolCallGroup
+            {...props(['only'])}
+            renderPart={(_p: TMessageContentParts, idx: number) => <LoneProbe key={idx} />}
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone')).toHaveTextContent('true');
+  });
+
+  it('does not mark a two-call group as lone', () => {
+    function LoneProbe({ idx }: { idx: number }) {
+      return <div data-testid={`lone-${idx}`}>{String(useContext(LoneGroupContext))}</div>;
+    }
+    renderGroup({
+      ...props(['a', 'b']),
+      renderPart: (_p: TMessageContentParts, idx: number) => <LoneProbe key={idx} idx={idx} />,
+    });
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone-0')).toHaveTextContent('false');
   });
 
   it('keeps a one-call group collapsed when its phase holds several calls', () => {

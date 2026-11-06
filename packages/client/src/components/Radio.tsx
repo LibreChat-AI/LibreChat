@@ -1,5 +1,5 @@
 import React, { useState, useRef, useLayoutEffect, useCallback, memo } from 'react';
-import { disabledInkClasses } from '~/utils';
+import { disabledInkClasses, resolveArrowKey } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 /** Matches the `inset-y-1` the single-row indicator uses. */
@@ -25,8 +25,15 @@ interface RadioProps {
    *  dialog's width on a phone and the choices past the edge become unreachable.
    *  The moving indicator follows across rows; the single-row default is untouched. */
   wrap?: boolean;
+  /** `sm` fits a section header row beside its label. */
+  size?: 'default' | 'sm';
   'aria-labelledby'?: string;
 }
+
+const segmentSizeClasses = {
+  default: 'h-[2.125rem] px-4 text-sm',
+  sm: 'h-7 px-2.5 text-xs',
+} as const;
 
 const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
   options,
@@ -37,6 +44,7 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
   buttonClassName = '',
   fullWidth = false,
   wrap = false,
+  size = 'default',
   'aria-labelledby': ariaLabelledBy,
 }: RadioProps) {
   const localize = useLocalize();
@@ -67,7 +75,7 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       Home: 0,
       End: options.length - 1,
     };
-    const target = moves[event.key];
+    const target = moves[resolveArrowKey(event.key, event.currentTarget)];
     if (target == null) {
       return;
     }
@@ -189,7 +197,7 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
           onClick={() => handleChange(option.value)}
           onKeyDown={(event) => handleKeyDown(event, index)}
           disabled={disabled}
-          className={`focus-visible:ring-focus-control relative z-10 flex h-[34px] items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden ${
+          className={`focus-visible:ring-focus-control relative z-10 flex items-center justify-center gap-2 rounded-md font-medium ${segmentSizeClasses[size]} transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden ${
             currentValue === option.value ? 'text-text-primary' : 'text-text-secondary'
           } ${disabled ? 'cursor-not-allowed opacity-50' : ''} ${disabledInkClasses} ${fullWidth ? 'flex-1' : ''} ${buttonClassName}`}
         >

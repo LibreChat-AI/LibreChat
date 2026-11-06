@@ -60,7 +60,7 @@ const TableRowComponent = <TData extends Record<string, unknown>>(
       /* The highlight is painted by the cells, not the row: `border-radius` has no
          effect on a table row, so rounding the outer cells is what gives the hover
          its pill shape. */
-      className="group border-0 hover:bg-transparent [&>*:first-child]:rounded-l-lg [&>*:last-child]:rounded-r-lg"
+      className="group border-0 hover:bg-transparent [&>*:first-child]:rounded-s-lg [&>*:last-child]:rounded-e-lg"
       style={style}
     >
       {row.getVisibleCells().map((cell) => {
@@ -72,7 +72,7 @@ const TableRowComponent = <TData extends Record<string, unknown>>(
         const percent = meta?.width;
         let widthStyle: React.CSSProperties | undefined;
         if (cell.column.id === 'select') {
-          widthStyle = { width: '32px', maxWidth: '32px', minWidth: '32px' };
+          widthStyle = { width: '2rem', maxWidth: '2rem', minWidth: '2rem' };
         } else if (percent) {
           widthStyle = {
             width: `${percent}%`,
@@ -92,7 +92,7 @@ const TableRowComponent = <TData extends Record<string, unknown>>(
               'group-hover:bg-surface-secondary-alt group-data-[state=selected]:bg-surface-active',
               cell.column.id === 'select' && 'w-8 p-1',
               meta?.className,
-              isDesktopOnly && 'hidden md:table-cell',
+              isDesktopOnly && '[display:var(--data-table-desktop-display,table-cell)]',
             )}
             style={widthStyle}
           >
@@ -169,7 +169,11 @@ export const SkeletonRows: React.MemoExoticComponent<
               <TableCell
                 key={columnKey}
                 size="dense"
-                className={cn('px-3', meta?.className, meta?.desktopOnly && 'hidden md:table-cell')}
+                className={cn(
+                  'px-3',
+                  meta?.className,
+                  meta?.desktopOnly && '[display:var(--data-table-desktop-display,table-cell)]',
+                )}
               >
                 <Skeleton className="h-6 w-full" />
               </TableCell>

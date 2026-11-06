@@ -2,8 +2,8 @@ import React from 'react';
 import { object, string } from 'zod';
 import { Label } from '@librechat/client';
 import { AuthKeys } from 'librechat-data-provider';
+import { FileUpload } from '@librechat/chat/components';
 import type { TConfigProps } from '~/common';
-import FileUpload from '~/components/Chat/Input/Files/FileUpload';
 import { useLocalize, useMultipleKeys } from '~/hooks';
 import InputWithLabel from './InputWithLabel';
 
@@ -25,10 +25,10 @@ const GoogleConfig = ({ userKey, setUserKey }: Pick<TConfigProps, 'userKey' | 's
   return (
     <>
       <div className="flex flex-row">
-        <Label htmlFor={AuthKeys.GOOGLE_SERVICE_KEY} className="text-left text-sm font-medium">
+        <Label htmlFor={AuthKeys.GOOGLE_SERVICE_KEY} className="text-start text-sm font-medium">
           {localize('com_endpoint_config_google_service_key')}
         </Label>
-        <Label className="mx-1 text-right text-sm text-text-secondary">
+        <Label variant="secondary" className="mx-1 text-end text-sm">
           {localize('com_endpoint_config_google_cloud_platform')}
         </Label>
         <br />
@@ -36,7 +36,6 @@ const GoogleConfig = ({ userKey, setUserKey }: Pick<TConfigProps, 'userKey' | 's
       <FileUpload
         id={AuthKeys.GOOGLE_SERVICE_KEY}
         className="w-full"
-        containerClassName="bg-surface-secondary h-10 max-h-10 w-full resize-none py-2"
         text={localize('com_endpoint_config_key_import_json_key')}
         successText={localize('com_endpoint_config_key_import_json_key_success')}
         invalidText={localize('com_endpoint_config_key_import_json_key_invalid')}

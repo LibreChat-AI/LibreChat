@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { FileContext } from 'librechat-data-provider';
+import { FileContext, FileSources } from 'librechat-data-provider';
 import type { TChatProject, TChatProjectFile, TFile } from 'librechat-data-provider';
 import type { IChatProject, ProjectFileRecord } from '@librechat/data-schemas';
 export type { ProjectFileRecord } from '@librechat/data-schemas';
@@ -23,13 +23,18 @@ export function getChatProjectFileAvailability(
   file:
     | {
         embedded?: boolean;
+        metadata?: { searchDestination?: boolean };
         context?: string;
         expiredAt?: Date | number | string | null;
       }
     | null
     | undefined,
 ): 'ready' | 'unavailable' {
-  if (!file || file.embedded !== true || file.context !== FileContext.message_attachment) {
+  if (
+    !file ||
+    (file.embedded !== true && file.metadata?.searchDestination !== true) ||
+    file.context !== FileContext.message_attachment
+  ) {
     return 'unavailable';
   }
 
@@ -86,6 +91,10 @@ function canonicalResourceVersion(
         file_id: file.file_id,
         availability,
         embedded: file.embedded ?? null,
+        searchDestination: file.metadata?.searchDestination ?? null,
+        ...(file.metadata?.routingMimeType !== undefined
+          ? { routingMimeType: file.metadata.routingMimeType }
+          : {}),
         context: file.context ?? null,
         expiredAt: file.expiredAt?.toISOString() ?? null,
         createdAt: file.createdAt?.toISOString() ?? null,
@@ -150,9 +159,24 @@ type RuntimeFileSource = {
   usage: number;
   user: string | { toString(): string };
   tenantId?: string;
+  embedded?: boolean;
+  metadata?: { searchDestination?: boolean; routingMimeType?: string };
+  source?: string;
+  storageKey?: string;
+  storageRegion?: string;
 };
 
+const storageSources = new Set<string>(Object.values(FileSources));
+
+function isStorageSource(value: string): value is FileSources {
+  return storageSources.has(value);
+}
+
 export function toRuntimeFile(file: RuntimeFileSource): TFile {
+  const source = file.source;
+  if (source != null && !isStorageSource(source)) {
+    throw new Error('Invalid project file storage source');
+  }
   return {
     file_id: file.file_id,
     filename: file.filename,
@@ -161,7 +185,23 @@ export function toRuntimeFile(file: RuntimeFileSource): TFile {
     type: file.type,
     bytes: file.bytes,
     usage: file.usage,
-    embedded: true,
+    embedded: file.embedded === true,
+    ...(file.metadata?.searchDestination !== undefined ||
+    file.metadata?.routingMimeType !== undefined
+      ? {
+          metadata: {
+            ...(file.metadata.searchDestination !== undefined
+              ? { searchDestination: file.metadata.searchDestination }
+              : {}),
+            ...(file.metadata.routingMimeType !== undefined
+              ? { routingMimeType: file.metadata.routingMimeType }
+              : {}),
+          },
+        }
+      : {}),
+    ...(source != null ? { source } : {}),
+    ...(file.storageKey != null ? { storageKey: file.storageKey } : {}),
+    ...(file.storageRegion != null ? { storageRegion: file.storageRegion } : {}),
     context: FileContext.message_attachment,
     user: typeof file.user === 'string' ? file.user : file.user.toString(),
     ...(file.tenantId != null ? { tenantId: file.tenantId } : {}),

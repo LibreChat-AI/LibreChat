@@ -29,6 +29,7 @@ import type { CheckAccessParams } from '../middleware/access';
 import type { MCPToolsSnapshot } from '../mcp/connection';
 import type { GetAppConfigOptions } from '../app/service';
 import type { ScheduledTokenContext } from './context';
+import type { ScheduledMCPBearerHost } from './bearer';
 import type { ScheduleMCPPreflight } from './types';
 import {
   MCPAuthenticationRejectedError,
@@ -44,6 +45,7 @@ import {
 import { ScheduledMCPPolicyError, isScheduledMCPCandidate } from './authorization/policy';
 import { MCPConfigInitializationCanceledError } from '../mcp/registry/MCPServersRegistry';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '../mcp/request';
+import { attachScheduledMCPBearer, ScheduledMCPBearerError } from './bearer';
 import { isScheduleFireRequest, readScheduleFireContext } from './trigger';
 import { resolveScheduledMCPRequirements } from './requirements';
 import { getAppConfigOptionsFromUser } from '../app/service';
@@ -163,6 +165,7 @@ export function getScheduleMCPFailureCode(
 }
 
 interface ScheduleMCPDeps {
+  scheduledBearerHost?: ScheduledMCPBearerHost;
   resolveAgentGraphAccess: (access: {
     userId: string;
     role?: string | null;
@@ -416,6 +419,21 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
           requestProbeLimit(() =>
             sharedProbeLimit(async (): Promise<ScheduleMCPOutcome[]> => {
               const context = createMCPRequestContext();
+              if (options.scheduleId)
+                attachScheduledMCPBearer(
+                  context,
+                  {
+                    scheduleId: options.scheduleId,
+                    ownerId: principal.id,
+                    tenantId: user.tenantId ?? null,
+                    agentId,
+                    invocationMode: 'delegated',
+                  },
+                  deps.scheduledBearerHost,
+                  options.stage ?? 'invoke',
+                  options.signal,
+                  { manual: options.manual === true },
+                );
               try {
                 throwIfAborted();
                 const serverConfig = servers[server];
@@ -447,6 +465,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                   const snapshot = await connection.fetchToolsSnapshot(options.deadlineMs, signal);
                   if (snapshot.authenticationError) throw snapshot.authenticationError;
                   if (execution) {
+                    const authorizations: Array<Promise<unknown>> = [];
                     for (const [toolKey, owners] of toolAgentIds.get(server) ?? []) {
                       const [selectionName] = splitMCPToolKey(toolKey, authoritativeCandidates);
                       const definitions = snapshot.tools.filter(
@@ -456,16 +475,19 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                             selectionName,
                       );
                       for (const ownerId of owners) {
-                        await execution.bind(ownerId, selectionName).authorize({
-                          user,
-                          serverName: server,
-                          serverConfig,
-                          toolName: definitions.length === 1 ? definitions[0].name : '',
-                          loadTools: async () => snapshot,
-                          signal,
-                        });
+                        authorizations.push(
+                          execution.bind(ownerId, selectionName).authorize({
+                            user,
+                            serverName: server,
+                            serverConfig,
+                            toolName: definitions.length === 1 ? definitions[0].name : '',
+                            loadTools: async () => snapshot,
+                            signal,
+                          }),
+                        );
                       }
                     }
+                    await Promise.all(authorizations);
                   }
                   const available = new Set(
                     Object.keys(formatMCPServerTools(server, snapshot.tools)),
@@ -502,7 +524,11 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                     missingOwners.size > 0 ? missingOwners : undefined,
                   );
                 } catch (error) {
-                  if (error instanceof ScheduledMCPPolicyError) return error.outcomes;
+                  if (
+                    error instanceof ScheduledMCPBearerError ||
+                    error instanceof ScheduledMCPPolicyError
+                  )
+                    return error.outcomes;
                   if (
                     error instanceof OboTokenResolutionError &&
                     error.reason === 'missing_upstream_provider'

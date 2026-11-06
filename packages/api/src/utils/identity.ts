@@ -288,3 +288,9 @@ export function createOpenIDOboIdentityTuple({
 export function serializeAuthIdentityTuple(tuple: AuthIdentityTuple): string {
   return [tuple.tenantId, tuple.openidIssuer, tuple.subject].join(IDENTITY_PART_SEPARATOR);
 }
+
+/** Internal user id for log lines, never an email, name or provider subject. */
+export function getUserLogId(user?: Pick<AuthIdentitySource, 'id' | '_id'> | null): string {
+  const id = user?._id ?? user?.id;
+  return id == null ? 'unknown' : String(id);
+}

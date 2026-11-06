@@ -26,6 +26,7 @@ const {
   createAgentExecutionContext,
   createMCPRuntimeRequestBody,
   loadSkillStates,
+  loadSkillAccess,
   sendFinalChunk,
   buildCompletionUsage,
   createSafeUser,
@@ -75,6 +76,9 @@ const {
   resolveApiConversationProject,
   resolveAdmittedCodeEnvironmentDecision,
   createTerminalRunErrorObserver,
+  isTemporaryTurn,
+  getModelEndUsage,
+  hasEntityEmbeddings,
 } = require('@librechat/api');
 const {
   buildSummarizationHandlers,
@@ -103,6 +107,9 @@ const {
 } = require('~/server/services/Endpoints/agents/skillDeps');
 const { createProvisionFilesCallback } = require('~/server/services/Files/provisionCallback');
 const { checkSessionsAlive, loadCodeApiKey } = require('~/server/services/Files/provision');
+const {
+  getLinkedInstructionsResolver,
+} = require('~/server/services/Endpoints/agents/linkedInstructions');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { resolveConfigServers } = require('~/server/services/MCP');
@@ -132,6 +139,7 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
     tool_resources,
     requestBody,
     codeExecutionContext,
+    attachedEnvironmentOptOut,
     accessibleMcpServerNames,
   }) {
     const agent = { id: agentId, tools, provider, model, tool_options };
@@ -144,6 +152,7 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
         requestBody,
         tool_resources,
         codeExecutionContext,
+        attachedEnvironmentOptOut,
         agentResourceType: ResourceType.REMOTE_AGENT,
         definitionsOnly,
         accessibleMcpServerNames,
@@ -543,6 +552,8 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         getUserCodeFiles: db.getUserCodeFiles,
         getDeferredProvisionFiles: db.getDeferredProvisionFiles,
         checkSessionsAlive,
+        adoptLegacySearchEmbeddings: db.adoptLegacySearchEmbeddings,
+        hasEntityEmbeddings,
         loadCodeApiKey,
         getToolFilesByIds: db.getToolFilesByIds,
         getCodeGeneratedFiles: db.getCodeGeneratedFiles,
@@ -585,29 +596,19 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
        *  request instead of issuing its own read. */
       const resolveWebSearchGrant = async () =>
         (await resolveToolRoleGrants({ req, getRoleByName: db.getRoleByName })).webSearch;
+      /** Resolves any agent's `instructionsPrompt` link this run encounters — primary
+       *  or handoff. No default resolution path, unlike `resolveWebSearchGrant`. */
+      const resolveLinkedInstructions = getLinkedInstructionsResolver();
       const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
       const ephemeralSkillsToggle = request.ephemeralAgent?.skills === true;
-      const accessibleSkillIds = skillsCapabilityEnabled
-        ? withDeploymentSkillIds(
-            await findAccessibleResources({
-              userId: principal.userId,
-              role: principal.role,
-              resourceType: ResourceType.SKILL,
-              requiredPermissions: PermissionBits.VIEW,
-            }),
-          )
-        : [];
-      const editableSkillIds = skillsCapabilityEnabled
-        ? await findAccessibleResources({
-            userId: principal.userId,
-            role: principal.role,
-            resourceType: ResourceType.SKILL,
-            requiredPermissions: PermissionBits.EDIT,
-          })
-        : [];
-      const skillCreateAllowed = skillsCapabilityEnabled
-        ? await getSkillToolDeps().canCreateSkill({ req })
-        : false;
+      const { accessibleSkillIds, editableSkillIds, skillCreateAllowed } = await loadSkillAccess(
+        { enabled: skillsCapabilityEnabled, userId: principal.userId, role: principal.role },
+        {
+          findAccessibleResources,
+          withDeploymentSkillIds,
+          canCreateSkill: () => getSkillToolDeps().canCreateSkill({ req }),
+        },
+      );
 
       const { skillStates, defaultActiveOnShare } = await loadSkillStates({
         userId: principal.userId,
@@ -653,6 +654,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           codeEnvAvailable,
           fileSearchAvailable,
           resolveWebSearchGrant,
+          resolveLinkedInstructions,
           backgroundToolsAvailable: enabledCapabilities.has(AgentCapabilities.run_in_background),
           toolIntentsAvailable: enabledCapabilities.has(AgentCapabilities.tool_intents),
           statefulSessionsAvailable: enabledCapabilities.has(
@@ -737,6 +739,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           codeEnvAvailable,
           fileSearchAvailable,
           resolveWebSearchGrant,
+          resolveLinkedInstructions,
           backgroundToolsAvailable: enabledCapabilities.has(AgentCapabilities.run_in_background),
           toolIntentsAvailable: enabledCapabilities.has(AgentCapabilities.tool_intents),
           statefulSessionsAvailable: enabledCapabilities.has(
@@ -1043,7 +1046,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         // Usage tracking
         on_chat_model_end: {
           handle: (_event, data, metadata, graph) => {
-            const usage = data?.output?.usage_metadata;
+            const usage = getModelEndUsage(data?.output);
             if (usage) {
               const agentContext = graph?.getAgentContext?.(metadata);
               const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
@@ -1106,6 +1109,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
             logger,
             mcpManager,
             configServers,
+            user: req.user,
             sharedRunContext: [memoryContext, agentScopedContext.get(runAgent.id)]
               .filter(Boolean)
               .join('\n\n'),
@@ -1130,6 +1134,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         user: { ...createSafeUser(req.user), id: userId },
         traceContext: { endpoint: EModelEndpoint.agents },
         tenantId: principal.tenantId,
+        isTemporary: isTemporaryTurn(req),
         /** Bills subagent child-run model calls (reported outside the
          *  streamEvents loop) into the same collectedUsage array. */
         subagentUsageSink: createSubagentUsageSink(collectedUsage),
@@ -1307,7 +1312,7 @@ const ListModelsController = async (req, res) => {
     // Get the accessible agents
     let agents = [];
     if (accessibleAgentIds.length > 0) {
-      agents = await db.getAgents({ _id: { $in: accessibleAgentIds } });
+      agents = await db.getAgentModelSummaries(accessibleAgentIds);
     }
 
     const models = agents.map((agent) => ({

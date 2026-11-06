@@ -41,6 +41,8 @@ jest.mock('librechat-data-provider/react-query', () => ({
 
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: { sharedLinksSnapshotFilesEnabled: true } }),
+  fetchConversationMessages: jest.requireActual('~/data-provider/Messages/queries')
+    .fetchConversationMessages,
 }));
 
 jest.mock('~/hooks/Messages/useLatestMessage', () => ({
@@ -137,8 +139,8 @@ describe('ShareButton', () => {
     expect(screen.getByLabelText(/com_ui_share_files_description/)).toBeInTheDocument();
     const sharedLinkInput = screen.getByTestId('shared-link-url') as HTMLInputElement;
     expect(sharedLinkInput.value).toContain('/share/share-1');
-    expect(sharedLinkInput).toHaveClass('text-right');
-    expect(sharedLinkInput).toHaveAttribute('dir', 'ltr');
+    expect(sharedLinkInput).toHaveClass('text-end');
+    expect(sharedLinkInput.closest('[dir="ltr"]')).not.toBeNull();
     expect(screen.getByRole('button', { name: 'com_ui_copy_link' })).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'com_ui_share_files' })).toBeChecked();
     expect(document.querySelector('svg[width="200"]')).toBeInTheDocument();
@@ -249,7 +251,9 @@ describe('ShareButton', () => {
     renderShareButton();
 
     await expect(mockResolveTargetMessageId?.()).resolves.toBe('persisted-message');
-    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(ACTIVE_CONVERSATION_ID);
+    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(ACTIVE_CONVERSATION_ID, {
+      toolPreviews: true,
+    });
     expect(mockGetMessageById).toHaveBeenCalledWith(ACTIVE_CONVERSATION_ID, 'persisted-message');
   });
 
@@ -261,7 +265,9 @@ describe('ShareButton', () => {
     await expect(mockResolveTargetMessageId?.()).rejects.toMatchObject({
       code: 'NO_MESSAGES',
     });
-    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(ACTIVE_CONVERSATION_ID);
+    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(ACTIVE_CONVERSATION_ID, {
+      toolPreviews: true,
+    });
     expect(mockGetMessageById).not.toHaveBeenCalled();
   });
 

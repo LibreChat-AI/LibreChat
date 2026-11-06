@@ -1,6 +1,7 @@
 import { memo, useState, useMemo, useCallback } from 'react';
 import { FixedSizeTree } from 'react-vtree';
 import { useNavigate } from 'react-router-dom';
+import { useRemScale } from '@librechat/client';
 import { ScrollText, ChevronDown, ChevronRight, Folder, Pin } from 'lucide-react';
 import type { FixedSizeNodeData, TreeWalkerValue, TreeWalker } from 'react-vtree';
 import type { TSkillSummary, TSkillFile } from 'librechat-data-provider';
@@ -139,12 +140,12 @@ function FileTreeNode({
 }) {
   const isFolder = data.nodeType === 'folder';
   const isFileActive = !isFolder && treeData?.activeFile === data.path;
-  const indent = data.depth * 16 + (isFolder ? 8 : 24);
+  const indentRem = (data.depth * 16 + (isFolder ? 8 : 24)) / 16;
 
   return (
     <button
       type="button"
-      style={{ ...style, paddingLeft: `${indent}px` }}
+      style={{ ...style, '--skill-indent': `${indentRem}rem` } as React.CSSProperties}
       onClick={(e) => {
         e.stopPropagation();
         if (isFolder) {
@@ -156,10 +157,10 @@ function FileTreeNode({
         }
       }}
       className={cn(
-        'flex w-full items-center gap-1.5 rounded-lg text-sm select-none',
+        'flex w-full items-center gap-1.5 rounded-lg ps-(--skill-indent) text-sm select-none',
         isFileActive
           ? 'bg-surface-active text-text-primary font-medium'
-          : 'text-text-secondary hover:bg-surface-active-alt hover:text-text-primary',
+          : 'text-text-secondary hover:bg-surface-nav-hover hover:text-text-primary',
       )}
       aria-expanded={isFolder ? isOpen : undefined}
     >
@@ -168,7 +169,7 @@ function FileTreeNode({
           <ChevronRight
             className={cn(
               'size-3 shrink-0 transition-transform duration-150',
-              isOpen && 'rotate-90',
+              isOpen ? 'rotate-90' : 'rtl:rotate-180',
             )}
             aria-hidden="true"
           />
@@ -198,7 +199,8 @@ function InlineFileTree({
 
   const visibleCount = useMemo(() => countVisible(treeEntries, openIds), [treeEntries, openIds]);
 
-  const height = Math.min(visibleCount * ITEM_SIZE, MAX_HEIGHT);
+  const remScale = useRemScale();
+  const height = Math.min(visibleCount * ITEM_SIZE, MAX_HEIGHT) * remScale;
 
   const handleToggle = useCallback((id: string, isOpen: boolean) => {
     setOpenIds((prev) => {
@@ -241,7 +243,7 @@ function InlineFileTree({
   return (
     <FixedSizeTree<FileNodeData>
       treeWalker={treeWalker}
-      itemSize={ITEM_SIZE}
+      itemSize={ITEM_SIZE * remScale}
       height={height}
       width="100%"
       itemData={callbacks}
@@ -304,15 +306,15 @@ function SkillListItem({
           screen reader, which announces one name for two different actions. */}
       <div
         className={cn(
-          'text-text-primary flex w-full items-center gap-1 rounded-lg pr-1 text-sm select-none',
+          'text-text-primary flex w-full items-center gap-1 rounded-lg pe-1 text-sm select-none',
           isActive && !activeFile && 'bg-surface-active',
-          !isActive && 'hover:bg-surface-active-alt',
+          !isActive && 'hover:bg-surface-nav-hover',
         )}
       >
         <button
           type="button"
           onClick={handleSkillClick}
-          className="focus-visible:ring-text-primary flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg py-1.5 pl-3 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset"
+          className="focus-visible:ring-text-primary flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg py-1.5 ps-3 text-start outline-hidden focus-visible:ring-2 focus-visible:ring-inset"
           aria-current={isActive ? 'true' : undefined}
         >
           <span className="flex size-6 shrink-0 items-center justify-center">
@@ -351,7 +353,7 @@ function SkillListItem({
       </div>
 
       {/* Inline file tree */}
-      <Collapse open={expanded && hasFiles} className="ml-5">
+      <Collapse open={expanded && hasFiles} className="ms-5">
         <InlineFileTree files={files} activeFile={activeFile} onFileClick={handleFileClick} />
       </Collapse>
     </div>

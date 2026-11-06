@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useOutletContext } from 'react-router-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Spinner, Button, SecretInput, Alert } from '@librechat/client';
 import { useResetPasswordMutation } from 'librechat-data-provider/react-query';
+import { CREDENTIAL_RETIREMENT_INCOMPLETE_CODE } from 'librechat-data-provider';
 import type { TResetPassword } from 'librechat-data-provider';
 import type { TLoginLayoutContext } from '~/common';
 import { useLocalize } from '~/hooks';
@@ -19,17 +21,19 @@ function ResetPassword() {
   const [params] = useSearchParams();
   const password = watch('password');
   const resetPassword = useResetPasswordMutation();
+  /** The password changed, but not every earlier session could be signed out. */
+  const [retirementIncomplete, setRetirementIncomplete] = useState(false);
   const { setError, setHeaderText, startupConfig } = useOutletContext<TLoginLayoutContext>();
-  const authInputClassName =
-    'webkit-dark-styles peer h-auto w-full rounded-2xl border border-border-light bg-surface-primary px-3.5 pb-2.5 pr-12 pt-3 text-text-primary duration-200 hover:border-border-light focus:border-accent-primary focus-visible:border-accent-primary';
-  const authLabelClassName =
-    'absolute start-3 top-1.5 z-10 origin-[0] -translate-y-4 scale-75 transform bg-surface-primary px-2 text-sm text-text-secondary-alt duration-200 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-1.5 peer-focus:-translate-y-4 peer-focus:scale-75 peer-focus:px-2 peer-focus:text-accent-primary rtl:peer-focus:left-auto rtl:peer-focus:translate-x-1/4';
-  const authSecretButtonClassName =
-    'size-9 rounded-xl text-text-secondary-alt hover:bg-transparent hover:text-text-primary';
 
   const onSubmit = (data: TResetPassword) => {
     resetPassword.mutate(data, {
-      onError: () => {
+      onError: (error) => {
+        const code = (error as { response?: { data?: { code?: string } } })?.response?.data?.code;
+        if (code === CREDENTIAL_RETIREMENT_INCOMPLETE_CODE) {
+          setHeaderText('com_auth_reset_password_success');
+          setRetirementIncomplete(true);
+          return;
+        }
         setError('com_auth_error_invalid_reset_token');
       },
       onSuccess: () => {
@@ -38,21 +42,30 @@ function ResetPassword() {
     });
   };
 
-  if (resetPassword.isSuccess) {
+  if (resetPassword.isSuccess || retirementIncomplete) {
     return (
       <>
         <Alert
-          variant="success"
-          icon={false}
+          variant={retirementIncomplete ? 'warning' : 'success'}
+          icon={retirementIncomplete}
           elevation="raised"
-          className="mt-6 px-6 py-4 transition-all"
+          size="roomy"
+          className="mt-6"
         >
           <div className="flex flex-col space-y-4">
-            <p>{localize('com_auth_login_with_new_password')}</p>
+            <p>
+              {localize(
+                retirementIncomplete
+                  ? 'com_auth_reset_password_incomplete'
+                  : 'com_auth_login_with_new_password',
+              )}
+            </p>
             <Button
               onClick={() => navigate('/login')}
               aria-label={localize('com_auth_sign_in')}
               variant="submit"
+              size="auth-action"
+              shape="auth-action"
             >
               {localize('com_auth_continue')}
             </Button>
@@ -100,12 +113,9 @@ function ResetPassword() {
               },
             })}
             aria-invalid={!!errors.password}
-            className={authInputClassName}
+            variant="floating"
             placeholder=" "
             label={localize('com_auth_password')}
-            labelClassName={authLabelClassName}
-            controlsClassName="right-2"
-            buttonClassName={authSecretButtonClassName}
           />
         </div>
 
@@ -125,12 +135,9 @@ function ResetPassword() {
               validate: (value) => value === password || localize('com_auth_password_not_match'),
             })}
             aria-invalid={!!errors.confirm_password}
-            className={authInputClassName}
+            variant="floating"
             placeholder=" "
             label={localize('com_auth_password_confirm')}
-            labelClassName={authLabelClassName}
-            controlsClassName="right-2"
-            buttonClassName={authSecretButtonClassName}
           />
         </div>
         {errors.confirm_password && (
@@ -155,7 +162,9 @@ function ResetPassword() {
           aria-label={localize('com_auth_submit_registration')}
           disabled={!!errors.password || !!errors.confirm_password || isSubmitting}
           variant="submit"
-          className="h-12 w-full rounded-2xl"
+          shape="soft"
+          size="auth"
+          className="w-full"
         >
           {isSubmitting ? <Spinner /> : localize('com_auth_continue')}
         </Button>

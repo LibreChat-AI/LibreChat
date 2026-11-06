@@ -53,7 +53,7 @@ export function ColumnVisibilityDropdown<TData>({
       }
       items={dropdownItems}
       menuId={menuId}
-      className="z-50 max-h-[300px] overflow-y-auto"
+      className="z-50 max-h-[18.75rem] overflow-y-auto"
     />
   );
 }

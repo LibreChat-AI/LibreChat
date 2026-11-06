@@ -1,6 +1,6 @@
 import { Tokenizer as AiTokenizer } from 'ai-tokenizer';
-import { Providers, StandardGraph, getTokenCountForMessage } from '@librechat/agents';
 import { HumanMessage, SystemMessage } from '@librechat/agents/langchain/messages';
+import { Providers, StandardGraph, getTokenCountForMessage } from '@librechat/agents';
 import { ContentTypes, DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { LCTool } from '@librechat/agents';
@@ -12,7 +12,6 @@ import {
   countRetainedToolTokens,
   createCachedTokenCounter,
   countFormattedMessageTokens,
-  estimateMediaTokensForMessage,
   payloadParser,
   prependQuotes,
   prependFileContext,
@@ -42,7 +41,6 @@ describe('provider-native media token accounting', () => {
         getTokenCountForMessage(new HumanMessage({ content: [block] }), countText, encoding) -
         framing;
       expect(sdkMediaTokens).toBeGreaterThan(0);
-      expect(estimateMediaTokensForMessage([block], isClaude, countText)).toBe(sdkMediaTokens);
 
       const text = { type: 'text', text: 'Please read the attachment.' };
       const textOnly = countFormattedMessageTokens({ role: 'user', content: [text] }, encoding);
@@ -73,12 +71,6 @@ describe('provider-native media token accounting', () => {
     expect(small).toBeGreaterThan(1500);
     expect(large).toBeGreaterThan(190_000);
     expect(large).toBeGreaterThan(small);
-  });
-
-  it('does not count text as media and handles empty content', () => {
-    expect(estimateMediaTokensForMessage([{ type: 'text', text: 'hello' }], false)).toBe(0);
-    expect(estimateMediaTokensForMessage([], false)).toBe(0);
-    expect(estimateMediaTokensForMessage(undefined, false)).toBe(0);
   });
 
   it('rejects an oversized PDF before invoking the model with precomputed counts', async () => {

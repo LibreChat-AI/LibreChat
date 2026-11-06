@@ -7,7 +7,7 @@ describe('Chip', () => {
     render(<Chip tone="surface">Context</Chip>);
 
     expect(screen.getByText('Context').parentElement).toHaveClass(
-      'border-border-light',
+      'border-border-chrome',
       'bg-surface-secondary',
       'text-text-secondary',
     );
@@ -20,6 +20,19 @@ describe('Chip', () => {
       'bg-status-info-subtle',
       'text-status-info',
     );
+  });
+
+  it('renders the merged tone as purple text on the plain surface', () => {
+    render(<Chip tone="merged">Merged</Chip>);
+
+    const chip = screen.getByText('Merged').parentElement;
+    expect(chip).toHaveClass('text-brand-purple', 'bg-transparent');
+  });
+
+  it('does not tint the merged tone, which would drop its dark-theme text contrast below 4.5:1', () => {
+    render(<Chip tone="merged">Merged</Chip>);
+
+    expect(screen.getByText('Merged').parentElement?.className).not.toMatch(/bg-brand-purple/);
   });
 
   it('stops propagation and calls the remove handler', () => {

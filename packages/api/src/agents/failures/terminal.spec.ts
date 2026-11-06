@@ -1,5 +1,11 @@
 import { errors } from 'undici';
-import { createTerminalRunErrorObserver, getUpstreamModelErrorMetadata } from './terminal';
+import { ErrorTypes, ViolationTypes } from 'librechat-data-provider';
+import {
+  getUpstreamModelErrorMetadata,
+  getUserFacingGenerationError,
+  createTerminalRunErrorObserver,
+} from './terminal';
+import { ContentFilterError } from '../../middleware/contentFilter';
 
 describe('terminal agent-run error logging', () => {
   it('logs stable upstream metadata and deterministic trace correlation', () => {
@@ -371,5 +377,125 @@ describe('terminal agent-run error logging', () => {
       errorOrigin: 'model_provider',
       errorType: '_OTHER',
     });
+  });
+});
+
+describe('getUserFacingGenerationError', () => {
+  const protectedConfig = {
+    filters: {
+      messages: {
+        pii: {
+          starterPatterns: [],
+          customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE' }],
+        },
+      },
+    },
+  };
+
+  it('replaces a raw exception message with the fallback while a content policy is active', () => {
+    const error = new Error('400 Bad Request: prompt "PRIVATE-PROMPT" was rejected');
+    expect(getUserFacingGenerationError(error, protectedConfig, 'Generation failed')).toBe(
+      'Generation failed',
+    );
+  });
+
+  it('keeps the message with URLs redacted when no content policy is active', () => {
+    const error = new Error('request to https://api.example.test/?api_key=secret-key failed');
+    expect(getUserFacingGenerationError(error, {}, 'Generation failed')).toBe(
+      'request to https://api.example.test/[redacted] failed',
+    );
+    expect(getUserFacingGenerationError(new Error('  '), undefined, 'Generation failed')).toBe(
+      'Generation failed',
+    );
+    expect(getUserFacingGenerationError('PRIVATE-STRING', undefined, 'Generation failed')).toBe(
+      'Generation failed',
+    );
+  });
+
+  it.each([
+    ['an sk- key', 'Incorrect API key provided: sk-proj-PRIVATEKEY123', 'PRIVATEKEY123'],
+    ['an x-api-key header', 'upstream rejected x-api-key: PRIVATEHEADER123', 'PRIVATEHEADER123'],
+    [
+      'a JWT',
+      'token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJQUklWQVRFIn0.PRIVATESIG123 expired',
+      'PRIVATESIG123',
+    ],
+    ['an Authorization header', 'sent Authorization: Basic PRIVATEAUTH123', 'PRIVATEAUTH123'],
+    ['an email address', 'no account for private.user@example.com', 'private.user@example.com'],
+  ])('never returns %s without a content policy', (_label, message, secret) => {
+    const text = getUserFacingGenerationError(new Error(message), {}, 'Generation failed');
+    expect(text).not.toContain(secret);
+    expect(text).not.toBe('Generation failed');
+  });
+
+  it('keeps a typed payload the client maps to localized copy under protection', () => {
+    const typed = JSON.stringify({ type: ErrorTypes.NO_USER_KEY });
+    const violation = JSON.stringify({ type: ViolationTypes.TOKEN_BALANCE, balance: 0 });
+    expect(getUserFacingGenerationError(new Error(typed), protectedConfig, 'x')).toBe(typed);
+    expect(getUserFacingGenerationError(new Error(violation), protectedConfig, 'x')).toBe(
+      violation,
+    );
+  });
+
+  it('keeps only the code and numeric fields of a typed payload under a content policy', () => {
+    const typed = JSON.stringify({
+      type: ViolationTypes.TOKEN_BALANCE,
+      balance: 0,
+      tokenCost: 120,
+      message: 'PRIVATE-PROMPT',
+      prompt: 'PRIVATE-FIELD',
+      nested: { value: 'PRIVATE-NESTED' },
+    });
+    const text = getUserFacingGenerationError(new Error(typed), protectedConfig, 'x');
+    expect(JSON.parse(text)).toEqual({
+      type: ViolationTypes.TOKEN_BALANCE,
+      balance: 0,
+      tokenCost: 120,
+    });
+  });
+
+  it('redacts credentials in a typed payload without a content policy', () => {
+    const typed = JSON.stringify({ type: ErrorTypes.INVALID_REQUEST, info: 'key sk-PRIVATEKEY99' });
+    const text = getUserFacingGenerationError(new Error(typed), {}, 'x');
+    expect(JSON.parse(text).type).toBe(ErrorTypes.INVALID_REQUEST);
+    expect(text).not.toContain('PRIVATEKEY99');
+  });
+
+  it('treats JSON with an unknown type as an ordinary message', () => {
+    const untyped = JSON.stringify({ type: 'PRIVATE-TYPE', prompt: 'PRIVATE-PROMPT' });
+    expect(getUserFacingGenerationError(new Error(untyped), protectedConfig, 'fallback')).toBe(
+      'fallback',
+    );
+    expect(getUserFacingGenerationError(new Error('[1,2]'), protectedConfig, 'fallback')).toBe(
+      'fallback',
+    );
+    expect(getUserFacingGenerationError(new Error('{not json'), protectedConfig, 'fallback')).toBe(
+      'fallback',
+    );
+  });
+
+  it('classifies a LangChain-coded provider failure under protection', () => {
+    const error = Object.assign(new Error('rate limited PRIVATE-DETAIL'), {
+      lc_error_code: 'MODEL_RATE_LIMIT',
+    });
+    expect(getUserFacingGenerationError(error, protectedConfig, 'Generation failed')).toBe(
+      JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT }),
+    );
+  });
+
+  it('keeps the host-authored message of a content policy block under protection', () => {
+    const error = new ContentFilterError({
+      detectorId: 'pii-pattern',
+      ruleId: 'bearer_header',
+      label: 'Bearer token',
+      source: 'file',
+      field: 'content',
+      provenance: 'tool',
+      fragmentId: 'generated-file',
+      fragmentPath: '/content',
+    });
+    expect(
+      getUserFacingGenerationError(new Error('wrapped', { cause: error }), protectedConfig, 'x'),
+    ).toBe('Submitted content contains a Bearer token. Remove it and try again.');
   });
 });

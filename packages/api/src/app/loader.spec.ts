@@ -1,7 +1,7 @@
 import path from 'path';
 import { logger } from '@librechat/data-schemas';
 import type { TCustomConfig } from 'librechat-data-provider';
-import { createCustomConfigLoader, ConfigReloadError } from './loader';
+import { createCustomConfigLoader, ConfigReloadError, hashCustomConfig } from './loader';
 import { loadYaml } from '~/utils/yaml';
 
 const fixture = (name: string) => path.join(__dirname, '__fixtures__', 'theme', `${name}.yaml`);
@@ -180,5 +180,203 @@ describe('createCustomConfigLoader interface.theme', () => {
       await expect(load('unrelated-error', 'reload')).rejects.toBeInstanceOf(ConfigReloadError);
       expect(exit).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('createCustomConfigLoader policy links', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+  let warn: jest.SpyInstance;
+  let exit: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(logger, 'warn');
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    jest.spyOn(logger, 'info').mockImplementation(() => logger);
+    exit = jest.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`process.exit(${code})`);
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) {
+      delete process.env.CONFIG_PATH;
+    } else {
+      process.env.CONFIG_PATH = originalConfigPath;
+    }
+  });
+
+  const load = async (name: string, mode: 'startup' | 'reload' = 'startup') => {
+    process.env.CONFIG_PATH = path.join(__dirname, '__fixtures__', 'links', `${name}.yaml`);
+    return createLoader()(false, { mode });
+  };
+
+  it.each(['startup', 'reload'] as const)(
+    'drops a link that is not http(s), mailto:, tel: or relative and still loads on %s',
+    async (mode) => {
+      const config = await load('unsafe', mode);
+
+      expect(exit).not.toHaveBeenCalled();
+      expect(config?.interface).toEqual({
+        modelSelect: true,
+        privacyPolicy: { openNewTab: true },
+        termsOfService: { modalAcceptance: true },
+      });
+      expect(warnings(warn)).toContain('- interface.privacyPolicy.externalUrl');
+      expect(warnings(warn)).toContain('- interface.termsOfService.externalUrl');
+      expect(warnings(warn)).not.toContain('javascript');
+    },
+  );
+
+  it('keeps mailto: and http(s) links as written, without warnings', async () => {
+    const config = await load('contact');
+
+    expect(config?.interface).toEqual({
+      privacyPolicy: { externalUrl: 'mailto:privacy@example.com' },
+      termsOfService: { externalUrl: 'https://example.com/terms' },
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('createCustomConfigLoader remote fetch failures', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+
+  beforeEach(() => {
+    process.env.CONFIG_PATH = 'https://config.example/librechat.yaml';
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) {
+      delete process.env.CONFIG_PATH;
+    } else {
+      process.env.CONFIG_PATH = originalConfigPath;
+    }
+  });
+
+  const loaderFor = (error: unknown) =>
+    createCustomConfigLoader({
+      loadLocal: loadYaml,
+      defaultConfigPath: fixture('valid'),
+      redactConfig: (config: TCustomConfig) => config,
+      fetchRemote: async () => {
+        throw error;
+      },
+    });
+
+  it('fails startup when the remote config fetch times out', async () => {
+    const timeout = Object.assign(new Error('timeout of 10000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    await expect(loaderFor(timeout)()).rejects.toThrow(/Timed out fetching the remote config/);
+  });
+
+  it('keeps returning null for other remote fetch failures', async () => {
+    const refused = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    await expect(loaderFor(refused)()).resolves.toBeNull();
+  });
+});
+
+describe('createCustomConfigLoader onLoad', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+
+  beforeEach(() => {
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    jest.spyOn(logger, 'info').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) {
+      delete process.env.CONFIG_PATH;
+    } else {
+      process.env.CONFIG_PATH = originalConfigPath;
+    }
+  });
+
+  /** The loader parses a string source as YAML, so comments and layout reach the digest input. */
+  const createTextLoader = (text: string, onLoad: jest.Mock) => {
+    process.env.CONFIG_PATH = '/virtual/librechat.yaml';
+    return createCustomConfigLoader({
+      loadLocal: () => text,
+      defaultConfigPath: '/virtual/librechat.yaml',
+      redactConfig: (value: TCustomConfig) => value,
+      onLoad,
+    });
+  };
+
+  const loadText = async (text: string) => {
+    const onLoad = jest.fn();
+    const config = await createTextLoader(text, onLoad)(false);
+    return { config, onLoad };
+  };
+
+  const digestOf = async (text: string): Promise<string> => {
+    const { onLoad } = await loadText(text);
+    expect(onLoad).toHaveBeenCalledTimes(1);
+    return onLoad.mock.calls[0][0].digest;
+  };
+
+  it('hands the loaded config and a short digest to onLoad', async () => {
+    const { config, onLoad } = await loadText(
+      'version: 1.3.18\ntelemetry:\n  stackTraceLimit: 40\n',
+    );
+
+    expect(config?.telemetry?.stackTraceLimit).toBe(40);
+    expect(onLoad).toHaveBeenCalledWith({
+      config,
+      digest: expect.stringMatching(/^[0-9a-f]{12}$/),
+    });
+  });
+
+  it('keeps the digest across comments, layout and key order, and moves it on a value change', async () => {
+    const base = await digestOf('version: 1.3.18\ncache: true\ninterface:\n  modelSelect: true\n');
+    const reordered = await digestOf(
+      '# comment\ninterface: { modelSelect: true }\n\ncache: true\nversion: 1.3.18\n',
+    );
+    const changed = await digestOf(
+      'version: 1.3.18\ncache: false\ninterface:\n  modelSelect: true\n',
+    );
+
+    expect(reordered).toBe(base);
+    expect(changed).not.toBe(base);
+  });
+
+  it('hashes the file as written, not the modelSpecs the schema fills in', async () => {
+    const text =
+      'version: 1.3.18\nmodelSpecs:\n  list:\n    - name: spec\n      label: Spec\n' +
+      '      preset:\n        endpoint: openAI\n        model: gpt-4o\n';
+    const { config, onLoad } = await loadText(text);
+
+    expect(config?.modelSpecs).toBeDefined();
+    expect(onLoad.mock.calls[0][0].digest).toBe(
+      hashCustomConfig({
+        version: '1.3.18',
+        modelSpecs: {
+          list: [{ name: 'spec', label: 'Spec', preset: { endpoint: 'openAI', model: 'gpt-4o' } }],
+        },
+      }),
+    );
+  });
+
+  it('does not call onLoad when a reload is rejected', async () => {
+    const onLoad = jest.fn();
+    const load = createTextLoader('version: 1.3.18\nnotAKey: true\n', onLoad);
+
+    await expect(load(false, { mode: 'reload' })).rejects.toBeInstanceOf(ConfigReloadError);
+    expect(onLoad).not.toHaveBeenCalled();
+  });
+});
+
+describe('hashCustomConfig', () => {
+  it('ignores key order and keeps array order', () => {
+    expect(hashCustomConfig({ a: 1, b: { c: 2, d: [1, 2] } })).toBe(
+      hashCustomConfig({ b: { d: [1, 2], c: 2 }, a: 1 }),
+    );
+    expect(hashCustomConfig({ b: { d: [2, 1], c: 2 }, a: 1 })).not.toBe(
+      hashCustomConfig({ a: 1, b: { c: 2, d: [1, 2] } }),
+    );
   });
 });

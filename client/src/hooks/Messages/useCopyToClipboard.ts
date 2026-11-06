@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import copy from 'copy-to-clipboard';
 import { useRecoilValue } from 'recoil';
+import { parseWakeupMessage } from '@librechat/chat';
 import { ContentTypes, SearchResultData } from 'librechat-data-provider';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { MarkdownVariant, RichTextMode } from '~/utils/richtext';
@@ -66,12 +67,6 @@ function getMessageParts({ text, content }: Partial<Pick<TMessage, 'text' | 'con
   }
 
   return parts;
-}
-
-export function serializeMessageForClipboard(
-  source: Partial<Pick<TMessage, 'text' | 'content'>>,
-): string {
-  return getMessageParts(source).join('\n');
 }
 
 type CitationSegment = {
@@ -220,6 +215,25 @@ type MessageClipboardSource = ClipboardSource &
     /** Set by callers that render through a fixed renderer rather than the authorship default. */
     variant?: MarkdownVariant;
   };
+
+/** Mirror the rendered task results, never the hidden host prompt, when
+ *  copying a wake-up. User-submitted lookalikes retain their original content. */
+export function getMessageClipboardSource(message?: TMessage | null): MessageClipboardSource {
+  const display = parseWakeupMessage(message ?? undefined);
+  if (display != null) {
+    return {
+      text: display.tasks.map((task) => task.result).join('\n\n'),
+      isCreatedByUser: false,
+      variant: 'lite',
+    };
+  }
+  return {
+    text: message?.text,
+    content: message?.content,
+    isCreatedByUser: message?.isCreatedByUser,
+    error: message?.error,
+  };
+}
 
 /**
  * Copies a message honoring the user's rich text preference. Kept apart from

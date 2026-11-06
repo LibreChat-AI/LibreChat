@@ -7,11 +7,12 @@ import { Ellipsis, PlusCircle, HatGlasses, Check, ChartNoAxesGantt } from 'lucid
 import type { TStartupConfig } from 'librechat-data-provider';
 import type { TraceControl } from '~/components/Chat/Trace';
 import type * as t from '~/common';
+import useTemporaryChat from '~/hooks/Conversations/useTemporaryChat';
+import { usePullRequestMenu } from '~/components/Chat/PullRequest';
+import useBookmarkItems from '~/hooks/Sharing/useBookmarkItems';
+import useMultiConvo from '~/hooks/Conversations/useMultiConvo';
 import { BookmarkContext } from '~/Providers/BookmarkContext';
-import useBookmarkItems from '~/hooks/Chat/useBookmarkItems';
-import useTemporaryChat from '~/hooks/Chat/useTemporaryChat';
-import useExportShare from '~/hooks/Chat/useExportShare';
-import useMultiConvo from '~/hooks/Chat/useMultiConvo';
+import useChatOptions from '~/hooks/Sharing/useChatOptions';
 import { useHasAccess, useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -25,10 +26,16 @@ export default function HeaderMenu({
   startupConfig,
   trace,
   className,
+  readOnly = false,
+  pullRequestConversationId,
 }: {
   startupConfig?: TStartupConfig;
+  /** A read-only subagent thread offers share and export but no edits to the chat. */
+  readOnly?: boolean;
   /** Owned by the header, which also renders the desktop trace button from it. */
   trace?: TraceControl;
+  /** The saved conversation whose pull request this menu offers; none for a new chat or a child thread. */
+  pullRequestConversationId?: string;
   className?: string;
 }) {
   const localize = useLocalize();
@@ -48,11 +55,15 @@ export default function HeaderMenu({
     permission: Permissions.USE,
   });
 
+  const pullRequest = usePullRequestMenu(pullRequestConversationId ?? '');
   const multiConvo = useMultiConvo();
   const temporary = useTemporaryChat();
   const bookmarks = useBookmarkItems({ enabled: hasAccessToBookmarks === true });
-  const exportShare = useExportShare({
+  const exportShare = useChatOptions({
     isSharedButtonEnabled: startupConfig?.sharedLinksEnabled ?? false,
+    readOnly,
+    isMenuOpen: isOpen,
+    closeMenu: () => setIsOpen(false),
   });
 
   const showBookmarks = hasAccessToBookmarks === true && bookmarks.show;
@@ -101,6 +112,10 @@ export default function HeaderMenu({
     });
   }
 
+  if (pullRequest.item != null) {
+    pushGroup(pullRequest.item);
+  }
+
   if (exportShare.show) {
     pushGroup(...exportShare.items);
   }
@@ -129,7 +144,7 @@ export default function HeaderMenu({
 
   /** Mirrors the desktop share button, which surfaces an active link in its tooltip. */
   const triggerDescription = exportShare.hasSharedLink
-    ? localize('com_ui_export_share_link_active')
+    ? localize('com_ui_chat_options_link_active')
     : localize('com_ui_more_options');
 
   return (
@@ -154,18 +169,15 @@ export default function HeaderMenu({
                 render={
                   <Button
                     size="icon"
-                    variant="outline"
-                    className={cn(
-                      'bg-presentation hover:bg-surface-active-alt relative size-9 shrink-0 rounded-xl',
-                      className,
-                    )}
+                    variant="header-action"
+                    className={cn('relative size-9 shrink-0', className)}
                   />
                 }
               >
                 <Ellipsis className="icon-md" aria-hidden="true" />
                 {exportShare.hasSharedLink && (
                   <span
-                    className="bg-status-info ring-presentation absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2"
+                    className="bg-status-info ring-presentation absolute -inset-e-0.5 -top-0.5 size-2 rounded-full ring-2"
                     data-testid="header-menu-shared-link-indicator"
                     aria-hidden="true"
                   />
@@ -177,6 +189,7 @@ export default function HeaderMenu({
       />
       {showBookmarks && bookmarks.dialog}
       {exportShare.dialogs}
+      {pullRequest.dialog}
     </BookmarkContext.Provider>
   );
 }

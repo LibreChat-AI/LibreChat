@@ -22,6 +22,7 @@ const mockSidebarState = { isSmallScreen: true, expanded: false, setExpanded: je
 
 jest.mock('@librechat/client', () => ({
   useMediaQuery: () => false,
+  useRemScale: () => 1,
 }));
 
 jest.mock('~/hooks/Nav/useSidebarState', () => ({
@@ -41,12 +42,15 @@ jest.mock('~/hooks/Nav/useUnifiedSidebarLinks', () => ({
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
-  useChatHelpers: () => ({}),
   useShowMarketplace: () => false,
 }));
 
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  ChatProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
+
 jest.mock('~/Providers', () => ({
-  ChatContext: { Provider: ({ children }: { children: ReactNode }) => <>{children}</> },
   ChatFormProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
   ActivePanelProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));

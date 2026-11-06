@@ -398,6 +398,33 @@ describe('bulkWriteTransactions (real DB)', () => {
     const bal = await Balance.findOne({ user: testUserId }).lean();
     expect(bal).toBeNull();
   });
+
+  it('should not debit the balance when inserting the ledger entries fails', async () => {
+    await Balance.create({ user: testUserId, tokenCredits: 1000 });
+    const docs: PreparedEntry[] = [
+      {
+        doc: { user: testUserId, conversationId: 'c1', tokenType: 'prompt', tokenValue: -100 },
+        tokenValue: -100,
+        balance: { enabled: true },
+      },
+    ];
+    const updateBalance = jest.fn(dbMethods.updateBalance);
+    const dbOps = {
+      insertMany: jest.fn().mockRejectedValue(new Error('insert failed')),
+      updateBalance,
+    };
+
+    await expect(bulkWriteTransactions({ user: testUserId, docs }, dbOps)).rejects.toThrow(
+      'insert failed',
+    );
+
+    expect(updateBalance).not.toHaveBeenCalled();
+    const bal = (await Balance.findOne({ user: testUserId }).lean()) as Record<
+      string,
+      unknown
+    > | null;
+    expect(bal!.tokenCredits).toBe(1000);
+  });
 });
 
 describe('end-to-end: prepare → bulk write → verify', () => {

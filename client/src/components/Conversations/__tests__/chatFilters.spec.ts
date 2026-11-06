@@ -33,17 +33,17 @@ describe('showProjectChatsAtom', () => {
     localStorage.clear();
   });
 
-  it('lists project chats under Chats by default', () => {
-    expect(createStore().get(showProjectChatsAtom)).toBe(true);
+  it('keeps project chats out of Chats by default', () => {
+    expect(createStore().get(showProjectChatsAtom)).toBe(false);
   });
 
-  it('counts hiding them as one change the menu badge and Reset own', () => {
+  it('counts listing them as one change the menu badge and Reset own', () => {
     const store = createStore();
-    store.set(showProjectChatsAtom, false);
+    store.set(showProjectChatsAtom, true);
     expect(store.get(chatFilterCountAtom)).toBe(1);
 
     store.set(resetChatFiltersAtom);
-    expect(store.get(showProjectChatsAtom)).toBe(true);
+    expect(store.get(showProjectChatsAtom)).toBe(false);
     expect(store.get(chatFilterCountAtom)).toBe(0);
   });
 
@@ -59,12 +59,12 @@ describe('showProjectChatsAtom', () => {
     return value as boolean;
   };
 
-  it('keeps the choice to hide them across visits', () => {
-    expect(onNextVisit(false)).toBe(false);
+  it('keeps the choice to list them across visits', () => {
+    expect(onNextVisit(true)).toBe(true);
   });
 
   it('reads a stored value that is not a boolean as the default', () => {
-    expect(onNextVisit('no')).toBe(true);
+    expect(onNextVisit('yes')).toBe(false);
   });
 });
 

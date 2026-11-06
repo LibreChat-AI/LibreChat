@@ -1,9 +1,11 @@
 import React from 'react';
 import { ResourceType } from 'librechat-data-provider';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/extend-expect';
 import GenericGrantAccessDialog from '../GenericGrantAccessDialog';
+import translationEn from '~/locales/en/translation.json';
 
+const mockShowToast = jest.fn();
 const mockRefetchPermissions = jest.fn();
 const mockUseResourcePermissionState = jest.fn();
 const mockUseAuthContext = jest.fn(() => ({ user: { role: 'ADMIN' } }));
@@ -50,7 +52,7 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
-  useToastContext: () => ({ showToast: jest.fn() }),
+  useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
 jest.mock('../PeoplePicker/UnifiedPeopleSearch', () => ({
@@ -160,7 +162,7 @@ describe('GenericGrantAccessDialog - permissions load failure', () => {
     expect(footer).toHaveClass('bg-transparent');
     expect(footer).not.toHaveClass('border-t');
     expect(saveButton).toHaveClass('sm:w-auto');
-    expect(saveButton).not.toHaveClass('min-w-[140px]');
+    expect(saveButton).not.toHaveClass('min-w-[8.75rem]');
     expect(screen.queryByRole('button', { name: 'com_ui_cancel' })).not.toBeInTheDocument();
   });
 
@@ -194,5 +196,32 @@ describe('GenericGrantAccessDialog - permissions load failure', () => {
 
     expect(setIsPublic).toHaveBeenCalledWith(false);
     expect(setPublicRole).toHaveBeenCalledWith('viewer');
+  });
+
+  it.each([
+    ['RESOURCE_PERMISSIONS_BUSY', 'com_ui_permissions_busy'],
+    ['RESOURCE_PERMISSIONS_UNAVAILABLE', 'com_ui_permissions_unavailable'],
+    ['PERMISSION_AUDIT_UNAVAILABLE', 'com_ui_permissions_audit_unavailable'],
+    ['SOMETHING_ELSE', 'com_ui_permissions_failed_update'],
+  ])('shows the localized message for the %s failure code on save', async (code, key) => {
+    const mutateAsync = jest.fn().mockRejectedValue({ response: { data: { code } } });
+    mockUseResourcePermissionState.mockReturnValue(
+      baseState({
+        isPublic: true,
+        currentIsPublic: false,
+        updatePermissionsMutation: { isLoading: false, mutateAsync },
+      }),
+    );
+    mockShowToast.mockClear();
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    renderDialog();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_share_var' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_save' }));
+
+    await waitFor(() =>
+      expect(mockShowToast).toHaveBeenCalledWith({ message: key, status: 'error' }),
+    );
+    expect((translationEn as Record<string, string>)[key]).toEqual(expect.any(String));
   });
 });

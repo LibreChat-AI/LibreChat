@@ -29,6 +29,7 @@ import {
   defaultAgentCapabilities,
   EToolResources,
   FileContext,
+  getClientLimit,
   MAX_CHAT_PROJECT_FILES,
   PermissionTypes,
   Permissions,
@@ -293,10 +294,20 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
     }
   };
 
+  /** runUpload reports its own failures per item, so workers never reject. */
   const processUploads = async (items: UploadState[]) => {
-    for (const item of items) {
-      await runUpload(item);
-    }
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const item = items[next++];
+        await runUpload(item);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(getClientLimit('uploadConcurrency'), items.length) }, () =>
+        worker(),
+      ),
+    );
   };
 
   const handleUploadChange = (event: React.ChangeEvent<HTMLInputElement>) => {

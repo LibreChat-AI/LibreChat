@@ -75,3 +75,25 @@ export function shouldPersistCodeWorkspaceInitializationError({
     !hasValidatedDecision
   );
 }
+
+/**
+ * Why a subagent cannot run on its machine in this conversation, when that need not fail the
+ * parent's turn. A `locked` decision concerns the whole conversation, so it stays fatal.
+ */
+export function getSubagentCodeWorkspaceUnavailableReason(
+  error: unknown,
+): Exclude<CodeWorkspaceSelectionErrorReason, 'locked'> | undefined {
+  if (!(error instanceof CodeWorkspaceSelectionError) || error.reason === 'locked') {
+    return undefined;
+  }
+  return error.reason;
+}
+
+/** Tells the parent model up front that this subagent cannot run, and why. */
+export function describeCodeWorkspaceUnavailableSubagent(
+  description: string | undefined,
+  reason: CodeWorkspaceSelectionErrorReason,
+): string {
+  const notice = `Unavailable in this conversation: ${codeWorkspaceSelectionErrorMessage(reason)}`;
+  return description ? `${description}\n\n${notice}` : notice;
+}

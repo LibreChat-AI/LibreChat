@@ -16,6 +16,7 @@ import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
+import type { AuthoredSkillBinding } from '~/agents/authored';
 import type { MCPRuntimeRequestBody } from '~/mcp/types';
 
 /**
@@ -172,6 +173,9 @@ export interface SerializableJobData {
 
   /** Whether this generation replaces an existing assistant branch. */
   isRegenerate?: boolean;
+  /** Whether this generation is a manual context compaction; the abort paths
+   * read it to stamp the stopped row with the compaction's identity. */
+  compact?: boolean;
   /** Exact normalized MCP placeholder identity for this turn. */
   mcpRequestBody?: MCPRuntimeRequestBody;
   /** Exact assistant-message fields authored by the user during this running job. */
@@ -202,6 +206,8 @@ export interface SerializableJobData {
    * the discovered tool schemas.
    */
   discoveredTools?: string[];
+  /** Skill identities authored by this generation, reauthorized on resume. */
+  authoredSkills?: AuthoredSkillBinding[];
   /** Bounded collector state for continuing a phase across HITL resume. */
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   /** Exact bounded compaction guidance captured atomically with a HITL pause. */
@@ -457,11 +463,34 @@ export class JobPredecessorMismatchError extends Error {
   }
 }
 
+/** Thrown by `createJob` when the owner's account deletion began before the job could be admitted. */
+export class GenerationAdmissionDeniedError extends Error {
+  readonly code = 'ACCOUNT_DELETION_IN_PROGRESS';
+  readonly status = 409;
+
+  constructor() {
+    super('Account deletion is in progress');
+    this.name = 'GenerationAdmissionDeniedError';
+  }
+}
+
+/** Thrown by `createJob` when the account admission check itself failed; carries no lookup diagnostics. */
+export class GenerationAdmissionUnavailableError extends Error {
+  readonly code = 'GENERATION_ADMISSION_UNAVAILABLE';
+  readonly status = 503;
+
+  constructor() {
+    super('Generation admission could not be verified');
+    this.name = 'GenerationAdmissionUnavailableError';
+  }
+}
+
 export type JobMetadataPatch = Partial<
   Pick<
     SerializableJobData,
     | 'responseMessageId'
     | 'isRegenerate'
+    | 'compact'
     | 'mcpRequestBody'
     | 'userSubmittedPaths'
     | 'userSubmittedMessageFieldPaths'
@@ -494,6 +523,7 @@ export type JobMetadataPatch = Partial<
     | 'preserveForScheduleReconcile'
     | 'promptTokens'
     | 'discoveredTools'
+    | 'authoredSkills'
     | 'activityPhaseSnapshot'
     | 'compactionSemanticIndex'
     | 'contextMeta'
@@ -796,6 +826,8 @@ export interface UsageMetadata {
   input_token_details?: {
     /** Tokens written to cache */
     cache_creation?: number;
+    /** Subset of `cache_creation` written to Anthropic's 1-hour cache (see `getModelEndUsage`) */
+    cache_creation_1h?: number;
     /** Tokens read from cache */
     cache_read?: number;
     /** OpenAI GPT-5.6+ cache-write tokens (billed above the input rate) */
@@ -915,8 +947,31 @@ export interface ResumeState {
  * the additional {@link IJobStoreV2} capabilities before accepting a custom
  * store at runtime.
  */
+/** Captured stale provider identity. Recovery requires positive host termination proof. */
+export interface ScheduleProviderOwner {
+  streamId: string;
+  createdAt: number;
+  providerExecutionId: string;
+  scheduleId: string;
+  scheduledFor: string;
+  userId: string;
+  tenantId: string | null;
+  lastActiveAt: number;
+}
+
+export interface ScheduleCleanupScope {
+  scheduleId?: string;
+  userId?: string;
+}
+
 export interface IJobStore {
   readonly detachedAgentEventActionStoreMode?: DetachedAgentEventActionStoreMode;
+  /** Receipt evidence survives loss of the generation worker; absent is volatile. */
+  readonly durableScheduleReceipts?: boolean;
+
+  /** Synchronous exact-epoch notification after a retained stale transition.
+   * Cancellation is not drain acknowledgement; provider owners still record drain. */
+  setStaleGenerationHandler?(handler?: (streamId: string, createdAt: number) => void): void;
 
   initialize(): Promise<void>;
 
@@ -963,6 +1018,12 @@ export interface IJobStore {
    * retry the host adapter after a restart / on another replica, even though the job is
    * no longer in the requires_action index. */
   getTerminalHostActionJobs?(): Promise<SerializableJobData[]>;
+  /** Generation-scoped schedule settlement outbox, including already-bookkept runs. */
+  getScheduleReconcileJobs?(limit: number): Promise<SerializableJobData[]>;
+  /** Independent of active Mongo runs. Missing capability cannot certify cleanup. */
+  hasScheduleCleanupObligation?(scope: ScheduleCleanupScope): Promise<boolean>;
+  /** Used only after trusted host process-loss confirmation; status/epoch/segment/liveness CAS. */
+  recoverScheduleProviderOwnerLoss?(owner: ScheduleProviderOwner): Promise<boolean>;
   /** Enumerates detached Event Actor completion generations from a versioned
    * retry lane known only to capable consumers. Redis keeps this lane separate
    * from `getTerminalHostActionJobs` so a rolling-deployment replica that only

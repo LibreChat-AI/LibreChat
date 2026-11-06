@@ -55,6 +55,9 @@ export type ServerRequest = Request<unknown, unknown, RequestBody> & {
   chatProjectFilesPromise?: Promise<TFile[]>;
   /** Internal opt-in marker for conversation graph agent initialization. */
   chatProjectContextEnabled?: boolean;
+  /** Subagents that run on their parent's attached machine this turn, keyed by saved agent ID.
+   *  Derived per request from the sealed decision and never persisted. */
+  codeWorkspaceInheritance?: ReadonlyMap<string, string>;
   authStrategy?: string;
   /** Trusted snapshot used to keep a request-scoped override out of saved conversation defaults. */
   reasoningOverrideBase?: {
