@@ -190,3 +190,32 @@ export function applyDeferredToolLoading(params: {
   }
   return { toolDefinitions: changed ? nextDefs : defs, toolRegistry, hasDeferredTools: true };
 }
+
+/**
+ * Points each deferred definition back at its registry entry after a pass that
+ * rewrote both sides separately, such as stripping background or intent schema
+ * from a subagent's inherited inputs. Both sides went through the same
+ * rewrite, so the registry entry is the definition's current form. Returns the
+ * input array when nothing needed rejoining.
+ */
+export function shareDeferredDefinitions(
+  toolDefinitions: LCTool[] | undefined,
+  toolRegistry: LCToolRegistry | undefined,
+): LCTool[] | undefined {
+  if (!toolDefinitions || !toolRegistry) {
+    return toolDefinitions;
+  }
+  let changed = false;
+  const shared = toolDefinitions.map((def) => {
+    if (def.defer_loading !== true) {
+      return def;
+    }
+    const entry = toolRegistry.get(def.name);
+    if (entry == null || entry === def || entry.defer_loading !== true) {
+      return def;
+    }
+    changed = true;
+    return entry;
+  });
+  return changed ? shared : toolDefinitions;
+}

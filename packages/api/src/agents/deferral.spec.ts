@@ -4,6 +4,7 @@ import type { LCTool, LCToolRegistry } from '@librechat/agents';
 import {
   isDeferrableToolName,
   applyDeferredToolLoading,
+  shareDeferredDefinitions,
   synthesizeDeferralToolOptions,
 } from './deferral';
 import { cloneSubagentToolSurface, overrideDeferLoadingForDiscoveredTools } from './run';
@@ -302,5 +303,31 @@ describe('cloneSubagentToolSurface', () => {
     overrideDeferLoadingForDiscoveredTools(child.toolRegistry, new Set(['web_search']));
     expect(childDeferred.defer_loading).toBe(false);
     expect(deferred.defer_loading).toBe(true);
+  });
+});
+
+describe('shareDeferredDefinitions', () => {
+  it('rejoins deferred definitions a strip pass rewrote separately from the registry', () => {
+    const strippedDefinition: LCTool = { ...def('web_search'), defer_loading: true };
+    const strippedEntry: LCTool = { ...def('web_search'), defer_loading: true };
+    const plain = def('file_search');
+    const registry: LCToolRegistry = new Map([
+      [strippedEntry.name, strippedEntry],
+      [plain.name, { ...plain }],
+    ]);
+    const shared = shareDeferredDefinitions([strippedDefinition, plain], registry);
+
+    expect(shared?.[0]).toBe(strippedEntry);
+    expect(shared?.[1]).toBe(plain);
+    overrideDeferLoadingForDiscoveredTools(registry, new Set(['web_search']));
+    expect(shared?.[0].defer_loading).toBe(false);
+  });
+
+  it('returns the same array when every deferred definition already shares its entry', () => {
+    const deferred: LCTool = { ...def('web_search'), defer_loading: true };
+    const defs = [deferred, def('file_search')];
+    const registry: LCToolRegistry = new Map([[deferred.name, deferred]]);
+    expect(shareDeferredDefinitions(defs, registry)).toBe(defs);
+    expect(shareDeferredDefinitions(defs, undefined)).toBe(defs);
   });
 });

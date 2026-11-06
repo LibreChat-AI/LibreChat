@@ -2275,7 +2275,6 @@ export async function initializeAgent(
     requestScopedConnections: undefined,
     toolDefinitions: [],
     hasDeferredTools: false,
-    deferredToolsEnabled: false,
     mcpToolAliases: [],
     actionsEnabled: undefined,
     oauthActionToolNames: undefined,

@@ -129,6 +129,7 @@ import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
+import { shareDeferredDefinitions } from '~/agents/deferral';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
 import { getAgentCheckpointer } from '~/agents/checkpointer';
 import { getPluginHookSource } from '~/agents/hooks/source';
@@ -1919,6 +1920,10 @@ function buildIsolatedAgentInputs(
       child.intentToolNames,
     );
   }
+  childInputs.toolDefinitions = shareDeferredDefinitions(
+    childInputs.toolDefinitions,
+    childInputs.toolRegistry,
+  );
   return childInputs;
 }
 
@@ -1970,12 +1975,15 @@ function buildSubagentConfigs(
         ? {
             agentInputs: {
               ...agentInput,
-              toolDefinitions: stripIntentFromToolDefinitions(
-                stripBackgroundFromToolDefinitions(
-                  agentInput.toolDefinitions,
-                  agent.backgroundToolNames,
+              toolDefinitions: shareDeferredDefinitions(
+                stripIntentFromToolDefinitions(
+                  stripBackgroundFromToolDefinitions(
+                    agentInput.toolDefinitions,
+                    agent.backgroundToolNames,
+                  ),
+                  agent.intentToolNames,
                 ),
-                agent.intentToolNames,
+                sanitizedToolRegistry,
               ),
               /** `registerBackgroundTaskTool` mutates the parent registry after
                * configs are built. Detach its self-child snapshot so the host
