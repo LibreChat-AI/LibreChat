@@ -248,10 +248,11 @@ async function collectSkillUploadFiles(
     if (result.status === 'fulfilled' && result.value) {
       filesToUpload.push(result.value);
     } else if (result.status === 'rejected') {
-      logger.error('[primeSkillFiles] Failed to get stream:', {
-        relativePath: skillFiles[index].relativePath,
-        ...getSafeErrorMetadata(result.reason),
-      });
+      /* The path belongs in the message: the default console format drops metadata. */
+      logger.error(
+        `[primeSkillFiles] Failed to get stream for "${skillFiles[index].relativePath}":`,
+        getSafeErrorMetadata(result.reason),
+      );
     }
   }
 

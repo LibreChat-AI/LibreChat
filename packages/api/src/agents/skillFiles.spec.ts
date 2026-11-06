@@ -973,10 +973,10 @@ describe('primeSkillFiles — resource identity propagation', () => {
     ]);
     expect(result?.storage_session_id).toBe('session-fresh');
     expect(logger.error).toHaveBeenCalledTimes(1);
-    expect(logger.error).toHaveBeenCalledWith('[primeSkillFiles] Failed to get stream:', {
-      relativePath: 'masters/missing.dotx',
-      type: 'Error',
-    });
+    expect(logger.error).toHaveBeenCalledWith(
+      '[primeSkillFiles] Failed to get stream for "masters/missing.dotx":',
+      { type: 'Error' },
+    );
   });
 
   it('fresh-upload path: emits resource_id=skill._id, kind=skill, version on each file', async () => {
