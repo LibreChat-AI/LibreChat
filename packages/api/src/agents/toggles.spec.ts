@@ -31,11 +31,19 @@ describe('resolveToolToggle', () => {
     expect(resolveToolToggle(undefined, undefined)).toBe(false);
   });
 
-  it('keeps the spec authoritative when it hides the badge row', () => {
-    const hidden = { hideBadgeRow: true };
-    expect(resolveToolToggle(false, true, hidden)).toBe(true);
-    expect(resolveToolToggle(true, false, hidden)).toBe(false);
-    expect(resolveToolToggle(true, undefined, hidden)).toBe(true);
+  it.each([
+    ['hides the badge row', { hideBadgeRow: true }],
+    ['is not sent to the client', { showInMenu: false }],
+  ])('combines both sources when the spec %s', (_label, visibility) => {
+    expect(resolveToolToggle(false, true, visibility)).toBe(true);
+    expect(resolveToolToggle(true, false, visibility)).toBe(true);
+    expect(resolveToolToggle(false, false, visibility)).toBe(false);
+    expect(resolveToolToggle(undefined, undefined, visibility)).toBe(false);
+  });
+
+  it('lets the user decide for a listed spec with visible badges', () => {
+    const visible = { showInMenu: true, hideBadgeRow: false };
+    expect(resolveToolToggle(false, true, visible)).toBe(false);
   });
 });
 
