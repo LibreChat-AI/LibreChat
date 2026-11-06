@@ -12,6 +12,7 @@ import type { ChatSurface } from '../../../react/subagents/surface';
 import type { SubagentsHost } from '../../../react/subagents/host';
 import type { MessagePartsHost } from '../../../react/host';
 import { SubagentActivity, SubagentActivityScrollSurface } from '../transcript';
+import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { TaskContentScopeContext } from '../../../react/subagents/scope';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { SubagentsHostProvider } from '../../../react/subagents/host';
@@ -180,13 +181,13 @@ const useRetainedControl: SubagentsHost['useRetainedControl'] = (scope, invocati
   };
 };
 
-const subagentsHost: SubagentsHost = {
+const subagentsHost: SubagentsHost = createSubagentsHost({
   renderSteer: (props) => <MockSteerPart {...props} />,
   useRetainedControl,
   useTaskContent: () => ({ isError: false, isUnavailable: false, refetch: () => undefined }),
   useAgentsMap: () => undefined,
   useChildPartsHost: (host) => host,
-};
+});
 
 const partsHost: Partial<MessagePartsHost> = {
   renderContentParts: (props) => (
