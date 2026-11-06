@@ -227,6 +227,19 @@ describe('resolveHeaders', () => {
     });
   });
 
+  it('should process the IDONTHESOURCE placeholder so an external identity can be sent', () => {
+    const user = createTestUser({
+      id: 'user-123',
+      idOnTheSource: 'oid-456',
+    });
+
+    const headers = {
+      'X-End-User-Id': '{{LIBRECHAT_USER_IDONTHESOURCE}}',
+    };
+
+    expect(resolveHeaders({ headers, user })).toEqual({ 'X-End-User-Id': 'oid-456' });
+  });
+
   it('should handle missing user fields gracefully', () => {
     const user = createTestUser({
       id: 'user-123',

@@ -34,6 +34,7 @@ export function isPluginSourced(config?: { source?: string } | null): boolean {
  */
 const ALLOWED_USER_FIELDS = [
   'id',
+  'idOnTheSource',
   'name',
   'username',
   'email',
