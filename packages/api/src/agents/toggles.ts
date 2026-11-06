@@ -4,8 +4,13 @@
  * The chat badges seed from the model spec and the client sends the user's
  * resulting choice, including an explicit `false` for a badge switched off.
  * The spec is the default, not an override: a visible badge the user turned off
- * stays off. A spec that hides the badge row offers no badges to switch, so its
- * own flags decide.
+ * stays off.
+ *
+ * That only holds when the client could seed and show the spec's badges. A spec
+ * that hides the badge row offers nothing to switch, and a `showInMenu: false`
+ * spec never reaches the client's startup config, so whatever badge state it
+ * sends was not chosen against this spec. Those keep combining both sources, so
+ * a server-only spec still equips its tools.
  *
  * @module packages/api/src/agents/toggles
  */
@@ -21,14 +26,21 @@ interface ToggleSources {
   modelSpec?: TModelSpec | null;
 }
 
+type BadgeVisibility = Pick<TModelSpec, 'hideBadgeRow' | 'showInMenu'>;
+
+/** Whether the client seeded this spec's badges and showed them for the user to switch. */
+export function hasUserControlledBadges(modelSpec: BadgeVisibility): boolean {
+  return modelSpec.hideBadgeRow !== true && modelSpec.showInMenu !== false;
+}
+
 /** Resolves one tool toggle from the user's badge and the spec's default. */
 export function resolveToolToggle(
   userValue: boolean | undefined,
   specValue: boolean | undefined,
-  modelSpec?: Pick<TModelSpec, 'hideBadgeRow'> | null,
+  modelSpec?: BadgeVisibility | null,
 ): boolean {
-  if (modelSpec?.hideBadgeRow === true) {
-    return (specValue ?? userValue) === true;
+  if (modelSpec != null && !hasUserControlledBadges(modelSpec)) {
+    return userValue === true || specValue === true;
   }
   return (userValue ?? specValue) === true;
 }

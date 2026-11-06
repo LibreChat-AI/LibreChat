@@ -148,4 +148,14 @@ describe('loadEphemeralAgent model spec tool toggles', () => {
     const agent = await load(specReq({ execute_code: false }, { hideBadgeRow: true }));
     expect(agent?.tools).toContain('execute_code');
   });
+
+  it('keeps spec tools for a spec the client never received', async () => {
+    const agent = await load(
+      specReq(
+        { execute_code: false, web_search: false, file_search: false },
+        { showInMenu: false },
+      ),
+    );
+    expect(agent?.tools).toEqual(['execute_code', 'file_search', 'web_search']);
+  });
 });
