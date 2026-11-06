@@ -85,9 +85,15 @@ async function memoryAlert(page: Page, conversationId: string, mode: Mode, theme
   await toggle.click();
   const alert = page.getByRole('alert').filter({ hasText: 'Cannot save - would exceed limit' });
   await expect(alert).toBeVisible();
-  /** The row opens with a height transition; the shot is taken once every animation has settled. */
+  /** The row opens with a height transition; the shot is taken once it has settled. A looping
+   *  animation never finishes: a long chat list keeps skeleton rows pulsing in the sidebar. */
   await page.evaluate(() =>
-    Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => null))),
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+        .map((animation) => animation.finished.catch(() => null)),
+    ),
   );
   await expect(alert).toBeInViewport({ ratio: 1 });
   await test.info().attach(`memory-alert-${theme}-${mode}`, {
