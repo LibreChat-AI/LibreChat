@@ -111,7 +111,7 @@ describe('Agent Management delete handler', () => {
     expect(deps.deleteAgent).not.toHaveBeenCalled();
   });
 
-  it('fails closed without a tenant-bound authenticated user', async () => {
+  it('reads and deletes only Agents without a tenant for a User without a tenant', async () => {
     const deps = makeDeps();
     const response = makeResponse();
 
@@ -120,9 +120,11 @@ describe('Agent Management delete handler', () => {
       response,
     );
 
-    expect(response.status).toHaveBeenCalledWith(403);
-    expect(deps.getRoleByName).not.toHaveBeenCalled();
-    expect(deps.deleteAgent).not.toHaveBeenCalled();
+    expect(deps.getAgentWithVersionCount).toHaveBeenCalledWith({
+      id: existingAgent.id,
+      tenantId: null,
+    });
+    expect(deps.deleteAgent).toHaveBeenCalledWith({ id: existingAgent.id, tenantId: null });
   });
 
   it('does not disclose or delete an Agent outside the authenticated tenant', async () => {

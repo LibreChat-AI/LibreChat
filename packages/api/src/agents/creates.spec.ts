@@ -140,12 +140,25 @@ describe('Agent Management create handler', () => {
     expect(deps.createAgent).not.toHaveBeenCalled();
   });
 
-  it('fails closed without a tenant-bound authenticated user', async () => {
+  it('creates for a User without a tenant, as its browser session does', async () => {
     const deps = makeDeps();
     const response = makeResponse();
 
     await createAgentManagementCreateHandler(deps)(
       makeRequest({ user: { ...user, tenantId: undefined } as IUser }),
+      response,
+    );
+
+    expect(response.status).not.toHaveBeenCalledWith(403);
+    expect(deps.createAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed without an authenticated user', async () => {
+    const deps = makeDeps();
+    const response = makeResponse();
+
+    await createAgentManagementCreateHandler(deps)(
+      makeRequest({ user: undefined as unknown as IUser }),
       response,
     );
 
