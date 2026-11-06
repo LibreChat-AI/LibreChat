@@ -722,7 +722,16 @@ export function createSchedulesService(
           // record in between must never be handed back its starting balance. Each case
           // fences the credit write so it can only create, never restore, credits. The
           // refill-config fields are a genuine sync and never carry a credit.
-          const { user: initUser, tokenCredits, ...syncFields } = updateFields;
+          const {
+            user: initUser,
+            tokenCredits,
+            allotment,
+            allottedAt,
+            lastRefill,
+            ...syncFields
+          } = updateFields;
+          // The grant tuple is written only with the credit, so a racing creator keeps its period.
+          const grant = { allotment, allottedAt, lastRefill };
           if (record == null) {
             // ABSENT record: upsert. The credit rides `$setOnInsert` so a document created
             // by a concurrent charge keeps its charged balance; the refill-config sync is
@@ -731,7 +740,7 @@ export function createSchedulesService(
               set: syncFields,
               setOnInsert: {
                 ...(initUser != null ? { user: initUser } : {}),
-                ...(tokenCredits != null ? { tokenCredits } : {}),
+                ...(tokenCredits != null ? { tokenCredits, ...grant } : {}),
               },
             });
           } else if (tokenCredits != null) {
@@ -739,9 +748,10 @@ export function createSchedulesService(
             // concurrent initializer/charge already set and spent between the read and
             // here. Initialize under a `{ tokenCredits: null }` CAS; on a miss re-read the
             // winner's balance instead of overwriting it.
+            // The allotment rides the CAS so it is written only with the credit it describes.
             const initialized = await deps.initializeNullBalance(user.id, {
               tokenCredits,
-              sync: syncFields,
+              sync: { ...syncFields, ...grant },
             });
             record =
               initialized ?? (await deps.findBalance(user.id, { applyReset: false })) ?? record;
