@@ -379,3 +379,116 @@ test.describe('tool fold tree (touch)', () => {
     await expect(traceOf(rail)).not.toHaveAttribute('data-lit', '');
   });
 });
+
+test.describe('tool disclosure polish', () => {
+  test.use(DESKTOP);
+  test('a named command with Thoughts retains its command header and precise timer', async ({
+    page,
+  }) => {
+    await openConversation(page, [
+      {
+        type: 'tool_call',
+        tool_call: {
+          id: 'timed',
+          name: 'bash_tool',
+          args: '{"command":"echo hi"}',
+          output: 'hi',
+          progress: 1,
+          type: 'tool_call',
+          runStepStatus: 'completed',
+          runStepDurationMs: 10200,
+        },
+      },
+      { type: 'activity_label', activity_label: 'Checked the command', pending: false },
+      { type: 'think', think: 'Checking whether the output matches' },
+      { type: 'text', text: 'Fold tree fixture done.' },
+    ]);
+    const header = messagesView(page)
+      .getByRole('button', { name: /Checked the command/ })
+      .first();
+    await header.click();
+    await expect(messagesView(page).getByRole('button', { name: /Ran command/ })).toBeVisible();
+    await expect(messagesView(page).getByTestId('command-time').first()).toContainText('10.2s');
+    await expect(
+      messagesView(page)
+        .getByRole('button', { name: /Thoughts/ })
+        .last(),
+    ).toBeVisible();
+  });
+  test('a generated failed-command title opens its error directly and retains focus', async ({
+    page,
+  }) => {
+    await openConversation(page, [
+      {
+        type: 'tool_call',
+        tool_call: {
+          id: 'failed',
+          name: 'bash_tool',
+          args: '{"command":"false"}',
+          output: 'Error: tool call failed: exit code 2',
+          progress: 1,
+          type: 'tool_call',
+          runStepStatus: 'failed',
+          runStepDurationMs: 10200,
+        },
+      },
+      {
+        type: 'activity_label',
+        activity_label: 'Checked the failing command',
+        pending: false,
+        status: 'failed',
+      },
+      {
+        type: 'activity_label',
+        activity_label: 'Checked the failing command',
+        activity_label_type: 'phase',
+        activity_start_index: 0,
+        activity_end_index: 2,
+        activity_count: 1,
+        pending: false,
+        status: 'failed',
+      },
+      { type: 'text', text: 'Fold tree fixture done.' },
+    ]);
+    await messagesView(page).getByTestId('failed-reveal-pill').first().click();
+    await expect(messagesView(page).getByRole('button', { name: /Ran command/ })).toHaveCount(0);
+    await expect(
+      messagesView(page).getByText('Error: tool call failed: exit code 2', { exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.textContent))
+      .toContain('exit code 2');
+  });
+
+  test('collapse passes through intermediate heights instead of snapping', async ({ page }) => {
+    await openConversation(page, GROUP_CONTENT);
+    await openGroup(page, /^Ran 4 actions/);
+    const panel = messagesView(page).getByTestId('tool-call-group-panel').last();
+    await expect(panel).toBeVisible();
+    await page.waitForFunction(
+      () =>
+        !document
+          .getAnimations()
+          .some((a) => a.playState === 'running' && a instanceof CSSTransition),
+    );
+    await panel.evaluate((element) => {
+      const values: number[] = [];
+      (window as unknown as { foldHeights: number[] }).foldHeights = values;
+      const until = performance.now() + 600;
+      const sample = () => {
+        values.push(element.getBoundingClientRect().height);
+        if (performance.now() < until) requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    await messagesView(page)
+      .getByRole('button', { name: /^Ran 4 actions/ })
+      .first()
+      .click();
+    await expect.poll(() => panel.evaluate((el) => el.getBoundingClientRect().height)).toBe(0);
+    const heights = await page.evaluate(
+      () => (window as unknown as { foldHeights: number[] }).foldHeights,
+    );
+    expect(new Set(heights.map(Math.round)).size).toBeGreaterThan(3);
+  });
+});

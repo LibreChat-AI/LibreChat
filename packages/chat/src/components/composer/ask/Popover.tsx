@@ -244,6 +244,19 @@ export default function AskPopover({
     textAreaRef?.current?.focus();
   }, [popoverVisible, textAreaRef]);
 
+  /** The other direction: opening is a handoff from the chat card, whose button goes away as the
+   *  popover opens. A single question is answered in the draft, so the draft takes focus; a batch
+   *  focuses its own controls through the host's card. */
+  const wasVisible = useRef(popoverVisible);
+  const batch = (liveAsk?.questions?.length ?? 0) > 0;
+  useEffect(() => {
+    const opened = popoverVisible && !wasVisible.current;
+    wasVisible.current = popoverVisible;
+    if (opened && !batch) {
+      textAreaRef?.current?.focus();
+    }
+  }, [popoverVisible, batch, textAreaRef]);
+
   if (!popoverVisible || !liveAsk) {
     return null;
   }

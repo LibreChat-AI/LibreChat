@@ -1,6 +1,13 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
 import {
+  MOCK_ENDPOINTS,
+  NEW_CHAT_PATH,
+  messagesView,
+  sendMessage,
+  selectMockEndpoint,
+} from '../helpers';
+import {
   REPLY_TEXT,
   createProject,
   deleteChat,
@@ -55,6 +62,48 @@ test('a mouse desktop reveals message actions on hover and keyboard focus @scena
   } finally {
     await deleteChat(conversationId);
   }
+});
+
+test("an open fork menu holds an earlier reply's actions visible after the pointer leaves @scenario:mouse-desktop-open-menu-holds-actions", async ({
+  page,
+}) => {
+  const label = `held-${randomUUID().slice(0, 8)}`;
+  await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
+  await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+  for (const turn of ['first', 'second']) {
+    expect((await sendMessage(page, `E2E_REPLY:${label}-${turn}`)).ok()).toBeTruthy();
+    await expect(messagesView(page).getByText(`E2E reply ${label}-${turn}`)).toBeVisible({
+      timeout: 30000,
+    });
+  }
+  const row = page
+    .locator('.message-render')
+    .filter({ hasText: `E2E reply ${label}-first` })
+    .last();
+  const latest = page
+    .locator('.message-render')
+    .filter({ hasText: `E2E reply ${label}-second` })
+    .last();
+  const copy = row.getByTestId('copy-response-button');
+  const fork = row.getByRole('button', { name: 'Open Fork Menu' });
+
+  await page.mouse.move(0, 0);
+  await expect.poll(() => paintedOpacity(copy)).toBe(0);
+  /** The latest reply's actions never fade. */
+  await expect.poll(() => paintedOpacity(latest.getByTestId('copy-response-button'))).toBe(1);
+
+  await row.hover();
+  await fork.click();
+  await expect(
+    page.getByRole('button', { name: 'Visible messages only', exact: true }),
+  ).toBeVisible();
+  await page.mouse.move(0, 0);
+  /** The open menu lights its trigger and keeps every action in the row opaque. */
+  await expect.poll(() => paintedOpacity(copy)).toBe(1);
+  await expect(fork).toHaveAttribute('data-hover-active', 'true');
+
+  await page.keyboard.press('Escape');
+  await expect(fork).not.toHaveAttribute('data-hover-active');
 });
 
 test('a mouse desktop reveals project row actions on hover and keyboard focus @scenario:mouse-desktop-project-row-actions-reveal', async ({

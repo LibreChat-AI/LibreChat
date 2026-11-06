@@ -56,9 +56,6 @@ const ScrollToBottom: ForwardRefExoticComponent<Props & RefAttributes<HTMLDivEle
           aria-label={localize('com_ui_scroll_to_bottom')}
           className={cn(
             'me-2 active:scale-[0.96] motion-reduce:active:scale-100',
-            /* The wrapper owns the fade, so being briefly unreachable must not
-                 dim the control on its way in on top of it. */
-            'disabled:opacity-100',
             interactive ? 'pointer-events-auto' : 'pointer-events-none',
           )}
         >

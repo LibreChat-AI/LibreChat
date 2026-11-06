@@ -233,6 +233,17 @@ describe('ChatForm URL submission', () => {
     jest.useRealTimers();
   });
 
+  it('enables Send when an existing conversation restores a saved draft', async () => {
+    const conversation = { ...initialConversation, conversationId: 'existing-chat' };
+    setDraft({ id: conversation.conversationId, value: 'restored draft' });
+
+    mountComposer(conversation, { query: '' });
+    await act(async () => jest.advanceTimersByTime(100));
+
+    expect(screen.getByTestId('text-input')).toHaveValue('restored draft');
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
+  });
+
   it('processes a queued prompt URL after ordinary conversation navigation without remounting', async () => {
     const source = { ...initialConversation, conversationId: 'source-chat' };
     const view = mountComposer(source, { query: '' });

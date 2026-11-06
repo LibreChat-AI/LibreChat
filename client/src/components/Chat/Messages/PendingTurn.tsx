@@ -2,16 +2,17 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import {
-  SubRow,
-  messageFooterClasses,
-  useQueuedTurnPortal,
-  MessageRow,
-} from '@librechat/chat/components';
-import {
   hasRevealSuccessor,
   buildRevealedMessage,
   revealedQueuedTurnFamily,
 } from '@librechat/chat/react';
+import {
+  SubRow,
+  messageFooterClasses,
+  useQueuedTurnPortal,
+  MessageRow,
+  Container,
+} from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { RefObject } from 'react';
 import type { TMessageIcon } from '~/common';
@@ -20,7 +21,6 @@ import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { useAuthContext } from '~/hooks/AuthContext';
 import MarkdownLite from './Content/MarkdownLite';
 import { useChatContext } from '~/Providers';
-import Container from './Content/Container';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';

@@ -51,9 +51,11 @@ jest.mock('../CodeAnalyze', () => ({ __esModule: true, default: mockStub('code-a
 jest.mock('../WebSearch', () => ({ __esModule: true, default: mockStub('web-search') }));
 jest.mock('../ToolCall', () => ({ __esModule: true, default: mockStub('tool-call') }));
 jest.mock('../Image', () => ({ __esModule: true, default: mockStub('image') }));
-jest.mock('../Container', () => ({ __esModule: true, default: mockPassthrough }));
-jest.mock('../preparation', () => ({ ToolPreparation: mockPassthrough }));
-
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Container: mockPassthrough,
+  ToolPreparation: mockPassthrough,
+}));
 /** What `Part` drew: the stubbed component's test id, or the text of an inline element. */
 const drawn = (part: TMessageContentParts): string | null => {
   const { container, unmount } = render(

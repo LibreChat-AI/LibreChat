@@ -1,12 +1,17 @@
 import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
-import { TOOL_ROW_CLASSES } from '@librechat/chat/components';
 import {
   hasToolParams,
   resolveToolCallPhase,
   getToolDisplayLabel,
   isToolCallPreparing,
 } from '@librechat/chat';
+import {
+  TOOL_ROW_CLASSES,
+  useToolPreparation,
+  ToolAuthWarning,
+  useFailedReveal,
+} from '@librechat/chat/components';
 import {
   Constants,
   dataService,
@@ -18,6 +23,7 @@ import {
   toolPanelSpacingClassName,
   useToolContentRequest,
   useToolExpansion,
+  GeneratedToolLabelContext,
   LoneGroupContext,
   SoleToolContext,
   useToolCallIntent,
@@ -28,12 +34,10 @@ import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from
 import { ToolIcon, getToolIconType, isError, hasRenderableOutput } from './ToolOutput';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { useToolPreparation } from './preparation';
 import { cn, logger, openInNewTab } from '~/utils';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
-import { ToolAuthWarning } from './auth';
 import { firstErrorLine } from './live';
 
 export default function ToolCall({
@@ -235,21 +239,17 @@ export default function ToolCall({
   const [expandedInfo, setShowInfo] = useToolExpansion(
     soleTool ? hasInfo : (output?.length ?? 0) > 0,
   );
-  /** The only call of its group, settled successfully: the group header is the
-   *  row, so the panel stands alone and stays open. An MCP or action call keeps
-   *  its row, the only place its function name and domain appear, as does a call
-   *  with a model-authored intent. */
+  /** A generated title can replace even a named MCP or action row. */
+  const generatedLabel = useContext(GeneratedToolLabelContext);
   const intent = useToolCallIntent(_args);
   const isActionCall = domain != null && domain !== '';
   const loneGroup = useContext(LoneGroupContext);
   /** The cheap, identity and phase checks run first: a streaming call re-renders
    *  on every argument delta, and the panel check parses its payload. */
   const bare =
-    phase === 'completed' &&
-    (soleTool || loneGroup) &&
-    !isMCPToolCall &&
-    !isActionCall &&
-    intent == null &&
+    (phase === 'completed' || (generatedLabel && phase === 'failed')) &&
+    (generatedLabel ||
+      ((soleTool || loneGroup) && !isMCPToolCall && !isActionCall && intent == null)) &&
     hasInfo &&
     (hasToolParams(args) || hasRenderableOutput(output));
   const showInfo = bare || expandedInfo;
@@ -257,6 +257,18 @@ export default function ToolCall({
   useToolContentRequest(bare);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
   const rowRef = useRowHandoff(bare);
+  const revealBareFailure = useCallback(
+    (claimFocus: () => boolean) => {
+      if (!claimFocus()) return;
+      const panel = expandRef.current;
+      if (panel == null) return;
+      panel.setAttribute('tabindex', '-1');
+      panel.focus({ preventScroll: true });
+    },
+    [expandRef],
+  );
+  useFailedReveal(bare && phase === 'failed', revealBareFailure);
+
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
   /**
@@ -478,7 +490,7 @@ export default function ToolCall({
         onTransitionEnd={handleTransitionEnd}
         data-tool-call-output-id={toolCallId}
       >
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasInfo && shouldRenderBody && (
             <div
               className={cn(

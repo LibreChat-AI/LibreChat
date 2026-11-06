@@ -67,7 +67,6 @@ jest.mock('../Footer', () => ({
 }));
 jest.mock('../Landing', () => ({ __esModule: true, default: () => <div /> }));
 jest.mock('~/components/Lia', () => ({ __esModule: true, default: () => null }));
-jest.mock('../Messages/MessagesView', () => ({ __esModule: true, default: () => <div /> }));
 jest.mock('../Input/ChatForm', () => ({
   __esModule: true,
   default: (props: Record<string, unknown>) => {

@@ -1903,21 +1903,6 @@ html {
   line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base)));
 }
 
-.progress-text-wrapper {
-  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
-  line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base)));
-}
-
-.progress-text-content {
-  font-size: inherit;
-  line-height: inherit;
-}
-
-.progress-text-wrapper button {
-  font-size: inherit;
-  line-height: inherit;
-}
-
 .tooltip {
   z-index: 150;
   cursor: pointer;

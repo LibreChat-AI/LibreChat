@@ -30,8 +30,8 @@ jest.mock('@librechat/chat/components', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
-  useMessageProcess: jest.requireActual('~/hooks/Messages/useMessageProcess').default,
-  useMemoizedChatContext: jest.requireActual('~/hooks/Messages/useMemoizedChatContext').default,
+  useMessageProcess: jest.requireActual('@librechat/chat/react').useMessageProcess,
+  useMemoizedChatContext: jest.requireActual('@librechat/chat/react').useMemoizedChatContext,
   useLocalize: () => (key: string) => key,
   useAttachments: () => ({ attachments: undefined, searchResults: undefined }),
   useContentMetadata: () => ({ hasParallelContent: false }),

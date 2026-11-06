@@ -2,8 +2,8 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen } from '@testing-library/react';
 import '~/Providers/MessagePartsHostContext';
+import { FailedRevealContext } from '@librechat/chat/components';
 import AskUserQuestionCall from '../AskUserQuestionCall';
-import { FailedRevealContext } from '../reveal';
 import store from '~/store';
 
 const translations: Record<string, string> = {
@@ -52,14 +52,13 @@ jest.mock('../AskUserQuestionProgress', () => ({
   },
 }));
 
-jest.mock('../Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => {
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Container: ({ children }: { children: React.ReactNode }) => {
     const { createElement } = jest.requireActual<typeof React>('react');
     return createElement('div', null, children);
   },
 }));
-
 /** Settled records mount collapsed, exactly like every other tool card. */
 const renderCall = (ui: React.ReactElement, autoExpand = false) =>
   render(

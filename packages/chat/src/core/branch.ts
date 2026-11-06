@@ -59,3 +59,27 @@ export const getBranchSiblingIndexesForTarget = (
   }
   return [];
 };
+
+/**
+ * The level a branch runs at, by the server's rule: the override on the nearest user message at or
+ * above `fromMessageId` that carries one.
+ */
+export function getBranchReasoning(
+  messages: TMessage[],
+  fromMessageId: string,
+): TMessage['reasoningOverride'] {
+  const byId = new Map<string, TMessage>();
+  for (const message of messages) {
+    byId.set(message.messageId, message);
+  }
+  const visited = new Set<string>();
+  let current = byId.get(fromMessageId);
+  while (current != null && !visited.has(current.messageId)) {
+    visited.add(current.messageId);
+    if (current.isCreatedByUser === true && current.reasoningOverride != null) {
+      return current.reasoningOverride;
+    }
+    current = current.parentMessageId != null ? byId.get(current.parentMessageId) : undefined;
+  }
+  return undefined;
+}

@@ -4,29 +4,14 @@ import type {
   TFile,
   TMessage,
   Assistant,
+  TAttachment,
   TConversation,
   SearchResultData,
   TForkConvoRequest,
+  TUpdateFeedbackRequest,
+  TUpdateFeedbackResponse,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, MouseEvent, RefObject, SetStateAction } from 'react';
-
-/** The scroll machinery of the message list, as the app's scrolling hook drives it. */
-export type MessagesScrolling = {
-  /** The conversation the scrolling follows. */
-  conversationId?: string | null;
-  /** Wraps the rendered thread. */
-  contentRef: RefObject<HTMLDivElement>;
-  /** The scroll container. */
-  scrollableRef: RefObject<HTMLDivElement>;
-  /** The zero-height marker after the last row. */
-  messagesEndRef: RefObject<HTMLDivElement>;
-  /** Scrolls smoothly to the end, from the scroll-to-bottom control. */
-  handleSmoothToRef: (event: MouseEvent<HTMLButtonElement>) => void;
-  /** The container's scroll listener. */
-  debouncedHandleScroll: () => void;
-  /** Reports whether the end marker is in view. */
-  handleNearBottomChange: (isNearBottom: boolean) => void;
-};
 
 /** What the message slot renders one visible row of the thread from. */
 export type MessageRowSlotProps = {
@@ -51,6 +36,41 @@ export type ActivitySlotProps = {
 /** Reports, from the end marker's visibility, that the reader has seen the conversation. */
 export type ReportNearBottom = (isNearBottom: boolean) => void;
 
+/** A conversation's newest reply, as the app's conversation store holds it. */
+export type SeenReply = {
+  /** When the newest reply landed; absent when the conversation has none. */
+  lastResponseAt?: string;
+  /** The reply that stamp belongs to; absent for a manual marker or a legacy stamp. */
+  lastResponseMessageId?: string;
+  /** Whether the stamp is a manual "mark as unread" marker rather than a real reply. */
+  lastResponseIsManual?: boolean;
+  /** Whether the reply landed after the viewer last caught up with the conversation. */
+  unseen: boolean;
+};
+
+/** Where a message reply's proof of being on screen came from: a terminal stream event that
+ *  committed it locally, or a messages fetch from the server. */
+export type ReplyProofSource = 'local' | 'server';
+
+/** The app's read-state storage and transport, which the list's seen reporting reads and
+ *  writes. Its members keep their identity across renders. */
+export type ConversationSeenSource = {
+  /** Reads the conversation's newest reply from the app's conversation store. */
+  readReply: (conversationId: string) => SeenReply | undefined;
+  /** Whether the cached messages of the conversation are still the ones that proved the reply
+   *  with this stamp, from the given source. */
+  hasReplyProof: (
+    conversationId: string,
+    lastResponseAt: string,
+    from: ReplyProofSource,
+  ) => boolean;
+  /** Acknowledges the reply with this stamp, and no newer one, on the server. */
+  markSeen: (input: { conversationId: string; lastResponseAt: string }) => void;
+  /** Takes the flag a notification click raises before it focuses the window, so that focus
+   *  is not read as the viewer returning to the open conversation. */
+  consumeFocusSuppression: () => boolean;
+};
+
 /** The viewer's fork defaults, kept across sessions. */
 export type ForkPreferences = {
   /** The fork option used without asking, when `rememberOption` is set. */
@@ -73,12 +93,24 @@ export type ForkEvents = {
 /** Starts a fork of a conversation. */
 export type ForkConversation = (request: TForkConvoRequest, events: ForkEvents) => void;
 
+/** What a feedback write reports back. */
+export type MessageFeedbackEvents = {
+  onSuccess: (data: TUpdateFeedbackResponse) => void;
+  onError: (error: unknown) => void;
+};
+
+/** Writes a message's feedback to the server. */
+export type MessageFeedbackWrite = (
+  payload: TUpdateFeedbackRequest,
+  events: MessageFeedbackEvents,
+) => void;
+
 /** The renderer a message is displayed with: `full` for model text, `lite` for user markdown. */
 export type MarkdownVariant = 'full' | 'lite';
 
 /** What a row asks the host to copy. */
 export type MessageCopyInput = {
-  message: TMessage;
+  message: TMessage | null | undefined;
   /** Search results the message cites, resolved into the copied text. */
   searchResults?: { [key: string]: SearchResultData };
   /** The renderer the row displayed the message with, when it is not the authorship default. */
@@ -152,26 +184,32 @@ export interface MessagesHost {
   useHasPendingTurn: (conversationId: string) => boolean;
   /** Renders the app's read-aloud control, or `null` while read-aloud is off. */
   renderMessageAudio: (props: MessageAudioProps) => ReactNode;
-  /**
-   * Drives the list's scrolling: follows the stream, lands on a conversation's end and keeps
-   * the reader's position.
-   *
-   * @deprecated On arrival: a bridge to the app's `useMessageScrolling`, which reads the app's
-   * messages providers, until it moves into this package and the list runs it itself.
-   */
-  useScrolling: (messagesTree: TMessage[] | null | undefined) => MessagesScrolling;
   /** The element the app's conversation screenshot captures; none outside a screenshot provider. */
   useScreenshotTarget: () => RefObject<HTMLDivElement> | undefined;
   /** Whether the viewer asked the thread to follow new content to the bottom. */
   useAutoScroll: () => boolean;
-  /** Marks the conversation seen once its latest reply is on screen; returns the reporter the
-   *  end marker's visibility feeds. */
-  useConversationSeen: (
-    conversationId: string | undefined,
-    isSubmitting: boolean,
-    measureNearBottom: () => boolean | null,
-    isResponseRendered: (messageId: string) => boolean,
-  ) => ReportNearBottom;
+  /** The read-state storage the list marks a conversation seen through. */
+  useSeenSource: () => ConversationSeenSource;
+  /** The conversation's cached messages, refreshed as they stream when isStreaming is set; undefined until loaded or without a conversation. */
+  useConversationMessages: (
+    conversationId: string | null | undefined,
+    isStreaming: boolean,
+  ) => TMessage[] | undefined;
+
+  /** The assistant a reply on an assistants endpoint came from, by endpoint and assistant id. */
+  useAssistant: (
+    endpoint: string | null | undefined,
+    model: string | null | undefined,
+  ) => Assistant | undefined;
+  /**
+   * Reads the second pane's conversation at call time, without subscribing to it, so a row does
+   * not re-render when that conversation changes. `null` where there is no second pane.
+   */
+  useGetAddedConvo: () => () => TConversation | null;
+  /** The attachments that arrived while a message streamed; `useStreamedAttachments` reads them. */
+  useStreamedAttachments: (messageId: string) => TAttachment[] | undefined;
+  /** Writes feedback on one message of a conversation. */
+  useMessageFeedback: (conversationId: string, messageId: string) => MessageFeedbackWrite;
 
   /** Renders a message author's icon with the app's endpoint and avatar icons. */
   renderMessageIcon: (props: MessageIconProps) => ReactNode;
@@ -196,27 +234,22 @@ const fallbackForkPreferences: ForkPreferences = {
   setRememberOption: noop,
 };
 
-/** Scrolling with nothing behind it: live refs, inert handlers. */
-function useInertScrolling(): MessagesScrolling {
-  const contentRef = useRef<HTMLDivElement>(null);
-  const scrollableRef = useRef<HTMLDivElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  return {
-    contentRef,
-    scrollableRef,
-    messagesEndRef,
-    handleSmoothToRef: () => undefined,
-    debouncedHandleScroll: () => undefined,
-    handleNearBottomChange: () => undefined,
-  };
-}
+/** Read state with nothing behind it: no conversation is ever unseen, so nothing is written. */
+const inertSeenSource: ConversationSeenSource = {
+  readReply: () => undefined,
+  hasReplyProof: () => false,
+  markSeen: noop,
+  consumeFocusSuppression: () => false,
+};
 
-const ignoreNearBottom: ReportNearBottom = () => undefined;
+const noAddedConvo = (): TConversation | null => null;
+
+const noFeedback: MessageFeedbackWrite = noop;
 
 const noMessages = (): TMessage[] | undefined => undefined;
 
 /** The host rows read outside any provider before an app registers one: locale clock, no slots,
- *  no forking, no copying, no thread, no queued turn, no read-aloud, inert scrolling. */
+ *  no forking, no copying, no thread, no queued turn, no read-aloud, no read state. */
 const fallbackHost: MessagesHost = {
   useHour12: () => undefined,
   renderFiles: () => null,
@@ -226,10 +259,14 @@ const fallbackHost: MessagesHost = {
   useGetMessages: () => noMessages,
   useHasPendingTurn: () => false,
   renderMessageAudio: () => null,
-  useScrolling: useInertScrolling,
   useScreenshotTarget: () => useRef<HTMLDivElement>(null),
   useAutoScroll: () => false,
-  useConversationSeen: () => ignoreNearBottom,
+  useSeenSource: () => inertSeenSource,
+  useConversationMessages: () => undefined,
+  useAssistant: () => undefined,
+  useGetAddedConvo: () => noAddedConvo,
+  useStreamedAttachments: () => undefined,
+  useMessageFeedback: () => noFeedback,
   renderMessageIcon: () => null,
   renderMessageRow: () => null,
   renderActivity: () => null,

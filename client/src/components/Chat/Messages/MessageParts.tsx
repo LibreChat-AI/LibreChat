@@ -1,8 +1,7 @@
 import React, { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { ContentRow, HoverButtons } from '@librechat/chat/components';
+import { ContentRow, HoverButtons, ResumeAuthorHeader } from '@librechat/chat/components';
 import type { TMessageProps, TMessageIcon } from '~/common';
-import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
 import { useLocalize, useAttachments, useMessageHelpers, useContentMetadata } from '~/hooks';
 import { areMessageRowPropsEqual } from '~/utils';
 import store from '~/store';

@@ -2,7 +2,6 @@ import React, { useState, useMemo, useCallback, useContext, memo } from 'react';
 import { Copy, Check } from 'lucide';
 import { getSpeechText, findMessageById, isUserInitiatedCompaction } from 'librechat-data-provider';
 import {
-  cn,
   Button,
   EditIcon,
   MorphIcon,
@@ -17,7 +16,6 @@ import { MessageAudioSlot, useMessagesHost } from '../../react/messages/host';
 import useGenerationsByLatest from '../../react/messages/generations';
 import { hasEditablePart } from '../../core/parts/editableParts';
 import { ChatContext } from '../../react/chat/context';
-import { hoverButtonClasses } from './styles';
 import Feedback from './Feedback';
 import Fork from './Fork';
 
@@ -47,8 +45,8 @@ type HoverButtonProps = {
   icon: React.ReactNode;
   isActive?: boolean;
   isLast?: boolean;
-  className?: string;
-  buttonStyle?: string;
+  /** Fades the button in with its row; the latest message's toolbar stays visible. */
+  reveal?: boolean;
   dataTestId?: string;
   disabled?: boolean;
 };
@@ -61,23 +59,20 @@ const HoverButton = memo(
     icon,
     isActive = false,
     isLast = false,
-    className = '',
+    reveal = !isLast,
     dataTestId,
     disabled = false,
   }: HoverButtonProps) => {
-    const buttonStyle = hoverButtonClasses({ isActive, isLast, className });
-
     return (
       <TooltipAnchor
         description={title}
         render={
           <Button
-            variant="ghost"
-            size="icon"
+            variant={reveal ? 'message-hover-reveal' : 'message-hover'}
             id={id}
             data-testid={dataTestId}
+            data-hover-active={isActive || undefined}
             aria-label={title}
-            className={buttonStyle}
             onClick={onClick}
             disabled={disabled}
           >
@@ -226,10 +221,7 @@ const HoverButtons = ({
           icon={<MorphIcon icon={isCopied ? Check : Copy} size="1.1875rem" />}
           isLast={isLast}
           disabled={!canCopy}
-          className={cn(
-            'ms-0 flex items-center gap-1.5 text-xs',
-            isSubmitting && isCreatedByUser ? 'no-touch:opacity-0 group-hover:opacity-100' : '',
-          )}
+          reveal={!isLast || (isSubmitting && isCreatedByUser)}
           dataTestId={!isCreatedByUser ? 'copy-response-button' : undefined}
         />
       )}
@@ -243,7 +235,6 @@ const HoverButtons = ({
           icon={<EditIcon size="19" />}
           isActive={isEditing}
           isLast={isLast}
-          className={isCreatedByUser ? '' : 'active'}
         />
       )}
 
@@ -272,7 +263,6 @@ const HoverButtons = ({
           icon={<RegenerateIcon size="19" />}
           isLast={isLast}
           dataTestId={isLast ? 'regenerate-generation-button' : undefined}
-          className="active"
         />
       )}
 
@@ -284,7 +274,6 @@ const HoverButtons = ({
           icon={<ContinueIcon className="size-4.75" />}
           isLast={isLast}
           dataTestId={isLast ? 'continue-generation-button' : undefined}
-          className="active"
         />
       )}
     </div>

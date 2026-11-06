@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 
 const mockSetAuthTokens = jest.fn(() => Promise.resolve('auth-token'));
 const mockDeleteAllUserSessions = jest.fn(() => Promise.resolve({ deletedCount: 0 }));
+const mockAwaitAuthUserDocEviction = jest.fn(() => Promise.resolve());
 const mockGetTOTPSecret = jest.fn();
 const mockVerifyTOTP = jest.fn();
 const mockVerifyBackupCode = jest.fn();
@@ -24,7 +25,9 @@ jest.mock('~/server/services/AuthService', () => ({
 jest.mock('~/models', () => ({
   getUserById: (...args) => store.getUserById(...args),
   updateTwoFactorEnrollment: (...args) => store.updateTwoFactorEnrollment(...args),
+  updateUser: (...args) => store.updateUser(...args),
   deleteAllUserSessions: (...args) => mockDeleteAllUserSessions(...args),
+  awaitAuthUserDocEviction: (...args) => mockAwaitAuthUserDocEviction(...args),
 }));
 
 const ELIGIBLE_PROVIDERS = new Set(['local', 'ldap']);
@@ -79,6 +82,16 @@ const store = {
       ([key, value]) => JSON.stringify(this.doc[key] ?? null) === JSON.stringify(value ?? null),
     );
     if (!matches) {
+      return null;
+    }
+    this.doc = { ...this.doc, ...update };
+    return { ...this.doc };
+  },
+  async updateUser(_userId, update, expectedState = {}) {
+    const matches = Object.entries(expectedState).every(
+      ([key, value]) => JSON.stringify(this.doc[key] ?? null) === JSON.stringify(value ?? null),
+    );
+    if (!this.doc || !matches) {
       return null;
     }
     this.doc = { ...this.doc, ...update };
@@ -522,6 +535,45 @@ describe('finalize2FASetup', () => {
     expect(mockDeleteAllUserSessions.mock.invocationCallOrder[0]).toBeLessThan(
       mockSetAuthTokens.mock.invocationCallOrder[0],
     );
+  });
+
+  it('re-dates the enrollment cutoff once the promoting write has committed', async () => {
+    const finalizationToken = await reachFinalization();
+    const updateUser = jest.spyOn(store, 'updateUser');
+    let promotedAt;
+    const promote = store.updateTwoFactorEnrollment.bind(store);
+    jest.spyOn(store, 'updateTwoFactorEnrollment').mockImplementation(async (...args) => {
+      const promoted = await promote(...args);
+      promotedAt = promoted?.twoFactorEnrolledAt;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return promoted;
+    });
+
+    await runFinalize(finalizationToken);
+
+    expect(updateUser).toHaveBeenCalledWith(
+      'user-1',
+      { twoFactorEnrolledAt: expect.any(Date) },
+      { twoFactorEnrolledAt: promotedAt },
+    );
+    expect(store.doc.twoFactorEnrolledAt.getTime()).toBeGreaterThan(promotedAt.getTime());
+    expect(updateUser.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSetAuthTokens.mock.invocationCallOrder[0],
+    );
+    jest.restoreAllMocks();
+  });
+
+  it('mints nothing and reports incomplete retirement when revoking sessions fails', async () => {
+    const finalizationToken = await reachFinalization();
+    mockDeleteAllUserSessions.mockRejectedValueOnce(new Error('down'));
+
+    const res = await runFinalize(finalizationToken);
+
+    expect(mockAwaitAuthUserDocEviction).toHaveBeenCalledWith('user-1');
+    expect(mockSetAuthTokens).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(jsonPayload(res)).toMatchObject({ code: 'CREDENTIAL_RETIREMENT_INCOMPLETE' });
+    expect(store.doc.twoFactorEnabled).toBe(true);
   });
 
   it('withdraws the enrolled session when the recheck cannot complete', async () => {

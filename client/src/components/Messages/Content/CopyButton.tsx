@@ -6,6 +6,7 @@ import { useLocalize } from '~/hooks';
 interface CopyButtonProps {
   isCopied: boolean;
   iconOnly?: boolean;
+  compact?: boolean;
   onClick: () => void;
   tabIndex?: number;
   className?: string;
@@ -20,6 +21,7 @@ const CopyButton = React.forwardRef<HTMLButtonElement, CopyButtonProps>(
     {
       isCopied,
       iconOnly = false,
+      compact,
       onClick,
       tabIndex,
       className,
@@ -40,6 +42,7 @@ const CopyButton = React.forwardRef<HTMLButtonElement, CopyButtonProps>(
         label={label ?? localize('com_ui_copy')}
         activeLabel={copiedLabel ?? localize('com_ui_copied')}
         iconOnly={iconOnly}
+        compact={compact}
         onClick={onClick}
         tabIndex={tabIndex}
         className={className}

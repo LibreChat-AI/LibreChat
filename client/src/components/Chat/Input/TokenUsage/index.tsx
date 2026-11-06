@@ -1,7 +1,13 @@
 import { memo } from 'react';
-import { useAtomValue } from 'jotai';
 import { Spinner } from '@librechat/client';
+import { useAtom, useAtomValue } from 'jotai';
 import { Constants } from 'librechat-data-provider';
+import {
+  CompactAction,
+  ContextBreakdown as Breakdown,
+  ContextGauge as Gauge,
+  ContextUsagePopover as UsagePopover,
+} from '@librechat/chat/components';
 import type { TConversation } from 'librechat-data-provider';
 import type { TokenUsageView } from '~/hooks/Chat/useTokenUsage';
 import type { CurrencyConfig } from '~/utils';
@@ -11,12 +17,8 @@ import Balance, { Summary as BalanceSummary } from '~/components/Balance';
 import useBalanceSummary from '~/hooks/useBalanceSummary';
 import useTokenUsage from '~/hooks/Chat/useTokenUsage';
 import { contextBreakdownExpandedAtom } from './store';
-import CompactAction from './CompactAction';
 import { cn, formatTokens } from '~/utils';
 import { useLocalize } from '~/hooks';
-import UsagePopover from './Popover';
-import Breakdown from './Breakdown';
-import Gauge from './Gauge';
 
 interface TokenUsageProps {
   index: number;
@@ -47,6 +49,7 @@ function ContextCard({
   compaction,
   compactionAvailable,
 }: ContextCardProps) {
+  const [breakdownExpanded, setBreakdownExpanded] = useAtom(contextBreakdownExpandedAtom);
   const canResolveLangfuseSession =
     langfuseConnectionAccess &&
     !isSubmitting &&
@@ -66,6 +69,8 @@ function ContextCard({
         compactionAvailable={compactionAvailable}
         currency={currency}
         langfuseSessionUrl={langfuseSession?.url ?? undefined}
+        expanded={breakdownExpanded}
+        onExpandedChange={setBreakdownExpanded}
       />
       {compactionAvailable && (
         <>

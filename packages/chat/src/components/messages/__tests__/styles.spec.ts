@@ -1,4 +1,5 @@
-import { hoverButtonClasses, revealOnRowHoverClasses } from '../styles';
+import { cn, buttonVariants } from '@librechat/client';
+import { revealOnRowHoverClasses } from '../styles';
 
 const FADE = 'no-touch:opacity-0';
 
@@ -49,46 +50,52 @@ describe('revealOnRowHoverClasses', () => {
      would replace the `transition-colors` a `Button` contributes and the hover
      tint would snap. The colour properties have to ride along explicitly. */
   it('names the colour properties alongside opacity', () => {
-    expect(revealOnRowHoverClasses).toContain('transition-[opacity,color,background-color]');
+    expect(revealOnRowHoverClasses).toContain('transition-reveal');
     expect(revealOnRowHoverClasses).not.toContain('transition-opacity');
+  });
+
+  it('keeps the colour fade when merged onto a Button', () => {
+    const merged = cn(buttonVariants({ variant: 'message-hover-reveal' }));
+    expect(merged).toContain('transition-reveal');
+    expect(merged).not.toContain('transition-colors');
   });
 });
 
-describe('hoverButtonClasses', () => {
+describe('message hover buttons', () => {
+  const idle = buttonVariants({ variant: 'message-hover-reveal' });
+  const last = buttonVariants({ variant: 'message-hover' });
+
   it('fades an idle action out until the row is hovered', () => {
-    expect(hoverButtonClasses()).toContain(FADE);
-    expect(hoverButtonClasses()).toContain('group-hover:opacity-100');
+    expect(idle).toContain(FADE);
+    expect(idle).toContain('group-hover:opacity-100');
   });
 
   it('reveals an idle action on keyboard focus, not on a click parking focus in the row', () => {
-    expect(hoverButtonClasses()).toContain(`${FOCUS_DESCENDANT}:opacity-100`);
-    expect(hoverButtonClasses()).not.toContain('group-focus-within:');
+    expect(idle).toContain(`${FOCUS_DESCENDANT}:opacity-100`);
+    expect(idle).not.toContain('group-focus-within:');
   });
 
   it('marks an active action so the toolbar can key off it', () => {
-    expect(hoverButtonClasses({ isActive: true })).toContain('hover-button-active');
-    expect(hoverButtonClasses({ isActive: true })).toContain('active');
+    expect(idle).toContain('data-[hover-active]:bg-surface-hover');
+    expect(idle).toContain('data-[hover-active]:text-text-primary');
   });
 
   it('keeps every action opaque while any of them is active', () => {
-    expect(hoverButtonClasses()).toContain('group-has-[.hover-button-active]:opacity-100');
-    expect(hoverButtonClasses({ isActive: true })).toContain(
-      'group-has-[.hover-button-active]:opacity-100',
-    );
-    expect(hoverButtonClasses({ isLast: true })).toContain(
-      'group-has-[.hover-button-active]:opacity-100',
-    );
+    expect(idle).toContain('group-has-[[data-hover-active]]:opacity-100');
+    expect(last).toContain('group-has-[[data-hover-active]]:opacity-100');
   });
 
   it('does not use the legacy active class as the marker', () => {
-    expect(hoverButtonClasses()).not.toContain('group-has-[.active]');
+    expect(idle).not.toContain('group-has-[.active]');
+    expect(last).not.toContain('group-has-[.active]');
   });
 
   it('never fades the actions on the last row', () => {
-    expect(hoverButtonClasses({ isLast: true })).not.toContain(FADE);
+    expect(last).not.toContain(FADE);
   });
 
-  it('appends caller classes', () => {
-    expect(hoverButtonClasses({ className: 'ml-0' })).toContain('ml-0');
+  it('keeps the marker the narrow-screen stylesheet reads', () => {
+    expect(idle).toContain('hover-button');
+    expect(last).toContain('hover-button');
   });
 });
