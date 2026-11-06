@@ -99,6 +99,8 @@ export const UNSEEN_REPLY_WATERMARK = '1970-01-01T00:00:00.000Z' as const;
 export const defaultSocialLogins = ['google', 'facebook', 'openid', 'github', 'discord', 'saml'];
 
 export const TWO_FACTOR_ENROLLMENT_REQUIRED_CODE = 'TWO_FACTOR_ENROLLMENT_REQUIRED' as const;
+/** A password reset changed the password but could not retire every earlier credential. */
+export const CREDENTIAL_RETIREMENT_INCOMPLETE_CODE = 'CREDENTIAL_RETIREMENT_INCOMPLETE' as const;
 
 /** A write was refused because the deployment requires terms acceptance the user has not given. */
 export const TERMS_NOT_ACCEPTED_CODE = 'terms_not_accepted' as const;
@@ -155,7 +157,8 @@ export const DEFAULT_CATALOG_MODELS_TTL_MS = 120_000;
  * Why a deployment-only path is set in librechat.yaml only:
  * - `startup`: read once when the server starts, so a stored value would never apply.
  * - `operator`: an operator boundary (signed access, rate limits, permission leases, code
- *   modules, which tools load), read from librechat.yaml itself.
+ *   modules, which tools load, the limits and telemetry every browser is sent, list filter
+ *   bounds, cleanup concurrency), read from librechat.yaml itself.
  * - `unused`: nothing reads it any more.
  */
 export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
@@ -169,13 +172,19 @@ export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
  */
 export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnlyConfigReason>> = {
   'telemetry.stackTraceLimit': 'operator',
+  'telemetry.rum': 'operator',
+  clientLimits: 'operator',
   rateLimits: 'operator',
   cloudfront: 'operator',
   permissions: 'operator',
   openapi: 'operator',
+  conversationList: 'operator',
   skillDeletion: 'startup',
+  passwordHashing: 'startup',
   includedTools: 'operator',
   filteredTools: 'operator',
+  'interface.colorModeFromUrl': 'startup',
+  'fileConfig.skills.deletionCleanupConcurrency': 'operator',
   'registration.openidDiscovery': 'startup',
   'registration.oauthStateTtlMs': 'startup',
   'endpoints.agents.subagentActivity': 'startup',
@@ -184,6 +193,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
   'endpoints.agents.backgroundTasks.completionReceiptBatching': 'startup',
   'endpoints.agents.toolApproval.hooks': 'operator',
+  'endpoints.agents.managementApi': 'operator',
   'mcpSettings.oauthFailureRetentionMs': 'startup',
   'mcpSettings.catalogRecovery.maxStateEntries': 'startup',
   'mcpSettings.catalogRecovery.maxDetachedDiscoveries': 'startup',

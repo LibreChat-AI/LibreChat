@@ -1,11 +1,11 @@
 import { useId, useMemo, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
+import { MemoryInfo } from '@librechat/chat/components';
 import { toolPanelSpacingClassName } from '@librechat/chat/react';
 import { Button, disclosureChevronVariants } from '@librechat/client';
 import type { MemoryArtifact, TAttachment } from 'librechat-data-provider';
 import { useExpandCollapse, useLocalize } from '~/hooks';
-import MemoryInfo from './MemoryInfo';
 import { cn } from '~/utils';
 
 /** True for a memory attachment with no originating tool call. A call rendered
@@ -100,7 +100,7 @@ export default function MemoryArtifacts({ attachments }: { attachments?: TAttach
           <ChevronDown
             className={cn(
               disclosureChevronVariants({ expanded: showInfo }),
-              'size-4 translate-y-[0.0625rem]',
+              'ms-auto size-4 translate-y-[0.0625rem]',
             )}
             aria-hidden="true"
           />

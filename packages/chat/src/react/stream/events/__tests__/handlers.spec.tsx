@@ -34,7 +34,7 @@ const unused = (): never => {
 };
 const host: StreamHost = {
   useResumableServices: unused,
-  useLegacyStream: unused,
+  useLegacyServices: unused,
   useTransport: () => null,
   useQueuedTurnReceipts: unused,
   useActiveJobs: unused,

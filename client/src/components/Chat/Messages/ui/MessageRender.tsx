@@ -6,6 +6,7 @@ import {
   MessageFooter,
   getHeaderHoverLabel,
   MessageRow,
+  WakeupRow,
 } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
@@ -18,10 +19,9 @@ import {
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
+import { MessageContext, useAgentsMapContext } from '~/Providers';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
-import { MessageContext } from '~/Providers';
-import WakeupRow from './WakeupRow';
 import store from '~/store';
 
 type MessageRenderProps = {
@@ -86,6 +86,7 @@ const MessageRender = memo(function MessageRender({
   latestMessageDepth,
 }: MessageRenderProps) {
   const localize = useLocalize();
+  const agentsMap = useAgentsMapContext();
   const {
     ask,
     edit,
@@ -165,6 +166,7 @@ const MessageRender = memo(function MessageRender({
   return (
     <Row
       task={subagentWakeup}
+      agentsMap={agentsMap}
       conversationId={msg.conversationId ?? conversation?.conversationId ?? ''}
       message={wakeupDisplay != null ? undefined : msg}
       id={msg.messageId}

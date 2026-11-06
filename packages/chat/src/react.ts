@@ -75,6 +75,7 @@ export {
   submissionStartFamily,
   showStopButtonByIndex,
   abortScrollFamily,
+  launchedConversationFamily,
 } from './react/generation';
 export { SteerHostProvider, useSteerHost } from './react/steer/host';
 export type {
@@ -129,6 +130,12 @@ export { useComposerOverlay, composerOverlayCountFamily } from './react/overlay'
 export { default as useTimeTick } from './react/tick';
 export { default as useGenerationsByLatest } from './react/messages/generations';
 export type { Generations, TUseGenerations } from './react/messages/generations';
+export { default as useConversationSeen } from './react/messages/useConversationSeen';
+export {
+  reconcileMessageContentLayout,
+  getRenderedContentMaxScrollTop,
+  scheduleMessageContentLayoutReconcile,
+} from './react/messages/messageLayout';
 export {
   useMessagesHost,
   MessagesHostProvider,
@@ -141,24 +148,64 @@ export type {
   MessagesHost,
   MarkdownVariant,
   MessageCopyInput,
+  MessageFeedbackWrite,
+  MessageFeedbackEvents,
   ForkPreferences,
   ForkConversation,
   ActivitySlotProps,
-  MessagesScrolling,
   ReportNearBottom,
+  SeenReply,
+  ReplyProofSource,
+  ConversationSeenSource,
   MessageIconData,
   MessageIconProps,
   MessageAudioProps,
   MessageAudioButtonProps,
   MessageRowSlotProps,
 } from './react/messages/host';
+export { default as useStreamedAttachments } from './react/messages/useStreamedAttachments';
+export { default as useMessageProcess } from './react/messages/useMessageProcess';
+export type { MessageProcess } from './react/messages/useMessageProcess';
+export { default as useContentMetadata } from './react/messages/useContentMetadata';
+export type { ContentMetadataResult } from './react/messages/useContentMetadata';
+export { default as useMemoizedChatContext } from './react/messages/useMemoizedChatContext';
+export type { MemoizedChatContext } from './react/messages/useMemoizedChatContext';
+export type { TMessageChatContext, TMessageProps } from './react/messages/types';
+export {
+  areMessageFilesEqual,
+  areMessageFieldsEqual,
+  isSameTailRelation,
+  areMessageRowPropsEqual,
+} from './react/messages/equal';
 export { AuthorContext, useAuthorContext } from './react/messages/author';
 export type { TMessageAuthor } from './react/messages/author';
 export { ErrorSourceProvider, useErrorSource } from './react/messages/error';
 export type { ErrorSource } from './react/messages/error';
 export { MessageSurfaceContext } from './react/messages/surface';
+export {
+  MessagesViewContext,
+  MessagesViewProvider,
+  useMessagesSubmission,
+  useMessagesOperations,
+  useMessagesViewContext,
+  useMessagesIsSubmitting,
+  useMessagesConversation,
+  MessagesOperationsContext,
+  MessagesSubmittingContext,
+  useIsMessagesViewReadOnly,
+  useOptionalMessagesOperations,
+  useOptionalMessagesConversation,
+} from './react/messages/view';
+export type {
+  MessagesEditing,
+  MessagesOperations,
+  MessagesSubmission,
+  MessagesConversation,
+  MessagesViewContextValue,
+} from './react/messages/view';
 export type { MessageSurface } from './react/messages/surface';
 export {
+  GeneratedToolLabelContext,
   SoleToolContext,
   LoneGroupContext,
   useToolExpansion,
@@ -191,7 +238,7 @@ export {
   askAnswerCheckedAtom,
   AskAnswerHostProvider,
   askAnswerSelectionAtom,
-  collapsedAskActionsAtom,
+  expandedAskActionsAtom,
   releasedComposerTextAtom,
 } from './react/parts/ask';
 export type { AskAnswerStatus, ReleasedComposerStash } from './react/parts/ask';

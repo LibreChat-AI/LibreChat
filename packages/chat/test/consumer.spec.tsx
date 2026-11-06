@@ -2,6 +2,7 @@
  * @jest-environment jsdom
  */
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { readFileSync } from 'node:fs';
 import { Chat } from '@librechat/chat';
 import { createInstance } from 'i18next';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
@@ -228,17 +229,19 @@ const messagesHost: MessagesHost = {
   useGetMessages: () => () => undefined,
   useHasPendingTurn: () => false,
   renderMessageAudio: () => null,
-  useScrolling: () => ({
-    contentRef: { current: null },
-    scrollableRef: { current: null },
-    messagesEndRef: { current: null },
-    handleSmoothToRef: () => undefined,
-    debouncedHandleScroll: () => undefined,
-    handleNearBottomChange: () => undefined,
-  }),
   useScreenshotTarget: () => undefined,
   useAutoScroll: () => false,
-  useConversationSeen: () => () => undefined,
+  useConversationMessages: () => undefined,
+  useAssistant: () => undefined,
+  useGetAddedConvo: () => () => null,
+  useStreamedAttachments: () => undefined,
+  useMessageFeedback: () => () => undefined,
+  useSeenSource: () => ({
+    readReply: () => undefined,
+    hasReplyProof: () => false,
+    markSeen: () => undefined,
+    consumeFocusSuppression: () => false,
+  }),
   renderMessageIcon: () => null,
   renderMessageRow: () => null,
   renderActivity: () => null,
@@ -582,7 +585,7 @@ describe('a consumer rendering subagent activity', () => {
   };
   const streamHost: StreamHost = {
     useResumableServices: unused,
-    useLegacyStream: unused,
+    useLegacyServices: unused,
     useTransport: () => null,
     useQueuedTurnReceipts: unused,
     useActiveJobs: unused,
@@ -678,18 +681,20 @@ describe('a consumer rendering subagent activity', () => {
     } as ChatContract;
     render(
       <I18nextProvider i18n={i18n}>
-        <ChatContext.Provider value={contract}>
-          <MessagesHostProvider host={threadHost}>
-            <MessagePartsHostProvider host={host}>
-              <MessagesView
-                messages={messages}
-                messagesTree={messages}
-                showScrollButton={false}
-                maximizeChatSpace={false}
-              />
-            </MessagePartsHostProvider>
-          </MessagesHostProvider>
-        </ChatContext.Provider>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatContext.Provider value={contract}>
+            <MessagesHostProvider host={threadHost}>
+              <MessagePartsHostProvider host={host}>
+                <MessagesView
+                  messages={messages}
+                  messagesTree={messages}
+                  showScrollButton={false}
+                  maximizeChatSpace={false}
+                />
+              </MessagePartsHostProvider>
+            </MessagesHostProvider>
+          </ChatContext.Provider>
+        </QueryClientProvider>
       </I18nextProvider>,
     );
 
@@ -702,5 +707,33 @@ describe('a consumer rendering subagent activity', () => {
     const older = screen.getByRole('group', { name: 'Assistant' });
     expect(older).toHaveTextContent('First');
     expect(within(older).getByRole('status')).toHaveTextContent('1 / 2');
+  });
+});
+
+describe('a consumer styled by the published stylesheet alone', () => {
+  /** What `@librechat/client/style.css` declares for an element's own classes. jsdom cannot load
+   *  the whole file (`@layer`, `:dir()`), so the rendered class list is matched by hand. */
+  const stylesheet = readFileSync(require.resolve('@librechat/client/style.css'), 'utf8');
+  const declaredFor = (element: Element): string =>
+    Array.from(stylesheet.matchAll(/([^{}]+)\{([^{}]*)\}/g))
+      .filter(([, selectors]) =>
+        selectors
+          .split(',')
+          .some((selector) =>
+            Array.from(element.classList).some((name) => selector.trim() === `.${name}`),
+          ),
+      )
+      .map(([, , declarations]) => declarations)
+      .join('');
+
+  it('sets the tool row type from a chain that ends in a length', () => {
+    render(<div data-testid="row" className="progress-text-wrapper" />);
+
+    const rule = declaredFor(screen.getByTestId('row'));
+    expect(rule).toMatch(
+      /font-size:[^;]*--markdown-font-size[^;]*;\s*line-height:[^;]*--markdown-font-size/,
+    );
+    /** Neither custom property is defined by the published theme, so each chain ends in a length. */
+    expect(rule.match(/var\(--font-size-base, 1rem\)/g)).toHaveLength(2);
   });
 });

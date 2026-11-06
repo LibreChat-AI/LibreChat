@@ -1,12 +1,15 @@
 import { useCallback, useMemo, memo } from 'react';
 import { useRecoilValue } from 'recoil';
 import { Constants } from 'librechat-data-provider';
-import { ContentRow, HoverButtons } from '@librechat/chat/components';
+import {
+  ContentRow,
+  HoverButtons,
+  ResumeAuthorHeader,
+  ToolCallLimitNotice,
+} from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
-import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
 import PromptCacheResetNotice from '~/components/Chat/Messages/Content/PromptCacheResetNotice';
-import ToolCallLimitNotice from '~/components/Chat/Messages/Content/ToolCallLimitNotice';
 import { useAttachments, useMessageActions, useContentMetadata } from '~/hooks';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import { areMessageFieldsEqual, isSameTailRelation } from '~/utils';

@@ -1,0 +1,21 @@
+/**
+ * Type scale of the tool and status rows `@librechat/chat` renders. The label
+ * follows the chat font setting (`--markdown-font-size`) at nine tenths, the
+ * same as the message text around it. It ships here rather than in the SPA's
+ * stylesheet so a consumer rendering the package's parts without the app's
+ * CSS keeps the row height and type size the app shows.
+ */
+.progress-text-wrapper {
+  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base, 1rem)));
+  line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base, 1rem)));
+}
+
+.progress-text-content {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.progress-text-wrapper button {
+  font-size: inherit;
+  line-height: inherit;
+}

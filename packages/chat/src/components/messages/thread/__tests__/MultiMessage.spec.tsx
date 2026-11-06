@@ -33,12 +33,19 @@ const host: MessagesHost = {
   useGetMessages: () => () => undefined,
   useHasPendingTurn: () => false,
   renderMessageAudio: () => null,
-  useScrolling: () => {
-    throw new Error('not used by the thread');
-  },
   useScreenshotTarget: () => undefined,
   useAutoScroll: () => false,
-  useConversationSeen: () => () => undefined,
+  useConversationMessages: () => undefined,
+  useAssistant: () => undefined,
+  useGetAddedConvo: () => () => null,
+  useStreamedAttachments: () => undefined,
+  useMessageFeedback: () => () => undefined,
+  useSeenSource: () => ({
+    readReply: () => undefined,
+    hasReplyProof: () => false,
+    markSeen: () => undefined,
+    consumeFocusSuppression: () => false,
+  }),
   renderMessageIcon: () => null,
   renderMessageRow: (props) => <RowStub {...props} />,
   renderActivity: ({ parentMessageIds, hasParallelContent }) => (

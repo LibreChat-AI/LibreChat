@@ -10,6 +10,7 @@ import {
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import CommandTime, { useCommandClock } from './CommandTime';
 import useLazyHighlight from './useLazyHighlight';
 import useToolCallState from './useToolCallState';
 import CodeWindowHeader from './CodeWindowHeader';
@@ -130,8 +131,11 @@ export default function ExecuteCode({
       runStepStatus,
       extraError: backgroundFailed,
       extraCancelled: cancelledInBackground,
-      keepRow: backgroundHandle != null || intent != null,
+      keepRow: backgroundHandle != null,
+      keepLabelRow: intent != null,
     });
+  /** Measured once per card, so the time survives moving from the row into the panel. */
+  const commandMs = useCommandClock(phase, runStepDurationMs);
 
   const highlighted = useLazyHighlight(showCode ? code : undefined, lang);
   const { ref: codePaneRef, onScroll: onCodePaneScroll } = useFollowScroll<HTMLPreElement>(
@@ -147,7 +151,7 @@ export default function ExecuteCode({
 
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
         <div
           className={TOOL_ROW_CLASSES}
@@ -169,8 +173,10 @@ export default function ExecuteCode({
              *  covers the live card; the persisted `backgrounded` marker covers
              *  the card after harvest replaces the handle with real stdout
              *  (and after any reload), when no transient signal survives. */
-            durationMs={
-              backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
+            timer={
+              backgroundHandle == null && backgrounded !== true ? (
+                <CommandTime phase={phase} ms={commandMs} />
+              ) : undefined
             }
             icon={
               <SquareTerminal
@@ -187,13 +193,20 @@ export default function ExecuteCode({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           <div
             className={cn(
               toolPanelSpacingClassName,
               'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
             )}
           >
+            {bare && code && (
+              <div className="flex items-center justify-end px-4 pt-2">
+                {backgroundHandle == null && backgrounded !== true && (
+                  <CommandTime phase={phase} ms={commandMs} />
+                )}
+              </div>
+            )}
             {code && <CodeWindowHeader language={lang} code={code} />}
             {code && (
               <pre

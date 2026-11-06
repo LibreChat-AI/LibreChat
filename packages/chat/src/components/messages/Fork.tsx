@@ -9,7 +9,6 @@ import type { TForkConvoRequest } from 'librechat-data-provider';
 import type { TranslationKeys } from '@librechat/client';
 import type { NamedExoticComponent } from 'react';
 import { useMessagesHost } from '../../react/messages/host';
-import { hoverButtonClasses } from './styles';
 
 interface PopoverButtonProps {
   children: React.ReactNode;
@@ -173,13 +172,13 @@ const CheckboxOption: React.FC<CheckboxOptionProps> = ({
                   }
                   onToggle(isChecked);
                 }}
-                className="transition duration-300 ease-in-out"
+                variant="fade"
                 aria-label={localize(labelKey)}
               />
               <Label
                 htmlFor={id}
-                variant="secondary"
-                className="hover:text-text-primary ms-2 w-auto cursor-pointer text-sm break-normal select-none"
+                variant="option"
+                className="ms-2 w-auto cursor-pointer text-sm break-normal select-none"
               >
                 {localize(labelKey)}
               </Label>
@@ -260,8 +259,6 @@ function Fork({
    *  outside clicks close the popover without going through the trigger, so a
    *  hand-kept copy would leave the button reading as active forever. */
   const isActive = Ariakit.useStoreState(popoverStore, 'open');
-
-  const buttonStyle = hoverButtonClasses({ isActive, isLast });
 
   const startFork = (request: TForkConvoRequest) => {
     if (forkConversation == null) {
@@ -346,9 +343,8 @@ function Fork({
         store={popoverStore}
         render={
           <Button
-            variant="ghost"
-            size="icon"
-            className={buttonStyle}
+            variant={isLast ? 'message-hover' : 'message-hover-reveal'}
+            data-hover-active={isActive || undefined}
             onClick={(e) => {
               if (rememberGlobal) {
                 e.preventDefault();

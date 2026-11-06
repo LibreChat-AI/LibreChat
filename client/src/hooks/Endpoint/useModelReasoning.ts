@@ -1,29 +1,10 @@
 import { useMemo } from 'react';
-import {
-  Providers,
-  ReasoningParameterFormat,
-  resolveModelReasoning,
-  hasExplicitReasoningEffort,
-} from 'librechat-data-provider';
+import { usesReasoningCapabilities } from '@librechat/chat';
+import { resolveModelReasoning } from 'librechat-data-provider';
 import type { TEndpointsConfig, TModelReasoning } from 'librechat-data-provider';
 import { useReasoningCapabilitiesQuery } from '~/data-provider';
 
-/**
- * Whether the endpoint's efforts come from a per-model catalog: an OpenRouter parameter set
- * whose administrator did not define `reasoning_effort` themselves. Anything else needs no
- * request and no waiting.
- */
-export function usesReasoningCapabilities(
-  endpointsConfig: TEndpointsConfig | undefined,
-  endpoint: string,
-): boolean {
-  const customParams = endpointsConfig?.[endpoint]?.customParams;
-  return (
-    customParams?.defaultParamsEndpoint === Providers.OPENROUTER &&
-    customParams.reasoningFormat !== ReasoningParameterFormat.disabled &&
-    !hasExplicitReasoningEffort(customParams.paramDefinitions)
-  );
-}
+export { usesReasoningCapabilities };
 
 /**
  * The reasoning efforts the selected OpenRouter model accepts, for `applyModelAwareDefaults`

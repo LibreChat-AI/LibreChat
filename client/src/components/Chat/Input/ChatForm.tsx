@@ -254,6 +254,7 @@ const ChatForm = memo(function ChatForm({
    *  answer box, or is locked behind the batch card that owns the answer. A
    *  collapsed batch is neither, it hands the composer back to the thread. */
   const composerReserved = answerMode.composerAnswers || answerMode.composerLocked;
+  const textValue = useWatch({ control: methods.control, name: 'text' });
 
   const { consumeDraft, preserveText, settleText } = useAutoSave({
     index,
@@ -437,7 +438,6 @@ const ChatForm = memo(function ChatForm({
     ),
   });
 
-  const textValue = useWatch({ control: methods.control, name: 'text' });
   const interfaceDirection = useDirection();
   /** An empty `dir="auto"` field resolves to LTR, which would park an RTL interface's placeholder on
    *  the wrong edge, so the empty field follows the interface until text gives it a direction. */
