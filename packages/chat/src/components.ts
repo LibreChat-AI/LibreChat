@@ -65,6 +65,8 @@ export { default as SourceIcon } from './components/composer/files/SourceIcon';
 export { default as FilePreview } from './components/composer/files/FilePreview';
 export { default as ProgressCircle } from './components/composer/files/ProgressCircle';
 export { default as FileContainer } from './components/composer/files/FileContainer';
+export { default as FileRow, FileRowWrapper } from './components/composer/files/FileRow';
+export type { FileRowProps } from './components/composer/files/FileRow';
 export { default as DragDropOverlay } from './components/composer/files/DragDropOverlay';
 export { default as PastedTextDialog } from './components/composer/files/PastedTextDialog';
 export { getFileType } from './components/composer/files/kinds';
