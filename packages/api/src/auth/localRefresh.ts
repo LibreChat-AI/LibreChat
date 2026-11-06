@@ -1,7 +1,15 @@
 import jwt from 'jsonwebtoken';
-import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from 'librechat-data-provider';
+import {
+  OPENID_SESSION_ENDED,
+  AUTH_SESSION_CHECK_UNAVAILABLE,
+  TWO_FACTOR_ENROLLMENT_REQUIRED_CODE,
+} from 'librechat-data-provider';
 import type { ISession, OIDCTokens } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
+import type {
+  ProviderSessionAuthorizeInput,
+  ProviderSessionAuthorizeOutcome,
+} from './openid/providerSession';
 import type { TokenIssuance, TwoFactorAccount } from './twoFactor';
 import {
   generateTwoFactorSetupToken,
@@ -11,6 +19,7 @@ import {
   isTwoFactorEnrollmentRequired,
   TOKEN_RETIREMENT_FIELDS,
 } from './twoFactor';
+import { isProviderSessionUnavailableError } from './openid/providerSession';
 import { clearSessionHintCookie } from '~/oauth/csrf';
 
 const EXPIRED_REFRESH_MESSAGE = 'Refresh token expired or not found for this user';
@@ -29,7 +38,9 @@ type RefreshUser = Pick<
   | 'credentialsChangedAt'
 >;
 
-type RefreshSession = Pick<ISession, 'expiration'> & { _id: UserIdentifier };
+type RefreshSession = Pick<ISession, 'expiration' | 'providerSession' | 'authMethod'> & {
+  _id: UserIdentifier;
+};
 type SessionDeletionResult = { deletedCount?: number };
 type AuthResponseSource = TwoFactorAccount & { __v?: number; federatedTokens?: OIDCTokens };
 
@@ -46,6 +57,11 @@ interface LocalRefreshDependencies {
     session: RefreshSession | null,
     req: Request,
   ) => Promise<string>;
+  /** The provider-session authorizer's `authorize` method, rechecked right before `setAuthTokens`
+   *  rotates the credential. */
+  authorizeProviderSession: (
+    input: ProviderSessionAuthorizeInput,
+  ) => Promise<ProviderSessionAuthorizeOutcome>;
   deleteSession: (query: { sessionId: string }) => Promise<SessionDeletionResult>;
   deleteAllUserSessions: (query: { userId: string }) => Promise<SessionDeletionResult>;
   clearCloudFrontCookies: (
@@ -81,6 +97,22 @@ export function sanitizeUserForAuthResponse<T extends object>(
     ...safeUser
   } = source as AuthResponseSource;
   return safeUser as Partial<T>;
+}
+
+/** `null` only for a non-OpenID login with no provider-session ref; no back-channel-logout check applies then. */
+function buildProviderSessionAuthorizeInput(
+  session: RefreshSession,
+  user: RefreshUser,
+): ProviderSessionAuthorizeInput | null {
+  const ref = session.providerSession ?? null;
+  if (ref == null) {
+    const isOpenIDCredential =
+      session.authMethod === 'openid' || (session.authMethod == null && user.provider === 'openid');
+    if (!isOpenIDCredential) {
+      return null;
+    }
+  }
+  return { ref, expiresAt: session.expiration, legacy: ref == null };
 }
 
 /** Handles only the local refresh branch after OpenID ownership has been resolved. */
@@ -155,6 +187,25 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
 
       const session = await deps.findSession({ userId, refreshToken }, { lean: false });
       if (session && session.expiration > new Date()) {
+        /** Checked before 2FA enrollment so an ended provider session cannot still obtain a
+         *  setup token. */
+        const authorizeInput = buildProviderSessionAuthorizeInput(session, user);
+        if (authorizeInput) {
+          let providerSessionCheck: ProviderSessionAuthorizeOutcome;
+          try {
+            providerSessionCheck = await deps.authorizeProviderSession(authorizeInput);
+          } catch (error) {
+            if (!isProviderSessionUnavailableError(error)) {
+              throw error;
+            }
+            return res.status(503).send({ code: AUTH_SESSION_CHECK_UNAVAILABLE });
+          }
+          if (!providerSessionCheck.ok) {
+            await deps.deleteSession({ sessionId: session._id.toString() });
+            return res.status(401).send({ code: OPENID_SESSION_ENDED });
+          }
+        }
+
         if (requiresEnrollment(user)) {
           await deps.deleteSession({ sessionId: session._id.toString() });
           res.clearCookie('refreshToken');

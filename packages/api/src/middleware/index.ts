@@ -38,3 +38,4 @@ export * from './management';
 export * from './twoFactor';
 export * from './messageIds';
 export * from './promptResolveLimiter';
+export * from './backchannelLogoutLimiter';

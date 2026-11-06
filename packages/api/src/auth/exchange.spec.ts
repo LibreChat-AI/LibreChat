@@ -11,11 +11,14 @@ jest.mock(
       info: jest.fn(),
       warn: jest.fn(),
     },
+    DEFAULT_REFRESH_TOKEN_EXPIRY: 1000 * 60 * 60 * 24 * 7,
   }),
   { virtual: true },
 );
 
+import { ProviderSessionUnavailableError } from '~/auth/openid/providerSession/errors';
 import {
+  AdminExchangeError,
   exchangeAdminCode,
   generateAdminExchangeCode,
   isAdminPanelRedirect,
@@ -292,6 +295,175 @@ describe('admin OAuth code exchange', () => {
 
       expect(result).not.toBeNull();
       expect(result!.token).toBe('jwt-token');
+    });
+  });
+
+  describe('provider-session authorization', () => {
+    const ref = { issuer: 'https://issuer.example.com', clientId: 'client-1', sid: 'sid-123' };
+    const openidUser = { ...user, openidId: 'sub-123' } as unknown as IUser;
+
+    it('authorizes before returning tokens when a ref is bound', async () => {
+      const { cache } = createCache();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const code = await generateAdminExchangeCode(
+        cache,
+        openidUser,
+        'jwt-token',
+        'refresh-token',
+        undefined,
+        undefined,
+        undefined,
+        ref,
+      );
+
+      const result = await exchangeAdminCode(cache, code, undefined, undefined, {
+        authorizeProviderSession,
+      });
+
+      expect(authorizeProviderSession).toHaveBeenCalledWith({
+        ref,
+        subject: 'sub-123',
+        expiresAt: expect.any(Date),
+        legacy: false,
+      });
+      expect(result).not.toBeNull();
+      expect(result!.token).toBe('jwt-token');
+    });
+
+    it('throws AdminExchangeError when the provider session has ended', async () => {
+      const { cache } = createCache();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: false });
+      const code = await generateAdminExchangeCode(
+        cache,
+        openidUser,
+        'jwt-token',
+        'refresh-token',
+        undefined,
+        undefined,
+        undefined,
+        ref,
+      );
+
+      await expect(
+        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+      ).rejects.toThrow(AdminExchangeError);
+    });
+
+    it('propagates an unavailable provider-session check uncaught', async () => {
+      const { cache } = createCache();
+      const unavailableError = new Error('db down');
+      const authorizeProviderSession = jest.fn().mockRejectedValue(unavailableError);
+      const code = await generateAdminExchangeCode(
+        cache,
+        openidUser,
+        'jwt-token',
+        'refresh-token',
+        undefined,
+        undefined,
+        undefined,
+        ref,
+      );
+
+      await expect(
+        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+      ).rejects.toBe(unavailableError);
+    });
+
+    it('restores the code when authorize throws ProviderSessionUnavailableError, so a retry succeeds', async () => {
+      const { cache } = createCache();
+      const unavailableError = new ProviderSessionUnavailableError();
+      const authorizeProviderSession = jest
+        .fn()
+        .mockRejectedValueOnce(unavailableError)
+        .mockResolvedValueOnce({ ok: true });
+      const code = await generateAdminExchangeCode(
+        cache,
+        openidUser,
+        'jwt-token',
+        'refresh-token',
+        undefined,
+        undefined,
+        undefined,
+        ref,
+      );
+
+      await expect(
+        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+      ).rejects.toBe(unavailableError);
+
+      await expect(
+        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+      ).resolves.toMatchObject({ token: 'jwt-token' });
+    });
+
+    it('does not restore the code when the provider session is denied', async () => {
+      const { cache } = createCache();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: false });
+      const code = await generateAdminExchangeCode(
+        cache,
+        openidUser,
+        'jwt-token',
+        'refresh-token',
+        undefined,
+        undefined,
+        undefined,
+        ref,
+      );
+
+      await expect(
+        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+      ).rejects.toThrow(AdminExchangeError);
+
+      await expect(
+        exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession }),
+      ).resolves.toBeNull();
+    });
+
+    it('skips the check entirely for a non-OpenID admin login', async () => {
+      const { cache } = createCache();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: false });
+      const googleUser = { ...user, provider: 'google' } as unknown as IUser;
+      const code = await generateAdminExchangeCode(cache, googleUser, 'jwt-token', 'refresh-token');
+
+      const result = await exchangeAdminCode(cache, code, undefined, undefined, {
+        authorizeProviderSession,
+      });
+
+      expect(authorizeProviderSession).not.toHaveBeenCalled();
+      expect(result).not.toBeNull();
+    });
+
+    it('marks the entry legacy and passes a null ref when no sid was bound', async () => {
+      const { cache } = createCache();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const code = await generateAdminExchangeCode(cache, openidUser, 'jwt-token', 'refresh-token');
+
+      await exchangeAdminCode(cache, code, undefined, undefined, { authorizeProviderSession });
+
+      expect(authorizeProviderSession).toHaveBeenCalledWith({
+        ref: null,
+        subject: 'sub-123',
+        expiresAt: expect.any(Date),
+        legacy: true,
+      });
+    });
+
+    it('makes zero authorize calls when deps are omitted (mode off)', async () => {
+      const { cache } = createCache();
+      const code = await generateAdminExchangeCode(
+        cache,
+        openidUser,
+        'jwt-token',
+        'refresh-token',
+        undefined,
+        undefined,
+        undefined,
+        ref,
+      );
+
+      const result = await exchangeAdminCode(cache, code);
+
+      expect(result).not.toBeNull();
     });
   });
 

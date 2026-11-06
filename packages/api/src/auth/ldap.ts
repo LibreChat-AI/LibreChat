@@ -12,6 +12,13 @@ import type {
 } from './provision';
 import { createUserOnce } from './provision';
 
+/** True when `LDAP_URL` and `LDAP_USER_SEARCH_BASE` are both set, the condition every LDAP entry
+ *  point (strategy registration, startup config, login routing) uses to treat the deployment as
+ *  LDAP-backed. */
+export function isLdapAuthEnabled(): boolean {
+  return Boolean(process.env.LDAP_URL) && Boolean(process.env.LDAP_USER_SEARCH_BASE);
+}
+
 /** Finds the account an LDAP login continues as; one owned by another provider fails the login. */
 export async function findLdapUser({
   findUser,

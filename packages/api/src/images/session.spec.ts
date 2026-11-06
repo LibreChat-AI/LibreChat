@@ -55,4 +55,36 @@ describe('storeOpenIdSession', () => {
     await expect(storeOpenIdSession({ userId: 'user-id' }, deps)).resolves.toBe(false);
     expect(deps.upsertSession).not.toHaveBeenCalled();
   });
+
+  it('persists the provider session and authMethod when supplied', async () => {
+    const providerSession = {
+      issuer: 'https://issuer.example.com',
+      clientId: 'client-1',
+      sid: 'sid-1',
+    };
+
+    await storeOpenIdSession(
+      {
+        userId: 'user-id',
+        refreshToken: 'new-refresh',
+        providerSession,
+        authMethod: 'openid',
+      },
+      deps,
+    );
+
+    expect(deps.upsertSession).toHaveBeenCalledWith(
+      'user-id',
+      'new-refresh',
+      expect.objectContaining({ providerSession, authMethod: 'openid' }),
+    );
+  });
+
+  it('leaves providerSession and authMethod off the upsert when omitted', async () => {
+    await storeOpenIdSession({ userId: 'user-id', refreshToken: 'new-refresh' }, deps);
+
+    const options = deps.upsertSession.mock.calls[0][2];
+    expect(options).not.toHaveProperty('providerSession');
+    expect(options).not.toHaveProperty('authMethod');
+  });
 });

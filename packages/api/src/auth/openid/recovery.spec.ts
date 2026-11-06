@@ -41,6 +41,15 @@ describe('OpenID authentication publication settlement', () => {
       storeOpenIDSession: jest.fn().mockResolvedValue(undefined),
       assertOpenIDRefreshFlightAvailable: jest.fn().mockResolvedValue(true),
       setOpenIDAuthTokens: jest.fn(() => 'app-token'),
+      math: jest.fn((_value: string | undefined, fallback: number) => fallback),
+      defaultRefreshTokenExpiry: 1000 * 60 * 60 * 24 * 90,
+      providerSessionAuthorizer: {
+        establish: jest.fn().mockResolvedValue({ ok: true }),
+        authorize: jest.fn().mockResolvedValue({ ok: true }),
+        preCheck: jest.fn().mockResolvedValue({ ok: true }),
+        getMode: jest.fn().mockResolvedValue('enforce'),
+      },
+      getProviderSessionClient: jest.fn(() => null),
     } satisfies OpenIDRefreshRecoveryDeps;
     const service = createOpenIDRefreshRecoveryService(deps);
     const input = {
