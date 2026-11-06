@@ -1,4 +1,4 @@
-import type { ChannelGatewayWirePolicy } from '../config';
+import type { ChannelStorageConfig, ChannelGatewayWirePolicy } from '../config';
 
 export const SLACK_CHANNEL_BOT_SCOPES = [
   'app_mentions:read',
@@ -64,4 +64,6 @@ export interface ChannelServiceBundle {
   credentials: { botToken: string; signingSecret?: string };
   agent: { id: string; name?: string };
   gateway: ChannelGatewayWirePolicy;
+  /** Absent on older servers: retain the shared default; never infer a replica-local limit. */
+  delivery?: Pick<ChannelStorageConfig, 'maxDeliveryParts'>;
 }
