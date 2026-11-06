@@ -117,6 +117,23 @@ export const TERMS_NOT_ACCEPTED_CODE = 'terms_not_accepted' as const;
 export const TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE =
   'TWO_FACTOR_FEDERATED_LOGIN_BLOCKED' as const;
 
+/** A back-channel logout notification already ended the provider session carrying this credential. */
+export const OPENID_SESSION_ENDED = 'OPENID_SESSION_ENDED' as const;
+
+/** The provider-session record could not be read or written; retry, this is not a logout. */
+export const AUTH_SESSION_CHECK_UNAVAILABLE = 'AUTH_SESSION_CHECK_UNAVAILABLE' as const;
+
+/** Verified OpenID claims carried no `sid`, so back-channel-logout enforcement rejected the callback. */
+export const OPENID_SESSION_ID_MISSING = 'OPENID_SESSION_ID_MISSING' as const;
+
+/** The provider session a login verified or a logout notification targets: `(issuer, clientId, sid)`.
+ *  `issuer` and `clientId` are normalized and configured identically at login and at logout. */
+export interface ProviderSessionRef {
+  issuer: string;
+  clientId: string;
+  sid: string;
+}
+
 const TWO_FACTOR_POLICY_PROVIDERS = new Set(['local', 'ldap']);
 
 export function isTwoFactorPolicyProvider(provider: string | null | undefined): boolean {
@@ -196,6 +213,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'fileConfig.skills.deletionCleanupConcurrency': 'operator',
   'registration.openidDiscovery': 'startup',
   'registration.oauthStateTtlMs': 'startup',
+  'registration.openidBackchannelLogout': 'startup',
   'endpoints.agents.subagentActivity': 'startup',
   'endpoints.agents.eventDriven': 'startup',
   'endpoints.agents.channels.slackApp': 'operator',
@@ -4590,6 +4608,44 @@ export const openIdDiscoverySchema = z.object({
 });
 
 export type TOpenIdDiscoveryConfig = z.infer<typeof openIdDiscoverySchema>;
+
+/** Asymmetric algorithms a logout token may be signed with; excludes `none` and the `HS*`
+ *  family, which would let the party holding the client secret forge a logout. */
+export const OPENID_BACKCHANNEL_LOGOUT_ALGORITHMS = [
+  'RS256',
+  'RS384',
+  'RS512',
+  'PS256',
+  'PS384',
+  'PS512',
+  'ES256',
+  'ES384',
+  'ES512',
+] as const;
+
+/** Mode for `POST /oauth/openid/backchannel-logout`: `off` disables it, `record` runs it and
+ *  associates sessions but fails open, `enforce` also denies a missing or unassociated session. */
+export const openidBackchannelLogoutSchema = z.object({
+  mode: z.enum(['off', 'record', 'enforce']).default('off'),
+  /** Permitted logout-token signing algorithms. */
+  algorithms: z.array(z.enum(OPENID_BACKCHANNEL_LOGOUT_ALGORITHMS)).min(1).default(['RS256']),
+  clockToleranceSec: z.number().int().min(0).max(3600).default(60),
+  maxTokenAgeSec: z.number().int().positive().max(3600).default(120),
+  maxBodyBytes: z.number().int().positive().max(1_000_000).default(16384),
+  rateLimit: z
+    .object({
+      windowMs: z.number().int().min(1000).max(3_600_000).default(60_000),
+      max: z.number().int().positive().max(100_000).default(60),
+    })
+    .strict()
+    .default({ windowMs: 60_000, max: 60 }),
+  processingTimeoutMs: z.number().int().positive().max(60_000).default(5000),
+  /** Covers a login callback still pending when its logout notification arrives; resolved
+   *  alongside `oauthStateTtlMs` by `resolveBackchannelLogoutConfig`, not defaulted here. */
+  callbackGraceMs: z.number().int().nonnegative().max(3_600_000).optional(),
+});
+
+export type TOpenIdBackchannelLogoutConfig = z.infer<typeof openidBackchannelLogoutSchema>;
 export const chatProjectsConfigSchema = z
   .object({
     /** Maximum number of reference files attached to one Chat Project. Defaults to 50. */
@@ -4925,6 +4981,7 @@ export const configSchema = z.object({
       oauthStateTtlMs: z.number().int().min(60_000).max(3_600_000).optional(),
       /** OpenID discovery retries; an unset field falls back to its `OPENID_DISCOVERY_RETRY_*` env var, then the schema default. */
       openidDiscovery: partialWithoutDefaults(openIdDiscoverySchema).optional(),
+      openidBackchannelLogout: openidBackchannelLogoutSchema.optional(),
     })
     .default({ socialLogins: defaultSocialLogins }),
   /** Changing the registered email address. An unset field falls back to its env var, then the

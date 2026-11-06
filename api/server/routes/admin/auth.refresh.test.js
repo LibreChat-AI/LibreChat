@@ -68,7 +68,7 @@ jest.mock('@librechat/api', () => {
 
 const mockAdminLoginController = jest.fn((req, res) => res.status(200).end());
 jest.mock('~/server/controllers/auth/LoginController', () => ({
-  loginController: (...args) => mockAdminLoginController(...args),
+  localLoginController: (...args) => mockAdminLoginController(...args),
 }));
 
 jest.mock('~/server/middleware/roles/capabilities', () => ({
@@ -83,9 +83,24 @@ jest.mock('~/server/controllers/auth/oauth', () => ({
 jest.mock('~/models', () => ({
   findBalanceByUser: jest.fn(),
   findUsers: jest.fn(),
+  findSession: jest.fn(),
+  upsertSession: jest.fn(),
+  deleteSession: jest.fn(),
   generateToken: jest.fn(() => Promise.resolve('minted-token')),
   getUserById: jest.fn(),
   upsertBalanceFields: jest.fn(),
+}));
+
+jest.mock('~/server/services/ProviderSession', () => ({
+  getProviderSessionAuthorizer: jest.fn(),
+  getProviderSessionClient: jest.fn(),
+}));
+
+jest.mock('~/server/services/RefreshTokenBridge', () => ({
+  getRefreshTokenBridge: jest.fn(),
+  storeRefreshTokenBridge: jest.fn(),
+  deleteRefreshTokenBridges: jest.fn(),
+  OPENID_REFRESH_BRIDGE_GRACE_MS: 60000,
 }));
 
 jest.mock('~/server/services/Config', () => ({
@@ -126,6 +141,16 @@ const {
 } = require('@librechat/api');
 const { getOpenIdConfig } = require('~/strategies');
 const middleware = require('~/server/middleware');
+const {
+  getProviderSessionAuthorizer,
+  getProviderSessionClient,
+} = require('~/server/services/ProviderSession');
+const {
+  getRefreshTokenBridge,
+  storeRefreshTokenBridge,
+  deleteRefreshTokenBridges,
+} = require('~/server/services/RefreshTokenBridge');
+const { findSession } = require('~/models');
 const adminAuthRouter = require('./auth');
 
 const ORIGINAL_OPENID_SCOPE = process.env.OPENID_SCOPE;
@@ -158,6 +183,17 @@ describe('admin auth OpenID refresh route', () => {
 
     isEnabled.mockReturnValue(true);
     getOpenIdConfig.mockReturnValue(openIdConfig);
+    getProviderSessionAuthorizer.mockReturnValue({
+      getMode: jest.fn().mockResolvedValue('off'),
+      authorize: jest.fn(),
+      preCheck: jest.fn(),
+      establish: jest.fn(),
+    });
+    getProviderSessionClient.mockReturnValue(null);
+    findSession.mockResolvedValue(null);
+    getRefreshTokenBridge.mockResolvedValue(null);
+    storeRefreshTokenBridge.mockResolvedValue(null);
+    deleteRefreshTokenBridges.mockResolvedValue({});
     openIdClient.refreshTokenGrant.mockResolvedValue(tokenset);
     applyAdminRefresh.mockResolvedValue({
       token: 'admin-jwt',
@@ -266,6 +302,128 @@ describe('admin auth OpenID refresh route', () => {
     expect(debugOutput).not.toContain('new-admin-id');
     expect(debugOutput).not.toContain('new-admin-refresh');
     expect(debugOutput).not.toContain('https://api.example.com');
+  });
+
+  it('returns 401 OPENID_SESSION_ENDED and never reaches the IdP when the bound session has ended', async () => {
+    getProviderSessionAuthorizer.mockReturnValue({
+      getMode: jest.fn().mockResolvedValue('enforce'),
+      authorize: jest.fn(),
+      preCheck: jest.fn().mockResolvedValue({ ok: false }),
+      establish: jest.fn(),
+    });
+    getProviderSessionClient.mockReturnValue({
+      issuer: 'https://issuer.example.com',
+      clientId: 'admin-client',
+    });
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-refresh-token' });
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({
+      error: 'Provider session has ended',
+      error_code: 'OPENID_SESSION_ENDED',
+    });
+    expect(openIdClient.refreshTokenGrant).not.toHaveBeenCalled();
+    expect(applyAdminRefresh).not.toHaveBeenCalled();
+  });
+
+  describe('refresh-token bridge recovery (provider-session enforce mode)', () => {
+    beforeEach(() => {
+      const { ProviderSessionUnavailableError } = require('@librechat/api');
+      getProviderSessionAuthorizer.mockReturnValue({
+        getMode: jest.fn().mockResolvedValue('enforce'),
+        authorize: jest.fn().mockRejectedValue(new ProviderSessionUnavailableError('db down')),
+        preCheck: jest.fn().mockResolvedValue({ ok: true }),
+        establish: jest.fn(),
+      });
+      getProviderSessionClient.mockReturnValue({
+        issuer: 'https://issuer.example.com',
+        clientId: 'admin-client',
+      });
+      findSession.mockResolvedValue({ user: 'admin-user-id', tenantId: undefined });
+    });
+
+    it('503s on the first attempt, then a retry with the original refresh_token uses the bridged token and succeeds', async () => {
+      const { ProviderSessionUnavailableError } = require('@librechat/api');
+      applyAdminRefresh.mockRejectedValueOnce(new ProviderSessionUnavailableError('db down'));
+
+      const firstResponse = await request(app)
+        .post('/api/admin/oauth/refresh')
+        .send({ refresh_token: 'original-refresh-token' });
+
+      expect(firstResponse.status).toBe(503);
+      expect(firstResponse.body).toEqual({
+        error: 'Provider session check unavailable',
+        error_code: 'AUTH_SESSION_CHECK_UNAVAILABLE',
+      });
+      expect(openIdClient.refreshTokenGrant).toHaveBeenCalledWith(
+        openIdConfig,
+        'original-refresh-token',
+        {},
+      );
+
+      getRefreshTokenBridge.mockResolvedValue({ refreshToken: 'bridged-refresh-token' });
+      applyAdminRefresh.mockResolvedValueOnce({
+        token: 'admin-jwt',
+        refreshToken: 'new-admin-refresh',
+        user: { id: 'user-id', email: 'admin@example.com' },
+        expiresAt: 1234567890,
+      });
+
+      const retryResponse = await request(app)
+        .post('/api/admin/oauth/refresh')
+        .send({ refresh_token: 'original-refresh-token' });
+
+      expect(retryResponse.status).toBe(200);
+      expect(openIdClient.refreshTokenGrant).toHaveBeenLastCalledWith(
+        openIdConfig,
+        'bridged-refresh-token',
+        {},
+      );
+      expect(deleteRefreshTokenBridges).toHaveBeenCalledWith({
+        refreshTokens: ['original-refresh-token'],
+        userId: 'admin-user-id',
+        tenantId: undefined,
+      });
+    });
+
+    it('passes the bridged token as grantRefreshToken on the retry, so a non-rotating IdP response returns it', async () => {
+      const { ProviderSessionUnavailableError } = require('@librechat/api');
+      applyAdminRefresh.mockRejectedValueOnce(new ProviderSessionUnavailableError('db down'));
+
+      await request(app)
+        .post('/api/admin/oauth/refresh')
+        .send({ refresh_token: 'original-refresh-token' });
+
+      getRefreshTokenBridge.mockResolvedValue({ refreshToken: 'bridged-refresh-token' });
+      openIdClient.refreshTokenGrant.mockResolvedValueOnce({
+        ...tokenset,
+        refresh_token: undefined,
+      });
+      applyAdminRefresh.mockResolvedValueOnce({
+        token: 'admin-jwt',
+        refreshToken: 'bridged-refresh-token',
+        user: { id: 'user-id', email: 'admin@example.com' },
+        expiresAt: 1234567890,
+      });
+
+      const retryResponse = await request(app)
+        .post('/api/admin/oauth/refresh')
+        .send({ refresh_token: 'original-refresh-token' });
+
+      expect(retryResponse.status).toBe(200);
+      expect(retryResponse.body.refreshToken).toBe('bridged-refresh-token');
+      expect(applyAdminRefresh).toHaveBeenLastCalledWith(
+        expect.objectContaining({ refresh_token: undefined }),
+        expect.any(Object),
+        expect.objectContaining({
+          previousRefreshToken: 'original-refresh-token',
+          grantRefreshToken: 'bridged-refresh-token',
+        }),
+      );
+    });
   });
 });
 

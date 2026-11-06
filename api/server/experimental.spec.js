@@ -147,6 +147,22 @@ describe('Experimental server configuration', () => {
     expect(source).not.toContain('baseAppConfig');
   });
 
+  it('bypasses the global body parsers for the back-channel logout route, like the standard server', () => {
+    expect(source).toContain(
+      "app.use(excludeBackchannelLogoutBodyParser(express.json({ limit: '3mb' })));",
+    );
+    expect(source).toMatch(
+      /app\.use\(\s*excludeBackchannelLogoutBodyParser\(express\.urlencoded\(\{ extended: true, limit: '3mb' \}\)\),\s*\);/,
+    );
+    const jsonParserIndex = source.indexOf(
+      "app.use(excludeBackchannelLogoutBodyParser(express.json({ limit: '3mb' })));",
+    );
+    const oauthRouteIndex = source.indexOf("app.use('/oauth', preAuthTenantMiddleware");
+    expect(jsonParserIndex).toBeGreaterThan(-1);
+    expect(oauthRouteIndex).toBeGreaterThan(-1);
+    expect(jsonParserIndex).toBeLessThan(oauthRouteIndex);
+  });
+
   it('matches the standard server pre-authentication tenant routes', () => {
     expect(source).toContain("app.use('/oauth', preAuthTenantMiddleware, routes.oauth);");
     expect(source).toContain("app.use('/api/auth', preAuthTenantMiddleware, routes.auth);");

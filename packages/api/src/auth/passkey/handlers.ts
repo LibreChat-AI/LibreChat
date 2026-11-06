@@ -1,6 +1,11 @@
 import { logger } from '@librechat/data-schemas';
+import type {
+  PasskeyCreateData,
+  PasskeyRecord,
+  AppConfig,
+  AuthMethod,
+} from '@librechat/data-schemas';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
-import type { PasskeyCreateData, PasskeyRecord, AppConfig } from '@librechat/data-schemas';
 import type { TPasskey } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type { AppConfigUserLike, GetAppConfigOptions } from '~/app/service';
@@ -80,6 +85,7 @@ export type PasskeyRequest<TBody = StepUpBody> = Request<
   user?: PasskeyAccount;
   banned?: boolean;
   config?: AppConfig;
+  authMethod?: AuthMethod;
 };
 
 /** Every management route sits behind `requireJwtAuth`, so `req.user` is always populated. */
@@ -684,6 +690,7 @@ export function createPasskeyHandlers(deps: PasskeyHandlersDeps): PasskeyHandler
       }
 
       req.user = user;
+      req.authMethod = 'passkey';
 
       /**
        * `checkBan` defaults `next` to a no-op, so calling it bare would swallow an

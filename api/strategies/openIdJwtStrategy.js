@@ -10,7 +10,7 @@ const {
   findOpenIDUser,
   getOpenIdEmail,
   getOpenIdIssuer,
-  normalizeOpenIdIssuer,
+  isOpenIdIssuerMatch,
   buildAuthUserDocCacheKey,
   getAuthUserDocCacheMode,
   getCurrentCachedAuthUserDoc,
@@ -57,34 +57,8 @@ const getOpenIdAudienceConfig = () => {
   };
 };
 
-const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-const issuerTemplateRegexCache = new Map();
-
-const issuerMatchesTemplate = (expectedIssuer, actualIssuer) => {
-  if (!expectedIssuer.includes('{tenantid}')) {
-    return false;
-  }
-
-  let regex = issuerTemplateRegexCache.get(expectedIssuer);
-  if (!regex) {
-    const escapedTemplate = expectedIssuer.split('{tenantid}').map(escapeRegExp).join('[^/]+');
-    regex = new RegExp(`^${escapedTemplate}$`);
-    issuerTemplateRegexCache.set(expectedIssuer, regex);
-  }
-  return regex.test(actualIssuer);
-};
-
-const isOpenIdIssuerAllowed = (payload, openIdConfig) => {
-  const actualIssuer = normalizeOpenIdIssuer(payload?.iss);
-  const expectedIssuer = normalizeOpenIdIssuer(openIdConfig.serverMetadata().issuer);
-
-  if (!actualIssuer || !expectedIssuer) {
-    return false;
-  }
-
-  return actualIssuer === expectedIssuer || issuerMatchesTemplate(expectedIssuer, actualIssuer);
-};
+const isOpenIdIssuerAllowed = (payload, openIdConfig) =>
+  isOpenIdIssuerMatch(openIdConfig.serverMetadata().issuer, payload?.iss);
 
 const getAuthUserDocCacheStore = () => getLogStores(CacheKeys.AUTH_USER_DOC);
 
