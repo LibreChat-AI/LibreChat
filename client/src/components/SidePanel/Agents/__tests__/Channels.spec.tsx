@@ -734,3 +734,52 @@ test('a completed closed operation cannot close a new dialog for the same channe
   expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('new-dialog-token');
   expect(dataService.activateAgentChannel).toHaveBeenCalledTimes(1);
 });
+
+test('channel creation explains the transaction prerequisite', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.createAgentChannel).mockRejectedValueOnce({
+    isAxiosError: true,
+    response: { status: 503, data: { error: 'transactions_unavailable' } },
+  });
+  renderChannels();
+  await openAdd(user);
+  await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'com_ui_channels_transaction_required',
+  );
+  expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeEnabled();
+});
+
+test('the activation adapter preserves only the approved setup code and clears credentials', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
+  jest
+    .mocked(dataService.activateAgentChannel)
+    .mockImplementation(
+      jest.requireActual('librechat-data-provider').dataService.activateAgentChannel,
+    );
+  const patch = jest.spyOn(request, 'patch').mockRejectedValueOnce({
+    isAxiosError: true,
+    response: { status: 503, data: { error: 'transactions_unavailable', secret: 'test-secret' } },
+    config: { data: 'test-token' },
+    request: { authorization: 'test-token' },
+  });
+  const { client } = renderChannels();
+  try {
+    await openConnection(user);
+    await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
+    await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
+    await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'com_ui_channels_transaction_required',
+    );
+    expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
+    const mutations = client.getMutationCache().getAll();
+    expect(mutations[0].state.error).toMatchObject({ code: 'transactions_unavailable' });
+    expect(JSON.stringify(mutations.map((mutation) => mutation.state))).not.toMatch(
+      /test-token|test-secret/,
+    );
+  } finally {
+    patch.mockRestore();
+  }
+});

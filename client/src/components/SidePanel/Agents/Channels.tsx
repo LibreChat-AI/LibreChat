@@ -1,4 +1,5 @@
 import { useId, useRef, useState, useEffect } from 'react';
+import axios from 'axios';
 import { Info, Plus, Power, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
@@ -18,6 +19,14 @@ import {
 import type { AgentChannel } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import { useLocalize } from '~/hooks';
+
+function channelErrorLabel(error: unknown): TranslationKeys {
+  const unavailable =
+    (axios.isAxiosError<{ error?: unknown }>(error) &&
+      error.response?.data?.error === 'transactions_unavailable') ||
+    (error instanceof Error && 'code' in error && error.code === 'transactions_unavailable');
+  return unavailable ? 'com_ui_channels_transaction_required' : 'com_ui_channels_action_error';
+}
 
 const statusLabels: Record<AgentChannel['status'], TranslationKeys> = {
   pending_install: 'com_ui_channels_pending',
@@ -203,7 +212,7 @@ function Channel({
         </dl>
         {mutation.isError && (
           <p role="alert" className="text-text-primary text-sm">
-            {localize('com_ui_channels_action_error')}
+            {localize(channelErrorLabel(mutation.error))}
           </p>
         )}
         {mutation.isError && mutation.variables === 'activate' && (
@@ -584,7 +593,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                   <h4 className="text-sm font-medium">{localize('com_ui_channel_link_mode')}</h4>
                   {create.isError && (
                     <p role="alert" className="text-sm">
-                      {localize('com_ui_channels_action_error')}
+                      {localize(channelErrorLabel(create.error))}
                     </p>
                   )}
                   <div

@@ -2,7 +2,13 @@ import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { createModels, createMethods, tenantStorage, runAsSystem } from '@librechat/data-schemas';
+import {
+  createModels,
+  createMethods,
+  tenantStorage,
+  runAsSystem,
+  TransactionUnavailableError,
+} from '@librechat/data-schemas';
 import type { ChannelDependencies } from './service';
 import { acceptsChannelServiceToken, createChannelHandlers, publicChannel } from './service';
 
@@ -339,4 +345,39 @@ it('fails closed if an existing socket-mode channel is switched to webhook trans
     .expect(409);
   expect(result.body).toEqual({ error: 'channel_signing_secret_required' });
   expect(JSON.stringify(result.body)).not.toContain('xoxb-');
+});
+
+it('returns an actionable transaction code without disclosing operational diagnostics', async () => {
+  const write = jest.spyOn(deps.db, 'createAgentChannel');
+  try {
+    write.mockRejectedValueOnce(new TransactionUnavailableError());
+    const unsupported = await request(app)
+      .post('/ui/agent-test/channels')
+      .send({ type: 'slack', credentialMode: 'shared' })
+      .expect(503);
+    expect(unsupported.body).toEqual({ error: 'transactions_unavailable' });
+    expect(deps.logError).not.toHaveBeenCalled();
+    write.mockRejectedValueOnce(new Error('mongodb://private-host/secret'));
+    const outage = await request(app)
+      .post('/ui/agent-test/channels')
+      .send({ type: 'slack', credentialMode: 'shared' })
+      .expect(503);
+    expect(outage.body).toEqual({ error: 'channel_operation_failed' });
+    expect(deps.logError).toHaveBeenCalledTimes(1);
+  } finally {
+    write.mockRestore();
+  }
+});
+
+it('uses the same setup error contract for an authenticated service operation', async () => {
+  const id = await createChannel();
+  await activation(id).expect(200);
+  deps.config = async () => {
+    throw new TransactionUnavailableError();
+  };
+  const result = await request(app)
+    .get(`/service/slack/${tenantId}/${id}`)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(503);
+  expect(result.body).toEqual({ error: 'transactions_unavailable' });
 });
