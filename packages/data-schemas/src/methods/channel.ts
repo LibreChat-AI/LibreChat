@@ -3,6 +3,7 @@ import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
 import { retireAgentChannel, initializeChannelScope, touchChannelScope } from './channelScope';
+import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createAgentChannelThreadModel } from '~/models/channel';
 import { prepareChannelOwnerAdmission } from './channelOwner';
@@ -225,6 +226,7 @@ export function createAgentChannelMethods(
       )
         return { status: 'pending_drain' };
       // Keep the deleting parent available for a retry if dependent cleanup fails.
+      await eraseChannelFeedbackForChannel(mongoose, deleting.tenantId, channelId);
       await threads().deleteMany({ channelId, tenantId: deleting.tenantId || { $in: [null, ''] } });
       const result = await channel().deleteOne({
         channelId,
