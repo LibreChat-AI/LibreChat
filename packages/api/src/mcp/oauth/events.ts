@@ -1,7 +1,32 @@
 import { Constants, Time } from 'librechat-data-provider';
 import { GraphEvents, StepTypes } from '@librechat/agents';
+import type { ServerResponse } from 'node:http';
+import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import type { OAuthStartHandler } from '../types';
 import type * as t from '~/types';
 import { buildOAuthToolCallName, splitMCPToolKey } from '~/mcp/utils';
+import { getSafeErrorMetadata } from '~/utils/errors';
+import { createOAuthCallback } from './publication';
+
+interface Diagnostics {
+  warn: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
+}
+
+function warnSafely(logger: Diagnostics | undefined, message: string, error: unknown): void {
+  try {
+    logger?.warn(message, getSafeErrorMetadata(error));
+  } catch {
+    // Diagnostics cannot become a tool or publication outcome.
+  }
+}
+
+class OAuthPromptPublicationError extends Error {
+  readonly code = 'oauth_prompt_publication_unavailable';
+  constructor() {
+    super('MCP sign-in prompt is unavailable. Please try again.');
+    this.name = 'OAuthPromptPublicationError';
+  }
+}
 
 export type OAuthPromptOptions = {
   expiresAt?: number;
@@ -14,6 +39,78 @@ export type OAuthToolCall = {
   args?: string;
   output?: string;
 };
+
+interface OAuthPromptStep {
+  stepId: string;
+  toolCall: OAuthToolCall;
+}
+
+/** Reauthentication owns a separate replayable step, never the model tool's result. */
+export function createMCPReauthenticationPrompt({
+  serverName,
+  toolCallId,
+  stepId,
+  runId,
+  createStart,
+  createEnd,
+  logger,
+}: {
+  serverName: string;
+  logger?: Diagnostics;
+  toolCallId?: string;
+  stepId?: string;
+  runId: string;
+  createStart: (step: OAuthPromptStep) => OAuthStartHandler;
+  createEnd: (step: OAuthPromptStep) => () => Promise<void>;
+}): {
+  start: OAuthStartHandler;
+  end: () => Promise<void>;
+  run: <Result>(operation: () => Promise<Result>) => Promise<Result>;
+} {
+  const callId = `oauth:${toolCallId ?? stepId ?? runId}`;
+  const step = {
+    stepId: `${buildMCPAuthStepId(serverName)}:${callId}`,
+    toolCall: buildMCPAuthToolCall({ id: callId, serverName }),
+  };
+  const emitStart = createStart(step);
+  const emitEnd = createEnd(step);
+  let pending = false;
+  const start: OAuthStartHandler = async (...args) => {
+    pending = true;
+    await emitStart(...args);
+  };
+  let retiring: Promise<void> | undefined;
+  const end = async () => {
+    if (!pending) return;
+    if (retiring) return retiring;
+    retiring = (async () => {
+      try {
+        await emitEnd();
+        pending = false;
+      } catch (error) {
+        // Keep the prompt retryable without replacing an already-performed tool's outcome.
+        warnSafely(logger, '[MCP OAuth] Prompt retirement unavailable', error);
+      }
+    })();
+    try {
+      await retiring;
+    } finally {
+      retiring = undefined;
+    }
+  };
+  return {
+    start,
+    end,
+    async run<Result>(operation: () => Promise<Result>): Promise<Result> {
+      try {
+        return await operation();
+      } finally {
+        // Timeout and caller cancellation retire only this prompt, not a shared OAuth flow.
+        await end();
+      }
+    },
+  };
+}
 
 export function getOAuthPromptExpiresAt(
   options?: OAuthPromptOptions,
@@ -161,4 +258,112 @@ export function buildMCPAuthRunStepCompletedEvent({
       },
     },
   };
+}
+
+interface OAuthEventTransport {
+  logger?: Diagnostics;
+  res: ServerResponse;
+  sendEvent: (res: ServerResponse, event: t.ServerSentEvent) => void;
+  jobs: Pick<GenerationJobManagerClass, 'emitChunk'>;
+  streamId?: string | null;
+  jobCreatedAt?: number;
+}
+
+/** One initialization owner per server, shared by reconnect and pending-flow discovery. */
+export function createMCPInitializationOAuthPrompts(
+  transport: OAuthEventTransport & { userId: string },
+): {
+  forServer: (
+    serverName: string,
+    index?: number,
+  ) => ReturnType<typeof createMCPReauthenticationPrompt>;
+} {
+  const prompts = new Map<string, ReturnType<typeof createMCPReauthenticationPrompt>>();
+  return {
+    forServer(serverName, index = 0) {
+      const existing = prompts.get(serverName);
+      if (existing) return existing;
+      let publishedURL: string | undefined;
+      const prompt = createMCPReauthenticationPrompt({
+        serverName,
+        logger: transport.logger,
+        toolCallId: `${transport.userId}:${serverName}:${Date.now()}`,
+        runId: String(Constants.USE_PRELIM_RESPONSE_MESSAGE_ID),
+        createStart: (step) => {
+          const delta = createMCPAuthDeltaEmitter({ ...transport, ...step });
+          const publish = createOAuthCallback({
+            runStepEmitter: createMCPAuthStepEmitter({ ...transport, ...step, index }),
+            runStepDeltaEmitter: async (authURL, options) => {
+              await delta(authURL, options);
+              // Record publication before acknowledgement can reenter completion.
+              publishedURL = authURL;
+            },
+          });
+          return async (authURL, options) => {
+            if (publishedURL === authURL) {
+              options?.onPublished?.();
+              return;
+            }
+            await publish(authURL, options);
+          };
+        },
+        createEnd: (step) => {
+          const retire = createMCPAuthEndEmitter({ ...transport, ...step, index });
+          return async () => {
+            await retire();
+            publishedURL = undefined;
+          };
+        },
+      });
+      prompts.set(serverName, prompt);
+      return prompt;
+    },
+  };
+}
+
+function createOAuthEventEmitter(transport: OAuthEventTransport) {
+  return async (event: t.ServerSentEvent): Promise<void> => {
+    try {
+      if (!transport.streamId) {
+        transport.sendEvent(transport.res, event);
+        return;
+      }
+      if (transport.jobCreatedAt == null) throw new OAuthPromptPublicationError();
+      await transport.jobs.emitChunk(transport.streamId, event, {
+        expectedCreatedAt: transport.jobCreatedAt,
+        durable: true,
+      });
+    } catch (error) {
+      warnSafely(transport.logger, '[MCP OAuth] Prompt publication unavailable', error);
+      throw new OAuthPromptPublicationError();
+    }
+  };
+}
+
+export function createMCPAuthStepEmitter(
+  input: OAuthEventTransport & Parameters<typeof buildMCPAuthRunStepEvent>[0],
+): () => Promise<void> {
+  const emit = createOAuthEventEmitter(input);
+  return () => emit(buildMCPAuthRunStepEvent(input));
+}
+
+export function createMCPAuthDeltaEmitter(
+  input: OAuthEventTransport &
+    Pick<Parameters<typeof buildMCPAuthRunStepDeltaEvent>[0], 'stepId' | 'toolCall'>,
+): OAuthStartHandler {
+  const emit = createOAuthEventEmitter(input);
+  return (authURL, options) => emit(buildMCPAuthRunStepDeltaEvent({ ...input, authURL, options }));
+}
+
+export function createMCPAuthEndEmitter(
+  input: OAuthEventTransport & Parameters<typeof buildMCPAuthRunStepCompletedEvent>[0],
+): () => Promise<void> {
+  const emit = createOAuthEventEmitter(input);
+  return () =>
+    emit(
+      buildMCPAuthRunStepCompletedEvent({
+        ...input,
+        toolCall: { ...input.toolCall, output: 'OAuth authentication ended', type: 'tool_call' },
+      }),
+    );
 }
