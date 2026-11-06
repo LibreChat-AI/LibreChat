@@ -712,6 +712,8 @@ export type TConfig = {
   /** Effective subagents-per-agent cap served from `endpoints.agents.maxSubagents`. */
   maxSubagents?: number;
   fileSharing?: TAgentsEndpoint['fileSharing'];
+  /** Human-in-the-loop switches served from `endpoints.agents.toolApproval`. */
+  toolApproval?: TAgentsEndpoint['toolApproval'];
   /** Rollout switches served to the Builder from `endpoints.agents.linkedInstructions`. */
   linkedInstructions?: {
     langfuse?: { enabled?: boolean };

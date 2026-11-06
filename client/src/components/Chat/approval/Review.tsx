@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import { isCancelKey } from '@librechat/chat';
 import { Button, TooltipAnchor } from '@librechat/client';
@@ -17,7 +17,7 @@ import {
   useResumeSubmit,
 } from '~/components/Chat/Messages/Content/ApprovalContext';
 import ToolApproval from '~/components/Chat/Messages/Content/ToolApproval';
-import { useLocalize } from '~/hooks';
+import { useGetAgentsConfig, useLocalize } from '~/hooks';
 
 function usePendingToolApproval(conversationId: string) {
   const pendingAction = useAtomValue(pendingApprovalActionFamily(conversationId));
@@ -62,17 +62,40 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
   triggerRef?: RefObject<HTMLButtonElement>;
 }) {
   const localize = useLocalize();
+  const { agentsConfig } = useGetAgentsConfig();
   const pendingAction = usePendingToolApproval(conversationId);
   const [open, setOpen] = useAtom(approvalPanelOpenFamily(conversationId));
   const { getDecisions, getStatus, isReady } = useApprovalContext();
   const { submitToolApproval } = useResumeSubmit();
   const actionId = pendingAction?.actionId;
+  /** `collapsed` keeps the panel closed until the user opens it; the default is `expanded`. */
+  const autoExpand = agentsConfig?.toolApproval?.panel !== 'collapsed';
+  /**
+   * The action this effect opened for on its own. It lets a config that finishes loading after
+   * the run paused retract that automatic open, without overriding a panel the user opened or
+   * closed by hand for an action already shown.
+   */
+  const autoOpenedActionRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (actionId != null) {
-      setOpen(true);
+    if (actionId == null) {
+      autoOpenedActionRef.current = null;
+      return;
     }
-  }, [actionId, setOpen]);
+    if (!autoExpand) {
+      if (autoOpenedActionRef.current !== actionId) {
+        return;
+      }
+      autoOpenedActionRef.current = null;
+      setOpen(false);
+      return;
+    }
+    if (autoOpenedActionRef.current === actionId) {
+      return;
+    }
+    autoOpenedActionRef.current = actionId;
+    setOpen(true);
+  }, [actionId, autoExpand, setOpen]);
 
   useComposerOverlay(conversationId, open && pendingAction != null);
 

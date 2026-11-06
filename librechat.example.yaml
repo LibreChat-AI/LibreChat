@@ -1106,6 +1106,11 @@ endpoints:
   #     grantLookupTimeoutMs: 3000
   #     enabled: true
   #     mode: default # default, dontAsk, or bypass
+  #     # Composer review panel behavior when a run pauses for approval. "expanded" (default) opens
+  #     # the panel automatically; "collapsed" leaves it closed until you open it from the thread's
+  #     # approval card or the composer's "Review N actions" toggle. Approval policy and the tools
+  #     # that run are unchanged either way.
+  #     panel: expanded # expanded or collapsed
   #     allow: ["mcp:trusted-server:read_*"]
   #     deny: ["mcp:*:delete_*"] # Deny rules always take precedence
   #     ask: ["mcp:*:*"]
