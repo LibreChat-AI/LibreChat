@@ -22,7 +22,7 @@ import store from '~/store';
 
 const Artifacts = lazyWithRecovery(() => import('~/components/Artifacts/Artifacts'));
 const SubagentThreadPanel = lazyWithRecovery(() =>
-  import('@librechat/chat/components').then((module) => ({ default: module.SubagentThreadPanel })),
+  import('@librechat/chat/components').then((module) => module.loadSubagentThreadPanel()),
 );
 
 export default function Presentation({
