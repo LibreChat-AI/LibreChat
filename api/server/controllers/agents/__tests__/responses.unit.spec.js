@@ -3,7 +3,7 @@
  * Tests that recordCollectedUsage is called correctly for token spending
  */
 
-const { ErrorTypes, ResourceType } = require('librechat-data-provider');
+const { ErrorTypes, ResourceType, ContentTypes } = require('librechat-data-provider');
 
 const mockSpendTokens = jest.fn().mockResolvedValue({});
 const mockSpendStructuredTokens = jest.fn().mockResolvedValue({});
@@ -221,10 +221,7 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').requireResponseStorageWrite(...args),
   saveForegroundResponseInputs: (...args) =>
     jest.requireActual('@librechat/api').saveForegroundResponseInputs(...args),
-  stageForegroundResponse: (...args) =>
-    jest.requireActual('@librechat/api').stageForegroundResponse(...args),
-  createForegroundResponseTerminal: (...args) =>
-    jest.requireActual('@librechat/api').createForegroundResponseTerminal(...args),
+  createResponseTurn: (...args) => jest.requireActual('@librechat/api').createResponseTurn(...args),
   createStoredForegroundResponseReader: (...args) =>
     jest.requireActual('@librechat/api').createStoredForegroundResponseReader(...args),
   createResponseAccountingSnapshot: (...args) =>
@@ -233,6 +230,11 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').withResponsePersistenceErrors(...args),
   createFileProvisionRecovery: () =>
     jest.requireActual('@librechat/api').createFileProvisionRecovery(),
+  ...jest.requireActual('../../../../../packages/api/src/agents/responses/persistence'),
+  createResponseExecutionRuntime: (...args) =>
+    jest.requireActual('@librechat/api').createResponseExecutionRuntime(...args),
+  GenerationJobManager: jest.requireActual('@librechat/api').GenerationJobManager,
+  getPluginHookSource: () => jest.requireActual('@librechat/api').getPluginHookSource(),
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   loadSkillAccess: (...args) => jest.requireActual('@librechat/api').loadSkillAccess(...args),
@@ -433,6 +435,17 @@ jest.mock('@librechat/api', () => ({
     usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
   }),
   buildResponsesUsage: mockBuildResponsesUsage,
+  createResponseAccountingCollector: jest.fn().mockImplementation(() => ({
+    record: jest.fn(),
+    snapshot: () => ({
+      status: 'unavailable',
+      currency: 'USD',
+      coverage: 'none',
+      reason: 'usage_unavailable',
+      calls: [],
+    }),
+  })),
+  createApplicationBillingQuote: jest.fn(),
   createResponseAggregator: jest.fn().mockReturnValue({
     usage: { inputTokens: 100, outputTokens: 50, reasoningTokens: 0, cachedTokens: 0 },
   }),
@@ -443,6 +456,7 @@ jest.mock('@librechat/api', () => ({
       on_reasoning_delta: { handle: jest.fn() },
       on_run_step: { handle: jest.fn() },
       on_run_step_delta: { handle: jest.fn() },
+      on_run_step_completed: { handle: jest.fn() },
       on_chat_model_end: { handle: jest.fn() },
     },
     finalizeStream: jest.fn(),
@@ -463,6 +477,7 @@ jest.mock('@librechat/api', () => ({
     on_reasoning_delta: { handle: jest.fn() },
     on_run_step: { handle: jest.fn() },
     on_run_step_delta: { handle: jest.fn() },
+    on_run_step_completed: { handle: jest.fn() },
     on_chat_model_end: { handle: jest.fn() },
   }),
   executeAgentRun: async (params) => {
@@ -1118,6 +1133,140 @@ describe('createResponse controller', () => {
       }),
       { context: 'Responses API - save assistant response' },
     );
+  });
+
+  it('stores a connected user-to-assistant message tree and reports storage success', async () => {
+    const api = require('@librechat/api');
+    const db = require('~/models');
+    api.validateResponseRequest.mockReturnValueOnce({ request: { ...req.body, store: true } });
+    api.convertInputToMessages.mockReturnValueOnce([
+      { role: 'user', content: 'Hello', messageId: 'input-chain' },
+    ]);
+
+    await createResponse(req, res);
+
+    expect(db.saveMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        messageId: 'input-chain',
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+      }),
+      expect.anything(),
+    );
+    expect(db.saveMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        messageId: 'resp_mock-123',
+        parentMessageId: 'input-chain',
+      }),
+      expect.anything(),
+    );
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ store: true }));
+  });
+
+  it('continues a stored response ID in its owner-scoped conversation', async () => {
+    const api = require('@librechat/api');
+    const db = require('~/models');
+    api.validateResponseRequest.mockReturnValueOnce({
+      request: { ...req.body, previous_response_id: 'resp_first' },
+    });
+    db.getMessage.mockResolvedValueOnce({
+      messageId: 'resp_first',
+      conversationId: 'thread-conversation',
+      isCreatedByUser: false,
+    });
+    db.getConvo.mockResolvedValueOnce({ conversationId: 'thread-conversation' });
+    db.getMessages.mockResolvedValueOnce([
+      {
+        messageId: 'first-input',
+        isCreatedByUser: true,
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        text: 'first question',
+      },
+      { messageId: 'resp_first', parentMessageId: 'first-input', text: 'first answer' },
+      {
+        messageId: 'later-input',
+        isCreatedByUser: true,
+        parentMessageId: 'resp_first',
+        text: 'later question',
+      },
+      { messageId: 'resp_later', parentMessageId: 'later-input', text: 'later answer' },
+    ]);
+
+    await createResponse(req, res);
+
+    expect(db.getMessage).toHaveBeenCalledWith({ user: 'user-123', messageId: 'resp_first' });
+    expect(db.getConvo).toHaveBeenCalledWith('user-123', 'thread-conversation');
+    const [history] = require('@librechat/agents').formatAgentMessages.mock.calls[0];
+    expect(history.slice(0, 2).map((message) => message.messageId)).toEqual([
+      'first-input',
+      'resp_first',
+    ]);
+    expect(history.some((message) => message.messageId === 'resp_later')).toBe(false);
+  });
+
+  it('reports unsuccessful optional storage without exposing database details', async () => {
+    const api = require('@librechat/api');
+    const db = require('~/models');
+    api.validateResponseRequest.mockReturnValueOnce({ request: { ...req.body, store: true } });
+    db.saveConvo.mockRejectedValueOnce(new Error('database contains sensitive diagnostics'));
+
+    await createResponse(req, res);
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ store: false }));
+    expect(api.sendResponsesErrorResponse).not.toHaveBeenCalled();
+    expect(JSON.stringify(res.json.mock.calls)).not.toContain('sensitive diagnostics');
+  });
+
+  it('retrieves the selected stored reply by its returned ID, without later replies', async () => {
+    const db = require('~/models');
+    req.params = { id: 'resp_first' };
+    db.getMessage.mockResolvedValueOnce({
+      messageId: 'resp_first',
+      conversationId: 'thread-conversation',
+      isCreatedByUser: false,
+      text: 'first answer',
+    });
+    db.getConvo.mockResolvedValueOnce({
+      conversationId: 'thread-conversation',
+      agent_id: 'agent-123',
+    });
+
+    await require('../responses').getResponse(req, res);
+
+    expect(db.getConvo).toHaveBeenCalledWith('user-123', 'thread-conversation');
+    expect(db.getMessages).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'resp_first',
+        model: 'agent-123',
+        store: true,
+        output: [
+          expect.objectContaining({
+            id: 'msg_resp_first',
+            content: [expect.objectContaining({ text: 'first answer' })],
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('does not retrieve another owner’s stored response', async () => {
+    const db = require('~/models');
+    req.params = { id: 'resp_foreign' };
+    db.getMessage.mockResolvedValueOnce(null);
+    db.getConvo.mockResolvedValueOnce(null);
+
+    await require('../responses').getResponse(req, res);
+
+    expect(db.getMessage).toHaveBeenCalledWith({ user: 'user-123', messageId: 'resp_foreign' });
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({
+      error: expect.objectContaining({
+        type: 'not_found',
+        code: 'response_not_found',
+      }),
+    });
   });
 
   it.each([false, true])(
@@ -2391,6 +2540,81 @@ describe('createResponse controller', () => {
 
   describe('remote-agent file authorization', () => {
     it.each([false, true])(
+      'persists completed server tool results for continued history (stream=%s)',
+      async (stream) => {
+        const api = require('@librechat/api');
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: { ...req.body, stream, store: true },
+        });
+        const response = {
+          id: 'resp_mock-123',
+          status: 'completed',
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_1',
+              call_id: 'call-a',
+              name: 'lookup',
+              arguments: '{}',
+              status: 'completed',
+            },
+            {
+              type: 'function_call_output',
+              id: 'fco_1',
+              call_id: 'call-a',
+              output: 'actual protected result',
+              status: 'completed',
+            },
+          ],
+        };
+        if (stream) {
+          const handlers = api.createResponsesEventHandlers.getMockImplementation()();
+          api.createResponsesEventHandlers.mockReturnValueOnce({
+            ...handlers,
+            prepareStreamResponse: jest.fn(() => response),
+          });
+        } else api.buildAggregatedResponse.mockReturnValueOnce(response);
+        await createResponse(req, res);
+        expect(require('~/models').saveMessage).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            messageId: 'resp_mock-123',
+            isCreatedByUser: false,
+            content: [
+              {
+                type: ContentTypes.TOOL_CALL,
+                tool_call: {
+                  id: 'call-a',
+                  name: 'lookup',
+                  args: '{}',
+                  output: 'actual protected result',
+                },
+              },
+            ],
+          }),
+          expect.anything(),
+        );
+      },
+    );
+
+    it.each([false, true])(
+      'preserves canonical tool completion and artifact callbacks (stream=%s)',
+      async (stream) => {
+        const api = require('@librechat/api');
+        req.body.stream = stream;
+        api.validateResponseRequest.mockReturnValueOnce({ request: { ...req.body } });
+        await createResponse(req, res);
+        const { customHandlers } = api.createRun.mock.calls.at(-1)[0];
+        const handlers = stream
+          ? api.createResponsesEventHandlers.mock.results.at(-1).value.handlers
+          : api.createAggregatorEventHandlers.mock.results.at(-1).value;
+        expect(customHandlers.on_run_step_completed).toBe(handlers.on_run_step_completed);
+        expect(customHandlers.on_run_step_completed.handle).toEqual(expect.any(Function));
+        expect(api.createOwnedToolEndHandler).toHaveBeenCalled();
+      },
+    );
+
+    it.each([false, true])(
       'threads the remote-agent permission boundary through initialization and tool loading (stream=%s)',
       async (stream) => {
         const { initializeAgent, createToolExecuteHandler } = require('@librechat/api');
@@ -2402,6 +2626,9 @@ describe('createResponse controller', () => {
           completionResultMaxChars: 4096,
         };
         req.body.stream = stream;
+        require('@librechat/api').validateResponseRequest.mockReturnValueOnce({
+          request: { ...req.body },
+        });
         await createResponse(req, res);
 
         const [initializeParams, dbMethods] = initializeAgent.mock.calls.at(-1);
