@@ -22,19 +22,20 @@ import {
   MAX_PII_PATTERN_LENGTH,
 } from './filters';
 import {
+  EModelEndpoint,
+  eModelEndpointSchema,
+  isAgentsEndpoint,
+  eReasoningEffortSchema,
+  eReasoningParameterFormatSchema,
+  eReasoningResponseKeySchema,
+} from './schemas';
+import {
   REFILL_INTERVAL_UNITS,
   BALANCE_DISPLAY_MODES,
   BALANCE_REFILL_MODES,
   MIN_BALANCE_RESERVATION_TTL_MS,
   DEFAULT_BALANCE_RESERVATION_TTL_MS,
 } from './balance';
-import {
-  EModelEndpoint,
-  eModelEndpointSchema,
-  isAgentsEndpoint,
-  eReasoningParameterFormatSchema,
-  eReasoningResponseKeySchema,
-} from './schemas';
 import {
   scheduledMCPResourceBindingSchema,
   scheduledMCPReadOnlyPolicySchema,
@@ -758,6 +759,11 @@ export const modelConfigSchema = z
     deploymentName: z.string().optional(),
     version: z.string().optional(),
     assistants: z.boolean().optional(),
+    /**
+     * The `reasoning_effort` values this deployment accepts. A deployment name does not identify
+     * its model, so the composer offers an effort control only for a deployment declaring these.
+     */
+    reasoningEfforts: z.array(eReasoningEffortSchema).min(1).optional(),
   })
   .or(z.boolean());
 

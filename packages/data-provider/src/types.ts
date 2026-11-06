@@ -675,6 +675,8 @@ export type ResponsesApiRouting = Record<string, ResponsesApiRoute>;
 
 export type TConfig = {
   responsesApiRouting?: ResponsesApiRouting;
+  /** Azure model name -> the `reasoning_effort` values its deployment declares. */
+  modelReasoningEfforts?: Record<string, string[]>;
   order: number;
   type?: EModelEndpoint;
   azure?: boolean;
