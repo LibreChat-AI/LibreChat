@@ -718,12 +718,6 @@ const ChatForm = memo(function ChatForm({
         onClose={pastedTextEdit.closeEditor}
         onSave={pastedTextEdit.saveEdit}
       />
-      {modelAvailability.showSelectionHint && !answerMode.composerAnswers && (
-        <div role="status" className="text-text-secondary px-5 py-2 text-sm">
-          {localize('com_ui_select_model_to_continue')}
-          {!modelAvailability.hasModels && <> {localize('com_ui_models_unavailable_wait')}</>}
-        </div>
-      )}
       {endpoint && (
         <ComposerField
           textAreaRef={textAreaRef as React.MutableRefObject<HTMLTextAreaElement | null>}
@@ -757,6 +751,9 @@ const ChatForm = memo(function ChatForm({
             onBlur: handleTextareaBlur,
             'aria-describedby': cn(
               composerHintId(index),
+              modelAvailability.showSelectionHint &&
+                !answerMode.composerAnswers &&
+                `model-selection-hint-${index}`,
               (codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') &&
                 `code-workspace-hint-${index}`,
             ),
@@ -775,6 +772,16 @@ const ChatForm = memo(function ChatForm({
           className="text-text-secondary px-5 pb-2 text-sm"
         >
           {localize('com_error_code_workspace_required')}
+        </p>
+      )}
+      {modelAvailability.showSelectionHint && !answerMode.composerAnswers && (
+        <p
+          id={`model-selection-hint-${index}`}
+          role="status"
+          className="text-text-secondary px-5 pb-2 text-sm"
+        >
+          {localize('com_ui_select_model_to_continue')}
+          {!modelAvailability.hasModels && <> {localize('com_ui_models_unavailable_wait')}</>}
         </p>
       )}
       {/* The composer is what keeps MCP connection and authorization state
