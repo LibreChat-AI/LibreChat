@@ -3317,3 +3317,21 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
     }
   });
 });
+
+describe('Permission principal concurrency', () => {
+  it('accepts bounded permission lookup concurrency', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', concurrency: { permissionPrincipalLookups: 2 } })
+        .concurrency?.permissionPrincipalLookups,
+    ).toBe(2);
+  });
+  it.each([0, 33, 1.5])(
+    'rejects invalid principal concurrency: %s',
+    (permissionPrincipalLookups) => {
+      expect(
+        configSchema.safeParse({ version: '1.3.5', concurrency: { permissionPrincipalLookups } })
+          .success,
+      ).toBe(false);
+    },
+  );
+});
