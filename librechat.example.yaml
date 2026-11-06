@@ -574,7 +574,7 @@ registration:
 #   imageFetchMs: 30000 # fetching a stored image to encode it for a provider
 #   toolsMs: 60000 # each call a built-in tool makes to its API (weather, Wolfram, web search)
 #   speechMs: 300000 # each text-to-speech or speech-to-text provider request
-#   imageGenerationMs: 300000 # each Stable Diffusion image generation request
+#   imageGenerationMs: 300000 # each Stable Diffusion or image_gen_oai generation request
 
 # Newest violations kept per user in the general violation log.
 # violationLog:
@@ -1574,6 +1574,8 @@ endpoints:
 #   jinaApiUrl: '${JINA_API_URL}'  # Custom Jina API URL (optional, defaults to https://api.jina.ai/v1/rerank)
 #   # Other rerankers
 #   cohereApiKey: '${COHERE_API_KEY}'
+#   # Rerank request timeout in milliseconds, applied per page (default: 10000)
+#   rerankerTimeout: 10000
 #   # Search providers
 #   serperApiKey: '${SERPER_API_KEY}'
 #   searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}'
