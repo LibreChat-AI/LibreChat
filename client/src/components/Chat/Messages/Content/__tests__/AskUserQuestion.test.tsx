@@ -2,10 +2,11 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { ASK_USER_DECLINED_ANSWER } from '@librechat/chat';
 import { ChatSurfaceProvider } from '@librechat/chat/react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { ShortcutBinding } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
 import ApprovalProvider from '../ApprovalContext';
+import { mockVisibility } from 'test/visibility';
 import AskUserQuestion from '../AskUserQuestion';
 
 const mockSubmitAnswer = jest.fn();
@@ -246,19 +247,40 @@ describe('AskUserQuestion', () => {
   });
 
   describe('arrival focus', () => {
+    let visibility: ReturnType<typeof mockVisibility>;
+
+    beforeEach(() => {
+      visibility = mockVisibility();
+    });
+
     afterEach(() => {
+      visibility.restore();
       document.getElementById('prompt-textarea')?.remove();
+    });
+
+    test('waits until the question is on screen before taking focus', () => {
+      visibility.setVisible(false);
+      mockLiveActionId = 'arrive-offscreen';
+      render(tree('arrive', withOptions, true, 'arrive-offscreen'));
+      act(() => visibility.notify());
+      expect(document.body).toHaveFocus();
+
+      visibility.setVisible(true);
+      act(() => visibility.notify());
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
     });
 
     test('puts the user on the first option when a live question arrives', () => {
       mockLiveActionId = 'arrive-option';
       render(tree('arrive', withOptions, true, 'arrive-option'));
+      act(() => visibility.notify());
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
     });
 
     test('puts the user in the answer field when the question has no options', () => {
       mockLiveActionId = 'arrive-field';
       render(tree('arrive', { question: 'Which environment?' }, true, 'arrive-field'));
+      act(() => visibility.notify());
       expect(screen.getByRole('textbox', { name: 'Your answer' })).toHaveFocus();
     });
 
@@ -270,6 +292,7 @@ describe('AskUserQuestion', () => {
 
       mockLiveActionId = 'arrive-composer';
       render(tree('arrive', withOptions, true, 'arrive-composer'));
+      act(() => visibility.notify());
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
     });
 
@@ -282,16 +305,19 @@ describe('AskUserQuestion', () => {
 
       mockLiveActionId = 'arrive-draft';
       render(tree('arrive', withOptions, true, 'arrive-draft'));
+      act(() => visibility.notify());
       expect(composer).toHaveFocus();
     });
 
     test('arrives once, not again when the card remounts', () => {
       mockLiveActionId = 'arrive-once';
       const view = render(tree('arrive', withOptions, true, 'arrive-once'));
+      act(() => visibility.notify());
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
       view.unmount();
 
       render(tree('arrive', withOptions, true, 'arrive-once'));
+      act(() => visibility.notify());
       expect(document.body).toHaveFocus();
     });
 
@@ -299,11 +325,13 @@ describe('AskUserQuestion', () => {
       mockLiveActionId = 'arrive-popover';
       mockPopoverVisible = true;
       render(tree('arrive', withOptions, true, 'arrive-popover'));
+      act(() => visibility.notify());
       expect(document.body).toHaveFocus();
     });
 
     test('does not take focus for a question that is not the live pause', () => {
       render(tree('arrive', withOptions, true, 'arrive-not-live'));
+      act(() => visibility.notify());
       expect(document.body).toHaveFocus();
     });
   });
