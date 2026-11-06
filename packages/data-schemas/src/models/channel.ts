@@ -6,16 +6,6 @@ import { applyTenantIsolation } from './plugins/tenantIsolation';
 export interface AgentChannelRecord extends AgentChannel {
   encryptedBotToken?: string;
   encryptedSigningSecret?: string;
-  encryptedApiKey?: string;
-  apiKeyId?: string;
-}
-
-/** Legacy prototype rows are retained only for privacy erasure, never conversation allocation. */
-interface LegacyAgentChannelThreadRecord {
-  channelId: string;
-  tenantId?: string;
-  externalThreadKey: string;
-  conversationId: string;
 }
 
 export function createAgentChannelModel(
@@ -34,12 +24,10 @@ export function createAgentChannelModel(
         required: true,
       },
       credentialMode: { type: String, enum: ['shared', 'per_user'], required: true },
-      revision: String,
+      revision: { type: String, required: true },
       slack: { teamId: String, appId: String, botUserId: String },
       encryptedBotToken: { type: String, select: false },
       encryptedSigningSecret: { type: String, select: false },
-      encryptedApiKey: { type: String, select: false },
-      apiKeyId: { type: String, select: false },
     },
     { timestamps: true },
   );
@@ -49,24 +37,4 @@ export function createAgentChannelModel(
   schema.index({ status: 1, _id: 1 });
   applyTenantIsolation(schema);
   return mongoose.models.AgentChannel ?? mongoose.model<AgentChannelRecord>('AgentChannel', schema);
-}
-
-export function createAgentChannelThreadModel(
-  mongoose: typeof import('mongoose'),
-): Model<LegacyAgentChannelThreadRecord> {
-  const schema = new Schema<LegacyAgentChannelThreadRecord>(
-    {
-      channelId: { type: String, required: true },
-      tenantId: String,
-      externalThreadKey: { type: String, required: true },
-      conversationId: { type: String, required: true },
-    },
-    { timestamps: true },
-  );
-  schema.index({ tenantId: 1, channelId: 1, externalThreadKey: 1 }, { unique: true });
-  applyTenantIsolation(schema);
-  return (
-    mongoose.models.AgentChannelThread ??
-    mongoose.model<LegacyAgentChannelThreadRecord>('AgentChannelThread', schema)
-  );
 }

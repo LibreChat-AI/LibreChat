@@ -230,7 +230,7 @@ describe('semantic Slack presentations', () => {
     );
   });
 
-  test('rejects duplicate pie labels before freezing new presentations while replaying existing v7 plans', () => {
+  test('rejects duplicate pie labels in new documents and persisted payloads', () => {
     const pie = {
       type: 'chart',
       title: 'Share',
@@ -253,31 +253,9 @@ describe('semantic Slack presentations', () => {
       text: 'Share: Same 2; Same 1',
       presentation: { format: 'slack-blocks-v1', payload },
     };
-    expect(durableSlackMessage(frozen, 'slack-structured-v7').blocks).toEqual(JSON.parse(payload));
-  });
-
-  test('keeps legacy layout labels optional on replay without changing new visible titles', () => {
-    const plan = makeSlackPlan(
-      run(document([{ type: 'layout', title: 'Visible title', rows: [[card]] }])),
+    expect(() => durableSlackMessage(frozen, rendererVersion)).toThrow(
+      'Invalid persisted Slack blocks',
     );
-    const part = plan.parts.find((item) =>
-      item.presentation?.payload.includes('is_label_visible'),
-    )!;
-    const blocks = JSON.parse(part.presentation!.payload);
-    expect(blocks[0]).toMatchObject({
-      type: 'layout',
-      label: 'Visible title',
-      is_label_visible: true,
-    });
-    delete blocks[0].is_label_visible;
-    const legacy = {
-      ...part,
-      presentation: { ...part.presentation!, payload: JSON.stringify(blocks) },
-    };
-    expect(durableSlackMessage(legacy, 'slack-structured-v7').blocks?.[0]).toMatchObject({
-      type: 'layout',
-      label: 'Visible title',
-    });
   });
 
   test('degrades a layout exceeding nested chart limits without losing its values', () => {
@@ -359,7 +337,7 @@ describe('semantic Slack presentations', () => {
 
   test('replays frozen v6 plans without stripping their footer and rejects modified v7 payloads', () => {
     const plan = makeSlackPlan(run('Ordinary reply'));
-    expect(durableSlackMessage(plan.parts[0], 'slack-structured-v6').text).toBe(plan.parts[0].text);
+    expect(durableSlackMessage(plan.parts[0], 'slack-structured-v1').text).toBe(plan.parts[0].text);
     const rich = makeSlackPlan(run(document([card])));
     const part = rich.parts.find((item) => item.presentation?.payload.includes('card'))!;
     expect(() =>

@@ -1220,7 +1220,6 @@ export const channelGatewayPolicySchema = z.object({
   nativeSessions: z.boolean(),
   lifecycleReactions: z.boolean(),
   signatureToleranceSeconds: z.number().int().min(1).max(300),
-  /** Additive v1 pacing setting; omitted older bundles retain the SDK's existing base delay. */
   socketReconnectDelayMs: z
     .number()
     .int()
@@ -1239,6 +1238,7 @@ export const DEFAULT_CHANNEL_GATEWAY_POLICY: ChannelGatewayPolicy = {
 export const CHANNEL_GATEWAY_POLICY_VERSION = 1;
 export const channelGatewayWirePolicySchema = channelGatewayPolicySchema.extend({
   version: z.literal(CHANNEL_GATEWAY_POLICY_VERSION),
+  socketReconnectDelayMs: channelGatewayPolicySchema.shape.socketReconnectDelayMs.removeDefault(),
 });
 export type ChannelGatewayWirePolicy = z.infer<typeof channelGatewayWirePolicySchema>;
 

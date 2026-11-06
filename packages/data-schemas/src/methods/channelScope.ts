@@ -195,15 +195,13 @@ export async function retireAgentChannel(
                   $unset: {
                     encryptedBotToken: '',
                     encryptedSigningSecret: '',
-                    encryptedApiKey: '',
-                    apiKeyId: '',
                   },
                 }
               : {}),
           },
           { new: true, session },
         )
-        .select('+encryptedBotToken +encryptedSigningSecret +encryptedApiKey +apiKeyId')
+        .select('+encryptedBotToken +encryptedSigningSecret')
         .lean();
       if (!record) return null;
       await closeChannelScope(mongoose, tenantId, channelId, session);
