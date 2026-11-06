@@ -1,65 +1,69 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { v4 } from 'uuid';
-import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
-import { isMacPlatform, resolveComposerKeyDown } from '@librechat/chat';
 import { ArrowUpRight, Clock, OctagonPause, X, Zap } from 'lucide-react';
 import {
+  cn,
   Alert,
   Button,
   Composer,
-  ControlCombobox,
+  useLocalize,
+  useFocusTrap,
   useMediaQuery,
+  ControlCombobox,
   useToastContext,
 } from '@librechat/client';
-import {
-  SubagentActivity,
-  SubagentConversation,
-  SubagentActivityScrollSurface,
-} from '@librechat/chat/components';
-import {
-  activeSubagentPanel,
-  subagentPanelFocusRequest,
-  subagentControlStateByTask,
-  subagentControlStateKey,
-  subagentProgressKey,
-  useSubagentProgress,
-  useSubagentActivityStream,
-  adaptDurableThreadActivity,
-  adaptDurableThreadConversation,
-  adaptLivePersistedActivity,
-  mergeChildConversationTurns,
-  retainBoundedMovingWindowTurns,
-  eventSubagentSelection,
-  resolveSubagentAgentId,
-  isLiveSubagentStatus,
-  getSubagentPrompt,
-  useParentSubagents,
-  agentAuthor,
-  resolveSubagentAuthor,
-  isSelfSpawn as isSelfSpawnType,
-  resolveChildAgent,
-  readableSubagentType,
-  useParentAuthor,
-  useChatSurface,
-  useSubagentsHost,
-  useMessagePartsHost,
-  TaskContentScopeContext,
-  ACTIVE_THREAD_REFRESH_MS,
-  subagentThreadHasTaskEvidence,
-} from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
   SubagentControlAction,
   SubagentControlReceipt,
   SubagentControlRequest,
 } from 'librechat-data-provider';
-import type { ComposerKeyVerdict, ComposerStopProps, SendAction } from '@librechat/client';
-import type { ActiveSubagentPanel, SubagentControlUiState } from '@librechat/chat/react';
+import type {
+  SendAction,
+  OptionWithIcon,
+  ComposerStopProps,
+  ComposerKeyVerdict,
+} from '@librechat/client';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { ComposerKeyAction } from '@librechat/chat';
-import type { OptionWithIcon } from '@librechat/client';
-import { useFocusTrap, useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import type { ActiveSubagentPanel } from '../../react/subagents/state';
+import type { ComposerKeyAction } from '../../core/shortcuts';
+import {
+  adaptDurableThreadActivity,
+  adaptLivePersistedActivity,
+  mergeChildConversationTurns,
+  adaptDurableThreadConversation,
+  retainBoundedMovingWindowTurns,
+} from '../../react/subagents/adapters';
+import {
+  agentAuthor,
+  useParentAuthor,
+  resolveChildAgent,
+  readableSubagentType,
+  resolveSubagentAuthor,
+  isSelfSpawn as isSelfSpawnType,
+} from '../../react/subagents/author';
+import {
+  subagentControlStateKey,
+  ACTIVE_THREAD_REFRESH_MS,
+  subagentThreadHasTaskEvidence,
+} from '../../react/subagents/thread';
+import {
+  useChatSurface,
+  useSubagentPanelState,
+  useSubagentPanelActions,
+} from '../../react/subagents/surface';
+import { SubagentActivity, SubagentActivityScrollSurface } from './transcript';
+import { eventSubagentSelection } from '../../react/subagents/eventSelection';
+import { isMacPlatform, resolveComposerKeyDown } from '../../core/shortcuts';
+import { resolveSubagentAgentId } from '../../react/subagents/identity';
+import { TaskContentScopeContext } from '../../react/subagents/scope';
+import { isLiveSubagentStatus } from '../../react/subagents/status';
+import { useParentSubagents } from '../../react/subagents/parents';
+import { getSubagentPrompt } from '../../react/subagents/prompt';
+import { useSubagentsHost } from '../../react/subagents/host';
+import { subagentProgressKey } from '../../core/stream/state';
+import { useMessagePartsHost } from '../../react/host';
+import SubagentConversation from './conversation';
 
 const EVENT_TASK_PAGE_SIZE = 3;
 const TERMINAL_CONTROL_REASONS = new Set([
@@ -112,7 +116,11 @@ const failedControlLocaleKey = (reason?: string) => {
   return 'com_ui_subagent_control_reason_invalid_command';
 };
 
-export default function SubagentThreadPanel({ selection }: { selection: ActiveSubagentPanel }) {
+export default function SubagentThreadPanel({
+  selection,
+}: {
+  selection: ActiveSubagentPanel;
+}): ReactNode {
   /** The shell carries the deployment's answer, so this surface lays out once,
    *  like the composer beside it. */
   const host = useSubagentsHost();
@@ -120,8 +128,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   const { renderAgentAvatar } = useMessagePartsHost();
   const clearsFooter = host.useClearsFooter();
   const localize = useLocalize();
-  const panelStore = useStore();
-  const focusRequest = useAtomValue(subagentPanelFocusRequest);
+  const panelStore = useSubagentPanelState();
+  const panelActions = useSubagentPanelActions();
+  const focusRequest = panelStore.useFocusRequest();
   const { showToast } = useToastContext();
   const navigation = host.useNavigation();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -146,11 +155,14 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   /** Unsent words in the composer are enough on their own: whatever put them
    *  there, an advance would change the control identity and wipe them. */
   const selectionHeldForDraft = continuationPending || controlMessage.trim() !== '';
-  const setSelection = useSetAtom(activeSubagentPanel);
+  const setSelection = useCallback(
+    (next: ActiveSubagentPanel | null) => panelActions?.update(next),
+    [panelActions],
+  );
   const resetSelection = useCallback(() => setSelection(null), [setSelection]);
   const agentsMap = host.useAgentsMap();
   const { byMessageId, byThreadId, refresh } = useParentSubagents();
-  const progress = useSubagentProgress(
+  const progress = panelStore.useProgress(
     subagentProgressKey(
       selection.parentMessageId,
       selection.event?.progressKey ?? selection.toolCallId,
@@ -175,12 +187,8 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     [selection.host, selection.parentConversationId, threadId, taskId],
   );
   const controlIdentity = subagentControlStateKey(selection.parentConversationId, threadId, taskId);
-  const [controlState, setControlState] = useAtom(subagentControlStateByTask(controlIdentity));
-  const setControlStateForIdentity = useCallback(
-    (identity: string, state: SubagentControlUiState | null) =>
-      panelStore.set(subagentControlStateByTask(identity), state),
-    [panelStore],
-  );
+  const [controlState, setControlState] = panelStore.useControlState(controlIdentity);
+  const setControlStateForIdentity = panelStore.useControlStateWriter();
   const transientControl = controlState?.receipt ?? null;
   const retryControl = controlState?.retry ?? null;
   const eventSummary = selection.event == null ? undefined : byThreadId.get(threadId);
@@ -286,7 +294,10 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       taskView?.status === 'interrupted' ||
       taskView?.status === 'cancelled');
   const priorTerminalRef = useRef(false);
-  const contentStream = useSubagentActivityStream(selection, !durableTerminal || eventTaskRunning);
+  const contentStream = panelStore.useActivityStream(
+    selection,
+    !durableTerminal || eventTaskRunning,
+  );
 
   useEffect(() => {
     if (selection.event == null) return;
@@ -819,23 +830,27 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     }
   }, [focusRequest]);
 
-  /** Escape is handled on the element rather than through the trap's own
-   *  native listener: that listener sits on this `aside`, so it runs BEFORE any
-   *  React handler inside it and would close the whole panel out from under a
-   *  nested popover that meant to dismiss only itself. As a React handler it
-   *  bubbles in DOM order, so an inner control can stop it or mark it handled. */
+  /** Escape is not handed to the trap's own native listener: that listener sits
+   *  on this panel, so it runs BEFORE any React handler inside it and would close
+   *  the whole panel out from under a nested popover that meant to dismiss only
+   *  itself. Listening on the document instead runs after React has dispatched the
+   *  key through the panel, so an inner control can still stop it or mark it handled. */
   useFocusTrap(panelRef, isMobile);
   useEffect(() => {
     if (!isMobile) panelRef.current?.focus({ preventScroll: true });
   }, [focusRequest, isMobile]);
-  const handlePanelKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLElement>) => {
-      if (!isMobile || event.key !== 'Escape' || event.defaultPrevented) return;
+  useEffect(() => {
+    if (!isMobile) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const panel = panelRef.current;
+      if (panel == null || !(event.target instanceof Node) || !panel.contains(event.target)) return;
       event.preventDefault();
       close();
-    },
-    [close, isMobile],
-  );
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [close, isMobile]);
 
   useEffect(() => {
     const activeElement = document.activeElement;
@@ -1594,7 +1609,6 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       role={isMobile ? 'dialog' : 'region'}
       aria-modal={isMobile || undefined}
       aria-label={localize('com_ui_subagent_thread_panel')}
-      onKeyDown={handlePanelKeyDown}
       className="bg-surface-primary-alt text-text-primary relative flex h-full w-full flex-col overflow-hidden"
     >
       {/* The main chat header's own shape: a 3.25rem bar that floats over the
@@ -1633,8 +1647,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
                   behind it. */
               portal={false}
               onOpenChange={setActorPickerOpen}
-              containerClassName="min-w-0 flex-1 px-0"
-              className="hover:bg-surface-hover h-9 w-full border-transparent bg-transparent font-semibold"
+              variant="field"
+              containerClassName="min-w-0 flex-1"
+              className="h-9 w-full"
               showCarat
             />
           </div>
@@ -1692,8 +1707,8 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
            two end on one line when the panel is open beside the thread. */
         <div className={cn('shrink-0 px-3 pt-2', clearsFooter ? 'pb-10' : 'pb-4')}>
           {transientControl?.status === 'failed' && (
-            <Alert variant="error" className="mb-2 flex items-center gap-2">
-              <span className="min-w-0 flex-1">
+            <Alert variant="error" className="mb-2 flex items-center">
+              <span className="me-2 min-w-0 flex-1">
                 {localize(failedControlLocaleKey(transientControl.reason))}
               </span>
               {retryControl != null && (
@@ -1743,11 +1758,11 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
                           key={action.key}
                           type="button"
                           size="icon"
+                          shape="round"
                           variant="quiet"
                           aria-label={action.label}
                           disabled={action.disabled}
                           onClick={action.onClick}
-                          className="size-9 rounded-full"
                         >
                           {action.icon}
                         </Button>

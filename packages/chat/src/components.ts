@@ -244,3 +244,4 @@ export {
 } from './components/subagents/transcript';
 export { default as SubagentConversation } from './components/subagents/conversation';
 export { default as SharedSubagentActivityDialog } from './components/subagents/shared';
+export { loadSubagentThreadPanel } from './components/subagents/load';
