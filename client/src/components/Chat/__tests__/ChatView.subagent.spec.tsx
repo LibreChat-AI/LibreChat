@@ -79,7 +79,6 @@ jest.mock('~/data-provider', () => ({
 jest.mock('../Input/ConversationStarters', () => () => null);
 /** The package list renders the child's messages; the app's pieces of it are not under test. */
 jest.mock('../Messages/PendingTurn', () => () => null);
-jest.mock('../Messages/ScrollButton', () => () => null);
 jest.mock('../Messages/Content/Parts/PendingSteers', () => () => null);
 jest.mock('../Presentation', () => ({ children }: { children: React.ReactNode }) => (
   <>{children}</>

@@ -24,7 +24,6 @@ import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { OwnerTextProvider } from './Messages/PrivateText';
-import ScrollButton from './Messages/ScrollButton';
 import PendingTurn from './Messages/PendingTurn';
 import { FLAT_THREAD } from './Messages/Thread';
 import { useAddedResponse } from '~/hooks';
@@ -41,7 +40,6 @@ const messagesSlots: ChatScreenMessagesSlots = {
   flatThread: FLAT_THREAD,
   renderPendingTurn: (props) => <PendingTurn {...props} />,
   renderPendingSteers: (props) => <PendingSteers {...props} />,
-  renderScrollButton: (props) => <ScrollButton {...props} />,
 };
 
 type ChatViewProps = {
