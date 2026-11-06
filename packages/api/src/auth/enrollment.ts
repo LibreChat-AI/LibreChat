@@ -3,7 +3,7 @@ import {
   CREDENTIAL_RETIREMENT_INCOMPLETE_CODE,
   TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE,
 } from 'librechat-data-provider';
-import type { TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
+import type { AuthMethod, TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { TwoFactorEnrollmentDependencies, StoredTwoFactorAccount } from './twoFactor';
 import type { UserDocumentId } from '~/auth/verification';
@@ -78,6 +78,7 @@ export interface EnrollmentControllerDependencies
     res: Response,
     unused: null,
     req: Request,
+    options?: { authMethod?: AuthMethod },
   ) => Promise<string>;
 }
 
@@ -192,7 +193,9 @@ export function createEnrollmentControllers(
       }
 
       const userData = sanitizeUser(user);
-      const authToken = await deps.setAuthTokens(user._id, res, null, req);
+      const authToken = await deps.setAuthTokens(user._id, res, null, req, {
+        authMethod: 'local',
+      });
       const retirement = await recheckMintedCredential(
         () => deps.getUserById(credential.userId, TOKEN_RETIREMENT_FIELDS),
         () => revokeMintedSession(res, user, credential.userId),
@@ -289,7 +292,9 @@ export function createEnrollmentControllers(
       if (!retired) {
         return res.status(500).json(RETIREMENT_INCOMPLETE_BODY);
       }
-      const authToken = await deps.setAuthTokens(result.user._id, res, null, req);
+      const authToken = await deps.setAuthTokens(result.user._id, res, null, req, {
+        authMethod: 'local',
+      });
       const retirement = await recheckMintedCredential(
         () => deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS),
         () => revokeMintedSession(res, result.user, userId),

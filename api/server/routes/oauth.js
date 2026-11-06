@@ -19,10 +19,16 @@ const {
   loginLimiter,
   logHeaders,
   markOAuthNavigation,
+  backchannelLogoutLimiter,
 } = require('~/server/middleware');
 const { createOAuthHandler } = require('~/server/controllers/auth/oauth');
 const { findBalanceByUser, upsertBalanceFields } = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
+const {
+  requireBackchannelLogoutEnabled,
+  parseBackchannelLogoutBody,
+  handleBackchannelLogout,
+} = require('~/server/services/OpenIDBackchannelLogout');
 
 const setBalanceConfig = createSetBalanceConfig({
   getAppConfig,
@@ -141,6 +147,15 @@ router.get(
   setBalanceConfig,
   checkDomainAllowed,
   oauthHandler,
+);
+
+/** OIDC Back-Channel Logout 1.0: runs as the system, not any tenant or user. */
+router.post(
+  '/openid/backchannel-logout',
+  requireBackchannelLogoutEnabled,
+  backchannelLogoutLimiter,
+  parseBackchannelLogoutBody,
+  handleBackchannelLogout,
 );
 
 /**

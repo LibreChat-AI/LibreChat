@@ -29,6 +29,7 @@ import {
   createOpenIDRefreshFlightMethods,
   type OpenIDRefreshFlightMethods,
 } from './openidRefreshFlight';
+import { createProviderSessionMethods, type ProviderSessionMethods } from './providerSession';
 import { createResourceLockMethods, type ResourceLockMethods } from './resourceLock';
 export {
   createMCPAuthorizationFenceRetryStorage,
@@ -283,6 +284,7 @@ export type AllMethods = SubagentContentMethods &
   TokenListMethods &
   RefreshTokenBridgeMethods &
   OpenIDRefreshFlightMethods &
+  ProviderSessionMethods &
   ResourceLockMethods &
   PasskeyMethods &
   RoleMethods &
@@ -527,6 +529,7 @@ export function createMethods(
     ...createTokenListMethods(mongoose),
     ...createRefreshTokenBridgeMethods(mongoose),
     ...createOpenIDRefreshFlightMethods(mongoose),
+    ...createProviderSessionMethods(mongoose),
     ...createResourceLockMethods(mongoose),
     ...createSubagentContentMethods(mongoose),
     ...createPasskeyMethods(mongoose),
@@ -600,6 +603,7 @@ export type {
   TokenMethods,
   RefreshTokenBridgeMethods,
   OpenIDRefreshFlightMethods,
+  ProviderSessionMethods,
   ResourceLockMethods,
   RoleMethods,
   KeyMethods,

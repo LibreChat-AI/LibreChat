@@ -2,7 +2,11 @@ const express = require('express');
 const passport = require('passport');
 const crypto = require('node:crypto');
 const openIdClient = require('openid-client');
-const { CacheKeys } = require('librechat-data-provider');
+const {
+  CacheKeys,
+  AUTH_SESSION_CHECK_UNAVAILABLE,
+  OPENID_SESSION_ENDED,
+} = require('librechat-data-provider');
 const {
   logger,
   DEFAULT_SESSION_EXPIRY,
@@ -23,16 +27,34 @@ const {
   preAuthTenantMiddleware,
   applyAdminRefresh,
   applyGoogleAdminRefresh,
+  precheckAdminRefreshBinding,
+  resolveAdminRefreshToken,
   AdminRefreshError,
+  AdminExchangeError,
   buildOpenIDRefreshParams,
   isEmailDomainAllowed,
+  isProviderSessionUnavailableError,
+  buildAdminRefreshProviderSessionDeps,
 } = require('@librechat/api');
 const { loginController } = require('~/server/controllers/auth/LoginController');
 const { hasCapability, requireCapability } = require('~/server/middleware/roles/capabilities');
 const { createOAuthHandler } = require('~/server/controllers/auth/oauth');
 const {
+  getProviderSessionAuthorizer,
+  getProviderSessionClient,
+} = require('~/server/services/ProviderSession');
+const {
+  getRefreshTokenBridge,
+  storeRefreshTokenBridge,
+  deleteRefreshTokenBridges,
+  OPENID_REFRESH_BRIDGE_GRACE_MS,
+} = require('~/server/services/RefreshTokenBridge');
+const {
   findBalanceByUser,
   findUsers,
+  findSession,
+  upsertSession,
+  deleteSession,
   generateToken,
   getUserById,
   upsertBalanceFields,
@@ -633,7 +655,9 @@ router.post('/oauth/exchange', middleware.loginLimiter, async (req, res) => {
 
     const cache = getLogStores(CacheKeys.ADMIN_OAUTH_EXCHANGE);
     const requestOrigin = resolveRequestOrigin(req);
-    const result = await exchangeAdminCode(cache, code, requestOrigin, codeVerifier);
+    const result = await exchangeAdminCode(cache, code, requestOrigin, codeVerifier, {
+      authorizeProviderSession: getProviderSessionAuthorizer().authorize,
+    });
 
     if (!result) {
       return res.status(401).json({
@@ -644,6 +668,15 @@ router.post('/oauth/exchange', middleware.loginLimiter, async (req, res) => {
 
     res.json(result);
   } catch (error) {
+    if (isProviderSessionUnavailableError(error)) {
+      return res.status(503).json({
+        error: 'Provider session check unavailable',
+        error_code: AUTH_SESSION_CHECK_UNAVAILABLE,
+      });
+    }
+    if (error instanceof AdminExchangeError) {
+      return res.status(error.status).json({ error: error.message, error_code: error.code });
+    }
     logger.error('[admin/oauth/exchange] Error:', error);
     res.status(500).json({
       error: 'Internal server error',
@@ -673,12 +706,14 @@ router.post('/oauth/exchange', middleware.loginLimiter, async (req, res) => {
  *   401 USER_ID_MISMATCH       — supplied user_id resolves to a different provider id
  *   401 ISSUER_MISMATCH        — refreshed tokenset was issued by an unexpected issuer
  *   401 TENANT_MISMATCH        — resolved user belongs to a different tenant than the request
+ *   401 OPENID_SESSION_ENDED   — the bound provider session has ended (openid provider only)
  *   403 FORBIDDEN              — resolved user no longer holds ACCESS_ADMIN
  *   403 TOKEN_REUSE_DISABLED   — OPENID_REUSE_TOKENS is not enabled (openid provider only)
  *   502 IDP_INCOMPLETE         — IdP returned a tokenset missing access_token / id_token
  *   502 CLAIMS_INCOMPLETE      — IdP tokenset has no readable claims or no sub
  *   503 OPENID_NOT_CONFIGURED  — OpenID is not configured on this server
  *   503 GOOGLE_NOT_CONFIGURED  — Google admin OAuth is not configured on this server
+ *   503 AUTH_SESSION_CHECK_UNAVAILABLE — provider-session check unavailable (openid provider only)
  *   500 INTERNAL_ERROR         — anything else (logged server-side)
  */
 router.post(
@@ -751,6 +786,51 @@ router.post(
         });
       }
 
+      const expectedIssuer = openIdConfig.serverMetadata?.()?.issuer;
+
+      let providerSessionDeps;
+      let binding;
+      let grantRefreshToken = refreshToken;
+      let releaseBridge;
+      try {
+        providerSessionDeps = await buildAdminRefreshProviderSessionDeps({
+          authorizer: getProviderSessionAuthorizer(),
+          getProviderSessionClient,
+          findProviderSessionBinding: async (token) => {
+            const session = await findSession({ refreshToken: token }, { lean: true });
+            if (!session) return null;
+            return {
+              userId: session.user ? String(session.user) : undefined,
+              tenantId: session.tenantId,
+              providerSession: session.providerSession,
+            };
+          },
+          getRefreshTokenBridge,
+          storeRefreshTokenBridge,
+          deleteRefreshTokenBridges,
+          bridgeGraceMs: OPENID_REFRESH_BRIDGE_GRACE_MS,
+          upsertSession,
+          deleteSession,
+        });
+        binding = await precheckAdminRefreshBinding(refreshToken, providerSessionDeps);
+        const resolution = await resolveAdminRefreshToken(refreshToken, providerSessionDeps, {
+          expectedIssuer,
+        });
+        grantRefreshToken = resolution.refreshToken;
+        releaseBridge = resolution.releaseBridge;
+      } catch (err) {
+        if (isProviderSessionUnavailableError(err)) {
+          return res.status(503).json({
+            error: 'Provider session check unavailable',
+            error_code: AUTH_SESSION_CHECK_UNAVAILABLE,
+          });
+        }
+        if (err instanceof AdminRefreshError) {
+          return res.status(err.status).json({ error: err.message, error_code: err.code });
+        }
+        throw err;
+      }
+
       const refreshParams = buildOpenIDRefreshParams();
       logger.debug('[admin/oauth/refresh] OpenID refresh params', {
         has_scope: Boolean(process.env.OPENID_SCOPE),
@@ -758,7 +838,11 @@ router.post(
       });
       let tokenset;
       try {
-        tokenset = await openIdClient.refreshTokenGrant(openIdConfig, refreshToken, refreshParams);
+        tokenset = await openIdClient.refreshTokenGrant(
+          openIdConfig,
+          grantRefreshToken,
+          refreshParams,
+        );
         logger.debug('[admin/oauth/refresh] OpenID refresh succeeded', {
           has_access_token: Boolean(tokenset.access_token),
           has_id_token: Boolean(tokenset.id_token),
@@ -776,8 +860,6 @@ router.post(
         });
       }
 
-      const expectedIssuer = openIdConfig.serverMetadata?.()?.issuer;
-
       try {
         const result = await applyAdminRefresh(
           tokenset,
@@ -785,20 +867,32 @@ router.post(
             findUsers,
             getUserById,
             ...buildAdminRefreshClosures(sessionExpiry),
+            ...providerSessionDeps,
           },
           {
             userId: normalizedUserId,
             previousRefreshToken: refreshToken,
             expectedIssuer,
             tenantId,
+            boundProviderSession: binding.ref,
           },
         );
+        await releaseBridge?.();
         req.user = { id: result.user._id };
         await middleware.checkBan(req, res, () => {});
         if (req.banned || res.headersSent) return;
         return res.json(result);
       } catch (err) {
+        if (isProviderSessionUnavailableError(err)) {
+          return res.status(503).json({
+            error: 'Provider session check unavailable',
+            error_code: AUTH_SESSION_CHECK_UNAVAILABLE,
+          });
+        }
         if (err instanceof AdminRefreshError) {
+          if (err.code === OPENID_SESSION_ENDED) {
+            await releaseBridge?.();
+          }
           return res.status(err.status).json({ error: err.message, error_code: err.code });
         }
         throw err;

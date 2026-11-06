@@ -1,8 +1,17 @@
 import crypto from 'crypto';
 import { Keyv } from 'keyv';
-import { logger } from '@librechat/data-schemas';
+import { OPENID_SESSION_ENDED } from 'librechat-data-provider';
+import { logger, DEFAULT_REFRESH_TOKEN_EXPIRY } from '@librechat/data-schemas';
+import type { ProviderSessionRef } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
-import { consumeCacheEntry } from '../cache/consume';
+import type {
+  ProviderSessionAuthorizeInput,
+  ProviderSessionAuthorizeOutcome,
+} from '~/auth/openid/providerSession/authorize';
+import { isProviderSessionUnavailableError } from '~/auth/openid/providerSession/errors';
+import { providerSessionCredentialExpiry } from '~/auth/openid/providerSession/ref';
+import { consumeCacheEntry, restoreCacheEntry } from '../cache/consume';
+import { math } from '~/utils/math';
 
 /** Default admin panel URL for local development */
 const DEFAULT_ADMIN_PANEL_URL = 'http://localhost:3000';
@@ -44,6 +53,29 @@ export interface AdminExchangeData {
   origin?: string;
   codeChallenge?: string;
   expiresAt?: number;
+  /** The provider session this OpenID login was bound to; `null`/omitted for a login that
+   *  carried no `sid` or predates back-channel-logout tracking. */
+  providerSession?: ProviderSessionRef | null;
+}
+
+/** Thrown by {@link exchangeAdminCode} when the bound provider session has ended. */
+export class AdminExchangeError extends Error {
+  constructor(
+    public readonly code: string,
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AdminExchangeError';
+  }
+}
+
+export interface AdminExchangeDeps {
+  /** The provider-session authorizer's `authorize` method, checked before tokens are returned.
+   *  Omitted (or a non-OpenID login) skips the check entirely. */
+  authorizeProviderSession?: (
+    input: ProviderSessionAuthorizeInput,
+  ) => Promise<ProviderSessionAuthorizeOutcome>;
 }
 
 /**
@@ -107,6 +139,7 @@ export function verifyCodeChallenge(verifier: string, challenge: string): boolea
  * @param origin - The admin panel origin (scheme://host:port) for origin binding
  * @param codeChallenge - PKCE code_challenge (hex-encoded SHA-256 of code_verifier)
  * @param expiresAt - Optional absolute expiry of `token` (ms epoch); admin panel uses for proactive refresh
+ * @param providerSession - The provider session this OpenID login was bound to, or `null`
  * @returns The generated exchange code
  */
 export async function generateAdminExchangeCode(
@@ -117,6 +150,7 @@ export async function generateAdminExchangeCode(
   origin?: string,
   codeChallenge?: string,
   expiresAt?: number,
+  providerSession?: ProviderSessionRef | null,
 ): Promise<string> {
   const exchangeCode = crypto.randomBytes(32).toString('hex');
 
@@ -128,6 +162,7 @@ export async function generateAdminExchangeCode(
     origin,
     codeChallenge,
     expiresAt,
+    providerSession,
   };
 
   await cache.set(exchangeCode, data);
@@ -144,20 +179,24 @@ export async function generateAdminExchangeCode(
  * @param code - The authorization code to exchange
  * @param requestOrigin - The origin of the requesting client for origin binding
  * @param codeVerifier - PKCE code_verifier to verify against the stored code_challenge
+ * @param deps - Optional provider-session authorizer; omitted or a non-OpenID login skips the check
  * @returns The exchange response with token, refreshToken, and user data, or null if invalid/expired
+ * @throws {AdminExchangeError} when the bound provider session has ended (`OPENID_SESSION_ENDED`)
  */
 export async function exchangeAdminCode(
   cache: Keyv,
   code: string,
   requestOrigin?: string,
   codeVerifier?: string,
+  deps?: AdminExchangeDeps,
 ): Promise<AdminExchangeResponse | null> {
-  const data = await consumeCacheEntry<AdminExchangeData>(cache, code);
+  const consumed = await consumeCacheEntry<AdminExchangeData>(cache, code);
 
-  if (!data) {
+  if (!consumed) {
     logger.warn('[adminExchange] Invalid or expired authorization code');
     return null;
   }
+  const data = consumed.value;
 
   if (data.origin && data.origin !== requestOrigin) {
     logger.warn('[adminExchange] Authorization code origin mismatch');
@@ -168,6 +207,38 @@ export async function exchangeAdminCode(
     if (!codeVerifier || !verifyCodeChallenge(codeVerifier, data.codeChallenge)) {
       logger.warn('[adminExchange] PKCE code_verifier mismatch or missing');
       return null;
+    }
+  }
+
+  if (deps?.authorizeProviderSession && data.user?.provider === 'openid') {
+    const ref = data.providerSession ?? null;
+    const minExpiresAt = providerSessionCredentialExpiry(
+      new Date(),
+      math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
+    );
+    const expiresAt = new Date(Math.max(data.expiresAt ?? 0, minExpiresAt.getTime()));
+    let outcome: ProviderSessionAuthorizeOutcome;
+    try {
+      outcome = await deps.authorizeProviderSession({
+        ref,
+        subject: data.user.openidId,
+        expiresAt,
+        legacy: ref == null,
+      });
+    } catch (error) {
+      if (isProviderSessionUnavailableError(error)) {
+        // A retry with the same code must still find the entry; the check never ran.
+        await restoreCacheEntry(cache, code, consumed).catch((restoreError: unknown) => {
+          logger.error(
+            '[adminExchange] Failed to restore exchange code after unavailable provider-session check',
+            restoreError,
+          );
+        });
+      }
+      throw error;
+    }
+    if (!outcome.ok) {
+      throw new AdminExchangeError(OPENID_SESSION_ENDED, 401, 'Provider session has ended');
     }
   }
 

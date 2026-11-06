@@ -5,7 +5,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
-import { render, act } from '@testing-library/react';
+import { render, act, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   FileSources,
@@ -30,6 +30,7 @@ import {
   resetChatFilterSessionAtom,
 } from '~/components/Conversations/chatFilters';
 import { AuthContextProvider, useAuthContext } from '../AuthContext';
+import { authSessionUnavailableAtom } from '~/store';
 
 const mockNavigate = jest.fn();
 jest.mock('react-router-dom', () => ({
@@ -1235,9 +1236,29 @@ describe('AuthContextProvider: read-aloud cache at every session end', () => {
     expect(getCachedTTSAudio('departing')).toBeUndefined();
   });
 
-  it('empties when the refresh token is rejected', () => {
+  it('empties when the refresh token is denied', () => {
     renderProviderLive();
-    act(() => refreshOptions().onError(new Error('401')));
+    act(() =>
+      refreshOptions().onError({
+        response: { status: 401, data: { code: 'OPENID_SESSION_ENDED' } },
+      }),
+    );
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('keeps the cache when the refresh check is temporarily unavailable', () => {
+    renderProviderLive();
+    act(() =>
+      refreshOptions().onError({
+        response: { status: 503, data: { code: 'AUTH_SESSION_CHECK_UNAVAILABLE' } },
+      }),
+    );
+    expect(getCachedTTSAudio('departing')).not.toBeUndefined();
+  });
+
+  it('empties the cache on a network error, same as on dev', () => {
+    renderProviderLive();
+    act(() => refreshOptions().onError(new Error('network error')));
     expect(getCachedTTSAudio('departing')).toBeUndefined();
   });
 
@@ -1370,5 +1391,264 @@ describe('AuthContextProvider: browser setup destination', () => {
     act(() => options.onSuccess({ twoFASetupRequired: true, tempToken: 'enrollment' }));
     expect(sessionStorage.getItem(SESSION_KEY)).toBe(destination);
     expect(mockNavigate).toHaveBeenLastCalledWith('/login/2fa/setup', { replace: true });
+  });
+});
+
+describe('AuthContextProvider — session check unavailable', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockApiBaseUrl.mockReturnValue('');
+    getDefaultStore().set(authSessionUnavailableAtom, false);
+  });
+
+  afterEach(() => {
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('shows Retry and does not redirect when the refresh check returns 503', () => {
+    renderProviderLive();
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onError: (error: unknown) => void },
+    ];
+
+    act(() =>
+      refreshOptions.onError({
+        response: { status: 503, data: { code: 'AUTH_SESSION_CHECK_UNAVAILABLE' } },
+      }),
+    );
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('consumer')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: "We couldn't verify your session" }),
+    ).toBeInTheDocument();
+  });
+
+  it('redirects to login on a network error, same as on dev', () => {
+    renderProviderLive();
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onError: (error: unknown) => void },
+    ];
+
+    act(() => refreshOptions.onError(new Error('network error')));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/login');
+    expect(
+      screen.queryByRole('heading', { name: "We couldn't verify your session" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('redirects to login on a 503 without the unavailable code, same as on dev', () => {
+    renderProviderLive();
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onError: (error: unknown) => void },
+    ];
+
+    act(() => refreshOptions.onError({ response: { status: 503, data: {} } }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/login');
+    expect(
+      screen.queryByRole('heading', { name: "We couldn't verify your session" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('still redirects to login for a confirmed denial', () => {
+    renderProviderLive();
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onError: (error: unknown) => void },
+    ];
+
+    act(() =>
+      refreshOptions.onError({ response: { status: 401, data: { code: 'OPENID_SESSION_ENDED' } } }),
+    );
+
+    expect(mockNavigate).toHaveBeenCalledWith('/login');
+    expect(
+      screen.queryByRole('heading', { name: "We couldn't verify your session" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('restores authenticated content after a successful retry', () => {
+    jest.useFakeTimers();
+    renderProviderLive();
+
+    act(() => {
+      (mockRefreshMutate.mock.calls[0][1] as { onError: (error: unknown) => void }).onError({
+        response: { status: 503, data: { code: 'AUTH_SESSION_CHECK_UNAVAILABLE' } },
+      });
+    });
+    expect(
+      screen.getByRole('heading', { name: "We couldn't verify your session" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(mockRefreshMutate).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      (mockRefreshMutate.mock.calls[1][1] as { onSuccess: (data: unknown) => void }).onSuccess({
+        user: { id: 'user-1', role: 'USER' },
+        token: 'new-token',
+      });
+    });
+    act(() => {
+      jest.advanceTimersByTime(100);
+    });
+
+    expect(
+      screen.queryByRole('heading', { name: "We couldn't verify your session" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('consumer')).toHaveAttribute('data-authenticated', 'true');
+    jest.useRealTimers();
+  });
+});
+
+describe('AuthContextProvider — userQuery session check unavailable', () => {
+  const mockUseGetUserQuery = jest.requireMock('~/data-provider').useGetUserQuery;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockApiBaseUrl.mockReturnValue('');
+    getDefaultStore().set(authSessionUnavailableAtom, false);
+  });
+
+  afterEach(() => {
+    mockUseGetUserQuery.mockReturnValue({ data: undefined, isError: false, error: null });
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('shows Retry and keeps the session instead of logging out when the user query fails as unavailable', () => {
+    mockUseGetUserQuery.mockReturnValue({
+      data: undefined,
+      isError: true,
+      error: { response: { status: 503, data: { code: 'AUTH_SESSION_CHECK_UNAVAILABLE' } } },
+    });
+
+    renderProviderLive();
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('consumer')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: "We couldn't verify your session" }),
+    ).toBeInTheDocument();
+  });
+
+  it('ends the session and redirects when the user query fails with a plain error, same as today', () => {
+    mockUseGetUserQuery.mockReturnValue({
+      data: undefined,
+      isError: true,
+      error: new Error('401'),
+    });
+
+    renderProviderLive();
+
+    expect(mockNavigate).toHaveBeenCalledWith('/login', { replace: true });
+    expect(
+      screen.queryByRole('heading', { name: "We couldn't verify your session" }),
+    ).not.toBeInTheDocument();
+    expect(getDefaultStore().get(authSessionUnavailableAtom)).toBe(false);
+  });
+});
+
+describe('AuthContextProvider — session-unavailable reset', () => {
+  it('resets on login success', () => {
+    const jotaiStore = getDefaultStore();
+    jotaiStore.set(authSessionUnavailableAtom, true);
+    renderProvider();
+
+    act(() => {
+      mockCapturedLoginOptions.onSuccess({ token: 'new-token', user: { id: 'user-1' } });
+    });
+
+    expect(jotaiStore.get(authSessionUnavailableAtom)).toBe(false);
+  });
+
+  it('resets on completeAuthentication', () => {
+    const jotaiStore = getDefaultStore();
+    jotaiStore.set(authSessionUnavailableAtom, true);
+    renderProvider();
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', { id: 'user-1' } as never);
+    });
+
+    expect(jotaiStore.get(authSessionUnavailableAtom)).toBe(false);
+  });
+
+  it('resets at the logout session boundary', () => {
+    const jotaiStore = getDefaultStore();
+    jotaiStore.set(authSessionUnavailableAtom, true);
+    renderProvider();
+
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+
+    expect(jotaiStore.get(authSessionUnavailableAtom)).toBe(false);
+  });
+});
+
+describe('AuthContextProvider — stale auth generation', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockApiBaseUrl.mockReturnValue('');
+    getDefaultStore().set(authSessionUnavailableAtom, false);
+    capturedAuthContext = undefined;
+  });
+
+  afterEach(() => {
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('ignores a refresh success from before a sign-in that has since completed', () => {
+    jest.useFakeTimers();
+    renderProviderLive();
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onSuccess: (data: unknown) => void },
+    ];
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('new-token', {
+        id: 'new-user',
+        role: 'USER',
+      } as never);
+    });
+
+    act(() => {
+      refreshOptions.onSuccess({ user: { id: 'stale-user', role: 'USER' }, token: 'stale-token' });
+    });
+    act(() => {
+      jest.advanceTimersByTime(100);
+    });
+
+    expect(capturedAuthContext?.token).toBe('new-token');
+    expect(capturedAuthContext?.user?.id).toBe('new-user');
+    jest.useRealTimers();
+  });
+
+  it('ignores a refresh failure from before a logout that has since completed', () => {
+    renderProviderLive();
+    const [, refreshOptions] = mockRefreshMutate.mock.calls[0] as [
+      unknown,
+      { onError: (error: unknown) => void },
+    ];
+
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+
+    act(() => {
+      refreshOptions.onError({ response: { status: 503 } });
+    });
+
+    /** A stale "unavailable" result must not block the screen the logout already produced. */
+    expect(
+      screen.queryByRole('heading', { name: "We couldn't verify your session" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('consumer')).toBeInTheDocument();
   });
 });

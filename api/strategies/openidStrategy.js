@@ -141,6 +141,11 @@ class CustomOpenIDStrategy extends OpenIDStrategy {
       params.set('state', options.state);
     }
 
+    /** Stamps the pending login so the callback can recheck it against a mid-flight logout. */
+    if (req.session) {
+      req.session.openidLoginIssuedAt = Date.now();
+    }
+
     const authorizationAudience = getOpenIdAuthorizationAudience();
     if (authorizationAudience) {
       params.set('audience', authorizationAudience);

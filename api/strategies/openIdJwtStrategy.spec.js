@@ -53,10 +53,21 @@ jest.mock('@librechat/api', () => ({
   isAccessTokenJwt: jest.requireActual('@librechat/api').isAccessTokenJwt,
   math: jest.fn((val, fallback) => fallback),
 }));
+/** Ordinary OpenID-JWT auth must never reach these; asserted directly in the tests below. */
+const mockEstablishProviderSession = jest.fn();
+const mockAuthorizeProviderSession = jest.fn();
+
 jest.mock('~/models', () => ({
   findUser: jest.fn(),
   updateUser: jest.fn(),
   isAgentTriggerPrincipalActive: jest.fn(() => true),
+  establishProviderSession: (...args) => mockEstablishProviderSession(...args),
+  authorizeProviderSession: (...args) => mockAuthorizeProviderSession(...args),
+}));
+
+const mockGetProviderSessionAuthorizer = jest.fn();
+jest.mock('~/server/services/ProviderSession', () => ({
+  getProviderSessionAuthorizer: (...args) => mockGetProviderSessionAuthorizer(...args),
 }));
 jest.mock('~/server/services/Files/strategies', () => ({
   getStrategyFunctions: jest.fn(() => ({
@@ -346,6 +357,19 @@ describe('openIdJwtStrategy – token source handling', () => {
       refresh_token: 'session-refresh',
       expires_at: undefined,
     });
+  });
+
+  it('performs no ProviderSession lookup for ordinary OpenID-JWT authentication', async () => {
+    const req = {
+      headers: { authorization: 'Bearer raw-bearer-token' },
+      session: { openidTokens: { accessToken: 'session-access' } },
+    };
+
+    await invokeVerify(req, payload);
+
+    expect(mockEstablishProviderSession).not.toHaveBeenCalled();
+    expect(mockAuthorizeProviderSession).not.toHaveBeenCalled();
+    expect(mockGetProviderSessionAuthorizer).not.toHaveBeenCalled();
   });
 
   it('should fall back to cookies when session is absent', async () => {

@@ -3,6 +3,7 @@ import {
   TWO_FACTOR_ENROLLMENT_REQUIRED_CODE,
   TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE,
 } from 'librechat-data-provider';
+import type { AuthMethod } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { StoredTwoFactorAccount } from './twoFactor';
 import type { UserDocumentId } from '~/auth/verification';
@@ -18,7 +19,9 @@ import {
 import { clearCloudFrontCookies } from '~/cdn';
 
 type LoginUser = StoredTwoFactorAccount & { __v?: number };
-type LoginRequest = Request & { user?: LoginUser };
+/** `authMethod` is set by a caller chained ahead of this controller (e.g. passkey) to override
+ *  `defaultAuthMethod` for that one request. */
+type LoginRequest = Request & { user?: LoginUser; authMethod?: AuthMethod };
 
 export interface LoginDependencies {
   getUserById: (userId: string, projection: string) => Promise<StoredTwoFactorAccount | null>;
@@ -30,7 +33,11 @@ export interface LoginDependencies {
     res: Response,
     unused: null,
     req: Request,
+    options?: { authMethod?: AuthMethod },
   ) => Promise<string>;
+  /** The method this controller's mount records for a request that did not override it, e.g.
+   *  `'ldap'` on a deployment with `LDAP_URL` set, otherwise `'local'`. */
+  defaultAuthMethod: AuthMethod;
 }
 
 export function createLoginController(deps: LoginDependencies) {
@@ -98,7 +105,9 @@ export function createLoginController(deps: LoginDependencies) {
       user.id = user._id.toString();
 
       const loginUser = req.user;
-      const token = await deps.setAuthTokens(loginUser._id, res, null, req);
+      const token = await deps.setAuthTokens(loginUser._id, res, null, req, {
+        authMethod: req.authMethod ?? deps.defaultAuthMethod,
+      });
       const revoked = await recheckMintedCredential(
         () => wasPasswordRevokedDuringLogin(loginUser),
         () => withdrawLoginSession(res, loginUser),

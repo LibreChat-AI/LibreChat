@@ -11,6 +11,7 @@ import misc from './misc';
 export * from './agents';
 export * from './mcp';
 export * from './favorites';
+export * from './authAvailability';
 
 export default {
   ...artifacts,

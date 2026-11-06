@@ -85,6 +85,101 @@ describe('RefreshTokenBridge Methods', () => {
     expect(found?.openidIssuer).toBe('https://issuer.example.com');
   });
 
+  it('persists the provider session supplied on first write', async () => {
+    const providerSession = {
+      issuer: 'https://issuer.example.com',
+      clientId: 'client-1',
+      sid: 'sid-1',
+    };
+    await methods.upsertRefreshTokenBridge({
+      oldRefreshTokenHash: 'old-hash',
+      encryptedNewRefreshToken: 'encrypted-new',
+      userId: 'user-1',
+      providerSession,
+      expiresAt: new Date(Date.now() + 60000),
+    });
+
+    const stored = await methods.findRefreshTokenBridge({
+      oldRefreshTokenHash: 'old-hash',
+      userId: 'user-1',
+    });
+    expect(stored?.providerSession).toEqual(providerSession);
+  });
+
+  it('never clears or replaces an already-stored provider session on a later rotation', async () => {
+    const providerSession = {
+      issuer: 'https://issuer.example.com',
+      clientId: 'client-1',
+      sid: 'sid-1',
+    };
+    const otherProviderSession = {
+      issuer: 'https://issuer.example.com',
+      clientId: 'client-1',
+      sid: 'sid-2',
+    };
+    await methods.upsertRefreshTokenBridge({
+      oldRefreshTokenHash: 'old-hash',
+      encryptedNewRefreshToken: 'encrypted-new',
+      userId: 'user-1',
+      providerSession,
+      expiresAt: new Date(Date.now() + 60000),
+    });
+
+    // A rotation that omits providerSession must not clear the stored one.
+    await methods.upsertRefreshTokenBridge({
+      oldRefreshTokenHash: 'old-hash',
+      encryptedNewRefreshToken: 'encrypted-newer',
+      userId: 'user-1',
+      expiresAt: new Date(Date.now() + 60000),
+    });
+    const afterOmitted = await methods.findRefreshTokenBridge({
+      oldRefreshTokenHash: 'old-hash',
+      userId: 'user-1',
+    });
+    expect(afterOmitted?.providerSession).toEqual(providerSession);
+
+    // A rotation that supplies a different ref must not replace the stored one either; the
+    // caller's own bridge/marker comparison is what denies on a mismatch.
+    await methods.upsertRefreshTokenBridge({
+      oldRefreshTokenHash: 'old-hash',
+      encryptedNewRefreshToken: 'encrypted-newest',
+      userId: 'user-1',
+      providerSession: otherProviderSession,
+      expiresAt: new Date(Date.now() + 60000),
+    });
+    const afterDiffering = await methods.findRefreshTokenBridge({
+      oldRefreshTokenHash: 'old-hash',
+      userId: 'user-1',
+    });
+    expect(afterDiffering?.providerSession).toEqual(providerSession);
+  });
+
+  it('clears openidIssuer on a later store that omits it, even when providerSession is also omitted', async () => {
+    await methods.upsertRefreshTokenBridge({
+      oldRefreshTokenHash: 'old-hash',
+      encryptedNewRefreshToken: 'encrypted-new',
+      userId: 'user-1',
+      openidIssuer: 'https://issuer.example.com',
+      expiresAt: new Date(Date.now() + 60000),
+    });
+
+    // Both openidIssuer and providerSession are omitted on this write: the old code built two
+    // separate $unset spreads that overwrote each other, so openidIssuer was silently never
+    // cleared when providerSession was also absent.
+    await methods.upsertRefreshTokenBridge({
+      oldRefreshTokenHash: 'old-hash',
+      encryptedNewRefreshToken: 'encrypted-newer',
+      userId: 'user-1',
+      expiresAt: new Date(Date.now() + 60000),
+    });
+
+    const stored = await methods.findRefreshTokenBridge({
+      oldRefreshTokenHash: 'old-hash',
+      userId: 'user-1',
+    });
+    expect(stored?.openidIssuer).toBeUndefined();
+  });
+
   it('replaces the encrypted token and expiry on repeated stores', async () => {
     await methods.upsertRefreshTokenBridge({
       oldRefreshTokenHash: 'old-hash',

@@ -1,3 +1,4 @@
+import type { ProviderSessionRef } from 'librechat-data-provider';
 import type {
   AuthIdentityContext,
   LeaseAssertion,
@@ -18,14 +19,23 @@ import type {
   SharedOpenIDRefreshResult,
   TokenPreference,
 } from './types';
+import type { ProviderSessionAuthorizer, ProviderSessionClaims } from './providerSession';
 import type { TokenResult } from './flight';
 import {
   createOpenIDSessionRetiredError,
   createOpenIDRefreshOwnershipError,
+  createOpenIDSessionEndedError,
   isOpenIDRefreshOwnershipError,
+  isOpenIDSessionEndedError,
   reloadOpenIDSessionIfPersisted,
   toOpenIDLogArgument,
 } from './errors';
+import {
+  extractProviderSessionRef,
+  isProviderSessionUnavailableError,
+  isSameProviderSessionRef,
+  providerSessionCredentialExpiry,
+} from './providerSession';
 import { isOpenIDSessionRetired } from './reuseCredential';
 
 type FindUser = (...args: Array<string | object | undefined>) => Promise<OpenIDUser | null>;
@@ -48,6 +58,8 @@ interface RefreshOpenIDUserArgs {
   strategyName: string;
   assertLeaseOwned?: LeaseAssertion;
   deferPublication?: boolean;
+  /** The provider session bound to this credential; never sourced from request body/query. */
+  providerSession?: ProviderSessionRef | null;
 }
 
 interface BridgeUser extends OpenIDUser {
@@ -70,6 +82,10 @@ interface RecoverOpenIDRefreshBridgeInput {
   refreshToken: string;
   bridgedRefreshToken: string;
   bridgeUser: BridgeUser;
+  /** The provider session recorded on the bridge being recovered, if any. */
+  bridgeProviderSession?: ProviderSessionRef | null;
+  /** The provider session from the verified `openid_user_id` marker, if any. */
+  markerProviderSession?: ProviderSessionRef | null;
 }
 
 interface RevokeOpenIDRefreshTokenChainInput {
@@ -100,6 +116,7 @@ interface SendOpenIDAuthResponseInput {
     metadata: {
       predecessorAccessToken?: string;
       acceptedIdentity: AuthIdentityContext;
+      providerSession?: ProviderSessionRef;
     },
   ) => Promise<void>;
   preparePublication?: boolean;
@@ -109,6 +126,9 @@ interface SendOpenIDAuthResponseInput {
    * races and must not republish that stale set in place of the tokens the IdP just issued.
    */
   discardSessionTokens?: boolean;
+  /** Overrides the ref derived from `tokenset`/claims; set by a caller that already verified it
+   *  against a bridge or marker. `null` forces the legacy (unbound) path. */
+  providerSession?: ProviderSessionRef | null;
 }
 
 export interface OpenIDRefreshRecoveryService {
@@ -163,6 +183,7 @@ export interface OpenIDRefreshRecoveryDeps {
     refreshToken: string,
     tenantId?: string,
     previousRefreshToken?: string,
+    options?: { providerSession?: ProviderSessionRef; authMethod?: string },
   ) => Promise<void>;
   setOpenIDAuthTokens: (
     tokens: OpenIDTokenSet,
@@ -174,6 +195,8 @@ export interface OpenIDRefreshRecoveryDeps {
       tenantId?: string;
       openidSubject?: string;
       openidIssuer?: string;
+      providerSession?: ProviderSessionRef;
+      authMethod?: string;
     },
   ) => string | undefined;
   getOpenIDAppAuthToken: (tokens: OpenIDTokenSet, sessionIdToken?: string) => string | undefined;
@@ -229,6 +252,11 @@ export interface OpenIDRefreshRecoveryDeps {
     operation: (context: LeaseContext) => Promise<T>;
   }) => Promise<T>;
   bridgeGraceMs: number;
+  math: (value: string | undefined, fallback: number) => number;
+  defaultRefreshTokenExpiry: number;
+  providerSessionAuthorizer: ProviderSessionAuthorizer;
+  /** `{issuer, clientId}` for the configured OpenID provider, or `null` when none is configured. */
+  getProviderSessionClient: () => { issuer: string; clientId: string } | null;
 }
 
 export function createOpenIDRefreshRecoveryService(
@@ -264,7 +292,35 @@ export function createOpenIDRefreshRecoveryService(
     revokeOpenIDRefreshFlights,
     withOpenIDRefreshFlightLease,
     bridgeGraceMs,
+    math,
+    defaultRefreshTokenExpiry,
+    providerSessionAuthorizer,
+    getProviderSessionClient,
   } = deps;
+
+  /** Derives the ref from verified claims when a raw IdP tokenset (e.g. a fresh login) has not
+   *  already had one merged onto it. */
+  function deriveProviderSessionFromClaims(ts: OpenIDTokenSet): ProviderSessionRef | null {
+    const client = getProviderSessionClient();
+    if (!client) return null;
+    let claims: OpenIDClaims | undefined;
+    try {
+      claims = typeof ts.claims === 'function' ? ts.claims() : ts.__identityClaims;
+    } catch {
+      return null;
+    }
+    return extractProviderSessionRef(claims as ProviderSessionClaims | undefined, {
+      issuer: client.issuer,
+      clientId: client.clientId,
+    });
+  }
+
+  function providerSessionExpiry(): Date {
+    return providerSessionCredentialExpiry(
+      new Date(),
+      math(process.env.REFRESH_TOKEN_EXPIRY, defaultRefreshTokenExpiry),
+    );
+  }
 
   const MAX_LOGOUT_REFRESH_CHAIN_DEPTH = 16;
   const MAX_LOGOUT_REFRESH_TARGETS = 128;
@@ -401,11 +457,14 @@ export function createOpenIDRefreshRecoveryService(
     user,
     refreshToken,
     browserRefreshToken,
+    providerSession,
   }: SeedRefreshSessionInput): AuthIdentityContext {
     if (!req.session) {
       throw new Error('OpenID refresh requires an Express session');
     }
     const identity = createAuthIdentityContext({ user, requestUser: req.user });
+    const boundProviderSession =
+      providerSession ?? req.session.openidTokens?.providerSession ?? null;
     req.session.openidTokens = {
       ...(req.session.openidTokens ?? {}),
       refreshToken,
@@ -414,6 +473,7 @@ export function createOpenIDRefreshRecoveryService(
       openidSubject: identity.openidSubject,
       ...(identity.tenantId ? { tenantId: identity.tenantId } : {}),
       ...(identity.openidIssuer ? { openidIssuer: identity.openidIssuer } : {}),
+      ...(boundProviderSession ? { providerSession: boundProviderSession } : {}),
     };
     return identity;
   }
@@ -463,6 +523,7 @@ export function createOpenIDRefreshRecoveryService(
     strategyName,
     assertLeaseOwned,
     deferPublication = false,
+    providerSession,
   }: RefreshOpenIDUserArgs): Promise<OpenIDRefreshResolution> {
     assertOpenIDSessionCurrent(req, res, user);
     const previousSessionTokens = deferPublication ? req.session?.openidTokens : undefined;
@@ -472,6 +533,7 @@ export function createOpenIDRefreshRecoveryService(
       user,
       refreshToken,
       browserRefreshToken,
+      providerSession,
     });
     let tokenset: OpenIDTokenSet | null;
     try {
@@ -498,8 +560,21 @@ export function createOpenIDRefreshRecoveryService(
     refreshToken,
     bridgedRefreshToken,
     bridgeUser,
+    bridgeProviderSession,
+    markerProviderSession,
   }: RecoverOpenIDRefreshBridgeInput): Promise<SharedOpenIDRefreshResult> {
     assertOpenIDSessionCurrent(req, res, bridgeUser, refreshToken);
+    const mode = await providerSessionAuthorizer.getMode();
+    /** A missing side is not a mismatch: only a disagreement between two recorded refs denies. */
+    const bridgeMarkerMismatch =
+      bridgeProviderSession != null &&
+      markerProviderSession != null &&
+      !isSameProviderSessionRef(bridgeProviderSession, markerProviderSession);
+    if (mode !== 'off' && bridgeMarkerMismatch) {
+      throw createOpenIDSessionEndedError('OpenID recovery bridge provider session mismatch');
+    }
+    const boundProviderSession =
+      mode === 'off' ? null : (markerProviderSession ?? bridgeProviderSession ?? null);
     const userId = bridgeUser._id.toString();
     const key = createRefreshTokenBridgeFlightKey({
       oldRefreshToken: refreshToken,
@@ -534,6 +609,7 @@ export function createOpenIDRefreshRecoveryService(
           openidIssuer: bridgeUser.openidIssuer,
         },
         predecessorAccessToken: resolved.predecessorAccessToken,
+        providerSession: resolved.providerSession ?? boundProviderSession,
         req,
         res,
         assertLeaseOwned: () => assertOpenIDRefreshFlightAvailable(publicationGeneration),
@@ -559,6 +635,7 @@ export function createOpenIDRefreshRecoveryService(
             strategyName: 'refreshController (bridge recovery)',
             assertLeaseOwned,
             deferPublication: true,
+            providerSession: boundProviderSession,
           });
           const { tokenset, user, error } = resolved;
           const resolvedUserId = user?._id?.toString();
@@ -573,6 +650,8 @@ export function createOpenIDRefreshRecoveryService(
           }
 
           await assertLeaseOwned();
+          const recoveredProviderSession =
+            tokenset.providerSession ?? boundProviderSession ?? undefined;
           let graceBridgeVersion: string | null = null;
           try {
             graceBridgeVersion = await storeRefreshTokenBridge({
@@ -582,6 +661,7 @@ export function createOpenIDRefreshRecoveryService(
               tenantId: bridgeUser.tenantId,
               openidIssuer: bridgeUser.openidIssuer,
               ttl: bridgeGraceMs,
+              providerSession: recoveredProviderSession,
             });
           } catch (graceError) {
             logger.warn(
@@ -624,6 +704,7 @@ export function createOpenIDRefreshRecoveryService(
             claims: resolved.claims,
             openidIssuer: resolved.openidIssuer,
             expires_at: tokenset.expires_at,
+            providerSession: recoveredProviderSession,
           };
           const appAuthToken = await sendOpenIDAuthResponse({
             tokenset,
@@ -636,6 +717,7 @@ export function createOpenIDRefreshRecoveryService(
               tenantId: bridgeUser.tenantId,
               openidIssuer: bridgeUser.openidIssuer,
             },
+            providerSession: recoveredProviderSession ?? null,
             req,
             res,
             assertLeaseOwned,
@@ -716,6 +798,65 @@ export function createOpenIDRefreshRecoveryService(
     });
   }
 
+  /** Denial cleanup: removes only the records bound to the denied credential and never clears
+   *  auth cookies, matching the no-cookie-clear denial contract. */
+  async function denyProviderSessionPublication({
+    req,
+    nextRefreshToken,
+    bridgeVersion,
+    effectiveExistingRefreshToken,
+    acceptedBridgeIdentity,
+    deniedRef,
+  }: {
+    req: OpenIDRequest;
+    nextRefreshToken: string;
+    bridgeVersion: string | null;
+    effectiveExistingRefreshToken?: string;
+    acceptedBridgeIdentity: RefreshTokenBridgeIdentity;
+    deniedRef: ProviderSessionRef | null;
+  }): Promise<void> {
+    try {
+      await deleteOpenIDSession(nextRefreshToken);
+    } catch (cleanupError) {
+      logger.warn(
+        '[refreshController] Failed to remove the denied session',
+        toOpenIDLogArgument(cleanupError),
+      );
+    }
+    if (bridgeVersion && effectiveExistingRefreshToken) {
+      try {
+        await deleteRefreshTokenBridges({
+          refreshTokens: [effectiveExistingRefreshToken],
+          userId: acceptedBridgeIdentity.userId,
+          tenantId: acceptedBridgeIdentity.tenantId,
+          version: bridgeVersion,
+        });
+      } catch (cleanupError) {
+        logger.warn(
+          '[refreshController] Failed to remove the denied bridge',
+          toOpenIDLogArgument(cleanupError),
+        );
+      }
+    }
+    try {
+      await reloadOpenIDSessionIfPersisted(req?.session);
+    } catch (reloadError) {
+      logger.warn(
+        '[refreshController] Could not confirm session state before clearing a denied provider session',
+        toOpenIDLogArgument(reloadError),
+      );
+    }
+    const sessionRef = req?.session?.openidTokens?.providerSession;
+    if (
+      req?.session &&
+      sessionRef &&
+      deniedRef &&
+      isSameProviderSessionRef(sessionRef, deniedRef)
+    ) {
+      delete req.session.openidTokens;
+    }
+  }
+
   async function sendOpenIDAuthResponse({
     tokenset,
     user,
@@ -732,6 +873,7 @@ export function createOpenIDRefreshRecoveryService(
     commitPublication,
     preparePublication = true,
     discardSessionTokens = false,
+    providerSession,
   }: SendOpenIDAuthResponseInput): Promise<string | undefined> {
     const userId = user._id.toString();
     const publicationIdentity = predecessorIdentity ?? {
@@ -766,6 +908,7 @@ export function createOpenIDRefreshRecoveryService(
             openidIssuer: shared.openidIssuer,
             predecessorIdentity: publicationIdentity,
             predecessorAccessToken: shared.predecessorAccessToken,
+            providerSession: shared.providerSession ?? providerSession,
             rejectedRefreshTokens,
             req,
             res,
@@ -788,6 +931,7 @@ export function createOpenIDRefreshRecoveryService(
               openidSubject,
               openidIssuer,
               predecessorIdentity: publicationIdentity,
+              providerSession,
               rejectedRefreshTokens,
               req,
               res,
@@ -922,6 +1066,15 @@ export function createOpenIDRefreshRecoveryService(
       tenantId: acceptedSessionIdentity.tenantId,
       openidIssuer: acceptedSessionIdentity.openidIssuer,
     };
+    let resolvedProviderSession: ProviderSessionRef | null | undefined;
+    if (providerSession !== undefined) {
+      resolvedProviderSession = providerSession;
+    } else if (usesAdvancedSession) {
+      resolvedProviderSession = currentSessionTokens?.providerSession ?? null;
+    } else {
+      resolvedProviderSession =
+        tokenset.providerSession ?? deriveProviderSessionFromClaims(tokenset);
+    }
     const assertSettledPublicationAvailable = async (): Promise<void> => {
       if (publicationGeneration) {
         await assertOpenIDRefreshFlightAvailable(publicationGeneration);
@@ -968,6 +1121,7 @@ export function createOpenIDRefreshRecoveryService(
           nextRefreshToken,
           acceptedSessionIdentity.tenantId,
           effectiveExistingRefreshToken,
+          { providerSession: resolvedProviderSession ?? undefined, authMethod: 'openid' },
         );
       } catch (error) {
         if (rotated && effectiveExistingRefreshToken) {
@@ -977,6 +1131,7 @@ export function createOpenIDRefreshRecoveryService(
               newRefreshToken: nextRefreshToken,
               ...acceptedBridgeIdentity,
               ttl: bridgeGraceMs,
+              providerSession: resolvedProviderSession ?? undefined,
             });
           } catch (bridgeError) {
             logger.warn(
@@ -995,6 +1150,7 @@ export function createOpenIDRefreshRecoveryService(
             newRefreshToken: nextRefreshToken,
             ...acceptedBridgeIdentity,
             ttl: bridgeGraceMs,
+            providerSession: resolvedProviderSession ?? undefined,
           });
         } catch (bridgeError) {
           logger.warn(
@@ -1012,8 +1168,27 @@ export function createOpenIDRefreshRecoveryService(
       await commitPublication?.(preparedAppAuthToken, authTokenset, {
         predecessorAccessToken: candidatePredecessorAccessToken,
         acceptedIdentity: acceptedSessionIdentity,
+        providerSession: resolvedProviderSession ?? undefined,
       });
       await assertSettledPublicationAvailable();
+
+      const authOutcome = await providerSessionAuthorizer.authorize({
+        ref: resolvedProviderSession,
+        subject: acceptedSessionIdentity.openidSubject,
+        expiresAt: providerSessionExpiry(),
+        legacy: resolvedProviderSession == null,
+      });
+      if (!authOutcome.ok) {
+        await denyProviderSessionPublication({
+          req,
+          nextRefreshToken,
+          bridgeVersion,
+          effectiveExistingRefreshToken,
+          acceptedBridgeIdentity,
+          deniedRef: resolvedProviderSession,
+        });
+        throw createOpenIDSessionEndedError();
+      }
 
       const publishedAppAuthToken = setOpenIDAuthTokens(authTokenset, req, res, {
         userId: acceptedSessionIdentity.appUserId ?? userId,
@@ -1021,6 +1196,8 @@ export function createOpenIDRefreshRecoveryService(
         tenantId: acceptedSessionIdentity.tenantId,
         openidSubject: acceptedSessionIdentity.openidSubject,
         openidIssuer: acceptedSessionIdentity.openidIssuer,
+        providerSession: resolvedProviderSession ?? undefined,
+        authMethod: 'openid',
       });
       if (req.session?.openidTokens && effectiveSessionGeneration) {
         req.session.openidTokens.publicationFlightKey = effectiveSessionGeneration.key;
@@ -1033,6 +1210,10 @@ export function createOpenIDRefreshRecoveryService(
       }
       return publishedAppAuthToken;
     } catch (error) {
+      if (isOpenIDSessionEndedError(error) || isProviderSessionUnavailableError(error)) {
+        /** Denial cleanup already ran above; an unavailable check clears nothing. */
+        throw error;
+      }
       if (!isOpenIDRefreshOwnershipError(error)) {
         logger.warn(
           '[refreshController] Keeping the prepared successor after an indeterminate publication failure',
