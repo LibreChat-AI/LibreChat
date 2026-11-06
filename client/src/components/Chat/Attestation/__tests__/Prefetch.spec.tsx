@@ -204,10 +204,7 @@ it('shares one report request between the model shield and full-scope replies of
 it.each(['gateway', 'model'] as const)(
   'shares pending automatic reports with Gateway replies only when the result is %s scoped',
   async (scope) => {
-    let resolve!: (data: TNearAIAttestationResponse) => void;
-    const pending = new Promise<TNearAIAttestationResponse>((done) => {
-      resolve = done;
-    });
+    const { promise: pending, resolve } = Promise.withResolvers<TNearAIAttestationResponse>();
     jest
       .mocked(request.get)
       .mockImplementation(async (url) =>
@@ -288,10 +285,7 @@ it.each([false, true])(
   'falls back to its own Gateway request after a shared request fails (Gateway failure: %s)',
   async (gatewayFails) => {
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    let reject!: (error: Error) => void;
-    const pending = new Promise<TNearAIAttestationResponse>((_resolve, fail) => {
-      reject = fail;
-    });
+    const { promise: pending, reject } = Promise.withResolvers<TNearAIAttestationResponse>();
     const gatewayError = new Error('Gateway request failed');
     jest.mocked(request.get).mockImplementation(async (url) => {
       if (!String(url).includes('scope=gateway')) return pending;
@@ -347,10 +341,7 @@ it('does not start a Gateway fallback after its consumer is cancelled and the sh
 });
 
 it('continues a live Gateway consumer when only the shared request is cancelled', async () => {
-  let resolve!: (data: TNearAIAttestationResponse) => void;
-  const pending = new Promise<TNearAIAttestationResponse>((done) => {
-    resolve = done;
-  });
+  const { promise: pending, resolve } = Promise.withResolvers<TNearAIAttestationResponse>();
   jest
     .mocked(request.get)
     .mockImplementation(async (url) =>

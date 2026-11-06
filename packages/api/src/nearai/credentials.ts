@@ -1,4 +1,4 @@
-import { extractEnvVariable } from 'librechat-data-provider';
+import { envVarRegex, extractEnvVariable } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { GetUserKeyValuesFunction } from '~/types/endpoints';
 import type { NearAICredentials } from './types';
@@ -20,17 +20,12 @@ export async function getNearAICredentials(
     getUserKeyValues?: GetUserKeyValuesFunction;
   },
 ): Promise<NearAICredentials | undefined> {
-  let endpointConfig;
-  try {
-    endpointConfig = getCustomEndpointConfig({ endpoint, appConfig });
-  } catch {
-    return undefined;
-  }
+  if (!appConfig) return undefined;
+  const endpointConfig = getCustomEndpointConfig({ endpoint, appConfig });
+  if (!isNearAIEndpoint(endpointConfig)) return undefined;
   let apiKey = extractEnvVariable(endpointConfig?.apiKey ?? '');
   const baseURL = extractEnvVariable(endpointConfig?.baseURL ?? '');
-  if (!isNearAIEndpoint(endpointConfig) || !apiKey) {
-    return undefined;
-  }
+  if (!apiKey || apiKey.match(envVarRegex)) throw new Error('nearai_credentials_unavailable');
   if (isUserProvided(apiKey)) {
     if (!userKey?.userId || !userKey.getUserKeyValues) {
       throw new Error('nearai_credentials_unavailable');

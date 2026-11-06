@@ -7,7 +7,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useUpdateUserKeysMutation } from 'librechat-data-provider/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TNearAIAttestationResponse } from 'librechat-data-provider';
-import { report, receipt, modelReport, gatewayReport, viewerUrl } from 'test/fixtures/nearai';
+import {
+  report,
+  receipt,
+  modelReport,
+  gatewayReport,
+  viewerUrl,
+  replyMessage,
+} from 'test/fixtures/nearai';
+import { closeDialog, deferReports, receive, reportRequests } from 'test/attestation';
 import { prefetchReport, reportQueryOptions } from '../queries';
 import { ModelShield } from '../Shield';
 import Signature from '../Signature';
@@ -23,24 +31,25 @@ const status = {
   checkedAt: report.verifiedAt,
 } satisfies TNearAIAttestationResponse;
 
-function setup(model = 'z-ai/glm-5.3-flash', children?: React.ReactNode) {
+function setup(model = 'z-ai/glm-5.3-flash', children?: React.ReactNode, endpoint = 'NEAR AI') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const host = (selected: string) => (
+  const host = (selected: string, configuredEndpoint = endpoint) => (
     <QueryClientProvider client={client}>
       <RecoilRoot>
         <ThemeProvider initialTheme="light">
-          <ModelShield endpoint="NEAR AI" model={selected} />
+          <ModelShield endpoint={configuredEndpoint} model={selected} />
           {children}
         </ThemeProvider>
       </RecoilRoot>
     </QueryClientProvider>
   );
   const rendered = render(host(model));
-  return { ...rendered, client, select: (selected: string) => rendered.rerender(host(selected)) };
-}
-
-function reportRequests() {
-  return jest.mocked(request.get).mock.calls.filter(([url]) => String(url).includes('reports=1'));
+  return {
+    ...rendered,
+    client,
+    select: (selected: string, configuredEndpoint = endpoint) =>
+      rendered.rerender(host(selected, configuredEndpoint)),
+  };
 }
 
 beforeEach(() => {
@@ -66,15 +75,7 @@ it('prefetches supported model reports before click, sends them to the iframe, a
   expect(new URL(frame.src).searchParams.has('layout')).toBe(false);
   expect(screen.getByRole('dialog', { name: 'Model verification' })).toBeVisible();
   const post = jest.spyOn(frame.contentWindow!, 'postMessage');
-  act(() =>
-    window.dispatchEvent(
-      new MessageEvent('message', {
-        origin: 'https://cloud-stg.near.ai',
-        source: frame.contentWindow,
-        data: { type: 'NEAR_AI_VERIFICATION_CENTER_READY', version: 1, requestId: 'model-1' },
-      }),
-    ),
-  );
+  receive(frame, 'NEAR_AI_VERIFICATION_CENTER_READY', 'model-1');
   expect(post).toHaveBeenCalledWith(
     expect.objectContaining({ reports: [modelReport] }),
     'https://cloud-stg.near.ai',
@@ -83,15 +84,7 @@ it('prefetches supported model reports before click, sends them to the iframe, a
   expect(reportRequests()[0][0]).not.toContain('refresh=1');
   expect(screen.getByText('Hardware checked at')).toBeVisible();
   expect(document.querySelector('time')).toHaveAttribute('datetime', modelReport.verifiedAt);
-  act(() =>
-    window.dispatchEvent(
-      new MessageEvent('message', {
-        origin: 'https://cloud-stg.near.ai',
-        source: frame.contentWindow,
-        data: { type: 'NEAR_AI_VERIFICATION_CLOSE', version: 1, requestId: 'model-1' },
-      }),
-    ),
-  );
+  receive(frame, 'NEAR_AI_VERIFICATION_CLOSE', 'model-1');
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   await waitFor(() => expect(shield).toHaveFocus());
 });
@@ -102,12 +95,9 @@ it.each([
   'openai/gpt-4.1-mini',
   'deepseek/deepseek-v3.2',
 ])(
-  'warms %s on selection before status verification finishes and reuses it on return',
+  'prefetches %s before status completes, displays its scope and reuses it on return',
   async (model) => {
-    let finishStatus!: () => void;
-    const pending = new Promise<void>((resolve) => {
-      finishStatus = resolve;
-    });
+    const { promise: pending, resolve: finishStatus } = Promise.withResolvers<void>();
     jest.mocked(request.get).mockImplementation(async (url) => {
       if (!String(url).includes('/nearai/attestation')) {
         return { nearaiVerifyUrl: viewerUrl, nearaiEndpoints: ['NEAR AI'] };
@@ -137,7 +127,22 @@ it.each([
     await waitFor(() => expect(client.isFetching()).toBe(1));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('header-nearai-shield'));
-    await screen.findByTitle('NEAR AI Verification Center');
+    const initialFrame = (await screen.findByTitle(
+      'NEAR AI Verification Center',
+    )) as HTMLIFrameElement;
+    const post = jest.spyOn(initialFrame.contentWindow!, 'postMessage');
+    receive(initialFrame, 'NEAR_AI_VERIFICATION_CENTER_READY');
+    const gateway = model.startsWith('openai/') || model.startsWith('deepseek/');
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reports: (gateway ? [gatewayReport] : [gatewayReport, modelReport]).map((entry) => ({
+          ...entry,
+          model,
+        })),
+      }),
+      new URL(viewerUrl).origin,
+    );
+    expect(new URL(initialFrame.src).searchParams.get('model')).toBe(model);
     expect(client.isFetching()).toBe(1);
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     const other =
@@ -147,6 +152,11 @@ it.each([
     select(model);
     await act(async () => finishStatus());
     await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(screen.getByTestId('header-nearai-shield')).toHaveAccessibleName(
+      gateway
+        ? 'NEAR AI Gateway verified; model execution is not attested'
+        : 'NEAR AI attestation verified',
+    );
     fireEvent.click(screen.getByTestId('header-nearai-shield'));
     const frame = await screen.findByTitle('NEAR AI Verification Center');
     expect(new URL(frame.getAttribute('src')!).searchParams.get('model')).toBe(model);
@@ -188,16 +198,7 @@ it('recovers verification after a user saves a missing provider key without relo
 });
 
 it('requests fresh evidence when Verify again is clicked', async () => {
-  let resolve!: (value: TNearAIAttestationResponse) => void;
-  const pending = new Promise<TNearAIAttestationResponse>((done) => {
-    resolve = done;
-  });
-  const original = jest.mocked(request.get).getMockImplementation()!;
-  jest
-    .mocked(request.get)
-    .mockImplementation((url, ...args) =>
-      String(url).includes('refresh=1') ? pending : original(url, ...args),
-    );
+  const { resolve } = deferReports('refresh=1');
   setup();
   fireEvent.click(await screen.findByRole('button', { name: 'NEAR AI attestation verified' }));
   await screen.findByTitle('NEAR AI Verification Center');
@@ -208,8 +209,7 @@ it('requests fresh evidence when Verify again is clicked', async () => {
   expect(screen.getByTestId('header-nearai-shield')).toHaveAccessibleName(
     'Checking NEAR AI attestation…',
   );
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  await closeDialog();
   fireEvent.click(screen.getByTestId('header-nearai-shield'));
   expect(screen.getByTestId('header-nearai-shield')).toHaveAccessibleName(
     'Checking NEAR AI attestation…',
@@ -218,8 +218,7 @@ it('requests fresh evidence when Verify again is clicked', async () => {
   expect(reportRequests()).toHaveLength(2);
   await act(async () => resolve({ ...status, reports: [modelReport] }));
   await screen.findByTitle('NEAR AI Verification Center');
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  await closeDialog();
   fireEvent.click(screen.getByTestId('header-nearai-shield'));
   await screen.findByTitle('NEAR AI Verification Center');
   expect(reportRequests()).toHaveLength(2);
@@ -255,8 +254,7 @@ it.each(['verified', 'partial'] as const)(
     expect(statusRequests).toBe(1);
     fireEvent.click(screen.getByRole('button', { name: 'Verify again' }));
     await waitFor(() => expect(statusRequests).toBe(2));
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await closeDialog();
     expect(
       client.isFetching({ queryKey: [QueryKeys.nearaiAttestation, 'NEAR AI', model], exact: true }),
     ).toBe(1);
@@ -270,10 +268,7 @@ it('shows loading in the first dialog commit before a report arrives', async () 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const observed: string[] = [];
   const current = jest.mocked(request.get).getMockImplementation()!;
-  let resolve!: (value: TNearAIAttestationResponse) => void;
-  const delayed = new Promise<TNearAIAttestationResponse>((done) => {
-    resolve = done;
-  });
+  const { promise: delayed, resolve } = Promise.withResolvers<TNearAIAttestationResponse>();
   jest
     .mocked(request.get)
     .mockImplementation((url, ...args) =>
@@ -344,13 +339,11 @@ it('reuses successful reports for five minutes and fetches once after expiry', a
   fireEvent.click(shield);
   await screen.findByTitle('NEAR AI Verification Center');
   expect(reportRequests()).toHaveLength(1);
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  await closeDialog();
   fireEvent.click(shield);
   await screen.findByTitle('NEAR AI Verification Center');
   expect(reportRequests()).toHaveLength(1);
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  await closeDialog();
   jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 300_001);
   fireEvent.click(shield);
   await screen.findByTitle('NEAR AI Verification Center');
@@ -374,8 +367,7 @@ it.each(['failed', 'unverifiable'] as const)(
     await waitFor(() => expect(client.isFetching()).toBe(0));
     fireEvent.click(shield);
     await screen.findByTitle('NEAR AI Verification Center');
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await closeDialog();
     fireEvent.click(shield);
     await waitFor(() => expect(reportRequests()).toHaveLength(3));
   },
@@ -400,8 +392,7 @@ it('invalidates old successful reports after a re-verification request fails and
   ).toMatchObject({ isInvalidated: true, data: { ...status, reports: [modelReport] } });
   expect(reportRequests()).toHaveLength(2);
   expect(shield).toHaveAccessibleName('NEAR AI attestation verified');
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  await closeDialog();
   fireEvent.click(shield);
   await screen.findByTitle('NEAR AI Verification Center');
   expect(reportRequests()).toHaveLength(3);
@@ -410,16 +401,7 @@ it('invalidates old successful reports after a re-verification request fails and
 it.each(['failed', 'unverifiable'] as const)(
   'keeps a delayed %s re-verification result without automatically requesting another report',
   async (verdict) => {
-    let resolve!: (value: TNearAIAttestationResponse) => void;
-    const pending = new Promise<TNearAIAttestationResponse>((done) => {
-      resolve = done;
-    });
-    const original = jest.mocked(request.get).getMockImplementation()!;
-    jest
-      .mocked(request.get)
-      .mockImplementation((url, ...args) =>
-        String(url).includes('refresh=1') ? pending : original(url, ...args),
-      );
+    const { resolve } = deferReports('refresh=1');
     const { client } = setup();
     const shield = await screen.findByRole('button', { name: 'NEAR AI attestation verified' });
     fireEvent.click(shield);
@@ -445,19 +427,7 @@ it.each(['failed', 'unverifiable'] as const)(
       verdict === 'failed' ? 'NEAR AI attestation failed' : 'NEAR AI attestation verified',
     );
     const post = jest.spyOn(frame.contentWindow!, 'postMessage');
-    act(() =>
-      window.dispatchEvent(
-        new MessageEvent('message', {
-          origin: 'https://cloud-stg.near.ai',
-          source: frame.contentWindow,
-          data: {
-            type: 'NEAR_AI_VERIFICATION_CENTER_READY',
-            version: 1,
-            requestId: 'failed-refresh',
-          },
-        }),
-      ),
-    );
+    receive(frame, 'NEAR_AI_VERIFICATION_CENTER_READY', 'failed-refresh');
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ reports: [expect.objectContaining({ status: verdict })] }),
       'https://cloud-stg.near.ai',
@@ -467,10 +437,7 @@ it.each(['failed', 'unverifiable'] as const)(
 
 it('retains an explicit hardware failure across a delayed network failure until a successful report replaces it', async () => {
   jest.spyOn(console, 'error').mockImplementation(() => undefined);
-  let reject!: (error: Error) => void;
-  const pending = new Promise<TNearAIAttestationResponse>((_resolve, fail) => {
-    reject = fail;
-  });
+  const { promise: pending, reject } = Promise.withResolvers<TNearAIAttestationResponse>();
   const original = jest.mocked(request.get).getMockImplementation()!;
   jest.mocked(request.get).mockImplementation((url, ...args) => {
     if (String(url).includes('refresh=1')) return pending;
@@ -495,12 +462,8 @@ it('retains an explicit hardware failure across a delayed network failure until 
   expect(await screen.findByRole('alert')).toHaveTextContent('Could not reach');
   expect(shield).toHaveAccessibleName('NEAR AI attestation failed');
   expect(reportRequests()).toHaveLength(3);
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-  let resolve!: (value: TNearAIAttestationResponse) => void;
-  const retry = new Promise<TNearAIAttestationResponse>((done) => {
-    resolve = done;
-  });
+  await closeDialog();
+  const { promise: retry, resolve } = Promise.withResolvers<TNearAIAttestationResponse>();
   jest
     .mocked(request.get)
     .mockImplementation((url, ...args) =>
@@ -534,10 +497,7 @@ it('recovers a failed status after successful re-verification', async () => {
 });
 
 it('prevents a late ordinary request from overwriting explicit re-verification', async () => {
-  let resolve!: (value: TNearAIAttestationResponse) => void;
-  const pending = new Promise<TNearAIAttestationResponse>((done) => {
-    resolve = done;
-  });
+  const { promise: pending, resolve } = Promise.withResolvers<TNearAIAttestationResponse>();
   const { client } = setup();
   const shield = await screen.findByRole('button', { name: 'NEAR AI attestation verified' });
   fireEvent.click(shield);
@@ -562,42 +522,6 @@ it('prevents a late ordinary request from overwriting explicit re-verification',
   expect(reportRequests()).toHaveLength(3);
 });
 
-it('keeps model report caches separate when switching models and reuses each on return', async () => {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const host = (model: string) => (
-    <QueryClientProvider client={client}>
-      <RecoilRoot>
-        <ThemeProvider initialTheme="light">
-          <ModelShield endpoint="NEAR AI" model={model} />
-        </ThemeProvider>
-      </RecoilRoot>
-    </QueryClientProvider>
-  );
-  jest.mocked(request.get).mockImplementation(async (url) => {
-    if (!String(url).includes('/nearai/attestation'))
-      return { nearaiVerifyUrl: viewerUrl, nearaiEndpoints: ['NEAR AI'] };
-    const model = new URL(String(url), 'http://localhost').searchParams.get('model');
-    return {
-      ...status,
-      model,
-      ...(String(url).includes('reports=1') ? { reports: [{ ...modelReport, model }] } : {}),
-    };
-  });
-  const { rerender } = render(host(status.model));
-  fireEvent.click(await screen.findByRole('button', { name: 'NEAR AI attestation verified' }));
-  await screen.findByTitle('NEAR AI Verification Center');
-  rerender(host('Qwen/Qwen3.6-35B-A3B-FP8'));
-  fireEvent.click(await screen.findByRole('button', { name: 'NEAR AI attestation verified' }));
-  const frame = await screen.findByTitle('NEAR AI Verification Center');
-  expect(frame).toHaveAttribute('src', expect.stringContaining('model=Qwen'));
-  expect(reportRequests()).toHaveLength(2);
-  rerender(host(status.model));
-  fireEvent.click(await screen.findByRole('button', { name: 'NEAR AI attestation verified' }));
-  const restored = await screen.findByTitle('NEAR AI Verification Center');
-  expect(restored).toHaveAttribute('src', expect.stringContaining('model=z-ai'));
-  expect(reportRequests()).toHaveLength(2);
-});
-
 it('retains a failed re-verification across closing and reopening despite a successful status poll', async () => {
   const original = jest.mocked(request.get).getMockImplementation()!;
   jest
@@ -613,8 +537,7 @@ it('retains a failed re-verification across closing and reopening despite a succ
   await screen.findByTitle('NEAR AI Verification Center');
   fireEvent.click(screen.getByRole('button', { name: 'Verify again' }));
   await waitFor(() => expect(shield).toHaveAccessibleName('NEAR AI attestation failed'));
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  await closeDialog();
   // Leave the next report pending: reopening must not fall back to the green status.
   jest
     .mocked(request.get)
@@ -707,80 +630,22 @@ it('recovers from simultaneous status and report failures with one retry', async
   expect(reportRequests()).toHaveLength(2);
 });
 
-it.each([
-  ['Qwen/Qwen3.6-35B-A3B-FP8', 'verified'],
-  ['z-ai/glm-5.3-flash', 'verified'],
-  ['openai/gpt-4.1-mini', 'partial'],
-  ['deepseek/deepseek-v3.2', 'partial'],
-] as const)('displays the appropriate hardware scope for %s', async (model, verdict) => {
-  const reports = (verdict === 'verified' ? [modelReport, gatewayReport] : [gatewayReport]).map(
-    (entry) => ({ ...entry, model }),
-  );
-  jest.mocked(request.get).mockImplementation(async (url) =>
-    String(url).includes('/nearai/attestation')
-      ? {
-          ...status,
-          model,
-          status: verdict,
-          ...(String(url).includes('reports=1') ? { reports } : {}),
-        }
-      : { nearaiVerifyUrl: viewerUrl, nearaiEndpoints: ['NEAR AI'] },
-  );
-  setup(model);
-  const label =
-    verdict === 'verified'
-      ? 'NEAR AI attestation verified'
-      : 'NEAR AI Gateway verified; model execution is not attested';
-  fireEvent.click(await screen.findByRole('button', { name: label }));
-  const frame = (await screen.findByTitle('NEAR AI Verification Center')) as HTMLIFrameElement;
-  const post = jest.spyOn(frame.contentWindow!, 'postMessage');
-  act(() =>
-    window.dispatchEvent(
-      new MessageEvent('message', {
-        origin: 'https://cloud-stg.near.ai',
-        source: frame.contentWindow,
-        data: { type: 'NEAR_AI_VERIFICATION_CENTER_READY', version: 1, requestId: 'scope' },
-      }),
-    ),
-  );
-  expect(post).toHaveBeenCalledWith(
-    expect.objectContaining({ reports }),
-    'https://cloud-stg.near.ai',
-  );
-  expect(new URL(frame.src).searchParams.get('model')).toBe(model);
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-  fireEvent.click(screen.getByTestId('header-nearai-shield'));
-  await screen.findByTitle('NEAR AI Verification Center');
-  expect(reportRequests()).toHaveLength(1);
-});
-
 it('closes the model dialog when its endpoint or model changes', async () => {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const host = (endpoint: string, model = status.model) => (
-    <QueryClientProvider client={client}>
-      <RecoilRoot>
-        <ThemeProvider initialTheme="light">
-          <ModelShield endpoint={endpoint} model={model} />
-        </ThemeProvider>
-      </RecoilRoot>
-    </QueryClientProvider>
-  );
   const current = jest.mocked(request.get).getMockImplementation()!;
   jest
     .mocked(request.get)
     .mockImplementation(async (url, ...args) =>
       String(url).includes('endpoint=Other') ? { enabled: false } : current(url, ...args),
     );
-  const { rerender } = render(host('NEAR AI'));
+  const { select } = setup();
   fireEvent.click(await screen.findByRole('button', { name: 'NEAR AI attestation verified' }));
   await screen.findByTitle('NEAR AI Verification Center');
-  rerender(host('Other'));
+  select(status.model, 'Other');
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-  rerender(host('NEAR AI'));
+  select(status.model);
   fireEvent.click(await screen.findByRole('button', { name: 'NEAR AI attestation verified' }));
   await screen.findByTitle('NEAR AI Verification Center');
-  rerender(host('NEAR AI', 'other/model'));
+  select('other/model');
   await screen.findByRole('button', { name: 'NEAR AI attestation verified' });
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 });
@@ -790,16 +655,7 @@ it.each(['model', 'gateway'] as const)(
   async (scope) => {
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
     const saved = { ...receipt, report: { ...report, scope } };
-    const message = {
-      messageId: 'reply',
-      conversationId: 'chat',
-      parentMessageId: 'parent',
-      endpoint: 'NEAR AI',
-      sender: 'NEAR AI',
-      text: 'OK',
-      isCreatedByUser: false,
-      metadata: { nearai: { receipts: [saved] } },
-    };
+    const message = replyMessage([saved]);
     const { client } = setup(status.model, <Signature message={message} isLast={true} />);
     const shield = await screen.findByRole('button', { name: 'NEAR AI attestation verified' });
     const params = {
@@ -820,13 +676,9 @@ it.each(['model', 'gateway'] as const)(
     expect(client.getQueryState(reportQueryOptions(client, params).queryKey)?.isInvalidated).toBe(
       true,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await closeDialog();
     const before = reportRequests().length;
-    let resolve!: (data: TNearAIAttestationResponse) => void;
-    const pending = new Promise<TNearAIAttestationResponse>((done) => {
-      resolve = done;
-    });
+    const { promise: pending, resolve } = Promise.withResolvers<TNearAIAttestationResponse>();
     jest
       .mocked(request.get)
       .mockImplementation((url, ...args) =>
@@ -844,12 +696,11 @@ it.each(['failed', 'network'] as const)(
   'preserves an in-progress re-verification across model switches and its %s result',
   async (outcome) => {
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    let resolve!: (data: TNearAIAttestationResponse) => void;
-    let reject!: (error: Error) => void;
-    const pending = new Promise<TNearAIAttestationResponse>((done, fail) => {
-      resolve = done;
-      reject = fail;
-    });
+    const {
+      promise: pending,
+      resolve,
+      reject,
+    } = Promise.withResolvers<TNearAIAttestationResponse>();
     const original = jest.mocked(request.get).getMockImplementation()!;
     jest
       .mocked(request.get)
@@ -896,16 +747,7 @@ it.each([
 ] as const)('shares warmed %s reports with the reply entry', async (model, scope) => {
   const verdict = scope === 'gateway' ? 'partial' : 'verified';
   const saved = { ...receipt, model, report: { ...report, model, scope } };
-  const message = {
-    messageId: 'reply',
-    conversationId: 'chat',
-    parentMessageId: 'parent',
-    endpoint: 'NEAR AI',
-    sender: 'NEAR AI',
-    text: 'OK',
-    isCreatedByUser: false,
-    metadata: { nearai: { receipts: [saved] } },
-  };
+  const message = replyMessage([saved]);
   jest.mocked(request.get).mockImplementation(async (url) => {
     if (!String(url).includes('/nearai/attestation'))
       return { nearaiVerifyUrl: viewerUrl, nearaiEndpoints: ['NEAR AI'] };
@@ -931,20 +773,8 @@ it.each([
 });
 
 it('shares an in-progress refresh with a reply opened after switching models', async () => {
-  let resolve!: (data: TNearAIAttestationResponse) => void;
-  const pending = new Promise<TNearAIAttestationResponse>((done) => {
-    resolve = done;
-  });
-  const message = {
-    messageId: 'reply',
-    conversationId: 'chat',
-    parentMessageId: 'parent',
-    endpoint: 'NEAR AI',
-    sender: 'NEAR AI',
-    text: 'OK',
-    isCreatedByUser: false,
-    metadata: { nearai: { receipts: [receipt] } },
-  };
+  const { promise: pending, resolve } = Promise.withResolvers<TNearAIAttestationResponse>();
+  const message = replyMessage([receipt]);
   const original = jest.mocked(request.get).getMockImplementation()!;
   jest
     .mocked(request.get)
@@ -970,19 +800,7 @@ it('shares an in-progress refresh with a reply opened after switching models', a
   );
   const frame = (await screen.findByTitle('NEAR AI Verification Center')) as HTMLIFrameElement;
   const post = jest.spyOn(frame.contentWindow!, 'postMessage');
-  act(() =>
-    window.dispatchEvent(
-      new MessageEvent('message', {
-        origin: 'https://cloud-stg.near.ai',
-        source: frame.contentWindow,
-        data: {
-          type: 'NEAR_AI_VERIFICATION_CENTER_READY',
-          version: 1,
-          requestId: 'shared-refresh',
-        },
-      }),
-    ),
-  );
+  receive(frame, 'NEAR_AI_VERIFICATION_CENTER_READY', 'shared-refresh');
   expect(post).toHaveBeenCalledWith(
     expect.objectContaining({
       reports: expect.arrayContaining([
@@ -1047,25 +865,13 @@ it.each([
 ] as const)(
   'lets %s open prefetched reports before the SDK status finishes only when configured as NEAR AI',
   async (endpoint, configured) => {
-    let resolve!: (value: TNearAIAttestationResponse) => void;
-    const pending = new Promise<TNearAIAttestationResponse>((done) => {
-      resolve = done;
-    });
+    const { promise: pending, resolve } = Promise.withResolvers<TNearAIAttestationResponse>();
     jest.mocked(request.get).mockImplementation(async (url) => {
       if (String(url).includes('reports=1')) return { ...status, reports: [modelReport] };
       if (String(url).includes('/nearai/attestation')) return pending;
       return { nearaiVerifyUrl: viewerUrl, nearaiEndpoints: ['NEAR AI'] };
     });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <QueryClientProvider client={client}>
-        <RecoilRoot>
-          <ThemeProvider initialTheme="light">
-            <ModelShield endpoint={endpoint} model="z-ai/glm-5.3-flash" />
-          </ThemeProvider>
-        </RecoilRoot>
-      </QueryClientProvider>,
-    );
+    const { client } = setup(status.model, undefined, endpoint);
     if (!configured) {
       await waitFor(() => expect(client.isFetching()).toBe(1));
       expect(screen.queryByTestId('header-nearai-shield')).not.toBeInTheDocument();

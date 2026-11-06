@@ -84,12 +84,13 @@ it('resolves the authenticated user key, separates scope, and uses evidence time
 it('forwards explicit report bypass without treating it as a Chat session refresh', async () => {
   const { app, service, verify } = setup();
   const reports = jest.spyOn(service, 'reports').mockResolvedValue([]);
-  await request(app).get('/attestation').query({
+  const response = await request(app).get('/attestation').query({
     endpoint: 'Private',
     model: 'model',
     reports: '1',
     force: '1',
   });
+  expect(response.status).toBe(200);
   expect(reports).toHaveBeenCalledWith(expect.any(Object), 'model', {
     scope: undefined,
     refresh: false,
@@ -118,6 +119,18 @@ it('returns safe non-success errors for missing credentials and invalid input', 
   expect((await request(app).get('/attestation')).status).toBe(400);
   expect(verify).not.toHaveBeenCalled();
 });
+
+it.each(['', '${NEAR_AI_REVIEW_MISSING_KEY}', 'user_provided'])(
+  'reports missing credentials instead of disabling a configured endpoint (%s)',
+  async (key) => {
+    const { app, getUserKeyValues, verify } = setup(config(key));
+    getUserKeyValues.mockResolvedValue({ apiKey: '' });
+    const response = await request(app).get('/attestation?endpoint=Private&model=model');
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: { code: 'nearai_verification_unavailable' } });
+    expect(verify).not.toHaveBeenCalled();
+  },
+);
 
 it('rejects native Anthropic transport instead of advertising or sending unverified NEAR AI chat', async () => {
   const appConfig = config(

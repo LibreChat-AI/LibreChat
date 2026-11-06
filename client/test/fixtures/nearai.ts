@@ -1,4 +1,4 @@
-import type { TNearAIReceipt, TNearAIVerificationReport } from 'librechat-data-provider';
+import type { TMessage, TNearAIReceipt, TNearAIVerificationReport } from 'librechat-data-provider';
 
 export const viewerUrl = 'https://cloud-stg.near.ai/verify?model=z-ai/glm-5.3-flash';
 export const report: TNearAIVerificationReport = {
@@ -39,6 +39,19 @@ export const receipt: TNearAIReceipt = {
   signature: report.signature?.signature,
   report,
 };
+
+export function replyMessage(receipts: TNearAIReceipt[] = [receipt]): TMessage {
+  return {
+    messageId: 'reply',
+    conversationId: 'chat',
+    parentMessageId: 'parent',
+    endpoint: 'NEAR AI',
+    sender: 'NEAR AI',
+    text: 'OK',
+    isCreatedByUser: false,
+    metadata: { nearai: { receipts } },
+  };
+}
 
 export const modelReport: TNearAIVerificationReport = {
   schemaVersion: 1,

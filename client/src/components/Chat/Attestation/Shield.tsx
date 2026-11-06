@@ -67,11 +67,10 @@ function ModelVerification(params: { endpoint: string; model: string }) {
     ...options,
     enabled: open && expected,
   });
-  const supported = expected;
   useEffect(() => {
-    if (!params.model || !supported) return;
+    if (!params.model || !expected) return;
     void prefetchReport(queryClient, { endpoint: params.endpoint, model: params.model });
-  }, [queryClient, params.endpoint, params.model, supported]);
+  }, [queryClient, params.endpoint, params.model, expected]);
   // A configured NEAR AI endpoint shows its first check instead of appearing only once it ends.
   if (!expected || status.data?.enabled === false) {
     return null;

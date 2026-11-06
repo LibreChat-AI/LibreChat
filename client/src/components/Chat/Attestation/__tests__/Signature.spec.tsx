@@ -5,8 +5,9 @@ import userEvent from '@testing-library/user-event';
 import { OGDialog, ThemeProvider } from '@librechat/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { TMessage, TNearAIReceipt, TNearAIAttestationResponse } from 'librechat-data-provider';
-import { receipt, modelReport, gatewayReport, viewerUrl } from 'test/fixtures/nearai';
+import type { TMessage, TNearAIReceipt } from 'librechat-data-provider';
+import { receipt, modelReport, gatewayReport, viewerUrl, replyMessage } from 'test/fixtures/nearai';
+import { closeDialog, deferReports, receive, reportRequests } from 'test/attestation';
 import { startupConfigKey } from '~/data-provider/Endpoints/queries';
 import Verification from '../Verification';
 import Signature from '../Signature';
@@ -23,17 +24,7 @@ function setup(
   prefetch = false,
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const message: TMessage = {
-    messageId: 'message-1',
-    conversationId: 'conversation-1',
-    parentMessageId: 'parent-1',
-    endpoint: 'NEAR AI',
-    sender: 'NEAR AI',
-    text: 'Reply',
-    isCreatedByUser: false,
-    metadata: { nearai: { receipts } },
-    ...provenance,
-  };
+  const message = { ...replyMessage(receipts), ...provenance };
   const result = render(
     <QueryClientProvider client={client}>
       <RecoilRoot>
@@ -50,18 +41,6 @@ function setup(
 async function openFrame() {
   fireEvent.click(screen.getByTestId('nearai-signature-button'));
   return (await screen.findByTitle('NEAR AI Verification Center')) as HTMLIFrameElement;
-}
-
-function receive(iframe: HTMLIFrameElement, type: string) {
-  act(() => {
-    window.dispatchEvent(
-      new MessageEvent('message', {
-        origin: 'https://cloud-stg.near.ai',
-        source: iframe.contentWindow,
-        data: { type, version: 1, requestId: 'request-1' },
-      }),
-    );
-  });
 }
 
 beforeEach(() => {
@@ -138,22 +117,11 @@ it('opens a reply using the hardware report prefetched by the message list', asy
   await waitFor(() => expect(request.get).toHaveBeenCalledTimes(1));
   const iframe = await openFrame();
   receive(iframe, 'NEAR_AI_VERIFICATION_CENTER_READY');
-  expect(
-    jest.mocked(request.get).mock.calls.filter(([url]) => String(url).includes('reports=1')),
-  ).toHaveLength(1);
+  expect(reportRequests()).toHaveLength(1);
 });
 
 it('joins an unfinished message-list prefetch when the reply shield is clicked', async () => {
-  let resolve!: (value: TNearAIAttestationResponse) => void;
-  const pending = new Promise<TNearAIAttestationResponse>((done) => {
-    resolve = done;
-  });
-  const original = jest.mocked(request.get).getMockImplementation()!;
-  jest
-    .mocked(request.get)
-    .mockImplementation((url, ...args) =>
-      String(url).includes('reports=1') ? pending : original(url, ...args),
-    );
+  const { resolve } = deferReports();
   setup([receipt], false, {}, true);
   await waitFor(() => expect(request.get).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByTestId('nearai-signature-button'));
@@ -173,26 +141,20 @@ it('joins an unfinished message-list prefetch when the reply shield is clicked',
     }),
   );
   await screen.findByTitle('NEAR AI Verification Center');
-  expect(
-    jest.mocked(request.get).mock.calls.filter(([url]) => String(url).includes('reports=1')),
-  ).toHaveLength(1);
+  expect(reportRequests()).toHaveLength(1);
 });
 
 it('reuses reply hardware for five minutes and fetches once after expiry', async () => {
   setup();
-  const requests = () =>
-    jest.mocked(request.get).mock.calls.filter(([url]) => String(url).includes('reports=1'));
   await openFrame();
-  expect(requests()).toHaveLength(1);
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(reportRequests()).toHaveLength(1);
+  await closeDialog();
   await openFrame();
-  expect(requests()).toHaveLength(1);
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(reportRequests()).toHaveLength(1);
+  await closeDialog();
   jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 300_001);
   await openFrame();
-  expect(requests()).toHaveLength(2);
+  expect(reportRequests()).toHaveLength(2);
 });
 
 it('displays the earliest hardware time rather than the saved signature time after the viewer is ready', async () => {
@@ -401,8 +363,7 @@ it('replaces previously successful hardware reports with unavailable reports whe
   expect(sent[1]).not.toHaveProperty('attestation');
   expect(sent).toHaveLength(2);
   expect(document.querySelector('time')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  await closeDialog();
   const reopened = await openFrame();
   expect(get.mock.calls.filter(([url]) => String(url).includes('reports=1'))).toHaveLength(3);
   expect(get.mock.calls.filter(([url]) => String(url).includes('reports=1'))[2][0]).toContain(

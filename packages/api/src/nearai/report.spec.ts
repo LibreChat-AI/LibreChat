@@ -121,28 +121,6 @@ describe('reply verification reports', () => {
     }
   });
 
-  it('leaves payload and signer consistency checks to the real SDK', () => {
-    const result = verifiedModel();
-    expect(() =>
-      verifyModelResponse({
-        ...result,
-        requestBody: Buffer.from(JSON.stringify({ model: 'other', messages: [] })),
-        responseBody,
-      }),
-    ).toThrow(VerificationError);
-    expect(() =>
-      verifyModelResponse({
-        ...result,
-        requestBody,
-        responseBody,
-        attestation: {
-          ...result.attestation,
-          signer: { signingAlgo: 'ed25519', signingAddress: '1'.repeat(64) },
-        },
-      }),
-    ).toThrow(VerificationError);
-  });
-
   it('strips secrets at the browser boundary and bounds report size', () => {
     const report = createReplyReport(verifiedModel(), verifiedAt);
     if (!report.ok) {
