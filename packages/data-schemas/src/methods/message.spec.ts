@@ -16,6 +16,7 @@ import {
   SUBAGENT_TRANSCRIPT_PAGE_LIMIT,
   SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT,
 } from './message';
+import { thinkReplayHash } from '~/utils/providerItems';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { MAX_MCP_APP_MESSAGE_BSON_BYTES } from './appSnapshots';
 import { createModels } from '../models';
@@ -432,6 +433,55 @@ describe('Message Operations', () => {
   });
 
   describe('saveMessage', () => {
+    describe('createdAtOnInsert', () => {
+      const turnStartedAt = new Date('2026-01-02T03:04:05.678Z');
+
+      it('stores the supplied creation time on insert and keeps it on later saves', async () => {
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true, createdAt: new Date('2020-01-01') },
+          { createdAtOnInsert: turnStartedAt },
+        );
+        const inserted = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(inserted?.createdAt).toEqual(turnStartedAt);
+        expect(inserted?.updatedAt?.getTime()).toBeGreaterThan(turnStartedAt.getTime());
+
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true, text: 'edited' },
+          { createdAtOnInsert: new Date('2027-01-01T00:00:00.000Z') },
+        );
+        const resaved = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(resaved?.text).toBe('edited');
+        expect(resaved?.createdAt).toEqual(turnStartedAt);
+      });
+
+      it('applies on the provenance-merging writer', async () => {
+        await saveMessage(
+          mockCtx,
+          {
+            ...mockMessageData,
+            isCreatedByUser: true,
+            content: [{ type: 'text', text: 'Hello' }] as IMessage['content'],
+            userSubmittedPaths: ['/content/0/text'],
+          },
+          { createdAtOnInsert: turnStartedAt },
+        );
+        const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(stored?.createdAt).toEqual(turnStartedAt);
+      });
+
+      it('applies on the insert-only writer', async () => {
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true },
+          { insertOnly: true, createdAtOnInsert: turnStartedAt },
+        );
+        const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(stored?.createdAt).toEqual(turnStartedAt);
+      });
+    });
+
     it('bounds aggregate App BSON without changing canonical output, even on a later full save', async () => {
       const content = [{ type: 'text', text: 'canonical message' }];
       const attachments = Array.from({ length: 17 }, (_, i) =>
@@ -3035,6 +3085,108 @@ describe('Message Operations', () => {
       const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
       const content = saved?.content as Array<{ tool_call?: { output?: string } }>;
       expect(content[1].tool_call?.output).toBe('{"background_task_id":"task-1"}');
+    });
+  });
+
+  describe('saveMessage provider items', () => {
+    const providerItems = {
+      origin: 'digest',
+      items: [{ id: 'rs_1', encrypted_content: 'opaque' }],
+    };
+    const toolCall = { id: 'call_1', name: 'lookup', args: '{}' };
+    const response = (items = true) => ({
+      ...mockMessageData,
+      isCreatedByUser: false,
+      content: [
+        { type: 'text', text: 'Looking it up.' },
+        { type: 'tool_call', tool_call: items ? { ...toolCall, providerItems } : toolCall },
+      ],
+    });
+    const readStored = async () =>
+      Message.findOne({ messageId: 'msg123' }).select('+providerItems').lean();
+
+    it('moves the items of a response out of its content, into a field ordinary reads skip', async () => {
+      await saveMessage(mockCtx, response() as never);
+
+      const stored = await readStored();
+      expect(stored?.providerItems).toEqual({ call_1: providerItems });
+      expect(JSON.stringify(stored?.content)).not.toContain('providerItems');
+      expect((stored?.content as unknown[])[1]).toMatchObject({ tool_call: toolCall });
+      for (const read of [
+        await Message.findOne({ messageId: 'msg123' }).lean(),
+        (await getMessages({ messageId: 'msg123' }))[0],
+        (await getMessages({ messageId: 'msg123' }, CLIENT_MESSAGE_SELECT))[0],
+      ]) {
+        expect(read).not.toHaveProperty('providerItems');
+        expect(JSON.stringify(read)).not.toContain('opaque');
+      }
+      const [history] = await getMessages({ messageId: 'msg123' }, '+providerItems');
+      expect(history.providerItems).toEqual({ call_1: providerItems });
+    });
+
+    it('stores the signed reasoning of think parts beside the tool call items, out of every ordinary read', async () => {
+      const replay = {
+        anthropic: { model: 'claude-test', blocks: [{ type: 'thinking', signature: 'SIG_1' }] },
+      };
+      await saveMessage(mockCtx, {
+        ...response(),
+        content: [
+          { type: 'think', think: 'plan', provider_replay: replay },
+          { type: 'tool_call', tool_call: { ...toolCall, providerItems } },
+        ],
+      } as never);
+
+      const stored = await readStored();
+      expect(stored?.providerItems).toEqual({
+        call_1: providerItems,
+        'think:0': { hash: thinkReplayHash('plan'), replay },
+      });
+      expect(JSON.stringify(stored?.content)).not.toContain('SIG_1');
+      const [read] = await getMessages({ messageId: 'msg123' }, CLIENT_MESSAGE_SELECT);
+      expect(JSON.stringify(read)).not.toContain('SIG_1');
+    });
+
+    it('does not keep the signed reasoning of a user message or of a forged field', async () => {
+      const replay = {
+        anthropic: { model: 'm', blocks: [{ type: 'thinking', signature: 'S' }] },
+      };
+      const content = [{ type: 'think', think: 'x', provider_replay: replay }];
+      await saveMessage(mockCtx, { ...mockMessageData, isCreatedByUser: true, content } as never);
+      let stored = await readStored();
+      expect(stored).not.toHaveProperty('providerItems');
+      expect(JSON.stringify(stored?.content)).not.toContain('"S"');
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        messageId: 'msg123',
+        providerItems: { 'think:0': { hash: thinkReplayHash('x'), replay } },
+      } as never);
+      stored = await readStored();
+      expect(stored).not.toHaveProperty('providerItems');
+    });
+
+    it('keeps the stored items when a later save carries none', async () => {
+      await saveMessage(mockCtx, response() as never);
+      await saveMessage(mockCtx, response(false) as never);
+      expect((await readStored())?.providerItems).toEqual({ call_1: providerItems });
+    });
+
+    it('drops the items of a user message instead of keeping them in its content', async () => {
+      await saveMessage(mockCtx, { ...response(), isCreatedByUser: true } as never);
+      const stored = await readStored();
+      expect(stored).not.toHaveProperty('providerItems');
+      expect(JSON.stringify(stored?.content)).not.toContain('providerItems');
+    });
+
+    it('ignores items submitted as a message field', async () => {
+      const forged = { providerItems: { call_1: providerItems } };
+      await saveMessage(mockCtx, { ...mockMessageData, ...forged } as never);
+      await updateMessage('user123', { messageId: 'msg123', ...forged });
+      await bulkSaveMessages([{ ...mockMessageData, messageId: 'bulk-1', ...forged }]);
+      for (const messageId of ['msg123', 'bulk-1']) {
+        const stored = await Message.findOne({ messageId }).select('+providerItems').lean();
+        expect(stored).toBeTruthy();
+        expect(stored).not.toHaveProperty('providerItems');
+      }
     });
   });
 

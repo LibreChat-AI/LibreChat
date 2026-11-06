@@ -33,6 +33,7 @@ jest.mock('@librechat/api', () => ({
   hasPersistableAbortContent: jest.requireActual('@librechat/api').hasPersistableAbortContent,
   announceReply: jest.requireActual('@librechat/api').announceReply,
   abortOwnedGeneration: jest.requireActual('@librechat/api').abortOwnedGeneration,
+  stripProviderItems: jest.requireActual('@librechat/api').stripProviderItems,
   countTokens: jest.fn().mockResolvedValue(100),
   isEnabled: jest.fn().mockReturnValue(false),
   sendEvent: jest.fn(),
@@ -325,6 +326,27 @@ describe('abortMiddleware - handleAbort billing', () => {
     );
     const finalEvent = JSON.parse(res.send.mock.calls[0][0]);
     expect(finalEvent.responseMessage.contextMeta).toEqual(contextMeta);
+  });
+
+  it('keeps provider items out of the response sent to the client', async () => {
+    const part = {
+      type: 'tool_call',
+      tool_call: { id: 'call_1', name: 'x', providerItems: { origin: 'o', items: [] } },
+    };
+    GenerationJobManager.abortJob.mockResolvedValue({
+      success: true,
+      jobData: buildJobData(),
+      content: [part],
+      text: 'partial',
+      collectedUsage: [],
+    });
+    const res = buildRes();
+
+    await handleAbort()(buildReq(), res);
+
+    const finalEvent = JSON.parse(res.send.mock.calls[0][0]);
+    expect(finalEvent.responseMessage.content[0].tool_call.providerItems).toBeUndefined();
+    expect(finalEvent.responseMessage.content[0].tool_call.id).toBe('call_1');
   });
 
   it('unsets context meta on a stopped response when the job carries none', async () => {

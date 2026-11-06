@@ -30,6 +30,8 @@ const {
   generationRetryProbeLimiter,
   generationRetryLimiter,
   startSseKeepalive,
+  omitProviderItemsFromEvent,
+  stripProviderItems,
 } = require('@librechat/api');
 const { createSseStreamTelemetry } = require('@librechat/api/telemetry');
 const { logger } = require('@librechat/data-schemas');
@@ -300,7 +302,7 @@ router.get('/chat/stream/:streamId', async (req, res) => {
     }
     if (!res.writableEnded) {
       const eventName = options.eventName ?? 'message';
-      const payload = `event: ${eventName}\ndata: ${JSON.stringify(event)}\n\n`;
+      const payload = `event: ${eventName}\ndata: ${JSON.stringify(omitProviderItemsFromEvent(event))}\n\n`;
       res.write(payload);
       streamTelemetry.recordWrite(payload, { final: options.final });
       if (typeof res.flush === 'function') {
@@ -571,17 +573,18 @@ router.get('/chat/status/:conversationId', async (req, res) => {
     }
   }
 
+  const aggregatedContent = stripProviderItems(resumeState?.aggregatedContent ?? []);
   res.json({
     active: isActive,
     generationProtocolVersion,
     ...(unrecoveredSteers && { unrecoveredSteers }),
     streamId: conversationId,
     status: job.status,
-    aggregatedContent: resumeState?.aggregatedContent ?? [],
+    aggregatedContent,
     createdAt: job.createdAt,
     elapsedMs: getGenerationElapsedMs(job),
     isTemporary: job.metadata?.isTemporary === true,
-    resumeState,
+    resumeState: resumeState && { ...resumeState, aggregatedContent },
     // Surface the live pending approval so a client rebuilding from /chat/status
     // (reload / cross-replica) has the action id + payload to render and submit
     // the prompt, not just the knowledge that the stream is paused. Client-safe

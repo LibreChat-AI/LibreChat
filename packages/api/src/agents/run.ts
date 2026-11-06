@@ -131,11 +131,13 @@ import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
 import { getAgentCheckpointer } from '~/agents/checkpointer';
+import { callsAnthropicMessagesApi, replaysSignedReasoning } from './reasoningReplay';
 import { getPluginHookSource } from '~/agents/hooks/source';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { buildLangfuseConfig } from '~/langfuse/config';
+import { isStableContextEnabled } from './promptCache';
 import { applyTestRunHook } from '~/agents/testHook';
 import { frameDynamicInstructions } from './tail';
 import { isUserProvided } from '~/utils/common';
@@ -2490,7 +2492,13 @@ export async function createRun({
 
     const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
 
-    let additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
+    /** With `stableContext` the conversation dates and one-turn context follow the
+     *  instructions every turn and conversation shares, so a provider cache keeps those. */
+    let additionalInstructions = (
+      isStableContextEnabled(appConfig)
+        ? [agent.additional_instructions ?? '', dynamicToolInstructions]
+        : [dynamicToolInstructions, agent.additional_instructions ?? '']
+    )
       .join('\n')
       .trim();
     if (isSubagent && agent.alwaysApplySkillPrimes?.length) {
@@ -2638,6 +2646,12 @@ export async function createRun({
           provider,
           promptCache: 'promptCache' in llmConfig && llmConfig.promptCache === true,
         }) || undefined,
+      /** Signed reasoning is captured only for stored conversations, never for isolated subagents. */
+      ...(!isSubagent &&
+        replaysSignedReasoning(appConfig, provider) &&
+        callsAnthropicMessagesApi(llmConfig) && {
+          providerReasoningReplay: true,
+        }),
       name: agent.name ?? undefined,
       toolRegistry,
       maxContextTokens: effectiveMaxContextTokens,
