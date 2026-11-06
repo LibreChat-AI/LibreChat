@@ -11,6 +11,8 @@ skillDeletion:
   sweepIntervalMs: 1000
 
 interface:
+  mcpServers:
+    mentions: true
   # Isolated test fleet contains only ownership-aware replicas.
   runningChatRename: true
   # Off the 300 ms default, so highlight-throttle.spec.ts can tell a configured

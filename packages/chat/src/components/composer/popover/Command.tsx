@@ -1,4 +1,4 @@
-import { useId, useRef, useEffect } from 'react';
+import { useId, useRef, useMemo, useEffect } from 'react';
 import { Input, Spinner, useRemScale } from '@librechat/client';
 import type { Dispatch, ReactNode, SetStateAction, KeyboardEvent } from 'react';
 import type { CommandListProps, CommandListRow } from '../../../react/input';
@@ -17,7 +17,13 @@ export type CommandOption = {
   label?: string;
   description?: string;
   icon?: ReactNode;
+  group?: string;
+  selected?: boolean;
 };
+
+type CommandRow =
+  | { kind: 'heading'; label: string }
+  | { kind: 'option'; option: CommandOption; optionIndex: number };
 
 /** Why a popover asks to close: the key that closed it, or focus leaving its input. */
 export type CommandDismissReason = 'escape' | 'backspace' | 'commit' | 'blur';
@@ -77,7 +83,30 @@ export default function CommandPopover({
   const remScale = useRemScale();
   const { renderCommandList } = useComposerHost();
   const listRef = useRef<HTMLDivElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { rows, options, optionRows } = useMemo(() => {
+    const groups = new Map<string | undefined, CommandOption[]>([[undefined, []]]);
+    for (const option of matches) {
+      const group = groups.get(option.group) ?? [];
+      group.push(option);
+      groups.set(option.group, group);
+    }
+    const rows: CommandRow[] = [];
+    const options: CommandOption[] = [];
+    const optionRows: number[] = [];
+    for (const [label, group] of groups) {
+      if (label && group.length > 0) {
+        rows.push({ kind: 'heading', label });
+      }
+      for (const option of group) {
+        optionRows.push(rows.length);
+        rows.push({ kind: 'option', option, optionIndex: options.length });
+        options.push(option);
+      }
+    }
+    return { rows, options, optionRows };
+  }, [matches]);
 
   const cancelBlurClose = () => {
     if (blurTimer.current) {
@@ -112,8 +141,11 @@ export default function CommandPopover({
       return;
     }
     if (e.key === 'Enter' || e.key === 'Tab') {
-      const option = matches[activeIndex];
+      const option = options[activeIndex];
       if (option == null) {
+        if (e.key === 'Tab' && notice != null) {
+          return;
+        }
         onDismiss('commit', e);
         return;
       }
@@ -129,18 +161,32 @@ export default function CommandPopover({
   const activeId = showList ? `${type}-item-${activeIndex}` : undefined;
 
   const renderRow = ({ index, key, style }: CommandListRow): ReactNode => {
-    const option = matches[index];
+    const row = rows[index];
+    if (row.kind === 'heading') {
+      return (
+        <div
+          key={key}
+          role="presentation"
+          style={style}
+          className="text-text-secondary flex h-11 items-center px-2 text-sm font-medium"
+        >
+          {row.label}
+        </div>
+      );
+    }
+    const { option, optionIndex } = row;
     return (
       <MentionItem
         key={key}
         type={type}
         role="option"
-        index={index}
+        index={optionIndex}
         style={style}
         name={option.label ?? ''}
         icon={option.icon}
         description={option.description}
-        isActive={index === activeIndex}
+        isActive={optionIndex === activeIndex}
+        isSelected={option.selected}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -152,16 +198,29 @@ export default function CommandPopover({
   };
 
   const listProps: CommandListProps = {
-    count: matches.length,
-    activeIndex,
+    count: rows.length,
+    activeIndex: optionRows[activeIndex] ?? 0,
     rowHeight: ROW_HEIGHT * remScale,
-    height: Math.min(matches.length * ROW_HEIGHT, MAX_LIST_HEIGHT) * remScale,
+    height: Math.min(rows.length * ROW_HEIGHT, MAX_LIST_HEIGHT) * remScale,
     renderRow,
   };
 
   return (
     <div className="absolute bottom-28 z-10 w-full space-y-2">
-      <div className="popover border-border-light bg-surface-tertiary-alt rounded-theme-popover border p-2 shadow-lg">
+      <div
+        ref={popoverRef}
+        className="popover border-border-light bg-surface-tertiary-alt rounded-theme-popover border p-2 shadow-lg"
+        onFocus={cancelBlurClose}
+        onBlur={(event) => {
+          if (
+            event.relatedTarget instanceof Node &&
+            popoverRef.current?.contains(event.relatedTarget)
+          ) {
+            return;
+          }
+          blurTimer.current = setTimeout(() => onDismiss('blur'), BLUR_CLOSE_DELAY);
+        }}
+      >
         <Input
           ref={inputRef}
           role="combobox"
@@ -177,9 +236,6 @@ export default function CommandPopover({
           onKeyDown={handleKeyDown}
           onChange={(e) => onSearchChange(e.target.value)}
           onFocus={onOpen}
-          onBlur={() => {
-            blurTimer.current = setTimeout(() => onDismiss('blur'), BLUR_CLOSE_DELAY);
-          }}
         />
         {open && isLoading && matches.length === 0 && (
           <div className="text-text-primary flex h-32 items-center justify-center">

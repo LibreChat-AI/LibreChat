@@ -9,3 +9,26 @@ export function removeCharIfLast(textarea: HTMLTextAreaElement, charToRemove: st
 
   textarea.focus();
 }
+export interface CommandRange {
+  start: number;
+  end: number;
+}
+
+/** The whitespace-delimited @ token ending at a collapsed caret, excluding email addresses. */
+export function findMentionRange(
+  text: string,
+  start: number,
+  end: number = start,
+): CommandRange | undefined {
+  if (start !== end || start < 1 || start > text.length) {
+    return undefined;
+  }
+  const tokenStart = text.lastIndexOf('@', start - 1);
+  if (tokenStart < 0 || (tokenStart > 0 && !/\s/.test(text[tokenStart - 1]))) {
+    return undefined;
+  }
+  if (/\s/.test(text.slice(tokenStart + 1, start))) {
+    return undefined;
+  }
+  return { start: tokenStart, end: start };
+}

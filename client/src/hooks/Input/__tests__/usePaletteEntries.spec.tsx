@@ -78,6 +78,7 @@ interface ContextFixture {
     selectableServers?: ServerFixture[];
     mcpValues: string[];
     toggleServerSelection: jest.Mock;
+    selectServer: jest.Mock;
     connectionStatus?: Record<string, { connectionState: string }>;
     initializeServer?: jest.Mock;
     getServerStatusIconProps?: jest.Mock;
@@ -99,6 +100,7 @@ const fullContext = (): ContextFixture => ({
     ],
     mcpValues: [],
     toggleServerSelection: jest.fn(),
+    selectServer: jest.fn(),
   },
   agentsConfig: { capabilities: [] },
 });
@@ -541,7 +543,7 @@ describe('usePaletteEntries', () => {
       mockContext = context;
       const row = entries().result.current.find((item) => item.key === 'mcp:github');
       act(() => row?.onSelect());
-      expect(context.mcpServerManager.toggleServerSelection).toHaveBeenCalledWith('github');
+      expect(context.mcpServerManager.selectServer).toHaveBeenCalledWith('github');
     });
 
     it('initializes rather than toggles a server whose connection status is still unknown', () => {
@@ -550,7 +552,7 @@ describe('usePaletteEntries', () => {
       mockContext = context;
       const row = entries().result.current.find((item) => item.key === 'mcp:github');
       act(() => row?.onSelect());
-      expect(context.mcpServerManager.initializeServer).toHaveBeenCalledWith('github');
+      expect(context.mcpServerManager.selectServer).toHaveBeenCalledWith('github');
       expect(context.mcpServerManager.toggleServerSelection).not.toHaveBeenCalled();
     });
 
@@ -587,7 +589,7 @@ describe('usePaletteEntries', () => {
       expect(onConfigClick).toHaveBeenCalledTimes(1);
 
       act(() => row?.onSelect());
-      expect(context.mcpServerManager.toggleServerSelection).toHaveBeenCalledWith('github');
+      expect(context.mcpServerManager.selectServer).toHaveBeenCalledWith('github');
     });
 
     it('offers no configure action for a connected server without custom variables', () => {

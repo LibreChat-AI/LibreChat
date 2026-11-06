@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import { useSetAtom } from 'jotai';
+import { findMentionRange } from '@librechat/chat';
 import { useSetRecoilState, useRecoilValue } from 'recoil';
 import { showSkillsPopoverFamily } from '@librechat/chat/react';
 import { PermissionTypes, Permissions, isAssistantsEndpoint } from 'librechat-data-provider';
@@ -54,9 +55,11 @@ const shouldTriggerCommand = (
 const useHandleKeyUp = ({
   index,
   textAreaRef,
+  mcpMentionsEnabled = false,
 }: {
   index: number;
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
+  mcpMentionsEnabled?: boolean;
 }) => {
   const hasPromptsAccess = useHasAccess({
     permissionType: PermissionTypes.PROMPTS,
@@ -92,10 +95,20 @@ const useHandleKeyUp = ({
   }, [endpoint, setShowPlusPopover, setShowSkillsPopover]);
 
   const handleAtCommand = useCallback(() => {
-    if (atCommandEnabled && shouldTriggerCommand(textAreaRef, '@')) {
+    const textarea = textAreaRef.current;
+    const range =
+      mcpMentionsEnabled && textarea
+        ? findMentionRange(textarea.value, textarea.selectionStart, textarea.selectionEnd)
+        : undefined;
+    if (
+      atCommandEnabled &&
+      (mcpMentionsEnabled
+        ? range != null && range.end - range.start <= MAX_COMMAND_TRIGGER_LENGTH
+        : shouldTriggerCommand(textAreaRef, '@'))
+    ) {
       setShowMentionPopover(true);
     }
-  }, [textAreaRef, setShowMentionPopover, atCommandEnabled]);
+  }, [textAreaRef, setShowMentionPopover, atCommandEnabled, mcpMentionsEnabled]);
 
   const handlePlusCommand = useCallback(() => {
     if (!hasMultiConvoAccess || !plusCommandEnabled || isAssistantsEndpoint(endpoint)) {
@@ -180,6 +193,16 @@ const useHandleKeyUp = ({
       if (invalidKeys[event.key as keyof typeof invalidKeys]) {
         return;
       }
+      if (event.nativeEvent?.isComposing || event.ctrlKey || event.metaKey) {
+        return;
+      }
+      if (mcpMentionsEnabled) {
+        const textarea = textAreaRef.current;
+        if (textarea && findMentionRange(text, textarea.selectionStart, textarea.selectionEnd)) {
+          handleAtCommand();
+          return;
+        }
+      }
 
       const firstChar = text[0];
       const handler = commandHandlers[firstChar as keyof typeof commandHandlers];
@@ -188,7 +211,7 @@ const useHandleKeyUp = ({
         handler();
       }
     },
-    [textAreaRef, commandHandlers, handleUpArrow],
+    [textAreaRef, commandHandlers, handleUpArrow, mcpMentionsEnabled, handleAtCommand],
   );
 
   return handleKeyUp;
