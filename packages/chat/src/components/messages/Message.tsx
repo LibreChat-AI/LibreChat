@@ -1,8 +1,10 @@
 import React from 'react';
-import type { TMessageProps } from '~/common';
-import { useMessageProcess, useMemoizedChatContext } from '~/hooks';
-import { areMessageRowPropsEqual } from '~/utils';
-import ContentRender from './ContentRender';
+import type { NamedExoticComponent, ReactElement } from 'react';
+import type { TMessageProps } from '../../react/messages/types';
+import useMemoizedChatContext from '../../react/messages/useMemoizedChatContext';
+import useMessageProcess from '../../react/messages/useMessageProcess';
+import { areMessageRowPropsEqual } from '../../react/messages/equal';
+import MessageRender from './MessageRender';
 
 const MessageContainer = React.memo(function MessageContainer({
   handleScroll,
@@ -22,7 +24,7 @@ const MessageContainer = React.memo(function MessageContainer({
   );
 });
 
-function MessageContent(props: TMessageProps) {
+function Message(props: TMessageProps): ReactElement | null {
   const { handleScroll, isSubmitting } = useMessageProcess({
     message: props.message,
   });
@@ -37,7 +39,7 @@ function MessageContent(props: TMessageProps) {
   return (
     <MessageContainer handleScroll={handleScroll}>
       <div className="m-auto justify-center px-4 py-3 sm:px-0">
-        <ContentRender
+        <MessageRender
           {...props}
           chatContext={chatContext}
           isSubmitting={effectiveIsSubmitting}
@@ -49,4 +51,9 @@ function MessageContent(props: TMessageProps) {
   );
 }
 
-export default React.memo(MessageContent, areMessageRowPropsEqual);
+const MemoizedMessage: NamedExoticComponent<TMessageProps> = React.memo(
+  Message,
+  areMessageRowPropsEqual,
+);
+
+export default MemoizedMessage;

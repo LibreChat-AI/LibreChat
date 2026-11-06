@@ -228,6 +228,12 @@ export type {
 } from './components/messages/MessagesView';
 
 export { EventSubagentActivityGroup } from './components/subagents/activity';
+export { default as ThreadMessage } from './components/messages/thread/Message';
+export { default as MessageContent } from './components/messages/MessageContent';
+export { default as ContentRender } from './components/messages/ContentRender';
+export { default as MessageRender } from './components/messages/MessageRender';
+export { default as MessageParts } from './components/messages/MessageParts';
+export { default as Message } from './components/messages/Message';
 export { default as useMessageActions } from './components/messages/useMessageActions';
 export type { TMessageActions, MessageActions } from './components/messages/useMessageActions';
 export { default as useMessageHelpers } from './components/messages/useMessageHelpers';

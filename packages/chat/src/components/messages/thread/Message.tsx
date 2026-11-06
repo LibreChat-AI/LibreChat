@@ -1,11 +1,12 @@
 import { isAssistantsEndpoint } from 'librechat-data-provider';
-import type { MessageRowSlotProps } from '@librechat/chat/react';
-import MessageContent from '~/components/Messages/MessageContent';
+import type { ReactElement } from 'react';
+import type { ThreadMessageProps } from '../../../react/messages/types';
+import MessageContent from '../MessageContent';
 import MessageParts from '../MessageParts';
 import Message from '../Message';
 
-/** The app's message row for the thread: assistants parts, content parts, or plain text. */
-export default function ThreadMessage(props: MessageRowSlotProps) {
+/** One message row of the thread: assistants parts, content parts, or plain text. */
+export default function ThreadMessage(props: ThreadMessageProps): ReactElement {
   const { message } = props;
   if (isAssistantsEndpoint(message.endpoint) && message.content) {
     return <MessageParts {...props} />;

@@ -2,52 +2,65 @@
  * @jest-environment jsdom
  */
 import { Provider as JotaiProvider } from 'jotai';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
-import type { MessageRowSlotProps, MessagesHost } from '../../../../react/messages/host';
+import type { ReactElement, ReactNode } from 'react';
+import type { ChatContract } from '../../../../react/chat/contract';
+import type { MessagesHost } from '../../../../react/messages/host';
+import type { MessagePartsHost } from '../../../../react/host';
 import { RowMountProvider } from '../../../../react/messages/useProgressiveRowMount';
+import { createMessagesHost } from '../../../../__fixtures__/messagesHost';
 import { setDefaultMessagesHost } from '../../../../react/messages/host';
+import { MessagePartsHostProvider } from '../../../../react/host';
+import { ChatContext } from '../../../../react/chat/context';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import MultiMessage from '../MultiMessage';
 
-const RowStub = ({ message, siblingIdx, setSiblingIdx }: MessageRowSlotProps) => (
-  <div>
-    <div data-testid="row">{message.messageId}</div>
-    <button data-testid="prev" onClick={() => setSiblingIdx(siblingIdx - 1)} />
-  </div>
-);
+const partsHost: MessagePartsHost = {
+  useMessage: () => ({ messageId: '' }),
+  renderMarkdown: ({ content }) => <p>{content}</p>,
+  useSmoothStreaming: () => false,
+  useAgent: () => undefined,
+  renderAgentIcon: () => null,
+  renderAgentAvatar: () => null,
+  renderContentParts: ({ content }) => (
+    <p>{content.map((part) => (part?.type === ContentTypes.TEXT ? part.text : '')).join('')}</p>
+  ),
+  renderImage: () => null,
+  renderFilePreview: () => null,
+  useFontSize: () => 'text-base',
+  useShowThinking: () => false,
+  useAutoExpandTools: () => false,
+  useLaTeXParsing: () => false,
+  useChatDirection: () => 'auto',
+  useUserTextPreferences: () => ({
+    enableUserMsgMarkdown: false,
+    collapseLongUserMessages: false,
+    usernameDisplay: false,
+  }),
+  useUser: () => undefined,
+  useFileMap: () => undefined,
+  useToast: () => () => undefined,
+  useSandboxStarting: () => false,
+  useToolArtifactClaim: () => [null, () => undefined],
+  useSteerEscalating: () => false,
+  usePaneConversationId: () => null,
+  useLiveAppliedSteer: () => [false, () => undefined],
+  useShare: () => ({}),
+};
 
-/** A host whose message slot exposes the sibling switcher contract (display-order index). */
-const host: MessagesHost = {
-  useHour12: () => undefined,
-  renderFiles: () => null,
-  useForkPreferences: () => ({
-    option: '',
-    setOption: () => undefined,
-    splitAtTarget: false,
-    setSplitAtTarget: () => undefined,
-    rememberOption: false,
-    setRememberOption: () => undefined,
-  }),
-  useForkConversation: () => null,
-  useMessageCopy: () => ({ copyToClipboard: () => undefined, canCopy: false }),
-  useGetMessages: () => () => undefined,
-  useHasPendingTurn: () => false,
-  renderMessageAudio: () => null,
-  useScreenshotTarget: () => undefined,
-  useAutoScroll: () => false,
-  useConversationMessages: () => undefined,
-  useAssistant: () => undefined,
-  useGetAddedConvo: () => () => null,
-  useStreamedAttachments: () => undefined,
-  useMessageFeedback: () => () => undefined,
-  useSeenSource: () => ({
-    readReply: () => undefined,
-    hasReplyProof: () => false,
-    markSeen: () => undefined,
-    consumeFocusSuppression: () => false,
-  }),
-  renderMessageIcon: () => null,
-  renderMessageRow: (props) => <RowStub {...props} />,
+const contract = {
+  index: 0,
+  isSubmitting: false,
+  latestMessageDepth: 0,
+  messagesKey: 'c1',
+  conversation: { conversationId: 'c1', endpoint: EModelEndpoint.agents },
+} as ChatContract;
+
+/** The host's activity slot exposes the anchor ids and layout flag the thread passed it. */
+const host: MessagesHost = createMessagesHost({
   renderActivity: ({ parentMessageIds, hasParallelContent }) => (
     <div
       data-testid="event-subagent-activity"
@@ -55,10 +68,26 @@ const host: MessagesHost = {
       data-has-parallel-content={String(hasParallelContent)}
     />
   ),
-  useFileMap: () => undefined,
-};
+});
 
-beforeAll(() => {
+function Providers({ children }: { children: ReactNode }): ReactElement {
+  return (
+    <JotaiProvider>
+      <QueryClientProvider client={queryClient}>
+        <ChatContext.Provider value={contract}>
+          <MessagePartsHostProvider host={partsHost}>{children}</MessagePartsHostProvider>
+        </ChatContext.Provider>
+      </QueryClientProvider>
+    </JotaiProvider>
+  );
+}
+
+const queryClient = new QueryClient();
+
+const renderTree = (ui: ReactElement) => render(ui, { wrapper: Providers });
+
+beforeAll(async () => {
+  await initEnglish();
   setDefaultMessagesHost(host);
 });
 
@@ -76,23 +105,25 @@ const msg = (messageId: string): TMessage =>
 const tree = (ids: string[]) => ids.map((id) => msg(id));
 
 const treeElement = (ids: string[]) => (
-  <JotaiProvider>
-    <MultiMessage
-      messageId="parent-1"
-      messagesTree={tree(ids)}
-      currentEditId={null}
-      setCurrentEditId={jest.fn()}
-    />
-  </JotaiProvider>
+  <MultiMessage
+    messageId="parent-1"
+    messagesTree={tree(ids)}
+    currentEditId={null}
+    setCurrentEditId={jest.fn()}
+  />
 );
 
-const displayed = () => screen.getAllByTestId('row')[0].textContent;
+/** The real row is a labelled group whose id is the message id. */
+const rowElements = () => screen.getAllByRole('group', { name: /^Message/ });
+const rowIds = () => rowElements().map((element) => element.id);
+const displayed = () => rowIds()[0];
+const previous = () => screen.getByRole('button', { name: 'Previous sibling message' });
 
 describe('MultiMessage sibling selection', () => {
   it('hosts event activity for structured and legacy message rows', () => {
     const structured = msg('structured');
     const legacy = { ...msg('legacy'), content: undefined } as TMessage;
-    const view = render(
+    const view = renderTree(
       <MultiMessage
         messageId="parent-1"
         messagesTree={[structured]}
@@ -130,7 +161,7 @@ describe('MultiMessage sibling selection', () => {
     } as TMessage;
     assistant.parentMessageId = 'user';
 
-    render(
+    renderTree(
       <MultiMessage
         messageId="root"
         messagesTree={[user]}
@@ -160,7 +191,7 @@ describe('MultiMessage sibling selection', () => {
       children: [assistant],
     } as TMessage;
 
-    render(
+    renderTree(
       <MultiMessage
         messageId="root"
         messagesTree={[user]}
@@ -182,7 +213,7 @@ describe('MultiMessage sibling selection', () => {
       ],
     } as unknown as TMessage;
 
-    render(
+    renderTree(
       <MultiMessage
         messageId="parent-1"
         messagesTree={[assistant]}
@@ -209,7 +240,7 @@ describe('MultiMessage sibling selection', () => {
       ],
     } as unknown as TMessage;
 
-    render(
+    renderTree(
       <MultiMessage
         messageId="parent-1"
         messagesTree={[assistant]}
@@ -230,7 +261,7 @@ describe('MultiMessage sibling selection', () => {
       content: [undefined, { type: 'text', text: 'answer' }],
     } as unknown as TMessage;
 
-    render(
+    renderTree(
       <MultiMessage
         messageId="parent-1"
         messagesTree={[assistant]}
@@ -239,7 +270,7 @@ describe('MultiMessage sibling selection', () => {
       />,
     );
 
-    expect(screen.getByTestId('row')).toHaveTextContent('assistant');
+    expect(within(rowElements()[0]).getByTestId('message-body')).toHaveTextContent('answer');
     expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
       'data-has-parallel-content',
       'false',
@@ -247,7 +278,7 @@ describe('MultiMessage sibling selection', () => {
   });
 
   it('shows the newest sibling by default and follows a newly appended one', () => {
-    const view = render(treeElement(['a', 'b']));
+    const view = renderTree(treeElement(['a', 'b']));
     expect(displayed()).toBe('b');
 
     view.rerender(treeElement(['a', 'b', 'c']));
@@ -261,10 +292,10 @@ describe('MultiMessage sibling selection', () => {
    * level) moves the selection.
    */
   it('keeps the viewed older branch when a middle sibling appears without a new newest', () => {
-    const view = render(treeElement(['a', 'b']));
+    const view = renderTree(treeElement(['a', 'b']));
     expect(displayed()).toBe('b');
 
-    fireEvent.click(screen.getAllByTestId('prev')[0]);
+    fireEvent.click(previous());
     expect(displayed()).toBe('a');
 
     view.rerender(treeElement(['a', 'restored-middle', 'b']));
@@ -272,8 +303,8 @@ describe('MultiMessage sibling selection', () => {
   });
 
   it('still follows a new newest sibling from an older branch (regenerate lands)', () => {
-    const view = render(treeElement(['a', 'b']));
-    fireEvent.click(screen.getAllByTestId('prev')[0]);
+    const view = renderTree(treeElement(['a', 'b']));
+    fireEvent.click(previous());
     expect(displayed()).toBe('a');
 
     view.rerender(treeElement(['a', 'b', 'c']));
@@ -281,9 +312,9 @@ describe('MultiMessage sibling selection', () => {
   });
 
   it('falls back to the newest when the viewed sibling disappears', () => {
-    const view = render(treeElement(['a', 'b', 'c']));
-    fireEvent.click(screen.getAllByTestId('prev')[0]);
-    fireEvent.click(screen.getAllByTestId('prev')[0]);
+    const view = renderTree(treeElement(['a', 'b', 'c']));
+    fireEvent.click(previous());
+    fireEvent.click(previous());
     expect(displayed()).toBe('a');
 
     view.rerender(treeElement(['b', 'c']));
@@ -291,8 +322,8 @@ describe('MultiMessage sibling selection', () => {
   });
 
   it('keeps the same-position display stable across content-only tree rebuilds', () => {
-    const view = render(treeElement(['a', 'b']));
-    fireEvent.click(screen.getAllByTestId('prev')[0]);
+    const view = renderTree(treeElement(['a', 'b']));
+    fireEvent.click(previous());
     expect(displayed()).toBe('a');
 
     /** Streaming mints a fresh array each write with identical membership. */
@@ -308,8 +339,8 @@ describe('MultiMessage sibling selection', () => {
    * paged to an older sibling mid-stream.
    */
   it('keeps the viewed older branch when the newest sibling is re-keyed at finalize', () => {
-    const view = render(treeElement(['a', 'streaming_']));
-    fireEvent.click(screen.getAllByTestId('prev')[0]);
+    const view = renderTree(treeElement(['a', 'streaming_']));
+    fireEvent.click(previous());
     expect(displayed()).toBe('a');
 
     view.rerender(treeElement(['a', 'durable-id']));
@@ -317,8 +348,8 @@ describe('MultiMessage sibling selection', () => {
   });
 
   it('keeps the viewed branch when a re-key lands together with restored middle siblings', () => {
-    const view = render(treeElement(['a', 'streaming_']));
-    fireEvent.click(screen.getAllByTestId('prev')[0]);
+    const view = renderTree(treeElement(['a', 'streaming_']));
+    fireEvent.click(previous());
     expect(displayed()).toBe('a');
 
     view.rerender(treeElement(['a', 'restored-middle', 'durable-id']));
@@ -326,8 +357,8 @@ describe('MultiMessage sibling selection', () => {
   });
 
   it('still follows a genuine append after a re-key settled', () => {
-    const view = render(treeElement(['a', 'streaming_']));
-    fireEvent.click(screen.getAllByTestId('prev')[0]);
+    const view = renderTree(treeElement(['a', 'streaming_']));
+    fireEvent.click(previous());
     view.rerender(treeElement(['a', 'durable-id']));
     expect(displayed()).toBe('a');
 
@@ -342,8 +373,8 @@ describe('MultiMessage sibling selection', () => {
    * message must stay selected by identity.
    */
   it('treats a same-membership reorder as churn, not an append', () => {
-    const view = render(treeElement(['a', 'b', 'c']));
-    fireEvent.click(screen.getAllByTestId('prev')[0]);
+    const view = renderTree(treeElement(['a', 'b', 'c']));
+    fireEvent.click(previous());
     expect(displayed()).toBe('b');
 
     view.rerender(treeElement(['b', 'c', 'a']));
@@ -366,8 +397,8 @@ describe('MultiMessage sibling selection', () => {
       />
     );
 
-    const view = render(treeFor('parent-a', ['a1', 'a2']));
-    fireEvent.click(screen.getAllByTestId('prev')[0]);
+    const view = renderTree(treeFor('parent-a', ['a1', 'a2']));
+    fireEvent.click(previous());
     expect(displayed()).toBe('a1');
 
     view.rerender(treeFor('parent-b', ['b1', 'b2', 'b3']));
@@ -397,21 +428,21 @@ describe('MultiMessage row mount window', () => {
   );
 
   it('renders every row without a window', () => {
-    render(windowedTree(null));
-    expect(screen.getAllByTestId('row').map((r) => r.textContent)).toEqual(['m0', 'm1', 'm2']);
+    renderTree(windowedTree(null));
+    expect(rowIds()).toEqual(['m0', 'm1', 'm2']);
   });
 
   it('gates rows outside the window while the recursion continues below them', () => {
-    render(windowedTree({ start: 2, end: 2 }));
-    expect(screen.getAllByTestId('row').map((r) => r.textContent)).toEqual(['m2']);
+    renderTree(windowedTree({ start: 2, end: 2 }));
+    expect(rowIds()).toEqual(['m2']);
   });
 
   it('mounts newly windowed rows above without disturbing deeper rows', () => {
-    const view = render(windowedTree({ start: 2, end: 2 }));
+    const view = renderTree(windowedTree({ start: 2, end: 2 }));
     view.rerender(windowedTree({ start: 1, end: 2 }));
-    expect(screen.getAllByTestId('row').map((r) => r.textContent)).toEqual(['m1', 'm2']);
+    expect(rowIds()).toEqual(['m1', 'm2']);
 
     view.rerender(windowedTree(null));
-    expect(screen.getAllByTestId('row').map((r) => r.textContent)).toEqual(['m0', 'm1', 'm2']);
+    expect(rowIds()).toEqual(['m0', 'm1', 'm2']);
   });
 });

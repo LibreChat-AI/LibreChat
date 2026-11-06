@@ -161,7 +161,9 @@ export type {
   MessageIconProps,
   MessageAudioProps,
   MessageAudioButtonProps,
-  MessageRowSlotProps,
+  MessageSlotProps,
+  WakeupSlotProps,
+  MessageBodySlotProps,
 } from './react/messages/host';
 export { default as useStreamedAttachments } from './react/messages/useStreamedAttachments';
 export { default as useMessageProcess } from './react/messages/useMessageProcess';
@@ -170,7 +172,11 @@ export { default as useContentMetadata } from './react/messages/useContentMetada
 export type { ContentMetadataResult } from './react/messages/useContentMetadata';
 export { default as useMemoizedChatContext } from './react/messages/useMemoizedChatContext';
 export type { MemoizedChatContext } from './react/messages/useMemoizedChatContext';
-export type { TMessageChatContext, TMessageProps } from './react/messages/types';
+export type {
+  TMessageChatContext,
+  TMessageProps,
+  ThreadMessageProps,
+} from './react/messages/types';
 export {
   areMessageFilesEqual,
   areMessageFieldsEqual,

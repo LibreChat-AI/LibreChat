@@ -2,14 +2,15 @@ import { memo, useEffect, useRef, useCallback } from 'react';
 import { useAtom } from 'jotai';
 import type { NamedExoticComponent, ReactElement, ReactNode } from 'react';
 import type { TMessage } from 'librechat-data-provider';
-import type { MessageRowSlotProps } from '../../../react/messages/host';
+import type { ThreadMessageProps } from '../../../react/messages/types';
 import { useRowMountWindow } from '../../../react/messages/useProgressiveRowMount';
 import { siblingIdxFamily, siblingKey } from '../../../react/thread';
 import { activityParentMessageIds } from '../../../core/activity';
 import { useMessagesHost } from '../../../react/messages/host';
 import { hasParallelLanes } from '../../../core/lanes';
+import ThreadMessage from './Message';
 
-type MultiMessageProps = Pick<MessageRowSlotProps, 'currentEditId' | 'setCurrentEditId'> & {
+type MultiMessageProps = Pick<ThreadMessageProps, 'currentEditId' | 'setCurrentEditId'> & {
   /** The parent whose children this level picks one of; the conversation id at the root. */
   messageId?: string | null;
   messagesTree?: TMessage[];
@@ -26,7 +27,7 @@ function MultiMessage({
   currentEditId,
   setCurrentEditId,
 }: MultiMessageProps): ReactElement | null {
-  const { renderMessageRow, renderActivity } = useMessagesHost();
+  const { renderActivity } = useMessagesHost();
   const [siblingIdx, setSiblingIdx] = useAtom(siblingIdxFamily(siblingKey(messageId)));
   const mountWindow = useRowMountWindow();
 
@@ -180,7 +181,7 @@ function MultiMessage({
     mountWindow == null ||
     ((message.depth ?? 0) >= mountWindow.start && (message.depth ?? 0) <= mountWindow.end);
 
-  const row: ReactNode = rowMounted ? renderMessageRow(sharedProps) : null;
+  const row: ReactNode = rowMounted ? <ThreadMessage {...sharedProps} /> : null;
   const activityIds = activityParentMessageIds(
     message,
     (message.children?.length ?? 0) > 0,

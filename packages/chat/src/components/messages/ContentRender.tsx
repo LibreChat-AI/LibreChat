@@ -1,18 +1,18 @@
 import { useCallback, useMemo, memo } from 'react';
-import { useRecoilValue } from 'recoil';
 import { Constants } from 'librechat-data-provider';
-import {
-  ContentRow,
-  HoverButtons,
-  ResumeAuthorHeader,
-  ToolCallLimitNotice,
-} from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
-import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
-import { useAttachments, useMessageActions, useContentMetadata } from '~/hooks';
-import { PrivateText } from '~/components/Chat/Messages/PrivateText';
-import { areMessageFieldsEqual, isSameTailRelation } from '~/utils';
-import store from '~/store';
+import type { NamedExoticComponent } from 'react';
+import type { TMessageProps, TMessageChatContext } from '../../react/messages/types';
+import type { MessageIconData } from '../../react/messages/host';
+import { areMessageFieldsEqual, isSameTailRelation } from '../../react/messages/equal';
+import useContentMetadata from '../../react/messages/useContentMetadata';
+import ToolCallLimitNotice from '../parts/ToolCallLimitNotice';
+import ResumeAuthorHeader from '../parts/ResumeAuthorHeader';
+import { useMessagesHost } from '../../react/messages/host';
+import useMessageActions from './useMessageActions';
+import useAttachments from './useAttachments';
+import HoverButtons from './HoverButtons';
+import ContentRow from './ContentRow';
 
 /**
  * The one header every assistant message hands its parts. It reads the author from
@@ -28,7 +28,7 @@ type ContentRenderProps = {
    * when the value actually matters.
    */
   isSubmitting?: boolean;
-  /** Stable context object from wrapper — avoids ChatContext subscription inside memo */
+  /** Stable context object from wrapper, avoids ChatContext subscription inside memo */
   chatContext: TMessageChatContext;
   /** The thread's tail; the comparator re-renders only when this row's relation to it changes */
   latestMessageId?: string;
@@ -68,7 +68,7 @@ function areContentRenderPropsEqual(prev: ContentRenderProps, next: ContentRende
   return areMessageFieldsEqual(prev.message, next.message) && isSameTailRelation(prev, next);
 }
 
-const ContentRender = memo(function ContentRender({
+const ContentRender: NamedExoticComponent<ContentRenderProps> = memo(function ContentRender({
   message: msg,
   siblingIdx,
   siblingCount,
@@ -105,7 +105,8 @@ const ContentRender = memo(function ContentRender({
     setCurrentEditId,
     chatContext,
   });
-  const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
+  const host = useMessagesHost();
+  const maximizeChatSpace = host.useMaximizeChatSpace();
 
   const handleRegenerateMessage = useCallback(() => regenerateMessage(), [regenerateMessage]);
   const getLatestMessageId = useCallback(() => chatContext.latestMessageId, [chatContext]);
@@ -115,7 +116,7 @@ const ContentRender = memo(function ContentRender({
   );
   const isLatestMessage = msg?.messageId === latestMessageId;
 
-  const iconData: TMessageIcon = useMemo(
+  const iconData: MessageIconData = useMemo(
     () => ({
       endpoint: msg?.endpoint ?? conversation?.endpoint,
       model: msg?.model ?? conversation?.model,
@@ -182,9 +183,9 @@ const ContentRender = memo(function ContentRender({
       authorHeader={RESUME_AUTHOR_HEADER}
       createdAt={msg.createdAt ?? msg.clientTimestamp}
       body={
-        !edit && msg.isCreatedByUser && msg.privacyRevision ? (
-          <PrivateText message={msg} />
-        ) : undefined
+        !edit && msg.isCreatedByUser && msg.privacyRevision
+          ? host.renderPrivateText({ message: msg })
+          : undefined
       }
       notice={
         /** A turn that ran out of agent steps is incomplete, not broken. Rendered
