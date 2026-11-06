@@ -574,6 +574,8 @@ const filterAuthorizedTools = async ({
         : userCanUseMCPServers(user))
     : true;
   let loggedMCPDenied = false;
+  /** @type {Array<{ position: number, tool: string, serverName: string, admitted: Promise<boolean> }>} */
+  const pendingAdmissions = [];
 
   for (const tool of tools) {
     const isActionToolName = typeof tool === 'string' && isActionTool(tool);
@@ -652,10 +654,14 @@ const filterAuthorizedTools = async ({
       continue;
     }
 
-    if (admitMCPTool && !(await admitMCPTool(tool, serverName, mcpServerConfigs[serverName]))) {
-      logger.warn(
-        `[filterAuthorizedTools] Rejected MCP tool "${tool}" — no live access to server "${serverName}" for user ${userId} outside the agent being changed`,
-      );
+    if (admitMCPTool) {
+      pendingAdmissions.push({
+        position: filteredTools.length,
+        tool,
+        serverName,
+        admitted: admitMCPTool(tool, serverName, mcpServerConfigs[serverName]),
+      });
+      filteredTools.push(tool);
       continue;
     }
 
@@ -663,7 +669,26 @@ const filterAuthorizedTools = async ({
     filteredTools.push(tool);
   }
 
-  return filteredTools;
+  if (pendingAdmissions.length === 0) {
+    return filteredTools;
+  }
+
+  /** Admission lookups for distinct servers run concurrently; positions keep tool order. */
+  const admissionResults = await Promise.all(pendingAdmissions.map(({ admitted }) => admitted));
+  const rejectedPositions = new Set();
+  pendingAdmissions.forEach(({ position, tool, serverName }, i) => {
+    if (admissionResults[i]) {
+      resolvedServerNames?.add(serverName);
+      return;
+    }
+    logger.warn(
+      `[filterAuthorizedTools] Rejected MCP tool "${tool}" — no live access to server "${serverName}" for user ${userId} outside the agent being changed`,
+    );
+    rejectedPositions.add(position);
+  });
+  return rejectedPositions.size > 0
+    ? filteredTools.filter((_, i) => !rejectedPositions.has(i))
+    : filteredTools;
 };
 
 /**

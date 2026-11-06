@@ -148,6 +148,41 @@ describe('MCP Tool Authorization', () => {
       expect(result).not.toContain(`toolB${d}forbiddenServer`);
     });
 
+    test('should run admission checks for distinct servers concurrently and keep tool order', async () => {
+      mockGetAllServerConfigs.mockResolvedValue({
+        serverA: { type: 'sse', source: 'user', dbId: 'a' },
+        serverB: { type: 'sse', source: 'user', dbId: 'b' },
+      });
+      const started = [];
+      const settle = {};
+      const admissions = {};
+      const admitMCPTool = jest.fn((tool, serverName) => {
+        started.push(serverName);
+        admissions[serverName] ??= new Promise((resolve) => {
+          settle[serverName] = resolve;
+        });
+        return admissions[serverName];
+      });
+      const resolvedServerNames = new Set();
+
+      const pending = filterAuthorizedTools({
+        tools: [`one${d}serverA`, 'web_search', `two${d}serverB`, `three${d}serverA`],
+        userId,
+        user: testUser,
+        availableTools,
+        resolvedServerNames,
+        admitMCPTool,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(started).toEqual(['serverA', 'serverB', 'serverA']);
+      settle.serverB(true);
+      settle.serverA(false);
+
+      expect(await pending).toEqual(['web_search', `two${d}serverB`]);
+      expect([...resolvedServerNames]).toEqual(['serverB']);
+    });
+
     test('should strip MCP tools when user lacks MCP server use permission', async () => {
       mockUserCanUseMCPServers.mockResolvedValue(false);
 
