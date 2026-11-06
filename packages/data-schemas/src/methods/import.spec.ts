@@ -69,6 +69,20 @@ describe('conversation import cleanup methods', () => {
           text: record.conversationId,
         })),
       );
+      await mongoose.models.StoredResponse.insertMany(
+        records.map((record, index) => ({
+          userId: record.user,
+          tenantId: record.tenantId,
+          conversationId: record.conversationId,
+          responseId: `response-${index}`,
+          requestKey: `request-${index}`,
+          fingerprint: 'request',
+          agentId: 'agent',
+          requestJSON: '{"input":"private"}',
+          parentMessageId: 'root',
+          status: 'queued',
+        })),
+      );
       await mongoose.models.ChatProject.updateOne(
         { _id: project._id },
         {
@@ -99,6 +113,9 @@ describe('conversation import cleanup methods', () => {
     });
     expect(remaining.conversations).toHaveLength(3);
     expect(remaining.messages).toHaveLength(3);
+    expect(await runAsSystem(async () => mongoose.models.StoredResponse.countDocuments({}))).toBe(
+      3,
+    );
     expect(
       remaining.conversations.some(
         (record) =>
@@ -158,10 +175,17 @@ describe('conversation import cleanup methods', () => {
     const deleteMessages = jest.fn().mockResolvedValue(undefined);
     const findProjects = jest.fn().mockResolvedValue([]);
     const deleteConversations = jest.fn().mockResolvedValue(undefined);
+    const responseScopes = { bulkWrite: jest.fn().mockResolvedValue(undefined) };
     const cleanupMongoose = {
+      model: jest.fn().mockReturnValue(responseScopes),
       models: {
         Message: { deleteMany: deleteMessages },
         Conversation: { distinct: findProjects, deleteMany: deleteConversations },
+        ResponseScope: responseScopes,
+        StoredResponse: {
+          updateMany: jest.fn().mockResolvedValue(undefined),
+          deleteMany: jest.fn().mockResolvedValue(undefined),
+        },
       },
     } as unknown as typeof mongoose;
     const methods = createConversationImportMethods(cleanupMongoose);

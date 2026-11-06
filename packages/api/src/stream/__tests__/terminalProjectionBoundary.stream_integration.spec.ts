@@ -317,14 +317,16 @@ describe('terminal projection boundary', () => {
       const claim = await manager.claimTerminalJob(streamId, 'complete', undefined, job.createdAt, {
         persistencePending: true,
       });
-      await manager.publishTerminalClaim(claim!, { final: true } as FinalEvent);
+      expect(claim).not.toBeNull();
 
-      /** Overwrite with the shape an older producer stored. */
-      await jobStore.updateJob(
-        streamId,
-        { finalEvent: JSON.stringify(buildUnsanitizedFinal()) },
-        job.createdAt,
-      );
+      /** Seed the legacy durable reply without publishing a competing modern FINAL. */
+      expect(
+        await jobStore.finalizeTerminalPersistence(
+          streamId,
+          job.createdAt,
+          JSON.stringify(buildUnsanitizedFinal()),
+        ),
+      ).toBe(true);
       const rawStored = await jobStore.getJob(streamId);
       expect(rawStored!.finalEvent).toContain(TRANSIENT_BODY);
 
@@ -349,12 +351,12 @@ describe('terminal projection boundary', () => {
             delivered.push(event);
           },
         );
-        expect(subscription).not.toBeNull();
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        // A completed replay may retire its subscription before attachment returns.
+        await waitFor(() => delivered.length > 0, 'legacy terminal replay');
 
         expect(delivered).toHaveLength(1);
         expectSafeTerminalEvent(delivered[0]);
-        subscription!.unsubscribe();
+        subscription?.unsubscribe();
       } finally {
         await replica.destroy();
         await replicaSubscriber.quit().catch(() => undefined);
