@@ -421,6 +421,40 @@ describe('setOpenIDMarkerCookies', () => {
     });
   });
 
+  it('includes the provider session in the signed user marker when supplied', () => {
+    const res = { cookie: jest.fn() } as unknown as import('express').Response;
+    const expires = new Date(Date.now() + 604800000);
+    const providerSession = {
+      issuer: 'https://issuer.example.com',
+      clientId: 'client-1',
+      sid: 'sid-1',
+    };
+
+    setOpenIDMarkerCookies(res, {
+      userId: 'user-123',
+      expires,
+      refreshExpiryMs: 604800000,
+      providerSession,
+    });
+
+    const signedUserId = (res.cookie as jest.Mock).mock.calls.find(
+      ([name]) => name === OPENID_USER_ID_COOKIE,
+    )?.[1];
+    expect(jwt.verify(signedUserId, 'marker-secret')).toMatchObject({ providerSession });
+  });
+
+  it('omits providerSession from the signed user marker when not supplied', () => {
+    const res = { cookie: jest.fn() } as unknown as import('express').Response;
+    const expires = new Date(Date.now() + 604800000);
+
+    setOpenIDMarkerCookies(res, { userId: 'user-123', expires, refreshExpiryMs: 604800000 });
+
+    const signedUserId = (res.cookie as jest.Mock).mock.calls.find(
+      ([name]) => name === OPENID_USER_ID_COOKIE,
+    )?.[1];
+    expect(jwt.verify(signedUserId, 'marker-secret')).not.toHaveProperty('providerSession');
+  });
+
   it('omits the binding when no refresh token is supplied', () => {
     const res = { cookie: jest.fn() } as unknown as import('express').Response;
     const expires = new Date(Date.now() + 604800000);

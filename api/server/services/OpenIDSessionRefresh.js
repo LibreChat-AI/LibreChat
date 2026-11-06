@@ -8,6 +8,7 @@ const { upsertSession, deleteSession } = require('~/models');
 const { getOpenIdConfig } = require('~/strategies/openidStrategy');
 const bridge = require('./RefreshTokenBridge');
 const flight = require('./OpenIDRefreshFlight');
+const { providerSessionAuthorizer, getProviderSessionClient } = require('./ProviderSession');
 
 module.exports = api.createOpenIDSessionRefreshService({
   jwt,
@@ -44,4 +45,6 @@ module.exports = api.createOpenIDSessionRefreshService({
   failOpenIDRefreshFlight: flight.failOpenIDRefreshFlight,
   waitForOpenIDRefreshFlight: flight.waitForOpenIDRefreshFlight,
   withOpenIDRefreshFlightLease: flight.withOpenIDRefreshFlightLease,
+  providerSessionAuthorizer,
+  getProviderSessionClient,
 });

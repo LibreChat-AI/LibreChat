@@ -1,22 +1,42 @@
 import { Types } from 'mongoose';
-import { logger } from '@librechat/data-schemas';
-
+import { OPENID_SESSION_ENDED } from 'librechat-data-provider';
+import { logger, DEFAULT_REFRESH_TOKEN_EXPIRY } from '@librechat/data-schemas';
+import type { ProviderSessionRef } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { FilterQuery } from 'mongoose';
+import type {
+  ProviderSessionAuthorizeInput,
+  ProviderSessionAuthorizeOutcome,
+} from '~/auth/openid/providerSession/authorize';
+import type { RefreshTokenBridgeDeleteInput, RefreshTokenBridgeInput } from '~/auth/openid/types';
+import type { ResolvedBackchannelLogoutConfig } from '~/auth/openid/providerSession/config';
 import type { AdminExchangeResponse } from '~/auth/exchange';
-
+import type { OpenIdSessionDeps } from '~/images/session';
+import {
+  extractProviderSessionRef,
+  mergeProviderSessionRef,
+  providerSessionCredentialExpiry,
+} from '~/auth/openid/providerSession/ref';
+import {
+  ProviderSessionUnavailableError,
+  isProviderSessionUnavailableError,
+} from '~/auth/openid/providerSession/errors';
 import {
   isUserIssuerAllowed,
   normalizeOpenIdIssuer,
   getIssuerBoundConditions,
 } from '~/auth/openid';
 import { serializeUserForExchange } from '~/auth/exchange';
+import { storeOpenIdSession } from '~/images/session';
+import { math } from '~/utils/math';
 
 const SAFE_USER_PROJECTION = '-password -__v -totpSecret -backupCodes';
 
 interface AdminRefreshClaims {
   sub?: string;
   iss?: string;
+  sid?: unknown;
+  [claim: string]: unknown;
 }
 
 /**
@@ -79,6 +99,45 @@ export interface AdminRefreshDeps {
    * propagate to the route handler.
    */
   onRefreshSuccess?: (user: IUser, tokenset: RefreshTokenset) => Promise<void>;
+  /** Looks up the provider-session binding for a raw refresh token by its hash. Omitted skips
+   *  the provider-session checks entirely. */
+  findProviderSessionBinding?: (refreshToken: string) => Promise<{
+    userId?: string;
+    tenantId?: string;
+    providerSession?: ProviderSessionRef | null;
+  } | null>;
+  /** Resolves the not-yet-spent rotated refresh token bridged from a prior attempt, keyed by the
+   *  old (already-spent) token. */
+  getRefreshTokenBridge?: (args: {
+    oldRefreshToken: string;
+    userId: string;
+    tenantId?: string;
+    openidIssuer?: string;
+  }) => Promise<{ refreshToken: string; providerSession?: ProviderSessionRef } | null>;
+  /** Stores the rotated refresh token under the just-spent one, so a retry after a
+   *  {@link ProviderSessionUnavailableError} can recover without repeating the spent IdP grant. */
+  storeRefreshTokenBridge?: (args: RefreshTokenBridgeInput) => Promise<string | null>;
+  /** Removes a recovered bridge once it has served a successful refresh or a denial. */
+  deleteRefreshTokenBridges?: (args: RefreshTokenBridgeDeleteInput) => Promise<object | null>;
+  /** TTL for a bridge stored by this module; mirrors the main refresh path's grace window. */
+  bridgeGraceMs?: number;
+  /** Same checks as `authorizeProviderSession`, run before the IdP grant is spent. */
+  preCheckProviderSession?: (
+    input: Omit<ProviderSessionAuthorizeInput, 'legacy'>,
+  ) => Promise<ProviderSessionAuthorizeOutcome>;
+  /** Final authorization step before the response is returned. */
+  authorizeProviderSession?: (
+    input: ProviderSessionAuthorizeInput,
+  ) => Promise<ProviderSessionAuthorizeOutcome>;
+  /** Resolves the configured mode; decides fail-open (`record`) vs fail-closed (`enforce`)
+   *  when a provider-session check itself fails. */
+  getMode?: () => Promise<ResolvedBackchannelLogoutConfig['mode']>;
+  /** `{ issuer, clientId }` for the configured OpenID provider; `null` ref extraction below
+   *  skips entirely without a configured client. */
+  getProviderSessionClient?: () => { issuer: string; clientId: string } | null;
+  /** Persists the rotated refresh token's binding; mirrors `storeOpenIdSession`'s deps. */
+  upsertSession?: OpenIdSessionDeps['upsertSession'];
+  deleteSession?: OpenIdSessionDeps['deleteSession'];
 }
 
 export interface AdminRefreshOptions {
@@ -95,6 +154,13 @@ export interface AdminRefreshOptions {
    * admin panel would receive `undefined` and lose its refresh capability.
    */
   previousRefreshToken?: string;
+  /**
+   * The refresh token actually sent to the IdP's refresh grant (a bridged
+   * replacement when {@link resolveAdminRefreshToken} recovered one). Takes
+   * priority over `previousRefreshToken` as the no-rotation fallback, so a
+   * bridge is never retried against an IdP grant that already spent it.
+   */
+  grantRefreshToken?: string;
   /**
    * Issuer URL of the OpenID provider this server trusts. When provided
    * alongside an `iss` claim on the refreshed tokenset, the helper rejects
@@ -113,6 +179,9 @@ export interface AdminRefreshOptions {
    * may omit it.
    */
   tenantId?: string;
+  /** The provider-session ref from {@link precheckAdminRefreshBinding}, reconciled against the
+   *  refreshed id_token's `sid` claim before the response is returned. */
+  boundProviderSession?: ProviderSessionRef | null;
 }
 
 export class AdminRefreshError extends Error {
@@ -138,6 +207,150 @@ export function buildOpenIDRefreshParams(): OpenIDRefreshParams {
   }
 
   return params;
+}
+
+export interface AdminRefreshBinding {
+  ref: ProviderSessionRef | null;
+}
+
+/** Rechecks the provider-session binding before the IdP grant is spent, so a denial never
+ *  reaches the IdP. */
+export async function precheckAdminRefreshBinding(
+  refreshToken: string,
+  deps: Pick<
+    AdminRefreshDeps,
+    'findProviderSessionBinding' | 'preCheckProviderSession' | 'getMode'
+  >,
+): Promise<AdminRefreshBinding> {
+  if (!deps.findProviderSessionBinding || !deps.preCheckProviderSession) {
+    return { ref: null };
+  }
+
+  let binding: { providerSession?: ProviderSessionRef | null } | null;
+  try {
+    binding = await deps.findProviderSessionBinding(refreshToken);
+  } catch (error) {
+    const mode = await deps.getMode?.();
+    if (mode === 'enforce') {
+      logger.error('[precheckAdminRefreshBinding] provider-session binding lookup unavailable', {
+        error,
+      });
+      throw new ProviderSessionUnavailableError('Provider session check unavailable', {
+        cause: error,
+      });
+    }
+    logger.warn(
+      '[precheckAdminRefreshBinding] provider-session binding lookup unavailable; continuing in record mode',
+      { error },
+    );
+    return { ref: null };
+  }
+
+  const ref = binding?.providerSession ?? null;
+  const expiresAt = providerSessionCredentialExpiry(
+    new Date(),
+    math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
+  );
+  const outcome = await deps.preCheckProviderSession({ ref, expiresAt });
+  if (!outcome.ok) {
+    throw new AdminRefreshError(OPENID_SESSION_ENDED, 401, 'Provider session has ended');
+  }
+  return { ref };
+}
+
+export interface AdminRefreshTokenResolution {
+  /** The token to send to the IdP's refresh grant: the incoming token, or a bridged
+   *  replacement when the incoming token was already spent by a prior attempt. */
+  refreshToken: string;
+  bridged: boolean;
+  /** Removes the recovered bridge; present only when `bridged` is true. The caller runs this
+   *  after a successful refresh or a denial, never after an unavailable check. */
+  releaseBridge?: () => Promise<void>;
+}
+
+/**
+ * Recovers from a prior attempt that spent the incoming refresh token at the IdP but could not
+ * persist the rotated one (an {@link ProviderSessionUnavailableError} between the grant and
+ * storage). Looks up a bridge from the incoming token before the IdP grant is spent again, so a
+ * retry reuses the still-unspent rotated token instead of repeating a doomed grant.
+ */
+export async function resolveAdminRefreshToken(
+  refreshToken: string,
+  deps: Pick<
+    AdminRefreshDeps,
+    'findProviderSessionBinding' | 'getRefreshTokenBridge' | 'deleteRefreshTokenBridges'
+  >,
+  options: { expectedIssuer?: string } = {},
+): Promise<AdminRefreshTokenResolution> {
+  if (!deps.findProviderSessionBinding || !deps.getRefreshTokenBridge) {
+    return { refreshToken, bridged: false };
+  }
+
+  let binding: { userId?: string; tenantId?: string } | null;
+  try {
+    binding = await deps.findProviderSessionBinding(refreshToken);
+  } catch (error) {
+    logger.warn('[resolveAdminRefreshToken] Provider-session binding lookup failed', { error });
+    return { refreshToken, bridged: false };
+  }
+
+  const userId = binding?.userId;
+  if (!userId) {
+    return { refreshToken, bridged: false };
+  }
+
+  const tenantId = binding?.tenantId;
+  const openidIssuer = normalizeOpenIdIssuer(options.expectedIssuer);
+  let bridge: { refreshToken: string } | null;
+  try {
+    bridge = await deps.getRefreshTokenBridge({
+      oldRefreshToken: refreshToken,
+      userId,
+      tenantId,
+      openidIssuer,
+    });
+  } catch (error) {
+    logger.warn('[resolveAdminRefreshToken] Refresh-token bridge lookup failed', { error });
+    return { refreshToken, bridged: false };
+  }
+
+  if (!bridge?.refreshToken) {
+    return { refreshToken, bridged: false };
+  }
+
+  return {
+    refreshToken: bridge.refreshToken,
+    bridged: true,
+    releaseBridge: async () => {
+      if (!deps.deleteRefreshTokenBridges) return;
+      try {
+        await deps.deleteRefreshTokenBridges({ refreshTokens: [refreshToken], userId, tenantId });
+      } catch (error) {
+        logger.warn('[resolveAdminRefreshToken] Failed to remove the recovered bridge', { error });
+      }
+    },
+  };
+}
+
+/**
+ * Runs `run` — the admin-panel-shaped completion of an IdP refresh grant — then releases a
+ * recovered refresh-token bridge on success or on a confirmed {@link OPENID_SESSION_ENDED}
+ * denial. Never releases on an unavailable check, so a retry can still recover the bridge.
+ */
+export async function finalizeAdminOpenIdRefresh<T>(
+  run: () => Promise<T>,
+  releaseBridge?: () => Promise<void>,
+): Promise<T> {
+  try {
+    const result = await run();
+    await releaseBridge?.();
+    return result;
+  } catch (error) {
+    if (error instanceof AdminRefreshError && error.code === OPENID_SESSION_ENDED) {
+      await releaseBridge?.();
+    }
+    throw error;
+  }
 }
 
 function applyTenantFilter(
@@ -300,13 +513,88 @@ export async function applyAdminRefresh(
     await deps.onRefreshSuccess(user, tokenset);
   }
 
+  if (deps.authorizeProviderSession) {
+    const client = deps.getProviderSessionClient?.() ?? null;
+    const refreshedRef = client
+      ? extractProviderSessionRef(claims, { issuer: client.issuer, clientId: client.clientId })
+      : null;
+    const merged = mergeProviderSessionRef(options.boundProviderSession ?? null, refreshedRef);
+    if (!merged.ok) {
+      throw new AdminRefreshError(
+        OPENID_SESSION_ENDED,
+        401,
+        'Provider session id changed during refresh',
+      );
+    }
+
+    const providerSessionExpiresAt = providerSessionCredentialExpiry(
+      new Date(),
+      math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
+    );
+    let outcome: ProviderSessionAuthorizeOutcome;
+    try {
+      outcome = await deps.authorizeProviderSession({
+        ref: merged.ref,
+        subject: openidId,
+        expiresAt: providerSessionExpiresAt,
+        legacy: merged.ref == null,
+      });
+    } catch (error) {
+      if (isProviderSessionUnavailableError(error) && deps.storeRefreshTokenBridge) {
+        const rotatedRefreshToken = tokenset.refresh_token;
+        if (rotatedRefreshToken && options.previousRefreshToken) {
+          try {
+            await deps.storeRefreshTokenBridge({
+              oldRefreshToken: options.previousRefreshToken,
+              newRefreshToken: rotatedRefreshToken,
+              userId: String(user._id),
+              tenantId: options.tenantId,
+              openidIssuer: normalizeOpenIdIssuer(options.expectedIssuer),
+              ttl: deps.bridgeGraceMs,
+              providerSession: merged.ref ?? undefined,
+            });
+          } catch (bridgeError) {
+            logger.warn(
+              '[adminRefresh] Failed to preserve the rotated refresh token after an unavailable provider-session check',
+              { error: bridgeError },
+            );
+          }
+        }
+      }
+      throw error;
+    }
+    if (!outcome.ok) {
+      throw new AdminRefreshError(OPENID_SESSION_ENDED, 401, 'Provider session has ended');
+    }
+
+    if (deps.upsertSession && deps.deleteSession) {
+      const rotatedRefreshToken =
+        tokenset.refresh_token ?? options.grantRefreshToken ?? options.previousRefreshToken;
+      if (rotatedRefreshToken) {
+        const mode = await deps.getMode?.();
+        await storeOpenIdSession(
+          {
+            userId: String(user._id),
+            refreshToken: rotatedRefreshToken,
+            tenantId: options.tenantId,
+            previousRefreshToken: options.previousRefreshToken,
+            providerSession: mode === 'off' ? undefined : merged.ref,
+            authMethod: 'openid',
+          },
+          { upsertSession: deps.upsertSession, deleteSession: deps.deleteSession },
+        );
+      }
+    }
+  }
+
   const responseUser = serializeUserForExchange(user);
 
   logger.debug(`[adminRefresh] Refreshed tokens for user: ${responseUser.id}`);
 
   return {
     token: minted.token,
-    refreshToken: tokenset.refresh_token ?? options.previousRefreshToken,
+    refreshToken:
+      tokenset.refresh_token ?? options.grantRefreshToken ?? options.previousRefreshToken,
     user: responseUser,
     expiresAt: minted.expiresAt,
   };

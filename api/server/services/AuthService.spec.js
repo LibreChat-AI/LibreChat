@@ -36,6 +36,14 @@ jest.mock(
       isEmailDomainAllowed: jest.fn(),
       getSafeErrorMetadata: jest.fn((error) => ({ type: error?.name ?? 'UnknownError' })),
       math: jest.fn((val, fallback) => (val ? Number(val) : fallback)),
+      resolveAuthMethod: jest.fn((provider) => {
+        if (provider == null) {
+          return undefined;
+        }
+        return ['local', 'ldap', 'saml', 'openid', 'passkey'].includes(provider)
+          ? provider
+          : 'social';
+      }),
       storeOpenIdSession: jest.fn(),
       shouldUseSecureCookie,
       setRefreshTokenCookie: jest.fn((res, refreshToken, expires) => {
@@ -503,6 +511,43 @@ describe('setOpenIDAuthTokens', () => {
       expect(req.session.openidTokens).not.toHaveProperty('accessTokenExpiresAt');
     });
 
+    it('persists providerSession on the session and forwards it to the marker cookie setter', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+      const providerSession = {
+        issuer: 'https://issuer.example.com',
+        clientId: 'client-1',
+        sid: 'sid-1',
+      };
+
+      setOpenIDAuthTokens(tokenset, req, res, { userId: 'user-123', providerSession });
+
+      expect(req.session.openidTokens.providerSession).toEqual(providerSession);
+      expect(setOpenIDMarkerCookies).toHaveBeenCalledWith(
+        res,
+        expect.objectContaining({ providerSession }),
+      );
+    });
+
+    it('leaves providerSession off the session when omitted', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      expect(req.session.openidTokens).not.toHaveProperty('providerSession');
+    });
+
     it('should return the existing unexpired session id_token when refresh omits one', () => {
       const existingIdToken = jwt.sign(
         { sub: 'user-123', exp: Math.floor(Date.now() / 1000) + 3600 },
@@ -645,6 +690,32 @@ describe('setOpenIDAuthTokens', () => {
         refreshToken: 'new-refresh-token',
         tenantId: 'tenant-a',
         previousRefreshToken: 'old-refresh-token',
+      },
+      { upsertSession, deleteSession },
+    );
+  });
+
+  it('forwards providerSession and authMethod options to the reuse-mode session store', async () => {
+    storeOpenIdSession.mockResolvedValue(true);
+    const providerSession = {
+      issuer: 'https://issuer.example.com',
+      clientId: 'client-1',
+      sid: 'sid-1',
+    };
+
+    await storeOpenIDSession('user-123', 'the-refresh-token', 'tenant-a', undefined, {
+      providerSession,
+      authMethod: 'openid',
+    });
+
+    expect(storeOpenIdSession).toHaveBeenCalledWith(
+      {
+        userId: 'user-123',
+        refreshToken: 'the-refresh-token',
+        tenantId: 'tenant-a',
+        previousRefreshToken: undefined,
+        providerSession,
+        authMethod: 'openid',
       },
       { upsertSession, deleteSession },
     );
@@ -1907,6 +1978,76 @@ describe('CloudFront cookie integration', () => {
       const result = await setAuthTokens('user-123', res);
 
       expect(result).toBe('mock-access-token');
+    });
+
+    it('persists providerSession and the caller-supplied authMethod on a newly created session', async () => {
+      getUserById.mockResolvedValueOnce({
+        _id: 'user-123',
+        tenantId: 'tenantA',
+        provider: 'openid',
+      });
+      const res = mockResponse();
+      const providerSession = {
+        issuer: 'https://issuer.example.com',
+        clientId: 'client-1',
+        sid: 'sid-1',
+      };
+
+      await setAuthTokens('user-123', res, null, null, {
+        providerSession,
+        authMethod: 'openid',
+      });
+
+      expect(createSession).toHaveBeenCalledWith('user-123', {
+        expiresIn: 604800000,
+        providerSession,
+        authMethod: 'openid',
+      });
+    });
+
+    it('uses the explicitly passed authMethod as-is', async () => {
+      getUserById.mockResolvedValueOnce({
+        _id: 'user-123',
+        tenantId: 'tenantA',
+        provider: 'local',
+      });
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res, null, null, { authMethod: 'ldap' });
+
+      expect(createSession).toHaveBeenCalledWith('user-123', {
+        expiresIn: 604800000,
+        authMethod: 'ldap',
+      });
+    });
+
+    it('does not derive authMethod from the user record when the caller omits it', async () => {
+      getUserById.mockResolvedValueOnce({
+        _id: 'user-123',
+        tenantId: 'tenantA',
+        provider: 'openid',
+      });
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res);
+
+      expect(createSession).toHaveBeenCalledWith('user-123', { expiresIn: 604800000 });
+    });
+
+    it('does not pass providerSession/authMethod options onto a rotated session', async () => {
+      const expiration = new Date(Date.now() + 3600000);
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res, { _id: 'session-1', expiration }, null, {
+        providerSession: {
+          issuer: 'https://issuer.example.com',
+          clientId: 'client-1',
+          sid: 'sid-1',
+        },
+      });
+
+      expect(createSession).not.toHaveBeenCalled();
+      expect(generateRefreshToken).toHaveBeenCalledWith({ _id: 'session-1', expiration });
     });
   });
 });

@@ -4,7 +4,15 @@ import { logger } from '@librechat/data-schemas';
 import type { IUser } from '@librechat/data-schemas';
 import type { AdminRefreshDeps, RefreshTokenset } from './refresh';
 
-import { applyAdminRefresh, AdminRefreshError, buildOpenIDRefreshParams } from './refresh';
+import {
+  applyAdminRefresh,
+  precheckAdminRefreshBinding,
+  resolveAdminRefreshToken,
+  finalizeAdminOpenIdRefresh,
+  AdminRefreshError,
+  buildOpenIDRefreshParams,
+} from './refresh';
+import { ProviderSessionUnavailableError } from './openid/providerSession/errors';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -12,6 +20,7 @@ jest.mock('@librechat/data-schemas', () => ({
     debug: jest.fn(),
     info: jest.fn(),
     warn: jest.fn(),
+    error: jest.fn(),
   },
 }));
 
@@ -641,6 +650,487 @@ describe('applyAdminRefresh', () => {
         'admin@example.com',
       );
     });
+  });
+
+  describe('provider-session binding', () => {
+    const ref = { issuer: 'https://issuer.example.com', clientId: 'test-client', sid: 'sid-1' };
+    const getProviderSessionClient = () => ({ issuer: ref.issuer, clientId: ref.clientId });
+
+    function makeDepsWithClient(
+      user: IUser | undefined,
+      overrides: Partial<AdminRefreshDeps> = {},
+    ) {
+      return makeDeps(user, { getProviderSessionClient, ...overrides });
+    }
+
+    it('authorizes before returning tokens and persists the rotated binding', async () => {
+      const user = makeUser();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const upsertSession = jest.fn().mockResolvedValue({});
+      const deleteSession = jest.fn().mockResolvedValue({ deletedCount: 0 });
+      const deps = makeDepsWithClient(user, {
+        authorizeProviderSession,
+        upsertSession,
+        deleteSession,
+      });
+      const tokenset = makeTokenset({
+        refresh_token: 'rotated-refresh',
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      const result = await applyAdminRefresh(tokenset, deps, {
+        previousRefreshToken: 'old-refresh',
+        boundProviderSession: ref,
+      });
+
+      expect(authorizeProviderSession).toHaveBeenCalledWith({
+        ref,
+        subject: SUB,
+        expiresAt: expect.any(Date),
+        legacy: false,
+      });
+      expect(upsertSession).toHaveBeenCalledWith(
+        String(user._id),
+        'rotated-refresh',
+        expect.objectContaining({ providerSession: ref, authMethod: 'openid' }),
+      );
+      expect(deleteSession).toHaveBeenCalledWith({ refreshToken: 'old-refresh' });
+      expect(result.token).toBe('minted-jwt');
+    });
+
+    it('falls back to the bridged grant token, not the client token, when the IdP grant does not rotate', async () => {
+      const user = makeUser();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const upsertSession = jest.fn().mockResolvedValue({});
+      const deleteSession = jest.fn().mockResolvedValue({ deletedCount: 0 });
+      const deps = makeDepsWithClient(user, {
+        authorizeProviderSession,
+        upsertSession,
+        deleteSession,
+      });
+      const tokenset = makeTokenset({
+        refresh_token: undefined,
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      const result = await applyAdminRefresh(tokenset, deps, {
+        previousRefreshToken: 'client-token-a',
+        grantRefreshToken: 'bridged-token-b',
+        boundProviderSession: ref,
+      });
+
+      expect(result.refreshToken).toBe('bridged-token-b');
+      expect(upsertSession).toHaveBeenCalledWith(
+        String(user._id),
+        'bridged-token-b',
+        expect.objectContaining({ providerSession: ref, authMethod: 'openid' }),
+      );
+      expect(deleteSession).toHaveBeenCalledWith({ refreshToken: 'client-token-a' });
+    });
+
+    it('passes the request tenantId through to the stored binding', async () => {
+      const user = makeUser();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const upsertSession = jest.fn().mockResolvedValue({});
+      const deleteSession = jest.fn().mockResolvedValue({ deletedCount: 0 });
+      const deps = makeDepsWithClient(user, {
+        authorizeProviderSession,
+        upsertSession,
+        deleteSession,
+      });
+      const tokenset = makeTokenset({
+        refresh_token: 'rotated-refresh',
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await applyAdminRefresh(tokenset, deps, {
+        previousRefreshToken: 'old-refresh',
+        boundProviderSession: ref,
+        tenantId: 'tenant-a',
+      });
+
+      expect(upsertSession).toHaveBeenCalledWith(
+        String(user._id),
+        'rotated-refresh',
+        expect.objectContaining({ tenantId: 'tenant-a' }),
+      );
+    });
+
+    it('stores no provider-session ref under mode off, even when authorize is wired', async () => {
+      const user = makeUser();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const upsertSession = jest.fn().mockResolvedValue({});
+      const deleteSession = jest.fn().mockResolvedValue({ deletedCount: 0 });
+      const getMode = jest.fn().mockResolvedValue('off');
+      const deps = makeDepsWithClient(user, {
+        authorizeProviderSession,
+        upsertSession,
+        deleteSession,
+        getMode,
+      });
+      const tokenset = makeTokenset({
+        refresh_token: 'rotated-refresh',
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await applyAdminRefresh(tokenset, deps, {
+        previousRefreshToken: 'old-refresh',
+        boundProviderSession: ref,
+      });
+
+      expect(upsertSession).toHaveBeenCalledTimes(1);
+      expect(upsertSession.mock.calls[0][2].providerSession).toBeUndefined();
+    });
+
+    it('throws OPENID_SESSION_ENDED when authorize denies', async () => {
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: false });
+      const deps = makeDepsWithClient(makeUser(), { authorizeProviderSession });
+
+      await expect(
+        applyAdminRefresh(makeTokenset({ claims: () => ({ sub: SUB }) }), deps, {
+          boundProviderSession: ref,
+        }),
+      ).rejects.toMatchObject({ code: 'OPENID_SESSION_ENDED', status: 401 });
+    });
+
+    it('stores a recovery bridge with the rotated token when authorize throws unavailable, then rethrows', async () => {
+      const user = makeUser();
+      const unavailableError = new ProviderSessionUnavailableError('db down');
+      const authorizeProviderSession = jest.fn().mockRejectedValue(unavailableError);
+      const storeRefreshTokenBridge = jest.fn().mockResolvedValue('bridge-version');
+      const deps = makeDepsWithClient(user, {
+        authorizeProviderSession,
+        storeRefreshTokenBridge,
+        bridgeGraceMs: 60000,
+      });
+      const tokenset = makeTokenset({
+        refresh_token: 'rotated-refresh',
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await expect(
+        applyAdminRefresh(tokenset, deps, {
+          previousRefreshToken: 'old-refresh',
+          boundProviderSession: ref,
+          expectedIssuer: ref.issuer,
+        }),
+      ).rejects.toBe(unavailableError);
+
+      expect(storeRefreshTokenBridge).toHaveBeenCalledWith({
+        oldRefreshToken: 'old-refresh',
+        newRefreshToken: 'rotated-refresh',
+        userId: String(user._id),
+        tenantId: undefined,
+        openidIssuer: ref.issuer,
+        ttl: 60000,
+        providerSession: ref,
+      });
+    });
+
+    it('stores no recovery bridge under mode off, even when storeRefreshTokenBridge is wired', async () => {
+      const user = makeUser();
+      const storeRefreshTokenBridge = jest.fn();
+      const deps = makeDeps(user, { storeRefreshTokenBridge });
+      const tokenset = makeTokenset({ claims: () => ({ sub: SUB }) });
+
+      await applyAdminRefresh(tokenset, deps);
+
+      expect(storeRefreshTokenBridge).not.toHaveBeenCalled();
+    });
+
+    it('stores no recovery bridge when authorize denies rather than throws unavailable', async () => {
+      const user = makeUser();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: false });
+      const storeRefreshTokenBridge = jest.fn();
+      const deps = makeDepsWithClient(user, { authorizeProviderSession, storeRefreshTokenBridge });
+      const tokenset = makeTokenset({
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await expect(
+        applyAdminRefresh(tokenset, deps, { boundProviderSession: ref }),
+      ).rejects.toMatchObject({ code: 'OPENID_SESSION_ENDED', status: 401 });
+
+      expect(storeRefreshTokenBridge).not.toHaveBeenCalled();
+    });
+
+    it('denies on a conflicting sid without ever calling authorize', async () => {
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const deps = makeDepsWithClient(makeUser(), { authorizeProviderSession });
+      const tokenset = makeTokenset({
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: 'a-different-sid' }),
+      });
+
+      await expect(
+        applyAdminRefresh(tokenset, deps, { boundProviderSession: ref }),
+      ).rejects.toMatchObject({ code: 'OPENID_SESSION_ENDED', status: 401 });
+      expect(authorizeProviderSession).not.toHaveBeenCalled();
+    });
+
+    it('does not conflict when a templated configured issuer resolves to the bound tenant issuer', async () => {
+      const templateIssuer = 'https://login.microsoftonline.com/{tenantid}/v2.0';
+      const tenantRef = {
+        issuer: 'https://login.microsoftonline.com/tenant-a/v2.0',
+        clientId: ref.clientId,
+        sid: ref.sid,
+      };
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const deps = makeDepsWithClient(makeUser(), {
+        authorizeProviderSession,
+        getProviderSessionClient: () => ({ issuer: templateIssuer, clientId: tenantRef.clientId }),
+      });
+      const tokenset = makeTokenset({
+        claims: () => ({ sub: SUB, iss: tenantRef.issuer, sid: tenantRef.sid }),
+      });
+
+      await applyAdminRefresh(tokenset, deps, { boundProviderSession: tenantRef });
+
+      expect(authorizeProviderSession).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: tenantRef, legacy: false }),
+      );
+    });
+
+    it('keeps the bound ref when the refreshed tokenset carries no sid', async () => {
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const deps = makeDepsWithClient(makeUser(), { authorizeProviderSession });
+      const tokenset = makeTokenset({ claims: () => ({ sub: SUB }) });
+
+      await applyAdminRefresh(tokenset, deps, { boundProviderSession: ref });
+
+      expect(authorizeProviderSession).toHaveBeenCalledWith(
+        expect.objectContaining({ ref, legacy: false }),
+      );
+    });
+
+    it('passes a null ref and marks the entry legacy when there is no binding', async () => {
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const deps = makeDepsWithClient(makeUser(), { authorizeProviderSession });
+
+      await applyAdminRefresh(makeTokenset({ claims: () => ({ sub: SUB }) }), deps);
+
+      expect(authorizeProviderSession).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: null, legacy: true }),
+      );
+    });
+
+    it('makes zero provider-session or Session-collection calls when the deps are omitted', async () => {
+      const upsertSession = jest.fn();
+      const deleteSession = jest.fn();
+      const deps = makeDeps(makeUser(), { upsertSession, deleteSession });
+
+      await applyAdminRefresh(makeTokenset({ claims: () => ({ sub: SUB }) }), deps, {
+        boundProviderSession: ref,
+      });
+
+      expect(upsertSession).not.toHaveBeenCalled();
+      expect(deleteSession).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('precheckAdminRefreshBinding', () => {
+  it('skips the lookup and returns a null ref when deps are omitted (mode off)', async () => {
+    const result = await precheckAdminRefreshBinding('refresh-token', {});
+    expect(result).toEqual({ ref: null });
+  });
+
+  it('resolves with the bound ref when preCheck authorizes', async () => {
+    const ref = { issuer: 'https://issuer.example.com', clientId: 'test-client', sid: 'sid-1' };
+    const findProviderSessionBinding = jest.fn().mockResolvedValue({ providerSession: ref });
+    const preCheckProviderSession = jest.fn().mockResolvedValue({ ok: true });
+
+    const result = await precheckAdminRefreshBinding('refresh-token', {
+      findProviderSessionBinding,
+      preCheckProviderSession,
+    });
+
+    expect(findProviderSessionBinding).toHaveBeenCalledWith('refresh-token');
+    expect(preCheckProviderSession).toHaveBeenCalledWith({ ref, expiresAt: expect.any(Date) });
+    expect(result).toEqual({ ref });
+  });
+
+  it('passes ref: null to preCheck when no binding is found', async () => {
+    const findProviderSessionBinding = jest.fn().mockResolvedValue(null);
+    const preCheckProviderSession = jest.fn().mockResolvedValue({ ok: true });
+
+    const result = await precheckAdminRefreshBinding('refresh-token', {
+      findProviderSessionBinding,
+      preCheckProviderSession,
+    });
+
+    expect(preCheckProviderSession).toHaveBeenCalledWith({
+      ref: null,
+      expiresAt: expect.any(Date),
+    });
+    expect(result).toEqual({ ref: null });
+  });
+
+  it('throws AdminRefreshError before any IdP grant would occur when preCheck denies', async () => {
+    const findProviderSessionBinding = jest.fn().mockResolvedValue(null);
+    const preCheckProviderSession = jest.fn().mockResolvedValue({ ok: false });
+
+    await expect(
+      precheckAdminRefreshBinding('refresh-token', {
+        findProviderSessionBinding,
+        preCheckProviderSession,
+      }),
+    ).rejects.toMatchObject({
+      name: 'AdminRefreshError',
+      code: 'OPENID_SESSION_ENDED',
+      status: 401,
+    });
+  });
+
+  it('propagates an unavailable provider-session check uncaught', async () => {
+    const unavailableError = new Error('db down');
+    const findProviderSessionBinding = jest.fn().mockResolvedValue(null);
+    const preCheckProviderSession = jest.fn().mockRejectedValue(unavailableError);
+
+    await expect(
+      precheckAdminRefreshBinding('refresh-token', {
+        findProviderSessionBinding,
+        preCheckProviderSession,
+      }),
+    ).rejects.toBe(unavailableError);
+  });
+
+  it('throws ProviderSessionUnavailableError, not a raw 500, when the binding lookup fails under enforce', async () => {
+    const findProviderSessionBinding = jest.fn().mockRejectedValue(new Error('db down'));
+    const preCheckProviderSession = jest.fn();
+    const getMode = jest.fn().mockResolvedValue('enforce');
+
+    await expect(
+      precheckAdminRefreshBinding('refresh-token', {
+        findProviderSessionBinding,
+        preCheckProviderSession,
+        getMode,
+      }),
+    ).rejects.toMatchObject({ name: 'ProviderSessionUnavailableError', status: 503 });
+    expect(preCheckProviderSession).not.toHaveBeenCalled();
+  });
+
+  it('fails open with a null ref when the binding lookup fails under record', async () => {
+    const findProviderSessionBinding = jest.fn().mockRejectedValue(new Error('db down'));
+    const preCheckProviderSession = jest.fn();
+    const getMode = jest.fn().mockResolvedValue('record');
+
+    const result = await precheckAdminRefreshBinding('refresh-token', {
+      findProviderSessionBinding,
+      preCheckProviderSession,
+      getMode,
+    });
+
+    expect(result).toEqual({ ref: null });
+    expect(preCheckProviderSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveAdminRefreshToken', () => {
+  it('returns the incoming token unchanged when the deps are omitted (mode off)', async () => {
+    const result = await resolveAdminRefreshToken('refresh-token', {});
+    expect(result).toEqual({ refreshToken: 'refresh-token', bridged: false });
+  });
+
+  it('returns the incoming token unchanged when no binding is found', async () => {
+    const findProviderSessionBinding = jest.fn().mockResolvedValue(null);
+    const getRefreshTokenBridge = jest.fn();
+
+    const result = await resolveAdminRefreshToken('refresh-token', {
+      findProviderSessionBinding,
+      getRefreshTokenBridge,
+    });
+
+    expect(result).toEqual({ refreshToken: 'refresh-token', bridged: false });
+    expect(getRefreshTokenBridge).not.toHaveBeenCalled();
+  });
+
+  it('swaps in the bridged token when a bridge exists for the incoming token', async () => {
+    const findProviderSessionBinding = jest.fn().mockResolvedValue({ userId: 'user-1' });
+    const getRefreshTokenBridge = jest.fn().mockResolvedValue({ refreshToken: 'bridged-refresh' });
+    const deleteRefreshTokenBridges = jest.fn().mockResolvedValue({});
+
+    const result = await resolveAdminRefreshToken(
+      'refresh-token',
+      { findProviderSessionBinding, getRefreshTokenBridge, deleteRefreshTokenBridges },
+      { expectedIssuer: 'https://issuer.example.com' },
+    );
+
+    expect(getRefreshTokenBridge).toHaveBeenCalledWith({
+      oldRefreshToken: 'refresh-token',
+      userId: 'user-1',
+      tenantId: undefined,
+      openidIssuer: 'https://issuer.example.com',
+    });
+    expect(result.refreshToken).toBe('bridged-refresh');
+    expect(result.bridged).toBe(true);
+
+    await result.releaseBridge?.();
+    expect(deleteRefreshTokenBridges).toHaveBeenCalledWith({
+      refreshTokens: ['refresh-token'],
+      userId: 'user-1',
+      tenantId: undefined,
+    });
+  });
+
+  it('falls back to the incoming token when the bridge lookup fails', async () => {
+    const findProviderSessionBinding = jest.fn().mockResolvedValue({ userId: 'user-1' });
+    const getRefreshTokenBridge = jest.fn().mockRejectedValue(new Error('db down'));
+
+    const result = await resolveAdminRefreshToken('refresh-token', {
+      findProviderSessionBinding,
+      getRefreshTokenBridge,
+    });
+
+    expect(result).toEqual({ refreshToken: 'refresh-token', bridged: false });
+  });
+});
+
+describe('finalizeAdminOpenIdRefresh', () => {
+  it('releases the bridge after a successful run and returns its result', async () => {
+    const releaseBridge = jest.fn().mockResolvedValue(undefined);
+    const run = jest.fn().mockResolvedValue({ token: 'minted-jwt' });
+
+    const result = await finalizeAdminOpenIdRefresh(run, releaseBridge);
+
+    expect(result).toEqual({ token: 'minted-jwt' });
+    expect(releaseBridge).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the result untouched when no releaseBridge is given', async () => {
+    const run = jest.fn().mockResolvedValue({ token: 'minted-jwt' });
+
+    await expect(finalizeAdminOpenIdRefresh(run)).resolves.toEqual({ token: 'minted-jwt' });
+  });
+
+  it('releases the bridge and rethrows on a confirmed OPENID_SESSION_ENDED denial', async () => {
+    const releaseBridge = jest.fn().mockResolvedValue(undefined);
+    const deniedError = new AdminRefreshError(
+      'OPENID_SESSION_ENDED',
+      401,
+      'Provider session has ended',
+    );
+    const run = jest.fn().mockRejectedValue(deniedError);
+
+    await expect(finalizeAdminOpenIdRefresh(run, releaseBridge)).rejects.toBe(deniedError);
+    expect(releaseBridge).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not release the bridge for an unavailable provider-session check', async () => {
+    const releaseBridge = jest.fn().mockResolvedValue(undefined);
+    const unavailableError = new ProviderSessionUnavailableError('db down');
+    const run = jest.fn().mockRejectedValue(unavailableError);
+
+    await expect(finalizeAdminOpenIdRefresh(run, releaseBridge)).rejects.toBe(unavailableError);
+    expect(releaseBridge).not.toHaveBeenCalled();
+  });
+
+  it('does not release the bridge for an AdminRefreshError unrelated to the provider session', async () => {
+    const releaseBridge = jest.fn().mockResolvedValue(undefined);
+    const otherError = new AdminRefreshError('USER_NOT_FOUND', 401, 'No user found');
+    const run = jest.fn().mockRejectedValue(otherError);
+
+    await expect(finalizeAdminOpenIdRefresh(run, releaseBridge)).rejects.toBe(otherError);
+    expect(releaseBridge).not.toHaveBeenCalled();
   });
 });
 
