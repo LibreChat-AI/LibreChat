@@ -49,6 +49,17 @@ const artifact: ChannelArtifact = {
 };
 
 describe('Slack answer rendering', () => {
+  it('honors configured budgets above 64 messages for ordinary answers', () => {
+    const view = run();
+    view.snapshot!.text = '# Heading\n\n'.repeat(2700);
+    const plan = makeSlackPlan(view, false, 100);
+    expect(plan.parts.length).toBeGreaterThan(64);
+    expect(plan.parts.length).toBeLessThanOrEqual(100);
+    expect(plan.parts.map((part) => part.text).join('')).not.toContain('Reply shortened');
+    for (const part of plan.parts)
+      expect(() => durableSlackMessage(part, plan.rendererVersion)).not.toThrow();
+  });
+
   it('parses balanced and escaped link parentheses without touching literal code', () => {
     expect(safeMrkdwn('[docs](https://example.com/Foo_(bar))')).toBe(
       '<https://example.com/Foo_(bar)|docs>',
@@ -173,6 +184,32 @@ describe('Slack answer rendering', () => {
     ).toBe(true);
     expect(messages.map((message) => message.plain).join('')).toContain('private');
   });
+
+  it.each(['https://user:password@example.com', 'javascript:alert'])(
+    'keeps synthetic GFM nodes inside the link sanitizer for %s',
+    (target) => {
+      const source = JSON.stringify({
+        version: 1,
+        blocks: [
+          {
+            type: 'card',
+            body: `[private](${target})`,
+            links: [{ url: 'https://docs.slack.dev/' }],
+          },
+        ],
+      });
+      expect(safeMrkdwn(source)).not.toContain(target);
+      for (const messages of [renderSlackDocument(source), renderAgentAnswer(source)]) {
+        const serialized = JSON.stringify(messages);
+        expect(serialized).not.toContain(target);
+        expect(serialized).toContain('private');
+        expect(serialized).toContain('https://docs.slack.dev/');
+        expect(
+          messages.some((message) => message.blocks?.some((block) => block.type === 'markdown')),
+        ).toBe(false);
+      }
+    },
+  );
 
   it('bounds escaped semantic fallback and keeps safe link destinations readable', () => {
     const view = run();
