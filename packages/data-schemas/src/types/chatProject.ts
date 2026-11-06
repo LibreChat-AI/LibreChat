@@ -9,6 +9,10 @@ export interface IChatProject {
   file_ids?: string[];
   hasInstructions?: boolean;
   fileCount?: number;
+  /** Set on projects another user shared with the requester. */
+  isShared?: boolean;
+  /** The requester's effective `PermissionBits` on a shared project. */
+  permissions?: number;
   user: string;
   conversationCount: number;
   lastConversationAt?: Date | null;

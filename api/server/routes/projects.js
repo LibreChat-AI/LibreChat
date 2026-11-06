@@ -1,6 +1,7 @@
 const express = require('express');
 const { createProjectHandlers } = require('@librechat/api');
 const { configMiddleware, requireJwtAuth } = require('~/server/middleware');
+const { grantPermission } = require('~/server/services/PermissionService');
 const db = require('~/models');
 
 const router = express.Router();
@@ -8,6 +9,7 @@ const handlers = createProjectHandlers({
   listChatProjects: db.listChatProjects,
   createChatProject: db.createChatProject,
   getChatProject: db.getChatProject,
+  getChatProjectView: db.getChatProjectView,
   updateChatProject: db.updateChatProject,
   deleteChatProject: db.deleteChatProject,
   assignConversationToProject: db.assignConversationToProject,
@@ -15,6 +17,7 @@ const handlers = createProjectHandlers({
   removeChatProjectFile: db.removeChatProjectFile,
   getProjectFiles: db.getProjectFiles,
   getAvailableProjectFiles: db.getAvailableProjectFiles,
+  grantPermission,
 });
 router.use(requireJwtAuth);
 router.get('/', handlers.listProjects);

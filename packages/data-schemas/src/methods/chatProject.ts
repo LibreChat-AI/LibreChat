@@ -1,5 +1,7 @@
 import {
   FileContext,
+  ResourceType,
+  PermissionBits,
   MAX_CHAT_PROJECT_FILES,
   MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH,
   MAX_CHAT_PROJECT_NAME_LENGTH,
@@ -11,6 +13,7 @@ import type { IChatProject, IChatProjectDocument, IConversation, IMongoFile } fr
 import { buildRetentionVisibilityFilter } from '~/utils/retention';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { escapeRegExp } from '~/utils/string';
+import { RoleBits } from '~/common/enum';
 import logger from '~/config/winston';
 
 export type ChatProjectSortBy = 'name' | 'createdAt' | 'lastConversationAt';
@@ -52,7 +55,49 @@ export type AssignConversationToProjectResult = {
   projectId: string | null;
 };
 
+/** A project as seen by one user: its owner, or someone it was shared with. */
+export type ChatProjectAccess = {
+  project: IChatProject;
+  /** Effective `PermissionBits`; the owner always holds every bit. */
+  permissions: number;
+  isOwner: boolean;
+};
+
+type AclPrincipal = { principalType: string; principalId?: string | Types.ObjectId };
+
+/**
+ * ACL lookups for sharing. Without them a project is visible to its owner only, which is
+ * how embedded integrations and unit tests that build the methods directly behave.
+ */
+export interface ChatProjectDeps {
+  getUserPrincipals?: (params: { userId: string | Types.ObjectId }) => Promise<AclPrincipal[]>;
+  getEffectivePermissions?: (
+    principals: AclPrincipal[],
+    resourceType: string,
+    resourceId: string | Types.ObjectId,
+  ) => Promise<number>;
+  getEffectivePermissionsForResources?: (
+    principals: AclPrincipal[],
+    resourceType: string,
+    resourceIds: Array<string | Types.ObjectId>,
+  ) => Promise<Map<string, number>>;
+  findAccessibleResources?: (
+    principals: AclPrincipal[],
+    resourceType: string,
+    requiredPermBit: number,
+  ) => Promise<Types.ObjectId[]>;
+  deleteAclEntries?: (filter: Record<string, unknown>) => Promise<unknown>;
+}
+
 export interface ChatProjectMethods {
+  /** Resolves a project the user may VIEW, with the user's effective permissions. */
+  getChatProjectAccess(user: string, projectId: string): Promise<ChatProjectAccess | null>;
+  /** Whether the user may VIEW the project, i.e. use it for their own chats. */
+  hasChatProjectAccess(user: string, projectId: string): Promise<boolean>;
+  /** The project as the user sees it; members get their own chat stats, not the owner's. */
+  getChatProjectView(user: string, projectId: string): Promise<IChatProject | null>;
+  /** Ids of every project the user owns or was granted VIEW on. */
+  listAccessibleChatProjectIds(user: string): Promise<string[]>;
   createChatProject(
     user: string,
     input: CreateChatProjectInput,
@@ -381,7 +426,86 @@ export async function updateChatProjectLastConversationForUser(
   }
 }
 
-export function createChatProjectMethods(mongoose: typeof import('mongoose')): ChatProjectMethods {
+export function createChatProjectMethods(
+  mongoose: typeof import('mongoose'),
+  deps: ChatProjectDeps = {},
+): ChatProjectMethods {
+  const canResolveShares = deps.getUserPrincipals != null && deps.getEffectivePermissions != null;
+
+  /**
+   * The owner always holds every bit through the project's own `user` field, so a missing
+   * or damaged owner ACL entry can never lock the owner out. Anyone else needs a grant.
+   */
+  async function resolveSharedPermissions(user: string, projectId: string): Promise<number> {
+    if (!canResolveShares || !isValidObjectIdString(user)) {
+      return 0;
+    }
+    try {
+      const principals = await deps.getUserPrincipals!({ userId: user });
+      return await deps.getEffectivePermissions!(principals, ResourceType.CHAT_PROJECT, projectId);
+    } catch (error) {
+      logger.warn('[chatProject] Failed to resolve shared project permissions', error);
+      return 0;
+    }
+  }
+
+  async function getChatProjectAccess(
+    user: string,
+    projectId: string,
+  ): Promise<ChatProjectAccess | null> {
+    if (!isValidObjectIdString(projectId)) {
+      return null;
+    }
+    const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
+    const project = await ChatProject.findById(projectId).lean<IChatProject>();
+    if (!project) {
+      return null;
+    }
+    if (project.user === user) {
+      return { project, permissions: RoleBits.OWNER, isOwner: true };
+    }
+    const permissions = await resolveSharedPermissions(user, projectId);
+    if ((permissions & PermissionBits.VIEW) === 0) {
+      return null;
+    }
+    return { project, permissions, isOwner: false };
+  }
+
+  async function hasChatProjectAccess(user: string, projectId: string): Promise<boolean> {
+    return (await getChatProjectAccess(user, projectId)) != null;
+  }
+
+  /**
+   * Project files stay with the owner: they are the owner's uploads, embedded under the
+   * owner's identity, so only the owner attaches or removes them.
+   */
+  async function getOwnedChatProject(
+    user: string,
+    projectId: string,
+  ): Promise<IChatProject | null> {
+    if (!isValidObjectIdString(projectId)) {
+      return null;
+    }
+    const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
+    return await ChatProject.findOne({
+      _id: new mongoose.Types.ObjectId(projectId),
+      user,
+    }).lean<IChatProject>();
+  }
+
+  /** Resolves the project only when the user holds every bit in `required`. */
+  async function getProjectWithPermission(
+    user: string,
+    projectId: string,
+    required: number,
+  ): Promise<IChatProject | null> {
+    const access = await getChatProjectAccess(user, projectId);
+    if (!access || (access.permissions & required) !== required) {
+      return null;
+    }
+    return access.project;
+  }
+
   async function createChatProject(
     user: string,
     input: CreateChatProjectInput,
@@ -403,16 +527,9 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     return project.toObject() as IChatProject;
   }
 
+  /** Resolves a project the user owns or was granted VIEW on. */
   async function getChatProject(user: string, projectId: string): Promise<IChatProject | null> {
-    if (!isValidObjectIdString(projectId)) {
-      return null;
-    }
-
-    const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
-    return await ChatProject.findOne({
-      _id: new mongoose.Types.ObjectId(projectId),
-      user,
-    }).lean<IChatProject>();
+    return (await getChatProjectAccess(user, projectId))?.project ?? null;
   }
 
   async function listChatProjects(
@@ -424,7 +541,10 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     const sortBy = normalizeSortBy(options.sortBy);
     const sortDirection = normalizeSortDirection(options.sortDirection);
     const sortOrder: SortOrder = sortDirection === 'asc' ? 1 : -1;
-    const filters: FilterQuery<IChatProjectDocument>[] = [{ user }];
+    const sharedIds = await listSharedProjectIds(user);
+    const filters: FilterQuery<IChatProjectDocument>[] = [
+      sharedIds.length > 0 ? { $or: [{ user }, { _id: { $in: sharedIds } }] } : { user },
+    ];
 
     if (options.search?.trim()) {
       const searchRegex = { $regex: escapeRegExp(options.search.trim()), $options: 'i' };
@@ -474,7 +594,163 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       }
     }
 
-    return { projects, nextCursor };
+    return { projects: await annotateSharedProjects(user, projects), nextCursor };
+  }
+
+  async function listAccessibleChatProjectIds(user: string): Promise<string[]> {
+    const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
+    const [owned, shared] = await Promise.all([
+      ChatProject.find({ user }).select('_id').lean(),
+      listSharedProjectIds(user),
+    ]);
+    return [
+      ...new Set([
+        ...owned.map((project) => String(project._id)),
+        ...shared.map((id) => id.toString()),
+      ]),
+    ];
+  }
+
+  /** Ids of projects other users shared with this user, by user, role, group, or public grant. */
+  async function listSharedProjectIds(user: string): Promise<Types.ObjectId[]> {
+    if (!deps.getUserPrincipals || !deps.findAccessibleResources || !isValidObjectIdString(user)) {
+      return [];
+    }
+    try {
+      const principals = await deps.getUserPrincipals({ userId: user });
+      const accessible = await deps.findAccessibleResources(
+        principals,
+        ResourceType.CHAT_PROJECT,
+        PermissionBits.VIEW,
+      );
+      if (accessible.length === 0) {
+        return [];
+      }
+      /** Owners hold an owner entry on their own projects; those are already matched by
+       *  `user`, so leave them out and keep the shared-id list to projects others own. */
+      const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
+      const owned = await ChatProject.find({ _id: { $in: accessible }, user })
+        .select('_id')
+        .lean();
+      const ownedIds = new Set(owned.map((project) => String(project._id)));
+      return accessible.filter((id) => !ownedIds.has(id.toString()));
+    } catch (error) {
+      logger.warn('[chatProject] Failed to list shared projects', error);
+      return [];
+    }
+  }
+
+  /**
+   * A project's stored stats describe its owner's chats. Members see their own instead, so a
+   * shared project never exposes the owner's chat count or latest conversation id.
+   */
+  async function getMemberProjectStats(
+    user: string,
+    projectIds: string[],
+  ): Promise<Map<string, ProjectStatsSnapshot>> {
+    const stats = new Map<string, ProjectStatsSnapshot>();
+    if (projectIds.length === 0) {
+      return stats;
+    }
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const rows = await Conversation.aggregate<{
+      _id: string;
+      conversationCount: number;
+      lastConversationAt: Date | null;
+      lastConversationId: string | null;
+    }>([
+      {
+        $match: {
+          $and: [
+            { user, chatProjectId: { $in: projectIds } },
+            { $or: [{ isArchived: false }, { isArchived: { $exists: false } }] },
+            buildRetentionVisibilityFilter<IConversation>(),
+          ],
+        },
+      },
+      { $sort: { updatedAt: -1, _id: -1 } },
+      {
+        $group: {
+          _id: '$chatProjectId',
+          conversationCount: { $sum: 1 },
+          lastConversationAt: { $first: { $ifNull: ['$updatedAt', '$createdAt'] } },
+          lastConversationId: { $first: '$conversationId' },
+        },
+      },
+    ]);
+    for (const row of rows) {
+      stats.set(row._id, {
+        conversationCount: row.conversationCount,
+        lastConversationAt: row.lastConversationAt ?? null,
+        lastConversationId: row.lastConversationId ?? null,
+      });
+    }
+    return stats;
+  }
+
+  function toMemberView(
+    project: IChatProject,
+    permissions: number,
+    stats: ProjectStatsSnapshot | undefined,
+  ): IChatProject {
+    return {
+      ...project,
+      conversationCount: stats?.conversationCount ?? 0,
+      lastConversationAt: stats?.lastConversationAt ?? null,
+      lastConversationId: stats?.lastConversationId ?? null,
+      isShared: true,
+      permissions,
+    };
+  }
+
+  /** A project as the given user sees it, for the project endpoints. */
+  async function getChatProjectView(user: string, projectId: string): Promise<IChatProject | null> {
+    const access = await getChatProjectAccess(user, projectId);
+    if (!access) {
+      return null;
+    }
+    if (access.isOwner) {
+      return access.project;
+    }
+    const stats = await getMemberProjectStats(user, [projectId]);
+    return toMemberView(access.project, access.permissions, stats.get(projectId));
+  }
+
+  /**
+   * Marks projects the user does not own and attaches their effective permissions, so the
+   * client can show a shared badge and hide edit controls. Owned projects are left as-is.
+   */
+  async function annotateSharedProjects(
+    user: string,
+    projects: ProjectLean[],
+  ): Promise<IChatProject[]> {
+    const shared = projects.filter((project) => project.user !== user);
+    if (shared.length === 0) {
+      return projects;
+    }
+    const sharedIds = shared.map((project) => project._id.toString());
+    const statsPromise = getMemberProjectStats(user, sharedIds);
+    let permissionsById = new Map<string, number>();
+    if (deps.getUserPrincipals && deps.getEffectivePermissionsForResources) {
+      try {
+        const principals = await deps.getUserPrincipals({ userId: user });
+        permissionsById = await deps.getEffectivePermissionsForResources(
+          principals,
+          ResourceType.CHAT_PROJECT,
+          shared.map((project) => project._id),
+        );
+      } catch (error) {
+        logger.warn('[chatProject] Failed to resolve shared project permissions', error);
+      }
+    }
+    const stats = await statsPromise;
+    return projects.map((project) => {
+      if (project.user === user) {
+        return project;
+      }
+      const id = project._id.toString();
+      return toMemberView(project, permissionsById.get(id) ?? PermissionBits.VIEW, stats.get(id));
+    });
   }
 
   async function updateChatProject(
@@ -500,7 +776,12 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     if (input.description !== undefined) {
       update.description = input.description?.trim().slice(0, maxDescriptionLength) ?? '';
     }
-    const ownerFilter = { _id: new mongoose.Types.ObjectId(projectId), user };
+    const editable = await getProjectWithPermission(user, projectId, PermissionBits.EDIT);
+    if (!editable) {
+      return null;
+    }
+    /** Keyed on the project's owner, so an editor's write lands on the project they checked. */
+    const ownerFilter = { _id: new mongoose.Types.ObjectId(projectId), user: editable.user };
     const expected = input.contextRevision;
     const hasExpected = typeof expected === 'number' && Number.isInteger(expected);
     const filter = hasExpected ? { ...ownerFilter, contextRevision: expected } : ownerFilter;
@@ -550,7 +831,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     limits?: Partial<ChatProjectLimits>,
   ): Promise<IChatProject | null> {
     const { maxFiles } = resolveChatProjectLimits(limits);
-    const project = await getChatProject(user, projectId);
+    const project = await getOwnedChatProject(user, projectId);
     if (!project) {
       return null;
     }
@@ -629,7 +910,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       if (updated) {
         return await dropIfFileDeleted(updated);
       }
-      const current = await getChatProject(user, projectId);
+      const current = await getOwnedChatProject(user, projectId);
       if (current?.file_ids?.includes(fileId)) {
         return current;
       }
@@ -658,7 +939,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       { $pull: { file_ids: fileId }, $inc: { contextRevision: 1 } },
       { new: true },
     ).lean<IChatProject>();
-    return project ?? getChatProject(user, projectId);
+    return project ?? getOwnedChatProject(user, projectId);
   }
 
   async function deleteChatProject(
@@ -677,11 +958,13 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       return { deletedCount: 0, modifiedCount: 0 };
     }
 
+    /** Members' chats in a shared project point at it too, not just the owner's. */
     const conversationResult = await Conversation.updateMany(
-      { user, chatProjectId: projectId },
+      { chatProjectId: projectId },
       { $unset: { chatProjectId: '' } },
     );
     const deleteResult = await ChatProject.deleteOne(projectFilter);
+    await removeProjectPermissions([project._id as Types.ObjectId]);
 
     return {
       deletedCount: deleteResult.deletedCount ?? 0,
@@ -689,11 +972,40 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     };
   }
 
-  /** Account erasure: the user's conversations are deleted first, so no chat keeps a pointer. */
+  /**
+   * Account erasure: the user's own conversations are deleted first, but members of a project
+   * they shared may still have chats pointing at it, and its ACL entries would otherwise remain.
+   */
   async function deleteUserChatProjects(user: string): Promise<number> {
     const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const projectIds = (await ChatProject.find({ user }).select('_id').lean()).map(
+      (project) => project._id as Types.ObjectId,
+    );
+    if (projectIds.length === 0) {
+      return 0;
+    }
+    await Conversation.updateMany(
+      { chatProjectId: { $in: projectIds.map((id) => id.toString()) } },
+      { $unset: { chatProjectId: '' } },
+    );
     const result = await ChatProject.deleteMany({ user });
+    await removeProjectPermissions(projectIds);
     return result.deletedCount ?? 0;
+  }
+
+  async function removeProjectPermissions(projectIds: Types.ObjectId[]): Promise<void> {
+    if (!deps.deleteAclEntries || projectIds.length === 0) {
+      return;
+    }
+    try {
+      await deps.deleteAclEntries({
+        resourceType: ResourceType.CHAT_PROJECT,
+        resourceId: { $in: projectIds },
+      });
+    } catch (error) {
+      logger.warn('[chatProject] Failed to remove project permissions', error);
+    }
   }
 
   async function assignConversationToProject(
@@ -701,7 +1013,6 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     conversationId: string,
     projectId: string | null,
   ): Promise<AssignConversationToProjectResult | null> {
-    const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const conversation = await Conversation.findOne({ user, conversationId }).lean<IConversation>();
     if (!conversation) {
@@ -710,16 +1021,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
 
     const normalizedProjectId = projectId || null;
     if (normalizedProjectId) {
-      if (!isValidObjectIdString(normalizedProjectId)) {
-        throw new Error('Project not found');
-      }
-      const project = await ChatProject.findOne({
-        _id: new mongoose.Types.ObjectId(normalizedProjectId),
-        user,
-      })
-        .select('_id')
-        .lean<IChatProject>();
-      if (!project) {
+      if (!(await hasChatProjectAccess(user, normalizedProjectId))) {
         throw new Error('Project not found');
       }
     }
@@ -754,6 +1056,10 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
   }
 
   return {
+    getChatProjectAccess,
+    hasChatProjectAccess,
+    getChatProjectView,
+    listAccessibleChatProjectIds,
     createChatProject,
     getChatProject,
     listChatProjects,

@@ -37,6 +37,7 @@ jest.mock('~/models', () => ({
   listChatProjects: jest.fn(),
   createChatProject: jest.fn(),
   getChatProject: jest.fn(),
+  getChatProjectView: jest.fn(),
   updateChatProject: jest.fn(),
   deleteChatProject: jest.fn(),
   assignConversationToProject: jest.fn(),
@@ -49,6 +50,7 @@ jest.mock('~/server/middleware', () => ({
   requireJwtAuth: mockRequireJwtAuth,
   configMiddleware: mockConfigMiddleware,
 }));
+jest.mock('~/server/services/PermissionService', () => ({ grantPermission: jest.fn() }));
 
 const projectsRouter = require('../projects');
 

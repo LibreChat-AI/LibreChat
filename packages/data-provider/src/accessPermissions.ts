@@ -40,6 +40,7 @@ export enum ResourceType {
   REMOTE_AGENT = 'remoteAgent',
   SKILL = 'skill',
   SHARED_LINK = 'sharedLink',
+  CHAT_PROJECT = 'chatProject',
 }
 
 /**
@@ -82,6 +83,9 @@ export enum AccessRoleIds {
   SKILL_OWNER = 'skill_owner',
   SHARED_LINK_VIEWER = 'sharedLink_viewer',
   SHARED_LINK_OWNER = 'sharedLink_owner',
+  CHAT_PROJECT_VIEWER = 'chatProject_viewer',
+  CHAT_PROJECT_EDITOR = 'chatProject_editor',
+  CHAT_PROJECT_OWNER = 'chatProject_owner',
 }
 
 // ===== ZOD SCHEMAS =====
