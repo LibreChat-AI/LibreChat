@@ -88,6 +88,7 @@ const {
 
 // Config owns the reader; models never import this module to obtain it.
 db.initializeMessageBudget(getAppConfig);
+db.initializeChannelStorageConfig(getAppConfig);
 
 /**
  * Admin config writes clear the per-principal override caches, the MCP config-source servers
