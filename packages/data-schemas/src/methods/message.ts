@@ -15,6 +15,7 @@ import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/ret
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
 import { prepareSubagentContentDeletion } from './subagentContent';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { splitProviderItems } from '~/utils/providerItems';
 import { tenantStorage } from '~/config/tenantContext';
 import logger from '~/config/winston';
 
@@ -1230,6 +1231,8 @@ export function createMessageMethods(
         user: userId,
         messageId: params.newMessageId || params.messageId,
       };
+      /** Written only from the provider items `saveMessage` splits off a response's content. */
+      delete update.providerItems;
       delete update.privateText;
       delete update.privacyRevision;
       delete update.privateTextTokens;
@@ -1242,6 +1245,13 @@ export function createMessageMethods(
       }
       delete update.isTemporary;
       delete update.expiredAt;
+      const split = splitProviderItems(update.content);
+      if (split != null) {
+        update.content = split.content;
+        if (params.isCreatedByUser !== true && Object.keys(split.providerItems).length > 0) {
+          update.providerItems = split.providerItems;
+        }
+      }
       let retentionOnInsert: { expiredAt: Date; isTemporary: false } | undefined;
 
       const forcedTemporary = isForcedTemporaryRetention(interfaceConfig?.retentionMode);
@@ -1450,6 +1460,7 @@ export function createMessageMethods(
       const Message = mongoose.models.Message as Model<IMessage>;
       const bulkOps = messages.map((message) => {
         const normalizedMessage = sanitizeMessageUpdate(message);
+        delete normalizedMessage.providerItems;
         delete normalizedMessage.privateText;
         delete normalizedMessage.privacyRevision;
         delete normalizedMessage.privateTextTokens;
@@ -2591,6 +2602,7 @@ export function createMessageMethods(
   ) {
     try {
       const { messageId, ...update } = message;
+      delete update.providerItems;
       delete update.privateText;
       delete update.privacyRevision;
       delete update.privateTextTokens;

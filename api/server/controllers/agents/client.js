@@ -138,6 +138,7 @@ const {
   agentHasInlineMemoryTools,
   loadAgent: loadAgentFn,
   createMultiAgentMapper,
+  attachProviderItems,
   filterMalformedContentParts,
   countFormattedMessageTokens,
   prependFileContext,
@@ -2375,13 +2376,15 @@ class AgentClient extends BaseClient {
       this.compactionSemanticIndexSnapshot = undefined;
     }
     /** Always pass mapMethod; getMessagesForConversation applies it only to messages with addedConvo flag */
-    const orderedMessages = this.constructor.getMessagesForConversation({
-      messages,
-      parentMessageId,
-      summary: this.shouldSummarize,
-      mapMethod: createMultiAgentMapper(this.options.agent, this.agentConfigs),
-      mapCondition: (message) => message.addedConvo === true,
-    });
+    const orderedMessages = this.constructor
+      .getMessagesForConversation({
+        messages,
+        parentMessageId,
+        summary: this.shouldSummarize,
+        mapMethod: createMultiAgentMapper(this.options.agent, this.agentConfigs),
+        mapCondition: (message) => message.addedConvo === true,
+      })
+      .map(attachProviderItems);
     /**
      * Answers the user gave to earlier `ask_user_question` calls. Read from the
      * rows before `messages` is narrowed to `orderedMessages`; when those rows

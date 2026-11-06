@@ -95,6 +95,12 @@ export interface IMessage extends Document {
   };
   plugins?: unknown[];
   content?: unknown[];
+  /**
+   * Provider output items of this response's tool rounds, by tool call id (OpenAI Responses
+   * ids, status and encrypted reasoning). Server-written by `saveMessage`, read only to
+   * replay a round as it was sent.
+   */
+  providerItems?: Record<string, unknown>;
   thread_id?: string;
   iconURL?: string;
   addedConvo?: boolean;
