@@ -25,6 +25,8 @@ module.exports = createSlackWorkspaceBindingHandlers({
   workspaces: createSlackWorkspaceStorage(mongoose),
   routes: createSlackRouteStorage(mongoose, async () => (await readSettings()).channels),
   readSettings,
+  isPrincipalActive: db.isAgentTriggerPrincipalActive,
+  getAgentName: db.getAgentName,
   canManage: createSlackWorkspaceAdminGuard({
     findUser: (id) => db.findUser({ _id: id }),
     isPrincipalActive: db.isAgentTriggerPrincipalActive,

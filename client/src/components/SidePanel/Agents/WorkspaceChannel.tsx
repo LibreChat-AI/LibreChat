@@ -1,20 +1,34 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import { ExternalLink, Plus } from 'lucide-react';
 import { dataService, QueryKeys, MutationKeys } from 'librechat-data-provider';
-import { Button, Checkbox, Input, Label, OGDialogFooter, Separator } from '@librechat/client';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  Alert,
+  Button,
+  Input,
+  Label,
+  OGDialog,
+  OGDialogTemplate,
+  OGDialogFooter,
+  Separator,
+  Tag,
+} from '@librechat/client';
 import type { AgentChannel, SlackWorkspaceRouteTarget } from 'librechat-data-provider';
+import type { TranslationKeys } from '~/hooks';
 import { channelErrorLabel } from '~/utils/channelErrors';
 import { useLocalize, useDebounce } from '~/hooks';
 import ChannelStatus from './ChannelStatus';
 
 type Action =
-  | { kind: 'assign' }
+  | { kind: 'assign'; replacementRevision?: string }
   | { kind: 'remove'; target: SlackWorkspaceRouteTarget }
-  | { kind: 'disable' | 'delete' };
+  | { kind: 'disable' }
+  | { kind: 'delete' };
 
 /** Installation credentials never enter Agent Builder; only routing and personal-link consent do. */
 export default function WorkspaceChannel({
   agentId,
+  initialSetup,
   channel,
   userId,
   tenantId,
@@ -22,6 +36,7 @@ export default function WorkspaceChannel({
   onClose,
 }: {
   agentId: string;
+  initialSetup: boolean;
   channel: AgentChannel;
   userId: string;
   tenantId?: string;
@@ -47,26 +62,31 @@ export default function WorkspaceChannel({
   ];
   const [specific, setSpecific] = useState(false);
   const [externalChannel, setExternalChannel] = useState('');
-  const [replace, setReplace] = useState(false);
+  const [editing, setEditing] = useState(initialSetup);
+  const actionRef = useRef<HTMLButtonElement | null>(null);
+  const addRef = useRef<HTMLButtonElement | null>(null);
   const [confirm, setConfirm] = useState<
-    { kind: 'delete' } | { kind: 'remove'; target: SlackWorkspaceRouteTarget } | null
+    | { kind: 'delete' }
+    | { kind: 'remove'; target: SlackWorkspaceRouteTarget }
+    | { kind: 'assign'; replacementRevision: string }
+    | null
   >(null);
   const workspace = useQuery(
     [QueryKeys.slackWorkspaces, principalKey, channel.workspaceId],
     () => dataService.getSlackWorkspace(channel.workspaceId!),
     { retry: false },
   );
-  const canManage = Boolean(workspace.data?.canManage);
+  const ownsChannel = channel.createdBy === userId;
   const available = Boolean(
     workspace.data?.configured && workspace.data.workspace.status === 'active',
   );
-  const mayRoute = enabled && canManage && available && channel.status !== 'deleting';
+  const mayRoute = enabled && ownsChannel && available && channel.status !== 'deleting';
   const routes = useInfiniteQuery(
     routesKey,
     ({ pageParam }: { pageParam?: string }) =>
       dataService.getAgentChannelWorkspaceRoutes(agentId, channel.channelId, pageParam),
     {
-      enabled: enabled && canManage,
+      enabled: enabled && ownsChannel,
       retry: false,
       getNextPageParam: (page) => page.next,
     },
@@ -85,9 +105,8 @@ export default function WorkspaceChannel({
   const target = useQuery(
     targetKey,
     () => dataService.getAgentChannelWorkspaceTarget(agentId, channel.channelId, targetId),
-    { enabled: mayRoute && validTarget && settledInput, retry: false },
+    { enabled: editing && mayRoute && validTarget && settledInput, retry: false },
   );
-  useEffect(() => setReplace(false), [target.data?.revision, targetId]);
   const mutation = useMutation({
     mutationKey: [
       MutationKeys.agentChannelWorkspaceRoutes,
@@ -102,7 +121,6 @@ export default function WorkspaceChannel({
         return dataService.disableAgentChannel(agentId, channel.channelId);
       if (action.kind === 'delete')
         return dataService.deleteAgentChannel(agentId, channel.channelId);
-      if (!canManage) throw new Error('Workspace administration required');
       if (action.kind === 'remove')
         return dataService.removeAgentChannelWorkspaceRoute(agentId, channel.channelId, {
           externalChannelId: action.target.externalChannelId,
@@ -114,7 +132,9 @@ export default function WorkspaceChannel({
         !settledInput ||
         !target.isSuccess ||
         target.isFetching ||
-        (target.data.occupied && !target.data.assignedToThisChannel && !replace)
+        (target.data.occupied &&
+          !target.data.assignedToThisChannel &&
+          (!target.data.canReplace || action.replacementRevision !== target.data.revision))
       )
         throw new Error('Route changed');
       return dataService.setAgentChannelWorkspaceRoute(agentId, channel.channelId, {
@@ -125,6 +145,7 @@ export default function WorkspaceChannel({
     },
     onSuccess: (_result, action) => {
       if (mounted.current) {
+        if (action.kind === 'remove') actionRef.current = addRef.current;
         setConfirm(null);
         if (action.kind !== 'remove') onClose();
       }
@@ -150,7 +171,36 @@ export default function WorkspaceChannel({
   const busy = !enabled || mutation.isLoading || channel.status === 'deleting';
   const entries = routes.data?.pages.flatMap((page) => page.routes) ?? [];
   const replacesOther = settledInput && target.data?.occupied && !target.data.assignedToThisChannel;
-  const alreadyAssigned = target.data?.assignedToThisChannel && channel.status === 'active';
+  const blocked = replacesOther && target.data?.canReplace !== true;
+  const replaceAssignmentLabel = specific
+    ? 'com_ui_channels_workspace_replace_channel_assignment'
+    : 'com_ui_channels_workspace_replace_assignment';
+  const alreadyAssigned =
+    settledInput &&
+    target.isSuccess &&
+    !target.isFetching &&
+    target.data.assignedToThisChannel &&
+    channel.status === 'active';
+  const assignmentDisabled =
+    busy ||
+    !mayRoute ||
+    !validTarget ||
+    !settledInput ||
+    !target.isSuccess ||
+    target.isFetching ||
+    Boolean(blocked) ||
+    Boolean(replacesOther && !target.data?.revision);
+  let confirmationTitle: TranslationKeys = 'com_ui_channels_workspace_delete_connection';
+  let confirmationHelp: TranslationKeys = 'com_ui_channels_workspace_delete_confirm';
+  if (confirm?.kind === 'remove') {
+    confirmationTitle = 'com_ui_channels_workspace_remove_assignment';
+    confirmationHelp = 'com_ui_channels_workspace_remove_confirm';
+  } else if (confirm?.kind === 'assign') {
+    confirmationTitle = replaceAssignmentLabel;
+    confirmationHelp = specific
+      ? 'com_ui_channels_workspace_replace_channel_help'
+      : 'com_ui_channels_workspace_replace_help';
+  }
   return (
     <>
       <div className="min-h-0 space-y-4 overflow-y-auto px-6 pb-6 text-sm">
@@ -158,9 +208,23 @@ export default function WorkspaceChannel({
           <span className="min-w-0 flex-1 font-medium break-words">
             {workspace.data?.workspace.teamName ?? localize('com_ui_channels_org_workspace')}
           </span>
-          <ChannelStatus status={channel.status} />
+          <ChannelStatus
+            status={channel.status}
+            pendingLabel="com_ui_channels_workspace_not_assigned"
+          />
         </div>
-        <p className="text-text-secondary">{localize('com_ui_channels_workspace_identity')}</p>
+        {workspace.data && (
+          <a
+            href={`https://slack.com/app_redirect?app=${encodeURIComponent(workspace.data.workspace.appId)}&team=${encodeURIComponent(workspace.data.workspace.teamId)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1 underline underline-offset-2"
+          >
+            {localize('com_ui_channels_workspace_open_bot')}
+            <ExternalLink className="size-3" aria-hidden="true" />
+          </a>
+        )}
+
         {workspace.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
         {workspace.isError && (
           <div role="alert">
@@ -173,17 +237,27 @@ export default function WorkspaceChannel({
         {workspace.data && !available && (
           <p role="status">{localize('com_ui_channels_workspace_unavailable')}</p>
         )}
-        {workspace.data && !canManage && <p>{localize('com_ui_slack_workspaces_admin')}</p>}
+        {!ownsChannel && <p>{localize('com_ui_channels_read_only')}</p>}
         {mutation.isError && (
           <p role="alert">
             {localize(channelErrorLabel(mutation.error, 'com_ui_channels_workspace_route_error'))}
           </p>
         )}
-        {canManage && (
-          <section className="space-y-2" aria-labelledby={`${id}-routes`}>
-            <h4 id={`${id}-routes`} className="font-medium">
-              {localize('com_ui_channels_workspace_routes')}
-            </h4>
+        {!editing && ownsChannel && (
+          <section
+            className="space-y-2"
+            aria-labelledby={entries.length > 0 ? `${id}-routes` : undefined}
+            aria-label={
+              entries.length === 0
+                ? localize('com_ui_channels_workspace_add_assignment')
+                : undefined
+            }
+          >
+            {entries.length > 0 && (
+              <h4 id={`${id}-routes`} className="font-medium">
+                {localize('com_ui_channels_workspace_routes')}
+              </h4>
+            )}
             {routes.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
             {routes.isError && (
               <div role="alert">
@@ -192,11 +266,6 @@ export default function WorkspaceChannel({
                   {localize('com_ui_retry')}
                 </Button>
               </div>
-            )}
-            {routes.isSuccess && entries.length === 0 && (
-              <p className="text-text-secondary">
-                {localize('com_ui_channels_workspace_no_routes')}
-              </p>
             )}
             {entries.map((entry) => (
               <div
@@ -211,7 +280,10 @@ export default function WorkspaceChannel({
                   variant="section-action"
                   size="compact"
                   disabled={busy}
-                  onClick={() => setConfirm({ kind: 'remove', target: entry })}
+                  onClick={(event) => {
+                    actionRef.current = event.currentTarget;
+                    setConfirm({ kind: 'remove', target: entry });
+                  }}
                 >
                   {localize('com_ui_channels_workspace_remove_route')}
                 </Button>
@@ -227,13 +299,38 @@ export default function WorkspaceChannel({
                 {localize('com_ui_channels_workspace_more_routes')}
               </Button>
             )}
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy || !mayRoute || !routes.isSuccess}
+              ref={addRef}
+              onClick={() => {
+                mutation.reset();
+                setSpecific(entries.some((entry) => !entry.externalChannelId));
+                setExternalChannel('');
+                setEditing(true);
+              }}
+            >
+              <Plus className="size-4" aria-hidden="true" />
+              {localize('com_ui_channels_workspace_add_assignment')}
+            </Button>
           </section>
         )}
-        {mayRoute && (
+        {editing && mayRoute && (
           <section className="space-y-3" aria-labelledby={`${id}-target`}>
-            <h4 id={`${id}-target`} className="font-medium">
-              {localize('com_ui_channels_workspace_target')}
-            </h4>
+            <div className="flex items-center justify-between gap-2">
+              <h4 id={`${id}-target`} className="min-w-0 font-medium">
+                {localize('com_ui_channels_workspace_target')}
+              </h4>
+              {alreadyAssigned && (
+                <Tag
+                  role="status"
+                  className="shrink-0"
+                  variant="success"
+                  label={localize('com_ui_channels_workspace_assigned')}
+                />
+              )}
+            </div>
             <div
               role="group"
               aria-label={localize('com_ui_channels_workspace_target')}
@@ -246,7 +343,6 @@ export default function WorkspaceChannel({
                 disabled={busy}
                 onClick={() => {
                   setSpecific(false);
-                  setReplace(false);
                 }}
               >
                 {localize('com_ui_channels_workspace_default')}
@@ -258,7 +354,6 @@ export default function WorkspaceChannel({
                 disabled={busy}
                 onClick={() => {
                   setSpecific(true);
-                  setReplace(false);
                 }}
               >
                 {localize('com_ui_channels_workspace_specific')}
@@ -285,7 +380,6 @@ export default function WorkspaceChannel({
                   disabled={busy}
                   onChange={(event) => {
                     setExternalChannel(event.target.value);
-                    setReplace(false);
                   }}
                 />
               </div>
@@ -301,99 +395,145 @@ export default function WorkspaceChannel({
                 </Button>
               </div>
             )}
-            {replacesOther && (
-              <div className="border-border-medium space-y-2 rounded-lg border p-3">
-                <p>{localize('com_ui_channels_workspace_replace_help')}</p>
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    aria-label={localize('com_ui_channels_workspace_replace')}
-                    id={`${id}-replace`}
-                    checked={replace}
-                    disabled={busy}
-                    onCheckedChange={(value) => setReplace(value === true)}
-                  />
-                  <Label htmlFor={`${id}-replace`}>
-                    {localize('com_ui_channels_workspace_replace')}
-                  </Label>
-                </div>
-              </div>
+            {blocked && (
+              <Alert variant="warning">{localize('com_ui_channels_workspace_route_owned')}</Alert>
             )}
-            <Button
-              type="button"
-              disabled={
-                busy ||
-                !validTarget ||
-                !settledInput ||
-                !target.isSuccess ||
-                target.isFetching ||
-                Boolean(alreadyAssigned) ||
-                Boolean(replacesOther && !replace)
-              }
-              onClick={() => mutation.mutate({ kind: 'assign' })}
-            >
-              {localize(
-                channel.status === 'active'
-                  ? 'com_ui_channels_workspace_assign'
-                  : 'com_ui_channels_activate',
-              )}
-            </Button>
-          </section>
-        )}
-        {confirm && (
-          <div
-            role="group"
-            aria-label={localize('com_ui_channels_workspace_confirm_title')}
-            className="border-border-medium space-y-3 rounded-lg border p-3"
-          >
-            <p>
-              {localize(
-                confirm.kind === 'delete'
-                  ? 'com_ui_channels_workspace_delete_confirm'
-                  : 'com_ui_channels_workspace_remove_confirm',
-              )}
+            {replacesOther && !blocked && (
+              <Alert variant="warning">
+                {target.data?.assignedAgentName
+                  ? localize('com_ui_channels_workspace_occupied_named', {
+                      0: target.data.assignedAgentName,
+                    })
+                  : localize('com_ui_channels_workspace_occupied')}
+              </Alert>
+            )}
+            <p className="text-text-secondary text-xs">
+              {localize('com_ui_channels_workspace_identity')}
             </p>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="destructive"
-                disabled={busy}
-                onClick={() => mutation.mutate(confirm)}
-              >
-                {localize('com_ui_confirm')}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                onClick={() => setConfirm(null)}
-              >
-                {localize('com_ui_cancel')}
-              </Button>
-            </div>
-          </div>
+          </section>
         )}
       </div>
       <Separator />
       <OGDialogFooter className="flex-wrap gap-2 px-6 py-4 sm:justify-between">
-        <Button
-          type="button"
-          variant="destructive-soft"
-          disabled={busy}
-          onClick={() => setConfirm({ kind: 'delete' })}
-        >
-          {localize('com_ui_delete')}
-        </Button>
-        {channel.status === 'active' && (
-          <Button
-            type="button"
-            variant="outline"
-            disabled={busy}
-            onClick={() => mutation.mutate({ kind: 'disable' })}
-          >
-            {localize('com_ui_channels_disable')}
-          </Button>
+        {editing ? (
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={mutation.isLoading}
+              onClick={() => {
+                mutation.reset();
+                if (initialSetup) onClose();
+                else setEditing(false);
+              }}
+            >
+              {localize('com_ui_cancel')}
+            </Button>
+            {!alreadyAssigned && (
+              <Button
+                type="button"
+                disabled={assignmentDisabled}
+                aria-busy={mutation.isLoading}
+                onClick={(event) => {
+                  if (replacesOther && target.data?.revision) {
+                    actionRef.current = event.currentTarget;
+                    setConfirm({ kind: 'assign', replacementRevision: target.data.revision });
+                  } else mutation.mutate({ kind: 'assign' });
+                }}
+              >
+                {localize(
+                  replacesOther ? replaceAssignmentLabel : 'com_ui_channels_workspace_assign',
+                )}
+              </Button>
+            )}
+          </>
+        ) : (
+          <>
+            <Button
+              type="button"
+              variant="destructive-soft"
+              disabled={busy}
+              onClick={(event) => {
+                actionRef.current = event.currentTarget;
+                setConfirm({ kind: 'delete' });
+              }}
+            >
+              {localize('com_ui_channels_workspace_delete_connection')}
+            </Button>
+            {channel.status === 'active' && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={() => mutation.mutate({ kind: 'disable' })}
+              >
+                {localize('com_ui_channels_disable')}
+              </Button>
+            )}
+          </>
         )}
       </OGDialogFooter>
+      <OGDialog
+        open={confirm !== null}
+        onOpenChange={(open) => {
+          if (!open && !mutation.isLoading) setConfirm(null);
+        }}
+      >
+        <OGDialogTemplate
+          className="max-w-md"
+          footerClassName="sm:justify-between"
+          title={
+            confirm?.kind === 'assign' && target.data?.assignedAgentName
+              ? localize('com_ui_channels_workspace_replace_named', {
+                  0: target.data.assignedAgentName,
+                })
+              : localize(confirmationTitle)
+          }
+          description={workspace.data?.workspace.teamName}
+          cancelDisabled={mutation.isLoading}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            if (actionRef.current?.isConnected) actionRef.current.focus();
+            else addRef.current?.focus();
+          }}
+          main={
+            <div className="space-y-3 text-sm">
+              <p className="text-text-secondary">{localize(confirmationHelp)}</p>
+              {confirm?.kind === 'assign' &&
+                target.data?.revision !== confirm.replacementRevision && (
+                  <Alert variant="warning">
+                    {localize('com_ui_channels_workspace_replacement_changed')}
+                  </Alert>
+                )}
+              {mutation.isError && (
+                <Alert variant="error">
+                  {localize(
+                    channelErrorLabel(mutation.error, 'com_ui_channels_workspace_route_error'),
+                  )}
+                </Alert>
+              )}
+            </div>
+          }
+          selection={
+            <Button
+              type="button"
+              variant={confirm?.kind === 'assign' ? 'default' : 'destructive'}
+              disabled={
+                busy ||
+                !confirm ||
+                (confirm.kind === 'assign' &&
+                  (assignmentDisabled || target.data?.revision !== confirm.replacementRevision))
+              }
+              aria-busy={mutation.isLoading}
+              onClick={() => {
+                if (confirm) mutation.mutate(confirm);
+              }}
+            >
+              {localize(confirmationTitle)}
+            </Button>
+          }
+        />
+      </OGDialog>
     </>
   );
 }
