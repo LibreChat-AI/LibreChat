@@ -22,15 +22,17 @@ export function mockVisibility() {
     .spyOn(window, 'IntersectionObserver')
     .mockImplementation((callback: IntersectionObserverCallback) => {
       const targets = new Set<Element>();
-      const observer: IntersectionObserver = {
+      // Unannotated so the extra `scrollMargin` is accepted by DOM libs that predate it.
+      const observer = {
         root: null,
         rootMargin: '0px',
+        scrollMargin: '0px',
         thresholds: [0],
-        observe: (target) => {
+        observe: (target: Element) => {
           targets.add(target);
           observers.set(observer, callback);
         },
-        unobserve: (target) => {
+        unobserve: (target: Element) => {
           targets.delete(target);
           if (targets.size === 0) {
             observers.delete(observer);
