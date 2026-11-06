@@ -2,6 +2,7 @@ import type { ChannelReplyMapping } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import { initializeResponseScopes, responseScopeKeys } from './responseScope';
 import { assertChannelTenant, touchChannelAuthority } from './channelScope';
+import { startRequiredTransactionSession } from '~/utils/transactions';
 import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { createResponseScopeModel } from '~/models/responseScope';
 
@@ -131,7 +132,7 @@ export async function withChannelFeedbackAuthority<T>(
   };
   const keys = responseScopeKeys(owner, mapping.conversationId);
   await initializeResponseScopes(mongoose, keys);
-  const session = await mongoose.startSession();
+  const session = await startRequiredTransactionSession(mongoose);
   try {
     let value!: T;
     await session.withTransaction(async () => {
