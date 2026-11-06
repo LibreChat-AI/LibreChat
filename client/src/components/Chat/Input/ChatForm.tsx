@@ -3,6 +3,7 @@ import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
 import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
+import { Button, Spinner } from '@librechat/client';
 import { useDirection } from '@radix-ui/react-direction';
 import { useSteering, showStopButtonByIndex, useComposerRestoreHost } from '@librechat/chat/react';
 import {
@@ -781,7 +782,18 @@ const ChatForm = memo(function ChatForm({
           className="text-text-secondary px-5 pb-2 text-sm"
         >
           {localize('com_ui_select_model_to_continue')}
-          {!modelAvailability.hasModels && <> {localize('com_ui_models_unavailable_wait')}</>}
+          {!modelAvailability.hasModels && <> {localize('com_ui_models_unavailable_wait')}</>}{' '}
+          <Button
+            type="button"
+            variant="hyperlink"
+            size="bare"
+            disabled={modelAvailability.isRefreshingModels}
+            aria-busy={modelAvailability.isRefreshingModels}
+            onClick={() => void modelAvailability.refreshModels({ cancelRefetch: false })}
+          >
+            {modelAvailability.isRefreshingModels && <Spinner className="size-3" />}
+            {localize('com_ui_refresh_models')}
+          </Button>
         </p>
       )}
       {/* The composer is what keeps MCP connection and authorization state

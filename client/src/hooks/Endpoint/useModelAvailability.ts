@@ -21,6 +21,8 @@ export default function useModelAvailability(
     available(conversation) && (addedConversation == null || available(addedConversation));
   return {
     ready,
+    refreshModels: query.refetch,
+    isRefreshingModels: query.isFetching,
     canSubmit,
     showSelectionHint: endpoints != null && !canSubmit,
     hasModels:

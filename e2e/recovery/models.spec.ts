@@ -13,6 +13,7 @@ test('an imported chat keeps its history while model access recovers', async ({
     conversationId: '78f5a289-5ebd-4314-898c-e06135f76b6a',
     title: 'Model recovery history',
     endpoint: 'Recovery',
+    options: { model: 'recovery-model' },
     messages: [
       {
         messageId: '11111111-1111-4111-8111-111111111111',
@@ -57,10 +58,11 @@ test('an imported chat keeps its history while model access recovers', async ({
     .filter({ hasText: 'Keep this original answer.' });
   await expect(originalQuestion).toBeVisible();
   await expect(originalAnswer).toBeVisible();
+  await expect(page.getByTestId('model-selector-button').first()).toContainText('recovery-model');
   await expect(page.getByText('Select a model to continue.', { exact: false })).toBeVisible();
   await expect(
     page.getByText(
-      'No models are available. Wait for access to return or contact an administrator.',
+      'No models are available. Refresh after access returns, or contact an administrator. Changes may take up to two minutes to appear.',
       { exact: false },
     ),
   ).toBeVisible();
@@ -77,12 +79,30 @@ test('an imported chat keeps its history while model access recovers', async ({
   await expect(page.getByTestId('send-button')).toBeDisabled();
   await page.screenshot({ path: testInfo.outputPath('unavailable-mobile.png') });
   await page.setViewportSize({ width: 1280, height: 720 });
-  await request.post(`${providerURL}/availability?available=true`);
-  await page.reload();
+  // A failed HTTP refresh must leave the fetched catalog and staged draft in place.
+  await page.route('**/api/models', (route) => route.abort('failed'));
+  const refresh = page.getByRole('button', { name: 'Refresh models' });
+  await Promise.all([
+    page.waitForEvent('requestfailed', (request) => request.url().endsWith('/api/models')),
+    refresh.click(),
+  ]);
+  await expect(refresh).toBeEnabled({ timeout: 30_000 });
+  await expect(input).toHaveValue('Continue this history.');
+  await expect(page.getByTestId('send-button')).toBeDisabled();
+  await expect(originalQuestion).toBeVisible();
   await expect(originalAnswer).toBeVisible();
-  // Existing chat-opening defaults choose the restored provider's available model.
+  await page.unroute('**/api/models');
+
+  await request.post(`${providerURL}/availability?available=true`);
+  // This account-scoped provider bypasses the shared server cache. The backend
+  // cache regression separately checks recovery only after its two-minute TTL.
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/api/models') && response.ok()),
+    refresh.click(),
+  ]);
+  await expect(originalAnswer).toBeVisible();
   await expect(page.getByTestId('model-selector-button').first()).toContainText('recovery-model');
-  await input.fill('Continue this history.');
+  await expect(input).toHaveValue('Continue this history.');
   await expect(page.getByTestId('send-button')).toBeEnabled();
   await page.getByTestId('send-button').click();
   await expect(
@@ -98,6 +118,6 @@ test('an imported chat keeps its history while model access recovers', async ({
   ).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('recovered.png') });
   console.log(
-    'Recovery verified: import with empty catalog; history visible; send blocked; restore catalog; existing chat-opening fallback selects model; send reply; original history preserved.',
+    'Recovery verified: import with empty catalog; history visible; send blocked; failed refresh preserves draft; explicit refresh restores catalog without reloading or replacing the saved model; send reply; original history preserved.',
   );
 });

@@ -1208,29 +1208,32 @@ it('keeps account-specific model requests isolated and restores later availabili
   );
 });
 
-it('fetches again after the existing two-minute model cache expires', async () => {
-  jest.useFakeTimers({ now: 1000 });
-  try {
-    const cache = new Keyv();
-    mockCacheGet.mockImplementation((key: string) => cache.get(key));
-    mockCacheSet.mockImplementation((key: string, value: string[], ttl: number) =>
-      cache.set(key, value, ttl),
-    );
-    mockedAxios.get
-      .mockClear()
-      .mockResolvedValueOnce({ data: { data: [{ id: 'first' }] } })
-      .mockResolvedValue({ data: { data: [{ id: 'later' }] } });
-    const params = { apiKey: 'test', baseURL: 'https://cache.test', createTokenConfig: false };
-    expect(await fetchModels(params)).toEqual(['first']);
-    jest.setSystemTime(1000 + Time.TWO_MINUTES - 1);
-    expect(await fetchModels(params)).toEqual(['first']);
-    jest.setSystemTime(1000 + Time.TWO_MINUTES + 1);
-    expect(await fetchModels(params)).toEqual(['later']);
-    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
-  } finally {
-    jest.useRealTimers();
-  }
-});
+it.each([{ initial: [] }, { initial: ['first'] }])(
+  'refreshes the cached catalog $initial only after the existing two-minute cache expires',
+  async ({ initial }) => {
+    jest.useFakeTimers({ now: 1000 });
+    try {
+      const cache = new Keyv();
+      mockCacheGet.mockImplementation((key: string) => cache.get(key));
+      mockCacheSet.mockImplementation((key: string, value: string[], ttl: number) =>
+        cache.set(key, value, ttl),
+      );
+      mockedAxios.get
+        .mockClear()
+        .mockResolvedValueOnce({ data: { data: initial.map((id) => ({ id })) } })
+        .mockResolvedValue({ data: { data: [{ id: 'later' }] } });
+      const params = { apiKey: 'test', baseURL: 'https://cache.test', createTokenConfig: false };
+      expect(await fetchModels(params)).toEqual(initial);
+      jest.setSystemTime(1000 + Time.TWO_MINUTES - 1);
+      expect(await fetchModels(params)).toEqual(initial);
+      jest.setSystemTime(1000 + Time.TWO_MINUTES + 1);
+      expect(await fetchModels(params)).toEqual(['later']);
+      expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);
 
 describe('discovery recovery', () => {
   it.each([{ models: [] }, { models: ['cached-model'] }])(
