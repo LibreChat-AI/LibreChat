@@ -43,6 +43,7 @@ export interface SlackWorkspaceHandlers {
   get: RequestHandler;
   connect: RequestHandler;
   disconnect: RequestHandler;
+  remove: RequestHandler;
   cancel: RequestHandler;
   callback: RequestHandler;
 }
@@ -88,6 +89,19 @@ export function createSlackWorkspaceHandlers(deps: {
         });
       }
     };
+
+  const workspaceAction = (action: 'disconnect' | 'remove') =>
+    browser(async (req, res, principal) => {
+      const id = identifier.safeParse(req.params.workspaceId);
+      const body = z.object({ revision: identifier }).strict().safeParse(req.body);
+      if (!id.success || !body.success) {
+        res.status(400).json({ ok: false, error: { code: 'workspace_changed' } });
+        return;
+      }
+      const result = await deps.service[action](principal, id.data, body.data.revision);
+      if (!result.ok) res.status(result.error.code === 'forbidden' ? 403 : 409).json(result);
+      else res.sendStatus(204);
+    });
 
   return {
     apps: browser(async (req, res, principal) => {
@@ -187,17 +201,8 @@ export function createSlackWorkspaceHandlers(deps: {
       );
       res.json(result.value);
     }),
-    disconnect: browser(async (req, res, principal) => {
-      const id = identifier.safeParse(req.params.workspaceId);
-      const body = z.object({ revision: identifier }).strict().safeParse(req.body);
-      if (!id.success || !body.success) {
-        res.status(400).json({ ok: false, error: { code: 'workspace_changed' } });
-        return;
-      }
-      const result = await deps.service.disconnect(principal, id.data, body.data.revision);
-      if (!result.ok) res.status(result.error.code === 'forbidden' ? 403 : 409).json(result);
-      else res.sendStatus(204);
-    }),
+    disconnect: workspaceAction('disconnect'),
+    remove: workspaceAction('remove'),
     cancel: browser(async (req, res, principal) => {
       if (!/^[a-f0-9]{64}$/.test(req.params.flowId)) {
         res.status(400).json({ ok: false, error: { code: 'invalid_install' } });

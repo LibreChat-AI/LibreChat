@@ -72,6 +72,8 @@ export interface SlackWorkspaceStorage {
   read(workspaceId: string): Promise<SlackWorkspaceRecord | null>;
   metadata(workspaceId: string): Promise<SlackWorkspaceMetadata | null>;
   disconnect(workspaceId: string, expectedRevision?: string): Promise<boolean>;
+  /** Hide a retired installation while retaining its callback and ownership fences. */
+  remove(workspaceId: string, expectedRevision: string): Promise<boolean>;
   /** Trusted routing metadata, read only after authenticating the Slack request. */
   route(appId: string, teamId: string): Promise<SlackWorkspaceMetadata | null>;
 }
@@ -198,7 +200,13 @@ export function createSlackWorkspaceStorage(
           },
           { session },
         );
-        return changed.matchedCount ? 'removed' : 'conflict';
+        if (!changed.matchedCount) return 'conflict';
+        await workspaces.updateMany(
+          { appId, tenantId: tenantId ?? null, status: 'disconnected' },
+          { $set: { removedAt: new Date(), revision: nanoid() } },
+          { session },
+        );
+        return 'removed';
       });
     },
     async startInstall(input) {
@@ -329,7 +337,11 @@ export function createSlackWorkspaceStorage(
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
         throw new TypeError('Invalid Slack workspace page size');
       const records = await workspaces
-        .find({ tenantId: tenantId ?? null, ...(cursor ? { workspaceId: { $gt: cursor } } : {}) })
+        .find({
+          tenantId: tenantId ?? null,
+          removedAt: { $exists: false },
+          ...(cursor ? { workspaceId: { $gt: cursor } } : {}),
+        })
         .sort({ workspaceId: 1 })
         .limit(limit + 1)
         .read('primary')
@@ -386,6 +398,19 @@ export function createSlackWorkspaceStorage(
         if (!disconnected.matchedCount) throw new Error('Slack workspace ownership changed');
         return true;
       });
+    },
+    async remove(workspaceId, expectedRevision) {
+      const removed = await workspaces.updateOne(
+        {
+          workspaceId,
+          tenantId: tenant() ?? null,
+          revision: expectedRevision,
+          status: 'disconnected',
+          removedAt: { $exists: false },
+        },
+        { $set: { removedAt: new Date(), revision: nanoid() } },
+      );
+      return removed.matchedCount === 1;
     },
     async route(appId, teamId) {
       return runAsSystem(async () => {

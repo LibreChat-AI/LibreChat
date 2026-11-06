@@ -32,4 +32,5 @@ router.post(
   handlers.connect,
 );
 router.delete('/workspaces/:workspaceId', requireJwtAuth, requireSameOrigin, handlers.disconnect);
+router.post('/workspaces/:workspaceId/remove', requireJwtAuth, requireSameOrigin, handlers.remove);
 module.exports = router;
