@@ -14,7 +14,7 @@ export {
   resolveResponseContinuation,
 } from './persistence';
 export { createBackgroundResponseService } from './background';
-
+export { createBackgroundResponsesHost } from './host';
 export { createResponseExecutionRuntime } from './runtime';
 export { createResponseDecisionSubmission } from './decision';
 export { createResponseResumeValidation, createResponseResumeAdmission } from './resume';
