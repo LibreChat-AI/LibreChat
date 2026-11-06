@@ -13,6 +13,9 @@ import {
   MessageRow,
   MentionPopover,
   ChatScreen,
+  RemoveFile,
+  ElapsedTimer,
+  SystemEventHeader,
   HoverButtons,
   MessagesView,
   SiblingSwitch,
@@ -711,6 +714,9 @@ describe('a consumer rendering subagent activity', () => {
 });
 
 describe('a consumer styled by the published stylesheet alone', () => {
+  const i18n = createInstance();
+  void i18n.use(initReactI18next).init({ lng: 'en', resources: { en: { translation: {} } } });
+
   /** What `@librechat/client/style.css` declares for an element's own classes. jsdom cannot load
    *  the whole file (`@layer`, `:dir()`), so the rendered class list is matched by hand. */
   const stylesheet = readFileSync(require.resolve('@librechat/client/style.css'), 'utf8');
@@ -735,5 +741,32 @@ describe('a consumer styled by the published stylesheet alone', () => {
     );
     /** Neither custom property is defined by the published theme, so each chain ends in a length. */
     expect(rule.match(/var\(--font-size-base, 1rem\)/g)).toHaveLength(2);
+  });
+
+  it('sizes icons, sets the status row type and sweeps in-flight labels', () => {
+    render(
+      <I18nextProvider i18n={i18n}>
+        <SystemEventHeader icon={null} label="Woke up" />
+        <ElapsedTimer start={Date.now()} />
+        <RemoveFile onRemove={() => undefined} label="Remove report.pdf" />
+      </I18nextProvider>,
+    );
+
+    expect(declaredFor(screen.getByText('Woke up'))).toMatch(
+      /font-size:[^;]*--markdown-font-size[^;]*;\s*line-height:[^;]*--markdown-font-size/,
+    );
+    /** Neither custom property is defined by the published theme, so each chain ends in a length. */
+    const statusRule = declaredFor(screen.getByText('Woke up'));
+    expect(statusRule.match(/var\(--font-size-base, 1rem\)/g)).toHaveLength(2);
+
+    expect(declaredFor(screen.getByTestId('stream-elapsed'))).toMatch(/animation:[^;]*\bshimmer\b/);
+    expect(stylesheet).toMatch(/@keyframes shimmer\s*\{/);
+    expect(stylesheet).toMatch(/@keyframes shimmer-rtl\s*\{/);
+    expect(stylesheet).toMatch(/html\.high-contrast\s*\{[^}]*--shimmer-dip-alpha: 1/);
+
+    const icon = screen.getByRole('button', { name: 'Remove report.pdf' }).querySelector('svg');
+    const iconRule = declaredFor(icon as SVGElement);
+    expect(iconRule).toContain('width: 1rem');
+    expect(iconRule).toContain('height: 1rem');
   });
 });
