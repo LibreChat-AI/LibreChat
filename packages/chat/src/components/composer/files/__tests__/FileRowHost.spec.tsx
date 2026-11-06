@@ -116,7 +116,11 @@ describe('FileRow host behavior', () => {
     );
 
     expect(getPreviewUrl).toHaveBeenCalledWith(file.file_id);
-    expect(container.querySelector('[style*="host-preview"]')).toBeInTheDocument();
-    expect(container.querySelector('[style*="localhost:3080/preview)"]')).not.toBeInTheDocument();
+    expect(
+      container.querySelector('img[src="blob:http://localhost:3080/host-preview"]'),
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector('img[src="blob:http://localhost:3080/preview"]'),
+    ).not.toBeInTheDocument();
   });
 });
