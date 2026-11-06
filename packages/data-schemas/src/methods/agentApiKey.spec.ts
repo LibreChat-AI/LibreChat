@@ -43,8 +43,8 @@ describe('validateAgentApiKey', () => {
     ).toBeNull();
     expect(await methods.validateAgentApiKey(created.key)).toBeNull();
     expect(await methods.validateBoundAgentApiKey(created.key)).toEqual({
-      userId,
-      keyId: new mongoose.Types.ObjectId(created.id),
+      userId: String(userId),
+      keyId: created.id,
       binding,
     });
     expect(await methods.getAgentApiKeyById(created.id, userId)).toEqual(

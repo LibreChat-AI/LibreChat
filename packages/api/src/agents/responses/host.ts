@@ -38,6 +38,7 @@ import { createResponseDecisionSubmission } from './decision';
 import { resolveResponseContinuation } from './persistence';
 import { cleanupResponseCheckpoint } from './checkpoint';
 import { createResponseRetirement } from './retirement';
+import { createResponseDispatchOutbox } from './outbox';
 import { createResponseReview } from './review';
 import { responseTenantId } from './scope';
 
@@ -45,6 +46,8 @@ export interface BackgroundResponsesHostDependencies
   extends BackgroundResponseAuthorityDependencies {
   storage: ResponseStorage;
   enqueue: AgentTriggerService['enqueue'];
+  /** Reuse the queue owner’s live producer capability; listener binding alone is insufficient. */
+  isQueueReady: AgentTriggerService['isReady'];
   jobs: Pick<
     GenerationJobManagerClass,
     'getJob' | 'abortJob' | 'getResumeState' | 'finishProviderTerminalPersistence'
@@ -103,6 +106,7 @@ export function createBackgroundResponsesHost(
   if (deps.decisions && deps.interactive)
     throw new Error('Response decision transport must have one owner');
   let listener: BoundAddress | undefined;
+  const isAdmissionReady = () => listener != null && deps.isQueueReady();
   const authorize = createBackgroundResponseAuthority(deps);
   const review = createResponseReview(deps);
   const completion = createResponseCompletion({
@@ -160,12 +164,25 @@ export function createBackgroundResponsesHost(
       ? { validate: deps.interactive.validate, enqueue: resumeQueue.enqueue }
       : deps.decisions;
 
+  const outbox = createResponseDispatchOutbox({
+    isReady: isAdmissionReady,
+    storage: deps.storage,
+    create: queue,
+    resume: resumeQueue ?? (decisions ? { enqueue: decisions.enqueue } : undefined),
+    authorize: (record) => authorize(record, record.agentId, record.sourceKeyId),
+    retire: (record) => retire(record, record.responseId),
+    onError: deps.onError,
+  });
+
   const submitInteractiveReview: ResponseDecisionSubmission = async (owner, responseId, input) => {
     if (!decisions) return { ok: false, status: 409, code: 'response_decision_unavailable' };
+    if (!isAdmissionReady())
+      return { ok: false, status: 503, code: 'response_decision_unavailable' };
     return createResponseDecisionSubmission({
       storage: deps.storage,
       jobs: deps.jobs,
       now: deps.now,
+      onDispatchError: deps.onError,
       ...decisions,
       authorize: (record) => authorize(record, record.agentId, record.sourceKeyId),
     })(owner, responseId, input);
@@ -176,6 +193,7 @@ export function createBackgroundResponsesHost(
     return createBackgroundResponseService({
       storage: deps.storage,
       enqueue: queue.enqueue,
+      onDispatchError: deps.onError,
       deliveryKey: queue.deliveryKey,
       authorize: (owner, agentId, keyId) => authorize(owner, agentId, keyId, user),
       resolveContinuation: async (owner, previous) => {
@@ -231,7 +249,7 @@ export function createBackgroundResponsesHost(
         oauth: [],
         pendingAction: view.pendingAction,
         pendingDecision: view.pendingDecision,
-        canSubmitDecision: decisions != null,
+        canSubmitDecision: decisions != null && isAdmissionReady(),
       };
     },
     review: async (req, res) => {
@@ -247,7 +265,7 @@ export function createBackgroundResponsesHost(
         const recovered = await completion.finish(record);
         res.json({
           ...(await review.privateView(recovered)),
-          canSubmitDecision: decisions != null,
+          canSubmitDecision: decisions != null && isAdmissionReady(),
         });
       } catch (error) {
         deps.onError(error);
@@ -259,11 +277,13 @@ export function createBackgroundResponsesHost(
       res.set('Referrer-Policy', 'no-referrer');
       const user = ownerReviewUser(req);
       if (!user?.id) return void res.status(401).json({ error: 'unauthorized' });
-      if (!decisions) return void res.status(503).json({ error: 'response_decision_unavailable' });
+      if (!decisions || !isAdmissionReady())
+        return void res.status(503).json({ error: 'response_decision_unavailable' });
       const submit = createResponseDecisionSubmission({
         storage: deps.storage,
         jobs: deps.jobs,
         now: deps.now,
+        onDispatchError: deps.onError,
         ...decisions,
         authorize: (record) => authorize(record, record.agentId, record.sourceKeyId, user),
       });
@@ -301,7 +321,9 @@ export function createBackgroundResponsesHost(
     readResponse: (owner, responseId) => service().retrieve(owner, responseId),
     cancelResponse: (owner, responseId) => service().cancel(owner, responseId),
     sourceDispatchers: new Map([
-      ...queue.sourceDispatchers,
+      ...[...queue.sourceDispatchers].map(
+        ([name, source]) => [name, { ...source, recoverPending: outbox.recoverPending }] as const,
+      ),
       ...(resumeQueue?.sourceDispatchers ?? []),
     ]),
     initialize: (address: BoundAddress | string | null) => {
@@ -322,6 +344,7 @@ export function createBackgroundResponsesHost(
       ),
     handlers: (ordinary: { create: RequestHandler; retrieve: RequestHandler }) =>
       createBackgroundResponseHttpHandlers({
+        isAdmissionReady,
         service,
         ordinary,
         onError: deps.onError,
