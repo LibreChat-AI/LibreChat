@@ -328,6 +328,10 @@ const RUNTIME_READERS: Readonly<Record<string, RuntimeReader>> = {
   'webSearch.tavilyApiKey': webSearchReader('tavilyApiKey', {
     searchProvider: SearchProviders.TAVILY,
   }),
+  'webSearch.kagiApiKey': webSearchReader('kagiApiKey', {
+    searchProvider: SearchProviders.KAGI,
+    scraperProvider: ScraperProviders.KAGI,
+  }),
   'webSearch.keenableApiKey': webSearchReader('keenableApiKey', {}),
   'webSearch.jinaApiKey': webSearchReader('jinaApiKey', { rerankerType: RerankerTypes.JINA }),
   'webSearch.cohereApiKey': webSearchReader('cohereApiKey', {

@@ -1,6 +1,7 @@
 import type { SearchCategories } from 'librechat-data-provider';
 
 export type TWebSearchKeys =
+  | 'kagiApiKey'
   | 'serperApiKey'
   | 'searxngInstanceUrl'
   | 'searxngApiKey'
