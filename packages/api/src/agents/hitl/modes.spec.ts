@@ -291,57 +291,81 @@ describe('deployment env references in connection authorities', () => {
     source: 'yaml' as const,
   };
   const withEnv = { ...base, headers: { Authorization: 'Bearer ${MCP_TOKEN}' } };
-  const saved = { ...process.env };
-  afterEach(() => {
-    process.env = { ...saved };
-  });
+  const env = { MCP_TOKEN: 'first-secret' };
 
   test('resolved env references produce a binding pinned to their values', () => {
-    process.env.MCP_TOKEN = 'first-secret';
-    const first = buildMCPToolApprovalBinding('db', withEnv);
+    const first = buildMCPToolApprovalBinding('db', withEnv, env);
     expect(first).toEqual(expect.any(String));
-    expect(buildMCPToolApprovalBinding('db', withEnv)).toBe(first);
-    process.env.MCP_TOKEN = 'rotated-secret';
-    expect(buildMCPToolApprovalBinding('db', withEnv)).not.toBe(first);
+    expect(buildMCPToolApprovalBinding('db', withEnv, { ...env })).toBe(first);
+    expect(buildMCPToolApprovalBinding('db', withEnv, { MCP_TOKEN: 'rotated' })).not.toBe(first);
   });
 
   test('configs without env references keep the existing digest', () => {
-    const plain = buildMCPToolApprovalBinding('db', base);
-    process.env.MCP_TOKEN = 'unrelated';
-    expect(buildMCPToolApprovalBinding('db', base)).toBe(plain);
+    expect(buildMCPToolApprovalBinding('db', base, env)).toBe(
+      buildMCPToolApprovalBinding('db', base, {}),
+    );
   });
 
   test('unset, empty or sensitive env references cannot be remembered', () => {
-    delete process.env.MCP_TOKEN;
-    expect(buildMCPToolApprovalBinding('db', withEnv)).toBeUndefined();
-    process.env.MCP_TOKEN = '';
-    expect(buildMCPToolApprovalBinding('db', withEnv)).toBeUndefined();
-    process.env.JWT_SECRET = 'server-secret';
+    expect(buildMCPToolApprovalBinding('db', withEnv, {})).toBeUndefined();
+    expect(buildMCPToolApprovalBinding('db', withEnv, { MCP_TOKEN: '' })).toBeUndefined();
     expect(
-      buildMCPToolApprovalBinding('db', {
-        ...base,
-        headers: { Authorization: 'Bearer ${JWT_SECRET}' },
-      }),
+      buildMCPToolApprovalBinding(
+        'db',
+        { ...base, headers: { Authorization: 'Bearer ${JWT_SECRET}' } },
+        { JWT_SECRET: 'server-secret' },
+      ),
+    ).toBeUndefined();
+  });
+
+  test('an env value carrying a user placeholder cannot be remembered', () => {
+    expect(
+      buildMCPToolApprovalBinding(
+        'db',
+        {
+          ...base,
+          headers: { Authorization: '${MCP_AUTH}' },
+          customUserVars: { API_KEY: { title: 'Key', description: 'Per-user key' } },
+        },
+        { MCP_AUTH: 'Bearer {{API_KEY}}' },
+      ),
     ).toBeUndefined();
   });
 
   test('servers whose env references stay literal at connection time are not resolved', () => {
-    process.env.MCP_TOKEN = 'secret';
-    expect(buildMCPToolApprovalBinding('db', { ...withEnv, source: 'plugin' })).toBeUndefined();
     expect(
-      buildMCPToolApprovalBinding('db', { ...withEnv, dbId: 'stored-server' }),
+      buildMCPToolApprovalBinding('db', { ...withEnv, source: 'plugin' }, env),
+    ).toBeUndefined();
+    expect(
+      buildMCPToolApprovalBinding('db', { ...withEnv, dbId: 'stored-server' }, env),
     ).toBeUndefined();
   });
 
   test('user placeholders stay unrememberable even alongside resolved env', () => {
-    process.env.MCP_TOKEN = 'secret';
     expect(
-      buildMCPToolApprovalBinding('db', {
-        ...withEnv,
-        url: '{{MCP_URL}}',
-        customUserVars: { MCP_URL: { title: 'URL', description: 'Target server' } },
-      }),
+      buildMCPToolApprovalBinding(
+        'db',
+        {
+          ...withEnv,
+          url: '{{MCP_URL}}',
+          customUserVars: { MCP_URL: { title: 'URL', description: 'Target server' } },
+        },
+        env,
+      ),
     ).toBeUndefined();
+  });
+
+  test('the binding defaults to the process environment the connection expands', () => {
+    const previous = process.env.MCP_TOKEN;
+    process.env.MCP_TOKEN = env.MCP_TOKEN;
+    try {
+      expect(buildMCPToolApprovalBinding('db', withEnv)).toBe(
+        buildMCPToolApprovalBinding('db', withEnv, env),
+      );
+    } finally {
+      if (previous === undefined) delete process.env.MCP_TOKEN;
+      else process.env.MCP_TOKEN = previous;
+    }
   });
 });
 

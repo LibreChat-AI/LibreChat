@@ -37,37 +37,48 @@ export interface AgentApprovalSource {
   toolDefinitions?: AgentApprovalDefinition[];
 }
 
-/** A changed connection, raw schema, mode or revision requires fresh consent. */
+const USER_PLACEHOLDER = /\{\{[^{}]+\}\}/;
+
+/**
+ * A changed connection, raw schema, mode or revision requires fresh consent. `env` is the
+ * source `${NAME}` references resolve against; it defaults to `process.env` because that is
+ * what processMCPEnv expands when the connection is made, and the two must agree.
+ */
 export function buildMCPToolApprovalBinding(
   serverName: string,
   config: ParsedServerConfig | undefined,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): string | undefined {
   if (config) config = projectMCPApprovalAuthority(config);
   if (!config || requiresEphemeralUserConnection(config)) return undefined;
   const serialized = JSON.stringify(config);
-  if (/\{\{[^{}]+\}\}/.test(serialized)) return undefined;
+  if (USER_PLACEHOLDER.test(serialized)) return undefined;
   const names = [...new Set(Array.from(serialized.matchAll(/\$\{([^{}]+)\}/g), (m) => m[1]))];
   if (names.length === 0) return digestMCPAuthorityValue({ serverName, config });
-  /** processMCPEnv leaves `${NAME}` literal for these tiers, so process.env is not the authority. */
+  /** processMCPEnv leaves `${NAME}` literal for these tiers, so the environment is not the authority. */
   if (isPluginSourced(config) || config.dbId) return undefined;
-  const env = resolveApprovalEnv(names);
-  if (!env) return undefined;
-  return digestMCPAuthorityValue({ serverName, config, env });
+  const resolved = resolveApprovalEnv(names, env);
+  if (!resolved) return undefined;
+  return digestMCPAuthorityValue({ serverName, config, env: resolved });
 }
 
 /**
  * Deployment `${NAME}` references are static, so their resolved values pin the connection:
- * a rotated secret or changed URL yields a new binding. Unset, empty or sensitive names
- * cannot be pinned and leave the connection unrememberable.
+ * a rotated secret or changed URL yields a new binding. Unset, empty or sensitive names cannot
+ * be pinned, nor can a value carrying a `{{...}}` placeholder, which processMCPEnv substitutes
+ * per user after env expansion.
  */
-function resolveApprovalEnv(names: string[]): Record<string, string> | undefined {
-  const env: Record<string, string> = {};
+function resolveApprovalEnv(
+  names: string[],
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> | undefined {
+  const resolved: Record<string, string> = {};
   for (const name of names.sort()) {
-    const value = process.env[name];
-    if (!value || isSensitiveEnvVar(name)) return undefined;
-    env[name] = value;
+    const value = env[name];
+    if (!value || isSensitiveEnvVar(name) || USER_PLACEHOLDER.test(value)) return undefined;
+    resolved[name] = value;
   }
-  return env;
+  return resolved;
 }
 
 export function attachMCPToolApprovalBindings(
