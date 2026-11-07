@@ -26,6 +26,7 @@ import {
   useCopyMessageToClipboard,
 } from '~/hooks';
 import { useForkConvoMutation, useGetMessagesByConvoId } from '~/data-provider';
+import { useHideSelectedAuthor } from '~/components/Chat/Menus/Endpoints/shown';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import useConversationSeenSource from '~/hooks/Conversations/seenSource';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
@@ -160,6 +161,7 @@ export const appMessagesHost: MessagesHost = {
   useSeenSource: useConversationSeenSource,
   renderMessageIcon: (props) => <MessageIcon {...props} />,
   useMaximizeChatSpace: () => useRecoilValue(store.maximizeChatSpace),
+  useHideSelectedAuthor,
   useAgentsMap: useAgentsMapContext,
   renderMessageBody: (props) => <MessageContent {...props} />,
   renderWakeup: (props) => <Wakeup {...props} />,
