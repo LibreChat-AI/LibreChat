@@ -10,6 +10,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@librechat/client';
+import type { TMCPAppToolApprovalTarget } from 'librechat-data-provider';
 import type { ComponentProps } from 'react';
 import { useLocalize } from '~/hooks';
 
@@ -23,7 +24,10 @@ type Pending = {
 };
 
 /** An App can request an action but only a host-controlled button can grant it. */
-export function useMCPAppApproval(maxPending = DEFAULT_MCP_APP_OPERATION_LIMITS.maxActive) {
+export function useMCPAppApproval(
+  maxPending = DEFAULT_MCP_APP_OPERATION_LIMITS.maxActive,
+  allowlistedTools?: readonly TMCPAppToolApprovalTarget[],
+) {
   const [pending, setPending] = useState<Pending | null>(null);
   const queueRef = useRef<Pending[]>([]);
   const suspendedRef = useRef(false);
@@ -34,7 +38,24 @@ export function useMCPAppApproval(maxPending = DEFAULT_MCP_APP_OPERATION_LIMITS.
   }, []);
   const request = useCallback(
     (action: MCPAppAction, signal: AbortSignal): Promise<boolean> => {
-      if (signal.aborted || suspendedRef.current || queueRef.current.length >= maxPending) {
+      if (signal.aborted || suspendedRef.current) {
+        return Promise.resolve(false);
+      }
+      // An allowlisted tool needs no host consent, so it never occupies a queue slot.
+      if (
+        action.kind === 'tool' &&
+        Array.isArray(allowlistedTools) &&
+        allowlistedTools.some(
+          (target) =>
+            typeof target?.server === 'string' &&
+            typeof target.tool === 'string' &&
+            target.server === action.serverName &&
+            target.tool === action.toolName,
+        )
+      ) {
+        return Promise.resolve(true);
+      }
+      if (queueRef.current.length >= maxPending) {
         return Promise.resolve(false);
       }
       return new Promise<boolean>((resolve) => {
@@ -59,7 +80,7 @@ export function useMCPAppApproval(maxPending = DEFAULT_MCP_APP_OPERATION_LIMITS.
         else setPending(queueRef.current[0]);
       });
     },
-    [maxPending, pause],
+    [maxPending, pause, allowlistedTools],
   );
   const cancel = useCallback(() => {
     if (queueRef.current.length > 0) pause();
