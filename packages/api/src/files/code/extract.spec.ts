@@ -653,6 +653,7 @@ describe('getExtractedTextFormat', () => {
     ['report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
     ['data.csv', 'text/csv'],
     ['workbook.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['macros.xlsm', 'application/vnd.ms-excel.sheet.macroEnabled.12'],
     ['legacy.xls', 'application/vnd.ms-excel'],
     ['sheet.ods', 'application/vnd.oasis.opendocument.spreadsheet'],
     ['slides.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],

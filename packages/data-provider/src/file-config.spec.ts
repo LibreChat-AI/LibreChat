@@ -130,6 +130,7 @@ describe('inferMimeType', () => {
     expect(inferMimeType('template.potx', '')).toBe(
       'application/vnd.openxmlformats-officedocument.presentationml.template',
     );
+    expect(inferMimeType('macros.xlsm', '')).toBe('application/vnd.ms-excel.sheet.macroEnabled.12');
   });
 
   it('produces Office types accepted by checkType after inference', () => {
@@ -137,6 +138,18 @@ describe('inferMimeType', () => {
     expect(baseFileConfig.checkType(inferMimeType('sheet.xlsx', ''))).toBe(true);
     expect(baseFileConfig.checkType(inferMimeType('legacy.doc', ''))).toBe(true);
     expect(baseFileConfig.checkType(inferMimeType('template.potx', ''))).toBe(true);
+    expect(baseFileConfig.checkType(inferMimeType('macros.xlsm', ''))).toBe(true);
+    expect(
+      baseFileConfig.checkType(
+        inferMimeType('macros.xlsm', 'application/vnd.ms-excel.sheet.macroEnabled.12'),
+      ),
+    ).toBe(true);
+    /* freedesktop shared-mime-info (Chrome and Firefox on Linux) lowercases the subtype */
+    expect(
+      baseFileConfig.checkType(
+        inferMimeType('macros.xlsm', 'application/vnd.ms-excel.sheet.macroenabled.12'),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -240,6 +253,7 @@ describe('documentParserMimeTypes', () => {
     'application/msexcel',
     'application/x-msexcel',
     'application/x-ms-excel',
+    'application/vnd.ms-excel.sheet.macroEnabled.12',
     'application/vnd.oasis.opendocument.spreadsheet',
     'application/vnd.oasis.opendocument.text',
   ])('matches natively parseable type: %s', (mimeType) => {
