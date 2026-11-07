@@ -1,6 +1,9 @@
-import React from 'react';
+/**
+ * @jest-environment jsdom
+ */
+import React, { useContext, useState } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
-import { mergeChildConversationTurns } from '@librechat/chat/react';
+import { Provider as JotaiProvider, createStore } from 'jotai';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type {
   FullToolCall,
@@ -8,100 +11,40 @@ import type {
   TMessage,
   TMessageContentParts,
 } from 'librechat-data-provider';
-import type { ChildConversationTurn, TurnAuthor } from '@librechat/chat/react';
-import type { ChatContract } from '~/hooks/Chat/contract';
-import SubagentConversation from './SubagentConversation';
-import { ChatContext } from '~/Providers/ChatContext';
-import { ChatSurfaceHarness } from 'test/harness';
-import '~/Providers/SubagentsHostContext';
-import '~/components/Chat/Messages/Content/register';
+import type { ContentPartsSlotProps, MessagePartsHost } from '../../../react/host';
+import type { ChildConversationTurn } from '../../../react/subagents/adapters';
+import type { ChatSurface } from '../../../react/subagents/surface';
+import type { SubagentsHost } from '../../../react/subagents/host';
+import type { TurnAuthor } from '../../../react/subagents/author';
+import type { ChatContract } from '../../../react/chat/contract';
+import { MessagePartsHostProvider, useMessagePartsHost } from '../../../react/host';
+import { mergeChildConversationTurns } from '../../../react/subagents/adapters';
+import { ChatSurfaceProvider } from '../../../react/subagents/provider';
+import { SubagentsHostProvider } from '../../../react/subagents/host';
+import { ChatContext } from '../../../react/chat/context';
+import SubagentConversation from '../conversation';
+
+type Ask = (input: { text: string }) => void;
 
 const mockRecoveredQuery = jest.fn();
-jest.mock('~/data-provider/Subagents/content', () => ({
-  ...jest.requireActual('~/data-provider/Subagents/content'),
-  useSubagentTaskContentQuery: (...args: unknown[]) => mockRecoveredQuery(...args),
-}));
-
-const mockCopyMessage = jest.fn();
-const mockRenderedContent = jest.fn();
-const mockPartScope = jest.fn();
+const mockCopyMessage = jest.fn<void, [TMessage]>();
+const mockRenderedContent = jest.fn<void, [Array<TMessageContentParts | undefined>]>();
+const mockPartScope = jest.fn<void, [ChatContract | null, Ask | undefined]>();
+const lastCall = <T,>(calls: T[]): T => calls[calls.length - 1];
 const mockParentAsk = jest.fn();
 
-/** The package's own provider, so the transcript, which reads the package host, sees the same
- *  host as the conversation around it. Registered as the default, as the app entry does. */
-jest.mock('~/Providers/MessagePartsHostContext', () => {
-  const { getAppContentParts } = jest.requireActual<
-    typeof import('~/components/Chat/Messages/Content/Parts/slots')
-  >('~/components/Chat/Messages/Content/Parts/slots');
-  const chat = jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
-  chat.setDefaultMessagePartsHost({
-    useShowThinking: () => false,
-    useAutoExpandTools: () => false,
-    useMessagesAsk: () => mockParentAsk,
-    renderMarkdown: ({ content }: { content: string }) => content,
-    renderContentParts: (props: Parameters<ReturnType<typeof getAppContentParts>>[0]) =>
-      getAppContentParts()(props),
-  } as unknown as Parameters<typeof chat.setDefaultMessagePartsHost>[0]);
-  return {
-    MessagePartsHostProvider: chat.MessagePartsHostProvider,
-    useMessagePartsHost: chat.useMessagePartsHost,
-  };
-});
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  Container: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  MinimalHoverButtons: ({ message }: { message: TMessage }) => {
+jest.mock('../../messages/MinimalHoverButtons', () => ({
+  __esModule: true,
+  default: ({ message }: { message: TMessage }) => {
     mockCopyMessage(message);
     return <button type="button" aria-label="copy" />;
   },
 }));
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-}));
-
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
+  useLanguage: () => 'en',
   useLocalize: () => (key: string) => key,
-}));
-
-jest.mock('~/Providers', () => ({
-  useAgentsMapContext: () => undefined,
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
-  __esModule: true,
-  default: function ContentPartsMock({
-    content,
-    messageId,
-  }: {
-    content: Array<Record<string, unknown>>;
-    messageId: string;
-  }) {
-    const React = jest.requireActual<typeof import('react')>('react');
-    const { ChatContext } = jest.requireActual('~/Providers/ChatContext');
-    const { useMessagePartsHost } = jest.requireMock('~/Providers/MessagePartsHostContext');
-    mockPartScope(React.useContext(ChatContext), useMessagePartsHost().useMessagesAsk());
-    mockRenderedContent(content);
-    return (
-      <div data-testid="shared-content-parts" data-message-id={messageId}>
-        {content.map((part, index) => (
-          <span key={index}>
-            {(part?.text as string | undefined) ??
-              (part?.think as string | undefined) ??
-              (part?.tool_call as { name?: string } | undefined)?.name ??
-              ''}
-          </span>
-        ))}
-      </div>
-    );
-  },
-}));
-
-jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
-  __esModule: true,
-  default: () => <span data-testid="message-icon" />,
 }));
 
 jest.mock('lucide-react', () => ({
@@ -115,6 +58,101 @@ jest.mock('lucide-react', () => ({
   XCircle: () => null,
   Zap: () => null,
 }));
+
+/** The parts host as the app extends it: the member a child conversation must stand down. */
+type AskPartsHost = MessagePartsHost & { useMessagesAsk: () => Ask };
+
+const hasAsk = (host: MessagePartsHost): host is AskPartsHost =>
+  'useMessagesAsk' in host && typeof host.useMessagesAsk === 'function';
+
+function partLabel(part: TMessageContentParts | undefined): string {
+  if (part?.type === ContentTypes.TEXT && typeof part.text === 'string') return part.text;
+  if (part?.type === ContentTypes.THINK) return typeof part.think === 'string' ? part.think : '';
+  if (part?.type === ContentTypes.TOOL_CALL && 'name' in part.tool_call) return part.tool_call.name;
+  return '';
+}
+
+function ContentPartsMock({ content, messageId }: ContentPartsSlotProps) {
+  const host = useMessagePartsHost();
+  mockPartScope(useContext(ChatContext), hasAsk(host) ? host.useMessagesAsk() : undefined);
+  mockRenderedContent(content);
+  return (
+    <div data-testid="shared-content-parts" data-message-id={messageId}>
+      {content.map((part, index) => (
+        <span key={index}>{partLabel(part)}</span>
+      ))}
+    </div>
+  );
+}
+
+const parentHost: AskPartsHost = {
+  useMessage: () => ({ messageId: 'parent-message' }),
+  renderMarkdown: ({ content }) => content,
+  useSmoothStreaming: () => false,
+  useAgent: () => undefined,
+  renderAgentIcon: () => null,
+  renderAgentAvatar: () => null,
+  renderContentParts: (props) => <ContentPartsMock {...props} />,
+  renderImage: () => null,
+  renderFilePreview: () => null,
+  useFontSize: () => 'text-base',
+  useShowThinking: () => false,
+  useAutoExpandTools: () => false,
+  useLaTeXParsing: () => false,
+  useChatDirection: () => 'ltr',
+  useUserTextPreferences: () => ({
+    usernameDisplay: false,
+    enableUserMsgMarkdown: false,
+    collapseLongUserMessages: false,
+  }),
+  useUser: () => undefined,
+  useFileMap: () => undefined,
+  useToast: () => jest.fn(),
+  useSandboxStarting: () => false,
+  useToolArtifactClaim: () => [null, jest.fn()],
+  useSteerEscalating: () => false,
+  usePaneConversationId: () => null,
+  useLiveAppliedSteer: () => [false, jest.fn()],
+  useShare: () => ({}),
+  useMessagesAsk: () => mockParentAsk,
+};
+
+/** The app's child host: the parent's, with the send member standing down. */
+const childHost: AskPartsHost = { ...parentHost, useMessagesAsk: () => () => undefined };
+
+const subagentsHost: SubagentsHost = {
+  renderSteer: () => null,
+  useRetainedControl: () => ({ isFetching: false, isError: false, refetch: () => undefined }),
+  useTaskContent: (scope, options) => mockRecoveredQuery(scope, options),
+  useAgentsMap: () => undefined,
+  useChildPartsHost: () => childHost,
+};
+
+const surface: ChatSurface = {
+  enterToSend: true,
+  maximizeChatSpace: false,
+  showScrollButton: true,
+  composerBindings: {
+    shortcutsEnabled: true,
+    submitOverride: undefined,
+    yieldedChords: new Set<string>(),
+  },
+  claimForeground: () => undefined,
+  handOffComposerText: () => undefined,
+};
+
+function ChatSurfaceHarness({ children }: { children: React.ReactNode }) {
+  const [store] = useState(() => createStore());
+  return (
+    <JotaiProvider store={store}>
+      <MessagePartsHostProvider host={parentHost}>
+        <SubagentsHostProvider host={subagentsHost}>
+          <ChatSurfaceProvider value={surface}>{children}</ChatSurfaceProvider>
+        </SubagentsHostProvider>
+      </MessagePartsHostProvider>
+    </JotaiProvider>
+  );
+}
 
 const author: TurnAuthor = { name: 'Research child', icon: <span data-testid="child-face" /> };
 const parentAuthor: TurnAuthor = { name: 'Lia', icon: <span data-testid="parent-face" /> };
@@ -300,13 +338,19 @@ describe('standard conversation content', () => {
   });
 
   it('copies the standard message source through the normal safe-copy action', () => {
-    const content = [
-      { type: 'text', text: 'Authoritative answer', phase: 'final_answer' },
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.TEXT, text: 'Authoritative answer', phase: 'final_answer' },
       {
-        type: 'tool_call',
-        tool_call: { id: 'tool', name: 'bash', args: 'private input', output: 'private output' },
+        type: ContentTypes.TOOL_CALL,
+        tool_call: {
+          id: 'tool',
+          name: 'bash',
+          args: 'private input',
+          output: 'private output',
+          progress: 1,
+        },
       },
-    ] as TMessageContentParts[];
+    ];
     render(
       <ChatSurfaceHarness>
         <SubagentConversation
@@ -329,7 +373,7 @@ describe('standard conversation content', () => {
         isCreatedByUser: false,
       }),
     );
-    expect(mockCopyMessage.mock.calls.at(-1)?.[0].content).toBe(content);
+    expect(lastCall(mockCopyMessage.mock.calls)?.[0].content).toBe(content);
     expect(screen.queryByText('The release is ready.')).not.toBeInTheDocument();
   });
 
@@ -389,8 +433,9 @@ describe('standard conversation content', () => {
           </ChatContext.Provider>
         </ChatSurfaceHarness>,
       );
-      const [context, ask] = mockPartScope.mock.calls.at(-1)!;
+      const [context, ask] = lastCall(mockPartScope.mock.calls);
       expect(context).toBe(interactive ? parent : null);
+      if (ask == null) throw new Error('the child host supplied no send function');
       ask({ text: 'Do not send this through the parent' });
       expect(mockParentAsk).not.toHaveBeenCalled();
     },
@@ -650,12 +695,13 @@ it.each(
         />
       </ChatSurfaceHarness>,
     );
-    const rendered = mockRenderedContent.mock.calls.findLast(([parts]) =>
-      parts.some(
-        (part: TMessageContentParts) => part?.type === 'tool_call' && part.tool_call.id === 'root',
-      ),
-    )?.[0];
+    const rendered = [...mockRenderedContent.mock.calls]
+      .reverse()
+      .find(([parts]) =>
+        parts.some((part) => part?.type === 'tool_call' && part.tool_call.id === 'root'),
+      )?.[0];
     expect(rendered).toBeDefined();
+    if (rendered == null) throw new Error('the root tool call was never rendered');
     expect(JSON.stringify(rendered)).not.toContain('approval');
     expect(rendered[0]).toEqual(content[0]);
     expect(rendered[1]).toMatchObject({
@@ -670,9 +716,9 @@ it.each(
       },
     });
     expect(content).toEqual(cached);
-    expect(mockPartScope.mock.calls.at(-1)?.[0]).toBeNull();
+    expect(lastCall(mockPartScope.mock.calls)?.[0]).toBeNull();
     if (status === 'completed') {
-      expect(mockCopyMessage.mock.calls.at(-1)?.[0].content).toEqual(rendered);
+      expect(lastCall(mockCopyMessage.mock.calls)?.[0].content).toEqual(rendered);
     }
   },
 );
@@ -728,7 +774,7 @@ it.each(
     );
     expect(screen.getByText('Retained earlier work.')).toBeInTheDocument();
     expect(screen.getAllByText('Durable final outcome.')).toHaveLength(1);
-    expect(mockCopyMessage.mock.calls.at(-1)?.[0].content).toEqual([
+    expect(lastCall(mockCopyMessage.mock.calls)?.[0].content).toEqual([
       ...content,
       { type: ContentTypes.TEXT, text: 'Durable final outcome.', phase: 'final_answer' },
     ]);
@@ -843,7 +889,7 @@ it.each(['partial', 'complete'] as const)(
     );
     expect(screen.getAllByText('Durable final outcome with retained full detail.')).toHaveLength(1);
     expect(screen.queryByText('Durable final outcome', { exact: true })).not.toBeInTheDocument();
-    expect(mockCopyMessage.mock.calls.at(-1)?.[0].content).toBe(content);
+    expect(lastCall(mockCopyMessage.mock.calls)?.[0].content).toBe(content);
     expect(content).toHaveLength(1);
   },
 );
@@ -936,7 +982,7 @@ it.each(['partial', 'complete'] as const)(
     expect(
       screen.queryByText(outcome, { exact: true, normalizer: (text) => text }),
     ).not.toBeInTheDocument();
-    expect(mockCopyMessage.mock.calls.at(-1)?.[0].content).toBe(content);
+    expect(lastCall(mockCopyMessage.mock.calls)?.[0].content).toBe(content);
     expect(content).toHaveLength(1);
   },
 );
@@ -985,7 +1031,7 @@ it.each(['completed', 'failed', 'cancelled', 'interrupted'] as const)(
       </ChatSurfaceHarness>,
     );
     expect(screen.getAllByText(outcome.text)).toHaveLength(1);
-    expect(mockCopyMessage.mock.calls.at(-1)?.[0].content).toEqual([
+    expect(lastCall(mockCopyMessage.mock.calls)?.[0].content).toEqual([
       ...content,
       { type: ContentTypes.TEXT, text: outcome.text, phase: 'final_answer' },
     ]);

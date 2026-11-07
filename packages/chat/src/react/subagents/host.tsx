@@ -1,6 +1,9 @@
 import { createContext, useContext } from 'react';
+import type { Agent, SubagentTaskContentSnapshot } from 'librechat-data-provider';
 import type { MouseEventHandler, ReactNode } from 'react';
 import type { SteerReceiptState } from '../../components/composer/steering/Receipt';
+import type { ToolContentQuery } from '../parts/disclosure';
+import type { MessagePartsHost } from '../host';
 import type { TaskContentScope } from './scope';
 
 /** One guidance message sent to a child, drawn as the main chat draws a steer. */
@@ -29,6 +32,15 @@ export type SubagentRetainedControl = {
   refetch: () => void;
 };
 
+/** A task's recovered content, read from the parent-authorized task endpoint. */
+export type SubagentTaskContent = {
+  data?: SubagentTaskContentSnapshot;
+  isError: boolean;
+  /** The task predates content recovery, so there is nothing to retry. */
+  isUnavailable: boolean;
+  refetch: () => void;
+};
+
 /**
  * What a subagent transcript reads from the app: render slots for the parts it shares with the
  * main chat and has not received yet, and the one read it makes. Members are hooks or slots,
@@ -48,6 +60,20 @@ export interface SubagentsHost {
     invocationId: string,
     enabled: boolean,
   ) => SubagentRetainedControl;
+  /** A task's recovered content, read only while `enabled`. */
+  useTaskContent: (scope: TaskContentScope, options: { enabled: boolean }) => SubagentTaskContent;
+  /**
+   * Reads a tool call's full output through the task scope, never the child's own messages.
+   * Without it, recovered tool calls stay view-only.
+   */
+  useToolContent?: ToolContentQuery;
+  /** The agents the viewer can see, keyed by id. */
+  useAgentsMap: () => Record<string, Agent | undefined> | undefined;
+  /**
+   * The parts host a child conversation renders its content with: the parent's, with the members
+   * that act on the parent's messages view stood down. Returns the same object while `host` is.
+   */
+  useChildPartsHost: (host: MessagePartsHost) => MessagePartsHost;
 }
 
 const idleControl: SubagentRetainedControl = {
@@ -56,10 +82,19 @@ const idleControl: SubagentRetainedControl = {
   refetch: () => undefined,
 };
 
+const idleContent: SubagentTaskContent = {
+  isError: false,
+  isUnavailable: false,
+  refetch: () => undefined,
+};
+
 /** The host a transcript reads before an app registers one: no slots and no reads. */
 const fallbackHost: SubagentsHost = {
   renderSteer: () => null,
   useRetainedControl: () => idleControl,
+  useTaskContent: () => idleContent,
+  useAgentsMap: () => undefined,
+  useChildPartsHost: (host) => host,
 };
 
 const SubagentsHostContext = createContext<SubagentsHost | null>(null);

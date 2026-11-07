@@ -5,7 +5,6 @@ import { dataService, ForkOptions } from 'librechat-data-provider';
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
 import { isMacPlatform, resolveComposerKeyDown } from '@librechat/chat';
 import { ArrowUpRight, Clock, OctagonPause, X, Zap } from 'lucide-react';
-import { SubagentActivity, SubagentActivityScrollSurface } from '@librechat/chat/components';
 import {
   Alert,
   Button,
@@ -14,6 +13,11 @@ import {
   useMediaQuery,
   useToastContext,
 } from '@librechat/client';
+import {
+  SubagentActivity,
+  SubagentConversation,
+  SubagentActivityScrollSurface,
+} from '@librechat/chat/components';
 import {
   activeSubagentPanel,
   subagentPanelFocusRequest,
@@ -65,7 +69,6 @@ import { useFocusTrap, useLocalize, useNavigateToConvo } from '~/hooks';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
-import SubagentConversation from './SubagentConversation';
 import { useAgentsMapContext } from '~/Providers';
 import { cn, renderAgentAvatar } from '~/utils';
 

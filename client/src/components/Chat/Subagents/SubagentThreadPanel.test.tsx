@@ -196,61 +196,7 @@ jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
 
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
-  SubagentActivityScrollSurface: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="shared-scroll-surface">{children}</div>
-  ),
-  SubagentActivity: function MockActivity({
-    activity,
-    activityId,
-    state,
-    onCancelControl,
-  }: {
-    activity: {
-      status: string;
-      prompt?: string;
-      items: Array<{ type: string; text?: string }>;
-      controls?: Array<{ invocationId: string; status: string }>;
-    };
-    activityId?: string;
-    state: string;
-    onCancelControl?: (controlId: string) => void;
-  }) {
-    const { useContext } = jest.requireActual<typeof import('react')>('react');
-    const { TaskContentScopeContext } = jest.requireActual<
-      typeof import('~/data-provider/Subagents/content')
-    >('~/data-provider/Subagents/content');
-    const scope = useContext(TaskContentScopeContext);
-    return (
-      <div
-        data-testid="shared-activity"
-        data-receipt-scope={JSON.stringify(scope)}
-        data-activity-id={activityId}
-        data-state={state}
-        data-status={activity.status}
-        data-can-withdraw={onCancelControl != null ? 'true' : 'false'}
-      >
-        {activity.prompt}
-        {activity.items.map((item, index) => (
-          <span key={index}>{item.text ?? item.type}</span>
-        ))}
-        {activity.controls?.map((control) => (
-          <span key={control.invocationId}>{control.status}</span>
-        ))}
-        {onCancelControl != null && (
-          <button
-            type="button"
-            data-testid="withdraw-control"
-            onClick={() => onCancelControl('control-1')}
-          />
-        )}
-      </div>
-    );
-  },
-}));
-
-jest.mock('./SubagentConversation', () => ({
-  __esModule: true,
-  default: function MockConversation({
+  SubagentConversation: function MockConversation({
     turns,
     author,
     parentAuthor,
@@ -298,6 +244,56 @@ jest.mock('./SubagentConversation', () => ({
             {detailStateByTask?.get(turn.taskId)}
           </div>
         ))}
+      </div>
+    );
+  },
+  SubagentActivityScrollSurface: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="shared-scroll-surface">{children}</div>
+  ),
+  SubagentActivity: function MockActivity({
+    activity,
+    activityId,
+    state,
+    onCancelControl,
+  }: {
+    activity: {
+      status: string;
+      prompt?: string;
+      items: Array<{ type: string; text?: string }>;
+      controls?: Array<{ invocationId: string; status: string }>;
+    };
+    activityId?: string;
+    state: string;
+    onCancelControl?: (controlId: string) => void;
+  }) {
+    const { useContext } = jest.requireActual<typeof import('react')>('react');
+    const { TaskContentScopeContext } = jest.requireActual<
+      typeof import('~/data-provider/Subagents/content')
+    >('~/data-provider/Subagents/content');
+    const scope = useContext(TaskContentScopeContext);
+    return (
+      <div
+        data-testid="shared-activity"
+        data-receipt-scope={JSON.stringify(scope)}
+        data-activity-id={activityId}
+        data-state={state}
+        data-status={activity.status}
+        data-can-withdraw={onCancelControl != null ? 'true' : 'false'}
+      >
+        {activity.prompt}
+        {activity.items.map((item, index) => (
+          <span key={index}>{item.text ?? item.type}</span>
+        ))}
+        {activity.controls?.map((control) => (
+          <span key={control.invocationId}>{control.status}</span>
+        ))}
+        {onCancelControl != null && (
+          <button
+            type="button"
+            data-testid="withdraw-control"
+            onClick={() => onCancelControl('control-1')}
+          />
+        )}
       </div>
     );
   },
