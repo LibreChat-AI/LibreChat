@@ -16,9 +16,19 @@ let mockPassportError = null;
 let mockRegisteredStrategies = new Set(['jwt']);
 /** The post-mint retirement read; defaults to an account no recovery has touched. */
 let mockGetUserById = jest.fn(async () => ({}));
+/** Ordinary JWT auth must never reach these; asserted directly in the tests below. */
+const mockEstablishProviderSession = jest.fn();
+const mockAuthorizeProviderSession = jest.fn();
+const mockGetProviderSessionAuthorizer = jest.fn();
 
 jest.mock('~/models', () => ({
   getUserById: (...args) => mockGetUserById(...args),
+  establishProviderSession: (...args) => mockEstablishProviderSession(...args),
+  authorizeProviderSession: (...args) => mockAuthorizeProviderSession(...args),
+}));
+
+jest.mock('~/server/services/ProviderSession', () => ({
+  getProviderSessionAuthorizer: (...args) => mockGetProviderSessionAuthorizer(...args),
 }));
 
 let mockGetAppConfig = jest.fn(async () => ({}));
@@ -215,6 +225,13 @@ describe('requireJwtAuth tenant context chaining', () => {
   it('sets ALS tenant context after passport auth succeeds', async () => {
     const tenantId = await runAuth({ tenantId: 'tenant-abc', role: 'user' });
     expect(tenantId).toBe('tenant-abc');
+  });
+
+  it('performs no ProviderSession lookup for ordinary JWT authentication', async () => {
+    await runAuth({ tenantId: 'tenant-abc', role: 'user' });
+    expect(mockEstablishProviderSession).not.toHaveBeenCalled();
+    expect(mockAuthorizeProviderSession).not.toHaveBeenCalled();
+    expect(mockGetProviderSessionAuthorizer).not.toHaveBeenCalled();
   });
 
   it('refreshes CloudFront auth cookies after passport auth succeeds', () => {

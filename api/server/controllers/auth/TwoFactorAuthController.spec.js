@@ -206,7 +206,9 @@ describe('verify2FAWithTempToken', () => {
 
     await verify2FAWithTempToken(req, res);
 
-    expect(mockSetAuthTokens).toHaveBeenCalledWith('user-1', res, null, req);
+    expect(mockSetAuthTokens).toHaveBeenCalledWith('user-1', res, null, req, {
+      authMethod: 'local',
+    });
     expect(res.status).toHaveBeenCalledWith(200);
   });
 
@@ -501,7 +503,9 @@ describe('finalize2FASetup', () => {
 
       const res = await runFinalize(finalizationToken);
 
-      expect(mockSetAuthTokens).toHaveBeenCalledWith('user-1', res, null, expect.any(Object));
+      expect(mockSetAuthTokens).toHaveBeenCalledWith('user-1', res, null, expect.any(Object), {
+        authMethod: 'local',
+      });
       expect(store.doc).toMatchObject({
         twoFactorEnabled: true,
         totpSecret: 'encrypted-secret',

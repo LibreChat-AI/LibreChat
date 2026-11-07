@@ -119,7 +119,9 @@ describe('loginController', () => {
 
     await loginController(req, res);
 
-    expect(mockSetAuthTokens).toHaveBeenCalledWith('user-3', res, null, req);
+    expect(mockSetAuthTokens).toHaveBeenCalledWith('user-3', res, null, req, {
+      authMethod: 'local',
+    });
     expect(res.send).toHaveBeenCalledWith({
       token: 'auth-token',
       user: {
@@ -191,7 +193,48 @@ describe('loginController', () => {
 
     await loginController(req, res);
 
-    expect(mockSetAuthTokens).toHaveBeenCalledWith('user-6', res, null, req);
+    expect(mockSetAuthTokens).toHaveBeenCalledWith('user-6', res, null, req, {
+      authMethod: 'local',
+    });
+  });
+
+  it('records ldap as the auth method when LDAP is configured for this deployment', async () => {
+    process.env.LDAP_URL = 'ldap://directory.example.com';
+    process.env.LDAP_USER_SEARCH_BASE = 'ou=users,dc=example,dc=com';
+    let ldapLoginController;
+    try {
+      jest.isolateModules(() => {
+        jest.doMock('@librechat/data-schemas', () => ({
+          logger: { error: jest.fn(), warn: jest.fn() },
+        }));
+        jest.doMock('@librechat/api', () => ({
+          ...jest.requireActual('@librechat/api'),
+          clearCloudFrontCookies: (...args) => mockClearCloudFrontCookies(...args),
+        }));
+        jest.doMock('~/server/services/twoFactorService', () => ({
+          generate2FATempToken: (...args) => mockGenerate2FATempToken(...args),
+        }));
+        jest.doMock('~/server/services/AuthService', () => ({
+          setAuthTokens: (...args) => mockSetAuthTokens(...args),
+        }));
+        jest.doMock('~/models', () => ({
+          getUserById: (...args) => mockGetUserById(...args),
+          deleteAllUserSessions: (...args) => mockDeleteAllUserSessions(...args),
+        }));
+        ldapLoginController = require('./LoginController').loginController;
+      });
+
+      const req = { user: { _id: 'user-12', email: 'user@example.com' } };
+      const res = createResponse();
+      await ldapLoginController(req, res);
+
+      expect(mockSetAuthTokens).toHaveBeenCalledWith('user-12', res, null, req, {
+        authMethod: 'ldap',
+      });
+    } finally {
+      delete process.env.LDAP_URL;
+      delete process.env.LDAP_USER_SEARCH_BASE;
+    }
   });
 
   /**

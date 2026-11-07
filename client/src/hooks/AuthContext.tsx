@@ -8,10 +8,12 @@ import {
   createContext,
 } from 'react';
 import debounce from 'lodash/debounce';
-import { getDefaultStore } from 'jotai';
 import { useNavigate } from 'react-router-dom';
+import { useAtom, getDefaultStore } from 'jotai';
+import { useToastContext } from '@librechat/client';
 import { useRecoilState, useSetRecoilState } from 'recoil';
 import {
+  request,
   apiBaseUrl,
   ErrorTypes,
   SystemRoles,
@@ -49,6 +51,10 @@ import {
 import { resetChatFilterSessionAtom } from '~/components/Conversations/chatFilters';
 import { TAuthConfig, TUserContext, TAuthContext, TResError } from '~/common';
 import { resetFacetsAtom } from '~/components/Conversations/facets';
+import { isPublicRoute, appBasePath } from '~/Providers/themeCache';
+import { authSessionUnavailableAtom } from '~/store';
+import Retry from '~/components/Auth/Retry';
+import useLocalize from './useLocalize';
 import useTimeout from './useTimeout';
 import store from '~/store';
 
@@ -65,8 +71,12 @@ if (import.meta.hot) {
  * that reliably sees the transition. Both are cleared together so neither can be added to an exit
  * path the other was wired into. */
 const endSessionClientState = (): void => {
+  /** Marks this identity transition so an in-flight refresh for the ending session is
+   *  recognized as stale and cannot overwrite the account state that follows it. */
+  request.advanceAuthGeneration();
   getDefaultStore().set(resetChatFilterSessionAtom);
   getDefaultStore().set(resetFacetsAtom);
+  getDefaultStore().set(authSessionUnavailableAtom, false);
   clearRetainedFileDeletions();
   clearComposerDraftStorage();
   endPullRequestSession();
@@ -101,7 +111,10 @@ const AuthContextProvider = ({
   const [error, setError] = useState<string | undefined>(undefined);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isAuthReady, setIsAuthReady] = useState<boolean>(authConfig?.test === true);
+  const [authSessionUnavailable, setAuthSessionUnavailable] = useAtom(authSessionUnavailableAtom);
   const setQueriesEnabled = useSetRecoilState<boolean>(store.queriesEnabled);
+  const localize = useLocalize();
+  const { showToast } = useToastContext();
 
   const userRoleName = user?.role ?? '';
   const isCustomRole = isAuthenticated && !!user?.role && !isSystemRoleName(user.role);
@@ -174,6 +187,7 @@ const AuthContextProvider = ({
 
   const { mutate: loginMutate } = useLoginUserMutation({
     onSuccess: (data: t.TLoginResponse) => {
+      request.advanceAuthGeneration();
       const { user, token, twoFAPending, twoFASetupRequired, tempToken } = data;
       /**
        * A sign-in supersedes whatever enrollment the tab was holding. An abandoned setup token
@@ -197,6 +211,7 @@ const AuthContextProvider = ({
         return;
       }
       setError(undefined);
+      setAuthSessionUnavailable(false);
       const redirect =
         getPostLoginRedirect(new URLSearchParams(window.location.search)) ?? '/c/new';
       setUserContext({ token, isAuthenticated: true, user, redirect });
@@ -263,6 +278,7 @@ const AuthContextProvider = ({
 
   const completeAuthentication = useCallback(
     (authenticatedToken: string, authenticatedUser: t.TUser) => {
+      request.advanceAuthGeneration();
       const redirect =
         getPostLoginRedirect(new URLSearchParams(window.location.search)) ?? '/c/new';
       /** The enrollment credential has done its job; do not leave it live in the tab. */
@@ -273,12 +289,13 @@ const AuthContextProvider = ({
       setIsAuthenticated(true);
       setIsAuthReady(true);
       setQueriesEnabled(true);
+      setAuthSessionUnavailable(false);
       openFileDeletionRetention();
       setTTSCacheOwner(authenticatedUser.id);
       setPullRequestSessionOwner(authenticatedUser.id);
       navigate(redirect, { replace: true });
     },
-    [navigate, setQueriesEnabled, setUser],
+    [navigate, setQueriesEnabled, setUser, setAuthSessionUnavailable],
   );
 
   /**
@@ -321,11 +338,16 @@ const AuthContextProvider = ({
       }
       return;
     }
+    const refreshGeneration = request.getAuthGeneration();
     refreshToken.mutate(undefined, {
       onSuccess: (data: t.TRefreshTokenResponse | undefined) => {
         if (isExternalRedirectRef.current) {
           return;
         }
+        if (request.getAuthGeneration() !== refreshGeneration) {
+          return;
+        }
+        setAuthSessionUnavailable(false);
         const { user, token = '', twoFASetupRequired, tempToken } = data ?? {};
         if (twoFASetupRequired && tempToken) {
           persistTwoFactorSetupToken(tempToken);
@@ -379,7 +401,19 @@ const AuthContextProvider = ({
         if (isExternalRedirectRef.current) {
           return;
         }
+        if (request.getAuthGeneration() !== refreshGeneration) {
+          return;
+        }
+        if (request.classifyRefreshFailure(error) === 'unavailable') {
+          console.log('refreshToken mutation error (session check unavailable):', error);
+          setAuthSessionUnavailable(true);
+          if (authConfig?.optional === true) {
+            setIsAuthReady(true);
+          }
+          return;
+        }
         console.log('refreshToken mutation error:', error);
+        setAuthSessionUnavailable(false);
         endSessionClientState();
         setIsAuthReady(true);
         if (authConfig?.test === true) {
@@ -403,11 +437,16 @@ const AuthContextProvider = ({
     if (userQuery.data) {
       setUser(userQuery.data);
     } else if (userQuery.isError) {
-      endSessionClientState();
-      doSetError((userQuery.error as Error).message);
-      setIsAuthReady(true);
-      if (authConfig?.optional !== true) {
-        navigate(buildLoginRedirectUrl(), { replace: true });
+      if (request.isAuthSessionUnavailableError(userQuery.error)) {
+        setAuthSessionUnavailable(true);
+        setIsAuthReady(true);
+      } else {
+        endSessionClientState();
+        doSetError((userQuery.error as Error).message);
+        setIsAuthReady(true);
+        if (authConfig?.optional !== true) {
+          navigate(buildLoginRedirectUrl(), { replace: true });
+        }
       }
     }
     if (error != null && error && isAuthenticated) {
@@ -431,6 +470,7 @@ const AuthContextProvider = ({
     silentRefresh,
     setUserContext,
     doSetError,
+    setAuthSessionUnavailable,
   ]);
 
   useEffect(() => {
@@ -464,6 +504,21 @@ const AuthContextProvider = ({
       window.removeEventListener('authRedirectStarted', handleAuthRedirect as EventListener);
     };
   }, [clearAuthenticationForRedirect]);
+
+  useEffect(() => {
+    const handleAuthUnavailable = () => {
+      showToast({
+        message: localize('com_auth_session_check_unavailable_toast'),
+        status: 'warning',
+      });
+    };
+
+    window.addEventListener('authSessionUnavailable', handleAuthUnavailable);
+
+    return () => {
+      window.removeEventListener('authSessionUnavailable', handleAuthUnavailable);
+    };
+  }, [localize, showToast]);
 
   const memoedValue = useMemo(
     () => ({
@@ -500,7 +555,24 @@ const AuthContextProvider = ({
     ],
   );
 
-  return <AuthContext.Provider value={memoedValue}>{children}</AuthContext.Provider>;
+  /** The initial-load session check could not be confirmed: hold the screen on Retry instead of
+   *  rendering as signed out, except on routes that render without a signed-in session. */
+  const blocksAuthenticatedContent =
+    authSessionUnavailable &&
+    !isAuthenticated &&
+    authConfig?.optional !== true &&
+    authConfig?.test !== true &&
+    !isPublicRoute(window.location.pathname, appBasePath());
+
+  return (
+    <AuthContext.Provider value={memoedValue}>
+      {blocksAuthenticatedContent ? (
+        <Retry onRetry={silentRefresh} isRetrying={refreshToken.isLoading} />
+      ) : (
+        children
+      )}
+    </AuthContext.Provider>
+  );
 };
 
 const useAuthContext = () => {

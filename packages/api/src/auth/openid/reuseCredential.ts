@@ -1,11 +1,15 @@
 import jwt from 'jsonwebtoken';
 import { createHash } from 'node:crypto';
+import type { ProviderSessionRef } from 'librechat-data-provider';
 import type { TokenIssuance, TokenRetirementSignals } from '../twoFactor';
 import type { SessionOpenIDTokens } from './types';
+import { isProviderSessionRef } from './providerSession/ref';
 import { isTokenRetired } from '../twoFactor';
 
 export interface OpenIDReuseCredential extends TokenIssuance {
   userId: string;
+  /** The provider session this marker was signed with, if any. */
+  providerSession?: ProviderSessionRef;
 }
 
 /** Verify the identity cookie and, when supplied, bind it to the source refresh token. */
@@ -36,6 +40,9 @@ export function getValidOpenIDReuseCredential(
       userId: payload.id,
       issuedAt: payload.iat,
       issuedAtMs: typeof payload.issuedAtMs === 'number' ? payload.issuedAtMs : undefined,
+      providerSession: isProviderSessionRef(payload.providerSession)
+        ? payload.providerSession
+        : undefined,
     };
   } catch {
     return null;

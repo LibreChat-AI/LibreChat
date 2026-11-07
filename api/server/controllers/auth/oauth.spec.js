@@ -8,7 +8,13 @@ const mockSendOpenIDAuthResponse = jest.fn();
 const mockGetLogStores = jest.fn();
 const mockCheckBan = jest.fn();
 const mockGenerateToken = jest.fn();
-const mockLogger = { info: jest.fn(), error: jest.fn() };
+const mockMath = jest.fn();
+const mockEstablishOpenIDCallbackProviderSession = jest.fn();
+const mockResolveAuthMethod = jest.fn();
+const mockGetProviderSessionAuthorizer = jest.fn();
+const mockGetProviderSessionClient = jest.fn();
+const mockStoreOpenIDSession = jest.fn();
+const mockLogger = { info: jest.fn(), error: jest.fn(), warn: jest.fn() };
 
 jest.mock('librechat-data-provider', () => ({
   CacheKeys: { ADMIN_OAUTH_EXCHANGE: 'admin-oauth-exchange' },
@@ -17,6 +23,7 @@ jest.mock('librechat-data-provider', () => ({
 jest.mock('@librechat/data-schemas', () => ({
   logger: mockLogger,
   DEFAULT_SESSION_EXPIRY: 60000,
+  DEFAULT_REFRESH_TOKEN_EXPIRY: 86400000,
 }));
 
 jest.mock('@librechat/api', () => ({
@@ -24,6 +31,10 @@ jest.mock('@librechat/api', () => ({
   getAdminPanelUrl: (...args) => mockGetAdminPanelUrl(...args),
   isAdminPanelRedirect: (...args) => mockIsAdminPanelRedirect(...args),
   generateAdminExchangeCode: (...args) => mockGenerateAdminExchangeCode(...args),
+  math: (...args) => mockMath(...args),
+  establishOpenIDCallbackProviderSession: (...args) =>
+    mockEstablishOpenIDCallbackProviderSession(...args),
+  resolveAuthMethod: (...args) => mockResolveAuthMethod(...args),
 }));
 
 jest.mock('~/server/services/PermissionService', () => ({
@@ -32,10 +43,16 @@ jest.mock('~/server/services/PermissionService', () => ({
 
 jest.mock('~/server/services/AuthService', () => ({
   setAuthTokens: (...args) => mockSetAuthTokens(...args),
+  storeOpenIDSession: (...args) => mockStoreOpenIDSession(...args),
 }));
 
 jest.mock('~/server/services/OpenIDRefreshRecovery', () => ({
   sendOpenIDAuthResponse: (...args) => mockSendOpenIDAuthResponse(...args),
+}));
+
+jest.mock('~/server/services/ProviderSession', () => ({
+  getProviderSessionAuthorizer: (...args) => mockGetProviderSessionAuthorizer(...args),
+  getProviderSessionClient: (...args) => mockGetProviderSessionClient(...args),
 }));
 
 jest.mock(
@@ -63,9 +80,15 @@ function buildReq(overrides = {}) {
       _id: 'user-123',
       email: 'admin@example.com',
       provider: 'openid',
-      tokenset: { refresh_token: 'openid-refresh-token', access_token: 'openid-access-token' },
+      openidIssuer: 'https://issuer.example.com',
+      tokenset: {
+        refresh_token: 'openid-refresh-token',
+        access_token: 'openid-access-token',
+        claims: () => ({ sub: 'sub-123', sid: 'sid-123' }),
+      },
       federatedTokens: { refresh_token: 'federated-refresh-token' },
     },
+    session: { openidLoginIssuedAt: Date.now() },
     pkceChallenge: 'pkce-challenge',
     banned: false,
     ...overrides,
@@ -80,6 +103,8 @@ function buildRes() {
 }
 
 describe('createOAuthHandler', () => {
+  const authorizerHandle = { getMode: jest.fn().mockResolvedValue('enforce') };
+
   beforeEach(() => {
     jest.clearAllMocks();
     process.env = {
@@ -96,10 +121,140 @@ describe('createOAuthHandler', () => {
     mockGenerateToken.mockResolvedValue('jwt-token');
     mockGenerateAdminExchangeCode.mockResolvedValue('exchange-code');
     mockSendOpenIDAuthResponse.mockResolvedValue('app-token');
+    mockMath.mockReturnValue(86400000);
+    mockResolveAuthMethod.mockImplementation((provider) =>
+      provider === 'openid' ? 'openid' : 'social',
+    );
+    authorizerHandle.getMode.mockResolvedValue('enforce');
+    mockGetProviderSessionAuthorizer.mockReturnValue(authorizerHandle);
+    mockGetProviderSessionClient.mockReturnValue({
+      issuer: 'https://issuer.example.com',
+      clientId: 'client-1',
+    });
+    mockEstablishOpenIDCallbackProviderSession.mockResolvedValue({ ok: true, ref: null });
   });
 
   afterAll(() => {
     process.env = ORIGINAL_ENV;
+  });
+
+  it('skips the provider-session check entirely for non-OpenID logins', async () => {
+    mockIsAdminPanelRedirect.mockReturnValue(false);
+    const handler = createOAuthHandler('http://localhost:3080');
+    const req = buildReq({
+      user: { _id: 'user-9', email: 'g@example.com', provider: 'google' },
+    });
+    const res = buildRes();
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(mockEstablishOpenIDCallbackProviderSession).not.toHaveBeenCalled();
+    expect(mockSetAuthTokens).toHaveBeenCalledWith('user-9', res, null, req, {
+      providerSession: null,
+      authMethod: 'social',
+    });
+    expect(res.redirect).toHaveBeenCalledWith('http://localhost:3080');
+  });
+
+  it('delegates the OpenID provider-session check with the authorizer, client resolver, and refresh-token lifetime', async () => {
+    mockIsAdminPanelRedirect.mockReturnValue(false);
+    const handler = createOAuthHandler('http://localhost:3080');
+    const req = buildReq();
+    const res = buildRes();
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(mockGetProviderSessionAuthorizer).toHaveBeenCalled();
+    expect(mockEstablishOpenIDCallbackProviderSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorizer: authorizerHandle,
+        getProviderSessionClient: expect.any(Function),
+        refreshTokenExpiryMs: 86400000,
+      }),
+      expect.objectContaining({
+        getClaims: expect.any(Function),
+        callbackIssuedAt: expect.any(Date),
+        res,
+      }),
+    );
+    const [, input] = mockEstablishOpenIDCallbackProviderSession.mock.calls[0];
+    expect(input.getClaims()).toEqual({ sub: 'sub-123', sid: 'sid-123' });
+  });
+
+  it('passes the extracted ref into setAuthTokens with the explicit openid auth method', async () => {
+    mockIsAdminPanelRedirect.mockReturnValue(false);
+    const ref = { issuer: 'https://issuer.example.com', clientId: 'client-1', sid: 'sid-123' };
+    mockEstablishOpenIDCallbackProviderSession.mockResolvedValue({ ok: true, ref });
+    const handler = createOAuthHandler('http://localhost:3080');
+    const req = buildReq();
+    const res = buildRes();
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(mockSetAuthTokens).toHaveBeenCalledWith(req.user._id, res, null, req, {
+      providerSession: ref,
+      authMethod: 'openid',
+    });
+    expect(res.redirect).toHaveBeenCalledWith('http://localhost:3080');
+  });
+
+  it('stops without publishing when the provider-session check denies the callback', async () => {
+    mockIsAdminPanelRedirect.mockReturnValue(false);
+    mockEstablishOpenIDCallbackProviderSession.mockResolvedValue({ ok: false });
+    const handler = createOAuthHandler('http://localhost:3080');
+    const req = buildReq();
+    const res = buildRes();
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(mockSetAuthTokens).not.toHaveBeenCalled();
+    expect(mockSendOpenIDAuthResponse).not.toHaveBeenCalled();
+    expect(res.redirect).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('propagates an establish failure that the provider-session check lets through', async () => {
+    mockIsAdminPanelRedirect.mockReturnValue(false);
+    const unrelatedError = new Error('boom');
+    mockEstablishOpenIDCallbackProviderSession.mockRejectedValue(unrelatedError);
+    const handler = createOAuthHandler('http://localhost:3080');
+    const req = buildReq();
+    const res = buildRes();
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(unrelatedError);
+  });
+
+  it('publishes the standard OpenID login through the durable generation service', async () => {
+    process.env.OPENID_REUSE_TOKENS = 'true';
+    mockIsAdminPanelRedirect.mockReturnValue(false);
+    const ref = { issuer: 'https://issuer.example.com', clientId: 'client-1', sid: 'sid-123' };
+    mockEstablishOpenIDCallbackProviderSession.mockResolvedValue({ ok: true, ref });
+    const handler = createOAuthHandler('http://localhost:3080');
+    const req = buildReq();
+    const res = buildRes();
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(mockSendOpenIDAuthResponse).toHaveBeenCalledWith({
+      tokenset: req.user.tokenset,
+      user: req.user,
+      existingRefreshToken: 'openid-refresh-token',
+      openidSubject: undefined,
+      openidIssuer: 'https://issuer.example.com',
+      discardSessionTokens: true,
+      providerSession: ref,
+      req,
+      res,
+    });
+    expect(res.redirect).toHaveBeenCalledWith('http://localhost:3080');
   });
 
   it('omits refresh token from admin exchange when OPENID_REUSE_TOKENS is disabled', async () => {
@@ -118,17 +273,21 @@ describe('createOAuthHandler', () => {
       'http://admin.example.com',
       'pkce-challenge',
       expect.any(Number),
+      null,
     );
     expect(res.redirect).toHaveBeenCalledWith(
       'http://admin.example.com/auth/openid/callback?code=exchange-code',
     );
+    expect(mockStoreOpenIDSession).not.toHaveBeenCalled();
     expect(mockSendOpenIDAuthResponse).not.toHaveBeenCalled();
     expect(mockSetAuthTokens).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('includes refresh token in admin exchange when OPENID_REUSE_TOKENS is enabled', async () => {
+  it('includes refresh token in admin exchange when OPENID_REUSE_TOKENS is enabled, and persists the binding', async () => {
     process.env.OPENID_REUSE_TOKENS = 'true';
+    const ref = { issuer: 'https://issuer.example.com', clientId: 'client-1', sid: 'sid-123' };
+    mockEstablishOpenIDCallbackProviderSession.mockResolvedValue({ ok: true, ref });
     const handler = createOAuthHandler('http://admin.example.com/auth/openid/callback');
     const req = buildReq();
     const res = buildRes();
@@ -144,6 +303,14 @@ describe('createOAuthHandler', () => {
       'http://admin.example.com',
       'pkce-challenge',
       expect.any(Number),
+      ref,
+    );
+    expect(mockStoreOpenIDSession).toHaveBeenCalledWith(
+      'user-123',
+      'openid-refresh-token',
+      undefined,
+      undefined,
+      { providerSession: ref, authMethod: 'openid' },
     );
     expect(res.redirect).toHaveBeenCalledWith(
       'http://admin.example.com/auth/openid/callback?code=exchange-code',
@@ -153,27 +320,55 @@ describe('createOAuthHandler', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('publishes the standard OpenID login through the durable generation service', async () => {
+  it('persists a null provider-session binding for an unassociated ref outside mode off', async () => {
     process.env.OPENID_REUSE_TOKENS = 'true';
-    mockIsAdminPanelRedirect.mockReturnValue(false);
-    const handler = createOAuthHandler('http://localhost:3080');
+    mockEstablishOpenIDCallbackProviderSession.mockResolvedValue({ ok: true, ref: null });
+    const handler = createOAuthHandler('http://admin.example.com/auth/openid/callback');
     const req = buildReq();
     const res = buildRes();
     const next = jest.fn();
 
     await handler(req, res, next);
 
-    expect(mockSendOpenIDAuthResponse).toHaveBeenCalledWith({
-      tokenset: req.user.tokenset,
-      user: req.user,
-      existingRefreshToken: 'openid-refresh-token',
-      openidSubject: undefined,
-      openidIssuer: undefined,
-      discardSessionTokens: true,
-      req,
-      res,
-    });
-    expect(res.redirect).toHaveBeenCalledWith('http://localhost:3080');
+    expect(mockStoreOpenIDSession).toHaveBeenCalledWith(
+      'user-123',
+      'openid-refresh-token',
+      undefined,
+      undefined,
+      { providerSession: null, authMethod: 'openid' },
+    );
+  });
+
+  it('does not call storeOpenIDSession for the admin exchange in mode off', async () => {
+    process.env.OPENID_REUSE_TOKENS = 'true';
+    authorizerHandle.getMode.mockResolvedValue('off');
+    mockEstablishOpenIDCallbackProviderSession.mockResolvedValue({ ok: true, ref: null });
+    const handler = createOAuthHandler('http://admin.example.com/auth/openid/callback');
+    const req = buildReq();
+    const res = buildRes();
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(mockStoreOpenIDSession).not.toHaveBeenCalled();
+    expect(res.redirect).toHaveBeenCalledWith(
+      'http://admin.example.com/auth/openid/callback?code=exchange-code',
+    );
+  });
+
+  it('denies the admin callback before an exchange code is issued when the provider-session check denies', async () => {
+    process.env.OPENID_REUSE_TOKENS = 'true';
+    mockEstablishOpenIDCallbackProviderSession.mockResolvedValue({ ok: false });
+    const handler = createOAuthHandler('http://admin.example.com/auth/openid/callback');
+    const req = buildReq();
+    const res = buildRes();
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(mockGenerateAdminExchangeCode).not.toHaveBeenCalled();
+    expect(mockStoreOpenIDSession).not.toHaveBeenCalled();
+    expect(res.redirect).not.toHaveBeenCalled();
   });
 
   it('forwards the refresh token from req.authInfo for non-openid admin providers', async () => {
@@ -195,6 +390,7 @@ describe('createOAuthHandler', () => {
       'http://admin.example.com',
       'pkce-challenge',
       expect.any(Number),
+      null,
     );
   });
 
@@ -216,6 +412,7 @@ describe('createOAuthHandler', () => {
       'http://admin.example.com',
       'pkce-challenge',
       expect.any(Number),
+      null,
     );
   });
 
@@ -238,6 +435,7 @@ describe('createOAuthHandler', () => {
       'http://admin.example.com',
       'pkce-challenge',
       expect.any(Number),
+      null,
     );
   });
 });
