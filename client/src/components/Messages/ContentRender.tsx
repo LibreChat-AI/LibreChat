@@ -9,6 +9,7 @@ import {
 } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
+import PromptCacheResetNotice from '~/components/Chat/Messages/Content/PromptCacheResetNotice';
 import { useAttachments, useMessageActions, useContentMetadata } from '~/hooks';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import { areMessageFieldsEqual, isSameTailRelation } from '~/utils';
@@ -187,15 +188,18 @@ const ContentRender = memo(function ContentRender({
         ) : undefined
       }
       notice={
-        /** A turn that ran out of agent steps is incomplete, not broken. Rendered
-         *  here rather than inside `ContentParts` because it is a message-level
-         *  outcome, and `ContentParts` also serves surfaces (subagent panels,
-         *  search) that have no message row behind them. */
-        msg.unfinished === true &&
-        !isSubmitting &&
-        msg.finish_reason === Constants.TOOL_CALL_LIMIT_FINISH_REASON ? (
-          <ToolCallLimitNotice message={msg} />
-        ) : undefined
+        <>
+          {!msg.isCreatedByUser && <PromptCacheResetNotice message={msg} />}
+          {/** A turn that ran out of agent steps is incomplete, not broken. Rendered
+           *  here rather than inside `ContentParts` because it is a message-level
+           *  outcome, and `ContentParts` also serves surfaces (subagent panels,
+           *  search) that have no message row behind them. */}
+          {msg.unfinished === true &&
+            !isSubmitting &&
+            msg.finish_reason === Constants.TOOL_CALL_LIMIT_FINISH_REASON && (
+              <ToolCallLimitNotice message={msg} />
+            )}
+        </>
       }
     />
   );

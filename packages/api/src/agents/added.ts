@@ -19,6 +19,7 @@ import {
   validateMCPServerConfig,
 } from '~/mcp/utils';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { orderNames } from '~/agents/promptCache';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
@@ -247,7 +248,7 @@ export async function loadAddedAgent(
   }
 
   const serverToolKeys = await mapWithConcurrency(
-    [...mcpServers],
+    orderNames(req.config, mcpServers),
     getLookupConcurrency(appConfig, 'mcpCatalogLookups'),
     async (mcpServer): Promise<string[]> => {
       /** Address durable catalogs by the effective request overlay; request-scoped
@@ -260,7 +261,9 @@ export async function loadAddedAgent(
         overlayConfig && requiresEphemeralUserConnection(overlayConfig)
           ? null
           : await deps.getMCPServerTools(userId, mcpServer, overlayConfig, capabilityProfile);
-      return serverTools ? Object.keys(serverTools) : [`${mcp_all}${mcp_delimiter}${mcpServer}`];
+      return serverTools
+        ? orderNames(req.config, Object.keys(serverTools))
+        : [`${mcp_all}${mcp_delimiter}${mcpServer}`];
     },
   );
   for (const keys of serverToolKeys) {

@@ -343,6 +343,10 @@ export function updateContent(
       if (contentPart.tool_call.executor != null) {
         newToolCall.executor = contentPart.tool_call.executor;
       }
+      const dispatched = (contentPart.tool_call as Agents.ToolCall).dispatched;
+      if (dispatched != null) {
+        newToolCall.dispatched = dispatched;
+      }
     }
 
     updatedContent[index] = {

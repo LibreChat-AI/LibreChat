@@ -113,6 +113,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         maxSubagents,
         fileSharing,
         linkedInstructions,
+        promptCache,
       } = appConfig.endpoints[EModelEndpoint.agents];
       const toolApproval = appConfig.endpoints[EModelEndpoint.agents].toolApproval;
       /** Only advertise Accept edits when the endpoint fallback cannot force every
@@ -168,6 +169,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         linkedInstructions: {
           langfuse: { enabled: linkedInstructions?.langfuse?.enabled === true },
         },
+        ...(promptCache?.stableContext === true && { stableContext: true }),
         toolApproval: {
           enabled: toolApproval?.enabled === true,
           agentModes: toolApproval?.enabled === true && toolApproval.agentModes === true,

@@ -541,6 +541,25 @@ describe('steps', () => {
       );
     });
 
+    it('keeps the tool a dispatcher call ran', () => {
+      const opened = applyToolCallsStep(createResponse(), search, 0).message;
+      const dispatched = { name: 'search', args: '{"q":"cats"}' };
+      const completed = applyToolCallCompleted(
+        opened,
+        search,
+        toolEnd(search.id, {
+          id: 'call-1',
+          name: 'call_tool',
+          args: '{"name":"search","arguments":"{\\"q\\":\\"cats\\"}"}',
+          output: '3',
+          dispatched,
+        }),
+        0,
+      );
+
+      expect(toolCallAt(completed, 1)).toMatchObject({ name: 'call_tool', dispatched });
+    });
+
     it('keeps streamed args when the completion omits them', () => {
       const opened = applyToolCallsStep(createResponse(), search, 0).message;
       const streamed = applyToolCallDelta(opened, search, argsDelta(search.id, '{}'), 'call-1', 0);

@@ -57,6 +57,7 @@ const {
   getMCPRequestContext,
   createSubagentCodeRouting,
   hasEntityEmbeddings,
+  isStableContextEnabled,
 } = require('@librechat/api');
 const {
   ResourceType,
@@ -254,7 +255,12 @@ const initializeClientWithProvider = async ({
   const requestConversationPromise = resolveRunConversation({
     request: req,
     conversationId,
-    loadConversation: (conversationId) => db.getConvo(req.user.id, conversationId),
+    loadConversation: (conversationId) =>
+      db.getConvo(
+        req.user.id,
+        conversationId,
+        isStableContextEnabled(req.config) ? '+contextAnchor' : undefined,
+      ),
   });
   const startupTelemetry = getAgentStartupTelemetry(req);
 
@@ -525,6 +531,7 @@ const initializeClientWithProvider = async ({
         tool_resources: ctx.tool_resources,
         actionsEnabled: ctx.actionsEnabled,
         accessibleMcpServerNames: ctx.accessibleMcpServerNames,
+        toolDispatch: ctx.toolDispatch?.() === true,
         jobCreatedAt,
       });
 
@@ -608,6 +615,7 @@ const initializeClientWithProvider = async ({
       codeApiMaxRetryWaitMs: appConfig?.endpoints?.agents?.codeApiMaxRetryWaitMs,
       timeoutMs: appConfig?.endpoints?.agents?.workspaceAttachments?.timeoutMs,
       concurrency: appConfig?.endpoints?.agents?.workspaceAttachments?.concurrency,
+      uploadOrder: isStableContextEnabled(appConfig),
     },
   });
 
