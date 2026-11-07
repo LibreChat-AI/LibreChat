@@ -69,8 +69,8 @@ async function archiveHeld(page: Page, chat: Chat) {
   }
   await expect(menuItem(page, 'Archive')).toHaveCount(0);
   return async () => {
-    await page.unroute('**/api/convos/archive');
     await held?.continue();
+    await page.unroute('**/api/convos/archive');
     await expect(page.getByTestId('convo-item').filter({ hasText: chat.title })).toHaveCount(0);
   };
 }
