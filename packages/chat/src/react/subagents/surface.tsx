@@ -1,9 +1,14 @@
 import { useContext } from 'react';
-import type { ChatSurface, SubagentPanelActions } from './context';
+import type { ChatSurface, SubagentPanelState, SubagentPanelActions } from './context';
 import type { ActiveSubagentPanel } from './state';
-import { ChatSurfaceContext, SubagentPanelActionsContext } from './context';
+import {
+  ChatSurfaceContext,
+  SubagentPanelStateContext,
+  SubagentPanelActionsContext,
+} from './context';
 
-export type { ChatSurface, SubagentPanelActions } from './context';
+export type { ChatSurface, SubagentPanelState, SubagentPanelActions } from './context';
+export { SubagentPanelStateContext } from './context';
 
 export function useChatSurface(): ChatSurface {
   const surface = useContext(ChatSurfaceContext);
@@ -34,4 +39,13 @@ export function useSubagentPanelActions(): SubagentPanelActions | null {
  */
 export function useOpenSubagentPanel(): ((selection: ActiveSubagentPanel) => void) | null {
   return useSubagentPanelActions()?.open ?? null;
+}
+
+/** The activity panel's state; the panel renders only inside a `ChatSurfaceProvider`. */
+export function useSubagentPanelState(): SubagentPanelState {
+  const state = useContext(SubagentPanelStateContext);
+  if (state == null) {
+    throw new Error('useSubagentPanelState must be used within a ChatSurfaceProvider');
+  }
+  return state;
 }

@@ -358,12 +358,6 @@ export type SubagentControlUiState = {
   retry?: SubagentControlRequest;
 };
 
-export const subagentControlStateKey = (
-  parentConversationId: string,
-  threadId: string,
-  taskId: string,
-): string => `${parentConversationId}\u0000${threadId}\u0000${taskId}`;
-
 const SUBAGENT_CONTROL_STORAGE_PREFIX = 'librechat.subagent-control:';
 const CONTROL_ACTIONS = new Set(['steer', 'queue', 'interrupt', 'cancel', 'cancel_message']);
 const storedControlState = (value: unknown): SubagentControlUiState | null => {

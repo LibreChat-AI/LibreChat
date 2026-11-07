@@ -7,7 +7,7 @@ export default function useFocusTrap(
   containerRef: RefObject<HTMLElement | null>,
   active: boolean,
   onEscape?: () => void,
-) {
+): void {
   const onEscapeRef = useRef(onEscape);
   useEffect(() => {
     onEscapeRef.current = onEscape;

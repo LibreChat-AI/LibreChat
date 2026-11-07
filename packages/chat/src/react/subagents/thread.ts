@@ -13,3 +13,10 @@ export const subagentThreadHasTaskEvidence = (
     (message) =>
       message.messageId === `${taskId}:user` || message.messageId === `${taskId}:assistant`,
   ) === true;
+
+/** Names one task's control state: the parent conversation, the child thread and the task. */
+export const subagentControlStateKey = (
+  parentConversationId: string,
+  threadId: string,
+  taskId: string,
+): string => `${parentConversationId}\u0000${threadId}\u0000${taskId}`;
