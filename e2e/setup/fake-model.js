@@ -121,6 +121,7 @@ const TWO_ARTIFACT_REPLY_MARKER = 'E2E_TWO_ARTIFACT_REPLY';
 const BACKGROUND_DISPATCH_MARKER = 'E2E_BACKGROUND_DISPATCH:';
 const BACKGROUND_COLLECT_MARKER = 'E2E_BACKGROUND_COLLECT:';
 const TOOL_APPROVAL_MARKER = 'E2E_TOOL_APPROVAL:';
+const INVALID_TOOL_ARGS_MARKER = 'E2E_INVALID_TOOL_ARGS:';
 const TOOL_APPROVAL_BATCH_MARKER = 'E2E_TOOL_APPROVAL_BATCH:';
 const TOOL_APPROVAL_RESTRICTED_MARKER = 'E2E_TOOL_APPROVAL_RESTRICTED:';
 const TOOL_APPROVAL_REWRITE_MARKER = 'E2E_TOOL_APPROVAL_REWRITE:';
@@ -192,6 +193,7 @@ const DEFERRED_OAUTH_TOOL_NAME = 'echo_mcp_e2e-oauth-deferred';
 const ASK_USER_QUESTION_NAME = 'ask_user_question';
 const CHECK_BACKGROUND_TASK_TOOL_NAME = 'check_background_task';
 const APPROVAL_TOOL_NAME = 'approval_probe_mcp_e2e-memory';
+const WORK_ITEM_TOOL_NAME = 'create_work_item_mcp_e2e-memory';
 const APPROVAL_TOOL_CALL_PREFIX = 'call_e2e_approval_';
 const BACKGROUND_DISPATCH_TOOL_CALL_ID = 'call_e2e_background_dispatch';
 const BACKGROUND_COLLECT_TOOL_CALL_ID = 'call_e2e_background_collect';
@@ -2517,6 +2519,42 @@ function subagentActivityResponses(text) {
   };
 }
 
+/** Calls the work-item tool with a string where the schema declares an object or null,
+ *  then reports the tool result verbatim so a test can read what the model was told. */
+function invalidToolArgsResponses(label, toolNames) {
+  if (!toolNames.has(WORK_ITEM_TOOL_NAME)) {
+    return {
+      responses: [`E2E invalid args unavailable: ${WORK_ITEM_TOOL_NAME} was not advertised.`],
+    };
+  }
+  const toolCallId = `call_e2e_invalid_args_${label}`;
+  return {
+    responses: ['', ''],
+    toolCalls: [
+      {
+        id: toolCallId,
+        name: WORK_ITEM_TOOL_NAME,
+        args: {
+          project: 'e2e',
+          subject: `item-${label}`,
+          confirm: true,
+          custom_fields: `{"secret":"value-${label}"}`,
+        },
+        type: 'tool_call',
+      },
+    ],
+    resolveOnStream: (streamMessages) => {
+      const toolMessage = findLastToolMessage(streamMessages, toolCallId);
+      if (!toolMessage) {
+        return null;
+      }
+      return {
+        responses: [`E2E tool feedback ${label}: ${getContentText(toolMessage.content)}`],
+      };
+    },
+  };
+}
+
 function approvalToolResponses(label, toolNames, review) {
   if (!toolNames.has(APPROVAL_TOOL_NAME)) {
     return {
@@ -3582,6 +3620,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const rewrittenApprovalLabel = getMarkerValue(text, TOOL_APPROVAL_REWRITE_MARKER);
   if (rewrittenApprovalLabel) {
     return approvalToolResponses(rewrittenApprovalLabel, toolNames, 'rewrite');
+  }
+
+  const invalidArgsLabel = getMarkerValue(text, INVALID_TOOL_ARGS_MARKER);
+  if (invalidArgsLabel) {
+    return invalidToolArgsResponses(invalidArgsLabel, toolNames);
   }
 
   const approvalLabel = getMarkerValue(text, TOOL_APPROVAL_MARKER);
