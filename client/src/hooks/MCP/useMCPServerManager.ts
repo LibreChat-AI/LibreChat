@@ -111,7 +111,12 @@ export function useMCPServerManager({
   const mcpServersReady = useCatalogReady('mcpServers');
   const mcpEnabled = canUseMcp && mcpServersReady;
 
-  const { data: loadedServers, isLoading } = useMCPServersQuery({ enabled: mcpEnabled });
+  const {
+    data: loadedServers,
+    isLoading,
+    isError: isCatalogError,
+    refetch: refetchServers,
+  } = useMCPServersQuery({ enabled: mcpEnabled });
   const mcpToolsReady = useCatalogReady('mcpTools');
   const { data: discoveredMCPTools } = useMCPToolsQuery({
     enabled:
@@ -752,11 +757,12 @@ export function useMCPServerManager({
       const serverStatus = connectionStatus?.[serverName];
       const serverConfig = loadedServers?.[serverName];
 
-      const handleConfigClick = (e: React.MouseEvent) => {
-        e.stopPropagation();
-        e.preventDefault();
+      const handleConfigClick = (e?: React.MouseEvent) => {
+        e?.stopPropagation();
+        e?.preventDefault();
 
-        previousFocusRef.current = document.activeElement as HTMLElement;
+        previousFocusRef.current =
+          document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
         /** Minimal TPlugin object for the config dialog */
         const configTool: TPlugin = {
@@ -811,6 +817,42 @@ export function useMCPServerManager({
     [queryClient, isCancellable, isInitializing, cancelOAuthFlow, connectionStatus, loadedServers],
   );
 
+  const pendingSelections = useRef(new Set<string>());
+  const selectServer = useCallback(
+    (serverName: string): void => {
+      if (
+        !canUseMcp ||
+        !selectableServers.some((server) => server.serverName === serverName) ||
+        mcpValuesRef.current.includes(serverName) ||
+        pendingSelections.current.has(serverName)
+      ) {
+        return;
+      }
+      const statusProps = getServerStatusIconProps(serverName);
+      if (statusProps.isInitializing) {
+        return;
+      }
+      if (connectionStatus?.[serverName]?.connectionState === 'connected') {
+        selectInitializedMCPServer(mcpValuesRef, setMCPValues, serverName);
+        return;
+      }
+      if (statusProps.hasCustomUserVars) {
+        statusProps.onConfigClick();
+        return;
+      }
+      pendingSelections.current.add(serverName);
+      void initializeServer(serverName).finally(() => pendingSelections.current.delete(serverName));
+    },
+    [
+      canUseMcp,
+      selectableServers,
+      getServerStatusIconProps,
+      connectionStatus,
+      setMCPValues,
+      initializeServer,
+    ],
+  );
+
   const getConfigDialogProps = useCallback(() => {
     if (!selectedToolForConfig) return null;
 
@@ -863,6 +905,9 @@ export function useMCPServerManager({
       selectableServers,
       availableMCPServersMap: loadedServers,
       isLoading,
+      isCatalogError,
+      refetchServers,
+      selectServer,
       connectionStatus,
       initializeServer,
       cancelOAuthFlow,
@@ -896,6 +941,9 @@ export function useMCPServerManager({
       selectableServers,
       loadedServers,
       isLoading,
+      isCatalogError,
+      refetchServers,
+      selectServer,
       connectionStatus,
       initializeServer,
       cancelOAuthFlow,

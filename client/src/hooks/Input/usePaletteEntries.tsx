@@ -485,8 +485,8 @@ export default function usePaletteEntries({
       selectableServers,
       mcpValues,
       toggleServerSelection,
+      selectServer,
       connectionStatus,
-      initializeServer,
       isInitializing,
       getServerStatusIconProps,
     } = mcpServerManager ?? {};
@@ -518,26 +518,12 @@ export default function usePaletteEntries({
            Selecting an unusable server here used to be a dead end: every
            connect, authenticate and retry control lived in the menu this
            palette replaced. */
-        const selectServer = () => {
+        const toggleServer = () => {
           if (selected.has(server.serverName)) {
             toggleServerSelection?.(server.serverName);
             return;
           }
-          /* An unknown status means the server has not reported a connection
-             yet, which is not the same as being connected: treat it like a
-             disconnected server so it initializes before it can be selected. */
-          if (connectionStatus?.[server.serverName]?.connectionState !== 'connected') {
-            if (statusProps?.isInitializing) {
-              return;
-            }
-            if (statusProps?.hasCustomUserVars) {
-              statusProps.onConfigClick(syntheticClick);
-              return;
-            }
-            void initializeServer?.(server.serverName);
-            return;
-          }
-          toggleServerSelection?.(server.serverName);
+          selectServer?.(server.serverName);
         };
         /* A connected server keeps its per-user variables editable: the
            palette row carries the Configure action the replaced menu had. */
@@ -592,7 +578,7 @@ export default function usePaletteEntries({
           section: 'mcp',
           active: selected.has(server.serverName),
           pinned: false,
-          onSelect: selectServer,
+          onSelect: toggleServer,
           modes: getServerModes(),
           iconUrl: server.config?.iconPath,
           /* Only the owner role carries Share, so it separates a server this

@@ -75,6 +75,100 @@ const input = () => screen.getByRole('combobox');
 const activeId = () => input().getAttribute('aria-activedescendant');
 
 describe('MentionPopover through the plain list', () => {
+  it('keeps an empty picker open while keyboard focus moves to a retry action', () => {
+    jest.useFakeTimers();
+    try {
+      const { onClose, onSelectMention } = renderMention({
+        options: [],
+        notice: <button type="button">Retry</button>,
+      });
+      expect(fireEvent.keyDown(input(), { key: 'Tab' })).toBe(true);
+      act(() => screen.getByRole('button', { name: 'Retry' }).focus());
+      act(() => jest.advanceTimersByTime(200));
+      expect(onClose).not.toHaveBeenCalled();
+      expect(onSelectMention).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not remove unrelated text if the draft changes while the picker is open', () => {
+    const textAreaRef = makeTextarea('Find @ later');
+    renderMention({ textAreaRef, commandRange: { start: 5, end: 6 } });
+    if (textAreaRef.current) {
+      textAreaRef.current.value = 'A different draft';
+    }
+    fireEvent.keyDown(input(), { key: 'Enter' });
+    expect(textAreaRef.current).toHaveValue('A different draft');
+  });
+
+  it('adds results arriving after the picker opens', () => {
+    const { rerender } = renderMention({ options: [] });
+    expect(screen.queryByRole('option')).toBeNull();
+    rerender(
+      <MentionPopover
+        textAreaRef={makeTextarea()}
+        placeholder={PLACEHOLDER}
+        options={options}
+        isLoading={false}
+        assistantListMap={{}}
+        onClose={jest.fn()}
+        onSelectMention={jest.fn()}
+      />,
+    );
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+  });
+
+  it.each(['Enter', 'Tab', 'click'])(
+    'preserves the surrounding draft on an inline %s pick',
+    (key) => {
+      const textAreaRef = makeTextarea('Find @git later');
+      textAreaRef.current?.setSelectionRange(9, 9);
+      const onInput = jest.fn();
+      textAreaRef.current?.addEventListener('input', onInput);
+      const { onSelectMention } = renderMention({
+        textAreaRef,
+        commandRange: { start: 5, end: 9 },
+        options: [option({ type: 'mcp', label: 'GitHub', value: 'github' })],
+      });
+      expect(input()).toHaveValue('git');
+      expect(textAreaRef.current).toHaveValue('Find @git later');
+      if (key === 'click') {
+        fireEvent.click(screen.getByRole('option'));
+      } else {
+        fireEvent.keyDown(input(), { key });
+      }
+      expect(onSelectMention).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'mcp', value: 'github' }),
+      );
+      expect(textAreaRef.current).toHaveValue('Find  later');
+      expect(textAreaRef.current?.selectionStart).toBe(5);
+      expect(textAreaRef.current).toHaveFocus();
+      expect(onInput).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['Escape', 'Backspace', 'Enter'])('keeps the original draft on %s dismissal', (key) => {
+    const textAreaRef = makeTextarea('Find @ later');
+    textAreaRef.current?.setSelectionRange(6, 6);
+    const { onSelectMention } = renderMention({
+      textAreaRef,
+      commandRange: { start: 5, end: 6 },
+      options: [],
+    });
+    fireEvent.keyDown(input(), { key });
+    expect(textAreaRef.current).toHaveValue('Find @ later');
+    expect(onSelectMention).not.toHaveBeenCalled();
+  });
+
+  it('does not steal focus from a configuration dialog opened by selection', () => {
+    const dialogInput = document.createElement('input');
+    document.body.appendChild(dialogInput);
+    renderMention({ onSelectMention: () => dialogInput.focus() });
+    fireEvent.keyDown(input(), { key: 'Enter' });
+    expect(dialogInput).toHaveFocus();
+  });
+
   it('exposes the input as a combobox controlling a listbox of options', () => {
     renderMention();
 
@@ -217,6 +311,53 @@ describe('MentionPopover through the plain list', () => {
 });
 
 describe('MentionPopover through a host list', () => {
+  it('skips group headings and maps active options to their windowed rows', () => {
+    const renderCommandList = jest.fn(({ count, renderRow }: CommandListProps) => (
+      <>
+        {Array.from({ length: count }, (_, index) =>
+          renderRow({ index, key: `${index}`, style: {} }),
+        )}
+      </>
+    ));
+    const { onSelectMention } = renderMention(
+      {
+        options: [
+          option({}),
+          option({
+            type: 'mcp',
+            label: 'GitHub',
+            value: 'github',
+            group: 'MCP Servers',
+            selected: true,
+          }),
+          option({
+            type: 'mcp',
+            label: 'GitLab',
+            value: 'gitlab',
+            group: 'MCP Servers',
+            selected: false,
+          }),
+        ],
+      },
+      {
+        useComposerBindings: () => NO_HOST_BINDINGS,
+        useShortcutDisplay: () => '',
+        useShortcutAriaKey: () => undefined,
+        renderCommandList,
+      },
+    );
+    expect(screen.getByText('MCP Servers')).toBeVisible();
+    expect(screen.getAllByRole('option')).toHaveLength(3);
+    fireEvent.keyDown(input(), { key: 'ArrowDown' });
+    expect(activeId()).toBe('mention-item-1');
+    expect(renderCommandList).toHaveBeenLastCalledWith(
+      expect.objectContaining({ count: 4, activeIndex: 2 }),
+    );
+    fireEvent.keyDown(input(), { key: 'Enter' });
+    expect(onSelectMention).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'mcp', value: 'github' }),
+    );
+  });
   it('renders its rows through the host windowed list', () => {
     const renderCommandList = jest.fn(({ count, renderRow }: CommandListProps) => (
       <div data-testid="host-list">

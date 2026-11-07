@@ -199,6 +199,12 @@ const ChatForm = memo(function ChatForm({
       !isAssistantsEndpoint(endpoint),
     [endpoint, modelSpec?.hideBadgeRow],
   );
+  const canUseMcp = useHasAccess({
+    permissionType: PermissionTypes.MCP_SERVERS,
+    permission: Permissions.USE,
+  });
+  const mcpMentionsEnabled =
+    startupConfig?.interface?.mcpServers?.mentions === true && showTools && canUseMcp;
   const conversationId = useMemo(
     () => conversation?.conversationId ?? Constants.NEW_CONVO,
     [conversation?.conversationId],
@@ -401,6 +407,7 @@ const ChatForm = memo(function ChatForm({
   const handleKeyUp = useHandleKeyUp({
     index,
     textAreaRef,
+    mcpMentionsEnabled,
   });
   const {
     isNotAppendable,
@@ -599,7 +606,7 @@ const ChatForm = memo(function ChatForm({
     [answerMode, steering, submitMessage, methods, index],
   );
 
-  return (
+  const composer = (
     <ComposerFrame
       onSubmit={methods.handleSubmit((data) => {
         if (!isPreparingFromUrl && submitComposerText(data) !== false) {
@@ -658,6 +665,7 @@ const ChatForm = memo(function ChatForm({
             popoverAtom={mentionPopoverAtom}
             newConversation={newConversation}
             textAreaRef={textAreaRef}
+            mcpMentionsEnabled={mcpMentionsEnabled}
           />
           <PromptsCommand index={index} textAreaRef={textAreaRef} submitPrompt={submitPrompt} />
           {index === 0 && (
@@ -767,65 +775,64 @@ const ChatForm = memo(function ChatForm({
           {localize('com_error_code_workspace_required')}
         </p>
       )}
-      {/* The composer is what keeps MCP connection and authorization state
-          current wherever its ephemeral tools apply; the Agent Builder's
-          tool library reads the same cache, so without this a server it
-          lists reads as unknown and offers to connect instead of toggling. */}
-      <BadgeRowProvider
-        conversationId={conversationId}
-        specName={conversation?.spec}
-        isSubmitting={isSubmitting}
-        observeToolAuthorization={showTools}
-      >
-        <Bar
-          index={index}
-          disabled={disableInputs}
-          agentId={conversation?.agent_id}
-          /* The RAW endpoint, not the effective type above: the attach
+      <Bar
+        index={index}
+        disabled={disableInputs}
+        agentId={conversation?.agent_id}
+        /* The RAW endpoint, not the effective type above: the attach
              destinations resolve the provider from its name, so a
              custom endpoint reduced to `custom` loses the uploads its
              provider actually takes (OpenRouter's video and audio).
              `endpointType` beside it carries the resolved type. */
-          endpoint={conversation?.endpoint}
-          endpointType={attachTarget.endpointType}
-          endpointFileConfig={attachTarget.endpointFileConfig}
-          useResponsesApi={attachTarget.useResponsesApi}
-          conversationId={conversationId}
-          conversation={conversation}
-          files={files}
-          setFiles={setFiles}
-          setFilesLoading={setFilesLoading}
-          canAttach={attachTarget.canAttach}
-          anchorRef={composerBoxRef}
-          showTools={showTools}
-          isSubmitting={isSubmitting}
-          showSpeech={SpeechToText}
-          speechDisabled={speechDisabled}
-          dictation={dictation}
-          approvalSlot={
-            <div className="flex items-center gap-1.5">
-              <CodeApprovalMenu
-                conversation={conversation}
-                addedConversation={addedConvo}
-                codeEnvironmentMode={codeWorkspace.mode}
-                setConversation={setConversation}
-                disabled={disableInputs}
+        endpoint={conversation?.endpoint}
+        endpointType={attachTarget.endpointType}
+        endpointFileConfig={attachTarget.endpointFileConfig}
+        useResponsesApi={attachTarget.useResponsesApi}
+        conversationId={conversationId}
+        conversation={conversation}
+        files={files}
+        setFiles={setFiles}
+        setFilesLoading={setFilesLoading}
+        canAttach={attachTarget.canAttach}
+        anchorRef={composerBoxRef}
+        showTools={showTools}
+        isSubmitting={isSubmitting}
+        showSpeech={SpeechToText}
+        speechDisabled={speechDisabled}
+        dictation={dictation}
+        approvalSlot={
+          <div className="flex items-center gap-1.5">
+            <CodeApprovalMenu
+              conversation={conversation}
+              addedConversation={addedConvo}
+              codeEnvironmentMode={codeWorkspace.mode}
+              setConversation={setConversation}
+              disabled={disableInputs}
+            />
+            {index === 0 && conversationId != null && (
+              <PendingToolApprovalButton
+                conversationId={conversationId}
+                triggerRef={approvalTriggerRef}
               />
-              {index === 0 && conversationId != null && (
-                <PendingToolApprovalButton
-                  conversationId={conversationId}
-                  triggerRef={approvalTriggerRef}
-                />
-              )}
-            </div>
-          }
-          actionSlot={actionSlot}
-          hasAddedConversation={addedConvo != null}
-        />
-        <ToolDialogs />
-      </BadgeRowProvider>
+            )}
+          </div>
+        }
+        actionSlot={actionSlot}
+        hasAddedConversation={addedConvo != null}
+      />
+      <ToolDialogs />
       {TextToSpeech && automaticPlayback && <AutoPlayAudio index={index} />}
     </ComposerFrame>
+  );
+  return (
+    <BadgeRowProvider
+      conversationId={conversationId}
+      specName={conversation?.spec}
+      isSubmitting={isSubmitting}
+      observeToolAuthorization={showTools}
+    >
+      {composer}
+    </BadgeRowProvider>
   );
 });
 ChatForm.displayName = 'ChatForm';
