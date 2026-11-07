@@ -78,7 +78,10 @@ jest.mock('~/components/Chat/Messages/SearchMessage', () => ({
   ),
 }));
 jest.mock('~/utils', () => ({ cn: (...a: unknown[]) => a.filter(Boolean).join(' ') }));
-jest.mock('jotai', () => ({ useAtomValue: () => 'text-base' }));
+jest.mock('jotai', () => ({
+  ...jest.requireActual<typeof import('jotai')>('jotai'),
+  useAtomValue: () => 'text-base',
+}));
 jest.mock('~/store/fontSize', () => ({ fontSizeAtom: {} }));
 
 const mockUseRecoilValue = useRecoilValue as jest.Mock;
