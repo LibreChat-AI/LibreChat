@@ -113,7 +113,11 @@ const host: MessagesHost = {
     consumeFocusSuppression: () => false,
   }),
   renderMessageIcon: () => null,
-  renderMessageRow: ({ message }) => <div data-testid="row">{message.messageId}</div>,
+  useMaximizeChatSpace: () => false,
+  useAgentsMap: () => undefined,
+  renderMessageBody: ({ message }) => <div data-testid="row">{message.messageId}</div>,
+  renderWakeup: () => null,
+  renderPrivateText: () => null,
   renderActivity: () => null,
   useFileMap: () => undefined,
 };

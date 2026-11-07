@@ -1,41 +1,37 @@
-import React, { useMemo, useState } from 'react';
-import { RecoilRoot } from 'recoil';
+/**
+ * @jest-environment jsdom
+ */
+import { useMemo, useState } from 'react';
 import { act, render } from '@testing-library/react';
 import type { TConversation, TMessage } from 'librechat-data-provider';
-import { ChatContext, MessagesViewProvider, useChatContext } from '~/Providers';
+import type { Dispatch, SetStateAction } from 'react';
+import type { ChatContract } from '../../../react/chat/contract';
+import { createMessagesHost } from '../../../__fixtures__/messagesHost';
+import { MessagesHostProvider } from '../../../react/messages/host';
+import { ChatContext } from '../../../react/chat/context';
 import MessageContent from '../MessageContent';
-import '~/components/Chat/Messages/Content/register';
-import '~/Providers/MessagesHostContext';
 
 const mockRowRenders = new Map<string, number>();
 
-jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
-  __esModule: true,
-  default: () => null,
-}));
+jest.mock('../HoverButtons', () => ({ __esModule: true, default: () => null }));
 
-jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
+jest.mock('../ContentRow', () => ({
   __esModule: true,
-  default: () => null,
-}));
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  HoverButtons: () => null,
-  ContentRow: ({ message }: { message: { messageId: string } }) => {
+  default: ({ message }: { message: { messageId: string } }) => {
     const id = message.messageId;
     mockRowRenders.set(id, (mockRowRenders.get(id) ?? 0) + 1);
     return <div data-testid={`row-${id}`} />;
   },
 }));
 
-jest.mock('~/hooks', () => ({
-  useMessageProcess: jest.requireActual('@librechat/chat/react').useMessageProcess,
-  useMemoizedChatContext: jest.requireActual('@librechat/chat/react').useMemoizedChatContext,
-  useLocalize: () => (key: string) => key,
-  useAttachments: () => ({ attachments: undefined, searchResults: undefined }),
-  useContentMetadata: () => ({ hasParallelContent: false }),
-  useMessageActions: ({ chatContext }: { chatContext: { conversation: TConversation } }) => ({
+jest.mock('../useAttachments', () => ({
+  __esModule: true,
+  default: () => ({ attachments: undefined, searchResults: undefined }),
+}));
+
+jest.mock('../useMessageActions', () => ({
+  __esModule: true,
+  default: ({ chatContext }: { chatContext: { conversation: TConversation } }) => ({
     edit: false,
     index: 0,
     agent: undefined,
@@ -51,6 +47,8 @@ jest.mock('~/hooks', () => ({
     hasConfiguredSender: false,
   }),
 }));
+
+const messagesHost = createMessagesHost();
 
 function mockNoop() {}
 
@@ -96,7 +94,7 @@ type ThreadState = {
   isSubmitting: boolean;
 };
 
-let setThreadState: React.Dispatch<React.SetStateAction<ThreadState>> = () => undefined;
+let setThreadState: Dispatch<SetStateAction<ThreadState>> = () => undefined;
 const setCurrentEditId = () => undefined;
 const setSiblingIdx = () => undefined;
 const stableHelpers = {
@@ -130,13 +128,13 @@ function Thread() {
         isSubmitting: state.isSubmitting,
         latestMessageId: state.latestMessageId,
         latestMessageDepth,
-      }) as unknown as ReturnType<typeof useChatContext>,
+      }) as unknown as ChatContract,
     [state.isSubmitting, state.latestMessageId, latestMessageDepth],
   );
 
   return (
-    <ChatContext.Provider value={chatHelpers}>
-      <MessagesViewProvider>
+    <MessagesHostProvider host={messagesHost}>
+      <ChatContext.Provider value={chatHelpers}>
         {state.messages.map((message) => (
           <MessageContent
             key={message.depth}
@@ -148,8 +146,8 @@ function Thread() {
             setSiblingIdx={setSiblingIdx}
           />
         ))}
-      </MessagesViewProvider>
-    </ChatContext.Provider>
+      </ChatContext.Provider>
+    </MessagesHostProvider>
   );
 }
 
@@ -160,11 +158,7 @@ function rendersOf(...ids: string[]) {
 describe('message rows across a send', () => {
   beforeEach(() => {
     mockRowRenders.clear();
-    render(
-      <RecoilRoot>
-        <Thread />
-      </RecoilRoot>,
-    );
+    render(<Thread />);
     mockRowRenders.clear();
   });
 
