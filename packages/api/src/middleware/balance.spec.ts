@@ -178,6 +178,26 @@ describe('createSetBalanceConfig', () => {
       expect(balanceRecord).toBeNull();
     });
 
+    test('resolves user-scoped config for a lean user without `id`', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const getAppConfig = jest.fn().mockResolvedValue({
+        balance: { enabled: true, startBalance: 1000 },
+      });
+
+      const middleware = createSetBalanceConfig({
+        getAppConfig,
+        findBalanceByUser,
+        upsertBalanceFields,
+      });
+      const req = { user: { _id: userId, role: 'USER' } } as unknown as ServerRequest;
+
+      await middleware(req, createMockResponse() as ServerResponse, mockNext);
+
+      expect(getAppConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'USER', userId: userId.toString() }),
+      );
+    });
+
     test('should handle user._id as string', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
       const getAppConfig = jest.fn().mockResolvedValue({

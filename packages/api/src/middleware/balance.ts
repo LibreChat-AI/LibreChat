@@ -142,9 +142,11 @@ export function createSetBalanceConfig({
     try {
       const balanceLocals = res.locals as BalanceLocals;
       const user = req.user as IUser & { _id: string | ObjectId };
+      /** Login routes carry a lean user document, which has `_id` but no `id` */
+      const principalId = user?.id ?? user?._id?.toString();
       const appConfig = await getAppConfig({
         role: user?.role,
-        userId: user?.id,
+        userId: principalId,
         tenantId: user?.tenantId,
       });
       const balanceConfig = getBalanceConfig(appConfig);
