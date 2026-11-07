@@ -1,6 +1,10 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 
-export default function useProgress(initialProgress = 0.01, increment = 0.007, fileSize?: number) {
+export default function useProgress(
+  initialProgress = 0.01,
+  increment = 0.007,
+  fileSize?: number,
+): number {
   const calculateIncrement = useCallback(
     (size?: number) => {
       const baseRate = 0.05;

@@ -1,6 +1,7 @@
 import { Constants, ContentTypes } from 'librechat-data-provider';
-import { hasParallelLanes, findResponseMessageIndex } from '@librechat/chat';
 import type { TMessage, TActivityLabelEvent, TMessageContentParts } from 'librechat-data-provider';
+import { findResponseMessageIndex } from '../steer';
+import { hasParallelLanes } from '../lanes';
 
 type ActivityLabelPart = Extract<TMessageContentParts, { type: ContentTypes.ACTIVITY_LABEL }> & {
   activity_label_type?: 'phase';
@@ -173,12 +174,17 @@ function textValue(part: TMessageContentParts | undefined): string {
  * belongs). Everything absent here — an error, an image, a summary — is content
  * in its own right and ends the fold rather than disappearing into it.
  */
-const ACTIVITY_BLOCK_TYPES = new Set<string>([
-  ContentTypes.TOOL_CALL,
-  ContentTypes.THINK,
-  ContentTypes.ACTIVITY_LABEL,
-  ContentTypes.AGENT_UPDATE,
-]);
+let activityBlockTypes: Set<string> | undefined;
+
+function getActivityBlockTypes(): Set<string> {
+  activityBlockTypes ??= new Set<string>([
+    ContentTypes.TOOL_CALL,
+    ContentTypes.THINK,
+    ContentTypes.ACTIVITY_LABEL,
+    ContentTypes.AGENT_UPDATE,
+  ]);
+  return activityBlockTypes;
+}
 
 /**
  * True at a hard UI boundary — where a fold has to stop.
@@ -207,7 +213,7 @@ function isFoldBoundaryPart(part: TMessageContentParts | undefined): boolean {
       (part as { phase?: string }).phase !== 'commentary' || text.length > SUBSTANTIAL_TEXT_CHARS
     );
   }
-  return !ACTIVITY_BLOCK_TYPES.has(part.type);
+  return !getActivityBlockTypes().has(part.type);
 }
 
 /**

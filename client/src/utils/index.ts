@@ -71,7 +71,6 @@ export {
 } from '@librechat/chat';
 export type { SteerCarriedContext } from '@librechat/chat';
 export { getChatPane, getFocusedChatPane, isFocusedChatPane } from '@librechat/chat';
-export * from './activityLabels';
 export * from './agentModelSelection';
 export * from './runStepDuration';
 export * from './documentTitle';

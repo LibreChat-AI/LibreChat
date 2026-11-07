@@ -242,3 +242,13 @@ export {
   SubagentActivityContent,
   SubagentActivityScrollSurface,
 } from './components/subagents/transcript';
+
+/** Part helpers moved from the app: copy and action buttons, language icons, expand/collapse. */
+export {
+  default as useExpandCollapse,
+  EXPAND_TRANSITION,
+  REDUCED_MOTION_EXPAND_TRANSITION,
+} from './components/parts/useExpandCollapse';
+export { default as CopyButton } from './components/parts/CopyButton';
+export { default as ActionButton } from './components/parts/ActionButton';
+export { default as LangIcon, hasLangIcon } from './components/parts/LangIcon';

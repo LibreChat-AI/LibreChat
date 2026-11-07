@@ -1,16 +1,23 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import CopyButton from '../CopyButton';
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-}));
-
 jest.mock('@librechat/client', () => {
-  const { createCopyCheckMorphIconMock } = jest.requireActual('~/../test/mockMorphIcon');
+  const { Copy, Check } = jest.requireActual('lucide');
+  const iconNames = new Map([
+    [Copy, 'copy'],
+    [Check, 'check'],
+  ]);
   return {
-    MorphIcon: createCopyCheckMorphIconMock(),
+    ...jest.requireActual('@librechat/client'),
+    useLocalize: () => (key: string) => key,
+    MorphIcon: ({ icon }: { icon?: unknown }) => (
+      <svg data-testid="morph-icon" data-icon={iconNames.get(icon) ?? 'unknown'} />
+    ),
     TooltipAnchor: ({ render }: { render: React.ReactElement }) => render,
   };
 });

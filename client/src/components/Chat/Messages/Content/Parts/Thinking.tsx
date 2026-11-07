@@ -9,15 +9,14 @@ import {
   type MouseEvent,
 } from 'react';
 import { Lightbulb, ChevronDown } from 'lucide-react';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import { ChevronUp as ChevronUpNode, ChevronDown as ChevronDownNode } from 'lucide';
+import { ROW_GLYPH_SLOT, CopyButton, useExpandCollapse } from '@librechat/chat/components';
 import type { FocusEvent, FC } from 'react';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import CopyButton from '~/components/Messages/Content/CopyButton';
-import { useLocalize, useExpandCollapse } from '~/hooks';
 import { cn, isRectVisible } from '~/utils';
 import { AnimatedText } from '../animate';
+import { useLocalize } from '~/hooks';
 
 /**
  * Tracks whether the referenced element is within the viewport. Mirrors the

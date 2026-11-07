@@ -35,7 +35,10 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
-  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
@@ -44,7 +47,11 @@ jest.mock('~/hooks', () => ({
     },
     ref: { current: null },
   }),
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
 }));
 
 jest.mock('~/hooks/MCP', () => {

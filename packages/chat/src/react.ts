@@ -267,3 +267,8 @@ export {
   useScrollbarGutterSeed,
   SCROLLBAR_GUTTER_PROPERTY,
 } from './react/messages/useScrollbarGutter';
+
+/** Part disclosure and layout helpers moved from the app. */
+export { default as useProgress } from './react/parts/useProgress';
+export { default as useThrottledValue } from './react/parts/useThrottledValue';
+export { default as useLazyCollapseBody } from './react/parts/useLazyCollapseBody';

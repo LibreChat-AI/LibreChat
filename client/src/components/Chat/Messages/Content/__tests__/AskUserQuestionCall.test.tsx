@@ -25,8 +25,6 @@ jest.mock('~/hooks', () => ({
       ? template
       : template.replace(/\{\{(\w+)\}\}/g, (_match, name: string) => values[name] ?? '');
   },
-  /** The disclosure is the behaviour under test — keep the real hook. */
-  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
 }));
 
 jest.mock('@librechat/chat', () => ({
