@@ -5,13 +5,11 @@ import type {
   TMessage,
   TModelSpec,
   TSubmission,
-  TAttachment,
   TConversation,
   TPendingSteer,
   TEphemeralAgent,
   TEndpointsConfig,
   TAgentQueuedTurnReceipt,
-  UIMappingOptions,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { ExtendedFile, TurnCodeInputs } from '../../core';
@@ -154,19 +152,11 @@ export interface ChatHost {
   useNewConversation(index: number): ChatContract['newConversation'];
   /** What the pane's turns need from the app; see {@link TurnServices}. */
   useTurnServices(params: ChatTurnsParams): TurnServices;
-  /** The tail of the branch on screen for the pane, read from the messages cached under `key`. */
-  useLatestMessage(index: number, key: string): TMessage | null;
-  /** The id of {@link ChatHost.useLatestMessage}, subscribed on its own. */
-  useLatestMessageId(index: number, key: string): string | null;
-  /** Selects the visible sibling under a parent message. */
-  useSetSiblingIdx(parentMessageId: string | null): (update: SetStateAction<number>) => void;
   /** Stops a resumable generation. */
   useAbortStream(): (params: AbortStreamParams) => Promise<AbortStreamResponse>;
   useMessageCache(): ChatMessageCache;
   /** Whether message feedback controls are on. */
   useFeedbackEnabled(): boolean;
-  /** The app's tool outcome rules for viewing one message; see {@link ChatContract}. */
-  getMappingOptions(live: TAttachment[] | undefined): UIMappingOptions;
   /** Loads a conversation's messages; `isStreaming` lets the query hold off refetching under a
    *  live stream. An absent id loads nothing. */
   useMessages(
