@@ -24,6 +24,10 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => {
   };
 });
 
+jest.mock('~/components/Chat/Menus/Endpoints/shown', () => ({
+  useHideSelectedAuthor: () => false,
+}));
+
 jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   __esModule: true,
   default: ({ agent }: { agent?: { name?: string } }) => (

@@ -51,6 +51,22 @@ type ChatViewProps = {
   routePending?: boolean;
 };
 
+/**
+ * The generic disclaimer and the policy links are the welcome screen's, where the deployment
+ * places them; a deployment's own footer stays with the conversation that always showed it.
+ */
+function renderFooter(placement: 'full' | 'composer' | 'band') {
+  if (placement === 'band') {
+    return <Footer configuredOnly />;
+  }
+  if (placement === 'composer') {
+    return (
+      <Footer className="text-text-muted hidden flex-wrap items-center justify-center gap-2 px-2 pb-2 text-center text-xs sm:flex" />
+    );
+  }
+  return <Footer />;
+}
+
 function ChatViewPane({
   index = 0,
   project,
@@ -139,12 +155,7 @@ function ChatViewPane({
                           centerFormOnLanding={centerFormOnLanding}
                         />
                       )}
-                      /* The generic disclaimer and the policy links are the welcome
-                         screen's; a deployment's own footer stays with the
-                         conversation that always showed it. */
-                      renderFooter={(placement) =>
-                        placement === 'band' ? <Footer configuredOnly /> : <Footer />
-                      }
+                      renderFooter={renderFooter}
                       renderMascot={(bandRef, landing) => (
                         <Lia bandRef={bandRef} landing={landing} submission={rootSubmission} />
                       )}
