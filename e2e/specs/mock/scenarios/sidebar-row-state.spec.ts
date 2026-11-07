@@ -11,6 +11,10 @@ const userEmail = getE2EUser().email;
 const row = (page: Page, title: string) =>
   page.getByTestId('convo-item').filter({ hasText: title }).filter({ visible: true }).first();
 
+/** Only the open menu: a row keeps its menu mounted after closing it. */
+const menuItem = (page: Page, name: string) =>
+  page.getByRole('menuitem', { name, exact: true }).filter({ visible: true });
+
 type Chat = { id: string; title: string };
 
 /** Three chats, newest first, so archiving the first moves the other two up a slot. */
@@ -58,8 +62,12 @@ async function archiveHeld(page: Page, chat: Chat) {
     arrived();
   });
   await openConversationMenu(row(page, chat.title));
-  await page.getByRole('menuitem', { name: 'Archive', exact: true }).click();
+  await menuItem(page, 'Archive').click();
   await reached;
+  if (await menuItem(page, 'Archive').isVisible()) {
+    await page.keyboard.press('Escape');
+  }
+  await expect(menuItem(page, 'Archive')).toHaveCount(0);
   return async () => {
     await page.unroute('**/api/convos/archive');
     await held?.continue();
@@ -82,7 +90,7 @@ test.describe('sidebar row state follows its chat', () => {
 
       const release = await archiveHeld(page, archived);
       await openConversationMenu(row(page, picked.title));
-      await page.getByRole('menuitem', { name: 'Delete' }).click();
+      await menuItem(page, 'Delete').click();
       const dialog = page.getByRole('dialog', { name: 'Delete chat?' });
       await expect(dialog).toContainText(picked.title);
 
@@ -135,7 +143,7 @@ test.describe('sidebar row state follows its chat', () => {
 
       const release = await archiveHeld(page, archived);
       await openConversationMenu(row(page, picked.title));
-      await page.getByRole('menuitem', { name: 'Rename' }).click();
+      await menuItem(page, 'Rename').click();
       const titleInput = page.getByRole('textbox', { name: 'New Conversation Title' });
       await titleInput.fill(typed);
 
