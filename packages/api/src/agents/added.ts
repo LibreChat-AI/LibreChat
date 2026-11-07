@@ -1,6 +1,5 @@
 import { logger } from '@librechat/data-schemas';
 import {
-  Tools,
   Constants,
   isAgentsEndpoint,
   isEphemeralAgentId,
@@ -9,7 +8,7 @@ import {
   encodeEphemeralAgentId,
   resolveMCPAppsPolicy,
 } from 'librechat-data-provider';
-import type { Agent, AgentToolOptions, TConversation, TModelSpec } from 'librechat-data-provider';
+import type { Agent, TConversation, TModelSpec } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
 import type { ParsedServerConfig } from '~/mcp/types';
@@ -18,11 +17,8 @@ import {
   filterChatSelectableMCPServers,
   validateMCPServerConfig,
 } from '~/mcp/utils';
-import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { getToggleToolNames, synthesizeToggleToolOptions } from '~/agents/toggles';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
-import { synthesizeBackgroundToolOptions } from '~/agents/background';
-import { mergeSynthesizedToolOptions } from '~/agents/selection';
-import { synthesizeIntentToolOptions } from '~/agents/intent';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { getCustomEndpointConfig } from '~/app/config';
 import { mapWithConcurrency } from '~/utils/promise';
@@ -186,20 +182,9 @@ export async function loadAddedAgent(
     };
     applyModelSpecSkills(result, modelSpec);
     applyModelSpecSubagents(result, modelSpec);
-    const primaryBackgroundToolOptions: AgentToolOptions | undefined =
-      synthesizeBackgroundToolOptions({ ephemeralAgent, modelSpec });
-    if (primaryBackgroundToolOptions) {
-      result.tool_options = primaryBackgroundToolOptions;
-    }
-    const primaryIntentToolOptions: AgentToolOptions | undefined = synthesizeIntentToolOptions({
-      ephemeralAgent,
-      modelSpec,
-    });
-    if (primaryIntentToolOptions) {
-      result.tool_options = mergeSynthesizedToolOptions(
-        result.tool_options as AgentToolOptions | undefined,
-        primaryIntentToolOptions,
-      );
+    const primaryToggleToolOptions = synthesizeToggleToolOptions({ ephemeralAgent, modelSpec });
+    if (primaryToggleToolOptions) {
+      result.tool_options = primaryToggleToolOptions;
     }
     return result as unknown as Agent;
   }
@@ -226,25 +211,10 @@ export async function loadAddedAgent(
     }
   }
 
-  const tools: string[] = [];
-  if (ephemeralAgent?.execute_code === true || modelSpec?.executeCode === true) {
-    tools.push(Tools.execute_code);
-  }
-  if (ephemeralAgent?.file_search === true || modelSpec?.fileSearch === true) {
-    tools.push(Tools.file_search);
-  }
-  if (ephemeralAgent?.web_search === true || modelSpec?.webSearch === true) {
-    tools.push(Tools.web_search);
-  }
-  if (ephemeralAgent?.memory === true || modelSpec?.memory === true) {
-    tools.push(Tools.memory);
-  }
-  /** Mirror the primary ephemeral loader (`loadEphemeralAgent`) so a model
-   *  spec's Ask User flag equips the added top-level agent too; downstream
-   *  `createRun` gating (hitlCapable, non-subagent, admin filter) is uniform. */
-  if (ephemeralAgent?.ask_user_question === true || modelSpec?.askUserQuestion === true) {
-    tools.push(ASK_USER_QUESTION_TOOL_NAME);
-  }
+  /** A badge the user switched off stays off; the spec only seeds the default.
+   *  `ask_user_question` keeps the downstream `createRun` gating (HITL-capable
+   *  request, top-level agent, admin filter) that persisted agents get. */
+  const tools: string[] = getToggleToolNames({ ephemeralAgent, modelSpec });
 
   const serverToolKeys = await mapWithConcurrency(
     [...mcpServers],
@@ -320,22 +290,9 @@ export async function loadAddedAgent(
   applyModelSpecSubagents(result, modelSpec);
   applyModelSpecSkills(result, modelSpec);
 
-  const backgroundToolOptions: AgentToolOptions | undefined = synthesizeBackgroundToolOptions({
-    ephemeralAgent,
-    modelSpec,
-  });
-  if (backgroundToolOptions) {
-    result.tool_options = backgroundToolOptions;
-  }
-  const intentToolOptions: AgentToolOptions | undefined = synthesizeIntentToolOptions({
-    ephemeralAgent,
-    modelSpec,
-  });
-  if (intentToolOptions) {
-    result.tool_options = mergeSynthesizedToolOptions(
-      result.tool_options as AgentToolOptions | undefined,
-      intentToolOptions,
-    );
+  const toggleToolOptions = synthesizeToggleToolOptions({ ephemeralAgent, modelSpec });
+  if (toggleToolOptions) {
+    result.tool_options = toggleToolOptions;
   }
 
   return result as unknown as Agent;

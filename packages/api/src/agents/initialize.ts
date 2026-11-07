@@ -147,6 +147,7 @@ import { resolveAgentCodeExecution } from '~/code/agent';
 import { hasActiveFileFieldPolicy } from '~/protection';
 import { applyBackgroundToolCalls } from './background';
 import { admitCurrentFileBudget } from './files/budget';
+import { applyDeferredToolLoading } from './deferral';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
 import { getAgentInferencePolicy } from './input';
@@ -988,6 +989,8 @@ export interface InitializeAgentParams {
     /** Serializable tool definitions for event-driven mode */
     toolDefinitions?: LCTool[];
     hasDeferredTools?: boolean;
+    /** Whether the `deferred_tools` capability is enabled for this agent's run. */
+    deferredToolsEnabled?: boolean;
     mcpToolAliases?: MCPToolAlias[];
     actionsEnabled?: boolean;
     /** Action tool names backed by OAuth — excluded from background dispatch. */
@@ -2245,14 +2248,15 @@ export async function initializeAgent(
   }
 
   const {
-    toolRegistry,
+    toolRegistry: loadedToolRegistry,
     toolContextMap,
     dynamicToolContextMap,
     userMCPAuthMap,
     toolDefinitions: loadedToolDefinitions,
     mcpAvailableTools,
     requestScopedConnections,
-    hasDeferredTools,
+    hasDeferredTools: loadedHasDeferredTools,
+    deferredToolsEnabled,
     mcpToolAliases,
     actionsEnabled,
     oauthActionToolNames,
@@ -2313,6 +2317,8 @@ export async function initializeAgent(
   }
 
   let toolDefinitions = loadedToolDefinitions;
+  let toolRegistry = loadedToolRegistry;
+  let hasDeferredTools = loadedHasDeferredTools;
 
   /**
    * Tolerant filter: anything `loadTools` couldn't resolve (capability
@@ -2726,6 +2732,32 @@ export async function initializeAgent(
   }
   if (intentSanitized.semanticIntentBlockedToolNames.length > 0) {
     semanticIntentBlockedToolNames = intentSanitized.semanticIntentBlockedToolNames;
+  }
+
+  /**
+   * Deferral runs on the final definition set so system tools registered above
+   * (code, memory, file authoring, the skill catalog) can be deferred like MCP
+   * tools, and a definition the intent pass replaced is deferred in its final
+   * form. A loader that returned early for an agent with no configured tools
+   * reports no capability, so the endpoint's capability list decides then.
+   */
+  const deferralEnabled =
+    deferredToolsEnabled ??
+    (appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? []).includes(
+      AgentCapabilities.deferred_tools,
+    );
+  if (deferralEnabled) {
+    const deferral = applyDeferredToolLoading({
+      toolDefinitions,
+      toolRegistry,
+      toolOptions: agent.tool_options,
+      capabilityToolNames,
+      provider: agent.provider,
+      hasDeferredTools,
+    });
+    toolDefinitions = deferral.toolDefinitions;
+    toolRegistry = deferral.toolRegistry;
+    hasDeferredTools = deferral.hasDeferredTools;
   }
 
   const hasFinalAgentTools =

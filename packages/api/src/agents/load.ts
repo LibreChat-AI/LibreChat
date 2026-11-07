@@ -1,6 +1,5 @@
 import { logger } from '@librechat/data-schemas';
 import {
-  Tools,
   Constants,
   isAgentsEndpoint,
   isEphemeralAgentId,
@@ -10,7 +9,6 @@ import {
 } from 'librechat-data-provider';
 import type {
   AgentModelParameters,
-  AgentToolOptions,
   TEphemeralAgent,
   TModelSpec,
   Agent,
@@ -23,11 +21,8 @@ import {
   filterChatSelectableMCPServers,
   validateMCPServerConfig,
 } from '~/mcp/utils';
-import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { getToggleToolNames, synthesizeToggleToolOptions } from '~/agents/toggles';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
-import { synthesizeBackgroundToolOptions } from '~/agents/background';
-import { mergeSynthesizedToolOptions } from '~/agents/selection';
-import { synthesizeIntentToolOptions } from '~/agents/intent';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { getCustomEndpointConfig } from '~/app/config';
 import { mapWithConcurrency } from '~/utils/promise';
@@ -110,25 +105,10 @@ export async function loadEphemeralAgent(
   if (ephemeralAgent != null && Array.isArray(ephemeralAgent.mcp)) {
     ephemeralAgent.mcp = [...mcpServers];
   }
-  const tools: string[] = [];
-  if (ephemeralAgent?.execute_code === true || modelSpec?.executeCode === true) {
-    tools.push(Tools.execute_code);
-  }
-  if (ephemeralAgent?.file_search === true || modelSpec?.fileSearch === true) {
-    tools.push(Tools.file_search);
-  }
-  if (ephemeralAgent?.web_search === true || modelSpec?.webSearch === true) {
-    tools.push(Tools.web_search);
-  }
-  if (ephemeralAgent?.memory === true || modelSpec?.memory === true) {
-    tools.push(Tools.memory);
-  }
-  /** Same downstream gating as persisted agents applies: `createRun` only
-   *  equips the tool when the request is HITL-capable, the agent is not a
-   *  subagent, and the admin hasn't excluded it (filteredTools/includedTools). */
-  if (ephemeralAgent?.ask_user_question === true || modelSpec?.askUserQuestion === true) {
-    tools.push(ASK_USER_QUESTION_TOOL_NAME);
-  }
+  /** A badge the user switched off stays off; the spec only seeds the default.
+   *  `ask_user_question` keeps the downstream `createRun` gating (HITL-capable
+   *  request, top-level agent, admin filter) that persisted agents get. */
+  const tools: string[] = getToggleToolNames({ ephemeralAgent, modelSpec });
 
   if (mcpServers.size > 0) {
     const serverToolKeys = await mapWithConcurrency(
@@ -194,19 +174,9 @@ export async function loadEphemeralAgent(
     tools,
   };
 
-  const backgroundToolOptions: AgentToolOptions | undefined = synthesizeBackgroundToolOptions({
-    ephemeralAgent,
-    modelSpec,
-  });
-  if (backgroundToolOptions) {
-    result.tool_options = backgroundToolOptions;
-  }
-  const intentToolOptions: AgentToolOptions | undefined = synthesizeIntentToolOptions({
-    ephemeralAgent,
-    modelSpec,
-  });
-  if (intentToolOptions) {
-    result.tool_options = mergeSynthesizedToolOptions(result.tool_options, intentToolOptions);
+  const toggleToolOptions = synthesizeToggleToolOptions({ ephemeralAgent, modelSpec });
+  if (toggleToolOptions) {
+    result.tool_options = toggleToolOptions;
   }
 
   if (ephemeralAgent?.artifacts) {
