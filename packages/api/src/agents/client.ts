@@ -1,4 +1,5 @@
 import { logger } from '@librechat/data-schemas';
+import { HumanMessage } from '@librechat/agents/langchain/messages';
 import {
   ContentTypes,
   isAgentsEndpoint,
@@ -300,6 +301,22 @@ function estimateDocumentBlockTokens(
   return URL_DOCUMENT_FALLBACK_TOKENS;
 }
 
+/** Reuse SDK media accounting without adding another message's framing tokens. */
+function estimateNativeMediaTokens(
+  block: ContentBlock,
+  isClaude: boolean,
+  getTokenCount: (text: string) => number = (text) => Math.ceil(text.length / 4),
+): number {
+  const encoding = isClaude ? 'claude' : 'o200k_base';
+  return (
+    getTokenCountForMessage(
+      new HumanMessage({ content: [{ ...block, type: 'media' }] }),
+      getTokenCount,
+      encoding,
+    ) - getTokenCountForMessage(new HumanMessage({ content: [] }), getTokenCount, encoding)
+  );
+}
+
 /**
  * Single-pass token counter for formatted messages (plain objects with role/content/name).
  * Handles text, tool_call, image, and document content types in one iteration,
@@ -346,6 +363,11 @@ export function countFormattedMessageTokens(
 
         if (type === 'document' || type === 'file') {
           numTokens += estimateDocumentBlockTokens(block, isClaude, countTokens);
+          continue;
+        }
+
+        if (type === 'media') {
+          numTokens += estimateNativeMediaTokens(block, isClaude, countTokens);
           continue;
         }
 
