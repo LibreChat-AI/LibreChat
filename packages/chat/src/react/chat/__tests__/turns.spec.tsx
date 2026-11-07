@@ -5,7 +5,13 @@ import React from 'react';
 import { createStore, Provider } from 'jotai';
 import { renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { QueryKeys, Constants, Providers, EModelEndpoint } from 'librechat-data-provider';
+import {
+  QueryKeys,
+  Constants,
+  Providers,
+  EModelEndpoint,
+  CODE_ENVIRONMENT_DECISION_VERSION,
+} from 'librechat-data-provider';
 import type { Agent, TMessage, TSubmission, TConversation } from 'librechat-data-provider';
 import type { ChatTurnsParams, TurnServices } from '../host';
 import type { ExtendedFile } from '../../../core';
@@ -15,7 +21,7 @@ import {
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
 } from '../../composer';
-import { createTurnServices } from '../__fixtures__/services';
+import { createTurnServices, createTurnCodeInputs } from '../__fixtures__/services';
 import { launchedConversationFamily } from '../../generation';
 import { siblingIdxFamily, siblingKey } from '../../thread';
 import { activeUsageResponseIdFamily } from '../../usage';
@@ -164,7 +170,14 @@ describe('useTurns', () => {
     ['while submitting', { isSubmitting: true }],
     ['before the history loads', { messages: null }],
     ['while the history revalidates', { revalidating: true }],
-    ['without a code workspace', { services: createTurnServices({ resolveCode: () => null }) }],
+    [
+      'while a code workspace recovery is pending',
+      {
+        services: createTurnServices({
+          readCodeInputs: () => createTurnCodeInputs({ recoveryPending: true }),
+        }),
+      },
+    ],
     [
       'onto a preliminary response',
       { latestMessage: { ...response, messageId: 'pending_', createdAt: undefined } },
@@ -277,16 +290,23 @@ describe('useTurns', () => {
   it('records the submitted code decision on the pane conversation', () => {
     const chat = setup({
       services: createTurnServices({
-        resolveCode: () => ({
-          code: { approvalMode: undefined, environmentMode: undefined, workspaces: undefined },
-          apply: (conversation) => ({ ...conversation, title: 'decided' }),
-        }),
+        // The agent's metadata is unknown, so a workspace is required; the chat runs without one.
+        readCodeInputs: () =>
+          createTurnCodeInputs(
+            {
+              conversation: { ...agentsConversation, agent_id: 'agent_saved' },
+              canRunCode: true,
+              capabilities: ['execute_code', 'stateful_code_sessions'],
+              startupConfig: { codeEnvironmentDecisionVersion: CODE_ENVIRONMENT_DECISION_VERSION },
+            },
+            { ...agentsConversation, codeEnvironmentMode: 'without_attached' },
+          ),
       }),
     });
 
     chat.turns.ask({ text: 'Next' });
 
-    expect(chat.conversation()?.title).toBe('decided');
+    expect(chat.conversation()?.codeEnvironmentMode).toBe('without_attached');
   });
 
   it('regenerates a response with the replayed user message and focuses it', () => {

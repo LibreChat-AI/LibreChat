@@ -6,18 +6,19 @@ import type { TMessage } from 'librechat-data-provider';
 import type { TAskFunction, TRegenerateFunction } from '../../core';
 import type { ChatTurnsParams, TurnServices } from './host';
 import {
+  buildTurn,
+  resolveSender,
+  resolveTurnCode,
+  createRegenerate,
+  isSubmittableMessage,
+  hasPendingAssistantParent,
+} from '../../core';
+import {
   getReasoningStateKey,
   pendingQuotesByConvoId,
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
 } from '../composer';
-import {
-  buildTurn,
-  resolveSender,
-  createRegenerate,
-  isSubmittableMessage,
-  hasPendingAssistantParent,
-} from '../../core';
 import {
   submissionStartFamily,
   showStopButtonByIndex,
@@ -155,7 +156,7 @@ export function useTurns(
 
     /** The builder resolves `promptPrefix` on its copy; the pane's conversation stays as is. */
     const conversation = immutableConversation == null ? null : { ...immutableConversation };
-    const codeDecision = services.resolveCode(conversation);
+    const codeDecision = resolveTurnCode(services.readCodeInputs(), conversation);
     if (codeDecision == null) {
       logger.warn('[useTurns] Refusing to send without an available code workspace');
       return false;
