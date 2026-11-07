@@ -124,6 +124,7 @@
     "sort-imports:check": "node scripts/sort-imports.mts --check",
     "static-checks": "node scripts/static-checks.mts",
     "static-checks:full": "node scripts/static-checks.mts --full",
+    "typecheck": "npm run typecheck --workspaces --if-present",
     "format": "npx prettier --write \"{,!(node_modules|venv)/**/}*.{js,jsx,ts,tsx}\"",
     "b:api": "NODE_ENV=production bun run api/server/index.js",
     "b:api-inspect": "NODE_ENV=production bun --inspect run api/server/index.js",
@@ -262,7 +263,7 @@
     },
     "underscore": "1.13.8",
     "hono": "^4.13.13",
-    "@hono/node-server": "^2.1.1",
+    "@hono/node-server": "^2.1.5",
     "monaco-editor": {
       "dompurify": "3.4.17"
     },

@@ -85,6 +85,14 @@ class KeyvMongoCustom extends EventEmitter {
           ).catch((error: unknown) => {
             logger.warn(`[KeyvMongo] Could not index "${collection}" by key`, error);
           });
+          /** `set` stamps `expiresAt` from the ttl (null when there is none, which a TTL index
+           *  ignores), so entries Keyv already treats as expired are also removed from disk. */
+          buildIndexWithRetry(
+            () => store.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+            `KeyvMongo "${collection}" expiry index`,
+          ).catch((error: unknown) => {
+            logger.warn(`[KeyvMongo] Could not add expiry index to "${collection}"`, error);
+          });
         }
       }
 

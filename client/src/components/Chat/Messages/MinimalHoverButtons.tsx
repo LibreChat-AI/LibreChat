@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { Copy, Check } from 'lucide';
+import { revealOnRowHoverClasses } from '@librechat/chat/components';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { TMessage, SearchResultData } from 'librechat-data-provider';
 import type { MarkdownVariant } from '~/utils/richtext';
@@ -9,7 +10,6 @@ import {
   getMessageClipboardSource,
   hasCopyableText,
 } from '~/hooks';
-import { revealOnRowHoverClasses } from './styles';
 import { cn } from '~/utils';
 
 type THoverButtons = {

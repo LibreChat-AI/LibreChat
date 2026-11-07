@@ -236,6 +236,24 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.artifactUndocking).toBe(true);
   });
 
+  it('carries a disabled analytics consent prompt to the clients', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { analyticsConsent: false } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.analyticsConsent).toBe(false);
+  });
+
+  it('leaves analytics consent unset so clients keep asking', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig).not.toHaveProperty('analyticsConsent');
+  });
+
   it('preserves enabled build info config', async () => {
     const config: Partial<TCustomConfig> = {
       interface: {

@@ -111,6 +111,8 @@ export function createErasureResolver(deps: ErasureResolverDeps) {
           inTargetTenant(async () => deps.db.findMCPServerOAuthTokenUserIds(serverName)),
         findMCPServerViewerEntries: (serverId) =>
           inTargetTenant(async () => deps.db.findMCPServerViewerEntries(serverId)),
+        findMCPServerViewerUserIds: (entries) =>
+          inTargetTenant(async () => deps.db.findMCPServerViewerUserIds(entries)),
         deleteStoredFiles: (files) =>
           inTargetTenant(async () => deps.processDeleteRequest({ req: fileRequest, files })),
         invalidateMCPServerTools: (serverName) =>
@@ -131,9 +133,15 @@ export function createErasureResolver(deps: ErasureResolverDeps) {
             inTargetTenant(async () =>
               oauth.getRegistry().resolveAllowlists({ userId: candidateId }),
             ),
-          uninstallOAuthMCP: (candidateId, pluginKey, cleanupConfig, serverConfig) =>
+          uninstallOAuthMCP: (candidateId, pluginKey, cleanupConfig, serverConfig, teardown) =>
             inTargetTenant(async () =>
-              oauth.uninstallOAuthMCP(candidateId, pluginKey, cleanupConfig, serverConfig),
+              oauth.uninstallOAuthMCP(
+                candidateId,
+                pluginKey,
+                cleanupConfig,
+                serverConfig,
+                teardown,
+              ),
             ),
           invalidateUserTools: (candidateId, serverName) =>
             inTargetTenant(async () =>

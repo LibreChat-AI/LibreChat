@@ -500,7 +500,7 @@ export default function LangfuseConnection() {
               disabled={destinations.length === 0 || busy}
               className="w-full"
               triggerClassName="w-full"
-              sizeClasses="z-50 w-[var(--popover-anchor-width)]"
+              sameWidth
               testId="langfuse-destination"
               aria-labelledby="langfuse-destination-label"
             />

@@ -1,9 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { useAtomValue } from 'jotai';
+import { activeSubagentPanel } from '@librechat/chat/react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
-import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
 import { ChatSurfaceHarness } from 'test/harness';
 import Wakeup from '../Wakeup';
 
@@ -48,6 +48,7 @@ jest.mock('lucide-react', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  cn: jest.requireActual('@librechat/client').cn,
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>
   ),

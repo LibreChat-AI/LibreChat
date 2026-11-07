@@ -36,7 +36,7 @@ import type { BaseMessage, ToolMessage } from '@librechat/agents/langchain/messa
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { Response as ServerResponse } from 'express';
 import type { ServerRequest, RunLLMConfig } from '~/types';
-import { resolveConfigHeaders, createSafeUser, getSafeErrorMetadata } from '~/utils';
+import { resolveConfigHeaders, createSafeUser, getSafeErrorMetadata, writeGuarded } from '~/utils';
 import { contentFilterModelBoundBlockResponse } from '~/middleware/contentFilter';
 import { extractMemoryContent } from '~/protection/adapters/submissions';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
@@ -1197,7 +1197,7 @@ async function handleMemoryArtifact({
       { expectedCreatedAt: jobCreatedAt },
     );
   } else {
-    res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
+    writeGuarded(res, `event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
   return attachment;
 }

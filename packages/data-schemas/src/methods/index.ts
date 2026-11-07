@@ -514,6 +514,7 @@ export function createMethods(
     getUserPrincipals: userGroupMethods.getUserPrincipals,
     findAccessibleResources: aclEntryMethods.findAccessibleResources,
     isExternalSkillId: deps.isExternalSkillId,
+    getCache: deps.getCache,
   };
   const agentMethods = createAgentMethods(mongoose, agentDeps);
   return {

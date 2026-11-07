@@ -1,16 +1,16 @@
 import { useCallback, useContext } from 'react';
-import type { PartMetadata } from 'librechat-data-provider';
-import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import {
   SoleToolContext,
   LoneGroupContext,
   useToolExpansion,
   useToolContentRequest,
-} from '../disclosure';
+  useRowHandoff,
+} from '@librechat/chat/react';
+import type { PartMetadata } from 'librechat-data-provider';
+import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
-import useRowHandoff from '../handoff';
 
 interface ToolCallState {
   showCode: boolean;

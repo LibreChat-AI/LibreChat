@@ -16,6 +16,7 @@ import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
+import type { AuthoredSkillBinding } from '~/agents/authored';
 import type { MCPRuntimeRequestBody } from '~/mcp/types';
 
 /**
@@ -205,6 +206,8 @@ export interface SerializableJobData {
    * the discovered tool schemas.
    */
   discoveredTools?: string[];
+  /** Skill identities authored by this generation, reauthorized on resume. */
+  authoredSkills?: AuthoredSkillBinding[];
   /** Bounded collector state for continuing a phase across HITL resume. */
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   /** Exact bounded compaction guidance captured atomically with a HITL pause. */
@@ -520,6 +523,7 @@ export type JobMetadataPatch = Partial<
     | 'preserveForScheduleReconcile'
     | 'promptTokens'
     | 'discoveredTools'
+    | 'authoredSkills'
     | 'activityPhaseSnapshot'
     | 'compactionSemanticIndex'
     | 'contextMeta'

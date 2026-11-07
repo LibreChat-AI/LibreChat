@@ -6095,6 +6095,90 @@ describe('initializeAgent — linked instructions', () => {
     expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
   });
 
+  it('falls back to empty instructions with a warning, and records no usage, when a Langfuse link is disabled', async () => {
+    const langfuseLink: AgentInstructionsPrompt = {
+      source: 'langfuse',
+      groupId: 'group-1',
+      selection: { type: 'production' },
+    };
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({ status: 'unavailable', reason: 'disabled' });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: langfuseLink, instructions: 'stale inline text' },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(result.instructions).toBe('');
+    expect(result.instructionsPromptFacts).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('group-1'));
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
+  it('resolves a linked Langfuse agent and records exactly one usage with version-shaped facts', async () => {
+    const langfuseLink: AgentInstructionsPrompt = {
+      source: 'langfuse',
+      groupId: 'group-1',
+      selection: { type: 'production' },
+    };
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Hello {{current_user}}, be concise.',
+      facts: { source: 'langfuse', groupId: 'group-1', version: 3 },
+    });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: langfuseLink },
+      reqOverrides: { user: { id: 'user-1', name: 'Ada' } as never },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(resolveLinkedInstructions).toHaveBeenCalledWith(
+      expect.objectContaining({ link: langfuseLink }),
+    );
+    expect(result.instructions).toBe('Hello Ada, be concise.');
+    expect(result.instructionsPromptFacts).toEqual({
+      source: 'langfuse',
+      groupId: 'group-1',
+      version: 3,
+    });
+    expect(resolveLinkedInstructions.recordUse).toHaveBeenCalledTimes(1);
+    expect(resolveLinkedInstructions.recordUse).toHaveBeenCalledWith({
+      source: 'langfuse',
+      groupId: 'group-1',
+      version: 3,
+    });
+  });
+
+  it('resolves a linked Langfuse agent normally, but records no usage, when recordLinkedPromptUsage is false (resume)', async () => {
+    const langfuseLink: AgentInstructionsPrompt = {
+      source: 'langfuse',
+      groupId: 'group-1',
+      selection: { type: 'exact', version: 3 },
+    };
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Fixed Langfuse instructions.',
+      facts: { source: 'langfuse', groupId: 'group-1', version: 3 },
+    });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: langfuseLink },
+      params: { resolveLinkedInstructions, recordLinkedPromptUsage: false },
+    });
+    await flush();
+
+    expect(result.instructions).toBe('Fixed Langfuse instructions.');
+    expect(resolveLinkedInstructions).toHaveBeenCalledWith(
+      expect.objectContaining({ link: langfuseLink }),
+    );
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
   it('falls back to empty instructions with a warning when no resolver is provided', async () => {
     const result = await run({
       agentOverrides: { instructionsPrompt: link, instructions: 'stale inline text' },

@@ -1,3 +1,4 @@
+const { toolRequestBudget } = require('@librechat/api');
 const { Tool } = require('@librechat/agents/langchain/tools');
 const { getEnvironmentVariable } = require('@librechat/agents/langchain/utils/env');
 
@@ -34,6 +35,7 @@ class GoogleSearchResults extends Tool {
     this.envVarApiKey = 'GOOGLE_SEARCH_API_KEY';
     this.envVarSearchEngineId = 'GOOGLE_CSE_ID';
     this.override = fields.override ?? false;
+    this.timeouts = fields.timeouts;
     this.apiKey = fields[this.envVarApiKey] ?? getEnvironmentVariable(this.envVarApiKey);
     this.searchEngineId =
       fields[this.envVarSearchEngineId] ?? getEnvironmentVariable(this.envVarSearchEngineId);
@@ -64,6 +66,7 @@ class GoogleSearchResults extends Tool {
         headers: {
           'Content-Type': 'application/json',
         },
+        signal: toolRequestBudget(this.timeouts).signal,
       },
     );
 

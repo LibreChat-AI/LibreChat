@@ -484,7 +484,7 @@ describe('useChatFunctions ask', () => {
     expect(setMessages).not.toHaveBeenCalled();
     expect(setSubmission).not.toHaveBeenCalled();
     expect(mockLoggerWarn).toHaveBeenCalledWith(
-      '[useChatFunctions] Refusing to send before existing conversation history loads',
+      '[useTurns] Refusing to send before existing conversation history loads',
     );
   });
 

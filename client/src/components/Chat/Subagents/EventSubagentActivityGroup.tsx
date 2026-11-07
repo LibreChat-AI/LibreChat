@@ -2,14 +2,18 @@ import { useCallback, useId, useMemo, useState } from 'react';
 import { useSetAtom } from 'jotai';
 import { Button, cn } from '@librechat/client';
 import { Bot, ChevronDown } from 'lucide-react';
+import { getMessageRowWidthClass } from '@librechat/chat/components';
+import {
+  activeSubagentPanel,
+  isLiveSubagentStatus,
+  subagentStatusDotClass,
+  subagentStatusLabelKey,
+  eventSubagentSelection,
+} from '@librechat/chat/react';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
-import { isLiveSubagentStatus, subagentStatusDotClass, subagentStatusLabelKey } from './status';
-import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
 import { useChatSurface, useOpenSubagentPanel } from './surface';
 import { useParentSubagents } from './ParentSubagentsProvider';
-import { eventSubagentSelection } from './eventSelection';
 import { useAgentsMapContext } from '~/Providers';
-import { activeSubagentPanel } from './state';
 import { renderAgentAvatar } from '~/utils';
 import { useLocalize } from '~/hooks';
 

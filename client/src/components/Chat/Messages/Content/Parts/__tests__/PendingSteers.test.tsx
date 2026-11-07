@@ -23,6 +23,7 @@ const mockShowToast = jest.fn();
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => key,
   useToastContext: () => ({ showToast: mockShowToast }),
 }));
 

@@ -1,7 +1,7 @@
 import { createContext, useRef, useContext, RefObject, ReactNode } from 'react';
 import { toCanvas } from 'html-to-image';
+import { completeProgressiveRowMounts } from '@librechat/chat/react';
 import { ThemeContext, isDark, readThemeColor } from '@librechat/client';
-import { completeProgressiveRowMounts } from '~/hooks/Messages/useProgressiveRowMount';
 
 type ScreenshotContextType = {
   ref?: RefObject<HTMLDivElement>;

@@ -20,5 +20,5 @@ export { default as BashCall } from './BashCall';
 export { default as PtcToolTrace } from './PtcToolTrace';
 export { default as SubagentCall } from './SubagentCall';
 export { default as SteerPart } from './SteerPart';
-export { default as AuthorHeader } from './AuthorHeader';
+export { AuthorHeader } from '@librechat/chat/components';
 export { default as ResumeAuthorHeader } from './ResumeAuthorHeader';

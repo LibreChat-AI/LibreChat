@@ -66,6 +66,63 @@ describe('encodeAndFormatImages', () => {
     expect(getDownloadStream).toHaveBeenCalledWith(expect.anything(), file.filepath);
   });
 
+  it('overlaps storage reads while keeping attachment order and the first error in order', async () => {
+    let active = 0;
+    let peak = 0;
+    getDownloadStream.mockImplementation(async (_req, key: string) => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active--;
+      if (key === 'b') {
+        throw new Error('second failed');
+      }
+      return Readable.from(imageBytes);
+    });
+    const files = ['a', 'c', 'd'].map((key) => ({ ...file, file_id: key, storageKey: key }));
+
+    const result = await encodeAndFormatImages(makeReq(), files, {}, deps);
+    expect(result.files.map((f) => f.file_id)).toEqual(['a', 'c', 'd']);
+    expect(peak).toBeGreaterThan(1);
+
+    await expect(
+      encodeAndFormatImages(
+        makeReq(),
+        [files[0], { ...file, file_id: 'b', storageKey: 'b' }, files[1]],
+        {},
+        deps,
+      ),
+    ).rejects.toBeInstanceOf(AttachmentStorageError);
+  });
+
+  it('surfaces an early storage failure without waiting for a stalled later read', async () => {
+    getDownloadStream.mockImplementation(async (_req, key: string) => {
+      if (key === 'stalled') {
+        return new Promise(() => undefined);
+      }
+      throw new Error('first failed');
+    });
+    const files = ['early', 'stalled'].map((key) => ({ ...file, file_id: key, storageKey: key }));
+
+    await expect(encodeAndFormatImages(makeReq(), files, {}, deps)).rejects.toBeInstanceOf(
+      AttachmentStorageError,
+    );
+  });
+
+  it('surfaces a later failure without waiting for an earlier pending read', async () => {
+    getDownloadStream.mockImplementation(async (_req, key: string) => {
+      if (key === 'slow') {
+        return new Promise(() => undefined);
+      }
+      throw new Error('later failed');
+    });
+    const files = ['slow', 'fails'].map((key) => ({ ...file, file_id: key, storageKey: key }));
+
+    await expect(encodeAndFormatImages(makeReq(), files, {}, deps)).rejects.toBeInstanceOf(
+      AttachmentStorageError,
+    );
+  });
+
   it('returns an empty result without acquiring a strategy for absent files', async () => {
     await expect(encodeAndFormatImages(makeReq(), undefined, {}, deps)).resolves.toEqual({
       files: [],

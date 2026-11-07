@@ -1,5 +1,6 @@
 import React from 'react';
 import { ContentTypes } from 'librechat-data-provider';
+import { mergeChildConversationTurns } from '@librechat/chat/react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type {
   FullToolCall,
@@ -7,11 +8,10 @@ import type {
   TMessage,
   TMessageContentParts,
 } from 'librechat-data-provider';
+import type { ChildConversationTurn } from '@librechat/chat/react';
 import type { ChatContract } from '~/hooks/Chat/contract';
-import type { ChildConversationTurn } from './adapters';
 import type { TurnAuthor } from './author';
 import SubagentConversation from './SubagentConversation';
-import { mergeChildConversationTurns } from './adapters';
 import { ChatContext } from '~/Providers/ChatContext';
 import { ChatSurfaceHarness } from 'test/harness';
 
@@ -358,7 +358,10 @@ describe('standard conversation content', () => {
         setSiblingIdx: () => undefined,
         latestMessageId: undefined,
         latestMessageDepth: undefined,
+        subscribeMessages: () => () => undefined,
+        getMessagesRevision: () => 0,
         useLiveAttachments: () => ({}),
+        getMappingOptions: () => ({}),
         ask: mockParentAsk,
         regenerate: () => undefined,
         isSubmitting: false,

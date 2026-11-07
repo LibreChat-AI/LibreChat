@@ -49,14 +49,19 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => {
   };
 });
 
-jest.mock('~/components/Chat/Messages/Content/Parts/AuthorHeader', () => ({
-  __esModule: true,
-  default: () => <div data-testid="author-header" />,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  AuthorHeader: () => <div data-testid="author-header" />,
 }));
 
 jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   __esModule: true,
   default: () => <div data-testid="message-icon" />,
+}));
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => key,
 }));
 
 jest.mock('~/hooks', () => {

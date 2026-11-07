@@ -34,11 +34,6 @@ jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
   default: () => null,
 }));
 
-jest.mock('~/components/Chat/Messages/ui/MessageTimestamp', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-
 /**
  * Stands in for the agents map: `useMessageActions` reads it through context, so the
  * agents list landing re-renders the memoized row without any new props.

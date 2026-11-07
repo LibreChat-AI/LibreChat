@@ -1,4 +1,4 @@
-export { default as useChatHelpers } from './useChatHelpers';
+export { useChatHelpers } from '@librechat/chat/react';
 export { default as useTokenLimits } from './useTokenLimits';
 export { default as useTokenUsage } from './useTokenUsage';
 export { default as useChatFunctions } from './useChatFunctions';

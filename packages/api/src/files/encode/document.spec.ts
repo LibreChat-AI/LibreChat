@@ -1222,6 +1222,113 @@ describe('dedupeDocumentNames', () => {
     );
   const contentOf = (message: Message) => (Array.isArray(message.content) ? message.content : []);
 
+  it.each(Object.values(Providers).filter((provider) => provider !== Providers.BEDROCK))(
+    'does not inspect replay content for %s',
+    (provider) => {
+      const content = jest.fn(() => {
+        throw new Error('Non-Bedrock content must not be traversed');
+      });
+      const messages: Message[] = [
+        {
+          get content() {
+            return content();
+          },
+        },
+      ];
+      messages.length = CONTENT_TRAVERSAL_MAX_NODES + 1;
+
+      dedupeDocumentNames(messages, [{ provider }]);
+
+      expect(content).not.toHaveBeenCalled();
+    },
+  );
+
+  it('stops recipient traversal as soon as Bedrock naming is required', () => {
+    const descendants = jest.fn(() => {
+      throw new Error('Bedrock descendants must not be read');
+    });
+    const recipients = [
+      {
+        provider: Providers.BEDROCK,
+        get lazySubagentConfigs() {
+          return descendants();
+        },
+      },
+    ];
+    const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+
+    dedupeDocumentNames(messages, recipients);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+    expect(descendants).not.toHaveBeenCalled();
+  });
+
+  it('renames documents for a Bedrock recipient after a non-Bedrock primary', () => {
+    const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+    const recipients = new Map([
+      ['primary', { provider: Providers.OPENAI }],
+      ['secondary', { provider: Providers.BEDROCK }],
+    ]);
+
+    dedupeDocumentNames(messages, recipients.values());
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+  });
+
+  it.each(['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const)(
+    'includes Bedrock providers in %s without resolving them',
+    (route) => {
+      const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+      const resolve = jest.fn();
+      const child = { provider: Providers.BEDROCK, resolve };
+      const recipients = [{ provider: Providers.OPENAI, [route]: [child] }];
+
+      dedupeDocumentNames(messages, recipients);
+
+      expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+      expect(resolve).not.toHaveBeenCalled();
+    },
+  );
+
+  it('handles cyclic metadata without losing distinct snapshots of the same agent', () => {
+    const child = { id: 'shared-id', provider: Providers.BEDROCK };
+    const root = {
+      id: 'shared-id',
+      provider: Providers.OPENAI,
+      lazySubagentConfigs: [] as Array<{ provider: Providers }>,
+    };
+    root.lazySubagentConfigs.push(root, child, child);
+    const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+
+    dedupeDocumentNames(messages, [root]);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+  });
+
+  it('leaves a large replay untouched without any Bedrock recipients', () => {
+    const content: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES);
+    const messages: Message[] = [{ content }];
+    const recipients = new Map([
+      ['primary', { provider: Providers.OPENAI }],
+      ['secondary', { provider: Providers.ANTHROPIC }],
+    ]);
+
+    const resolve = jest.fn();
+    const lazy = {
+      provider: Providers.GOOGLE,
+      resolve,
+      subagentGraphMemberMetadata: [{ provider: Providers.ANTHROPIC }],
+      lazySubagentConfigs: [] as Array<{ provider: Providers }>,
+    };
+    lazy.lazySubagentConfigs.push(lazy);
+    const root = { provider: Providers.OPENAI, lazySubagentConfigs: [lazy] };
+
+    dedupeDocumentNames(messages, [...recipients.values(), root]);
+
+    expect(messages[0].content).toBe(content);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it('renames repeated Bedrock document names across the payload in order', () => {
     const first = bedrock('Stripe fees');
     const messages: Message[] = [
@@ -1347,21 +1454,56 @@ describe('dedupeDocumentNames', () => {
     const messages: Message[] = [{ content }];
 
     expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+    expect(() =>
+      dedupeDocumentNames(messages, [
+        { provider: Providers.OPENAI },
+        { provider: Providers.BEDROCK },
+      ]),
+    ).toThrow(ContentTraversalLimitError);
     expect(messages[0].content).toBe(content);
     expect(content[1].document.name).toBe('notes');
   });
 
-  it('shares the part budget across messages and nested steer media', () => {
-    const media: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES - 3);
-    const messages: Message[] = [
-      { content: [{ type: 'steer', media }] },
-      { content: [bedrock('x')] },
-    ];
+  it('allows long histories while keeping document names unique across messages', () => {
+    const content: PayloadContentPart[] = [{ type: 'text' }, bedrock('notes')];
+    const messages: Message[] = Array.from({ length: CONTENT_TRAVERSAL_MAX_NODES + 1 }, () => ({
+      content,
+    }));
 
-    expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+    dedupeDocumentNames(messages, [{ provider: Providers.BEDROCK }]);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes']);
+    expect(names(contentOf(messages[messages.length - 1]))).toEqual([`notes (${messages.length})`]);
+    expect(new Set(messages.flatMap((message) => names(contentOf(message)))).size).toBe(
+      messages.length,
+    );
+    expect(names(content)).toEqual(['notes']);
   });
 
-  it('accepts a replay exactly at the node budget and bounds the message array', () => {
+  it('resets the part budget for each message, including nested steer media', () => {
+    const media: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES - 2).fill({
+      type: 'text',
+    });
+    const messages: Message[] = [
+      { content: [{ type: 'steer', media }] },
+      { content: [bedrock('x'), bedrock('x')] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    expect(names(contentOf(messages[1]))).toEqual(['x', 'x (2)']);
+  });
+
+  it('shares a message budget across its top-level parts and nested steer media', () => {
+    const media: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES - 2);
+    const content = [{ type: 'steer', media }, bedrock('x')];
+    const messages: Message[] = [{ content }];
+
+    expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+    expect(messages[0].content).toBe(content);
+  });
+
+  it('accepts a message exactly at the node budget and rejects sparse histories', () => {
     const messages: Message[] = [{ content: new Array(CONTENT_TRAVERSAL_MAX_NODES - 1) }];
 
     expect(() => dedupeDocumentNames(messages)).not.toThrow();

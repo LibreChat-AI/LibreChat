@@ -1,18 +1,22 @@
 import React from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { initSubagentAggregatorState, initSubagentTickerState } from '@librechat/chat';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ContentTypes, EModelEndpoint, ForkOptions, QueryKeys } from 'librechat-data-provider';
+import {
+  activeSubagentPanel,
+  subagentProgressByToolCallId,
+  subagentProgressKey,
+} from '@librechat/chat/react';
 import type {
   TMessage,
   SubagentThreadView,
   TMessageContentParts,
   ParentSubagentSummary,
 } from 'librechat-data-provider';
-import type { ActiveSubagentPanel } from './state';
+import type { ActiveSubagentPanel } from '@librechat/chat/react';
 import type { JotaiStore } from 'test/harness';
-import { activeSubagentPanel, subagentProgressByToolCallId, subagentProgressKey } from './state';
-import { initSubagentAggregatorState, initSubagentTickerState } from '~/utils/subagentContent';
 import { ChatSurfaceHarness, testChatSurface } from 'test/harness';
 import SubagentThreadPanel from './SubagentThreadPanel';
 import { useOpenSubagentPanel } from './surface';
@@ -124,9 +128,9 @@ jest.mock('~/data-provider', () => ({
   }),
 }));
 
-jest.mock('~/data-provider/Subagents/useSubagentActivityStream', () => ({
-  __esModule: true,
-  default: (...args: unknown[]) => mockUseSubagentActivityStream(...args),
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useSubagentActivityStream: (...args: unknown[]) => mockUseSubagentActivityStream(...args),
 }));
 
 jest.mock('~/hooks', () => ({

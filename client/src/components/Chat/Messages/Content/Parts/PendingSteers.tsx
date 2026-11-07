@@ -4,6 +4,7 @@ import { Clock, TextQuote, X } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button, TooltipAnchor } from '@librechat/client';
 import { QueryKeys, type TMessage } from 'librechat-data-provider';
+import { EscalateNowButton, getMessageRowWidthClass } from '@librechat/chat/components';
 import {
   useSteerCancel,
   useSteerMoveToQueue,
@@ -11,9 +12,7 @@ import {
   useSteerEscalate,
   useSteerRecovery,
 } from '@librechat/chat/react';
-import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
-import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
-import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
+import type { SteerReceiptState } from '@librechat/chat/components';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { cn, isLegacyDeliveryUncertain } from '~/utils';

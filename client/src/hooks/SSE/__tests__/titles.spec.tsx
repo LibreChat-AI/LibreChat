@@ -14,9 +14,12 @@ jest.mock('~/hooks/AuthContext', () => ({ useAuthContext: () => ({ token: 'test'
 jest.mock('~/Providers', () => ({ useLiveAnnouncer: () => ({ announcePolite: jest.fn() }) }));
 jest.mock('../useContentHandler', () => () => ({}));
 jest.mock('../useAttachmentHandler', () => () => jest.fn());
-jest.mock('../useStepHandler', () => () => ({
-  resetSubagentAtoms: jest.fn(),
-  resetPtcAtoms: jest.fn(),
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useStepHandler: () => ({
+    resetSubagentAtoms: jest.fn(),
+    resetPtcAtoms: jest.fn(),
+  }),
 }));
 
 const initialConversation = {

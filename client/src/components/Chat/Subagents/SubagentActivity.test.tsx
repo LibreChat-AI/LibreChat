@@ -3,7 +3,7 @@ import { ContentTypes } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import type { TMessageContentParts, Agents } from 'librechat-data-provider';
-import type { ChildActivity } from './adapters';
+import type { ChildActivity } from '@librechat/chat/react';
 import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
 import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
 import { ChatSurfaceHarness } from 'test/harness';
@@ -224,14 +224,16 @@ jest.mock('~/components/Chat/Messages/Content/ToolApproval', () => ({
   default: () => <div data-testid="tool-approval">approval</div>,
 }));
 
-jest.mock('~/components/Chat/Steering/Receipt', () => ({
-  __esModule: true,
-  default: ({ state }: { state: string }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  SteerReceipt: ({ state }: { state: string }) => (
     <span data-testid="steer-receipt" data-receipt-state={state} />
   ),
 }));
 
 jest.mock('@librechat/client', () => ({
+  cn: jest.requireActual('@librechat/client').cn,
+  useLanguage: () => 'en',
   Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>

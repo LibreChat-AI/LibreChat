@@ -253,6 +253,7 @@ const mockCleanupMCPRequestContextForReq = jest.fn(async (req) => {
 jest.mock('@librechat/data-schemas', () => ({
   logger: mockLogger,
   createChatExpirationDate: jest.requireActual('@librechat/data-schemas').createChatExpirationDate,
+  redactMessage: jest.requireActual('@librechat/data-schemas').redactMessage,
 }));
 
 jest.mock('@librechat/api', () => ({
@@ -262,6 +263,8 @@ jest.mock('@librechat/api', () => ({
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
   savePrivateTextErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
+  getUserFacingGenerationError: (...args) =>
+    jest.requireActual('@librechat/api').getUserFacingGenerationError(...args),
   stampPreliminaryPrivateTextMessage: (_req, message) => message,
   getSteerRecoveryFailure: jest.requireActual(
     '../../../../../packages/api/src/stream/SteerRecovery',
@@ -270,10 +273,12 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   applyForcedTemporaryRequest: jest.fn(),
   resolveResumableRetention: jest.requireActual('@librechat/api').resolveResumableRetention,
-  markAbortedCompactionContent: (...args) =>
-    jest.requireActual('@librechat/api').markAbortedCompactionContent(...args),
-  resolveDisconnectSnapshotMode: (...args) =>
-    jest.requireActual('@librechat/api').resolveDisconnectSnapshotMode(...args),
+  planDisconnectSnapshot: (...args) =>
+    jest.requireActual('@librechat/api').planDisconnectSnapshot(...args),
+  createDisconnectSnapshotQueue: (...args) =>
+    jest.requireActual('@librechat/api').createDisconnectSnapshotQueue(...args),
+  announceDisconnectSnapshot: (...args) =>
+    jest.requireActual('@librechat/api').announceDisconnectSnapshot(...args),
   settleExistingRowsBeforeErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').settleExistingRowsBeforeErrorTurn(...args),
   sendEvent: jest.fn(),
@@ -2801,6 +2806,137 @@ describe('ResumableAgentController resume metadata', () => {
     expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain(signedUrl);
   });
 
+  it('publishes and persists the fallback for a raw generation error under a content policy', async () => {
+    const privateValue = 'PRIVATE-PROMPT-ECHO';
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Fail during generation.',
+        messageId: 'user-msg',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {
+        filters: {
+          messages: {
+            pii: {
+              starterPatterns: [],
+              customPatterns: [{ id: 'secret', label: 'secret', regex: 'NEVER-MATCHES-XYZ' }],
+            },
+          },
+        },
+      },
+    };
+    const client = {
+      options: {},
+      sendMessage: jest.fn().mockRejectedValue(new Error(`Provider echoed ${privateValue}`)),
+    };
+    const initializeClient = jest.fn().mockResolvedValue({ client });
+
+    await AgentController(req, createResumableResponse(), jest.fn(), initializeClient, null);
+    await nextTick();
+
+    expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
+      'conversation-123',
+      'Generation failed',
+      1000,
+      expect.objectContaining({ beforeErrorPublication: expect.any(Function) }),
+    );
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.objectContaining({ error: true, text: 'Generation failed' }),
+      expect.any(Object),
+    );
+    expect(JSON.stringify(mockGenerationJobManager.completeJob.mock.calls)).not.toContain(
+      privateValue,
+    );
+    expect(JSON.stringify(mockSaveMessage.mock.calls)).not.toContain(privateValue);
+  });
+
+  it('redacts credentials and emails from a generation error published and persisted without a content policy', async () => {
+    const secrets = [
+      'sk-proj-PRIVATEKEY123',
+      'PRIVATEHEADER123',
+      'PRIVATESIG123',
+      'PRIVATEAUTH123',
+      'private.user@example.com',
+    ];
+    const rawMessage = [
+      'Incorrect API key provided: sk-proj-PRIVATEKEY123;',
+      'x-api-key: PRIVATEHEADER123;',
+      'token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJQUklWQVRFIn0.PRIVATESIG123;',
+      'owner private.user@example.com;',
+      'Authorization: Basic PRIVATEAUTH123',
+    ].join(' ');
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Fail during generation.',
+        messageId: 'user-msg',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+    };
+    const client = {
+      options: {},
+      sendMessage: jest.fn().mockRejectedValue(new Error(rawMessage)),
+    };
+    const initializeClient = jest.fn().mockResolvedValue({ client });
+
+    await AgentController(req, createResumableResponse(), jest.fn(), initializeClient, null);
+    await nextTick();
+
+    const [, published] = mockGenerationJobManager.completeJob.mock.calls[0];
+    expect(published).toContain('Incorrect API key provided');
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.objectContaining({ error: true, text: published }),
+      expect.any(Object),
+    );
+    for (const secret of secrets) {
+      expect(JSON.stringify(mockGenerationJobManager.completeJob.mock.calls)).not.toContain(secret);
+      expect(JSON.stringify(mockSaveMessage.mock.calls)).not.toContain(secret);
+    }
+  });
+
+  it('keeps a typed generation error under a content policy so the client can localize it', async () => {
+    const typedError = JSON.stringify({ type: 'no_user_key' });
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Fail during generation.',
+        messageId: 'user-msg',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {
+        filters: {
+          messages: {
+            pii: {
+              starterPatterns: [],
+              customPatterns: [{ id: 'secret', label: 'secret', regex: 'NEVER-MATCHES-XYZ' }],
+            },
+          },
+        },
+      },
+    };
+    const client = {
+      options: {},
+      sendMessage: jest.fn().mockRejectedValue(new Error(typedError)),
+    };
+    const initializeClient = jest.fn().mockResolvedValue({ client });
+
+    await AgentController(req, createResumableResponse(), jest.fn(), initializeClient, null);
+    await nextTick();
+
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.objectContaining({ error: true, text: typedError }),
+      expect.any(Object),
+    );
+  });
+
   it('publishes a safe image storage failure during generation and releases the request', async () => {
     const signedUrl =
       'https://minio.example.com/bucket/image.png?X-Amz-Credential=secret&X-Amz-Signature=signed';
@@ -5056,6 +5192,138 @@ describe('ResumableAgentController resume metadata', () => {
       );
     },
   );
+
+  it('promotes a live compaction snapshot once its terminal write settles for reconciliation', async () => {
+    const userMessage = {
+      messageId: 'user-msg',
+      parentMessageId: 'parent-msg',
+      conversationId: 'conversation-123',
+      text: '',
+    };
+    const textPart = { type: 'text', text: 'Partial summary' };
+    let jobRecord = { createdAt: 1000, status: 'running' };
+    let allSubscribersLeftHandler;
+    mockGenerationJobManager.createJob.mockResolvedValue({
+      createdAt: 1000,
+      metadata: { providerExecutionId: 'provider-segment-1', providerDrained: true },
+      readyPromise: Promise.resolve(),
+      abortController: new AbortController(),
+      emitter: {
+        on: jest.fn((event, handler) => {
+          if (event === 'allSubscribersLeft') {
+            allSubscribersLeftHandler = handler;
+          }
+        }),
+      },
+    });
+    mockGenerationJobManager.getJobStore.mockReturnValue({
+      getJob: jest.fn(async () => jobRecord),
+      getContentParts: jest.fn(async () => ({ content: [textPart] })),
+    });
+    mockGenerationJobManager.getResumeState.mockResolvedValue({
+      conversationId: 'conversation-123',
+      responseMessageId: 'response-msg',
+      userMessage: { messageId: userMessage.messageId },
+    });
+    mockGenerationJobManager.publishTerminalClaim.mockImplementation(async (_claim, finalEvent) => {
+      if (finalEvent == null) {
+        jobRecord = {
+          createdAt: 1000,
+          status: 'complete',
+          finalEvent: JSON.stringify({ final: true, reconcile: true }),
+        };
+      }
+      return { finalEvent, persistenceFailed: finalEvent == null };
+    });
+    mockGetMessages.mockImplementation(async ({ messageId }) => {
+      if (messageId === userMessage.messageId) {
+        return [{ _id: 'anchor' }];
+      }
+      return messageId === 'response-msg' ? [{ _id: 'live-row', unfinished: true }] : [];
+    });
+    let signalPromoted;
+    const promoted = new Promise((resolve) => {
+      signalPromoted = resolve;
+    });
+    let signalFinished;
+    const finished = new Promise((resolve) => {
+      signalFinished = resolve;
+    });
+    mockGenerationJobManager.finishTerminalJob.mockImplementation(async () => signalFinished());
+    mockSaveMessage.mockImplementation(async (_reqCtx, message) => {
+      if (message?.messageId === userMessage.messageId) {
+        return {};
+      }
+      if (message?.unfinished === false && message?.error === false) {
+        signalPromoted(message);
+        return {};
+      }
+      /** The live snapshot lands; the completed response write does not. */
+      return message?.unfinished === true ? {} : undefined;
+    });
+    const client = {
+      options: {},
+      savedMessageIds: new Set(['response-msg']),
+      skipSaveUserMessage: false,
+      sendMessage: jest.fn(async (_text, options) => {
+        options.onStart(userMessage, 'response-msg');
+        await allSubscribersLeftHandler([textPart]);
+        return {
+          messageId: 'response-msg',
+          parentMessageId: userMessage.messageId,
+          conversationId: 'conversation-123',
+          content: [textPart],
+          databasePromise: Promise.resolve({
+            conversation: { conversationId: 'conversation-123', title: 'Existing' },
+          }),
+        };
+      }),
+    };
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: '',
+        compact: true,
+        messageId: userMessage.messageId,
+        parentMessageId: userMessage.messageId,
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+    };
+
+    await AgentController(
+      req,
+      createResumableResponse(),
+      jest.fn(),
+      jest.fn().mockResolvedValue({ client }),
+      null,
+    );
+    const [promotedRow] = await Promise.all([promoted, finished]);
+
+    const snapshotWrites = mockSaveMessage.mock.calls
+      .map(([, message]) => message)
+      .filter((message) => message.messageId === 'response-msg' && message.unfinished != null);
+    expect(snapshotWrites[0]).toMatchObject({ unfinished: true, error: false });
+    expect(promotedRow).toMatchObject({
+      messageId: 'response-msg',
+      parentMessageId: userMessage.messageId,
+      unfinished: false,
+      error: false,
+    });
+    expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
+      expect.anything(),
+      null,
+    );
+    /** Terminal cleanup releases the content and resume state the plan reads. */
+    const promotedOrder =
+      mockSaveMessage.mock.invocationCallOrder[
+        mockSaveMessage.mock.calls.findIndex(([, message]) => message === promotedRow)
+      ];
+    expect(promotedOrder).toBeLessThan(
+      mockGenerationJobManager.finishTerminalJob.mock.invocationCallOrder[0],
+    );
+  });
 
   it('suppresses the completed response write when Stop already won terminal ownership', async () => {
     const userMessage = {

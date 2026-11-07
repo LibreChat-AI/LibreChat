@@ -7,6 +7,7 @@ import type { TMessageChatContext } from '~/common';
 import { OwnerTextProvider } from '~/components/Chat/Messages/PrivateText';
 import MessageRender from '~/components/Chat/Messages/ui/MessageRender';
 import ContentRender from '../ContentRender';
+import '~/Providers/MessagesHostContext';
 
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
@@ -39,13 +40,10 @@ jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
   __esModule: true,
   default: () => null,
 }));
-jest.mock('~/components/Chat/Messages/SiblingSwitch', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-jest.mock('~/components/Chat/Messages/Elapsed', () => ({
-  __esModule: true,
-  default: () => null,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  SiblingSwitch: () => null,
+  Elapsed: () => null,
   shouldShowElapsed: () => false,
 }));
 

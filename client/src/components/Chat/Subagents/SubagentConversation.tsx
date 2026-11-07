@@ -8,12 +8,25 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@librechat/client';
+import {
+  isAbnormalTerminalStatus,
+  isLiveSubagentStatus,
+  hasTerminalOutcome,
+  standardContent,
+} from '@librechat/chat/react';
+import {
+  SystemEventHeader,
+  SystemEventIcon,
+  systemEventHeaderClasses,
+  messageFooterClasses,
+  ElapsedTimer,
+  MessageRow,
+} from '@librechat/chat/components';
+import type { ChildConversationTurn, ToolContentQuery } from '@librechat/chat/react';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import type { ToolContentQuery } from '~/components/Chat/Messages/Content/disclosure';
 import type { TaskContentScope } from '~/data-provider/Subagents/content';
 import type { MessagePartsHost } from '~/hooks/Chat/contract';
-import type { ChildConversationTurn } from './adapters';
 import type { TranslationKeys } from '~/hooks';
 import type { TurnAuthor } from './author';
 import {
@@ -21,10 +34,6 @@ import {
   useSubagentTaskContentQuery,
   useSubagentToolContentQuery,
 } from '~/data-provider/Subagents/content';
-import SystemEventHeader, {
-  SystemEventIcon,
-  systemEventHeaderClasses,
-} from '~/components/Chat/Messages/ui/SystemEvent';
 import { MessagePartsHostProvider, useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { SubagentActivityContent, SubagentStatus, getActivityContent } from './SubagentActivity';
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
@@ -32,15 +41,9 @@ import { useSearchResultsByTurn } from '~/hooks/Messages/useSearchResultsByTurn'
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
-import { isAbnormalTerminalStatus, isLiveSubagentStatus } from './status';
-import { messageFooterClasses } from '~/components/Chat/Messages/styles';
-import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
-import { ElapsedTimer } from '~/components/Chat/Messages/Elapsed';
 import { AuthorContext } from '~/Providers/AuthorContext';
 import { ChatContext } from '~/Providers/ChatContext';
 import { isEmptyContentPart } from '~/utils/messages';
-import { hasTerminalOutcome } from './outcome';
-import { standardContent } from './adapters';
 import { useChatSurface } from './surface';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';

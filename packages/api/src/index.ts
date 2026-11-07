@@ -64,6 +64,7 @@ export * from './html';
 /* OAuth */
 export * from './oauth';
 export * from './mcp/oauth/OAuthReconnectionManager';
+export * from './mcp/oauth/OAuthReconnectionTracker';
 /* Crypto */
 export * from './crypto';
 /* Flow */
@@ -141,6 +142,7 @@ export * from './rum/proxy';
 export * from './rum/policy';
 export * from './rum/config';
 export * from './rum/limiter';
+export * from './clientlimits/client';
 /* OpenAPI */
 export { createOpenApiRouter } from './openapi/router';
 export type { OpenApiRouterDeps } from './openapi/router';

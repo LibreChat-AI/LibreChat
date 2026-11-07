@@ -7,9 +7,24 @@ import MessageContent from '../MessageContent';
 
 const mockRowRenders = new Map<string, number>();
 
-jest.mock('~/components/Chat/Messages/ui/MessageRow', () => ({
+jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
   __esModule: true,
-  default: ({
+  default: () => null,
+}));
+
+jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
+jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  MessageRow: ({
     id,
     children,
     footer,
@@ -26,26 +41,7 @@ jest.mock('~/components/Chat/Messages/ui/MessageRow', () => ({
       </div>
     );
   },
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-
-jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-
-jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-
-jest.mock('~/components/Chat/Messages/Elapsed', () => ({
-  __esModule: true,
-  default: () => null,
+  Elapsed: () => null,
   shouldShowElapsed: () => false,
 }));
 

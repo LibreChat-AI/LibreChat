@@ -766,6 +766,7 @@ const initializeClientWithProvider = async ({
         names: selectedModelSpec.skills,
         accessibleSkillIds,
         getSkillByName: skillDbMethods.getSkillByName,
+        appConfig,
       });
       primaryAgent.skills_enabled = true;
       primaryAgent.skills = resolvedSkillIds.map((id) => id.toString());

@@ -1,0 +1,116 @@
+import { createContext, useContext } from 'react';
+import type {
+  TSubmission,
+  ChatTransport,
+  RetentionMode,
+  TConversation,
+  TAgentQueuedTurnReceipt,
+} from 'librechat-data-provider';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import type { ResumableHost, ResumableRun, StreamStatusResponse } from '../../core';
+import type { ChatContract } from '../chat/contract';
+
+/** The chat members a stream writes through: the message cache, the pane's conversation and its
+ *  in-flight flag, and the generator a stream calls when the server starts a new chat. */
+export type StreamChat = Pick<
+  ChatContract,
+  'setMessages' | 'getMessages' | 'setConversation' | 'setIsSubmitting' | 'newConversation'
+>;
+
+/** One pane's resumable stream, as the host builds the services it runs on. */
+export type ResumableStreamParams = {
+  run: ResumableRun;
+  chat: StreamChat;
+  /** `0` for the main pane, `1` for the added (multi-convo) pane. */
+  runIndex: number;
+  isAddedRequest: boolean;
+  /** Reports the stream the pane is attached to, or `null` once it detaches. */
+  setStreamId: Dispatch<SetStateAction<string | null>>;
+};
+
+/** One of the app's queries as a resume reads it: the data and when it was last fetched. */
+export type ResumeQuery<Data> = {
+  data: Data | undefined;
+  dataUpdatedAt: number;
+};
+
+/** The stream status read a resume decides on. */
+export type ResumeStatusQuery = ResumeQuery<StreamStatusResponse> & {
+  isSuccess: boolean;
+  isFetching: boolean;
+};
+
+/** What a pane's resume check reads from the app's settings. */
+export type ResumeSettings = {
+  /** Whether the deployment's startup configuration has loaded. */
+  configLoaded: boolean;
+  retentionMode?: RetentionMode;
+  /** The conversation the pane shows. */
+  conversation: TConversation | null;
+};
+
+/** Everything a resumable stream runs on except how it re-attaches, which the binding owns. */
+export type ResumableServices = Omit<ResumableHost, 'subscribe'>;
+
+/**
+ * What the stream bindings need from the app that hosts them. Members are hooks, called
+ * unconditionally on every render, so the host can back each one with its own query cache,
+ * transport and store. A host must stay the same object for the life of the tree it wraps.
+ */
+export interface StreamHost {
+  /**
+   * Builds the services one pane's resumable stream runs on. The returned function is called
+   * whenever the stream mounts or re-attaches, so each attachment reads the services of the
+   * latest render; it changes only when they do.
+   */
+  useResumableServices(params: ResumableStreamParams): () => ResumableServices;
+  /** Streams a turn that carries its own response (Assistants), for `submission` or none. */
+  useLegacyStream(
+    submission: TSubmission | null,
+    chat: StreamChat,
+    isAddedRequest: boolean,
+    runIndex: number,
+  ): void;
+  /**
+   * The signed-in user's stream transport, or `null` before sign-in, for feeds outside a chat
+   * turn such as a subagent's activity. Changes when the token does.
+   */
+  useTransport(): ChatTransport | null;
+  /** A conversation's queued-turn receipts, observed from the app's cache without fetching. */
+  useQueuedTurnReceipts(conversationId: string): ResumeQuery<TAgentQueuedTurnReceipt[]>;
+  /**
+   * The signed-in user's active generations. `expectsSuccessor` keeps listening while the
+   * caller knows the server owes it a run.
+   */
+  useActiveJobs(
+    enabled: boolean,
+    expectsSuccessor: boolean,
+  ): ResumeQuery<{ activeJobIds: string[] }>;
+  /** Restarts the active-job list's handover window after a run was seen live another way. */
+  extendActiveJobsGrace(): void;
+  /** A conversation's generation status, read only while `enabled`. */
+  useStreamStatus(conversationId: string | undefined, enabled: boolean): ResumeStatusQuery;
+  /** The settings a pane's resume check reads. */
+  useResumeSettings(runIndex: number): ResumeSettings;
+}
+
+const StreamHostContext = createContext<StreamHost | null>(null);
+
+/** Supplies the host the stream bindings read from. */
+export function StreamHostProvider({
+  host,
+  children,
+}: {
+  host: StreamHost;
+  children?: ReactNode;
+}): ReactNode {
+  return <StreamHostContext.Provider value={host}>{children}</StreamHostContext.Provider>;
+}
+
+export function useStreamHost(): StreamHost {
+  const host = useContext(StreamHostContext);
+  if (host == null) {
+    throw new Error('The stream hooks need a StreamHostProvider above them.');
+  }
+  return host;
+}
