@@ -8,6 +8,7 @@ import {
   EModelEndpoint,
   defaultModels,
 } from 'librechat-data-provider';
+import type { TEndpoint } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { AxiosRequestConfig } from 'axios';
 import {
@@ -39,6 +40,8 @@ export interface FetchModelsParams {
   allowedAddresses?: string[] | null;
   /** Endpoint name (defaults to 'openAI') */
   name?: string;
+  /** Native provider configured on a custom endpoint. */
+  provider?: TEndpoint['provider'];
   /** Whether directEndpoint was configured */
   direct?: boolean;
   /** Whether to fetch from Azure */
@@ -158,6 +161,7 @@ export async function fetchModels({
   baseURLIsUserProvided = false,
   allowedAddresses,
   name = EModelEndpoint.openAI,
+  provider,
   direct = false,
   azure = false,
   userIdQuery = false,
@@ -168,7 +172,15 @@ export async function fetchModels({
   skipCache = false,
 }: FetchModelsParams): Promise<string[]> {
   let models: string[] = [];
-  const baseURL = direct ? extractBaseURL(_baseURL ?? '') : _baseURL;
+  const isCustomAnthropic = provider === EModelEndpoint.anthropic;
+  // The native client appends /v1/messages to the configured base URL.
+  // Built-in Anthropic discovery already supplies a base URL ending in /v1.
+  let baseURL = _baseURL;
+  if (isCustomAnthropic && baseURL) {
+    baseURL = `${baseURL.replace(/\/+$/, '')}/v1`;
+  } else if (direct) {
+    baseURL = extractBaseURL(baseURL ?? '') ?? undefined;
+  }
 
   if (!baseURL && !azure) {
     return models;
@@ -183,7 +195,7 @@ export async function fetchModels({
     await validateEndpointURL(baseURL, name, allowedAddresses);
   }
 
-  // The MODEL_QUERIES cache is keyed by baseURL+apiKey only. That's safe
+  // The MODEL_QUERIES cache is keyed by baseURL, apiKey, and native provider. That's safe
   // when the response is identical for every caller, but fails when callers
   // forward header templates that resolve to a user-bound value (e.g.
   // `Authorization: Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}`): one user's
@@ -193,7 +205,7 @@ export async function fetchModels({
   // resolving headers against a specific user's identity.
   const hasUserScopedHeaders = !!headers && Object.keys(headers).length > 0 && !!userObject;
   const shouldCache = !skipCache && !(userIdQuery && user) && !hasUserScopedHeaders;
-  const cacheKey = shouldCache ? modelsCacheKey(baseURL ?? '', apiKey) : '';
+  const cacheKey = shouldCache ? modelsCacheKey(baseURL ?? '', apiKey, provider) : '';
   const modelsCache = shouldCache ? standardCache(CacheKeys.MODEL_QUERIES) : null;
   if (modelsCache && cacheKey) {
     const cachedModels = await modelsCache.get(cacheKey);
@@ -211,7 +223,7 @@ export async function fetchModels({
     }
   }
 
-  if (name && name.toLowerCase().startsWith(KnownEndpoints.ollama)) {
+  if (!isCustomAnthropic && name && name.toLowerCase().startsWith(KnownEndpoints.ollama)) {
     let ollamaModels: string[] | null = null;
     try {
       ollamaModels = await fetchOllamaModels(baseURL ?? '', {
@@ -254,7 +266,7 @@ export async function fetchModels({
       timeout: 5000,
     };
 
-    if (name === EModelEndpoint.anthropic) {
+    if (isCustomAnthropic || name === EModelEndpoint.anthropic) {
       // Keep configured custom headers (e.g. gateway metadata) while the
       // provider-managed auth/version headers stay authoritative.
       options.headers = {
@@ -311,8 +323,9 @@ export async function fetchModels({
   return models;
 }
 
-function modelsCacheKey(baseURL: string, apiKey: string): string {
-  return crypto.createHash('sha256').update(`${baseURL}:${apiKey}`).digest('hex').slice(0, 32);
+function modelsCacheKey(baseURL: string, apiKey: string, provider?: TEndpoint['provider']): string {
+  const key = JSON.stringify([baseURL, apiKey, provider ?? null]);
+  return crypto.createHash('sha256').update(key).digest('hex').slice(0, 32);
 }
 
 /** Options for fetching OpenAI models */
