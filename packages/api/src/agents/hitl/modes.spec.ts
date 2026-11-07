@@ -282,12 +282,59 @@ test('templated connection authorities never reuse remembered approval', () => {
       customUserVars: { MCP_URL: { title: 'URL', description: 'Target server' } },
     }),
   ).toBeUndefined();
-  expect(
-    buildMCPToolApprovalBinding('db', {
-      ...base,
-      headers: { Authorization: 'Bearer ${MCP_TOKEN}' },
-    }),
-  ).toBeUndefined();
+});
+
+describe('deployment env references in connection authorities', () => {
+  const base = {
+    type: 'streamable-http' as const,
+    url: 'https://mcp.example.test/mcp',
+    source: 'yaml' as const,
+  };
+  const withEnv = { ...base, headers: { Authorization: 'Bearer ${MCP_TOKEN}' } };
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  test('resolved env references produce a binding pinned to their values', () => {
+    process.env.MCP_TOKEN = 'first-secret';
+    const first = buildMCPToolApprovalBinding('db', withEnv);
+    expect(first).toEqual(expect.any(String));
+    expect(buildMCPToolApprovalBinding('db', withEnv)).toBe(first);
+    process.env.MCP_TOKEN = 'rotated-secret';
+    expect(buildMCPToolApprovalBinding('db', withEnv)).not.toBe(first);
+  });
+
+  test('configs without env references keep the existing digest', () => {
+    const plain = buildMCPToolApprovalBinding('db', base);
+    process.env.MCP_TOKEN = 'unrelated';
+    expect(buildMCPToolApprovalBinding('db', base)).toBe(plain);
+  });
+
+  test('unset, empty or sensitive env references cannot be remembered', () => {
+    delete process.env.MCP_TOKEN;
+    expect(buildMCPToolApprovalBinding('db', withEnv)).toBeUndefined();
+    process.env.MCP_TOKEN = '';
+    expect(buildMCPToolApprovalBinding('db', withEnv)).toBeUndefined();
+    process.env.JWT_SECRET = 'server-secret';
+    expect(
+      buildMCPToolApprovalBinding('db', {
+        ...base,
+        headers: { Authorization: 'Bearer ${JWT_SECRET}' },
+      }),
+    ).toBeUndefined();
+  });
+
+  test('user placeholders stay unrememberable even alongside resolved env', () => {
+    process.env.MCP_TOKEN = 'secret';
+    expect(
+      buildMCPToolApprovalBinding('db', {
+        ...withEnv,
+        url: '{{MCP_URL}}',
+        customUserVars: { MCP_URL: { title: 'URL', description: 'Target server' } },
+      }),
+    ).toBeUndefined();
+  });
 });
 
 test('collision-preserved tool keys remain distinct and resettable', () => {

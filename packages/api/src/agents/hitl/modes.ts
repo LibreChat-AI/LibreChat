@@ -1,4 +1,5 @@
 import { createToolPolicyHook } from '@librechat/agents';
+import { isSensitiveEnvVar } from 'librechat-data-provider';
 import { digestMCPAuthorityValue, logger } from '@librechat/data-schemas';
 import type {
   AgentToolOptions,
@@ -41,13 +42,29 @@ export function buildMCPToolApprovalBinding(
   config: ParsedServerConfig | undefined,
 ): string | undefined {
   if (config) config = projectMCPApprovalAuthority(config);
-  if (
-    !config ||
-    requiresEphemeralUserConnection(config) ||
-    /\{\{[^{}]+\}\}|\$\{[^{}]+\}/.test(JSON.stringify(config))
-  )
-    return undefined;
-  return digestMCPAuthorityValue({ serverName, config });
+  if (!config || requiresEphemeralUserConnection(config)) return undefined;
+  const serialized = JSON.stringify(config);
+  if (/\{\{[^{}]+\}\}/.test(serialized)) return undefined;
+  const names = [...new Set(Array.from(serialized.matchAll(/\$\{([^{}]+)\}/g), (m) => m[1]))];
+  if (names.length === 0) return digestMCPAuthorityValue({ serverName, config });
+  const env = resolveApprovalEnv(names);
+  if (!env) return undefined;
+  return digestMCPAuthorityValue({ serverName, config, env });
+}
+
+/**
+ * Deployment `${NAME}` references are static, so their resolved values pin the connection:
+ * a rotated secret or changed URL yields a new binding. Unset, empty or sensitive names
+ * cannot be pinned and leave the connection unrememberable.
+ */
+function resolveApprovalEnv(names: string[]): Record<string, string> | undefined {
+  const env: Record<string, string> = {};
+  for (const name of names.sort()) {
+    const value = process.env[name];
+    if (!value || isSensitiveEnvVar(name)) return undefined;
+    env[name] = value;
+  }
+  return env;
 }
 
 export function attachMCPToolApprovalBindings(
