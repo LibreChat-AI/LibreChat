@@ -1,7 +1,9 @@
-import React from 'react';
+/**
+ * @jest-environment jsdom
+ */
 import { Provider, createStore } from 'jotai';
 import { act, render, screen } from '@testing-library/react';
-import { composerOverlayCountFamily } from '@librechat/chat/react';
+import { composerOverlayCountFamily } from '../../../react/overlay';
 import ScrollButton from '../ScrollButton';
 
 jest.mock('@librechat/client', () => ({
@@ -13,6 +15,8 @@ const CONVO_ID = 'convo-1';
 /** `visibilityDebounceRate` in the component, plus the exit transition. */
 const VISIBILITY_DEBOUNCE = 150;
 const EXIT_TRANSITION = 180;
+/** The enter transition, `--resize-dur` in the app's styles. */
+const ENTER_TRANSITION = 300;
 
 class MockIntersectionObserver {
   static instances: MockIntersectionObserver[] = [];
@@ -149,5 +153,49 @@ describe('ScrollButton', () => {
     renderButton({ enabled: false });
     scrollAway();
     expect(button()).toBeNull();
+  });
+  /* The app styles the fade through these classes (style.css), in the order a CSS
+     transition applies them; the control takes clicks only once it has settled. */
+  it('steps through the fade classes and takes clicks only once settled', () => {
+    renderButton();
+    scrollAway();
+    const wrapper = () => button()?.closest('.scrollbar-gutter-spacer');
+
+    expect(wrapper()).toHaveClass('scroll-animation-enter', 'scroll-animation-enter-active');
+    expect(button()).toBeDisabled();
+
+    act(() => {
+      jest.advanceTimersByTime(ENTER_TRANSITION + 1);
+    });
+    expect(wrapper()).toHaveClass('scroll-animation-enter-done');
+    expect(wrapper()).not.toHaveClass('scroll-animation-enter');
+    expect(button()).toBeEnabled();
+
+    setOpenPanels(1);
+    expect(wrapper()).toHaveClass('scroll-animation-exit', 'scroll-animation-exit-active');
+    expect(button()).toBeDisabled();
+
+    finishExit();
+    expect(button()).toBeNull();
+  });
+
+  it('turns back from a leave that has not finished', () => {
+    renderButton();
+    scrollAway();
+    act(() => {
+      jest.advanceTimersByTime(ENTER_TRANSITION + 1);
+    });
+
+    setOpenPanels(1);
+    act(() => {
+      jest.advanceTimersByTime(EXIT_TRANSITION / 2);
+    });
+    setOpenPanels(0);
+    finishExit();
+
+    expect(button()?.closest('.scrollbar-gutter-spacer')).toHaveClass(
+      'scroll-animation-enter',
+      'scroll-animation-enter-active',
+    );
   });
 });

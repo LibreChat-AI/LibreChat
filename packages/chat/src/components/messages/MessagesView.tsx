@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Constants } from 'librechat-data-provider';
 import { cn, useLocalize } from '@librechat/client';
-import type { RefObject, ReactNode, MouseEvent, ReactElement } from 'react';
+import type { RefObject, ReactNode, ReactElement } from 'react';
 import type { TMessage } from 'librechat-data-provider';
+import type { MessagesScrollButtonProps } from './ScrollButton';
 import type { MessagesThreadProps } from './thread/Thread';
 import {
   RowMountProvider,
@@ -14,21 +15,11 @@ import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
 import { useMessagesHost } from '../../react/messages/host';
 import { useChatContext } from '../../react/chat/context';
 import { useMessagePartsHost } from '../../react/host';
+import ScrollButton from './ScrollButton';
 import MessageNav from './MessageNav';
 import Thread from './thread/Thread';
 
-export type { MessagesThreadProps };
-
-/** What the scroll-to-bottom slot needs to watch the end marker and scroll to it. */
-export type MessagesScrollButtonProps = {
-  conversationId: string;
-  enabled: boolean;
-  maximizeChatSpace: boolean;
-  scrollableRef: RefObject<HTMLDivElement>;
-  messagesEndRef: RefObject<HTMLDivElement>;
-  scrollHandler: (event: MouseEvent<HTMLButtonElement>) => void;
-  onNearBottomChange: (isNearBottom: boolean) => void;
-};
+export type { MessagesThreadProps, MessagesScrollButtonProps };
 
 export type MessagesViewProps = {
   messagesTree?: TMessage[] | null;
@@ -53,7 +44,7 @@ export type MessagesViewProps = {
     index: number;
     fullWidth: boolean;
   }) => ReactNode;
-  /** Renders the scroll-to-bottom control. */
+  /** Renders the scroll-to-bottom control; the package control by default. */
   renderScrollButton?: (props: MessagesScrollButtonProps) => ReactNode;
   /** Renders the in-thread navigation rail; the package rail by default. */
   renderNav?: (props: {
@@ -63,6 +54,9 @@ export type MessagesViewProps = {
 };
 
 const renderDefaultThread = (props: MessagesThreadProps): ReactNode => <Thread {...props} />;
+const renderDefaultScrollButton = (props: MessagesScrollButtonProps): ReactNode => (
+  <ScrollButton {...props} />
+);
 /** Keyed so a warm switch releases the outgoing conversation's rail. */
 const renderDefaultNav: NonNullable<MessagesViewProps['renderNav']> = ({
   conversationId,
@@ -85,7 +79,7 @@ export default function MessagesView({
   renderThread = renderDefaultThread,
   renderPendingTurn,
   renderPendingSteers,
-  renderScrollButton,
+  renderScrollButton = renderDefaultScrollButton,
   renderNav = renderDefaultNav,
 }: MessagesViewProps): ReactElement {
   const localize = useLocalize();
