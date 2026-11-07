@@ -107,6 +107,28 @@ describe('toolValidationFeedback type checks', () => {
     );
   });
 
+  it('reads anyOf and oneOf unions and the nullable flag', () => {
+    const schema = jsonSchema({
+      type: 'object',
+      properties: {
+        custom_fields: { anyOf: [{ type: 'object', additionalProperties: {} }, { type: 'null' }] },
+        mode: { oneOf: [{ type: 'string' }, { type: 'integer' }] },
+        collapsed: { type: 'object', nullable: true },
+        pattern: { anyOf: [{ type: 'string' }, { not: {} }] },
+      },
+    });
+    const invalid = { custom_fields: '{}', mode: false, collapsed: 'x', pattern: 4 };
+    const feedback = toolValidationFeedback(parserError(), 'tool', schema, invalid);
+    expect(feedback).toContain(
+      'Invalid field types: custom_fields (expected object or null), mode (expected string or integer), collapsed (expected object or null).',
+    );
+    expect(feedback).not.toContain('pattern');
+    const valid = { custom_fields: null, mode: 2, collapsed: null };
+    expect(toolValidationFeedback(parserError(), 'tool', schema, valid)).not.toContain(
+      'Invalid field types',
+    );
+  });
+
   it('caps reported fields rather than inspected properties', () => {
     const properties: Record<string, unknown> = {};
     const input: Record<string, unknown> = {};

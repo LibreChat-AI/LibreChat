@@ -13,21 +13,51 @@ const typeChecks: Record<string, (value: unknown) => boolean> = {
   null: (value) => value === null,
 };
 
-/** Declared JSON types of a property, or undefined when any of them cannot be checked here. */
-function declaredTypes(property: unknown): string[] | undefined {
-  if (property == null || typeof property !== 'object' || !('type' in property)) {
+const MAX_UNION_DEPTH = 3;
+
+/**
+ * Declared JSON types of a property, read from `type` (a string or an array), an
+ * `anyOf`/`oneOf` union, and the OpenAPI-style `nullable` flag that the Gemini
+ * sanitizer leaves behind. Undefined when any member cannot be checked here.
+ */
+function declaredTypes(property: unknown, depth = 0): string[] | undefined {
+  if (property == null || typeof property !== 'object' || depth > MAX_UNION_DEPTH) {
     return undefined;
   }
-  const types = Array.isArray(property.type) ? property.type : [property.type];
-  if (
-    types.length === 0 ||
-    !types.every(
-      (type) => typeof type === 'string' && Object.prototype.hasOwnProperty.call(typeChecks, type),
-    )
-  ) {
+  const types = new Set<string>();
+  if ('type' in property) {
+    const declared = Array.isArray(property.type) ? property.type : [property.type];
+    for (const type of declared) {
+      if (typeof type !== 'string' || !Object.prototype.hasOwnProperty.call(typeChecks, type)) {
+        return undefined;
+      }
+      types.add(type);
+    }
+  } else {
+    let union: unknown;
+    if ('anyOf' in property) {
+      union = property.anyOf;
+    } else if ('oneOf' in property) {
+      union = property.oneOf;
+    }
+    if (!Array.isArray(union)) {
+      return undefined;
+    }
+    for (const branch of union) {
+      const branchTypes = declaredTypes(branch, depth + 1);
+      if (branchTypes == null) {
+        return undefined;
+      }
+      branchTypes.forEach((type) => types.add(type));
+    }
+  }
+  if (types.size === 0) {
     return undefined;
   }
-  return types as string[];
+  if ('nullable' in property && property.nullable === true) {
+    types.add('null');
+  }
+  return [...types];
 }
 
 /** Read only schema-owned field names; parser messages/output can contain input secrets. */
