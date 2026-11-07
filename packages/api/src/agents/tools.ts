@@ -37,6 +37,8 @@ export const EDIT_FILE_TOOL_NAME = 'edit_file';
 export const SEARCH_WORKSPACE_TOOL_NAME = 'search_workspace';
 export const LIST_WORKSPACE_FILES_TOOL_NAME = 'list_workspace_files';
 export const HOST_FILE_AUTHORING_ARTIFACT_KEY = '__librechat_file_authoring';
+/** Marks artifact content meant for the model only, such as an image `read_file` returned. */
+export const MODEL_ONLY_ARTIFACT_KEY = '__librechat_model_only';
 export const FILE_AUTHORING_TOOL_NAMES: ReadonlySet<string> = new Set([
   CREATE_FILE_TOOL_NAME,
   EDIT_FILE_TOOL_NAME,
@@ -97,6 +99,16 @@ export function isCodeArtifactToolOutput(output: { name: string; artifact?: unkn
       typeof artifact === 'object' &&
       HOST_FILE_AUTHORING_ARTIFACT_KEY in artifact &&
       artifact[HOST_FILE_AUTHORING_ARTIFACT_KEY] === true)
+  );
+}
+
+/** Reading a file gives the model its content; only deliberate outputs become chat attachments. */
+export function isModelOnlyArtifact(artifact: unknown): boolean {
+  return (
+    artifact != null &&
+    typeof artifact === 'object' &&
+    MODEL_ONLY_ARTIFACT_KEY in artifact &&
+    artifact[MODEL_ONLY_ARTIFACT_KEY] === true
   );
 }
 

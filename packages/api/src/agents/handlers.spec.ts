@@ -31,6 +31,7 @@ import { ContentFilterError } from '../middleware/contentFilter';
 import { WorkspaceToolHttpError } from '../code/workspace';
 import { createAttachedWorkspaceBashTool, stampCommandExecutor } from '../code/command';
 import { createCodeApiUploadRegistry } from '~/utils';
+import { MODEL_ONLY_ARTIFACT_KEY } from './tools';
 
 function createMockTool(
   name: string,
@@ -8578,6 +8579,59 @@ describe('createToolExecuteHandler', () => {
       }
     });
 
+    it('returns a skill image to the model without attaching it to the chat', async () => {
+      const image = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64',
+      );
+      const handler = createToolExecuteHandler({
+        loadTools: async () => ({
+          loadedTools: [],
+          configurable: {
+            req: { user: { id: 'user-1' }, config: {} },
+            accessibleSkillIds: skillsInScope(),
+          },
+        }),
+        getSkillByName: async () => ({
+          _id: '507f1f77bcf86cd799439011' as unknown as never,
+          name: 'image-skill',
+          body: '# Image',
+          fileCount: 1,
+          version: 1,
+        }),
+        getSkillFileByPath: async (_id, relativePath) => ({
+          mimeType: 'image/png',
+          bytes: image.length,
+          isBinary: true,
+          filepath: `/storage/${relativePath}`,
+          source: 'local',
+          relativePath,
+        }),
+        getStrategyFunctions: () => ({
+          getDownloadStream: async () => Readable.from(image),
+        }),
+      });
+
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'skill-image',
+          name: Constants.READ_FILE,
+          args: { path: 'skills/image-skill/chart.png' },
+        },
+      ]);
+
+      expect(result.status).toBe('success');
+      expect(result.artifact).toMatchObject({
+        [MODEL_ONLY_ARTIFACT_KEY]: true,
+        content: [
+          {
+            type: 'image_url',
+            image_url: { url: `data:image/png;base64,${image.toString('base64')}` },
+          },
+        ],
+      });
+    });
+
     it('refuses incomplete or oversized sandbox text instead of reporting a false EOF', async () => {
       const original = text;
       const readSandboxFile: NonNullable<ToolExecuteOptions['readSandboxFile']> = jest.fn(
@@ -10462,8 +10516,9 @@ describe('createToolExecuteHandler', () => {
       /**
        * `read_file` on a sandbox image returns the bytes as an `image_url`
        * artifact the model can see. The SDK folds `artifact.content` into
-       * the model-visible message and the host tool-end callback saves the
-       * same data URL as a viewable attachment. `readSandboxFile` (the text
+       * the model-visible message; the model-only marker keeps the host
+       * tool-end callback from re-attaching the read to the chat on every
+       * call. `readSandboxFile` (the text
        * `cat` path) must NOT be used — its JSON transport corrupts image
        * bytes, which was the matplotlib-shape mojibake regression.
        */
@@ -10507,6 +10562,7 @@ describe('createToolExecuteHandler', () => {
         expect(result.content).toContain('Image:');
         expect(result.content).toContain('image/png');
         expect(result.artifact).toMatchObject({
+          [MODEL_ONLY_ARTIFACT_KEY]: true,
           content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${PNG_B64}` } }],
         });
       });
