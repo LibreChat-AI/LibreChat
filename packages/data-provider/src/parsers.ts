@@ -253,6 +253,8 @@ export const getResponseSender = (endpointOption: Partial<t.TEndpointOption>): s
       return 'Kimi';
     } else if (model && model.includes('moonshot')) {
       return 'Moonshot';
+    } else if (model && model.toLowerCase().includes('minimax')) {
+      return 'MiniMax';
     } else if (model && model.includes('gpt-')) {
       const gptVersion = extractGPTVersion(model);
       return gptVersion || 'GPT';
@@ -294,6 +296,8 @@ export const getResponseSender = (endpointOption: Partial<t.TEndpointOption>): s
       return 'Kimi';
     } else if (model && model.includes('moonshot')) {
       return 'Moonshot';
+    } else if (model && model.toLowerCase().includes('minimax')) {
+      return 'MiniMax';
     } else if (model && model.includes('gpt-')) {
       const gptVersion = extractGPTVersion(model);
       return gptVersion || 'GPT';
