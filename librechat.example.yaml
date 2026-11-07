@@ -475,6 +475,20 @@ interface:
 #   enabled: true
 #   tokenTTLSeconds: 900
 
+# Embed chat and chat history in another web app (docs/embed.md).
+# The host page loads https://<librechat>/embed.js; its backend signs a short-lived
+# HS256 token with the app secret for the signed-in user.
+# embed:
+#   enabled: true
+#   apps:
+#     - id: my-app
+#       secret: '${EMBED_SECRET_MY_APP}'
+#       allowedOrigins:
+#         - 'https://app.example.com'
+#       role: USER
+#       maxTokenAgeSeconds: 300
+#       sessionSeconds: 900
+
 # Passkey (WebAuthn) enrollment limits.
 # Omitted, perUserMax falls back to MAX_PASSKEYS_PER_USER, then 20.
 # passkeys:

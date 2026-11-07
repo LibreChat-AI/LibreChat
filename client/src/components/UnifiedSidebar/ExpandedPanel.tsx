@@ -10,6 +10,7 @@ import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import useDirection, { inlineSide } from '~/hooks/Nav/useDirection';
 import useNewChat from '~/hooks/Conversations/useNewChat';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
+import { useEmbedded } from '~/embed/context';
 import { useLocalize } from '~/hooks';
 
 const AccountSettings = lazyWithRecovery(() => import('~/components/Nav/AccountSettings'));
@@ -139,6 +140,7 @@ function ExpandedPanel({
   switchToHistory: boolean;
 }) {
   const localize = useLocalize();
+  const embedded = useEmbedded();
   const tooltipSide = inlineSide(useDirection(), 'end');
   const location = useLocation();
   const { active, setActive } = useActivePanel();
@@ -172,7 +174,7 @@ function ExpandedPanel({
         }
       />
       <NewChatButton setActive={setActive} switchToHistory={switchToHistory} />
-      <AgentMarketplaceButton />
+      {!embedded && <AgentMarketplaceButton />}
       <div className="border-border-inset mx-2 border-b" />
       <div className="flex flex-col gap-1 overflow-y-auto">
         {links.map((link) => (
@@ -194,11 +196,13 @@ function ExpandedPanel({
         ))}
       </div>
 
-      <div className="mt-auto">
-        <Suspense fallback={<Skeleton className="h-9 w-9 rounded-lg" />}>
-          <AccountSettings collapsed />
-        </Suspense>
-      </div>
+      {!embedded && (
+        <div className="mt-auto">
+          <Suspense fallback={<Skeleton className="h-9 w-9 rounded-lg" />}>
+            <AccountSettings collapsed />
+          </Suspense>
+        </div>
+      )}
     </div>
   );
 }

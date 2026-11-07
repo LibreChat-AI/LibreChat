@@ -1098,6 +1098,22 @@ export type TRefreshTokenResponse = {
   code?: 'TWO_FACTOR_ENROLLMENT_REQUIRED';
 };
 
+export type TEmbedSessionRequest = {
+  /** The embed app id from librechat.yaml. */
+  app: string;
+  /** The host-signed token. */
+  token: string;
+  /** Origin of the host page that supplied the token. */
+  origin: string;
+};
+
+export type TEmbedSessionResponse = {
+  token: string;
+  user: TUser;
+  /** Access token expiry, ms since epoch. */
+  expiresAt: number;
+};
+
 export type TCheckUserKeyResponse = {
   expiresAt: string;
 };
