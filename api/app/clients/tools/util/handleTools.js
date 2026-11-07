@@ -207,6 +207,7 @@ const loadTools = async ({
         imageFiles,
         userId: user,
         fileStrategy,
+        rootAgentBillingMode: options.rootAgentBillingMode,
       });
     },
   };
