@@ -55,6 +55,8 @@ export interface FetchModelsParams {
   userObject?: Partial<IUser>;
   /** Skip MODEL_QUERIES cache (e.g., for user-provided keys) */
   skipCache?: boolean;
+  /** Optional request timeout in milliseconds (defaults to 5000) */
+  timeout?: number;
 }
 
 function applyUserProvidedBaseURLProtection(
@@ -86,6 +88,7 @@ async function fetchOllamaModels(
     headers?: Record<string, string> | null;
     ssrfAgents?: SSRFSafeAgents;
     user?: Partial<IUser>;
+    timeout?: number;
   } = {},
 ): Promise<string[]> {
   if (!baseURL) {
@@ -105,7 +108,7 @@ async function fetchOllamaModels(
     timeout: number;
   } = {
     headers: resolvedHeaders,
-    timeout: 5000,
+    timeout: options.timeout ?? 5000,
   };
   applyUserProvidedBaseURLProtection(requestOptions, options.ssrfAgents);
 
@@ -166,6 +169,7 @@ export async function fetchModels({
   headers,
   userObject,
   skipCache = false,
+  timeout,
 }: FetchModelsParams): Promise<string[]> {
   let models: string[] = [];
   const baseURL = direct ? extractBaseURL(_baseURL ?? '') : _baseURL;
@@ -218,6 +222,7 @@ export async function fetchModels({
         headers,
         ssrfAgents,
         user: userObject,
+        timeout,
       });
     } catch (ollamaError) {
       logAxiosError({
@@ -251,7 +256,7 @@ export async function fetchModels({
       headers: {
         ...resolvedHeaders,
       },
-      timeout: 5000,
+      timeout: timeout ?? 5000,
     };
 
     if (name === EModelEndpoint.anthropic) {

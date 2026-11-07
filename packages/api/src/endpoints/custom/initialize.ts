@@ -305,6 +305,12 @@ export async function initializeCustom(
     endpointConfig.models?.fetch &&
     !endpointTokenConfig
   ) {
+    const fetchTimeout =
+      endpointConfig.models?.fetchTimeoutMs ??
+      endpointConfig.models?.timeoutMs ??
+      endpointConfig.models?.timeout ??
+      endpointConfig.fetchTimeoutMs ??
+      endpointConfig.timeoutMs;
     await fetchModels({
       apiKey,
       baseURL,
@@ -319,6 +325,7 @@ export async function initializeCustom(
       // templates like {{LIBRECHAT_OPENID_ID_TOKEN}} would otherwise resolve
       // and leak the user's identity token to a destination the user controls.
       headers: userProvidesURL ? undefined : endpointConfig.headers,
+      timeout: fetchTimeout,
       // Note: when both `headers` and `userObject` are supplied below, the
       // MODEL_QUERIES cache inside `fetchModels` is automatically skipped,
       // which prevents a per-user filtered model list from leaking across

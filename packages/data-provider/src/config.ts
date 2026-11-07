@@ -2318,8 +2318,21 @@ export const endpointSchema = baseEndpointSchema.merge(
     models: z.object({
       default: z.array(modelItemSchema).min(1),
       fetch: z.boolean().optional(),
+      /**
+       * Timeout in milliseconds when fetching /v1/models from OpenAI-compatible endpoints.
+       * Defaults to 5000 ms.
+       */
+      fetchTimeoutMs: z.number().int().positive().optional(),
+      timeoutMs: z.number().int().positive().optional(),
+      timeout: z.number().int().positive().optional(),
       userIdQuery: z.boolean().optional(),
     }),
+    /**
+     * Timeout in milliseconds when fetching /v1/models from OpenAI-compatible endpoints.
+     * Defaults to 5000 ms. Can also be set within `models`.
+     */
+    fetchTimeoutMs: z.number().int().positive().optional(),
+    timeoutMs: z.number().int().positive().optional(),
     iconURL: z.string().optional(),
     modelDisplayLabel: z.string().optional(),
     /**
