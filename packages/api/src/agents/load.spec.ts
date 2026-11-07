@@ -100,3 +100,62 @@ describe('loadEphemeralAgent → resolveSender parity', () => {
     expect(sender).toBe(parseEphemeralAgentId(agent?.id ?? '')?.sender);
   });
 });
+
+describe('loadEphemeralAgent model spec tool toggles', () => {
+  const specReq = (
+    ephemeralAgent: Record<string, unknown> | undefined,
+    specOverrides: Record<string, unknown> = {},
+  ) =>
+    ({
+      user: { id: 'user-1' },
+      config: {
+        modelSpecs: {
+          list: [
+            {
+              name: 'tools-spec',
+              label: 'Tools',
+              preset: { endpoint: 'google' },
+              executeCode: true,
+              webSearch: true,
+              fileSearch: true,
+              ...specOverrides,
+            },
+          ],
+        },
+      },
+      body: ephemeralAgent ? { ephemeralAgent } : {},
+    }) as unknown as Parameters<typeof loadEphemeralAgent>[0]['req'];
+
+  const load = (req: Parameters<typeof loadEphemeralAgent>[0]['req']) =>
+    loadEphemeralAgent(
+      { req, spec: 'tools-spec', endpoint: 'google', model_parameters: { model: 'm' } as never },
+      deps,
+    );
+
+  it('leaves out a spec tool whose badge the user switched off', async () => {
+    const agent = await load(
+      specReq({ execute_code: false, web_search: true, file_search: false }),
+    );
+    expect(agent?.tools).toEqual(['web_search']);
+  });
+
+  it('keeps every spec tool for a caller that sends no badge state', async () => {
+    const agent = await load(specReq(undefined));
+    expect(agent?.tools).toEqual(['execute_code', 'file_search', 'web_search']);
+  });
+
+  it('keeps spec tools when the spec hides the badge row', async () => {
+    const agent = await load(specReq({ execute_code: false }, { hideBadgeRow: true }));
+    expect(agent?.tools).toContain('execute_code');
+  });
+
+  it('keeps spec tools for a spec the client never received', async () => {
+    const agent = await load(
+      specReq(
+        { execute_code: false, web_search: false, file_search: false },
+        { showInMenu: false },
+      ),
+    );
+    expect(agent?.tools).toEqual(['execute_code', 'file_search', 'web_search']);
+  });
+});

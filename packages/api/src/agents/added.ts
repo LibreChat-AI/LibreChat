@@ -1,6 +1,5 @@
 import { logger } from '@librechat/data-schemas';
 import {
-  Tools,
   Constants,
   isAgentsEndpoint,
   isEphemeralAgentId,
@@ -18,13 +17,13 @@ import {
   filterChatSelectableMCPServers,
   validateMCPServerConfig,
 } from '~/mcp/utils';
-import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
 import { synthesizeIntentToolOptions } from '~/agents/intent';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { getCustomEndpointConfig } from '~/app/config';
+import { getToggleToolNames } from '~/agents/toggles';
 import { mapWithConcurrency } from '~/utils/promise';
 
 const { mcp_all, mcp_delimiter } = Constants;
@@ -226,25 +225,10 @@ export async function loadAddedAgent(
     }
   }
 
-  const tools: string[] = [];
-  if (ephemeralAgent?.execute_code === true || modelSpec?.executeCode === true) {
-    tools.push(Tools.execute_code);
-  }
-  if (ephemeralAgent?.file_search === true || modelSpec?.fileSearch === true) {
-    tools.push(Tools.file_search);
-  }
-  if (ephemeralAgent?.web_search === true || modelSpec?.webSearch === true) {
-    tools.push(Tools.web_search);
-  }
-  if (ephemeralAgent?.memory === true || modelSpec?.memory === true) {
-    tools.push(Tools.memory);
-  }
-  /** Mirror the primary ephemeral loader (`loadEphemeralAgent`) so a model
-   *  spec's Ask User flag equips the added top-level agent too; downstream
-   *  `createRun` gating (hitlCapable, non-subagent, admin filter) is uniform. */
-  if (ephemeralAgent?.ask_user_question === true || modelSpec?.askUserQuestion === true) {
-    tools.push(ASK_USER_QUESTION_TOOL_NAME);
-  }
+  /** A badge the user switched off stays off; the spec only seeds the default.
+   *  `ask_user_question` keeps the downstream `createRun` gating (HITL-capable
+   *  request, top-level agent, admin filter) that persisted agents get. */
+  const tools: string[] = getToggleToolNames({ ephemeralAgent, modelSpec });
 
   const serverToolKeys = await mapWithConcurrency(
     [...mcpServers],
