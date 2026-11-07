@@ -22,6 +22,7 @@ import { requiresEphemeralUserConnection } from '~/mcp/utils';
 import { projectMCPApprovalAuthority } from '~/mcp/approval';
 import { getToolApprovalAuthKind } from '~/tools/approval';
 import { mapToolApprovalPolicy } from './policy';
+import { isPluginSourced } from '~/utils/env';
 
 export interface AgentApprovalDefinition {
   name: string;
@@ -47,6 +48,8 @@ export function buildMCPToolApprovalBinding(
   if (/\{\{[^{}]+\}\}/.test(serialized)) return undefined;
   const names = [...new Set(Array.from(serialized.matchAll(/\$\{([^{}]+)\}/g), (m) => m[1]))];
   if (names.length === 0) return digestMCPAuthorityValue({ serverName, config });
+  /** processMCPEnv leaves `${NAME}` literal for these tiers, so process.env is not the authority. */
+  if (isPluginSourced(config) || config.dbId) return undefined;
   const env = resolveApprovalEnv(names);
   if (!env) return undefined;
   return digestMCPAuthorityValue({ serverName, config, env });

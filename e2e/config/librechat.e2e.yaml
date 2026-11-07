@@ -80,7 +80,11 @@ mcpServers:
     command: node
     args:
       - e2e/setup/fake-mcp-server.js
-    # __E2E_DYNAMIC_MCP_STDIO_ENV__
+    # A deployment `${VAR}` reference, the shape most OAuth MCP servers carry; remembered
+    # approvals must still work for it.
+    env:
+      E2E_MCP_DEPLOYMENT: '${E2E_MCP_DEPLOYMENT}'
+      # __E2E_DYNAMIC_MCP_STDIO_ENV__
     title: E2E Memory
     description: Local MCP fixture used by mock end-to-end tests.
     timeout: 30000

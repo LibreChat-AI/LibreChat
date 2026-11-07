@@ -325,6 +325,14 @@ describe('deployment env references in connection authorities', () => {
     ).toBeUndefined();
   });
 
+  test('servers whose env references stay literal at connection time are not resolved', () => {
+    process.env.MCP_TOKEN = 'secret';
+    expect(buildMCPToolApprovalBinding('db', { ...withEnv, source: 'plugin' })).toBeUndefined();
+    expect(
+      buildMCPToolApprovalBinding('db', { ...withEnv, dbId: 'stored-server' }),
+    ).toBeUndefined();
+  });
+
   test('user placeholders stay unrememberable even alongside resolved env', () => {
     process.env.MCP_TOKEN = 'secret';
     expect(
