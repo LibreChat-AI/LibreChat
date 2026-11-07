@@ -236,15 +236,19 @@ const getMCPTools = async (req, res) => {
 
         // Set authentication config once for the server
         if (serverConfig?.customUserVars) {
-          const customVarKeys = Object.keys(serverConfig.customUserVars);
-          if (customVarKeys.length > 0) {
-            server.authConfig = Object.entries(serverConfig.customUserVars).map(([key, value]) => ({
+          const customVars = Object.entries(serverConfig.customUserVars);
+          if (customVars.length > 0) {
+            server.authConfig = customVars.map(([key, value]) => ({
               authField: key,
               label: value.title || key,
               description: value.description || '',
               sensitive: value.sensitive,
+              optional: value.optional,
             }));
-            server.authenticated = false;
+            /* Optional vars override a default the deployment provides, so a server that declares
+             * only those is already usable - marking it unauthenticated would show it as needing
+             * setup when nothing is missing. */
+            server.authenticated = !customVars.some(([, value]) => value?.optional !== true);
           }
         }
 

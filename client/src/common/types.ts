@@ -26,6 +26,8 @@ export interface ConfigFieldDetail {
   description: string;
   /** Whether the field holds a secret and should be masked (defaults to masked when omitted). */
   sensitive?: boolean;
+  /** Whether the value overrides a working default and may be left blank. */
+  optional?: boolean;
 }
 
 export type CodeBarProps = {

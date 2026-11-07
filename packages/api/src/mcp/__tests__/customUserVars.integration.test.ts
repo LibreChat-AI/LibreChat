@@ -71,4 +71,83 @@ describe('processMCPEnv — customUserVars placeholder resolution', () => {
 
     expect((result as t.StreamableHTTPOptions).url).toContain('{{MY_CUSTOM_KEY}}');
   });
+  describe('optional vars the user has not set', () => {
+    const withOptionalPat = () =>
+      ({
+        type: 'streamable-http',
+        url: 'https://my-mcp.server.com/mcp',
+        headers: {
+          'X-User-Email': '{{LIBRECHAT_USER_EMAIL}}',
+          'X-User-Github-Pat': '{{GITHUB_PAT}}',
+        },
+        customUserVars: {
+          GITHUB_PAT: { title: 'GitHub Token', description: 'own account', optional: true },
+        },
+      }) as unknown as t.MCPOptions;
+
+    it('omits a header made solely of an unset optional placeholder', () => {
+      const result = processMCPEnv({ options: withOptionalPat(), user: mockUser });
+      const headers = (result as t.StreamableHTTPOptions).headers ?? {};
+
+      expect(headers).not.toHaveProperty('X-User-Github-Pat');
+      expect(headers['X-User-Email']).toBe('test@example.com');
+    });
+
+    it('sends the value once the user sets it', () => {
+      const result = processMCPEnv({
+        options: withOptionalPat(),
+        user: mockUser,
+        customUserVars: { GITHUB_PAT: 'ghp_realtoken' },
+      });
+
+      expect((result as t.StreamableHTTPOptions).headers?.['X-User-Github-Pat']).toBe(
+        'ghp_realtoken',
+      );
+    });
+
+    it('treats a blank value as unset rather than as an empty credential', () => {
+      const result = processMCPEnv({
+        options: withOptionalPat(),
+        user: mockUser,
+        customUserVars: { GITHUB_PAT: '   ' },
+      });
+
+      expect((result as t.StreamableHTTPOptions).headers).not.toHaveProperty('X-User-Github-Pat');
+    });
+
+    it('clears the placeholder but keeps a header that carries other content', () => {
+      const options = {
+        type: 'streamable-http',
+        url: 'https://my-mcp.server.com/mcp?pat={{GITHUB_PAT}}',
+        headers: { 'X-Combined': 'user={{LIBRECHAT_USER_EMAIL}};pat={{GITHUB_PAT}}' },
+        customUserVars: {
+          GITHUB_PAT: { title: 'GitHub Token', description: 'own account', optional: true },
+        },
+      } as unknown as t.MCPOptions;
+
+      const result = processMCPEnv({ options, user: mockUser });
+
+      expect((result as t.StreamableHTTPOptions).url).toBe('https://my-mcp.server.com/mcp?pat=');
+      expect((result as t.StreamableHTTPOptions).headers?.['X-Combined']).toBe(
+        'user=test@example.com;pat=',
+      );
+    });
+
+    it('leaves a required var untouched, so its absence stays visible', () => {
+      const options = {
+        type: 'streamable-http',
+        url: 'https://my-mcp.server.com/mcp',
+        headers: { Authorization: 'Bearer {{REQUIRED_TOKEN}}' },
+        customUserVars: {
+          REQUIRED_TOKEN: { title: 'Token', description: 'required' },
+        },
+      } as unknown as t.MCPOptions;
+
+      const result = processMCPEnv({ options, user: mockUser });
+
+      expect((result as t.StreamableHTTPOptions).headers?.['Authorization']).toBe(
+        'Bearer {{REQUIRED_TOKEN}}',
+      );
+    });
+  });
 });
