@@ -322,6 +322,9 @@ export function createClientToolRunStepDeltaHandler({
   if (clientToolNames.size === 0) {
     return delegate;
   }
+  // A provider may split a call's name across chunks; the chunk contract
+  // treats names as concatenatable, so assemble before matching.
+  const namesByCall = new Map<string, string>();
   return {
     handle: (event, data, metadata, graph) => {
       delegate.handle(event, data, metadata, graph);
@@ -329,15 +332,20 @@ export function createClientToolRunStepDeltaHandler({
         return;
       }
       const deltaData = data as {
+        id?: string;
         delta?: { tool_calls?: Array<{ id?: string; name?: string }> };
       };
+      const stepId = deltaData?.id ?? '';
       const invoked = graph.invokedToolIds ?? new Set<string>();
       for (const toolCall of deltaData?.delta?.tool_calls ?? []) {
-        if (
-          toolCall?.id != null &&
-          toolCall.id !== '' &&
-          clientToolNames.has(toolCall.name ?? '')
-        ) {
+        if (toolCall?.id == null || toolCall.id === '') {
+          continue;
+        }
+        const key = `${stepId}:${toolCall.id}`;
+        if (toolCall.name != null && toolCall.name !== '') {
+          namesByCall.set(key, (namesByCall.get(key) ?? '') + toolCall.name);
+        }
+        if (clientToolNames.has(namesByCall.get(key) ?? '')) {
           invoked.add(toolCall.id);
         }
       }
