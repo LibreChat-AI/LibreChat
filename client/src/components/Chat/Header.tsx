@@ -21,6 +21,7 @@ import ExportAndShareMenu from './ExportAndShareMenu';
 import SubagentThreadLink from './SubagentThreadLink';
 import { PullRequestChip } from './PullRequest';
 import BookmarkMenu from './Menus/BookmarkMenu';
+import { useEmbedded } from '~/embed/context';
 import { useChatContext } from '~/Providers';
 import AddMultiConvo from './AddMultiConvo';
 import { useHasAccess } from '~/hooks';
@@ -38,6 +39,7 @@ function Header({
   readOnly?: boolean;
 }) {
   const { data: startupConfig } = useGetStartupConfig();
+  const embedded = useEmbedded();
   const navVisible = useRecoilValue(store.sidebarExpanded);
   const isSubmitting = useIsSubmitting(0);
   const isSmallScreen = useDrawerViewport();
@@ -141,19 +143,24 @@ function Header({
             isSubmitting={isSubmitting}
           />
         )}
-        <HeaderMenu
-          startupConfig={startupConfig}
-          trace={trace}
-          readOnly={readOnly}
-          pullRequestConversationId={showPullRequest ? routeConversationId : undefined}
-          className={isSmallScreen ? undefined : 'hidden'}
-        />
+        {/* Export and share lead out of the host page, so an embedded chat leaves them out. */}
+        {!embedded && (
+          <HeaderMenu
+            startupConfig={startupConfig}
+            trace={trace}
+            readOnly={readOnly}
+            pullRequestConversationId={showPullRequest ? routeConversationId : undefined}
+            className={isSmallScreen ? undefined : 'hidden'}
+          />
+        )}
         <div className={cn('items-center gap-2', isSmallScreen ? 'hidden' : 'flex')}>
           {trace.show && <TraceButton onClick={trace.open} />}
-          <ExportAndShareMenu
-            isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false}
-            readOnly={readOnly}
-          />
+          {!embedded && (
+            <ExportAndShareMenu
+              isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false}
+              readOnly={readOnly}
+            />
+          )}
           {showTemporaryChat && <TemporaryChat />}
         </div>
       </div>

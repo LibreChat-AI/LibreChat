@@ -9,6 +9,7 @@ import type { NavLink } from '~/common';
 import { useGetEndpointsQuery, useGetStartupConfig, useInsightsAccessQuery } from '~/data-provider';
 import ConversationsSection from '~/components/UnifiedSidebar/ConversationsSection';
 import useSideNavLinks from '~/hooks/Nav/useSideNavLinks';
+import { useEmbedded } from '~/embed/context';
 import { useAuthContext } from '~/hooks';
 import store from '~/store';
 
@@ -18,6 +19,7 @@ export default function useUnifiedSidebarLinks() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuthContext();
+  const embedded = useEmbedded();
   /** Selector instead of the full conversation atom: the links only depend on
    * the endpoint, so parameter edits and other conversation writes stay out. */
   const endpoint = useRecoilValue(store.conversationEndpointByIndex(0)) ?? undefined;
@@ -72,6 +74,11 @@ export default function useUnifiedSidebarLinks() {
       Component: ConversationsSection,
     };
 
+    /** A host page shows chat and its history only. */
+    if (embedded) {
+      return [conversationLink];
+    }
+
     if (
       !insightsFeatureEnabled ||
       (!isInsightsRoute && !isInsightsAccessLoading && insightsAccess?.access !== true)
@@ -97,6 +104,7 @@ export default function useUnifiedSidebarLinks() {
 
     return [conversationLink, ...nextLinks];
   }, [
+    embedded,
     insightsAccess?.access,
     insightsFeatureEnabled,
     isInsightsAccessLoading,

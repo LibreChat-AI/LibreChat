@@ -518,7 +518,8 @@ export function sourcemapExclude(opts?: SourcemapExclude): Plugin {
 /**
  * Production builds set `publicDir: false`, so nothing under public/ reaches dist on its
  * own. This copies what the server actually has to serve: all of public/assets (the PWA
- * icons plus the endpoint, tool and language logos referenced at runtime) and robots.txt.
+ * icons plus the endpoint, tool and language logos referenced at runtime), robots.txt and
+ * embed.js, the loader host pages include to frame the chat.
  * The font files live in the component library (`packages/client/src/theme/fonts`) and are
  * emitted as bundle assets through the `@font-face` rules `tokens.css` imports, so only their
  * licence texts are copied, next to them in assets/fonts: the SIL OFL lets a font be
@@ -549,6 +550,7 @@ export function copyPublicAssets(): Plugin {
         path.join(publicDir, 'robots.txt'),
         path.join(outDir, 'robots.txt'),
       );
+      await fs.promises.copyFile(path.join(publicDir, 'embed.js'), path.join(outDir, 'embed.js'));
       const licences = (await fs.promises.readdir(fontsDir)).filter((name) =>
         name.endsWith('.txt'),
       );

@@ -20,6 +20,10 @@ const {
   createMetrics,
   applyCspNonce,
   createCspPolicy,
+  resolveEmbedApps,
+  getEmbedFrameAncestors,
+  withEmbedFrameAncestors,
+  createEmbedFramingMiddleware,
   shellCacheHeaders,
   escapeHtmlAttribute,
   ErrorController,
@@ -329,7 +333,12 @@ const startServer = async () => {
     readBundledThemeBoot(appConfig.paths.dist),
   );
 
-  const cspPolicy = createCspPolicy();
+  const embedFrameAncestors = getEmbedFrameAncestors(resolveEmbedApps(appConfig.embed));
+  const embedFraming = createEmbedFramingMiddleware(embedFrameAncestors);
+  if (embedFraming) {
+    app.use(embedFraming);
+  }
+  const cspPolicy = createCspPolicy(withEmbedFrameAncestors(process.env, embedFrameAncestors));
   const shellCache = shellCacheHeaders(cspPolicy != null);
 
   const sendIndexHtml = (req, res) => {
@@ -434,6 +443,7 @@ const startServer = async () => {
   app.use('/oauth', preAuthTenantMiddleware, routes.oauth);
   /* API Endpoints */
   app.use('/api/auth', preAuthTenantMiddleware, routes.auth);
+  app.use('/api/embed', preAuthTenantMiddleware, routes.embed);
   app.use('/api/insights', routes.insights);
   app.use('/api/admin', routes.adminAuth);
   app.use('/api/admin/config', routes.adminConfig);

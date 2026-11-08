@@ -73,6 +73,8 @@ export * from './flow/manager';
 export * from './middleware';
 /* Security */
 export * from './security';
+/* Embed */
+export * from './embed';
 /* Content protection */
 export * from './protection';
 /* Imports */

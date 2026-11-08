@@ -48,6 +48,7 @@ import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
 import { TermsAndConditionsModal } from '~/components/ui';
 import useDrawerSwipe from '~/hooks/Nav/useDrawerSwipe';
+import { EmbedProvider, isEmbedded } from '~/embed';
 import ChatSettingsProvider from './ChatSettings';
 import { useHealthCheck } from '~/data-provider';
 import Settings from '~/components/Nav/Settings';
@@ -273,16 +274,18 @@ function RootLayout() {
 
 export default function Root() {
   return (
-    <ChatSettingsProvider>
-      <SteerHostProvider host={appSteerHost}>
-        <ChatHostProvider host={appChatHost}>
-          <StreamHostProvider host={appStreamHost}>
-            <ComposerHostProvider host={appComposerHost}>
-              <RootLayout />
-            </ComposerHostProvider>
-          </StreamHostProvider>
-        </ChatHostProvider>
-      </SteerHostProvider>
-    </ChatSettingsProvider>
+    <EmbedProvider embedded={isEmbedded()}>
+      <ChatSettingsProvider>
+        <SteerHostProvider host={appSteerHost}>
+          <ChatHostProvider host={appChatHost}>
+            <StreamHostProvider host={appStreamHost}>
+              <ComposerHostProvider host={appComposerHost}>
+                <RootLayout />
+              </ComposerHostProvider>
+            </StreamHostProvider>
+          </ChatHostProvider>
+        </SteerHostProvider>
+      </ChatSettingsProvider>
+    </EmbedProvider>
   );
 }

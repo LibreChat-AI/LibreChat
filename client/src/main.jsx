@@ -1,5 +1,6 @@
 import './polyfills/storage';
 import './polyfills/regeneratorRuntime';
+import './embed/boot';
 import { createRoot } from 'react-dom/client';
 import { initializeI18n } from './locales/i18n';
 import App from './App';
