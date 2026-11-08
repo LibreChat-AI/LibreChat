@@ -302,6 +302,51 @@ export function createClientToolRunStepHandler({
 }
 
 /**
+ * The {@link createClientToolRunStepHandler} companion for streamed deltas.
+ *
+ * Anthropic-style streaming opens each tool call with an args-less id/name
+ * chunk: the SDK dispatches the `tool_calls` run step once, for the first
+ * chunk, so only the first call is ever announced through `on_run_step`. Later
+ * calls of the batch arrive exclusively as `on_run_step_delta` chunks that do
+ * carry `id` and `name`. Without marking them here, `toolsCondition` never
+ * sees every call as invoked and the batch enters the tool node instead of
+ * handing off.
+ */
+export function createClientToolRunStepDeltaHandler({
+  delegate,
+  clientToolNames,
+}: {
+  delegate: RunStepHandler;
+  clientToolNames: Set<string>;
+}): RunStepHandler {
+  if (clientToolNames.size === 0) {
+    return delegate;
+  }
+  return {
+    handle: (event, data, metadata, graph) => {
+      delegate.handle(event, data, metadata, graph);
+      if (graph == null) {
+        return;
+      }
+      const deltaData = data as {
+        delta?: { tool_calls?: Array<{ id?: string; name?: string }> };
+      };
+      const invoked = graph.invokedToolIds ?? new Set<string>();
+      for (const toolCall of deltaData?.delta?.tool_calls ?? []) {
+        if (
+          toolCall?.id != null &&
+          toolCall.id !== '' &&
+          clientToolNames.has(toolCall.name ?? '')
+        ) {
+          invoked.add(toolCall.id);
+        }
+      }
+      graph.invokedToolIds = invoked;
+    },
+  };
+}
+
+/**
  * What the model is told when it calls a client tool in a batch that also holds
  * a server tool.
  *
@@ -419,6 +464,7 @@ export interface ClientToolHandoff {
    */
   clientToolNames: ReadonlySet<string>;
   wrapRunStep: (delegate: RunStepHandler) => RunStepHandler;
+  wrapRunStepDelta: (delegate: RunStepHandler) => RunStepHandler;
   wrapToolExecute: (
     delegate: ToolExecuteHandler,
     onDeferred?: (callId: string, output: string) => void,
@@ -457,6 +503,7 @@ export function createClientToolHandoff({
       appliedTools: [],
       clientToolNames: new Set<string>(),
       wrapRunStep: identity,
+      wrapRunStepDelta: identity,
       wrapToolExecute: identity,
     };
   }
@@ -475,6 +522,7 @@ export function createClientToolHandoff({
       appliedTools: [],
       clientToolNames: new Set<string>(),
       wrapRunStep: identity,
+      wrapRunStepDelta: identity,
       wrapToolExecute: identity,
       error:
         `function tool name is already provided by this agent: ${shadowed.join(', ')}; ` +
@@ -489,6 +537,8 @@ export function createClientToolHandoff({
       .map(({ strict: _strict, ...applied }) => applied),
     clientToolNames: names,
     wrapRunStep: (delegate) => createClientToolRunStepHandler({ delegate, clientToolNames: names }),
+    wrapRunStepDelta: (delegate) =>
+      createClientToolRunStepDeltaHandler({ delegate, clientToolNames: names }),
     wrapToolExecute: (delegate, onDeferred) =>
       createClientToolExecuteHandler({ delegate, clientToolNames: names, responseId, onDeferred }),
   };
