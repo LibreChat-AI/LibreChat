@@ -412,6 +412,11 @@ const bareNameOf = (filename: string | undefined): string => {
   return bareNameFromBasename(basenameOf(filename));
 };
 
+export const isHtmlFilename = (filename: string | undefined): boolean => {
+  const ext = extensionOf(filename);
+  return ext === 'html' || ext === 'htm';
+};
+
 /** Strip charset / boundary parameters so we can do exact MIME comparisons. */
 const baseMime = (mime: string | undefined): string => {
   if (!mime) {
@@ -892,6 +897,58 @@ export function wrapAsFencedCodeBlock(source: string, lang: string): string {
    * gap that marked would render as an extra <br>. */
   const body = source.endsWith('\n') ? source.slice(0, -1) : source;
   return fence + lang + '\n' + body + '\n' + fence;
+}
+
+/**
+ * Scopes inline classic JavaScript in HTML artifacts so that top-level
+ * `let`, `const`, and `class` declarations do not collide with Sandpack's
+ * injected console hook globals (`const scope`, `var t`, and minified single-letter
+ * identifiers such as `k`, `S`, `e`, etc.) in the static template preview frame (#17860).
+ *
+ * External scripts (`src="..."`) and non-classic scripts (`type="module"`,
+ * `type="importmap"`, `type="application/json"`, etc.) are left untouched.
+ *
+ * Scoping the inline script body inside a block `{ ... }` isolates lexical declarations
+ * while preserving browser Annex B function hoisting to global/window scope
+ * (needed for inline event handlers like `<button onclick="func()">`) and `var` hoisting.
+ */
+export function scopeHtmlScripts(html: string): string {
+  if (!html || typeof html !== 'string') {
+    return html;
+  }
+
+  return html.replace(
+    /<script\b([^>]*)>([\s\S]*?)<\/script>/gi,
+    (match, attrs: string, body: string) => {
+      /* External scripts fetch from a URL and have no inline body to isolate. */
+      if (/\bsrc\s*=/i.test(attrs)) {
+        return match;
+      }
+
+      /* Non-classic scripts (modules, importmaps, templates, data JSON) must not be wrapped. */
+      const typeMatch = attrs.match(/\btype\s*=\s*(?:'([^']*)'|"([^"]*)"|([^\s>]+))/i);
+      if (typeMatch) {
+        const type = (typeMatch[1] ?? typeMatch[2] ?? typeMatch[3] ?? '').trim().toLowerCase();
+        const classicTypes = [
+          'text/javascript',
+          'application/javascript',
+          'text/ecmascript',
+          'application/ecmascript',
+          'javascript',
+        ];
+        if (!classicTypes.includes(type)) {
+          return match;
+        }
+      }
+
+      const trimmed = body.trim();
+      if (!trimmed) {
+        return match;
+      }
+
+      return `<script${attrs}>{\n${body}\n}</script>`;
+    },
+  );
 }
 
 const EXTENSION_TO_TOOL_ARTIFACT_TYPE: Record<string, ToolArtifactType> = {

@@ -13,6 +13,8 @@ import {
   isCodeOnlyArtifact,
   isPreviewOnlyArtifact,
   isSvgArtifactType,
+  isHtmlFilename,
+  scopeHtmlScripts,
   languageForFilename,
   normalizeArtifactType,
   TOOL_ARTIFACT_TYPES,
@@ -1361,5 +1363,96 @@ describe('normalizeArtifactType', () => {
     expect(artifactRowKind({ type: 'react' }).label).toEqual({
       key: 'com_ui_artifact_format_react',
     });
+  });
+});
+
+describe('HTML artifact script scoping for Sandpack static template (#17860)', () => {
+  it('wraps top-level declarations in a block to avoid collisions with Sandpack console hook globals', () => {
+    const html = `<!DOCTYPE html>
+<html>
+<head><title>Repro</title></head>
+<body>
+  <script>
+    let k = 1;
+    const S = 2;
+    class e {}
+    console.log(k, S, e);
+  </script>
+</body>
+</html>`;
+    const scoped = scopeHtmlScripts(html);
+    expect(scoped).toContain('<script>{\n');
+    expect(scoped).toContain('let k = 1;');
+    expect(scoped).toContain('const S = 2;');
+    expect(scoped).toContain('class e {}');
+    expect(scoped).toContain('\n}</script>');
+  });
+
+  it('leaves external scripts with src attributes untouched', () => {
+    const html = '<script src="https://cdn.tailwindcss.com/3.4.17"></script>';
+    expect(scopeHtmlScripts(html)).toBe(html);
+  });
+
+  it('leaves module scripts untouched to preserve ES module scoping and top-level imports', () => {
+    const html = `<script type="module">
+import { h } from 'https://esm.sh/preact';
+let k = 1;
+</script>`;
+    expect(scopeHtmlScripts(html)).toBe(html);
+  });
+
+  it('leaves non-executable script tags (e.g. application/json, importmap) untouched', () => {
+    const jsonScript = '<script type="application/json">{"k": 1, "S": 2}</script>';
+    const importMap = '<script type="importmap">{"imports": {}}</script>';
+    expect(scopeHtmlScripts(jsonScript)).toBe(jsonScript);
+    expect(scopeHtmlScripts(importMap)).toBe(importMap);
+  });
+
+  it('scopes scripts with explicit classic javascript type attributes', () => {
+    const html = '<script type="text/javascript">\nlet k = 1;\n</script>';
+    const scoped = scopeHtmlScripts(html);
+    expect(scoped).toBe('<script type="text/javascript">{\n\nlet k = 1;\n\n}</script>');
+  });
+
+  it('leaves empty or whitespace-only scripts untouched', () => {
+    const html = '<script></script><script>   \n  </script>';
+    expect(scopeHtmlScripts(html)).toBe(html);
+  });
+
+  it('scopes multiple inline scripts independently in the same document', () => {
+    const html = `<div>Header</div>
+<script>
+let k = 1;
+</script>
+<div>Body</div>
+<script>
+const S = 2;
+</script>`;
+    const scoped = scopeHtmlScripts(html);
+    expect(scoped).toContain('<script>{\n\nlet k = 1;\n\n}</script>');
+    expect(scoped).toContain('<script>{\n\nconst S = 2;\n\n}</script>');
+  });
+
+  it('preserves function declarations so browser Annex B hoists them for inline event handlers', () => {
+    const html = `<button onclick="handleClick()">Click</button>
+<script>
+let count = 0;
+function handleClick() {
+  count++;
+}
+</script>`;
+    const scoped = scopeHtmlScripts(html);
+    expect(scoped).toContain('<script>{\n');
+    expect(scoped).toContain('function handleClick()');
+    expect(scoped).toContain('\n}</script>');
+  });
+
+  it('recognizes html and htm extensions via isHtmlFilename', () => {
+    expect(isHtmlFilename('index.html')).toBe(true);
+    expect(isHtmlFilename('index.HTM')).toBe(true);
+    expect(isHtmlFilename('/public/page.html')).toBe(true);
+    expect(isHtmlFilename('App.tsx')).toBe(false);
+    expect(isHtmlFilename('index.svg')).toBe(false);
+    expect(isHtmlFilename(undefined)).toBe(false);
   });
 });
