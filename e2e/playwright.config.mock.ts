@@ -218,6 +218,9 @@ const baseEnv = {
   ASSISTANTS_API_KEY: 'e2e-mock-assistants-key',
   ASSISTANTS_BASE_URL: `http://127.0.0.1:${ASSISTANTS_PORT}/v1`,
   ASSISTANTS_MODELS: 'gpt-4o-mini',
+  /** Enables the native Google provider for agents. The run hook replaces the model, so the
+   *  key never reaches Google; it only lets attachments take the Google encoding path. */
+  GOOGLE_KEY: 'e2e-mock-google-key',
   ...(process.env.E2E_CODE_BRIDGE_ADMIN_TOKEN
     ? { E2E_CODE_BRIDGE_ADMIN_TOKEN: process.env.E2E_CODE_BRIDGE_ADMIN_TOKEN }
     : {}),

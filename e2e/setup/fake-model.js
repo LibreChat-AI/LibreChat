@@ -34,6 +34,7 @@ const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
 const REPORT_LLM_CONFIG_MARKER = 'E2E_REPORT_LLM_CONFIG';
+const REPORT_CONTEXT_TOKENS_MARKER = 'E2E_REPORT_CONTEXT_TOKENS';
 const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
 const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
@@ -532,6 +533,25 @@ function llmConfigReportResponses(graph) {
     maxContextTokens: agent?.maxContextTokens ?? null,
   };
   return { responses: [`E2E llm config: ${JSON.stringify(report)}`] };
+}
+
+/**
+ * Reports the precomputed per-message token counts the primary agent prunes against, read
+ * before the fake model runs: the latest message's count and the total for the history.
+ */
+function contextTokensReportResponses(graph) {
+  const agent = graph?.agentContexts?.values().next().value;
+  const tokenMap = agent?.baseIndexTokenCountMap ?? agent?.indexTokenCountMap ?? {};
+  const indices = Object.keys(tokenMap)
+    .map(Number)
+    .filter((index) => Number.isInteger(index));
+  const latestIndex = indices.length > 0 ? Math.max(...indices) : null;
+  const report = {
+    provider: agent?.provider ?? null,
+    latest: latestIndex == null ? null : (tokenMap[latestIndex] ?? null),
+    total: indices.reduce((sum, index) => sum + (tokenMap[index] ?? 0), 0),
+  };
+  return { responses: [`E2E context tokens: ${JSON.stringify(report)}`] };
 }
 
 function collectSystemPromptText(messages) {
@@ -3785,6 +3805,10 @@ function resolveResponses({ graph, messages, text, toolNames }) {
 
   if (text.includes(REPORT_LLM_CONFIG_MARKER)) {
     return llmConfigReportResponses(graph);
+  }
+
+  if (text.includes(REPORT_CONTEXT_TOKENS_MARKER)) {
+    return contextTokensReportResponses(graph);
   }
 
   if (text.includes(ASSERT_AGENT_CONTEXT_MARKER)) {
