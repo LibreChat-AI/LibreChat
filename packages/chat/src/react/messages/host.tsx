@@ -232,6 +232,9 @@ export interface MessagesHost {
   renderMessageIcon: (props: MessageIconProps) => ReactNode;
   /** Whether rows drop the reading-width cap and fill the pane. */
   useMaximizeChatSpace: () => boolean;
+  /** Whether a response by the agent the header's model selector shows drops its avatar and name
+   *  (`interface.messageAuthor: whenDifferent`). */
+  useHideSelectedAuthor: () => boolean;
   /** The agents the viewer can see by id, or `undefined` until they load. */
   useAgentsMap: () => Record<string, Agent | undefined> | undefined;
   /** Renders a row's text body when it has no content parts. */
@@ -294,6 +297,7 @@ const fallbackHost: MessagesHost = {
   useMessageFeedback: () => noFeedback,
   renderMessageIcon: () => null,
   useMaximizeChatSpace: () => false,
+  useHideSelectedAuthor: () => false,
   useAgentsMap: () => undefined,
   renderMessageBody: () => null,
   renderWakeup: () => null,

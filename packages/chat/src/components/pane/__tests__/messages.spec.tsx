@@ -114,6 +114,7 @@ const host: MessagesHost = {
   }),
   renderMessageIcon: () => null,
   useMaximizeChatSpace: () => false,
+  useHideSelectedAuthor: () => false,
   useAgentsMap: () => undefined,
   renderMessageBody: ({ message }) => <div data-testid="row">{message.messageId}</div>,
   renderWakeup: () => null,
