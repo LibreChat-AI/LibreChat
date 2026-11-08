@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
 import { QueryClient, focusManager, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
@@ -760,6 +760,36 @@ describe('usePrefetchConversationMessages', () => {
     });
     expect(mockGet).toHaveBeenCalledTimes(1);
     expect(mockGet).toHaveBeenCalledWith(conversationId, { toolPreviews: true });
+  });
+
+  it('keeps the prefetch for the view when another observer of the conversation mounts inside it', async () => {
+    const conversationId = 'prefetch-nested';
+    const queryClient = newClient();
+    const serverMessages = [message({ conversationId, messageId: 'm1' })];
+    mockGet.mockResolvedValue(serverMessages);
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() =>
+      expect(queryClient.getQueryState([QueryKeys.messages, conversationId])?.status).toBe(
+        'success',
+      ),
+    );
+
+    function Child() {
+      useGetMessagesByConvoId(conversationId, { enabled: true });
+      return null;
+    }
+    function View() {
+      useView(conversationId);
+      return createElement(Child);
+    }
+    const Wrapper = wrapper;
+    render(createElement(Wrapper, null, createElement(View)));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockGet).toHaveBeenCalledTimes(1);
   });
 
   it('joins the in-flight prefetch when the view mounts before it settles', async () => {

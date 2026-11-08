@@ -305,10 +305,15 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
     },
   );
 
-  /** Runs after the query subscribed, so the mount above already decided on the prefetch. */
+  /** Only the observer that consults the prefetch clears its mark, and only after it subscribed:
+   *  other observers of this key never refetch on mount, and mount as children of the view, so
+   *  their effects run first and must not spend the mark the view still needs. */
+  const usesPrefetch = config?.refetchOnMount === refetchMessagesOnMount;
   useEffect(() => {
-    prefetched.delete(id);
-  }, [id]);
+    if (usesPrefetch) {
+      prefetched.delete(id);
+    }
+  }, [id, usesPrefetch]);
 
   return query;
 };
