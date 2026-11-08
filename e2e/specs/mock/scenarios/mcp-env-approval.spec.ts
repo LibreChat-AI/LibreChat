@@ -60,9 +60,10 @@ async function approveRemembered(page: Page, notice: RegExp, tag: string): Promi
   for (const approve of await panel.getByRole('button', { name: 'Approve', exact: true }).all())
     await approve.click();
   await panel.getByRole('button', { name: 'Continue', exact: true }).click();
-  await expect(
-    messagesView(page).getByText(`E2E activity reply done ${tag}`, { exact: true }),
-  ).toBeVisible({ timeout: 20000 });
+  /** A resumed turn ends with the fake model's resume reply, not the unprompted one. */
+  await expect(messagesView(page).getByText('E2E mock reply: pong', { exact: true })).toBeVisible({
+    timeout: 20000,
+  });
   await expect(panel).toHaveCount(0);
 }
 
