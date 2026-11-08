@@ -854,11 +854,15 @@ describe('usePrefetchConversationMessages', () => {
     expect(mockGet).toHaveBeenCalledTimes(1);
   });
 
-  it('retries a transient prefetch failure the way the view would have', async () => {
-    const conversationId = 'prefetch-transient';
+  it.each([
+    ['a network failure', new Error('offline')],
+    ['a rate limit', Object.assign(new Error('Too many requests'), { status: 429 })],
+    ['a request timeout', Object.assign(new Error('Request timeout'), { status: 408 })],
+  ])('retries %s during the prefetch the way the view would have', async (_label, failure) => {
+    const conversationId = `prefetch-transient-${(failure as { status?: number }).status ?? 'network'}`;
     const queryClient = newClient();
     const serverMessages = [message({ conversationId, messageId: 'm1' })];
-    mockGet.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(serverMessages);
+    mockGet.mockRejectedValueOnce(failure).mockResolvedValueOnce(serverMessages);
     const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
 
     renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });

@@ -188,6 +188,9 @@ const PREFETCH_FRESH_MS = 10_000;
 /** React Query's default retry count, which the view's own load used before the prefetch. */
 const PREFETCH_RETRIES = 3;
 
+/** Request timeout and rate limit: 4xx answers that a later attempt can succeed past. */
+const TRANSIENT_CLIENT_STATUSES = new Set([408, 429]);
+
 /** Conversations whose messages the route prefetched and no view has mounted on yet. */
 const prefetched = new Set<string>();
 
@@ -366,12 +369,14 @@ export function usePrefetchConversationMessages(conversationId: string, enabled:
 
 /**
  * A prefetch has no observer, so leaving the route cannot cancel its retries. It retries the way
- * the view's own load did (React Query's default three), except when the server answered: a 4xx
- * such as a deleted conversation will answer the same again.
+ * the view's own load did (React Query's default three), except on a 4xx the server will answer
+ * the same way again, such as a deleted conversation. A timeout or rate limit is still retried.
  */
 function retryPrefetch(failureCount: number, error: unknown): boolean {
   const status = getResponseStatus(error);
-  return failureCount < PREFETCH_RETRIES && !(status != null && status >= 400 && status < 500);
+  const permanent =
+    status != null && status >= 400 && status < 500 && !TRANSIENT_CLIENT_STATUSES.has(status);
+  return failureCount < PREFETCH_RETRIES && !permanent;
 }
 
 /**
