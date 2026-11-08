@@ -456,6 +456,20 @@ describe('createClientToolRunStepDeltaHandler', () => {
     expect([...graph.invokedToolIds!]).toEqual(['call_a']);
   });
 
+  it('assembles fragmented names before matching', () => {
+    const delegate: RunStepHandler = { handle: () => undefined };
+    const handler = createClientToolRunStepDeltaHandler({
+      delegate,
+      clientToolNames: new Set(['submit_sql']),
+    });
+    const graph: StandardGraph = {};
+
+    handler.handle('on_run_step_delta', delta([{ id: 'call_b', name: 'submit' }]), metadata, graph);
+    expect(graph.invokedToolIds ?? new Set()).toEqual(new Set());
+    handler.handle('on_run_step_delta', delta([{ id: 'call_b', name: '_sql' }]), metadata, graph);
+    expect([...graph.invokedToolIds!]).toEqual(['call_b']);
+  });
+
   it('creates the invoked set when the graph has none', () => {
     const delegate: RunStepHandler = { handle: () => undefined };
     const handler = createClientToolRunStepDeltaHandler({
