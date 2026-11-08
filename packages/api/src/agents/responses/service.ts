@@ -869,8 +869,28 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
           for (const tc of delta.tool_calls) {
             // Resolved before the empty-args check so an id-bearing opening chunk is recorded.
             const callId = chunkResolver.resolve(deltaData?.id ?? '', tc);
+            if (!callId) {
+              continue;
+            }
+            // Providers that open each tool call with an args-less id/name chunk
+            // (Anthropic-style streaming) dispatch the `tool_calls` run step once,
+            // for the first chunk only, so later calls of a batch never reach the
+            // on_run_step announcement. Announce them here on their first delta.
+            if (
+              tc.id != null &&
+              tc.id !== '' &&
+              tc.name != null &&
+              !state.activeToolCalls.has(callId)
+            ) {
+              closeOpenStreams();
+              state.activeToolCalls.add(callId);
+              if (config.clientToolNames?.has(tc.name) === true) {
+                state.clientToolCalls.add(callId);
+              }
+              emitFunctionCallItemAdded(config, callId, tc.name);
+            }
             const args = typeof tc.args === 'string' ? tc.args : '';
-            if (!args || !callId) {
+            if (!args) {
               continue;
             }
 
@@ -1236,8 +1256,25 @@ export function createAggregatorEventHandlers(aggregator: ResponseAggregator): R
           for (const tc of delta.tool_calls) {
             // Resolved before the empty-args check so an id-bearing opening chunk is recorded.
             const callId = chunkResolver.resolve(deltaData?.id ?? '', tc);
+            if (!callId) {
+              continue;
+            }
+            // Providers that open each tool call with an args-less id/name chunk
+            // (Anthropic-style streaming) dispatch the `tool_calls` run step once,
+            // for the first chunk only, so later calls of a batch never reach the
+            // on_run_step seeding above. Seed them here on their first delta, or
+            // their streamed arguments would have nowhere to accumulate.
+            if (
+              tc.id != null &&
+              tc.id !== '' &&
+              tc.name != null &&
+              !activeToolCalls.has(callId)
+            ) {
+              activeToolCalls.add(callId);
+              aggregator.toolCalls.set(callId, { id: callId, name: tc.name, arguments: '' });
+            }
             const args = typeof tc.args === 'string' ? tc.args : '';
-            if (!args || !callId) {
+            if (!args) {
               continue;
             }
 
