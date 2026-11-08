@@ -2668,6 +2668,30 @@ describe('processDeleteRequest', () => {
     }));
   });
 
+  it('deletes files when the request has no body (agent DELETE cascade)', async () => {
+    const deleteFile = jest.fn().mockResolvedValue(undefined);
+    getStrategyFunctions.mockReturnValue({ deleteFile });
+    db.deleteFiles.mockResolvedValue({ deletedCount: 1 });
+
+    const result = await processDeleteRequest({
+      req: {
+        config: {},
+        user: { id: 'user-123', tenantId: 'tenant-a' },
+      },
+      files: [
+        {
+          file_id: 'agent-file',
+          filepath: '/images/user-123/agent.png',
+          source: FileSources.local,
+        },
+      ],
+    });
+
+    expect(deleteFile).toHaveBeenCalled();
+    expect(db.deleteFiles).toHaveBeenCalledWith(['agent-file']);
+    expect(result).toEqual({ deletedFileIds: ['agent-file'], failedFileIds: [] });
+  });
+
   it('removes metadata when backing storage is already missing', async () => {
     const missingError = Object.assign(new Error('no such file'), { code: 'ENOENT' });
     const deleteFile = jest.fn().mockRejectedValue(missingError);
