@@ -264,20 +264,32 @@ describe('Tokenizer', () => {
       );
     });
 
-    it('keeps digits linear, since the encoder splits them into groups of three', () => {
+    it('keeps o200k digits linear, since that encoder splits them into groups of three', () => {
       const digits = '1234567890'.repeat(1000);
       expect(getExactCountWork(digits)).toBe(digits.length);
+      expect(getExactCountWork(digits, { encoding: 'o200k_base' })).toBe(digits.length);
+    });
+
+    it('charges a Claude digit run like any other run, since that encoder keeps it whole', () => {
+      /** 50,000 unbroken digits take ~1.2 s to merge with the Claude encoding. */
+      const digits = '1234567890'.repeat(1000);
+      expect(getExactCountWork(digits, { encoding: 'claude' })).toBe(
+        Math.ceil((digits.length * digits.length) / 32),
+      );
+      /** Separated numbers stay ordinary text in either encoding. */
+      const numbers = '1024, 2048, 4096.';
+      expect(getExactCountWork(numbers, { encoding: 'claude' })).toBe(numbers.length);
     });
 
     it('stops scanning once the work passes the limit', () => {
       /** Rejecting huge input must cost no more than the budget it is checked against. */
       const huge = ' '.repeat(10_000_000);
       const start = performance.now();
-      const work = getExactCountWork(huge, 1_000);
+      const work = getExactCountWork(huge, { limit: 1_000 });
       expect(work).toBeGreaterThan(1_000);
       expect(work).toBeLessThan(2_000);
       expect(performance.now() - start).toBeLessThan(50);
-      expect(getExactCountWork('ordinary words', 1_000)).toBe('ordinary words'.length);
+      expect(getExactCountWork('ordinary words', { limit: 1_000 })).toBe('ordinary words'.length);
     });
 
     it('costs ordinary non-ASCII text its UTF-8 length', () => {

@@ -46,15 +46,24 @@ function runWork(length: number): number {
  * as 16,000 ASCII letters. Ordinary text therefore costs its UTF-8 length here (its
  * length, for ASCII), and each long run of whitespace, letters or punctuation
  * costs the square of its byte length, so the budget keeps meaning time. Digits
- * split into groups of three and never form a long piece. Letter runs that change
- * case may split into several pieces, so the figure can overstate the work but
- * does not understate it. The figure is never below `text.length`.
+ * depend on the encoding: o200k splits them into groups of three, so they never
+ * form a long piece, while the Claude encoding keeps a whole digit run as one
+ * piece (` ?\p{N}+`), so there it is charged like any other run. Letter runs that
+ * change case may split into several pieces, so the figure can overstate the work
+ * but does not understate it. The figure is never below `text.length`.
  *
  * With `limit`, the scan stops as soon as the work exceeds it and returns the
  * figure reached so far (still above `limit`), so rejecting huge input costs no
  * more than the budget it is checked against.
  */
-export function getExactCountWork(text: string, limit = Number.POSITIVE_INFINITY): number {
+export function getExactCountWork(
+  text: string,
+  {
+    limit = Number.POSITIVE_INFINITY,
+    encoding = 'o200k_base',
+  }: { limit?: number; encoding?: EncodingName } = {},
+): number {
+  const digitsSplit = encoding === 'o200k_base';
   let work = 0;
   let run = 0;
   let previous = 0;
@@ -77,7 +86,7 @@ export function getExactCountWork(text: string, limit = Number.POSITIVE_INFINITY
       }
       runClass = classifyRunCharacter(String.fromCodePoint(point));
     }
-    if (runClass === previous && runClass !== RUN_NUMBER) {
+    if (runClass === previous && (runClass !== RUN_NUMBER || !digitsSplit)) {
       run += width;
       continue;
     }

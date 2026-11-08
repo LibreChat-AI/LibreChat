@@ -504,7 +504,10 @@ export function countRetainedToolTokens({
     if (output.length > remaining) {
       return undefined;
     }
-    workCounted += getExactCountWork(output, remaining);
+    workCounted += getExactCountWork(output, {
+      limit: remaining,
+      encoding: isClaude ? 'claude' : 'o200k_base',
+    });
     if (workCounted > maxCountChars) {
       return undefined;
     }

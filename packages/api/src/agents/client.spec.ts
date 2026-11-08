@@ -383,6 +383,28 @@ describe('countRetainedToolTokens', () => {
     expect(counted).not.toHaveBeenCalled();
   });
 
+  it('charges an unbroken digit run quadratically for the Claude encoding only', () => {
+    /** o200k splits digits into threes; the Claude encoding merges the whole run. */
+    const output = '7'.repeat(200_000);
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+        isClaude: true,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact,
+      }),
+    ).toBe(countExact(output));
+  });
+
   it('refuses output longer than the remaining budget without scanning it', () => {
     const counted = jest.fn(countExact);
     expect(
