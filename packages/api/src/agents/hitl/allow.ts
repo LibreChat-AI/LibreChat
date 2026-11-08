@@ -4,7 +4,7 @@ import type { PluginHookSource } from '~/agents/hooks/source';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { ToolApprovalHookContext } from './hooks';
 import { buildToolApprovalHooks, resolvedToolApprovalHooksCanMatch } from './hooks';
-import { healToolApprovalPolicy, isHITLEnabled } from './policy';
+import { healToolApprovalPolicy, isHITLEnabled, globToRegex } from './policy';
 import { isStatefulCodeEnvironmentToolName } from './byom';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
@@ -38,10 +38,7 @@ function matchesAny(patterns: readonly string[] | undefined, name: string): bool
   if (patterns == null || patterns.length === 0) {
     return false;
   }
-  return patterns.some((pattern) => {
-    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp('^' + escaped.replace(/\*/g, '.*') + '$').test(name);
-  });
+  return patterns.some((pattern) => globToRegex(pattern).test(name));
 }
 
 /** Whether the admin enabled remembered allows and the current mode can honor them. */

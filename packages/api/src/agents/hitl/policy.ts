@@ -1,8 +1,10 @@
 import { randomUUID, createHash } from 'crypto';
 import {
+  Constants,
   openAIBaseSchema,
   googleBaseSchema,
   anthropicBaseSchema,
+  normalizeServerName,
   reasoningOverrideSchema,
 } from 'librechat-data-provider';
 import type { Agents, TReasoningOverride, TToolApprovalPolicy } from 'librechat-data-provider';
@@ -154,9 +156,35 @@ export function isToolApprovalPauseCapable(
  * defaults apply). The `enabled` field is LibreChat-only and stripped here —
  * it's consumed separately via {@link isHITLEnabled} to gate the SDK opt-out.
  */
+const MCP_PATTERN_PREFIX = 'mcp:';
+
+/**
+ * Rewrites the documented `mcp:<server>:<tool>` form into the runtime tool key
+ * `<tool>_mcp_<server>` the SDK and every local matcher test against, so
+ * `mcp:server:*` covers every tool of that server. Other patterns pass through.
+ */
+export function toToolApprovalPattern(pattern: string): string {
+  if (!pattern.startsWith(MCP_PATTERN_PREFIX)) {
+    return pattern;
+  }
+  const rest = pattern.slice(MCP_PATTERN_PREFIX.length);
+  const separator = rest.indexOf(':');
+  if (separator <= 0 || separator === rest.length - 1) {
+    return pattern;
+  }
+  const server = rest.slice(0, separator);
+  const tool = rest.slice(separator + 1);
+  const serverKey = server.includes('*') ? server : normalizeServerName(server);
+  return `${tool}${Constants.mcp_delimiter}${serverKey}`;
+}
+
+function toToolApprovalPatterns(patterns: string[] | undefined): string[] | undefined {
+  return patterns?.map(toToolApprovalPattern);
+}
+
 /** Anchored-glob matcher mirroring the SDK's `createToolPolicyHook` semantics exactly. */
-function globToRegex(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+export function globToRegex(pattern: string): RegExp {
+  const escaped = toToolApprovalPattern(pattern).replace(/[.+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp('^' + escaped.replace(/\*/g, '.*') + '$');
 }
 
@@ -237,13 +265,13 @@ export function mapToolApprovalPolicy(
     config.mode = policy.mode;
   }
   if (policy.allow && policy.allow.length > 0) {
-    config.allow = policy.allow;
+    config.allow = toToolApprovalPatterns(policy.allow);
   }
   if (policy.deny && policy.deny.length > 0) {
-    config.deny = policy.deny;
+    config.deny = toToolApprovalPatterns(policy.deny);
   }
   if (policy.ask && policy.ask.length > 0) {
-    config.ask = policy.ask;
+    config.ask = toToolApprovalPatterns(policy.ask);
   }
   if (policy.reason) {
     config.reason = policy.reason;

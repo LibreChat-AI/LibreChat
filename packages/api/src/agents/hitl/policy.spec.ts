@@ -178,10 +178,60 @@ describe('mapToolApprovalPolicy', () => {
     };
     expect(mapToolApprovalPolicy(policy)).toEqual({
       mode: 'dontAsk',
-      allow: ['read_*', 'mcp:github:*'],
+      allow: ['read_*', '*_mcp_github'],
       deny: ['delete_*'],
       ask: ['execute_*'],
       reason: 'Tool {tool} requires review',
+    });
+  });
+
+  describe('mcp:<server>:<tool> patterns', () => {
+    const SERVER = 'helpers-scripts-sandbox';
+    const LIST_DIRS = `list_allowed_directories_mcp_${SERVER}`;
+    const policy: TToolApprovalPolicy = {
+      enabled: true,
+      mode: 'dontAsk',
+      deny: [`mcp:${SERVER}:delete_file`],
+      ask: [`mcp:${SERVER}:*`, 'mcp:wpr-sandbox:*'],
+    };
+
+    const decide = async (toolName: string) => {
+      const hook = createToolPolicyHook(mapToolApprovalPolicy(policy) ?? {});
+      const result = await hook(
+        {
+          hook_event_name: 'PreToolUse',
+          runId: 'run',
+          toolName,
+          toolInput: {},
+          toolUseId: 'call',
+        } as Parameters<typeof hook>[0],
+        new AbortController().signal,
+      );
+      return result.decision;
+    };
+
+    test('a server-wide ask asks for every tool of that server under dontAsk', async () => {
+      expect(await decide(LIST_DIRS)).toBe('ask');
+      expect(await decide(`read_file_mcp_${SERVER}`)).toBe('ask');
+      expect(isToolBlockedByApprovalPolicy(policy, LIST_DIRS)).toBe(false);
+      expect(isToolApprovalPauseCapable(policy, false, [LIST_DIRS])).toBe(true);
+    });
+
+    test('deny still wins over a server-wide ask', async () => {
+      expect(await decide(`delete_file_mcp_${SERVER}`)).toBe('deny');
+      expect(isToolDeniedByApprovalPolicy(policy, `delete_file_mcp_${SERVER}`)).toBe(true);
+    });
+
+    test('does not reach other servers or non-MCP tools', async () => {
+      expect(await decide('list_allowed_directories_mcp_other')).toBe('deny');
+      expect(await decide('list_allowed_directories')).toBe('deny');
+      expect(isToolBlockedByApprovalPolicy(policy, 'list_allowed_directories')).toBe(true);
+    });
+
+    test('matches the normalized server name and leaves other patterns alone', () => {
+      expect(
+        mapToolApprovalPolicy({ ask: ['mcp:My Server:run', 'mcp:*:search', 'mcp:x', 'read_*'] }),
+      ).toEqual({ ask: ['run_mcp_My_Server', 'search_mcp_*', 'mcp:x', 'read_*'] });
     });
   });
 
