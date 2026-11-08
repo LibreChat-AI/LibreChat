@@ -24,6 +24,7 @@ import {
   clearMessagesCache,
 } from '~/utils';
 import {
+  usePrefetchConversationMessages,
   useGetConvoIdQuery,
   useGetStartupConfig,
   useGetEndpointsQuery,
@@ -66,6 +67,7 @@ export default function ChatRoute() {
   const projectIdParam = searchParams.get('projectId');
   const chatProjectId = isValidChatProjectId(projectIdParam) ? projectIdParam : null;
   useIdChangeEffect(conversationId);
+  usePrefetchConversationMessages(conversationId, isAuthenticated);
   const { hasSetConversation, conversation } = store.useCreateConversationAtom(index);
   const [routeState, setRouteState] = useState({
     conversationId,

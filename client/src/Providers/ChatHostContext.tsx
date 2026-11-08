@@ -4,7 +4,11 @@ import { hashQueryKey, useQueryClient } from '@tanstack/react-query';
 import type { ChatHost, ChatMessageCache, ChatMessagesQuery } from '@librechat/chat/react';
 import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueryClient, QueryCacheNotifyEvent } from '@tanstack/react-query';
-import { useAbortStreamMutation, useGetMessagesByConvoId } from '~/data-provider';
+import {
+  refetchMessagesOnMount,
+  useAbortStreamMutation,
+  useGetMessagesByConvoId,
+} from '~/data-provider';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useTurnServices from '~/hooks/Chat/services';
@@ -83,7 +87,8 @@ function useMessageCache(): ChatMessageCache {
 
 /** The conversation's messages query. Refetches stale caches on mount: navigation invalidates
  *  (not removes) messages, so a warm conversation renders instantly from cache and reconciles in
- *  the background instead of unmounting into a spinner. */
+ *  the background instead of unmounting into a spinner. A payload or failure `ChatRoute` just
+ *  prefetched counts as this mount's own load. */
 function useMessages(
   conversationId: string | undefined,
   { isStreaming }: { isStreaming: boolean },
@@ -96,7 +101,7 @@ function useMessages(
     conversationId ?? '',
     {
       enabled: !!conversationId && conversationId !== Constants.SEARCH,
-      refetchOnMount: true,
+      refetchOnMount: refetchMessagesOnMount,
     },
     { isStreaming },
   );

@@ -952,6 +952,29 @@ export function markServerFetchedReply(
   markReplyProof(queryClient, conversationId, lastResponseAt, 'server', messages);
 }
 
+/**
+ * Proves a history fetched before its conversation record was cached, as a URL load's prefetch
+ * is. Such a fetch had no reply stamp to capture, so the proof comes from the content instead:
+ * the history must hold the exact reply the record names. A reply newer than the fetch names a
+ * message the history lacks, so it stays unproven and the seen check loads it.
+ */
+export function proveFetchedReplyByIdentity(
+  queryClient: QueryClient,
+  conversationId: string,
+  messages: TMessage[],
+): boolean {
+  const convo = findConvoInAllQueries(queryClient, conversationId);
+  const { lastResponseAt, lastResponseMessageId } = convo ?? {};
+  if (!lastResponseAt || !lastResponseMessageId || convo?.lastResponseIsManual === true) {
+    return false;
+  }
+  if (!messages.some((message) => message.messageId === lastResponseMessageId)) {
+    return false;
+  }
+  markServerFetchedReply(queryClient, conversationId, lastResponseAt, messages);
+  return true;
+}
+
 function hasReplyProof(
   queryClient: QueryClient,
   conversationId: string,

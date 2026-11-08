@@ -7,6 +7,7 @@ import ChatRoute from '../ChatRoute';
 
 const mockSetConversation = jest.fn();
 const mockFetchConversation = jest.fn();
+const mockPrefetchMessages = jest.fn();
 const mockHasSetConversation = { current: true };
 let mockConversation: Partial<TConversation> = { conversationId: 'chat-a' };
 const mockConfig = {};
@@ -39,6 +40,8 @@ jest.mock('librechat-data-provider/react-query', () => ({
   useGetModelsQuery: () => ({ data: mockConfig }),
 }));
 jest.mock('~/data-provider', () => ({
+  usePrefetchConversationMessages: (id: string, enabled: boolean) =>
+    mockPrefetchMessages(id, enabled),
   useGetStartupConfig: () => ({ data: mockConfig }),
   useGetEndpointsQuery: () => ({ data: mockConfig }),
   useListAgentsQuery: () => ({}),
@@ -104,6 +107,7 @@ function setup(initialEntries = ['/c/chat-a'], initialIndex = initialEntries.len
 }
 
 beforeEach(() => {
+  mockPrefetchMessages.mockClear();
   mockConversation = { conversationId: 'chat-a' };
   mockHasSetConversation.current = true;
   mockAssistantListMap = {};
@@ -124,6 +128,13 @@ it('reconciles Back and Forward with each route, including new chat', async () =
     await router.navigate(1);
   });
   await waitFor(() => expect(screen.getByTestId('composer')).toHaveTextContent('chat-b'));
+});
+
+it('starts loading the routed conversation messages before the conversation record resolves', async () => {
+  mockFetchConversation.mockImplementation(() => new Promise(() => {}));
+  setup(['/c/chat-b']);
+  await waitFor(() => expect(mockPrefetchMessages).toHaveBeenCalledWith('chat-b', true));
+  expect(screen.queryByTestId('composer')).not.toHaveTextContent('chat-b');
 });
 
 it('does not reset a new conversation when its server id arrives before the URL', async () => {
