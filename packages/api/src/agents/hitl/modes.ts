@@ -514,7 +514,7 @@ export function createAgentToolApprovalSession({
         throw new Error('The advertised MCP tool or connection changed. Retry the run.');
       }
       const baseline = policy
-        ? await createToolPolicyHook(mapToolApprovalPolicy(policy()) ?? {})(
+        ? await createToolPolicyHook(mapToolApprovalPolicy(policy(), tool.name) ?? {})(
             {
               hook_event_name: 'PreToolUse',
               runId: '',
