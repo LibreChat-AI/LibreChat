@@ -36,6 +36,8 @@ const {
   getSafeErrorMetadata,
   hashSecret,
   compareSecret,
+  getOpenIDAppAccessToken,
+  getOpenIDBearerAudiences,
 } = require('@librechat/api');
 const {
   findUser,
@@ -208,7 +210,10 @@ const getUnexpiredOpenIDSessionIdToken = (idToken) => {
 const getOpenIDAppAuthToken = (tokenset, sessionIdToken) =>
   (isExpiredOpenIDIdToken(tokenset?.id_token) ? undefined : tokenset?.id_token) ||
   getUnexpiredOpenIDSessionIdToken(sessionIdToken) ||
-  tokenset?.access_token;
+  getOpenIDAppAccessToken(
+    tokenset?.access_token,
+    getOpenIDBearerAudiences(process.env.OPENID_CLIENT_ID, process.env.OPENID_AUDIENCE),
+  );
 
 const clearOpenIDAuthTokens = (req, res, userId, tenantId) => {
   if (req.session?.openidTokens) {

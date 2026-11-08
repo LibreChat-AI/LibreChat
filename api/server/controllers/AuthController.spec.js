@@ -1249,6 +1249,72 @@ describe('refreshController – OpenID path', () => {
     expectOpenIDRefreshGrant();
   });
 
+  describe('access token fallback audience', () => {
+    const originalClientId = process.env.OPENID_CLIENT_ID;
+    const originalAudience = process.env.OPENID_AUDIENCE;
+
+    beforeEach(() => {
+      process.env.OPENID_CLIENT_ID = 'app-client-id';
+      process.env.OPENID_AUDIENCE = 'api://app-resource';
+    });
+
+    afterEach(() => {
+      for (const [key, value] of [
+        ['OPENID_CLIENT_ID', originalClientId],
+        ['OPENID_AUDIENCE', originalAudience],
+      ]) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    });
+
+    const armReuse = (accessToken) => {
+      setOpenIDReuseCookies();
+      req.session = {
+        openidTokens: {
+          accessToken,
+          idToken: makeSessionToken({ exp: Math.floor(Date.now() / 1000) - 60 }),
+          refreshToken: 'stored-refresh',
+          lastRefreshedAt: Date.now(),
+          appUserId: 'user-db-id',
+          openidSubject: baseClaims.sub,
+          tenantId: 'tenant-1',
+          openidIssuer: baseClaims.iss,
+        },
+      };
+    };
+
+    it('refreshes instead of reusing a time-valid access token for another resource', async () => {
+      const graphAccessToken = makeSessionToken({
+        aud: '00000003-0000-0000-c000-000000000000',
+        scp: 'User.Read',
+      });
+      armReuse(graphAccessToken);
+
+      await refreshController(req, res);
+
+      expectOpenIDRefreshGrant();
+      expect(res.send).not.toHaveBeenCalledWith(
+        expect.objectContaining({ token: graphAccessToken }),
+      );
+    });
+
+    it('reuses a time-valid access token minted for a configured audience', async () => {
+      const appAccessToken = makeSessionToken({ aud: 'api://app-resource', scp: 'access' });
+      armReuse(appAccessToken);
+      getUserById.mockResolvedValue({ ...defaultUser });
+
+      await refreshController(req, res);
+
+      expect(openIdClient.refreshTokenGrant).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.send).toHaveBeenCalledWith(expect.objectContaining({ token: appAccessToken }));
+    });
+  });
+
   it('falls through to full OpenID refresh when session tokens have no exp claim', async () => {
     const tokenWithoutExp = jwt.sign({ sub: baseClaims.sub }, idpSigningSecret);
     setOpenIDReuseCookies();
