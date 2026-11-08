@@ -2,14 +2,25 @@ import { expect, test } from '@playwright/test';
 import {
   uniqueLabel,
   startApproval,
+  APPROVAL_TOOL_ID,
   submitAndCapture,
   createApprovalAgent,
   clearApprovalInvocations,
   expectApprovalInvocationCount,
   expectCompletedApprovalToolOutput,
 } from '../approvals.helpers';
-import { cleanupAgent } from '../agents.helpers';
-import { NEW_CHAT_PATH, messagesView, sendMessage } from '../helpers';
+import { cleanupAgent, uniqueAgentName } from '../agents.helpers';
+import {
+  messagesView,
+  requestJson,
+  sendMessage,
+  getAccessToken,
+  MOCK_ENDPOINTS,
+  NEW_CHAT_PATH,
+} from '../helpers';
+
+const SERVER_TOOL = 'sys__server__sys_mcp_e2e-memory';
+const REMEMBER_TOOL = 'remember_fact_mcp_e2e-memory';
 
 /**
  * The e2e endpoint runs `mode: bypass` with one `ask` rule written in the documented
@@ -37,9 +48,10 @@ test.describe('MCP-scoped tool approval rules', () => {
       const card = await startApproval(page, label);
       await expectApprovalInvocationCount(value, 0);
 
+      await card.getByRole('button', { name: 'Approve', exact: true }).click();
       const { response } = await submitAndCapture(
         page,
-        card.getByRole('button', { name: 'Approve', exact: true }),
+        card.getByRole('button', { name: 'Submit', exact: true }),
       );
       expect((await response.json()).status).toBe('resuming');
       await expectCompletedApprovalToolOutput(
@@ -62,7 +74,21 @@ test.describe('MCP-scoped tool approval rules', () => {
     let agentId: string | undefined;
 
     try {
-      agentId = (await createApprovalAgent(page)).id;
+      await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+      const token = await getAccessToken(page);
+      agentId = (
+        await requestJson<{ id: string }>(page, {
+          path: '/api/agents',
+          method: 'POST',
+          token,
+          body: {
+            name: uniqueAgentName('E2E Scoped Approval Agent'),
+            provider: MOCK_ENDPOINTS[0].label,
+            model: MOCK_ENDPOINTS[0].model,
+            tools: [SERVER_TOOL, REMEMBER_TOOL, APPROVAL_TOOL_ID],
+          },
+        })
+      ).id;
       await page.goto(`${NEW_CHAT_PATH}?agent_id=${encodeURIComponent(agentId)}`, {
         timeout: 10000,
       });
