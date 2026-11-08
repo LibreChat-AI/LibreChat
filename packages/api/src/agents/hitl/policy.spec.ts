@@ -276,6 +276,19 @@ describe('mapToolApprovalPolicy', () => {
       expect(await decide('delete_file_mcp_prod1', target)).toBe('deny');
     });
 
+    test('a glob whose star matches nothing still reaches the trimmed edge', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'bypass',
+        deny: ['mcp:*(Production):delete_file'],
+      };
+      for (const name of ['delete_file_mcp_Production', 'delete_file_mcp_Acme__Production']) {
+        expect(await decide(name, target)).toBe('deny');
+        expect(isToolDeniedByApprovalPolicy(target, name)).toBe(true);
+      }
+      expect(await decide('delete_file_mcp_Staging', target)).toBe('allow');
+    });
+
     test('a tool name that starts with the delimiter still meets its server rule', async () => {
       const target: TToolApprovalPolicy = { enabled: true, mode: 'bypass', deny: ['mcp:github:*'] };
       expect(await decide('_mcp_read_mcp_github', target)).toBe('deny');

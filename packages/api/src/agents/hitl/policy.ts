@@ -152,11 +152,10 @@ const UNSUPPORTED_SERVER_CHARS = /[^a-zA-Z0-9_.-]/g;
 
 interface MCPToolApprovalPattern {
   tool: RegExp;
-  /** Every normalized form a matching server name can take; see `normalizeServerGlob`. */
-  servers: RegExp[];
+  server: RegExp;
   /** The one runtime key a glob-free entry names. */
   key?: string;
-  /** Trimming widened the server glob (`(*)` became `*`), so it may not grant. */
+  /** The server glob has optional edge underscores, so it may not grant. */
   widened?: boolean;
 }
 
@@ -167,20 +166,24 @@ function globToRegex(pattern: string): RegExp {
 }
 
 /**
- * Normalizes a globbed server pattern the way `normalizeServerName` normalizes a name. A
- * name of supported characters keeps its edge underscores; any other name has unsupported
- * characters replaced and its edges trimmed. A glob cannot tell which branch a matching
- * name took, so it yields both forms, and `widened` reports that they differ.
+ * Matches a globbed server segment against normalized server keys. `normalizeServerName`
+ * keeps a name of supported characters as is and otherwise replaces unsupported characters
+ * with `_` and trims the name's edges, so which underscores survive at an edge depends on
+ * the full name a `*` stands for. Underscores at the glob's edges or beside a `*` are
+ * therefore optional, a superset of every key a matching name can produce; `widened`
+ * reports that the glob has any, and such a glob may only tighten, never grant.
  */
-function normalizeServerGlob(server: string): { globs: string[]; widened: boolean } {
+function serverGlobToRegex(server: string): { regex: RegExp; widened: boolean } {
   const parts = server.split('*').map((part) => part.replace(UNSUPPORTED_SERVER_CHARS, '_'));
-  const replaced = parts.join('*');
-  parts[0] = parts[0].replace(/^_+/, '');
-  parts[parts.length - 1] = parts[parts.length - 1].replace(/_+$/, '');
-  const trimmed = parts.join('*');
-  return trimmed === replaced
-    ? { globs: [trimmed], widened: false }
-    : { globs: [replaced, trimmed], widened: true };
+  let widened = false;
+  const source = parts.map((part) => {
+    const match = /^(_*)(.*?)(_*)$/.exec(part);
+    const [, lead = '', body = part, trail = ''] = match ?? [];
+    widened ||= lead.length > 0 || trail.length > 0;
+    const escaped = body.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+    return `${lead ? '_*' : ''}${escaped}${trail ? '_*' : ''}`;
+  });
+  return { regex: new RegExp('^' + source.join('.*') + '$'), widened };
 }
 
 /**
@@ -199,13 +202,13 @@ function parseMCPToolApprovalPattern(pattern: string): MCPToolApprovalPattern | 
   const server = rest.slice(0, separator);
   const tool = rest.slice(separator + 1);
   if (server.includes('*')) {
-    const { globs, widened } = normalizeServerGlob(server);
-    return { tool: globToRegex(tool), servers: globs.map(globToRegex), widened };
+    const { regex, widened } = serverGlobToRegex(server);
+    return { tool: globToRegex(tool), server: regex, widened };
   }
   const serverKey = normalizeServerName(server);
   return {
     tool: globToRegex(tool),
-    servers: [globToRegex(serverKey)],
+    server: globToRegex(serverKey),
     ...(tool.includes('*') ? {} : { key: `${tool}${Constants.mcp_delimiter}${serverKey}` }),
   };
 }
@@ -217,7 +220,7 @@ function parseMCPToolApprovalPattern(pattern: string): MCPToolApprovalPattern | 
  * `_mcp_` delimiters is otherwise ambiguous without the server registry (the tool or the
  * server name may contain the delimiter), so a globbed `grant` (an `allow` entry) never
  * matches it, while `ask` and `deny` entries match at any delimiter and so err toward
- * review or refusal. A server glob that normalization widened never grants either.
+ * review or refusal. A server glob with optional edge underscores never grants either.
  */
 function matchesToolApprovalPattern(pattern: string, toolName: string, grant: boolean): boolean {
   const mcp = parseMCPToolApprovalPattern(pattern);
@@ -238,7 +241,7 @@ function matchesToolApprovalPattern(pattern: string, toolName: string, grant: bo
     }
     const tool = toolName.slice(0, index);
     const server = toolName.slice(index + delimiter.length);
-    if (mcp.tool.test(tool) && mcp.servers.some((regex) => regex.test(server))) {
+    if (mcp.tool.test(tool) && mcp.server.test(server)) {
       return true;
     }
   }
