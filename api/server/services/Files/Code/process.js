@@ -862,8 +862,9 @@ const primeFiles = async (options) => {
                 ),
               openSource: async () => {
                 signal?.throwIfAborted();
-                return openCodeFileSource(() =>
-                  getDownloadStream(options.req, resolveDownloadPath(file), { signal }),
+                return openCodeFileSource(
+                  () => getDownloadStream(options.req, resolveDownloadPath(file), { signal }),
+                  signal,
                 );
               },
               upload: (stream) =>

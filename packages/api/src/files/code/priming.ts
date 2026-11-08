@@ -1,3 +1,5 @@
+import { once } from 'node:events';
+import { Readable } from 'node:stream';
 import {
   Tools,
   FileContext,
@@ -318,7 +320,7 @@ export function appendCodeFileContextLine(
 }
 
 /** Dynamic tool context key for code files whose stored copy was deleted. */
-export const MISSING_CODE_FILES_CONTEXT_KEY = 'missing_code_files';
+const MISSING_CODE_FILES_CONTEXT_KEY = 'missing_code_files';
 
 /**
  * Names the conversation files that could not be restored into the code environment because
@@ -349,15 +351,40 @@ export class CodeSourceMissingError extends Error {
   }
 }
 
-/** Opens a code file's source from storage, naming a storage miss as `CodeSourceMissingError`. */
-export async function openCodeFileSource<T>(open: () => Promise<T>): Promise<T> {
+function isReadableStream(value: unknown): value is Readable {
+  return value instanceof Readable;
+}
+
+/**
+ * Opens a code file's source from storage, naming a storage miss as `CodeSourceMissingError`.
+ * Local storage hands back a stream that only reports a missing file once read, so a stream is
+ * held until its first chunk or error; the chunk stays buffered for the upload.
+ */
+export async function openCodeFileSource<T>(
+  open: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
   try {
-    return await open();
+    const source = await open();
+    if (isReadableStream(source) && !source.readableEnded) {
+      await once(source, 'readable', signal ? { signal } : undefined);
+    }
+    return source;
   } catch (error) {
     if (isStorageNotFoundError(error)) {
       throw new CodeSourceMissingError();
     }
     throw error;
+  }
+}
+
+/** Puts the missing-files note under its own context key, which no workspace rebuild replaces. */
+export function setMissingCodeFilesContext(
+  dynamicToolContextMap: Record<string, unknown>,
+  missingFilesContext: string | undefined,
+): void {
+  if (missingFilesContext) {
+    dynamicToolContextMap[MISSING_CODE_FILES_CONTEXT_KEY] = missingFilesContext;
   }
 }
 

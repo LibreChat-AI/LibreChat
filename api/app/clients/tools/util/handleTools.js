@@ -32,7 +32,7 @@ const {
   withRequestCodeInputs,
   resolveAgentCodeExecution,
   resolveMCPClientCapabilityProfile,
-  MISSING_CODE_FILES_CONTEXT_KEY,
+  setMissingCodeFilesContext,
 } = require('@librechat/api');
 const {
   AuthType,
@@ -348,9 +348,7 @@ const loadTools = async ({
         if (toolContext) {
           dynamicToolContextMap[tool] = toolContext;
         }
-        if (missingFilesContext) {
-          dynamicToolContextMap[MISSING_CODE_FILES_CONTEXT_KEY] = missingFilesContext;
-        }
+        setMissingCodeFilesContext(dynamicToolContextMap, missingFilesContext);
         if (files?.length) {
           primedCodeFiles = files;
         }

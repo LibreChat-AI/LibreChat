@@ -80,7 +80,7 @@ const {
   resolveMCPClientCapabilityProfile,
   getOutboundTimeoutMs,
   getToolErrorText,
-  MISSING_CODE_FILES_CONTEXT_KEY,
+  setMissingCodeFilesContext,
 } = require('@librechat/api');
 const {
   Time,
@@ -1574,9 +1574,7 @@ async function loadToolDefinitionsWrapper({
       if (toolContext) {
         dynamicToolContextMap[Tools.execute_code] = toolContext;
       }
-      if (missingFilesContext) {
-        dynamicToolContextMap[MISSING_CODE_FILES_CONTEXT_KEY] = missingFilesContext;
-      }
+      setMissingCodeFilesContext(dynamicToolContextMap, missingFilesContext);
       if (files?.length) {
         primedCodeFiles = files;
       }

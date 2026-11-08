@@ -1,3 +1,5 @@
+import { Readable } from 'node:stream';
+import { createReadStream } from 'node:fs';
 import { FileContext } from 'librechat-data-provider';
 import type { CodeEnvRef, TFile } from 'librechat-data-provider';
 import {
@@ -7,6 +9,7 @@ import {
   appendCodeFileContextLine,
   CodeSourceMissingError,
   openCodeFileSource,
+  setMissingCodeFilesContext,
   createCodeReuploadFailures,
 } from './priming';
 
@@ -382,6 +385,21 @@ describe('openCodeFileSource', () => {
     );
   });
 
+  it('names a local file that only reports ENOENT once the stream is read', async () => {
+    await expect(
+      openCodeFileSource(async () => createReadStream('/nonexistent/librechat-missing.csv')),
+    ).rejects.toBeInstanceOf(CodeSourceMissingError);
+  });
+
+  it('keeps every byte of a stream it held for its first chunk', async () => {
+    const stream = await openCodeFileSource(async () => Readable.from(['first,', 'second']));
+    const chunks: string[] = [];
+    for await (const chunk of stream) {
+      chunks.push(String(chunk));
+    }
+    expect(chunks.join('')).toBe('first,second');
+  });
+
   it('passes other storage failures through unchanged', async () => {
     const denied = { code: 'AccessDenied', status: 403 };
     await expect(openCodeFileSource(() => Promise.reject(denied))).rejects.toBe(denied);
@@ -430,5 +448,15 @@ describe('createCodeReuploadFailures', () => {
     failures.add(new Error('slow'), 'rate_limited', file('a', 'a.csv'));
     failures.add(new Error('boom'), 'reupload_failed', file('b', 'b.csv'));
     expect(failures.recoveryCategory()).toBe('mixed_reupload_failure');
+  });
+});
+
+describe('setMissingCodeFilesContext', () => {
+  it('adds the note under its own key and nothing when there is none', () => {
+    const map: Record<string, unknown> = { execute_code: 'files' };
+    setMissingCodeFilesContext(map, undefined);
+    expect(map).toEqual({ execute_code: 'files' });
+    setMissingCodeFilesContext(map, 'note');
+    expect(Object.values(map)).toEqual(['files', 'note']);
   });
 });
