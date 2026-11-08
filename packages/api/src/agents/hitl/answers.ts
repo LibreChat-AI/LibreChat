@@ -464,7 +464,10 @@ async function buildContext({
 }
 
 /** Bytes' worth of merge work one retained-answer text may cost to count exactly
- *  (~30 ms of ordinary text); a block is measured several times per turn. */
+ *  (~30 ms of ordinary text); a block is measured several times per turn. Not a
+ *  config field: it changes no retention decision beyond the budgeting counter's
+ *  fraction-of-a-percent margin, and raising it only lets one answer stall the
+ *  server again. */
 const MAX_EXACT_ANSWER_COUNT_WORK = 1024 * 1024;
 
 /**
