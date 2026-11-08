@@ -254,6 +254,23 @@ describe('image tools - agent mode ToolMessage format', () => {
       }
     });
 
+    it('submits to the global endpoint when FLUX_API_BASE_URL is unset', async () => {
+      delete process.env.FLUX_API_BASE_URL;
+
+      const flux = new FluxAPI({ isAgent: true });
+      const invokePromise = flux.invoke(
+        makeToolCall('flux', { prompt: 'a box', endpoint: '/v1/flux-dev' }),
+      );
+      await jest.runAllTimersAsync();
+      await invokePromise;
+
+      expect(axios.post).toHaveBeenCalledWith(
+        'https://api.bfl.ai/v1/flux-dev',
+        expect.any(Object),
+        expect.any(Object),
+      );
+    });
+
     it('falls back to get_result on the base URL when polling_url is on another domain', async () => {
       process.env.FLUX_API_BASE_URL = 'https://api.bfl.ai';
       axios.post.mockResolvedValue({

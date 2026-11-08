@@ -146,7 +146,7 @@ class FluxAPI extends Tool {
     // Use action: 'list_finetunes' to see available custom models. When using finetunes, use endpoint: '/v1/flux-pro-finetuned' (default) or '/v1/flux-pro-1.1-ultra-finetuned' for higher quality and aspect ratio.`;
 
     // Add base URL from environment variable with fallback
-    this.baseUrl = process.env.FLUX_API_BASE_URL || 'https://api.us1.bfl.ai';
+    this.baseUrl = process.env.FLUX_API_BASE_URL || 'https://api.bfl.ai';
 
     this.schema = fluxApiJsonSchema;
   }
