@@ -1,23 +1,24 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import type { ComposerItem } from '~/hooks/Input/useComposerItems';
-import type { ExtendedFile } from '~/common';
+import '@testing-library/jest-dom';
+import type { ComposerItem } from '../../../react/items';
+import type { ExtendedFile } from '../../../core/files';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import Tray from '../Tray';
 
 const mockFileRow = jest.fn();
+const mockAbortUpload = jest.fn();
 const mockIsPastedTextFile = jest.fn(() => false);
 const mockIsPasteActionPending = jest.fn(() => false);
 const mockEditPastedText = jest.fn();
 const mockMovePastedTextInline = jest.fn();
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-  useFileHandlingNoChatContext: () => ({ abortUpload: jest.fn() }),
-}));
-
 /* Files keep their own component, with its own upload/delete stack; the tray's
    job is to hand it the staged map, which is what is asserted here. */
-jest.mock('../../Files/FileRow', () => ({
+jest.mock('../files/FileRow', () => ({
   __esModule: true,
   default: (props: { files: Map<string, unknown> } & Record<string, unknown>) => {
     mockFileRow(props);
@@ -42,10 +43,10 @@ function renderTray(
   return render(
     <Tray
       items={items}
-      conversation={null}
       files={files}
       setFiles={jest.fn()}
       setFilesLoading={jest.fn()}
+      abortUpload={mockAbortUpload}
       index={0}
       isPastedTextFile={mockIsPastedTextFile}
       isPasteActionPending={mockIsPasteActionPending}
@@ -57,6 +58,7 @@ function renderTray(
 }
 
 describe('Tray', () => {
+  beforeAll(() => initEnglish());
   beforeEach(() => jest.clearAllMocks());
 
   it('renders nothing when no context is staged', () => {
@@ -75,7 +77,7 @@ describe('Tray', () => {
 
     expect(screen.getByTestId('composer-tray')).toBeInTheDocument();
     expect(screen.getByTestId('file-row')).toBeInTheDocument();
-    const chipList = screen.getByRole('list', { name: 'com_ui_composer_staged_context' });
+    const chipList = screen.getByRole('list', { name: 'Staged context' });
     expect(chipList).toContainElement(screen.getByTestId('composer-chip-quote'));
     expect(chipList).toContainElement(screen.getByTestId('composer-chip-skill'));
   });
@@ -86,14 +88,14 @@ describe('Tray', () => {
       item({ id: 'skill:a', kind: 'skill', label: 'code-review' }),
     ]);
 
-    expect(screen.getByLabelText('com_ui_remove_quote')).toBeInTheDocument();
-    expect(screen.getByLabelText('com_ui_remove_skill')).toBeInTheDocument();
+    expect(screen.getByLabelText('Remove quote')).toBeInTheDocument();
+    expect(screen.getByLabelText('Remove skill')).toBeInTheDocument();
   });
 
   it('invokes the item own remove handler', () => {
     const remove = jest.fn();
     renderTray([item({ remove })]);
-    fireEvent.click(screen.getByLabelText('com_ui_remove_quote'));
+    fireEvent.click(screen.getByLabelText('Remove quote'));
     expect(remove).toHaveBeenCalledTimes(1);
   });
   it('returns focus to the composer when the last quote is dismissed', () => {
@@ -101,7 +103,7 @@ describe('Tray', () => {
     const remove = jest.fn();
     renderTray([item({ id: 'quote:0', remove })], new Map(), focusComposer);
 
-    fireEvent.click(screen.getByLabelText('com_ui_remove_quote'));
+    fireEvent.click(screen.getByLabelText('Remove quote'));
     expect(remove).toHaveBeenCalledTimes(1);
     expect(focusComposer).toHaveBeenCalledTimes(1);
   });
@@ -116,7 +118,7 @@ describe('Tray', () => {
     );
 
     fireEvent.click(
-      within(screen.getAllByTestId('composer-chip-quote')[0]).getByLabelText('com_ui_remove_quote'),
+      within(screen.getAllByTestId('composer-chip-quote')[0]).getByLabelText('Remove quote'),
     );
     expect(remove).toHaveBeenCalledTimes(1);
     expect(focusComposer).not.toHaveBeenCalled();
@@ -128,12 +130,13 @@ describe('Tray', () => {
     expect(screen.getByTestId('file-row')).toBeInTheDocument();
   });
 
-  it('forwards pasted-text actions to the staged file row', () => {
+  it('forwards the upload abort and pasted-text actions to the staged file row', () => {
     renderTray([], new Map([['f1', {} as ExtendedFile]]));
 
     expect(mockFileRow).toHaveBeenCalledWith(
       expect.objectContaining({
         index: 0,
+        abortUpload: mockAbortUpload,
         isPastedTextFile: mockIsPastedTextFile,
         isPasteActionPending: mockIsPasteActionPending,
         onEditPastedText: mockEditPastedText,
