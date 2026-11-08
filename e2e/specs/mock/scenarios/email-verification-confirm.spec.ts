@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomInt, randomBytes, randomUUID } from 'node:crypto';
 import { withMongo, deleteUserByEmail } from '../db';
 
 /**
@@ -108,6 +108,10 @@ test.describe('email verification link', () => {
     await expect(scannerPage.getByRole('button', { name: 'Verify email' })).toBeVisible();
     await scanner.close();
 
+    /** The harness trusts one proxy; give each run its own budget on the 2-per-window submission limiter. */
+    await page.setExtraHTTPHeaders({
+      'X-Forwarded-For': `127.${randomInt(1, 255)}.${randomInt(1, 255)}.${randomInt(1, 255)}`,
+    });
     const posts = countPosts(page, '/api/user/verify');
     await page.goto(verifyLink(seeded), { timeout: 15000 });
     const button = page.getByRole('button', { name: 'Verify email' });
