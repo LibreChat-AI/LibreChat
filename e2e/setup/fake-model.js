@@ -347,6 +347,19 @@ function collectToolDefinitions(agents) {
   return definitions;
 }
 
+/** Text a provider bills for one advertised tool: its name, description and JSON schema.
+ *  A zod schema (on a LangChain tool) is skipped, since serializing it reports the
+ *  validator's internals rather than the schema the provider receives. */
+function toolDefinitionText(name, definition) {
+  const schema = definition?.parameters ?? definition?.input_schema ?? definition?.schema;
+  const plainSchema =
+    schema != null && typeof schema === 'object' && typeof schema.safeParse !== 'function'
+      ? JSON.stringify(schema)
+      : '';
+  const description = typeof definition?.description === 'string' ? definition.description : '';
+  return `${name}${description}${plainSchema}`;
+}
+
 function collectToolNames(agents) {
   return new Set(collectToolDefinitions(agents).keys());
 }
@@ -1012,15 +1025,22 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
       outputChars += typeof chunk.text === 'string' ? chunk.text.length : 0;
       yield chunk;
     }
-    const { messages: promptMessages } = await getStreamAgentView({
+    const { messages: promptMessages, toolDefinitions } = await getStreamAgentView({
       graph: this.graph,
       messages: messages ?? [],
       options,
       runManager,
     });
+    /** A provider bills the advertised tool definitions too. The context snapshot counts
+     *  them inside its instruction share and reconciles against this total, so leaving
+     *  them out would leave too little for the messages and the tool results they hold. */
+    let toolChars = 0;
+    for (const [name, definition] of toolDefinitions) {
+      toolChars += toolDefinitionText(name, definition).length;
+    }
     const inputChars = promptMessages.reduce(
       (sum, message) => sum + getContentText(message?.content).length,
-      0,
+      toolChars,
     );
     const input_tokens = Math.max(1, Math.ceil(inputChars / 4));
     const output_tokens = Math.max(1, Math.ceil(outputChars / 4));
