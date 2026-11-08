@@ -210,11 +210,10 @@ function parseMCPToolApprovalPattern(pattern: string): MCPToolApprovalPattern | 
  * Whether one policy entry matches a runtime tool name. An `mcp:<server>:<tool>` entry is
  * matched per segment against `<tool>_mcp_<server>`, never as one glob, so `*` cannot
  * cross the server boundary. A glob-free entry names exactly one key. A key with several
- * `_mcp_` delimiters is otherwise ambiguous without the server registry: a globbed `grant`
- * (an `allow` entry) only reads it at the first delimiter, so a server named
- * `Google_mcp_Workspace` is never granted by `mcp:Workspace:*`, while `ask` and `deny`
- * entries match at any delimiter and so err toward review or refusal. A server glob that
- * normalization widened never grants, for the same reason.
+ * `_mcp_` delimiters is otherwise ambiguous without the server registry (the tool or the
+ * server name may contain the delimiter), so a globbed `grant` (an `allow` entry) never
+ * matches it, while `ask` and `deny` entries match at any delimiter and so err toward
+ * review or refusal. A server glob that normalization widened never grants either.
  */
 function matchesToolApprovalPattern(pattern: string, toolName: string, grant: boolean): boolean {
   const mcp = parseMCPToolApprovalPattern(pattern);
@@ -224,22 +223,16 @@ function matchesToolApprovalPattern(pattern: string, toolName: string, grant: bo
   if (mcp.key != null) {
     return mcp.key === toolName;
   }
-  if (grant && mcp.widened === true) {
+  const delimiter = Constants.mcp_delimiter;
+  const first = toolName.indexOf(delimiter);
+  if (grant && (mcp.widened === true || toolName.indexOf(delimiter, first + 1) !== -1)) {
     return false;
   }
-  const delimiter = Constants.mcp_delimiter;
-  for (
-    let index = toolName.indexOf(delimiter);
-    index > 0;
-    index = toolName.indexOf(delimiter, index + 1)
-  ) {
+  for (let index = first; index > 0; index = toolName.indexOf(delimiter, index + 1)) {
     const tool = toolName.slice(0, index);
     const server = toolName.slice(index + delimiter.length);
     if (mcp.tool.test(tool) && mcp.server.test(server)) {
       return true;
-    }
-    if (grant) {
-      return false;
     }
   }
   return false;

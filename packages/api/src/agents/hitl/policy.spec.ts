@@ -290,6 +290,28 @@ describe('mapToolApprovalPolicy', () => {
       expect(isToolBlockedByApprovalPolicy(target, 'read_mcp_Workspace')).toBe(false);
     });
 
+    test('a globbed allow never grants an ambiguous key, whichever side holds the delimiter', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:*:get', 'mcp:gitlab:*'],
+        ask: ['mcp:*:get'],
+      };
+      const ambiguous = 'get_mcp_server_version_mcp_gitlab';
+      expect(await decide('get_mcp_github', target)).toBe('ask');
+      expect(await decide('list_mcp_gitlab', target)).toBe('allow');
+      expect(await decide(ambiguous, target)).toBe('ask');
+      expect(
+        await decide(ambiguous, { enabled: true, mode: 'dontAsk', allow: ['mcp:*:get'] }),
+      ).toBe('deny');
+      expect(
+        isToolBlockedByApprovalPolicy(
+          { enabled: true, mode: 'dontAsk', allow: ['mcp:gitlab:*'] },
+          ambiguous,
+        ),
+      ).toBe(true);
+    });
+
     test('a glob-free entry matches its exact key even when the tool name contains the delimiter', async () => {
       const target: TToolApprovalPolicy = {
         enabled: true,
