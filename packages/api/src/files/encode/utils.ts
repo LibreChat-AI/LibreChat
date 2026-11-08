@@ -6,6 +6,7 @@ import {
   isExplicitMimeConfig,
   getEndpointFileConfig,
 } from 'librechat-data-provider';
+import type { FileConfig, RegexLike } from 'librechat-data-provider';
 import type { ServerRequest, StrategyFunctions, ProcessedFile } from '~/types';
 import type { StoredFileRef } from '~/storage/path';
 import { resolveDownloadPath } from '~/storage/path';
@@ -109,6 +110,38 @@ export const isConfiguredProviderMediaType = (
     return false;
   }
   return fileConfig.checkType?.(mimeType, types) ?? false;
+};
+
+/** Archive and container types that no provider accepts as an inline document. */
+const providerArchiveMimeTypes = new Set([
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/x-tar',
+  'application/gzip',
+  'application/x-gzip',
+  'application/epub+zip',
+  'application/octet-stream',
+]);
+
+/**
+ * Whether a provider-bound attachment that has no dedicated branch (image, PDF, Bedrock
+ * document, audio, video) goes to the document encoder. The endpoint's `supportedMimeTypes`
+ * decides, including the built-in list an unconfigured endpoint inherits. That inherited
+ * list also allows archives for other upload paths, and no provider accepts one inline, so
+ * an archive goes to the provider only when the admin lists it for the endpoint.
+ */
+export const isProviderDocumentCandidate = (
+  mimeType: string | null | undefined,
+  fileConfig: Pick<FileConfig, 'checkType'> | undefined,
+  supportedMimeTypes: RegexLike[] | undefined,
+): boolean => {
+  if (!mimeType || !supportedMimeTypes) {
+    return false;
+  }
+  if (!isExplicitMimeConfig(supportedMimeTypes) && providerArchiveMimeTypes.has(mimeType)) {
+    return false;
+  }
+  return fileConfig?.checkType?.(mimeType, supportedMimeTypes) ?? false;
 };
 
 /**
