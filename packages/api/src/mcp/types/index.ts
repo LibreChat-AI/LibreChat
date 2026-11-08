@@ -105,6 +105,7 @@ export type Provider =
   | 'openrouter'
   | 'xai'
   | 'deepseek'
+  | 'minimax'
   | 'ollama'
   | 'bedrock';
 

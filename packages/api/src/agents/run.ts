@@ -346,6 +346,7 @@ const customProviders = new Set([
   Providers.DEEPSEEK,
   Providers.MOONSHOT,
   Providers.OPENROUTER,
+  'minimax',
   KnownEndpoints.ollama,
 ]);
 
