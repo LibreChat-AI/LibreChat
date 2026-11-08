@@ -7,6 +7,7 @@ const {
   applyAxiosProxyConfig,
   createMinimalRetentionRequest,
   getHttpsProxyAgent,
+  resolveFluxResultRequest,
 } = require('@librechat/api');
 const { FileContext, ContentTypes } = require('librechat-data-provider');
 
@@ -239,7 +240,6 @@ class FluxAPI extends Tool {
     }
 
     const generateUrl = `${this.baseUrl}${imageData.endpoint || '/v1/flux-pro'}`;
-    const resultUrl = `${this.baseUrl}/v1/get_result`;
 
     logger.debug('[FluxAPI] Generating image with payload:', payload);
     logger.debug('[FluxAPI] Using endpoint:', generateUrl);
@@ -264,7 +264,11 @@ class FluxAPI extends Tool {
       );
     }
 
-    const taskId = taskResponse.data.id;
+    const resultRequest = resolveFluxResultRequest(
+      this.baseUrl,
+      taskResponse.data.id,
+      taskResponse.data.polling_url,
+    );
 
     // Polling for the result
     let status = 'Pending';
@@ -273,13 +277,13 @@ class FluxAPI extends Tool {
       try {
         // Wait 2 seconds between polls
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const resultResponse = await axios.get(resultUrl, {
+        const resultResponse = await axios.get(resultRequest.url, {
           headers: {
             'x-key': requestApiKey,
             Accept: 'application/json',
           },
-          params: { id: taskId },
-          ...this.getAxiosConfig(),
+          params: resultRequest.params,
+          ...applyAxiosProxyConfig({}, resultRequest.url),
         });
         status = resultResponse.data.status;
 
@@ -474,7 +478,6 @@ class FluxAPI extends Tool {
     }
 
     const generateUrl = `${this.baseUrl}${endpoint}`;
-    const resultUrl = `${this.baseUrl}/v1/get_result`;
 
     logger.debug('[FluxAPI] Generating finetuned image with payload:', payload);
     logger.debug('[FluxAPI] Using endpoint:', generateUrl);
@@ -498,7 +501,11 @@ class FluxAPI extends Tool {
       );
     }
 
-    const taskId = taskResponse.data.id;
+    const resultRequest = resolveFluxResultRequest(
+      this.baseUrl,
+      taskResponse.data.id,
+      taskResponse.data.polling_url,
+    );
 
     // Polling for the result
     let status = 'Pending';
@@ -507,13 +514,13 @@ class FluxAPI extends Tool {
       try {
         // Wait 2 seconds between polls
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const resultResponse = await axios.get(resultUrl, {
+        const resultResponse = await axios.get(resultRequest.url, {
           headers: {
             'x-key': requestApiKey,
             Accept: 'application/json',
           },
-          params: { id: taskId },
-          ...this.getAxiosConfig(),
+          params: resultRequest.params,
+          ...applyAxiosProxyConfig({}, resultRequest.url),
         });
         status = resultResponse.data.status;
 
