@@ -152,7 +152,8 @@ const UNSUPPORTED_SERVER_CHARS = /[^a-zA-Z0-9_.-]/g;
 
 interface MCPToolApprovalPattern {
   tool: RegExp;
-  server: RegExp;
+  /** Every normalized form a matching server name can take; see `normalizeServerGlob`. */
+  servers: RegExp[];
   /** The one runtime key a glob-free entry names. */
   key?: string;
   /** Trimming widened the server glob (`(*)` became `*`), so it may not grant. */
@@ -166,17 +167,20 @@ function globToRegex(pattern: string): RegExp {
 }
 
 /**
- * Normalizes a globbed server pattern the way `normalizeServerName` normalizes a name:
- * unsupported characters become `_` and the name's outer edges lose their underscores.
- * `widened` reports that the edge trim dropped characters, which loosens the glob.
+ * Normalizes a globbed server pattern the way `normalizeServerName` normalizes a name. A
+ * name of supported characters keeps its edge underscores; any other name has unsupported
+ * characters replaced and its edges trimmed. A glob cannot tell which branch a matching
+ * name took, so it yields both forms, and `widened` reports that they differ.
  */
-function normalizeServerGlob(server: string): { glob: string; widened: boolean } {
+function normalizeServerGlob(server: string): { globs: string[]; widened: boolean } {
   const parts = server.split('*').map((part) => part.replace(UNSUPPORTED_SERVER_CHARS, '_'));
   const replaced = parts.join('*');
   parts[0] = parts[0].replace(/^_+/, '');
   parts[parts.length - 1] = parts[parts.length - 1].replace(/_+$/, '');
-  const glob = parts.join('*');
-  return { glob, widened: glob !== replaced };
+  const trimmed = parts.join('*');
+  return trimmed === replaced
+    ? { globs: [trimmed], widened: false }
+    : { globs: [replaced, trimmed], widened: true };
 }
 
 /**
@@ -195,13 +199,13 @@ function parseMCPToolApprovalPattern(pattern: string): MCPToolApprovalPattern | 
   const server = rest.slice(0, separator);
   const tool = rest.slice(separator + 1);
   if (server.includes('*')) {
-    const { glob, widened } = normalizeServerGlob(server);
-    return { tool: globToRegex(tool), server: globToRegex(glob), widened };
+    const { globs, widened } = normalizeServerGlob(server);
+    return { tool: globToRegex(tool), servers: globs.map(globToRegex), widened };
   }
   const serverKey = normalizeServerName(server);
   return {
     tool: globToRegex(tool),
-    server: globToRegex(serverKey),
+    servers: [globToRegex(serverKey)],
     ...(tool.includes('*') ? {} : { key: `${tool}${Constants.mcp_delimiter}${serverKey}` }),
   };
 }
@@ -228,10 +232,13 @@ function matchesToolApprovalPattern(pattern: string, toolName: string, grant: bo
   if (grant && (mcp.widened === true || toolName.indexOf(delimiter, first + 1) !== -1)) {
     return false;
   }
-  for (let index = first; index > 0; index = toolName.indexOf(delimiter, index + 1)) {
+  for (let index = first; index !== -1; index = toolName.indexOf(delimiter, index + 1)) {
+    if (index === 0) {
+      continue;
+    }
     const tool = toolName.slice(0, index);
     const server = toolName.slice(index + delimiter.length);
-    if (mcp.tool.test(tool) && mcp.server.test(server)) {
+    if (mcp.tool.test(tool) && mcp.servers.some((regex) => regex.test(server))) {
       return true;
     }
   }

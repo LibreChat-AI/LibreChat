@@ -265,6 +265,23 @@ describe('mapToolApprovalPolicy', () => {
       expect(await decide('read_file_mcp_Acme__Production', target)).toBe('allow');
     });
 
+    test('a globbed server keeps the edge underscores a supported name keeps', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'bypass',
+        deny: ['mcp:_prod*:delete_file'],
+      };
+      expect(await decide('delete_file_mcp__prod1', target)).toBe('deny');
+      expect(isToolDeniedByApprovalPolicy(target, 'delete_file_mcp__prod1')).toBe(true);
+      expect(await decide('delete_file_mcp_prod1', target)).toBe('deny');
+    });
+
+    test('a tool name that starts with the delimiter still meets its server rule', async () => {
+      const target: TToolApprovalPolicy = { enabled: true, mode: 'bypass', deny: ['mcp:github:*'] };
+      expect(await decide('_mcp_read_mcp_github', target)).toBe('deny');
+      expect(isToolDeniedByApprovalPolicy(target, '_mcp_read_mcp_github')).toBe(true);
+    });
+
     test('a server glob widened by normalization still reviews but never grants', async () => {
       const target: TToolApprovalPolicy = {
         enabled: true,
