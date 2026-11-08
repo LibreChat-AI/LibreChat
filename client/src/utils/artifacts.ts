@@ -341,9 +341,12 @@ export function buildSandpackOptions(
     return sharedOptions;
   }
 
+  const bundlerURL =
+    template === 'static' ? startupConfig.staticBundlerURL : startupConfig.bundlerURL;
+  /** An empty env value (e.g. `${SANDPACK_BUNDLER_URL:-}` in Compose) means unset. */
   return {
     ...sharedOptions,
-    bundlerURL: template === 'static' ? startupConfig.staticBundlerURL : startupConfig.bundlerURL,
+    bundlerURL: bundlerURL || undefined,
   };
 }
 
