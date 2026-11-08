@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
 import debounce from 'lodash/debounce';
-import { PermissionBits, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
+import { Constants, EModelEndpoint, PermissionBits, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
+import { useToastContext } from '@librechat/client';
 import type * as t from 'librechat-data-provider';
 import type { Endpoint, SelectedValues } from '~/common';
 import {
@@ -13,9 +14,12 @@ import {
 import { useAgentsMapContext, useAssistantsMapContext, useLiveAnnouncer } from '~/Providers';
 import { useGetEndpointsQuery, useListAgentsQuery } from '~/data-provider';
 import { useModelSelectorChatContext } from './ModelSelectorChatContext';
+import useWarnModelLocked from '~/hooks/Input/useWarnModelLocked';
 import useSelectMention from '~/hooks/Input/useSelectMention';
 import { useCatalogReady } from '~/hooks/useCatalogWarmup';
 import useModelSpecs from '~/hooks/Agents/specs';
+import useIsModelLocked from '~/hooks/Input/useIsModelLocked';
+
 import { filterItems } from './utils';
 
 type ModelSelectorContextType = {
@@ -30,6 +34,7 @@ type ModelSelectorContextType = {
   agentsMap: t.TAgentsMap | undefined;
   assistantsMap: t.TAssistantsMap | undefined;
   endpointsConfig: t.TEndpointsConfig;
+  isModelLocked: boolean;
 
   // Functions
   endpointRequiresUserKey: (endpoint: string) => boolean;
@@ -65,7 +70,29 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
     useModelSelectorChatContext();
   const localize = useLocalize();
   const { announcePolite } = useLiveAnnouncer();
-  const modelSpecs = useModelSpecs(startupConfig);
+
+  const isModelLocked = useIsModelLocked();
+  const warnLocked = useWarnModelLocked();
+
+  const modelSpecs = useMemo(() => {
+    /** Labels are normalized at the startup-config query boundary. */
+    const specs = startupConfig?.modelSpecs?.list ?? [];
+    if (!agentsMap) {
+      return specs;
+    }
+
+    /**
+     * Filter modelSpecs to only include agents the user has access to.
+     * Use agentsMap which already contains permission-filtered agents (consistent with other components).
+     */
+    return specs.filter((spec) => {
+      if (spec.preset?.endpoint === EModelEndpoint.agents && spec.preset?.agent_id) {
+        return spec.preset.agent_id in agentsMap;
+      }
+      /** Keep non-agent modelSpecs */
+      return true;
+    });
+  }, [startupConfig, agentsMap]);
 
   const permissionLevel = useAgentDefaultPermissionLevel();
   /**
@@ -203,6 +230,10 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
 
   const handleSelectEndpoint = useCallback(
     (endpoint: Endpoint) => {
+      if (isModelLocked) {
+        warnLocked();
+        return;
+      }
       if (!endpoint.hasModels) {
         if (endpoint.value) {
           onSelectEndpoint?.(endpoint.value);
@@ -214,7 +245,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
         });
       }
     },
-    [onSelectEndpoint],
+    [onSelectEndpoint, isModelLocked, warnLocked],
   );
 
   const handleSelectModel = useCallback(
@@ -264,6 +295,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
       endpointRequiresUserKey,
       setSearchValue: setDebouncedSearchValue,
       ...keyProps,
+      isModelLocked,
     }),
     [
       searchValue,
@@ -283,6 +315,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
       endpointRequiresUserKey,
       setDebouncedSearchValue,
       keyProps,
+      isModelLocked,
     ],
   );
 

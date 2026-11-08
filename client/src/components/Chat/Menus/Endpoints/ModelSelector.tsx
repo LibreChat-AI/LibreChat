@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { TooltipAnchor } from '@librechat/client';
+import { TooltipAnchor, disabledInkClasses } from '@librechat/client';
 import type { ModelSelectorProps } from '~/common';
 import {
   renderModelSpecs,
@@ -16,6 +16,7 @@ import { CustomMenu as Menu } from './CustomMenu';
 import { isModelSelectorShown } from './shown';
 import DialogManager from './DialogManager';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 function activateSelectorCatalogs(open: boolean) {
   if (!open) return;
@@ -46,6 +47,7 @@ function ModelSelectorContent() {
     keyDialogOpen,
     onOpenChange,
     keyDialogEndpoint,
+    isModelLocked,
   } = useModelSelectorContext();
 
   const selectedIcon = useMemo(
@@ -74,12 +76,24 @@ function ModelSelectorContent() {
   const trigger = (
     <TooltipAnchor
       aria-label={localize('com_ui_select_model')}
-      description={modelSelectorHint}
+      description={isModelLocked ? localize('com_ui_model_locked_tooltip') : modelSelectorHint}
       render={
         <button
           data-testid="model-selector-button"
           aria-keyshortcuts={modelSelectorAriaKey}
-          className="border-border-light bg-presentation text-text-primary hover:bg-surface-active-alt rounded-theme-control flex h-9 max-w-full items-center gap-2 border px-3 py-2 text-sm"
+          aria-disabled={isModelLocked}
+          className={cn(
+            'border-border-light bg-presentation text-text-primary hover:bg-surface-active-alt rounded-theme-control flex h-9 max-w-full items-center gap-2 border px-3 py-2 text-sm',
+            'aria-disabled:cursor-not-allowed aria-disabled:opacity-70',
+            disabledInkClasses,
+          )}
+          onClick={(e) => {
+            if (isModelLocked) {
+              e.preventDefault();
+              e.stopPropagation();
+              return;
+            }
+          }}
           aria-label={localize('com_ui_select_model')}
         >
           {selectedIcon && React.isValidElement(selectedIcon) && (
@@ -99,6 +113,9 @@ function ModelSelectorContent() {
         onOpenChange={activateSelectorCatalogs}
         values={selectedValues}
         onValuesChange={(values: Record<string, any>) => {
+          if (isModelLocked) {
+            return;
+          }
           setSelectedValues({
             endpoint: values.endpoint || '',
             model: values.model || '',

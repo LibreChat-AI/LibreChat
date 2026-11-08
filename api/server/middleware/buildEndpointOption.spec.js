@@ -48,8 +48,10 @@ jest.mock('~/server/services/Endpoints/agents', () => ({
 
 jest.mock('~/models', () => ({
   updateFilesUsage: jest.fn(),
+  getConvo: jest.fn(),
 }));
 const { updateFilesUsage } = require('~/models');
+const { getConvo } = require('~/models');
 
 const mockGetEndpointsConfig = jest.fn();
 jest.mock('~/server/services/Config', () => ({
@@ -1063,4 +1065,29 @@ describe('buildEndpointOption - enforced server continuations', () => {
       expect(next).not.toHaveBeenCalled();
     },
   );
+
+  it('rejects a model switch on an existing conversation when lockModelPerConversation is enabled', async () => {
+    const req = createReq({
+      config: { interfaceConfig: { lockModelPerConversation: true } },
+      body: { conversationId: 'existing-convo-id', endpoint: 'openAI', model: 'gpt-4o-mini' },
+    });
+    getConvo.mockResolvedValue({ endpoint: 'openAI', model: 'gpt-4o' });
+
+    const res = createRes();
+    await buildEndpointOption(req, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(409);
+  });
+
+  it('allows model selection for a brand-new conversation even when lockModelPerConversation is enabled', async () => {
+    const req = createReq({
+      config: { interfaceConfig: { lockModelPerConversation: true } },
+      body: { conversationId: 'new', endpoint: 'anthropic', model: 'claude-opus-4.5' },
+    });
+
+    const res = createRes();
+    await buildEndpointOption(req, res, jest.fn());
+
+    expect(res.status).not.toHaveBeenCalledWith(409);
+  });
 });

@@ -17,6 +17,7 @@ import {
   getConvoSwitchLogic,
   logger,
 } from '~/utils';
+import useWarnModelLocked from '~/hooks/Input/useWarnModelLocked';
 import { useDefaultConvo } from '~/hooks';
 import store from '~/store';
 
@@ -28,6 +29,7 @@ export default function useSelectMention({
   endpointsConfig,
   getConversation,
   newConversation,
+  isModelLocked = false,
 }: {
   presets?: TPreset[];
   modelSpecs: TModelSpec[];
@@ -36,11 +38,13 @@ export default function useSelectMention({
   newConversation: ConvoGenerator;
   endpointsConfig: TEndpointsConfig;
   getConversation: () => TConversation | null;
+  isModelLocked?: boolean;
 }) {
   const getDefaultConversation = useDefaultConvo();
   const modularChat = useRecoilValue(store.modularChat);
   const availableTools = useRecoilValue(store.availableTools);
   const [searchParams] = useSearchParams();
+  const warnLocked = useWarnModelLocked();
   /**
    * Project scope is read from React Router's search params (the same source the
    * project chip reads), not window.location — new-chat params are written to the
@@ -54,6 +58,10 @@ export default function useSelectMention({
   const onSelectSpec = useCallback(
     (spec?: TModelSpec) => {
       if (!spec) {
+        return;
+      }
+      if (isModelLocked) {
+        warnLocked();
         return;
       }
 
@@ -134,6 +142,8 @@ export default function useSelectMention({
       endpointsConfig,
       assistantsMap,
       routeChatProjectId,
+      isModelLocked,
+      warnLocked,
     ],
   );
 
@@ -148,6 +158,10 @@ export default function useSelectMention({
     (_newEndpoint?: EModelEndpoint | string | null, kwargs: Kwargs = {}) => {
       const newEndpoint = _newEndpoint ?? '';
       if (!newEndpoint) {
+        return;
+      }
+      if (isModelLocked) {
+        warnLocked();
         return;
       }
 
@@ -231,12 +245,18 @@ export default function useSelectMention({
       newConversation,
       endpointsConfig,
       routeChatProjectId,
+      isModelLocked,
+      warnLocked,
     ],
   );
 
   const onSelectPreset = useCallback(
     (_newPreset?: TPreset) => {
       if (!_newPreset) {
+        return;
+      }
+      if (isModelLocked) {
+        warnLocked();
         return;
       }
 
@@ -303,6 +323,8 @@ export default function useSelectMention({
       endpointsConfig,
       getDefaultConversation,
       routeChatProjectId,
+      isModelLocked,
+      warnLocked,
     ],
   );
 

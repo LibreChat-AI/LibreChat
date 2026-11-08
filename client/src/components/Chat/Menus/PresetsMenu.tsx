@@ -15,6 +15,7 @@ import {
 } from '@librechat/client';
 import type { TPreset } from 'librechat-data-provider';
 import type { FC } from 'react';
+import useIsModelLocked from '~/hooks/Input/useIsModelLocked';
 import { SaveAsPresetDialog } from '~/components/Endpoints';
 import { EditPresetDialog, PresetItems } from './Presets';
 import { useLocalize, usePresets } from '~/hooks';
@@ -26,6 +27,7 @@ const PresetsMenu: FC = () => {
   const [saveAsDialogOpen, setSaveAsDialogOpen] = useState(false);
   const [presetToSave, setPresetToSave] = useState<TPreset | null>(null);
   const { conversation } = useChatContext();
+  const isModelLocked = useIsModelLocked();
   const {
     presetsQuery,
     onSetDefaultPreset,
@@ -101,6 +103,7 @@ const PresetsMenu: FC = () => {
             clearAllPresets={clearAllPresets}
             onFileSelected={onFileSelected}
             onSaveAsPreset={conversation ? openSaveAsDialog : undefined}
+            isModelLocked={isModelLocked}
           />
         </Content>
       </Portal>

@@ -510,6 +510,26 @@ describe('loadDefaultInterface', () => {
 
     expect(interfaceConfig).not.toHaveProperty('theme');
   });
+
+  it('preserves an enabled model lock flag', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: { lockModelPerConversation: true },
+    };
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+    expect(interfaceConfig?.lockModelPerConversation).toBe(true);
+  });
+
+  it('defaults model lock to false when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.lockModelPerConversation).toBe(false);
+  });
 });
 
 describe('running chat rename deployment fence', () => {

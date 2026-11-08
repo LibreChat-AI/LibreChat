@@ -1,10 +1,12 @@
-import { memo } from 'react';
+import { memo, useEffect } from 'react';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import { MentionPopover } from '@librechat/chat/components';
 import type { RecoilState } from 'recoil';
 import type { ConvoGenerator } from '~/common';
 import { useGetConversation, useLocalize, TranslationKeys } from '~/hooks';
+import useWarnModelLocked from '~/hooks/Input/useWarnModelLocked';
 import useSelectMention from '~/hooks/Input/useSelectMention';
+import useIsModelLocked from '~/hooks/Input/useIsModelLocked';
 import { useAssistantsMapContext } from '~/Providers';
 import useMentions from '~/hooks/Input/useMentions';
 
@@ -30,6 +32,15 @@ function MentionContent({
   const getConversation = useGetConversation(0);
   const assistantsMap = useAssistantsMapContext();
   const setShowPopover = useSetRecoilState(popoverAtom);
+  const isLockedForConversation = useIsModelLocked();
+  const isModelLocked = commandChar === '@' && isLockedForConversation;
+  const warnLocked = useWarnModelLocked();
+  useEffect(() => {
+    if (isModelLocked) {
+      warnLocked();
+      setShowPopover(false);
+    }
+  }, [isModelLocked, warnLocked, setShowPopover]);
   const {
     options,
     presets,
@@ -47,6 +58,7 @@ function MentionContent({
     endpointsConfig,
     getConversation,
     newConversation,
+    isModelLocked,
   });
 
   return (

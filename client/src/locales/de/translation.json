@@ -1548,6 +1548,8 @@
   "com_ui_model": "KI-Modell",
   "com_ui_model_parameters": "Modell-Parameter",
   "com_ui_model_parameters_reset": "Modellparameter wurden zurückgesetzt.",
+  "com_ui_model_locked": "Die Modell-Auswahl ist für diese Konversation gesperrt",
+  "com_ui_model_locked_tooltip": "Modell-Auswahl gesperrt",
   "com_ui_model_selected": "{{0}} ausgewählt",
   "com_ui_model_spec": "Modellspezifikation",
   "com_ui_more_count": "{{0}} weitere",

@@ -45,6 +45,7 @@ const PresetItems: FC<{
   clearAllPresets: () => void;
   onFileSelected: (jsonData: Record<string, unknown>) => void;
   onSaveAsPreset?: () => void;
+  isModelLocked?: boolean;
 }> = ({
   presets,
   onSetDefaultPreset,
@@ -54,6 +55,7 @@ const PresetItems: FC<{
   clearAllPresets,
   onFileSelected,
   onSaveAsPreset,
+  isModelLocked = false,
 }) => {
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const defaultPreset = useRecoilValue(store.defaultPreset);
@@ -232,28 +234,47 @@ const PresetItems: FC<{
             });
             const presetTitle = getPresetTitle(preset);
 
+            const selectButton = (
+              <Button
+                variant="ghost"
+                shape="theme"
+                type="button"
+                className="h-auto min-w-0 flex-1 justify-start gap-1 p-2 text-start text-xs font-normal hover:bg-transparent focus-visible:ring-offset-0"
+                disabled={isModelLocked}
+                onClick={() => onSelectPreset(preset)}
+                aria-label={presetTitle}
+                data-testid={`preset-item-${presetId}`}
+              >
+                <ResolvedProviderIcon
+                  provider={provider}
+                  imageURL={imageURL}
+                  size={20}
+                  className="icon-md shrink-0"
+                />
+                <span className="truncate">{presetTitle}</span>
+              </Button>
+            );
+
             return (
               <Close asChild key={`preset-${presetId}`}>
                 <div key={`preset-${presetId}`}>
                   <Flipped flipId={presetId}>
                     <div className="group rounded-theme-control hover:bg-surface-hover m-1.5 flex items-center gap-2 px-3 py-1.5 text-sm">
-                      <Button
-                        variant="ghost"
-                        shape="theme"
-                        type="button"
-                        className="h-auto min-w-0 flex-1 justify-start gap-1 p-2 text-start text-xs font-normal hover:bg-transparent focus-visible:ring-offset-0"
-                        onClick={() => onSelectPreset(preset)}
-                        aria-label={presetTitle}
-                        data-testid={`preset-item-${presetId}`}
-                      >
-                        <ResolvedProviderIcon
-                          provider={provider}
-                          imageURL={imageURL}
-                          size={20}
-                          className="icon-md shrink-0"
+                      {isModelLocked ? (
+                        <TooltipAnchor
+                          description={localize('com_ui_model_locked_tooltip')}
+                          render={
+                            <span
+                              tabIndex={0}
+                              className="inline-flex min-w-0 flex-1 cursor-not-allowed"
+                            >
+                              {selectButton}
+                            </span>
+                          }
                         />
-                        <span className="truncate">{presetTitle}</span>
-                      </Button>
+                      ) : (
+                        selectButton
+                      )}
                       <div className="flex items-center justify-end gap-1">
                         <div
                           className={cn(

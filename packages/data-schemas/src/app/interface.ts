@@ -98,6 +98,8 @@ export async function loadDefaultInterface({
     autoSubmitFromUrl: interfaceConfig?.autoSubmitFromUrl ?? defaults.autoSubmitFromUrl,
     colorModeFromUrl: interfaceConfig?.colorModeFromUrl ?? defaults.colorModeFromUrl,
     buildInfo: interfaceConfig?.buildInfo ?? defaults.buildInfo,
+    lockModelPerConversation:
+      interfaceConfig?.lockModelPerConversation ?? defaults.lockModelPerConversation,
     mascot: interfaceConfig?.mascot ?? defaults.mascot,
     contextUsage: interfaceConfig?.contextUsage ?? defaults.contextUsage,
     artifactUndocking: interfaceConfig?.artifactUndocking ?? defaults.artifactUndocking,
