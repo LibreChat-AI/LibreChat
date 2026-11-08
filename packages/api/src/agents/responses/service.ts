@@ -523,6 +523,8 @@ interface StreamState {
   completedToolCalls: Set<string>;
   /** Calls to a caller-executed tool — the subset the run has to terminate itself. */
   clientToolCalls: Set<string>;
+  /** Streamed tool call name fragments, keyed by step id and call id; names concatenate. */
+  toolCallNames: Map<string, string>;
 }
 
 /** One streamed argument fragment, as the agents SDK forwards LangChain tool call chunks. */
@@ -625,6 +627,7 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
     activeToolCalls: new Set(),
     completedToolCalls: new Set(),
     clientToolCalls: new Set(),
+    toolCallNames: new Map(),
   };
 
   const chunkResolver = createToolCallChunkResolver();
@@ -876,20 +879,31 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
             // (Anthropic-style streaming) dispatch the `tool_calls` run step once,
             // for the first chunk only, so later calls of a batch never reach the
             // on_run_step announcement. Announce them here on their first delta.
-            if (
-              tc.id != null &&
-              tc.id !== '' &&
-              tc.name != null &&
-              !state.activeToolCalls.has(callId)
-            ) {
-              closeOpenStreams();
-              state.activeToolCalls.add(callId);
-              if (config.clientToolNames?.has(tc.name) === true) {
-                state.clientToolCalls.add(callId);
-              }
-              emitFunctionCallItemAdded(config, callId, tc.name);
-            }
             const args = typeof tc.args === 'string' ? tc.args : '';
+            if (tc.id != null && tc.id !== '') {
+              // Names may stream as fragments; the chunk contract concatenates
+              // them, so announce only once the name stops growing: when it is
+              // a known client tool name, when this chunk also carries
+              // arguments, or when a later chunk brings none.
+              const nameKey = `${deltaData?.id ?? ''}:${callId}`;
+              if (tc.name != null && tc.name !== '') {
+                state.toolCallNames.set(nameKey, (state.toolCallNames.get(nameKey) ?? '') + tc.name);
+              }
+              const assembledName = state.toolCallNames.get(nameKey);
+              const isClientTool = config.clientToolNames?.has(assembledName ?? '') === true;
+              if (
+                assembledName != null &&
+                !state.activeToolCalls.has(callId) &&
+                (isClientTool || tc.name == null || tc.name === '' || args !== '')
+              ) {
+                closeOpenStreams();
+                state.activeToolCalls.add(callId);
+                if (isClientTool) {
+                  state.clientToolCalls.add(callId);
+                }
+                emitFunctionCallItemAdded(config, callId, assembledName);
+              }
+            }
             if (!args) {
               continue;
             }
@@ -1175,6 +1189,7 @@ export function createAggregatorEventHandlers(aggregator: ResponseAggregator): R
 > {
   const activeToolCalls = new Set<string>();
   const chunkResolver = createToolCallChunkResolver();
+  const toolCallNames = new Map<string, string>();
 
   return {
     on_message_delta: {
@@ -1264,16 +1279,25 @@ export function createAggregatorEventHandlers(aggregator: ResponseAggregator): R
             // for the first chunk only, so later calls of a batch never reach the
             // on_run_step seeding above. Seed them here on their first delta, or
             // their streamed arguments would have nowhere to accumulate.
-            if (
-              tc.id != null &&
-              tc.id !== '' &&
-              tc.name != null &&
-              !activeToolCalls.has(callId)
-            ) {
-              activeToolCalls.add(callId);
-              aggregator.toolCalls.set(callId, { id: callId, name: tc.name, arguments: '' });
-            }
             const args = typeof tc.args === 'string' ? tc.args : '';
+            if (tc.id != null && tc.id !== '') {
+              // Names may stream as fragments; the chunk contract concatenates
+              // them, so seed only once the name stops growing: when this chunk
+              // also carries arguments, or when a later chunk brings none.
+              const nameKey = `${deltaData?.id ?? ''}:${callId}`;
+              if (tc.name != null && tc.name !== '') {
+                toolCallNames.set(nameKey, (toolCallNames.get(nameKey) ?? '') + tc.name);
+              }
+              const assembledName = toolCallNames.get(nameKey);
+              if (
+                assembledName != null &&
+                !activeToolCalls.has(callId) &&
+                (tc.name == null || tc.name === '' || args !== '')
+              ) {
+                activeToolCalls.add(callId);
+                aggregator.toolCalls.set(callId, { id: callId, name: assembledName, arguments: '' });
+              }
+            }
             if (!args) {
               continue;
             }
