@@ -38,6 +38,7 @@ export interface AgentApprovalSource {
 }
 
 const USER_PLACEHOLDER = /\{\{[^{}]+\}\}/;
+const ENV_REFERENCE = /\$\{([^{}]+)\}/g;
 
 /**
  * A changed connection, raw schema, mode or revision requires fresh consent. `env` is the
@@ -53,20 +54,19 @@ export function buildMCPToolApprovalBinding(
   if (!config || requiresEphemeralUserConnection(config)) return undefined;
   const serialized = JSON.stringify(config);
   if (USER_PLACEHOLDER.test(serialized)) return undefined;
-  const names = [...new Set(Array.from(serialized.matchAll(/\$\{([^{}]+)\}/g), (m) => m[1]))];
+  const names = [...new Set(Array.from(serialized.matchAll(ENV_REFERENCE), (m) => m[1]))];
   if (names.length === 0) return digestMCPAuthorityValue({ serverName, config });
   /** processMCPEnv leaves `${NAME}` literal for these tiers, so the environment is not the authority. */
   if (isPluginSourced(config) || config.dbId) return undefined;
   const resolved = resolveApprovalEnv(names, env);
-  if (!resolved) return undefined;
+  if (!resolved || expandsToUserPlaceholder(config, resolved)) return undefined;
   return digestMCPAuthorityValue({ serverName, config, env: resolved });
 }
 
 /**
  * Deployment `${NAME}` references are static, so their resolved values pin the connection:
  * a rotated secret or changed URL yields a new binding. Unset, empty or sensitive names cannot
- * be pinned, nor can a value carrying a `{{...}}` placeholder, which processMCPEnv substitutes
- * per user after env expansion.
+ * be pinned.
  */
 function resolveApprovalEnv(
   names: string[],
@@ -75,10 +75,22 @@ function resolveApprovalEnv(
   const resolved: Record<string, string> = {};
   for (const name of names.sort()) {
     const value = env[name];
-    if (!value || isSensitiveEnvVar(name) || USER_PLACEHOLDER.test(value)) return undefined;
+    if (!value || isSensitiveEnvVar(name)) return undefined;
     resolved[name] = value;
   }
   return resolved;
+}
+
+/**
+ * processMCPEnv expands each string value's env references before substituting `{{...}}` user
+ * values, so a placeholder can appear only once a value is expanded, whether it came whole from
+ * the environment or was split between the template and an env value.
+ */
+function expandsToUserPlaceholder(value: unknown, env: Readonly<Record<string, string>>): boolean {
+  if (typeof value === 'string')
+    return USER_PLACEHOLDER.test(value.replace(ENV_REFERENCE, (ref, name) => env[name] ?? ref));
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value).some((child) => expandsToUserPlaceholder(child, env));
 }
 
 export function attachMCPToolApprovalBindings(

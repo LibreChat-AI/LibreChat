@@ -332,6 +332,20 @@ describe('deployment env references in connection authorities', () => {
     ).toBeUndefined();
   });
 
+  test('a user placeholder split between the template and an env value cannot be remembered', () => {
+    expect(
+      buildMCPToolApprovalBinding(
+        'db',
+        {
+          ...base,
+          headers: { Authorization: 'Bearer ${AUTH_PREFIX}API_KEY}}' },
+          customUserVars: { API_KEY: { title: 'Key', description: 'Per-user key' } },
+        },
+        { AUTH_PREFIX: '{{' },
+      ),
+    ).toBeUndefined();
+  });
+
   test('servers whose env references stay literal at connection time are not resolved', () => {
     expect(
       buildMCPToolApprovalBinding('db', { ...withEnv, source: 'plugin' }, env),
