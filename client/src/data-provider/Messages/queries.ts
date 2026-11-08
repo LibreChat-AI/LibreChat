@@ -15,6 +15,7 @@ import {
   findConvoInAllQueries,
   getResponseStatus,
   isNotFoundError,
+  proveFetchedReplyByIdentity,
   logger,
 } from '~/utils';
 
@@ -308,6 +309,7 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
       refetchOnMount: false,
+      retryOnMount: retryMessagesOnMount(queryClient, id),
       ...config,
     },
   );
@@ -351,19 +353,46 @@ export function usePrefetchConversationMessages(conversationId: string, enabled:
       return;
     }
     const queryKey = [QueryKeys.messages, conversationId];
-    if (queryClient.getQueryState(queryKey) != null) {
+    if (queryClient.getQueryState(queryKey) == null) {
+      prefetched.add(conversationId);
+      queryClient.prefetchQuery(
+        queryKey,
+        () =>
+          loadConversationMessages(queryClient, conversationId, {
+            pathname: pathnameRef.current,
+            isStreaming: () => false,
+          }),
+        { retry: retryPrefetch },
+      );
+    }
+    if (!prefetched.has(conversationId)) {
       return;
     }
-    prefetched.add(conversationId);
-    queryClient.prefetchQuery(
-      queryKey,
-      () =>
-        loadConversationMessages(queryClient, conversationId, {
-          pathname: pathnameRef.current,
-          isStreaming: () => false,
-        }),
-      { retry: retryPrefetch },
-    );
+    /** The record usually lands after the prefetch started, so the fetch captured no reply stamp.
+     *  Prove the prefetched history once both are cached, before the view's seen check reads it.
+     *  True once there is nothing left to prove: proven, replaced, failed, or the view mounted. */
+    const prove = () => {
+      const state = queryClient.getQueryState<t.TMessage[]>(queryKey);
+      if (!prefetched.has(conversationId) || state == null) {
+        return true;
+      }
+      if (state.dataUpdateCount > 1 || state.status === 'error') {
+        return true;
+      }
+      if (state.status !== 'success' || state.data == null) {
+        return false;
+      }
+      return proveFetchedReplyByIdentity(queryClient, conversationId, state.data);
+    };
+    if (prove()) {
+      return;
+    }
+    const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+      if (event.type === 'updated' && event.action.type === 'success' && prove()) {
+        unsubscribe();
+      }
+    });
+    return unsubscribe;
   }, [conversationId, enabled, queryClient]);
 }
 
@@ -380,9 +409,9 @@ function retryPrefetch(failureCount: number, error: unknown): boolean {
 }
 
 /**
- * `retryOnMount` for the conversation view: a view mounting on a prefetch that just failed shows
- * that failure instead of requesting the same messages again. Any other failed entry retries on
- * mount as before.
+ * `retryOnMount` for every observer of a conversation's messages: one mounting on a prefetch that
+ * just failed shows that failure instead of requesting the same messages again. Any other failed
+ * entry, or one invalidated since, retries on mount as before.
  */
 export function retryMessagesOnMount(queryClient: QueryClient, conversationId: string): boolean {
   if (!prefetched.has(conversationId)) {
@@ -392,6 +421,7 @@ export function retryMessagesOnMount(queryClient: QueryClient, conversationId: s
   return !(
     state?.status === 'error' &&
     state.dataUpdateCount === 0 &&
+    !state.isInvalidated &&
     Date.now() - state.errorUpdatedAt < PREFETCH_FRESH_MS
   );
 }
@@ -409,6 +439,10 @@ export function refetchMessagesOnMount(query: Query<t.TMessage[], unknown>): boo
   }
   /** The route prefetches only a conversation the cache has never held, so a second write means
    *  something newer replaced the prefetched payload. */
-  const { dataUpdateCount, dataUpdatedAt } = query.state;
-  return !(dataUpdateCount === 1 && Date.now() - dataUpdatedAt < PREFETCH_FRESH_MS);
+  const { dataUpdateCount, dataUpdatedAt, isInvalidated } = query.state;
+  return !(
+    dataUpdateCount === 1 &&
+    !isInvalidated &&
+    Date.now() - dataUpdatedAt < PREFETCH_FRESH_MS
+  );
 }

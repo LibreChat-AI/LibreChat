@@ -19,7 +19,7 @@ import {
   useGetMessagesByConvoId,
   usePrefetchConversationMessages,
 } from '../queries';
-import { clearMessagesCache, logger } from '~/utils';
+import { clearMessagesCache, hasServerFetchedReply, logger } from '~/utils';
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -902,6 +902,105 @@ describe('usePrefetchConversationMessages', () => {
     } finally {
       clock.mockRestore();
     }
+  });
+
+  it('refetches on mount when the prefetched payload was invalidated before the view mounted', async () => {
+    const conversationId = 'prefetch-invalidated';
+    const queryClient = newClient();
+    mockGet.mockResolvedValue([message({ conversationId, messageId: 'm1' })]);
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() =>
+      expect(queryClient.getQueryState([QueryKeys.messages, conversationId])?.status).toBe(
+        'success',
+      ),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries([QueryKeys.messages, conversationId]);
+    });
+    expect(mockGet).toHaveBeenCalledTimes(1);
+
+    renderHook(() => useView(conversationId), { wrapper });
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+  });
+
+  it('keeps a failed prefetch from being requested again by an observer inside the view', async () => {
+    const conversationId = 'prefetch-nested-failure';
+    const queryClient = newClient();
+    mockGet.mockRejectedValue(Object.assign(new Error('Not found'), { status: 404 }));
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() =>
+      expect(queryClient.getQueryState([QueryKeys.messages, conversationId])?.status).toBe('error'),
+    );
+
+    function Child() {
+      useGetMessagesByConvoId(conversationId, { enabled: true });
+      return null;
+    }
+    function View() {
+      useView(conversationId);
+      return createElement(Child);
+    }
+    const Wrapper = wrapper;
+    render(createElement(Wrapper, null, createElement(View)));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('proves the prefetched history against the reply the conversation record names', async () => {
+    const conversationId = 'prefetch-reply-proof';
+    const queryClient = newClient();
+    const stamp = '2026-11-08T12:00:00.000Z';
+    mockGet.mockResolvedValue([
+      message({ conversationId, messageId: 'question' }),
+      message({ conversationId, messageId: 'reply', isCreatedByUser: false, sender: 'Assistant' }),
+    ]);
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() =>
+      expect(queryClient.getQueryState([QueryKeys.messages, conversationId])?.status).toBe(
+        'success',
+      ),
+    );
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(false);
+
+    act(() => {
+      queryClient.setQueryData([QueryKeys.conversation, conversationId], {
+        conversationId,
+        lastResponseAt: stamp,
+        lastResponseMessageId: 'reply',
+      });
+    });
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(true);
+  });
+
+  it('leaves a reply newer than the prefetched history unproven', async () => {
+    const conversationId = 'prefetch-newer-reply';
+    const queryClient = newClient();
+    const stamp = '2026-11-08T12:05:00.000Z';
+    mockGet.mockResolvedValue([message({ conversationId, messageId: 'older-reply' })]);
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() =>
+      expect(queryClient.getQueryState([QueryKeys.messages, conversationId])?.status).toBe(
+        'success',
+      ),
+    );
+    act(() => {
+      queryClient.setQueryData([QueryKeys.conversation, conversationId], {
+        conversationId,
+        lastResponseAt: stamp,
+        lastResponseMessageId: 'newer-reply',
+      });
+    });
+    expect(hasServerFetchedReply(queryClient, conversationId, stamp)).toBe(false);
   });
 
   it('reconciles on every mount after the first, as before', async () => {

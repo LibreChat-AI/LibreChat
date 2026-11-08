@@ -5,7 +5,6 @@ import type { ChatHost, ChatMessageCache, ChatMessagesQuery } from '@librechat/c
 import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueryClient, QueryCacheNotifyEvent } from '@tanstack/react-query';
 import {
-  retryMessagesOnMount,
   refetchMessagesOnMount,
   useAbortStreamMutation,
   useGetMessagesByConvoId,
@@ -94,7 +93,6 @@ function useMessages(
   conversationId: string | undefined,
   { isStreaming }: { isStreaming: boolean },
 ): ChatMessagesQuery {
-  const queryClient = useQueryClient();
   const {
     data = null,
     isLoading,
@@ -104,7 +102,6 @@ function useMessages(
     {
       enabled: !!conversationId && conversationId !== Constants.SEARCH,
       refetchOnMount: refetchMessagesOnMount,
-      retryOnMount: retryMessagesOnMount(queryClient, conversationId ?? ''),
     },
     { isStreaming },
   );
