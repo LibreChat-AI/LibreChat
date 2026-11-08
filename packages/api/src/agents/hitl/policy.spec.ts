@@ -265,6 +265,18 @@ describe('mapToolApprovalPolicy', () => {
       expect(await decide('read_file_mcp_Acme__Production', target)).toBe('allow');
     });
 
+    test('a server glob widened by normalization still reviews but never grants', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:(*):*'],
+        ask: ['mcp:* (Production):*'],
+      };
+      expect(await decide('read_mcp_github', target)).toBe('deny');
+      expect(isToolBlockedByApprovalPolicy(target, 'read_mcp_github')).toBe(true);
+      expect(await decide('read_mcp_Acme__Production', target)).toBe('ask');
+    });
+
     test('a server glob never crosses into a server whose name contains the delimiter', async () => {
       const target: TToolApprovalPolicy = {
         enabled: true,

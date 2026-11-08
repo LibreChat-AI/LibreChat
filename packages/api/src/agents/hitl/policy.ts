@@ -155,6 +155,8 @@ interface MCPToolApprovalPattern {
   server: RegExp;
   /** The one runtime key a glob-free entry names. */
   key?: string;
+  /** Trimming widened the server glob (`(*)` became `*`), so it may not grant. */
+  widened?: boolean;
 }
 
 /** Anchored-glob matcher mirroring the SDK's `createToolPolicyHook` semantics exactly. */
@@ -166,12 +168,15 @@ function globToRegex(pattern: string): RegExp {
 /**
  * Normalizes a globbed server pattern the way `normalizeServerName` normalizes a name:
  * unsupported characters become `_` and the name's outer edges lose their underscores.
+ * `widened` reports that the edge trim dropped characters, which loosens the glob.
  */
-function normalizeServerGlob(server: string): string {
+function normalizeServerGlob(server: string): { glob: string; widened: boolean } {
   const parts = server.split('*').map((part) => part.replace(UNSUPPORTED_SERVER_CHARS, '_'));
+  const replaced = parts.join('*');
   parts[0] = parts[0].replace(/^_+/, '');
   parts[parts.length - 1] = parts[parts.length - 1].replace(/_+$/, '');
-  return parts.join('*');
+  const glob = parts.join('*');
+  return { glob, widened: glob !== replaced };
 }
 
 /**
@@ -189,14 +194,15 @@ function parseMCPToolApprovalPattern(pattern: string): MCPToolApprovalPattern | 
   }
   const server = rest.slice(0, separator);
   const tool = rest.slice(separator + 1);
-  const serverKey = server.includes('*')
-    ? normalizeServerGlob(server)
-    : normalizeServerName(server);
-  const literal = !server.includes('*') && !tool.includes('*');
+  if (server.includes('*')) {
+    const { glob, widened } = normalizeServerGlob(server);
+    return { tool: globToRegex(tool), server: globToRegex(glob), widened };
+  }
+  const serverKey = normalizeServerName(server);
   return {
     tool: globToRegex(tool),
     server: globToRegex(serverKey),
-    ...(literal ? { key: `${tool}${Constants.mcp_delimiter}${serverKey}` } : {}),
+    ...(tool.includes('*') ? {} : { key: `${tool}${Constants.mcp_delimiter}${serverKey}` }),
   };
 }
 
@@ -207,7 +213,8 @@ function parseMCPToolApprovalPattern(pattern: string): MCPToolApprovalPattern | 
  * `_mcp_` delimiters is otherwise ambiguous without the server registry: a globbed `grant`
  * (an `allow` entry) only reads it at the first delimiter, so a server named
  * `Google_mcp_Workspace` is never granted by `mcp:Workspace:*`, while `ask` and `deny`
- * entries match at any delimiter and so err toward review or refusal.
+ * entries match at any delimiter and so err toward review or refusal. A server glob that
+ * normalization widened never grants, for the same reason.
  */
 function matchesToolApprovalPattern(pattern: string, toolName: string, grant: boolean): boolean {
   const mcp = parseMCPToolApprovalPattern(pattern);
@@ -216,6 +223,9 @@ function matchesToolApprovalPattern(pattern: string, toolName: string, grant: bo
   }
   if (mcp.key != null) {
     return mcp.key === toolName;
+  }
+  if (grant && mcp.widened === true) {
+    return false;
   }
   const delimiter = Constants.mcp_delimiter;
   for (
