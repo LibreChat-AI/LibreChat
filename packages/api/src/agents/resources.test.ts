@@ -2039,6 +2039,58 @@ describe('primeResources', () => {
       expect(attachmentIds).toContain('none-file');
     });
 
+    describe('a spreadsheet stored for Run Code without text', () => {
+      const sheet = (deferred: boolean): TFile =>
+        ({
+          user: 'user1',
+          file_id: 'sheet',
+          filename: 'pivot.xlsx',
+          filepath: '/path/pivot.xlsx',
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          bytes: 18_769_510,
+          object: 'file' as const,
+          usage: 0,
+          embedded: false,
+          llmDeliveryPath: 'none',
+          metadata: {
+            destinationChosen: false,
+            ...(deferred ? { textDerivation: 'deferred' } : {}),
+          },
+        }) as TFile;
+      const prime = (file: TFile, tool_resources = {}, attachments?: Promise<TFile[]>) =>
+        primeResources({
+          req: mockReq,
+          appConfig: mockAppConfig,
+          getFiles: mockGetFiles,
+          filterFiles: mockFilterFiles,
+          tool_resources,
+          attachments,
+          requestFileSet,
+          agentId: 'agent1',
+          enabledToolResources: new Set([EToolResources.file_search]),
+        });
+      const queued = (result: Awaited<ReturnType<typeof prime>>) =>
+        result.provisionState?.vectorDBFiles.map((f) => f.file_id) ?? [];
+
+      it('stays off the File Search queue as a message attachment', async () => {
+        const result = await prime(sheet(true), {}, Promise.resolve([sheet(true)]));
+        expect(queued(result)).not.toContain('sheet');
+      });
+
+      it('is queued without the marker', async () => {
+        const result = await prime(sheet(false), {}, Promise.resolve([sheet(false)]));
+        expect(queued(result)).toContain('sheet');
+      });
+
+      it('is queued when the agent holds it for File Search', async () => {
+        mockGetFiles.mockResolvedValue([sheet(true)]);
+        const result = await prime(sheet(true), {
+          [EToolResources.file_search]: { file_ids: ['sheet'] },
+        });
+        expect(queued(result)).toContain('sheet');
+      });
+    });
+
     it('should include llmDeliveryPath "none" files in lazy provisioning state', async () => {
       const noneFile: TFile = {
         user: 'user1',

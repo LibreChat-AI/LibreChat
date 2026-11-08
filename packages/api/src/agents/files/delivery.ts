@@ -56,8 +56,36 @@ export function resolveTurnDeliveryRouting({
   };
 }
 
+/** What a turn without Run Code reads in place of a spreadsheet stored for Run Code alone. */
+export const getDeferredTextNote = (filename?: string | null): string =>
+  `The spreadsheet "${filename ?? 'attachment'}" was stored for Run Code and its contents were not extracted as text. It can only be read with Run Code (code execution). If Run Code is not available in this chat, tell the user to enable it and send the message again.`;
+
+/** One attachment as this turn delivers it, without mutating the stored record. A record whose
+ *  text was deferred at upload (`textDerivation: 'deferred'`) carries the note when sent as text. */
+export function resolveTurnAttachment<
+  T extends TurnDeliveryFile & { filename?: string | null; bytes?: number },
+>(file: T, routing: TurnDeliveryRouting | undefined, consumers: TurnFileConsumers | undefined): T {
+  if (routing == null || !hasInferredLLMDeliveryPath(file)) {
+    return file;
+  }
+  const llmDeliveryPath = resolveTurnLLMDeliveryPath(routing, file, consumers);
+  /* An endpoint whose route for the type is 'none' with no file tool still delivers nothing,
+   * like any unreadable type today. */
+  if (llmDeliveryPath === 'text' && !file.text && file.metadata?.textDerivation === 'deferred') {
+    const text = getDeferredTextNote(file.filename);
+    /* bytes = the note, so per-file and aggregate size limits price what is actually sent. */
+    return { ...file, llmDeliveryPath, text, bytes: Buffer.byteLength(text) };
+  }
+  if (llmDeliveryPath == null || llmDeliveryPath === file.llmDeliveryPath) {
+    return file;
+  }
+  return { ...file, llmDeliveryPath };
+}
+
 /** Materialize the exact turn route before admission without mutating stored records. */
-export function applyTurnDelivery<T extends TurnDeliveryFile>(
+export function applyTurnDelivery<
+  T extends TurnDeliveryFile & { filename?: string | null; bytes?: number },
+>(
   files: T[],
   { routing, consumers }: { routing?: TurnDeliveryRouting; consumers?: TurnFileConsumers },
 ): T[] {
@@ -66,15 +94,9 @@ export function applyTurnDelivery<T extends TurnDeliveryFile>(
   }
   let changed = false;
   const result = files.map((file) => {
-    if (!hasInferredLLMDeliveryPath(file)) {
-      return file;
-    }
-    const llmDeliveryPath = resolveTurnLLMDeliveryPath(routing, file, consumers);
-    if (llmDeliveryPath == null || llmDeliveryPath === file.llmDeliveryPath) {
-      return file;
-    }
-    changed = true;
-    return { ...file, llmDeliveryPath };
+    const next = resolveTurnAttachment(file, routing, consumers);
+    changed ||= next !== file;
+    return next;
   });
   return changed ? result : files;
 }
@@ -99,7 +121,9 @@ export function applyCheckpointDelivery<T extends TurnDeliveryFile>(files: T[]):
  * from the shared prompt to its scoped context. The existing scoped-context pipeline owns
  * endpoint filtering, aggregate admission, inspection and extraction for these copies.
  */
-export function resolveScopedTurnAttachments<T extends TurnDeliveryFile & { file_id: string }>({
+export function resolveScopedTurnAttachments<
+  T extends TurnDeliveryFile & { file_id: string } & { filename?: string | null; bytes?: number },
+>({
   agents,
   sharedConversationAgentIds,
   resendFiles,
@@ -144,8 +168,8 @@ export function resolveScopedTurnAttachments<T extends TurnDeliveryFile & { file
     const files = new Map(scoped.map((file) => [file.file_id, file]));
     for (const [fileId, file] of sharedAgents.has(agentId) ? candidates : []) {
       if (files.has(fileId)) continue;
-      const path = resolveTurnLLMDeliveryPath(agent.deliveryRouting, file, agent.fileConsumers);
-      if (path === 'text' && file.text) files.set(fileId, { ...file, llmDeliveryPath: path });
+      const resolved = resolveTurnAttachment(file, agent.deliveryRouting, agent.fileConsumers);
+      if (resolved.llmDeliveryPath === 'text' && resolved.text) files.set(fileId, resolved);
     }
     result.set(agentId, [...files.values()]);
   }

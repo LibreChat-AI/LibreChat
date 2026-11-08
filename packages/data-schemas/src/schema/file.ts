@@ -201,6 +201,17 @@ const file: Schema<IMongoFile> = new Schema(
         type: String,
         default: undefined,
       },
+      /** #16848: `deferred` means text was intentionally not extracted at upload; Run Code reads the original. */
+      textDerivation: { type: String, enum: ['deferred'], default: undefined },
+      /** PDF pages and extracted characters counted at upload; they price a PDF the provider reads. */
+      pageCount: {
+        type: Number,
+        default: undefined,
+      },
+      textChars: {
+        type: Number,
+        default: undefined,
+      },
       /** Copies placed in attached workspaces, keyed by opaque target digests; written only
        *  through `recordFileWorkspaceImport`. Mixed for the same dotted-key reason as
        *  `codeEnvRefs`. */

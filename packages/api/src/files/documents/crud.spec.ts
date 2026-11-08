@@ -1,7 +1,25 @@
 import path from 'path';
 import * as fs from 'fs';
 import JSZip from 'jszip';
-import { parseDocument } from './crud';
+import { parseDocument, measurePdf } from './crud';
+
+const mockDestroy = jest.fn(async () => undefined);
+
+jest.mock(
+  'pdfjs-dist/legacy/build/pdf.mjs',
+  () => ({
+    getDocument: () => ({
+      promise: Promise.resolve({
+        numPages: 2,
+        getPage: async (i: number) => ({
+          getTextContent: async () => ({ items: [{ str: `page ${i}` }] }),
+        }),
+        destroy: () => mockDestroy(),
+      }),
+    }),
+  }),
+  { virtual: true },
+);
 
 describe('Document Parser', () => {
   test('parseDocument() parses text from docx', async () => {
@@ -230,6 +248,30 @@ describe('Document Parser', () => {
       images: [],
       text: 'Empty:\n\n',
     });
+  });
+
+  test('measurePdf() counts pages and characters', async () => {
+    const file = {
+      path: path.join(__dirname, 'sample.docx'),
+      size: 100,
+      originalname: 'a.pdf',
+      mimetype: 'application/pdf',
+    } as Express.Multer.File;
+
+    mockDestroy.mockClear();
+    await expect(measurePdf(file)).resolves.toEqual({ pageCount: 2, textChars: 14 });
+    expect(mockDestroy).toHaveBeenCalledTimes(1);
+  });
+
+  test('measurePdf() skips a PDF over the parser limit', async () => {
+    const file = {
+      path: path.join(__dirname, 'sample.docx'),
+      size: 15 * 1024 * 1024 + 1,
+      originalname: 'a.pdf',
+      mimetype: 'application/pdf',
+    } as Express.Multer.File;
+
+    await expect(measurePdf(file)).resolves.toBeUndefined();
   });
 
   test('xlsx exports read and utils as named imports', async () => {
