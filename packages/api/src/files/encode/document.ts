@@ -16,16 +16,13 @@ import type {
   ServerRequest,
 } from '~/types';
 import type { ReachableAgent } from '~/agents/traversal';
+import type { MissingAttachmentHandler } from './utils';
 import {
   CONTENT_TRAVERSAL_MAX_DEPTH,
   CONTENT_TRAVERSAL_MAX_NODES,
   ContentTraversalLimitError,
 } from '~/protection/adapters/nested';
-import {
-  getFileStream,
-  getConfiguredFileSizeLimit,
-  isAttachmentObjectNotFoundError,
-} from './utils';
+import { getFileStream, getConfiguredFileSizeLimit, skipMissingAttachment } from './utils';
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
 import { someReachableAgent } from '~/agents/traversal';
 import { runGuardedEncode } from './memoryGuard';
@@ -318,10 +315,16 @@ function getBase64DecodedByteCount(content: string): number {
 export async function encodeAndFormatDocuments(
   req: ServerRequest,
   files: IMongoFile[],
-  params: { provider: Providers; endpoint?: string; useResponsesApi?: boolean; model?: string },
+  params: {
+    provider: Providers;
+    endpoint?: string;
+    useResponsesApi?: boolean;
+    model?: string;
+    onMissingFile?: MissingAttachmentHandler;
+  },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<DocumentResult> {
-  const { provider, endpoint, useResponsesApi, model } = params;
+  const { provider, endpoint, useResponsesApi, model, onMissingFile } = params;
   if (!files?.length) {
     return { documents: [], files: [] };
   }
@@ -352,10 +355,10 @@ export async function encodeAndFormatDocuments(
     ),
   );
 
-  for (const settledResult of results) {
+  for (const [index, settledResult] of results.entries()) {
     if (settledResult.status === 'rejected') {
-      if (isAttachmentObjectNotFoundError(settledResult.reason)) {
-        throw settledResult.reason;
+      if (skipMissingAttachment(settledResult.reason, processableFiles[index], onMissingFile)) {
+        continue;
       }
       console.error('Document processing failed:', settledResult.reason);
       continue;
