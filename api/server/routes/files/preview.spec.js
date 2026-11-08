@@ -60,6 +60,10 @@ jest.mock('~/server/services/PermissionService', () => ({
   getResourcePermissionsMap: jest.fn().mockResolvedValue(new Map()),
 }));
 
+jest.mock('~/server/services/Config', () => ({
+  checkCapability: jest.fn(),
+}));
+
 jest.mock('~/server/utils/files', () => ({
   cleanFileName: (name) => name,
   getContentDisposition: (name) => `attachment; filename="${name}"`,

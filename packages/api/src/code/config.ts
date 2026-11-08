@@ -31,6 +31,38 @@ type StatefulCodeConfig = NonNullable<
 >['statefulCodeSessions'];
 type CodeEnvironmentConfig = NonNullable<NonNullable<StatefulCodeConfig>['environments']>[number];
 
+export type CodeDefaultProfile = 'default' | 'stateful';
+
+const warnedCodeDefaultProfiles = new Set<string>();
+
+export function resolveCodeDefaultProfile(configured?: string): CodeDefaultProfile {
+  const trimmedProfile = configured?.trim() ?? '';
+  if (trimmedProfile === 'stateful') return 'stateful';
+  if (
+    trimmedProfile !== '' &&
+    trimmedProfile !== 'default' &&
+    !warnedCodeDefaultProfiles.has(trimmedProfile)
+  ) {
+    warnedCodeDefaultProfiles.add(trimmedProfile);
+    logger.warn(
+      `[resolveCodeDefaultProfile] Unknown LIBRECHAT_CODE_DEFAULT_PROFILE "${trimmedProfile}"; using "default"`,
+    );
+  }
+  return 'default';
+}
+
+export function getCodeDefaultProfile(
+  configured: string | undefined = process.env.LIBRECHAT_CODE_DEFAULT_PROFILE,
+): CodeDefaultProfile {
+  return resolveCodeDefaultProfile(configured);
+}
+
+export function isStatefulCodeDefaultProfile(
+  configured: string | undefined = process.env.LIBRECHAT_CODE_DEFAULT_PROFILE,
+): boolean {
+  return getCodeDefaultProfile(configured) === 'stateful';
+}
+
 function conversationMovesEnabled(appConfig?: Pick<AppConfig, 'endpoints'> | null): boolean {
   return (
     appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.conversationMoves
