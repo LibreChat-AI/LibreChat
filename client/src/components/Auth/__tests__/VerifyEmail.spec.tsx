@@ -5,9 +5,7 @@ import VerifyEmail from '~/components/Auth/VerifyEmail';
 import * as dataProvider from '~/data-provider';
 
 jest.mock('@librechat/client', () => ({
-  Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button {...props}>{children}</button>
-  ),
+  ...jest.requireActual('@librechat/client'),
   Spinner: () => null,
   ThemeSelector: () => null,
 }));
