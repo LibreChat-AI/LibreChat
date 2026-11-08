@@ -367,7 +367,13 @@ export async function openCodeFileSource<T>(
   try {
     const source = await open();
     if (isReadableStream(source) && !source.readableEnded) {
-      await once(source, 'readable', signal ? { signal } : undefined);
+      try {
+        await once(source, 'readable', signal ? { signal } : undefined);
+      } catch (error) {
+        /* The caller never receives this stream, so nothing else can close it. */
+        source.destroy();
+        throw error;
+      }
     }
     return source;
   } catch (error) {

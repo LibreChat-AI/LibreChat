@@ -1,5 +1,5 @@
-import { Readable } from 'node:stream';
 import { createReadStream } from 'node:fs';
+import { PassThrough, Readable } from 'node:stream';
 import { FileContext } from 'librechat-data-provider';
 import type { CodeEnvRef, TFile } from 'librechat-data-provider';
 import {
@@ -398,6 +398,16 @@ describe('openCodeFileSource', () => {
       chunks.push(String(chunk));
     }
     expect(chunks.join('')).toBe('first,second');
+  });
+
+  it('destroys a stream it was still holding when the turn is cancelled', async () => {
+    const stream = new PassThrough();
+    const controller = new AbortController();
+    const opened = openCodeFileSource(async () => stream, controller.signal);
+    controller.abort();
+
+    await expect(opened).rejects.toMatchObject({ name: 'AbortError' });
+    expect(stream.destroyed).toBe(true);
   });
 
   it('passes other storage failures through unchanged', async () => {
