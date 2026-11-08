@@ -335,6 +335,22 @@ describe('terminal agent-run error logging', () => {
     observer.modelCallback.handleLLMError(providerError);
 
     expect(observer.getUserFacingError(terminalError, () => 'fallback')).toBe(
+      JSON.stringify({ type: 'model_rate_limit', info: 'rate limited' }),
+    );
+  });
+
+  it('withholds the provider message of a classified failure under protection', () => {
+    const observer = createTerminalRunErrorObserver({
+      logger: { error: jest.fn() },
+      source: '[Agent API]',
+      protectionEnabled: true,
+    });
+    const providerError = Object.assign(new Error('429 PRIVATE-DETAIL'), {
+      lc_error_code: 'MODEL_RATE_LIMIT',
+    });
+    observer.modelCallback.handleLLMError(providerError);
+
+    expect(observer.getUserFacingError(providerError, () => 'fallback')).toBe(
       JSON.stringify({ type: 'model_rate_limit' }),
     );
   });
@@ -481,6 +497,17 @@ describe('getUserFacingGenerationError', () => {
     expect(getUserFacingGenerationError(error, protectedConfig, 'Generation failed')).toBe(
       JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT }),
     );
+  });
+
+  it('keeps the redacted provider message of a classified failure without protection', () => {
+    const error = Object.assign(
+      new Error('429 Budget exhausted for user@example.com, ask the service desk'),
+      { lc_error_code: 'MODEL_RATE_LIMIT' },
+    );
+    const payload = JSON.parse(getUserFacingGenerationError(error, {}, 'Generation failed'));
+    expect(payload.type).toBe(ErrorTypes.MODEL_RATE_LIMIT);
+    expect(payload.info).toContain('Budget exhausted for');
+    expect(payload.info).not.toContain('user@example.com');
   });
 
   it('keeps the host-authored message of a content policy block under protection', () => {

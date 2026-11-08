@@ -96,14 +96,42 @@ export function getLangChainErrorCode(error: unknown): string | undefined {
   return parseLangChainErrorCode(message);
 }
 
+export interface LangChainErrorOptions {
+  /**
+   * Whether the provider's own message may ride along as `info`. A gateway in front of the provider
+   * often explains the failure there (a spending limit, where to ask for more), which the localized
+   * copy cannot. Off by default because the text may echo submitted content.
+   */
+  includeProviderMessage?: boolean;
+  maxProviderErrorChars?: number;
+  /** Applies the caller's disclosure policy (for example redaction) to the included message. */
+  formatProviderMessage?: (message: string) => string;
+}
+
+/** A status prefix like `429 ` repeats what the classification already says. */
+const STATUS_PREFIX = /^\d{3}(?:\s+|$)/;
+
 /**
  * Typed payload the client localizes for a classified LangChain failure, or `undefined` when the
  * code has no localized copy and the provider's own message should be shown instead.
  */
-export function resolveLangChainError(error: unknown): string | undefined {
+export function resolveLangChainError(
+  error: unknown,
+  options: LangChainErrorOptions = {},
+): string | undefined {
   const code = getLangChainErrorCode(error);
   const type = code == null ? undefined : LANGCHAIN_ERROR_TYPES[code];
-  return type == null ? undefined : JSON.stringify({ type });
+  if (type == null) {
+    return undefined;
+  }
+  const message =
+    options.includeProviderMessage === true
+      ? getProviderErrorMessage(error, options.maxProviderErrorChars)
+          ?.replace(STATUS_PREFIX, '')
+          .trim()
+      : undefined;
+  const info = message ? (options.formatProviderMessage?.(message) ?? message).trim() : '';
+  return JSON.stringify(info ? { type, info } : { type });
 }
 
 export type ModelStreamFailure = 'closed' | 'stalled';

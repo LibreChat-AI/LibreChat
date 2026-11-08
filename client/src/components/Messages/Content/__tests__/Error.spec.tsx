@@ -264,6 +264,18 @@ describe('Error — reader-facing provider and fallback copy', () => {
     expectReadable();
   });
 
+  it.each([
+    [ErrorTypes.MODEL_RATE_LIMIT, 'com_error_model_rate_limit'],
+    [ErrorTypes.MODEL_NOT_FOUND, 'com_error_model_not_found'],
+  ])('keeps the gateway explanation a classified %s carries as its detail', (type, key) => {
+    const info = 'You reached your assigned budget. Ask for more at the service desk.';
+    renderError({ type, info });
+
+    expect(screen.getByText(catalog[key])).toBeInTheDocument();
+    expect(screen.getByText(info)).toBeInTheDocument();
+    expectReadable();
+  });
+
   it('keeps provider text for a LangChain code without localized copy, minus the URL', () => {
     const raw =
       'An error occurred while processing the request: could not parse output\n\nTroubleshooting URL: https://docs.langchain.com/oss/javascript/langchain/errors/OUTPUT_PARSING_FAILURE/\n';
