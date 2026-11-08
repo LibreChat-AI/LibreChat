@@ -277,6 +277,17 @@ describe('mapToolApprovalPolicy', () => {
       expect(isToolBlockedByApprovalPolicy(target, other)).toBe(true);
       expect(isToolBlockedByApprovalPolicy(target, 'read_mcp_Workspace')).toBe(false);
     });
+
+    test('a glob-free entry matches its exact key even when the tool name contains the delimiter', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:Workspace:read_mcp_file'],
+      };
+      expect(await decide('read_mcp_file_mcp_Workspace', target)).toBe('allow');
+      expect(isToolBlockedByApprovalPolicy(target, 'read_mcp_file_mcp_Workspace')).toBe(false);
+      expect(await decide('read_mcp_Workspace', target)).toBe('deny');
+    });
   });
 
   test('strips enabled regardless of value (LibreChat-only field)', () => {

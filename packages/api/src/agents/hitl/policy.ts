@@ -153,6 +153,8 @@ const UNSUPPORTED_SERVER_CHARS = /[^a-zA-Z0-9_.-]/g;
 interface MCPToolApprovalPattern {
   tool: RegExp;
   server: RegExp;
+  /** The one runtime key a glob-free entry names. */
+  key?: string;
 }
 
 /** Anchored-glob matcher mirroring the SDK's `createToolPolicyHook` semantics exactly. */
@@ -186,24 +188,34 @@ function parseMCPToolApprovalPattern(pattern: string): MCPToolApprovalPattern | 
     return undefined;
   }
   const server = rest.slice(0, separator);
+  const tool = rest.slice(separator + 1);
   const serverKey = server.includes('*')
     ? normalizeServerGlob(server)
     : normalizeServerName(server);
-  return { tool: globToRegex(rest.slice(separator + 1)), server: globToRegex(serverKey) };
+  const literal = !server.includes('*') && !tool.includes('*');
+  return {
+    tool: globToRegex(tool),
+    server: globToRegex(serverKey),
+    ...(literal ? { key: `${tool}${Constants.mcp_delimiter}${serverKey}` } : {}),
+  };
 }
 
 /**
  * Whether one policy entry matches a runtime tool name. An `mcp:<server>:<tool>` entry is
  * matched per segment against `<tool>_mcp_<server>`, never as one glob, so `*` cannot
- * cross the server boundary. A key with several `_mcp_` delimiters is ambiguous without
- * the server registry: a `grant` (an `allow` entry) only reads it at the first delimiter,
- * so a server named `Google_mcp_Workspace` is never granted by `mcp:Workspace:*`, while
- * `ask` and `deny` entries match at any delimiter and so err toward review or refusal.
+ * cross the server boundary. A glob-free entry names exactly one key. A key with several
+ * `_mcp_` delimiters is otherwise ambiguous without the server registry: a globbed `grant`
+ * (an `allow` entry) only reads it at the first delimiter, so a server named
+ * `Google_mcp_Workspace` is never granted by `mcp:Workspace:*`, while `ask` and `deny`
+ * entries match at any delimiter and so err toward review or refusal.
  */
 function matchesToolApprovalPattern(pattern: string, toolName: string, grant: boolean): boolean {
   const mcp = parseMCPToolApprovalPattern(pattern);
   if (!mcp) {
     return globToRegex(pattern).test(toolName);
+  }
+  if (mcp.key != null) {
+    return mcp.key === toolName;
   }
   const delimiter = Constants.mcp_delimiter;
   for (
