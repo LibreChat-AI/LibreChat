@@ -1,11 +1,10 @@
 import React from 'react';
 import { InfoIcon } from 'lucide-react';
+import { CopyButton, LangIcon } from '@librechat/chat/components';
 import type { CodeBarProps } from '~/common';
 import useDownloadCode from '~/components/Messages/Content/useDownloadCode';
 import DownloadButton from '~/components/Messages/Content/DownloadButton';
 import useCopyCode from '~/components/Messages/Content/useCopyCode';
-import CopyButton from '~/components/Messages/Content/CopyButton';
-import LangIcon from '~/components/Messages/Content/LangIcon';
 import RunCode from '~/components/Messages/Content/RunCode';
 import { useLocalize } from '~/hooks';
 

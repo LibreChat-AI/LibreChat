@@ -5,10 +5,19 @@ import { ReasoningCompact } from '../Reasoning';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  CopyButton: () => <button type="button">{'copy'}</button>,
   useExpandCollapse: (isExpanded: boolean) => ({
     style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
     ref: { current: null },
   }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useLazyCollapseBody: (isExpanded: boolean) => ({
     shouldRenderBody: isExpanded,
     mountBody: jest.fn(),
@@ -21,11 +30,6 @@ jest.mock('../Thinking', () => ({
   ThinkingButton: () => <button type="button">{'thinking'}</button>,
   FloatingThinkingBar: () => null,
   useInViewport: () => ({ ref: { current: null }, inViewport: true }),
-}));
-
-jest.mock('~/components/Messages/Content/CopyButton', () => ({
-  __esModule: true,
-  default: () => <button type="button">{'copy'}</button>,
 }));
 
 jest.mock('lucide-react', () => ({

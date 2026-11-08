@@ -791,6 +791,28 @@ describe('groupActivityPhases — what a fold may not swallow', () => {
     expect(foldOf(segments)?.contentIndices).toEqual([0, 1, 2, 3, 4]);
   });
 
+  it('folds exactly the tool call, reasoning, activity label and handoff part types', () => {
+    const between = (part: TMessageContentParts) =>
+      foldOf(
+        groupActivityPhases([
+          toolPart('t1'),
+          childLabel('Read the config'),
+          part,
+          toolPart('t2'),
+          childLabel('Checked the callers'),
+        ]),
+      )?.contentIndices;
+    const think = { type: ContentTypes.THINK, think: 'step' } as unknown as TMessageContentParts;
+    const image = {
+      type: ContentTypes.IMAGE_FILE,
+      image_file: { file_id: 'f1', filepath: '/images/a.png' },
+    } as unknown as TMessageContentParts;
+
+    expect(between(toolPart('t3'))).toEqual([0, 1, 2, 3, 4]);
+    expect(between(think)).toEqual([0, 1, 2, 3, 4]);
+    expect(between(image)).toBeUndefined();
+  });
+
   it('does not count orphan labels that head no group', () => {
     expect(
       groupActivityPhases([childLabel('Read the config'), childLabel('Checked the callers')]),

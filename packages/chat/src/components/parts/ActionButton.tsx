@@ -1,8 +1,7 @@
 import React from 'react';
 import { Check } from 'lucide';
-import { MorphIcon, TooltipAnchor } from '@librechat/client';
+import { MorphIcon, TooltipAnchor, cn, disabledInkClasses } from '@librechat/client';
 import type { IconInput } from '@librechat/client';
-import cn from '~/utils/cn';
 
 interface ActionButtonProps {
   icon: IconInput;
@@ -19,7 +18,9 @@ interface ActionButtonProps {
   disabled?: boolean;
 }
 
-const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
+const ActionButton: React.ForwardRefExoticComponent<
+  ActionButtonProps & React.RefAttributes<HTMLButtonElement>
+> = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
   (
     {
       icon,
@@ -49,7 +50,8 @@ const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
         className={cn(
           'text-text-secondary inline-flex items-center justify-center transition-all duration-200 ease-out select-none',
           'hover:bg-surface-hover hover:text-text-primary',
-          'disabled:pointer-events-none disabled:opacity-50',
+          'disabled:pointer-events-none',
+          disabledInkClasses,
           'focus-visible:outline-focus-subtle focus-visible:outline focus-visible:outline-2',
           iconOnly && (compact ? 'rounded-md p-1' : 'rounded-lg p-1.5'),
           !iconOnly && 'ms-auto gap-2 rounded-md px-2 py-1',

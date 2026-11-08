@@ -14,6 +14,8 @@ import {
   parseToolName,
   getOutcomeStatus,
   summarizeSpan,
+  getBatchActivityLabelPart,
+  getActivityLabelText,
 } from '@librechat/chat';
 import {
   FOLD_RAIL_CLASSES,
@@ -30,19 +32,14 @@ import {
   useFailedRevealTrigger,
   ToolAuthWarning,
   ToolAuthWarningContext,
+  useExpandCollapse,
 } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { ToolMeta } from '@librechat/chat';
 import type { PartWithIndex } from './ParallelContent';
-import {
-  cn,
-  getPartKeyIndex,
-  hasPendingAuthInPart,
-  getBatchActivityLabelPart,
-  getActivityLabelText,
-} from '~/utils';
-import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
+import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import { cn, getPartKeyIndex, hasPendingAuthInPart } from '~/utils';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { MCPAppViews } from '~/components/MCPUIResource';

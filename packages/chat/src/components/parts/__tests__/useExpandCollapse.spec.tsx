@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import { renderHook } from '@testing-library/react';
 import useExpandCollapse, {
   EXPAND_TRANSITION,

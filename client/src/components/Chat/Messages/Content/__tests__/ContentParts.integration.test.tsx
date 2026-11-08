@@ -21,6 +21,7 @@ jest.mock('~/data-provider', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
+  scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
   useLocalize: () => (key: string, values?: Record<string | number, string>) => {
     if (key === 'com_ui_ran_n_actions') {
       return `Ran ${values?.[0]} actions`;
@@ -33,11 +34,18 @@ jest.mock('~/hooks', () => ({
     }
     return key;
   },
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
     ref: { current: null },
   }),
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useProgress: (initial: number) => (initial >= 1 ? 1 : initial),
   scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
 }));

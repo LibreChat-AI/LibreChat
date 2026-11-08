@@ -1,7 +1,13 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import { Button } from '@librechat/client';
-import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES, BareStatus } from '@librechat/chat/components';
+import {
+  PANE_COPY_REVEAL,
+  TOOL_ROW_CLASSES,
+  BareStatus,
+  CopyButton,
+  LangIcon,
+} from '@librechat/chat/components';
 import {
   toolPanelSpacingClassName,
   useToolContentPending,
@@ -18,8 +24,6 @@ import {
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import CopyButton from '~/components/Messages/Content/CopyButton';
-import LangIcon from '~/components/Messages/Content/LangIcon';
 import CommandTime, { useCommandClock } from './CommandTime';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
