@@ -333,3 +333,44 @@ export function formatMissingCodeFilesNote(filenames: string[]): string {
     'If they are needed, ask the user to upload them again.'
   );
 }
+
+/** Category `getReuploadFailureCategory` assigns to a source object storage no longer has. */
+const MISSING_BACKING_OBJECT = 'missing_backing_object';
+
+/**
+ * Tallies the reupload failures of one priming pass. A file storage deleted is named to the
+ * model instead of failing the turn; only the other categories can require resource recovery.
+ */
+export function createCodeReuploadFailures(): {
+  add: (category: string, file: Pick<CodeContextFile, 'file_id' | 'filename'>) => void;
+  readonly count: number;
+  readonly missingCount: number;
+  requiresRecovery: (required: number, primed: number) => boolean;
+  recoveryCategory: () => string;
+  missingFilesContext: () => string;
+} {
+  let count = 0;
+  const categories = new Set<string>();
+  const missingFilenames: string[] = [];
+  return {
+    add: (category, file) => {
+      count += 1;
+      if (category === MISSING_BACKING_OBJECT) {
+        missingFilenames.push(file.filename || file.file_id);
+        return;
+      }
+      categories.add(category);
+    },
+    get count() {
+      return count;
+    },
+    get missingCount() {
+      return missingFilenames.length;
+    },
+    requiresRecovery: (required, primed) =>
+      required > 0 && primed === 0 && count === required && categories.size > 0,
+    recoveryCategory: () =>
+      categories.size === 1 ? Array.from(categories)[0] : 'mixed_reupload_failure',
+    missingFilesContext: () => formatMissingCodeFilesNote(missingFilenames),
+  };
+}

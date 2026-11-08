@@ -72,7 +72,7 @@ jest.mock('@librechat/api', () => {
       jest.requireActual('@librechat/api').prepareCodeOutputBufferForInspection,
     getCodeFileContextLine: jest.requireActual('@librechat/api').getCodeFileContextLine,
     appendCodeFileContextLine: jest.requireActual('@librechat/api').appendCodeFileContextLine,
-    formatMissingCodeFilesNote: jest.requireActual('@librechat/api').formatMissingCodeFilesNote,
+    createCodeReuploadFailures: jest.requireActual('@librechat/api').createCodeReuploadFailures,
     resolveDownloadPath: (file) => file.storageKey || file.filepath,
     logAxiosError: jest.fn(),
     /* Behaviourally identical to the real predicate in

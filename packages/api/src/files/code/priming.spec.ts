@@ -5,6 +5,7 @@ import {
   getCodeFileLocation,
   getCodeFileContextLine,
   appendCodeFileContextLine,
+  createCodeReuploadFailures,
 } from './priming';
 
 const file = (id: string, name: string, ref: Partial<CodeEnvRef> = {}, time = 1): TFile =>
@@ -365,5 +366,39 @@ describe('code file context', () => {
     expect(getCodeFileContextLine(output, new Set(), 'chart-1.png', 'programmatic')).toBe(
       '\n\t- $LIBRECHAT_CODE_DATA_DIR/chart-1.png (written earlier as chart.png)',
     );
+  });
+});
+
+describe('createCodeReuploadFailures', () => {
+  const file = (file_id: string, filename: string) => ({ file_id, filename });
+
+  it('names files deleted from storage without requiring recovery', () => {
+    const failures = createCodeReuploadFailures();
+    failures.add('missing_backing_object', file('a', 'report.csv'));
+    failures.add('missing_backing_object', file('b', ''));
+
+    expect(failures.count).toBe(2);
+    expect(failures.missingCount).toBe(2);
+    expect(failures.requiresRecovery(2, 0)).toBe(false);
+    expect(failures.missingFilesContext()).toContain('"report.csv", "b"');
+  });
+
+  it('requires recovery when every file failed and one failed for another reason', () => {
+    const failures = createCodeReuploadFailures();
+    failures.add('missing_backing_object', file('a', 'gone.csv'));
+    failures.add('resource_access_denied', file('b', 'denied.csv'));
+
+    expect(failures.requiresRecovery(2, 0)).toBe(true);
+    expect(failures.recoveryCategory()).toBe('resource_access_denied');
+    expect(failures.requiresRecovery(3, 1)).toBe(false);
+  });
+
+  it('reports mixed categories and stays quiet with no failures', () => {
+    const failures = createCodeReuploadFailures();
+    expect(failures.requiresRecovery(0, 0)).toBe(false);
+    expect(failures.missingFilesContext()).toBe('');
+    failures.add('rate_limited', file('a', 'a.csv'));
+    failures.add('reupload_failed', file('b', 'b.csv'));
+    expect(failures.recoveryCategory()).toBe('mixed_reupload_failure');
   });
 });
