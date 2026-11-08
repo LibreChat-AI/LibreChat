@@ -91,7 +91,27 @@ describe('fetchModels', () => {
     expect(models).toEqual(['model-1', 'model-2']);
     expect(mockedAxios.get).toHaveBeenCalledWith(
       expect.stringContaining('https://api.test.com/models'),
-      expect.any(Object),
+      expect.objectContaining({
+        timeout: 5000,
+      }),
+    );
+  });
+
+  it('uses custom timeout when timeout option is provided', async () => {
+    const models = await fetchModels({
+      user: 'user123',
+      apiKey: 'testApiKey',
+      baseURL: 'https://api.test.com',
+      name: 'TestAPI',
+      timeout: 15000,
+    });
+
+    expect(models).toEqual(['model-1', 'model-2']);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      expect.stringContaining('https://api.test.com/models'),
+      expect.objectContaining({
+        timeout: 15000,
+      }),
     );
   });
 
@@ -631,6 +651,22 @@ describe('fetchModels with Ollama specific logic', () => {
     expect(mockedAxios.get).toHaveBeenCalledWith('https://api.ollama.test.com/api/tags', {
       headers: {},
       timeout: 5000,
+    });
+  });
+
+  it('should pass custom timeout to Ollama fetchModels when specified', async () => {
+    const models = await fetchModels({
+      user: 'user789',
+      apiKey: 'testApiKey',
+      baseURL: 'https://api.ollama.test.com',
+      name: 'OllamaAPI',
+      timeout: 20000,
+    });
+
+    expect(models).toEqual(['Ollama-Base', 'Ollama-Advanced']);
+    expect(mockedAxios.get).toHaveBeenCalledWith('https://api.ollama.test.com/api/tags', {
+      headers: {},
+      timeout: 20000,
     });
   });
 
