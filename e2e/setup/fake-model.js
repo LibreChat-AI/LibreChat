@@ -122,6 +122,9 @@ const TWO_ARTIFACT_REPLY_MARKER = 'E2E_TWO_ARTIFACT_REPLY';
 const BACKGROUND_DISPATCH_MARKER = 'E2E_BACKGROUND_DISPATCH:';
 const BACKGROUND_COLLECT_MARKER = 'E2E_BACKGROUND_COLLECT:';
 const TOOL_APPROVAL_MARKER = 'E2E_TOOL_APPROVAL:';
+/** `E2E_FLUX_IMAGE:<generate|finetuned>:<polling|legacy|foreign>:<label>` calls the Flux tool. */
+const FLUX_IMAGE_MARKER = 'E2E_FLUX_IMAGE:';
+const FLUX_TOOL_NAME = 'flux';
 const INVALID_TOOL_ARGS_MARKER = 'E2E_INVALID_TOOL_ARGS:';
 const TOOL_APPROVAL_BATCH_MARKER = 'E2E_TOOL_APPROVAL_BATCH:';
 const TOOL_APPROVAL_RESTRICTED_MARKER = 'E2E_TOOL_APPROVAL_RESTRICTED:';
@@ -2595,6 +2598,34 @@ function invalidToolArgsResponses(label, toolNames) {
   };
 }
 
+/**
+ * Calls the real Flux tool against `e2e/setup/fake-flux-server.js`; the prompt tells that
+ * fake which BFL routing to simulate, and the tool's own polling decides where it reads.
+ */
+function fluxImageResponses(value, toolNames) {
+  if (!toolNames.has(FLUX_TOOL_NAME)) {
+    return { responses: [`E2E flux unavailable: ${FLUX_TOOL_NAME} was not advertised.`] };
+  }
+  const [action, mode, label] = value.split(':');
+  const finetuned = action === 'finetuned';
+  return {
+    responses: ['', `Flux image ready for ${label}.`],
+    toolCalls: [
+      {
+        id: `call_e2e_flux_${label}`,
+        name: FLUX_TOOL_NAME,
+        args: {
+          action: finetuned ? 'generate_finetuned' : 'generate',
+          prompt: `flux-e2e:${mode}:${label}`,
+          endpoint: finetuned ? '/v1/flux-pro-finetuned' : '/v1/flux-dev',
+          ...(finetuned ? { finetune_id: `ft-${label}` } : {}),
+        },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
 function approvalToolResponses(label, toolNames, review) {
   if (!toolNames.has(APPROVAL_TOOL_NAME)) {
     return {
@@ -3665,6 +3696,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const invalidArgsLabel = getMarkerValue(text, INVALID_TOOL_ARGS_MARKER);
   if (invalidArgsLabel) {
     return invalidToolArgsResponses(invalidArgsLabel, toolNames);
+  }
+
+  const fluxImage = getMarkerValue(text, FLUX_IMAGE_MARKER);
+  if (fluxImage) {
+    return fluxImageResponses(fluxImage, toolNames);
   }
 
   const approvalLabel = getMarkerValue(text, TOOL_APPROVAL_MARKER);
