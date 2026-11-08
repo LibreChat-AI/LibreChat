@@ -369,6 +369,20 @@ describe('countRetainedToolTokens', () => {
     expect(counted).not.toHaveBeenCalled();
   });
 
+  it('charges a multi-byte run by its UTF-8 bytes', () => {
+    /** 16,000 astral letters are 64,000 bytes in one piece and take ~2 s to merge.
+     *  Charged per character they would fit the default ceiling; per byte they do not. */
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', '\u{1D400}'.repeat(16_000))],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
   it('refuses output longer than the remaining budget without scanning it', () => {
     const counted = jest.fn(countExact);
     expect(

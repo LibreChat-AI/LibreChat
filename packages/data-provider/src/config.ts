@@ -1774,8 +1774,9 @@ export const agentsEndpointSchema = baseEndpointSchema
       /** Characters of retained tool output the save path may tokenize exactly for the
        * context gauge when a turn stops at the tool-call limit (see
        * `retainedToolTokens`). Tokenizing costs ~60 ms/MB and runs once per stopped
-       * turn, except that a long unbroken run of whitespace, letters or punctuation
-       * costs the square of its length and is charged that way against this ceiling.
+       * turn. The ceiling is spent in UTF-8 bytes (ASCII text costs its length), and a
+       * long unbroken run of whitespace, letters or punctuation costs the square of
+       * its byte length and is charged that way.
        * Past the ceiling the figure is withdrawn rather than estimated, so the
        * gauge under-reports that turn instead of blocking the save. Raise it for
        * deployments whose tools legitimately return more, lower it on slow hardware. */

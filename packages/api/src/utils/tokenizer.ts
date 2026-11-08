@@ -11,7 +11,7 @@ const MAX_TOKENIZER_RUN_LENGTH = 256;
 const WHITESPACE = /\s/u;
 const LETTER = /[\p{L}\p{M}]/u;
 const NUMBER = /\p{N}/u;
-/** Unbroken runs up to this length cost no more than their length to merge. */
+/** Unbroken runs up to this many UTF-8 bytes cost no more than their length to merge. */
 const LINEAR_RUN_LENGTH = 32;
 
 const RUN_SPACE = 1;
@@ -38,15 +38,17 @@ function runWork(length: number): number {
 }
 
 /**
- * Characters' worth of merge work an exact count of `text` costs. The encoder
- * merges within one pre-tokenized piece at a time (a word, a whitespace run, a
- * punctuation run), and that work grows with the square of the piece's length:
- * 200 KB of unbroken whitespace takes ~25 s, while 1 MB of ordinary text takes
- * ~30 ms. Ordinary text therefore costs its length here, and each long run of
- * whitespace, letters or punctuation costs the square of its length, so a
- * character budget keeps meaning time. Digits split into groups of three and
- * never form a long piece. Letter runs that change case may split into several
- * pieces, so the figure can overstate the work but does not understate it.
+ * Bytes' worth of merge work an exact count of `text` costs. The encoder merges
+ * the UTF-8 bytes of one pre-tokenized piece at a time (a word, a whitespace run,
+ * a punctuation run), and that work grows with the square of the piece's byte
+ * length: 200 KB of unbroken whitespace takes ~25 s, while 1 MB of ordinary text
+ * takes ~30 ms, and 16,000 unbroken CJK characters cost about seven times as much
+ * as 16,000 ASCII letters. Ordinary text therefore costs its UTF-8 length here (its
+ * length, for ASCII), and each long run of whitespace, letters or punctuation
+ * costs the square of its byte length, so the budget keeps meaning time. Digits
+ * split into groups of three and never form a long piece. Letter runs that change
+ * case may split into several pieces, so the figure can overstate the work but
+ * does not understate it. The figure is never below `text.length`.
  *
  * With `limit`, the scan stops as soon as the work exceeds it and returns the
  * figure reached so far (still above `limit`), so rejecting huge input costs no
@@ -62,21 +64,25 @@ export function getExactCountWork(text: string, limit = Number.POSITIVE_INFINITY
     }
     const code = text.charCodeAt(index);
     let runClass: number;
+    let width = 1;
     if (code < 128) {
       runClass = ASCII_RUN_CLASSES[code];
     } else {
       const point = text.codePointAt(index) ?? code;
       if (point > 0xffff) {
         index++;
+        width = 4;
+      } else {
+        width = point < 0x800 ? 2 : 3;
       }
       runClass = classifyRunCharacter(String.fromCodePoint(point));
     }
     if (runClass === previous && runClass !== RUN_NUMBER) {
-      run++;
+      run += width;
       continue;
     }
     work += runWork(run);
-    run = 1;
+    run = width;
     previous = runClass;
   }
   return work + runWork(run);

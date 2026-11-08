@@ -280,10 +280,17 @@ describe('Tokenizer', () => {
       expect(getExactCountWork('ordinary words', 1_000)).toBe('ordinary words'.length);
     });
 
-    it('reads astral characters as one character of their own class', () => {
-      /** A surrogate pair must not split a letter run in two. */
-      const run = '\u{1D400}'.repeat(100);
-      expect(getExactCountWork(run)).toBe(Math.ceil((100 * 100) / 32));
+    it('costs ordinary non-ASCII text its UTF-8 length', () => {
+      /** The encoder merges bytes, so a CJK sentence costs three units a character. */
+      const sentence = '漢字の文章です。 Привет, мир.';
+      expect(getExactCountWork(sentence)).toBe(Buffer.byteLength(sentence, 'utf8'));
+    });
+
+    it('charges a multi-byte run the square of its byte length', () => {
+      /** 16,000 CJK characters merge 48,000 bytes and cost ~7x the same count of ASCII. */
+      expect(getExactCountWork('漢'.repeat(1000))).toBe(Math.ceil((3000 * 3000) / 32));
+      /** A surrogate pair is one four-byte character and must not split the run. */
+      expect(getExactCountWork('\u{1D400}'.repeat(100))).toBe(Math.ceil((400 * 400) / 32));
     });
   });
 });

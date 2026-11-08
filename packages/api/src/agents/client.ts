@@ -459,9 +459,9 @@ export function countFormattedMessageTokens(
  * Non-string outputs are skipped, matching {@link countFormattedMessageTokens}.
  *
  * `maxCountChars` bounds the tokenization this turn may cost (one call can request
- * several tools, so the budget spans all their results). It is spent in characters'
+ * several tools, so the budget spans all their results). It is spent in UTF-8 bytes'
  * worth of merge work ({@link getExactCountWork}), not characters: one long unbroken
- * run costs the square of its length, so 200 KB of whitespace from a scraped page or
+ * run costs the square of its byte length, so 200 KB of whitespace from a scraped page or
  * a program's output cannot block the event loop for seconds under a budget sized
  * for prose. `countExact` returns `undefined` for content it cannot count exactly. Either limit withdraws the whole
  * figure: a turn whose gauge is missing the retained result is better than one

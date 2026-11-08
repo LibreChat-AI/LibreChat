@@ -37,9 +37,10 @@ export const MAX_GRAPH_SUBAGENT_MEMBERS = 32;
 
 /** Characters of retained tool output one stopped turn may be tokenized for, so the
  *  context gauge can add an exact figure instead of an estimate. The schema default
- *  and the save path share it; tokenizing runs ~60 ms/MB, once per stopped turn. A
- *  long unbroken run (whitespace, letters, punctuation) is charged the square of its
- *  length, because that is how its tokenization cost grows. */
+ *  and the save path share it; tokenizing runs ~60 ms/MB, once per stopped turn. It
+ *  is spent in UTF-8 bytes, so ASCII text costs its length, and a long unbroken run
+ *  (whitespace, letters, punctuation) is charged the square of its byte length,
+ *  because that is how its tokenization cost grows. */
 export const DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS = 8 * 1024 * 1024;
 
 /** Token ceiling for the block of Ask User answers carried verbatim in an agent's
