@@ -5,6 +5,7 @@ import type { InputItem, ResponseContext } from '../types';
 import {
   buildAggregatedResponse,
   convertInputToMessages,
+  extractResponseInputFileContent,
   createAggregatorEventHandlers,
   createResponseAggregator,
   createResponsesEventHandlers,
@@ -1080,6 +1081,30 @@ describe('content-array function_call_output', () => {
       { type: 'image_url', image_url: { url: 'https://example.com/chart.png', detail: 'high' } },
       { type: 'text', text: '[File: report.pdf]' },
     ]);
+  });
+
+  it('exposes tool-output image URLs and file names to file policies, like message parts', () => {
+    const fileFragments = (input: InputItem[]) =>
+      extractResponseInputFileContent(input).map(({ source, field, text }) => ({
+        source,
+        field,
+        text,
+      }));
+    const toolOutput = fileFragments(inputFor(parts));
+    expect(toolOutput).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'file', text: 'https://example.com/chart.png' }),
+        expect.objectContaining({ source: 'file', field: 'name', text: 'report.pdf' }),
+      ]),
+    );
+    expect(fileFragments([{ type: 'message', role: 'user', content: parts } as InputItem])).toEqual(
+      toolOutput,
+    );
+    expect(
+      extractResponseInputFileContent(
+        inputFor([{ type: 'input_image', image_url: 'data:image/png;base64,AA==' }]),
+      ),
+    ).toEqual([]);
   });
 
   it('keeps array text reachable by the protection traversal', () => {

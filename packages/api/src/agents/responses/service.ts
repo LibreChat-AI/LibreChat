@@ -23,6 +23,7 @@ import type {
   Usage,
 } from './types';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
+import type { TextContentFragment } from '~/protection/types';
 import {
   writeDone,
   emitResponseCompleted,
@@ -46,6 +47,7 @@ import {
   type StreamHandlerConfig,
 } from './handlers';
 import { declaredClientToolNames, validateClientTools } from './clientTools';
+import { extractFileContent } from '~/protection/adapters/submissions';
 import { aggregateCollectedUsage } from '../usage';
 
 interface ResponseUsageAccumulator {
@@ -476,6 +478,46 @@ function convertContentParts(parts: (InputContent | ModelContent)[]): InternalCo
       return null;
     })
     .filter((part): part is InternalContentPart => part != null);
+}
+
+/**
+ * File-policy fragments for the media parts in `input`: each file name and each
+ * non-inline image URL, whether it arrives in a `message` or in a
+ * `function_call_output` content array. Conversion turns these parts into text
+ * and `image_url` blocks, so the message traversal alone never sees them as files.
+ */
+export function extractResponseInputFileContent(
+  input: string | InputItem[] | undefined,
+): TextContentFragment[] {
+  const fragments: TextContentFragment[] = [];
+  if (!Array.isArray(input)) {
+    return fragments;
+  }
+  for (const item of input) {
+    let parts: unknown;
+    if (item?.type === 'message') {
+      parts = (item as { content?: unknown }).content;
+    } else if (item?.type === 'function_call_output') {
+      parts = (item as { output?: unknown }).output;
+    }
+    if (!Array.isArray(parts)) {
+      continue;
+    }
+    for (const part of parts as Array<Partial<InputContent> | null>) {
+      if (part?.type === 'input_file') {
+        fragments.push(...extractFileContent({ name: part.filename }));
+        continue;
+      }
+      if (
+        part?.type === 'input_image' &&
+        typeof part.image_url === 'string' &&
+        !part.image_url.startsWith('data:')
+      ) {
+        fragments.push(...extractFileContent({ uri: part.image_url }));
+      }
+    }
+  }
+  return fragments;
 }
 
 /** Indexes every `function_call_output` in the input by its `call_id`. */

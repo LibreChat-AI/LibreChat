@@ -351,6 +351,7 @@ jest.mock('@librechat/api', () => ({
   ]),
   extractAgentContent: jest.fn().mockReturnValue([]),
   extractFileContent: jest.fn().mockReturnValue([]),
+  extractResponseInputFileContent: jest.fn().mockReturnValue([]),
   extractMessageContent: jest.fn().mockReturnValue([]),
   extractModelParameterContent: jest.fn().mockReturnValue([]),
   extractSkillContent: jest.fn().mockReturnValue([]),

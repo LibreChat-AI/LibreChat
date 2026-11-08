@@ -160,6 +160,7 @@ export {
   isValidationFailure,
   // Input conversion
   convertInputToMessages,
+  extractResponseInputFileContent,
   type InternalMessage,
   // Error response
   sendResponsesErrorResponse,
