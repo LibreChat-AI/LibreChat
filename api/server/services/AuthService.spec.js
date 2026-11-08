@@ -13,6 +13,7 @@ jest.mock(
 jest.mock(
   'librechat-data-provider',
   () => ({
+    ...jest.requireActual('librechat-data-provider'),
     ErrorTypes: {},
     SystemRoles: { USER: 'USER', ADMIN: 'ADMIN' },
     errorsToString: jest.fn(),
@@ -29,6 +30,8 @@ jest.mock(
       /** Real bcrypt on the test thread; the worker pool has its own spec in packages/api. */
       hashSecret: jest.fn((plain) => require('bcryptjs').hash(plain, 4)),
       compareSecret: jest.fn((plain, hash) => require('bcryptjs').compare(plain, hash)),
+      getOpenIDBearerAudiences: jest.requireActual('@librechat/api').getOpenIDBearerAudiences,
+      getOpenIDAppAccessToken: jest.requireActual('@librechat/api').getOpenIDAppAccessToken,
       checkEmailConfig: jest.fn(),
       isEmailDomainAllowed: jest.fn(),
       getSafeErrorMetadata: jest.fn((error) => ({ type: error?.name ?? 'UnknownError' })),
@@ -341,6 +344,56 @@ describe('setOpenIDAuthTokens', () => {
       const result = setOpenIDAuthTokens(tokenset, req, res, 'user-123');
       expect(result).toBe('id-token-jwt-signed-by-idp');
       expect(result).not.toBe('opaque-graph-api-token');
+    });
+
+    describe('with configured bearer audiences', () => {
+      const originalClientId = process.env.OPENID_CLIENT_ID;
+      const originalAudience = process.env.OPENID_AUDIENCE;
+      const signAccessToken = (aud) =>
+        jwt.sign({ aud, exp: Math.floor(Date.now() / 1000) + 600 }, 'idp-secret');
+
+      beforeEach(() => {
+        process.env.OPENID_CLIENT_ID = 'app-client-id';
+        process.env.OPENID_AUDIENCE = 'api://app-resource';
+      });
+
+      afterEach(() => {
+        for (const [key, value] of [
+          ['OPENID_CLIENT_ID', originalClientId],
+          ['OPENID_AUDIENCE', originalAudience],
+        ]) {
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+      });
+
+      it('does not return a JWT access token minted for another resource', () => {
+        const tokenset = {
+          access_token: signAccessToken('00000003-0000-0000-c000-000000000000'),
+          refresh_token: 'the-refresh-token',
+        };
+
+        const result = setOpenIDAuthTokens(tokenset, mockRequest(), mockResponse(), 'user-123');
+        expect(result).toBeUndefined();
+      });
+
+      it('returns a JWT access token minted for a configured audience', () => {
+        const accessToken = signAccessToken('api://app-resource');
+        const tokenset = { access_token: accessToken, refresh_token: 'the-refresh-token' };
+
+        const result = setOpenIDAuthTokens(tokenset, mockRequest(), mockResponse(), 'user-123');
+        expect(result).toBe(accessToken);
+      });
+
+      it('keeps returning an opaque access token', () => {
+        const tokenset = { access_token: 'opaque-access-token', refresh_token: 'refresh' };
+
+        const result = setOpenIDAuthTokens(tokenset, mockRequest(), mockResponse(), 'user-123');
+        expect(result).toBe('opaque-access-token');
+      });
     });
   });
 
