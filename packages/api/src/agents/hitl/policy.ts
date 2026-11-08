@@ -122,16 +122,14 @@ export function isToolApprovalPauseCapable(
     if (names.length === 0) {
       return false;
     }
-    const matches = (patterns: string[] | undefined, name: string): boolean =>
-      patterns?.some((pattern) => globToRegex(pattern).test(name)) === true;
     return names.some((name) => {
       if (isToolBlockedByApprovalPolicy(enabledPolicy, name)) {
         return false;
       }
-      if (hasProgrammaticHooks || matches(enabledPolicy.ask, name)) {
+      if (hasProgrammaticHooks || matchesToolApprovalPatterns(enabledPolicy.ask, name)) {
         return true;
       }
-      if (matches(enabledPolicy.allow, name)) {
+      if (matchesToolApprovalPatterns(enabledPolicy.allow, name, true)) {
         return false;
       }
       return enabledPolicy.mode !== 'bypass' && enabledPolicy.mode !== 'dontAsk';
@@ -149,50 +147,114 @@ export function isToolApprovalPauseCapable(
   return policy?.allow?.includes('*') !== true;
 }
 
-/**
- * Map a LibreChat tool-approval policy to the SDK's `ToolPolicyConfig`.
- *
- * Returns `undefined` when there's nothing to configure (so the SDK's own
- * defaults apply). The `enabled` field is LibreChat-only and stripped here —
- * it's consumed separately via {@link isHITLEnabled} to gate the SDK opt-out.
- */
 const MCP_PATTERN_PREFIX = 'mcp:';
+const UNSUPPORTED_SERVER_CHARS = /[^a-zA-Z0-9_.-]/g;
 
-/**
- * Rewrites the documented `mcp:<server>:<tool>` form into the runtime tool key
- * `<tool>_mcp_<server>` the SDK and every local matcher test against, so
- * `mcp:server:*` covers every tool of that server. Other patterns pass through.
- */
-export function toToolApprovalPattern(pattern: string): string {
-  if (!pattern.startsWith(MCP_PATTERN_PREFIX)) {
-    return pattern;
-  }
-  const rest = pattern.slice(MCP_PATTERN_PREFIX.length);
-  /** Server names may contain `:` and MCP tool names may not, so the tool is the last segment. */
-  const separator = rest.lastIndexOf(':');
-  if (separator <= 0 || separator === rest.length - 1) {
-    return pattern;
-  }
-  const server = rest.slice(0, separator);
-  const tool = rest.slice(separator + 1);
-  /** Globbed names keep their `*` but get the same character replacement on the literal parts. */
-  const serverKey = server.includes('*')
-    ? server
-        .split('*')
-        .map((part) => part.replace(/[^a-zA-Z0-9_.-]/g, '_'))
-        .join('*')
-    : normalizeServerName(server);
-  return `${tool}${Constants.mcp_delimiter}${serverKey}`;
-}
-
-function toToolApprovalPatterns(patterns: string[] | undefined): string[] | undefined {
-  return patterns?.map(toToolApprovalPattern);
+interface MCPToolApprovalPattern {
+  tool: RegExp;
+  server: RegExp;
 }
 
 /** Anchored-glob matcher mirroring the SDK's `createToolPolicyHook` semantics exactly. */
-export function globToRegex(pattern: string): RegExp {
-  const escaped = toToolApprovalPattern(pattern).replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+function globToRegex(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp('^' + escaped.replace(/\*/g, '.*') + '$');
+}
+
+/**
+ * Normalizes a globbed server pattern the way `normalizeServerName` normalizes a name:
+ * unsupported characters become `_` and the name's outer edges lose their underscores.
+ */
+function normalizeServerGlob(server: string): string {
+  const parts = server.split('*').map((part) => part.replace(UNSUPPORTED_SERVER_CHARS, '_'));
+  parts[0] = parts[0].replace(/^_+/, '');
+  parts[parts.length - 1] = parts[parts.length - 1].replace(/_+$/, '');
+  return parts.join('*');
+}
+
+/**
+ * Parses the documented `mcp:<server>:<tool>` form. Server names may contain `:` and MCP
+ * tool names may not, so the tool is the last segment. Anything else is a plain glob.
+ */
+function parseMCPToolApprovalPattern(pattern: string): MCPToolApprovalPattern | undefined {
+  if (!pattern.startsWith(MCP_PATTERN_PREFIX)) {
+    return undefined;
+  }
+  const rest = pattern.slice(MCP_PATTERN_PREFIX.length);
+  const separator = rest.lastIndexOf(':');
+  if (separator <= 0 || separator === rest.length - 1) {
+    return undefined;
+  }
+  const server = rest.slice(0, separator);
+  const serverKey = server.includes('*')
+    ? normalizeServerGlob(server)
+    : normalizeServerName(server);
+  return { tool: globToRegex(rest.slice(separator + 1)), server: globToRegex(serverKey) };
+}
+
+/**
+ * Whether one policy entry matches a runtime tool name. An `mcp:<server>:<tool>` entry is
+ * matched per segment against `<tool>_mcp_<server>`, never as one glob, so `*` cannot
+ * cross the server boundary. A key with several `_mcp_` delimiters is ambiguous without
+ * the server registry: a `grant` (an `allow` entry) only reads it at the first delimiter,
+ * so a server named `Google_mcp_Workspace` is never granted by `mcp:Workspace:*`, while
+ * `ask` and `deny` entries match at any delimiter and so err toward review or refusal.
+ */
+function matchesToolApprovalPattern(pattern: string, toolName: string, grant: boolean): boolean {
+  const mcp = parseMCPToolApprovalPattern(pattern);
+  if (!mcp) {
+    return globToRegex(pattern).test(toolName);
+  }
+  const delimiter = Constants.mcp_delimiter;
+  for (
+    let index = toolName.indexOf(delimiter);
+    index > 0;
+    index = toolName.indexOf(delimiter, index + 1)
+  ) {
+    const tool = toolName.slice(0, index);
+    const server = toolName.slice(index + delimiter.length);
+    if (mcp.tool.test(tool) && mcp.server.test(server)) {
+      return true;
+    }
+    if (grant) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** Whether any entry of one policy list matches a runtime tool name; see `matchesToolApprovalPattern`. */
+export function matchesToolApprovalPatterns(
+  patterns: readonly string[] | undefined,
+  toolName: string,
+  grant = false,
+): boolean {
+  return patterns?.some((pattern) => matchesToolApprovalPattern(pattern, toolName, grant)) === true;
+}
+
+/**
+ * The SDK globs every entry against the whole tool name, which cannot express a server
+ * boundary. For one concrete call, each `mcp:` entry becomes that tool's literal name when
+ * it matches and is dropped when it does not, so the SDK decides exactly as the local
+ * matchers predict.
+ */
+function resolveToolApprovalPatterns(
+  patterns: string[] | undefined,
+  toolName: string,
+  grant: boolean,
+): string[] | undefined {
+  if (!patterns?.some((pattern) => parseMCPToolApprovalPattern(pattern) != null)) {
+    return patterns;
+  }
+  const resolved: string[] = [];
+  for (const pattern of patterns) {
+    if (parseMCPToolApprovalPattern(pattern) == null) {
+      resolved.push(pattern);
+    } else if (matchesToolApprovalPattern(pattern, toolName, grant)) {
+      resolved.push(toolName);
+    }
+  }
+  return resolved;
 }
 
 /** Whether an enabled static policy unconditionally denies one concrete tool name. */
@@ -200,10 +262,7 @@ export function isToolDeniedByApprovalPolicy(
   policy: TToolApprovalPolicy | undefined,
   toolName: string,
 ): boolean {
-  return (
-    isHITLEnabled(policy) &&
-    policy.deny?.some((pattern) => globToRegex(pattern).test(toolName)) === true
-  );
+  return isHITLEnabled(policy) && matchesToolApprovalPatterns(policy.deny, toolName);
 }
 
 /** Static deny, including the unmatched `dontAsk` fallback, cannot be tightened into review. */
@@ -214,9 +273,10 @@ export function isToolBlockedByApprovalPolicy(
   if (!isHITLEnabled(policy)) return false;
   if (isToolDeniedByApprovalPolicy(policy, toolName)) return true;
   if (policy.mode !== 'dontAsk') return false;
-  const matches = (patterns?: readonly string[]) =>
-    patterns?.some((pattern) => globToRegex(pattern).test(toolName)) === true;
-  return !matches(policy.ask) && !matches(policy.allow);
+  return (
+    !matchesToolApprovalPatterns(policy.ask, toolName) &&
+    !matchesToolApprovalPatterns(policy.allow, toolName, true)
+  );
 }
 
 /**
@@ -237,17 +297,16 @@ export function healToolApprovalPolicy(
   if (!policy || aliases.length === 0) {
     return policy;
   }
-  const healList = (patterns: string[] | undefined): string[] | undefined => {
+  const healList = (patterns: string[] | undefined, grant = false): string[] | undefined => {
     if (!patterns || patterns.length === 0) {
       return patterns;
     }
-    const regexes = patterns.map(globToRegex);
     const appended: string[] = [];
     for (const { name, aliasName } of aliases) {
-      if (name === aliasName || regexes.some((regex) => regex.test(name))) {
+      if (name === aliasName || matchesToolApprovalPatterns(patterns, name, grant)) {
         continue;
       }
-      if (regexes.some((regex) => regex.test(aliasName))) {
+      if (matchesToolApprovalPatterns(patterns, aliasName, grant)) {
         appended.push(name);
       }
     }
@@ -255,14 +314,23 @@ export function healToolApprovalPolicy(
   };
   return {
     ...policy,
-    allow: healList(policy.allow),
+    allow: healList(policy.allow, true),
     deny: healList(policy.deny),
     ask: healList(policy.ask),
   };
 }
 
+/**
+ * Map a LibreChat tool-approval policy to the SDK's `ToolPolicyConfig`.
+ *
+ * Returns `undefined` when there's nothing to configure (so the SDK's own
+ * defaults apply). The `enabled` field is LibreChat-only and stripped here;
+ * it's consumed separately via {@link isHITLEnabled} to gate the SDK opt-out.
+ * Pass the called tool's name so `mcp:<server>:<tool>` entries resolve for it.
+ */
 export function mapToolApprovalPolicy(
   policy: TToolApprovalPolicy | undefined,
+  toolName?: string,
 ): ToolPolicyConfig | undefined {
   if (!policy) {
     return undefined;
@@ -271,14 +339,19 @@ export function mapToolApprovalPolicy(
   if (policy.mode) {
     config.mode = policy.mode;
   }
-  if (policy.allow && policy.allow.length > 0) {
-    config.allow = toToolApprovalPatterns(policy.allow);
+  const resolve = (patterns: string[] | undefined, grant = false) =>
+    toolName == null ? patterns : resolveToolApprovalPatterns(patterns, toolName, grant);
+  const allow = resolve(policy.allow, true);
+  const deny = resolve(policy.deny);
+  const ask = resolve(policy.ask);
+  if (allow && allow.length > 0) {
+    config.allow = allow;
   }
-  if (policy.deny && policy.deny.length > 0) {
-    config.deny = toToolApprovalPatterns(policy.deny);
+  if (deny && deny.length > 0) {
+    config.deny = deny;
   }
-  if (policy.ask && policy.ask.length > 0) {
-    config.ask = toToolApprovalPatterns(policy.ask);
+  if (ask && ask.length > 0) {
+    config.ask = ask;
   }
   if (policy.reason) {
     config.reason = policy.reason;

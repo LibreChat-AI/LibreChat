@@ -178,7 +178,7 @@ describe('mapToolApprovalPolicy', () => {
     };
     expect(mapToolApprovalPolicy(policy)).toEqual({
       mode: 'dontAsk',
-      allow: ['read_*', '*_mcp_github'],
+      allow: ['read_*', 'mcp:github:*'],
       deny: ['delete_*'],
       ask: ['execute_*'],
       reason: 'Tool {tool} requires review',
@@ -195,8 +195,9 @@ describe('mapToolApprovalPolicy', () => {
       ask: [`mcp:${SERVER}:*`, 'mcp:wpr-sandbox:*'],
     };
 
-    const decide = async (toolName: string) => {
-      const hook = createToolPolicyHook(mapToolApprovalPolicy(policy) ?? {});
+    /** Runs the SDK's real policy hook the way `runtime.ts` does, per called tool. */
+    const decide = async (toolName: string, target: TToolApprovalPolicy = policy) => {
+      const hook = createToolPolicyHook(mapToolApprovalPolicy(target, toolName) ?? {});
       const result = await hook(
         {
           hook_event_name: 'PreToolUse',
@@ -228,36 +229,53 @@ describe('mapToolApprovalPolicy', () => {
       expect(isToolBlockedByApprovalPolicy(policy, 'list_allowed_directories')).toBe(true);
     });
 
-    test('matches the normalized server name and leaves other patterns alone', () => {
-      expect(
-        mapToolApprovalPolicy({ ask: ['mcp:My Server:run', 'mcp:*:search', 'mcp:x', 'read_*'] }),
-      ).toEqual({ ask: ['run_mcp_My_Server', 'search_mcp_*', 'mcp:x', 'read_*'] });
+    test('resolves mcp: entries to the called tool and leaves other entries alone', () => {
+      const target: TToolApprovalPolicy = {
+        ask: ['mcp:My Server:run', 'mcp:*:search', 'mcp:x', 'read_*'],
+      };
+      expect(mapToolApprovalPolicy(target, 'run_mcp_My_Server')).toEqual({
+        ask: ['run_mcp_My_Server', 'mcp:x', 'read_*'],
+      });
+      expect(mapToolApprovalPolicy(target, 'search_mcp_github')).toEqual({
+        ask: ['search_mcp_github', 'mcp:x', 'read_*'],
+      });
+      expect(mapToolApprovalPolicy(target)).toEqual(target);
     });
 
-    test('keeps a colon inside the server name', () => {
-      const colonPolicy: TToolApprovalPolicy = {
+    test('keeps a colon inside the server name', async () => {
+      const target: TToolApprovalPolicy = {
         enabled: true,
         mode: 'dontAsk',
         ask: ['mcp:Connector: Company:*'],
       };
-      expect(mapToolApprovalPolicy(colonPolicy)).toEqual({
-        mode: 'dontAsk',
-        ask: ['*_mcp_Connector__Company'],
-      });
-      expect(isToolBlockedByApprovalPolicy(colonPolicy, 'search_mcp_Connector__Company')).toBe(
-        false,
-      );
+      expect(await decide('search_mcp_Connector__Company', target)).toBe('ask');
+      expect(isToolBlockedByApprovalPolicy(target, 'search_mcp_Connector__Company')).toBe(false);
     });
 
-    test('normalizes the literal parts of a globbed server name', () => {
-      const deny = mapToolApprovalPolicy({ deny: ['mcp:My Server*:delete_file'] });
-      expect(deny).toEqual({ deny: ['delete_file_mcp_My_Server*'] });
-      expect(
-        isToolDeniedByApprovalPolicy(
-          { enabled: true, deny: ['mcp:My Server*:delete_file'] },
-          'delete_file_mcp_My_Server_1',
-        ),
-      ).toBe(true);
+    test('normalizes a globbed server name, including its trimmed edges', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'bypass',
+        deny: ['mcp:My Server*:delete_file', 'mcp:* (Production):delete_file'],
+      };
+      for (const name of ['delete_file_mcp_My_Server_1', 'delete_file_mcp_Acme__Production']) {
+        expect(await decide(name, target)).toBe('deny');
+        expect(isToolDeniedByApprovalPolicy(target, name)).toBe(true);
+      }
+      expect(await decide('read_file_mcp_Acme__Production', target)).toBe('allow');
+    });
+
+    test('a server glob never crosses into a server whose name contains the delimiter', async () => {
+      const target: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        allow: ['mcp:Workspace:*'],
+      };
+      const other = 'delete_file_mcp_Google_mcp_Workspace';
+      expect(await decide('read_mcp_Workspace', target)).toBe('allow');
+      expect(await decide(other, target)).toBe('deny');
+      expect(isToolBlockedByApprovalPolicy(target, other)).toBe(true);
+      expect(isToolBlockedByApprovalPolicy(target, 'read_mcp_Workspace')).toBe(false);
     });
   });
 
