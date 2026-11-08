@@ -13,6 +13,7 @@ import {
   beginMessagesReplyFetch,
   completeMessagesReplyFetch,
   findConvoInAllQueries,
+  getResponseStatus,
   isNotFoundError,
   logger,
 } from '~/utils';
@@ -184,6 +185,9 @@ function hasActiveJob(queryClient: QueryClient, id: string) {
  */
 const PREFETCH_FRESH_MS = 10_000;
 
+/** React Query's default retry count, which the view's own load used before the prefetch. */
+const PREFETCH_RETRIES = 3;
+
 /** Conversations whose messages the route prefetched and no view has mounted on yet. */
 const prefetched = new Set<string>();
 
@@ -322,8 +326,8 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
  * Starts loading a conversation's messages as soon as the route knows its id, instead of when the
  * conversation view mounts after config, roles, endpoints, models and the conversation itself
  * have resolved. Only a conversation the cache has never held is prefetched, so in-app navigation
- * and warm caches keep their existing behavior. A failed prefetch leaves no data, and the view's
- * own query then loads and reports the error as before.
+ * and warm caches keep their existing behavior. A prefetch that failed leaves its error for the
+ * view to show (see `retryMessagesOnMount`), so a missing conversation is still requested once.
  */
 export function usePrefetchConversationMessages(conversationId: string, enabled: boolean) {
   const queryClient = useQueryClient();
@@ -348,22 +352,43 @@ export function usePrefetchConversationMessages(conversationId: string, enabled:
       return;
     }
     prefetched.add(conversationId);
-    queryClient
-      .prefetchQuery(
-        queryKey,
-        () =>
-          loadConversationMessages(queryClient, conversationId, {
-            pathname: pathnameRef.current,
-            isStreaming: () => false,
-          }),
-        { retry: false },
-      )
-      .then(() => {
-        if (queryClient.getQueryState(queryKey)?.status !== 'success') {
-          prefetched.delete(conversationId);
-        }
-      });
+    queryClient.prefetchQuery(
+      queryKey,
+      () =>
+        loadConversationMessages(queryClient, conversationId, {
+          pathname: pathnameRef.current,
+          isStreaming: () => false,
+        }),
+      { retry: retryPrefetch },
+    );
   }, [conversationId, enabled, queryClient]);
+}
+
+/**
+ * A prefetch has no observer, so leaving the route cannot cancel its retries. It retries the way
+ * the view's own load did (React Query's default three), except when the server answered: a 4xx
+ * such as a deleted conversation will answer the same again.
+ */
+function retryPrefetch(failureCount: number, error: unknown): boolean {
+  const status = getResponseStatus(error);
+  return failureCount < PREFETCH_RETRIES && !(status != null && status >= 400 && status < 500);
+}
+
+/**
+ * `retryOnMount` for the conversation view: a view mounting on a prefetch that just failed shows
+ * that failure instead of requesting the same messages again. Any other failed entry retries on
+ * mount as before.
+ */
+export function retryMessagesOnMount(queryClient: QueryClient, conversationId: string): boolean {
+  if (!prefetched.has(conversationId)) {
+    return true;
+  }
+  const state = queryClient.getQueryState([QueryKeys.messages, conversationId]);
+  return !(
+    state?.status === 'error' &&
+    state.dataUpdateCount === 0 &&
+    Date.now() - state.errorUpdatedAt < PREFETCH_FRESH_MS
+  );
 }
 
 /**

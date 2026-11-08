@@ -2,12 +2,18 @@ import { createElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
-import { QueryClient, focusManager, QueryClientProvider } from '@tanstack/react-query';
+import {
+  QueryClient,
+  focusManager,
+  useQueryClient,
+  QueryClientProvider,
+} from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
   getStableMessages,
   shouldPreserveMessagesOnNotFound,
+  retryMessagesOnMount,
   refetchMessagesOnMount,
   useSubagentAttachmentCallsQueries,
   useGetMessagesByConvoId,
@@ -728,14 +734,16 @@ describe('usePrefetchConversationMessages', () => {
   });
 
   function newClient() {
-    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
   }
 
   /** The conversation view's observer, configured the way `useMessages` configures it. */
   function useView(conversationId: string) {
+    const queryClient = useQueryClient();
     return useGetMessagesByConvoId(conversationId, {
       enabled: true,
       refetchOnMount: refetchMessagesOnMount,
+      retryOnMount: retryMessagesOnMount(queryClient, conversationId),
     });
   }
 
@@ -830,8 +838,24 @@ describe('usePrefetchConversationMessages', () => {
     expect(mockGet).not.toHaveBeenCalled();
   });
 
-  it('lets the view load and report the conversation when the prefetch failed', async () => {
-    const conversationId = 'prefetch-failed';
+  it('shows a missing conversation without requesting its messages a second time', async () => {
+    const conversationId = 'prefetch-missing';
+    const queryClient = newClient();
+    mockGet.mockRejectedValue(Object.assign(new Error('Not found'), { status: 404 }));
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() =>
+      expect(queryClient.getQueryState([QueryKeys.messages, conversationId])?.status).toBe('error'),
+    );
+
+    const { result } = renderHook(() => useView(conversationId), { wrapper });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a transient prefetch failure the way the view would have', async () => {
+    const conversationId = 'prefetch-transient';
     const queryClient = newClient();
     const serverMessages = [message({ conversationId, messageId: 'm1' })];
     mockGet.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(serverMessages);
@@ -839,13 +863,41 @@ describe('usePrefetchConversationMessages', () => {
 
     renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
     await waitFor(() =>
-      expect(queryClient.getQueryState([QueryKeys.messages, conversationId])?.status).toBe('error'),
+      expect(queryClient.getQueryData([QueryKeys.messages, conversationId])).toEqual(
+        serverMessages,
+      ),
     );
-    expect(mockGet).toHaveBeenCalledTimes(1);
 
     const { result } = renderHook(() => useView(conversationId), { wrapper });
-    await waitFor(() => expect(result.current.data).toEqual(serverMessages));
+    expect(result.current.data).toEqual(serverMessages);
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(mockGet).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a failed entry on mount when the failure is not a fresh prefetch', async () => {
+    const conversationId = 'prefetch-stale-error';
+    const queryClient = newClient();
+    const serverMessages = [message({ conversationId, messageId: 'm1' })];
+    mockGet
+      .mockRejectedValueOnce(Object.assign(new Error('Not found'), { status: 404 }))
+      .mockResolvedValueOnce(serverMessages);
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() =>
+      expect(queryClient.getQueryState([QueryKeys.messages, conversationId])?.status).toBe('error'),
+    );
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 60_000);
+    try {
+      const { result } = renderHook(() => useView(conversationId), { wrapper });
+      await waitFor(() => expect(result.current.data).toEqual(serverMessages));
+      expect(mockGet).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('reconciles on every mount after the first, as before', async () => {

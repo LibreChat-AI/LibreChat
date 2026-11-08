@@ -5,6 +5,7 @@ import type { ChatHost, ChatMessageCache, ChatMessagesQuery } from '@librechat/c
 import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueryClient, QueryCacheNotifyEvent } from '@tanstack/react-query';
 import {
+  retryMessagesOnMount,
   refetchMessagesOnMount,
   useAbortStreamMutation,
   useGetMessagesByConvoId,
@@ -87,11 +88,13 @@ function useMessageCache(): ChatMessageCache {
 
 /** The conversation's messages query. Refetches stale caches on mount: navigation invalidates
  *  (not removes) messages, so a warm conversation renders instantly from cache and reconciles in
- *  the background instead of unmounting into a spinner. */
+ *  the background instead of unmounting into a spinner. A payload or failure `ChatRoute` just
+ *  prefetched counts as this mount's own load. */
 function useMessages(
   conversationId: string | undefined,
   { isStreaming }: { isStreaming: boolean },
 ): ChatMessagesQuery {
+  const queryClient = useQueryClient();
   const {
     data = null,
     isLoading,
@@ -101,6 +104,7 @@ function useMessages(
     {
       enabled: !!conversationId && conversationId !== Constants.SEARCH,
       refetchOnMount: refetchMessagesOnMount,
+      retryOnMount: retryMessagesOnMount(queryClient, conversationId ?? ''),
     },
     { isStreaming },
   );
