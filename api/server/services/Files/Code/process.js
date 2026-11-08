@@ -38,6 +38,7 @@ const {
   getCodeFileContextLine,
   appendCodeFileContextLine,
   createCodeReuploadFailures,
+  openCodeFileSource,
   getUploadedCodeEnvFilename,
   checkCodeFileActive: checkIfActive,
   CODE_OUTPUT_PREFLIGHT_MAX_BYTES,
@@ -861,7 +862,9 @@ const primeFiles = async (options) => {
                 ),
               openSource: async () => {
                 signal?.throwIfAborted();
-                return getDownloadStream(options.req, resolveDownloadPath(file), { signal });
+                return openCodeFileSource(() =>
+                  getDownloadStream(options.req, resolveDownloadPath(file), { signal }),
+                );
               },
               upload: (stream) =>
                 uploadCodeEnvFile({
@@ -926,7 +929,7 @@ const primeFiles = async (options) => {
          * uploads after the foreground run has ended. */
         signal?.throwIfAborted();
         const failureCategory = getReuploadFailureCategory(error);
-        reuploadFailures.add(failureCategory, file);
+        reuploadFailures.add(error, failureCategory, file);
         const { requestId, runId } = getPrimingCorrelation(req);
         logger.error(
           `[primeCodeFiles] reupload-failed requestId=${requestId} runId=${runId} ` +

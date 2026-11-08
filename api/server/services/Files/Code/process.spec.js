@@ -1,3 +1,4 @@
+const { Readable } = require('stream');
 // Configurable file size limit for tests - use a getter so it can be changed per test
 const fileSizeLimitConfig = { value: 20 * 1024 * 1024 }; // Default 20MB
 
@@ -73,6 +74,7 @@ jest.mock('@librechat/api', () => {
     getCodeFileContextLine: jest.requireActual('@librechat/api').getCodeFileContextLine,
     appendCodeFileContextLine: jest.requireActual('@librechat/api').appendCodeFileContextLine,
     createCodeReuploadFailures: jest.requireActual('@librechat/api').createCodeReuploadFailures,
+    openCodeFileSource: jest.requireActual('@librechat/api').openCodeFileSource,
     resolveDownloadPath: (file) => file.storageKey || file.filepath,
     logAxiosError: jest.fn(),
     /* Behaviourally identical to the real predicate in
@@ -4000,6 +4002,23 @@ describe('Code Process', () => {
       const failureLogs = logger.error.mock.calls.map(([message]) => message).join('\n');
       expect(failureLogs).toContain('category=missing_backing_object');
       expect(failureLogs).not.toContain(dbFile.filename);
+    });
+
+    it('still requires recovery when the Code API upload returns 404', async () => {
+      const dbFile = makeMissingObjectFile('librechat-file-id', 'cross-region-report.png');
+      const getDownloadStream = jest.fn().mockResolvedValue(Readable.from(['source bytes']));
+      const handleFileUpload = jest.fn().mockRejectedValue({ response: { status: 404 } });
+      getFiles.mockResolvedValue([dbFile]);
+      getStrategyFunctions.mockImplementation((source) =>
+        source === 'execute_code' ? { handleFileUpload } : { getDownloadStream },
+      );
+      mockAxios.mockResolvedValue({ data: null });
+
+      await expect(primeMissing(['librechat-file-id'])).rejects.toMatchObject({
+        code: ErrorTypes.RESOURCE_RECOVERY_REQUIRED,
+        details: { required: 1, primed: 0, failed: 1 },
+      });
+      expect(handleFileUpload).toHaveBeenCalled();
     });
 
     it('still requires recovery when a file failed for another reason', async () => {

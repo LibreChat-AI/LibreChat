@@ -14,8 +14,7 @@ const {
   encodeAndFormatVideos,
   getTransactionsConfig,
   encodeAndFormatDocuments,
-  appendMissingAttachmentsNote,
-  createMissingAttachmentCollector,
+  replayMessageAttachments,
   getLangfuseTraceMessageFields,
   isContentFilterError,
   assertModelBoundProviderContent,
@@ -2068,22 +2067,12 @@ class BaseClient {
         return message;
       }
 
-      /* Storage retention can delete an earlier turn's file while its record stays on the
-       * message; skip it with a note instead of failing every later turn. */
-      const missing = createMissingAttachmentCollector();
-      const [, processedFiles] = await Promise.all([
-        this.addFileContextToMessage(message, contextFiles),
-        this.processAttachments(message, contextFiles, undefined, missing.onMissingFile),
-      ]);
-      if (missing.files.length > 0) {
-        message.fileContext = appendMissingAttachmentsNote(message.fileContext, missing.files);
-      }
-
-      const processedFileIds = new Set(
-        (processedFiles ?? [])
-          .map((file) => file?.file_id)
-          .filter((fileId) => fileId && !missing.has(fileId)),
-      );
+      const processedFileIds = await replayMessageAttachments({
+        message,
+        addFileContext: () => this.addFileContextToMessage(message, contextFiles),
+        processAttachments: (onMissingFile) =>
+          this.processAttachments(message, contextFiles, undefined, onMissingFile),
+      });
       this.message_file_map[message.messageId] = contextFiles.filter(
         (file) => processedFileIds.has(file?.file_id) && isModelBoundAttachmentFile(file),
       );

@@ -22,6 +22,7 @@ import {
   createCodeApiUploadRegistry,
   withCodeApiUploadSlot,
 } from '~/utils/code';
+import { isStorageNotFoundError } from '~/files/encode/utils';
 import { codeExecutionHeaders } from '~/agents/execution';
 import { buildCodeEnvDownloadQuery } from './identity';
 import { getCodeEnvUploadFilename } from './form';
@@ -334,15 +335,43 @@ export function formatMissingCodeFilesNote(filenames: string[]): string {
   );
 }
 
-/** Category `getReuploadFailureCategory` assigns to a source object storage no longer has. */
-const MISSING_BACKING_OBJECT = 'missing_backing_object';
+/**
+ * Raised when storage no longer has a code file's source object. Only the storage read throws
+ * it, so a 404 from the Code API upload is never mistaken for a deleted file. `code` keeps the
+ * operator-facing failure category `missing_backing_object`.
+ */
+export class CodeSourceMissingError extends Error {
+  readonly code = 'NotFound';
+
+  constructor() {
+    super('The source object of a code file is missing from storage.');
+    this.name = 'CodeSourceMissingError';
+  }
+}
+
+/** Opens a code file's source from storage, naming a storage miss as `CodeSourceMissingError`. */
+export async function openCodeFileSource<T>(open: () => Promise<T>): Promise<T> {
+  try {
+    return await open();
+  } catch (error) {
+    if (isStorageNotFoundError(error)) {
+      throw new CodeSourceMissingError();
+    }
+    throw error;
+  }
+}
 
 /**
- * Tallies the reupload failures of one priming pass. A file storage deleted is named to the
- * model instead of failing the turn; only the other categories can require resource recovery.
+ * Tallies the reupload failures of one priming pass. A file whose source storage deleted is
+ * named to the model instead of failing the turn; every other failure, including a Code API
+ * 404, can still require resource recovery.
  */
 export function createCodeReuploadFailures(): {
-  add: (category: string, file: Pick<CodeContextFile, 'file_id' | 'filename'>) => void;
+  add: (
+    error: unknown,
+    category: string,
+    file: Pick<CodeContextFile, 'file_id' | 'filename'>,
+  ) => void;
   readonly count: number;
   readonly missingCount: number;
   requiresRecovery: (required: number, primed: number) => boolean;
@@ -353,9 +382,9 @@ export function createCodeReuploadFailures(): {
   const categories = new Set<string>();
   const missingFilenames: string[] = [];
   return {
-    add: (category, file) => {
+    add: (error, category, file) => {
       count += 1;
-      if (category === MISSING_BACKING_OBJECT) {
+      if (error instanceof CodeSourceMissingError) {
         missingFilenames.push(file.filename || file.file_id);
         return;
       }

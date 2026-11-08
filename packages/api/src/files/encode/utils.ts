@@ -71,6 +71,36 @@ export function createMissingAttachmentCollector(): {
 }
 
 /**
+ * Replays one earlier message's attachments with missing files tolerated: the encoders skip
+ * whatever storage deleted, the message's file context names those files, and the returned
+ * ids are the files that were actually processed.
+ */
+export async function replayMessageAttachments(params: {
+  message: { fileContext?: string };
+  addFileContext: () => Promise<void>;
+  processAttachments: (
+    onMissingFile: MissingAttachmentHandler,
+  ) => Promise<Array<{ file_id?: string } | null | undefined> | null | undefined>;
+}): Promise<Set<string>> {
+  const { message, addFileContext, processAttachments } = params;
+  const missing = createMissingAttachmentCollector();
+  const [, processedFiles] = await Promise.all([
+    addFileContext(),
+    processAttachments(missing.onMissingFile),
+  ]);
+  if (missing.files.length > 0) {
+    message.fileContext = appendMissingAttachmentsNote(message.fileContext, missing.files);
+  }
+  const processedFileIds = new Set<string>();
+  for (const file of processedFiles ?? []) {
+    if (file?.file_id && !missing.has(file.file_id)) {
+      processedFileIds.add(file.file_id);
+    }
+  }
+  return processedFileIds;
+}
+
+/**
  * Tells the model which earlier attachments were deleted from storage, so it neither claims
  * to have read them nor stays silent about why they are absent.
  */
@@ -91,7 +121,8 @@ export function appendMissingAttachmentsNote(
   return fileContext ? `${fileContext}\n\n${note}` : note;
 }
 
-function isStorageNotFoundError(error: unknown): boolean {
+/** Whether a storage backend reported that the requested object does not exist. */
+export function isStorageNotFoundError(error: unknown): boolean {
   if (typeof error !== 'object' || error == null) {
     return false;
   }

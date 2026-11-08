@@ -5,6 +5,8 @@ import {
   getCodeFileLocation,
   getCodeFileContextLine,
   appendCodeFileContextLine,
+  CodeSourceMissingError,
+  openCodeFileSource,
   createCodeReuploadFailures,
 } from './priming';
 
@@ -369,13 +371,32 @@ describe('code file context', () => {
   });
 });
 
+describe('openCodeFileSource', () => {
+  it.each([
+    { name: 'NoSuchKey' },
+    { code: 'BlobNotFound', statusCode: 404 },
+    { response: { status: 404 } },
+  ])('names a storage miss %#', async (error) => {
+    await expect(openCodeFileSource(() => Promise.reject(error))).rejects.toBeInstanceOf(
+      CodeSourceMissingError,
+    );
+  });
+
+  it('passes other storage failures through unchanged', async () => {
+    const denied = { code: 'AccessDenied', status: 403 };
+    await expect(openCodeFileSource(() => Promise.reject(denied))).rejects.toBe(denied);
+    await expect(openCodeFileSource(async () => 'stream')).resolves.toBe('stream');
+  });
+});
+
 describe('createCodeReuploadFailures', () => {
   const file = (file_id: string, filename: string) => ({ file_id, filename });
+  const missing = new CodeSourceMissingError();
 
-  it('names files deleted from storage without requiring recovery', () => {
+  it('names files whose source storage deleted without requiring recovery', () => {
     const failures = createCodeReuploadFailures();
-    failures.add('missing_backing_object', file('a', 'report.csv'));
-    failures.add('missing_backing_object', file('b', ''));
+    failures.add(missing, 'missing_backing_object', file('a', 'report.csv'));
+    failures.add(missing, 'missing_backing_object', file('b', ''));
 
     expect(failures.count).toBe(2);
     expect(failures.missingCount).toBe(2);
@@ -383,10 +404,19 @@ describe('createCodeReuploadFailures', () => {
     expect(failures.missingFilesContext()).toContain('"report.csv", "b"');
   });
 
+  it('treats a Code API 404 as a recovery failure, not a deleted file', () => {
+    const failures = createCodeReuploadFailures();
+    failures.add({ response: { status: 404 } }, 'missing_backing_object', file('a', 'a.csv'));
+
+    expect(failures.missingCount).toBe(0);
+    expect(failures.requiresRecovery(1, 0)).toBe(true);
+    expect(failures.recoveryCategory()).toBe('missing_backing_object');
+  });
+
   it('requires recovery when every file failed and one failed for another reason', () => {
     const failures = createCodeReuploadFailures();
-    failures.add('missing_backing_object', file('a', 'gone.csv'));
-    failures.add('resource_access_denied', file('b', 'denied.csv'));
+    failures.add(missing, 'missing_backing_object', file('a', 'gone.csv'));
+    failures.add(new Error('denied'), 'resource_access_denied', file('b', 'denied.csv'));
 
     expect(failures.requiresRecovery(2, 0)).toBe(true);
     expect(failures.recoveryCategory()).toBe('resource_access_denied');
@@ -397,8 +427,8 @@ describe('createCodeReuploadFailures', () => {
     const failures = createCodeReuploadFailures();
     expect(failures.requiresRecovery(0, 0)).toBe(false);
     expect(failures.missingFilesContext()).toBe('');
-    failures.add('rate_limited', file('a', 'a.csv'));
-    failures.add('reupload_failed', file('b', 'b.csv'));
+    failures.add(new Error('slow'), 'rate_limited', file('a', 'a.csv'));
+    failures.add(new Error('boom'), 'reupload_failed', file('b', 'b.csv'));
     expect(failures.recoveryCategory()).toBe('mixed_reupload_failure');
   });
 });
