@@ -168,7 +168,8 @@ export function toToolApprovalPattern(pattern: string): string {
     return pattern;
   }
   const rest = pattern.slice(MCP_PATTERN_PREFIX.length);
-  const separator = rest.indexOf(':');
+  /** Server names may contain `:` and MCP tool names may not, so the tool is the last segment. */
+  const separator = rest.lastIndexOf(':');
   if (separator <= 0 || separator === rest.length - 1) {
     return pattern;
   }

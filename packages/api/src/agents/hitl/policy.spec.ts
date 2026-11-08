@@ -234,6 +234,21 @@ describe('mapToolApprovalPolicy', () => {
       ).toEqual({ ask: ['run_mcp_My_Server', 'search_mcp_*', 'mcp:x', 'read_*'] });
     });
 
+    test('keeps a colon inside the server name', () => {
+      const colonPolicy: TToolApprovalPolicy = {
+        enabled: true,
+        mode: 'dontAsk',
+        ask: ['mcp:Connector: Company:*'],
+      };
+      expect(mapToolApprovalPolicy(colonPolicy)).toEqual({
+        mode: 'dontAsk',
+        ask: ['*_mcp_Connector__Company'],
+      });
+      expect(isToolBlockedByApprovalPolicy(colonPolicy, 'search_mcp_Connector__Company')).toBe(
+        false,
+      );
+    });
+
     test('normalizes the literal parts of a globbed server name', () => {
       const deny = mapToolApprovalPolicy({ deny: ['mcp:My Server*:delete_file'] });
       expect(deny).toEqual({ deny: ['delete_file_mcp_My_Server*'] });
