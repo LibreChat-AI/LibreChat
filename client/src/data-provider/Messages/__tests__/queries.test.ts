@@ -8,8 +8,10 @@ import type { ReactNode } from 'react';
 import {
   getStableMessages,
   shouldPreserveMessagesOnNotFound,
+  refetchMessagesOnMount,
   useSubagentAttachmentCallsQueries,
   useGetMessagesByConvoId,
+  usePrefetchConversationMessages,
 } from '../queries';
 import { clearMessagesCache, logger } from '~/utils';
 
@@ -713,5 +715,150 @@ describe('useSubagentAttachmentCallsQueries', () => {
     expect(batches).toEqual([32, 8]);
     unmount();
     queryClient.clear();
+  });
+});
+
+describe('usePrefetchConversationMessages', () => {
+  const mockGet = dataService.getMessagesByConvoId as jest.MockedFunction<
+    typeof dataService.getMessagesByConvoId
+  >;
+
+  beforeEach(() => {
+    mockGet.mockReset();
+  });
+
+  function newClient() {
+    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  }
+
+  /** The conversation view's observer, configured the way `useMessages` configures it. */
+  function useView(conversationId: string) {
+    return useGetMessagesByConvoId(conversationId, {
+      enabled: true,
+      refetchOnMount: refetchMessagesOnMount,
+    });
+  }
+
+  it('loads once when the view mounts after the prefetch settled', async () => {
+    const conversationId = 'prefetch-settled';
+    const queryClient = newClient();
+    const serverMessages = [message({ conversationId, messageId: 'm1' })];
+    mockGet.mockResolvedValue(serverMessages);
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() =>
+      expect(queryClient.getQueryData([QueryKeys.messages, conversationId])).toEqual(
+        serverMessages,
+      ),
+    );
+
+    const { result } = renderHook(() => useView(conversationId), { wrapper });
+    expect(result.current.data).toEqual(serverMessages);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockGet).toHaveBeenCalledTimes(1);
+    expect(mockGet).toHaveBeenCalledWith(conversationId, { toolPreviews: true });
+  });
+
+  it('joins the in-flight prefetch when the view mounts before it settles', async () => {
+    const conversationId = 'prefetch-in-flight';
+    const queryClient = newClient();
+    const serverMessages = [message({ conversationId, messageId: 'm1' })];
+    let resolve: (value: TMessage[]) => void = () => {};
+    mockGet.mockImplementation(() => new Promise((r) => (resolve = r)));
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
+    const { result } = renderHook(() => useView(conversationId), { wrapper });
+    await act(async () => resolve(serverMessages));
+
+    await waitFor(() => expect(result.current.data).toEqual(serverMessages));
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips a conversation the cache already holds, a new chat, search, and a disabled route', async () => {
+    const queryClient = newClient();
+    queryClient.setQueryData([QueryKeys.messages, 'prefetch-warm'], []);
+    const wrapper = createWrapper(queryClient, '/c/new');
+
+    renderHook(() => usePrefetchConversationMessages('prefetch-warm', true), { wrapper });
+    renderHook(() => usePrefetchConversationMessages(Constants.NEW_CONVO as string, true), {
+      wrapper,
+    });
+    renderHook(() => usePrefetchConversationMessages(Constants.SEARCH as string, true), {
+      wrapper,
+    });
+    renderHook(() => usePrefetchConversationMessages('prefetch-disabled', false), { wrapper });
+    renderHook(() => usePrefetchConversationMessages('', true), { wrapper });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('lets the view load and report the conversation when the prefetch failed', async () => {
+    const conversationId = 'prefetch-failed';
+    const queryClient = newClient();
+    const serverMessages = [message({ conversationId, messageId: 'm1' })];
+    mockGet.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(serverMessages);
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() =>
+      expect(queryClient.getQueryState([QueryKeys.messages, conversationId])?.status).toBe('error'),
+    );
+    expect(mockGet).toHaveBeenCalledTimes(1);
+
+    const { result } = renderHook(() => useView(conversationId), { wrapper });
+    await waitFor(() => expect(result.current.data).toEqual(serverMessages));
+    expect(mockGet).toHaveBeenCalledTimes(2);
+  });
+
+  it('reconciles on every mount after the first, as before', async () => {
+    const conversationId = 'prefetch-remount';
+    const queryClient = newClient();
+    mockGet.mockResolvedValue([message({ conversationId, messageId: 'm1' })]);
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(queryClient.getQueryState([QueryKeys.messages, conversationId])?.status).toBe(
+        'success',
+      ),
+    );
+
+    const first = renderHook(() => useView(conversationId), { wrapper });
+    first.unmount();
+    expect(mockGet).toHaveBeenCalledTimes(1);
+
+    renderHook(() => useView(conversationId), { wrapper });
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+  });
+
+  it('refetches on mount once the prefetched payload is no longer fresh', async () => {
+    const conversationId = 'prefetch-expired';
+    const queryClient = newClient();
+    mockGet.mockResolvedValue([message({ conversationId, messageId: 'm1' })]);
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() =>
+      expect(queryClient.getQueryState([QueryKeys.messages, conversationId])?.status).toBe(
+        'success',
+      ),
+    );
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 60_000);
+    try {
+      renderHook(() => useView(conversationId), { wrapper });
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    } finally {
+      clock.mockRestore();
+    }
   });
 });

@@ -4,7 +4,11 @@ import { hashQueryKey, useQueryClient } from '@tanstack/react-query';
 import type { ChatHost, ChatMessageCache, ChatMessagesQuery } from '@librechat/chat/react';
 import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueryClient, QueryCacheNotifyEvent } from '@tanstack/react-query';
-import { useAbortStreamMutation, useGetMessagesByConvoId } from '~/data-provider';
+import {
+  refetchMessagesOnMount,
+  useAbortStreamMutation,
+  useGetMessagesByConvoId,
+} from '~/data-provider';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useTurnServices from '~/hooks/Chat/services';
@@ -96,7 +100,7 @@ function useMessages(
     conversationId ?? '',
     {
       enabled: !!conversationId && conversationId !== Constants.SEARCH,
-      refetchOnMount: true,
+      refetchOnMount: refetchMessagesOnMount,
     },
     { isStreaming },
   );
