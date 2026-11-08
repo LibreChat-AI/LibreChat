@@ -904,6 +904,28 @@ describe('retained answer lifecycle', () => {
     }
   });
 
+  test('counts an answer with a long unbroken run in linear time instead of exactly', async () => {
+    /** The SDK counts the block in 8,192-character slices, and each slice of this
+     *  answer takes ~0.3 s to count whole; the block is measured several times per
+     *  turn, so no slice of the run may reach the exact counter. */
+    await Tokenizer.initEncoding('o200k_base');
+    const answer = '漢'.repeat(16_000);
+    const block = `Q: Paste the log\nA: ${answer}`;
+    const message = new HumanMessage({
+      content: block,
+      additional_kwargs: { librechat_retained_answers: block },
+    });
+    const fallback = jest.fn(() => 5);
+    const exact = jest.spyOn(Tokenizer, 'countExactTokens');
+    try {
+      const count = withRetainedAnswerTokenCounter(fallback, 'o200k_base')(message);
+      expect(exact.mock.calls.some(([text]) => text.includes('漢'.repeat(1000)))).toBe(false);
+      expect(count).toBeGreaterThanOrEqual(Tokenizer.getTokenCount(block, 'o200k_base'));
+    } finally {
+      exact.mockRestore();
+    }
+  });
+
   test('preserves the fallback counter for ordinary content with empty parts', () => {
     const message = new HumanMessage({
       content: [null as never, { type: 'text', text: 'ordinary' }],
