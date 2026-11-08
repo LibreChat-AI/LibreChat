@@ -39,6 +39,7 @@ export interface AgentApprovalSource {
 
 const USER_PLACEHOLDER = /\{\{[^{}]+\}\}/;
 const ENV_REFERENCE = /\$\{([^{}]+)\}/g;
+const hasOwn = Object.prototype.hasOwnProperty;
 
 /**
  * A changed connection, raw schema, mode or revision requires fresh consent. `env` is the
@@ -72,10 +73,11 @@ function resolveApprovalEnv(
   names: string[],
   env: Readonly<Record<string, string | undefined>>,
 ): Record<string, string> | undefined {
-  const resolved: Record<string, string> = {};
+  /** Prototype-free, so names such as `__proto__` stay own entries the digest can see. */
+  const resolved: Record<string, string> = Object.create(null);
   for (const name of names.sort()) {
-    const value = env[name];
-    if (!value || isSensitiveEnvVar(name)) return undefined;
+    const value = hasOwn.call(env, name) ? env[name] : undefined;
+    if (typeof value !== 'string' || !value || isSensitiveEnvVar(name)) return undefined;
     resolved[name] = value;
   }
   return resolved;
@@ -88,7 +90,9 @@ function resolveApprovalEnv(
  */
 function expandsToUserPlaceholder(value: unknown, env: Readonly<Record<string, string>>): boolean {
   if (typeof value === 'string')
-    return USER_PLACEHOLDER.test(value.replace(ENV_REFERENCE, (ref, name) => env[name] ?? ref));
+    return USER_PLACEHOLDER.test(
+      value.replace(ENV_REFERENCE, (ref, name) => (hasOwn.call(env, name) ? env[name] : ref)),
+    );
   if (value === null || typeof value !== 'object') return false;
   return Object.values(value).some((child) => expandsToUserPlaceholder(child, env));
 }
