@@ -1,37 +1,30 @@
-import { isIP } from 'net';
-
 export interface FluxResultRequest {
   url: string;
   params?: { id: string };
 }
 
-/** Last two hostname labels (`api.eu2.bfl.ai` -> `bfl.ai`), or the full host for IPs and single labels. */
-function getSiteDomain(hostname: string): string {
-  if (isIP(hostname) || !hostname.includes('.')) {
-    return hostname;
-  }
-  return hostname.split('.').slice(-2).join('.');
+const BFL_DOMAIN = 'bfl.ai';
+
+function isBflHost(url: URL): boolean {
+  return (
+    url.protocol === 'https:' &&
+    (url.hostname === BFL_DOMAIN || url.hostname.endsWith(`.${BFL_DOMAIN}`))
+  );
 }
 
 function isTrustedPollingUrl(pollingUrl: URL, baseUrl: URL): boolean {
-  if (pollingUrl.protocol !== baseUrl.protocol) {
-    return false;
-  }
-  if (pollingUrl.hostname === baseUrl.hostname) {
+  if (pollingUrl.origin === baseUrl.origin) {
     return true;
   }
-  const domain = getSiteDomain(baseUrl.hostname);
-  if (domain === baseUrl.hostname) {
-    return false;
-  }
-  return pollingUrl.hostname.endsWith(`.${domain}`);
+  return isBflHost(baseUrl) && isBflHost(pollingUrl);
 }
 
 /**
  * Resolves where to poll for a BFL task result. The global and regional endpoints route
  * tasks to other clusters and return the cluster's `polling_url`, so it is preferred.
  * The API key travels with the poll, so a `polling_url` is only followed when it shares the
- * base URL's protocol and site domain; otherwise the legacy `/v1/get_result` endpoint is used.
+ * base URL's origin, or when both are BFL clusters over https; otherwise the legacy
+ * `/v1/get_result` endpoint on the base URL is used.
  */
 export function resolveFluxResultRequest(
   baseUrl: string,

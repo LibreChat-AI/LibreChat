@@ -32,10 +32,31 @@ describe('resolveFluxResultRequest', () => {
     });
   });
 
-  it('only follows an exact host match when the base URL is an IP or single label', () => {
-    expect(
-      resolveFluxResultRequest('http://127.0.0.1:8080', taskId, 'http://10.0.0.1/v1/get_result'),
-    ).toEqual({ url: 'http://127.0.0.1:8080/v1/get_result', params: { id: taskId } });
+  it.each([
+    [
+      'a public suffix shared with the base',
+      'https://flux.example.co.uk',
+      'https://attacker.co.uk/poll',
+    ],
+    [
+      'a sibling on a multi-tenant suffix',
+      'https://flux.workers.dev',
+      'https://evil.workers.dev/poll',
+    ],
+    ['another port on the same host', 'http://localhost:8080', 'http://localhost:9090/poll'],
+    [
+      'a BFL cluster when the base is a proxy',
+      'https://proxy.example.com',
+      'https://api.eu2.bfl.ai/poll',
+    ],
+  ])('falls back for %s', (_label, baseUrl, pollingUrl) => {
+    expect(resolveFluxResultRequest(baseUrl, taskId, pollingUrl)).toEqual({
+      url: `${baseUrl}/v1/get_result`,
+      params: { id: taskId },
+    });
+  });
+
+  it('follows a polling_url on the same origin as a custom base URL', () => {
     expect(
       resolveFluxResultRequest('http://localhost:8080', taskId, 'http://localhost:8080/poll?id=1'),
     ).toEqual({ url: 'http://localhost:8080/poll?id=1' });
