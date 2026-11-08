@@ -9,6 +9,7 @@ import {
   isCodeEnvironmentMode,
   isCodeWorkspaceSelections,
 } from 'librechat-data-provider';
+import type { ToolMessage } from '@langchain/core/messages';
 import type { Response as ServerResponse } from 'express';
 import type {
   FunctionCallOutputItemParam,
@@ -165,6 +166,76 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value !== '';
 }
 
+function isSupportedImageUrl(value: string): boolean {
+  if (/^data:image\/[a-z0-9.+-]+[;,]/i.test(value)) {
+    return true;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+/** Validate before mapping: never silently discard a malformed or unsupported media part. */
+function validateFunctionCallOutput(output: unknown): string | undefined {
+  if (typeof output === 'string') {
+    return undefined;
+  }
+  if (!Array.isArray(output)) {
+    return 'requires output as a string or array of input_text, input_image, or input_file parts';
+  }
+  for (let index = 0; index < output.length; index++) {
+    const part = output[index] as Record<string, unknown> | null;
+    const prefix = `output[${index}]`;
+    if (part == null || typeof part !== 'object' || Array.isArray(part)) {
+      return `${prefix} must be a content part object`;
+    }
+    if (part.type === 'input_text') {
+      if (typeof part.text !== 'string') {
+        return `${prefix} requires text as a string`;
+      }
+      continue;
+    }
+    if (part.type !== 'input_image' && part.type !== 'input_file') {
+      return `${prefix} must be input_text, input_image, or input_file`;
+    }
+    // There is no authenticated file resolver in this conversion path. Do not
+    // forward arbitrary LibreChat/provider file IDs across users or tenants.
+    if (part.file_id != null) {
+      return `${prefix} file_id is not supported; supply inline data or a URL`;
+    }
+    if (part.type === 'input_image') {
+      if (!isNonEmptyString(part.image_url)) {
+        return `${prefix} requires a non-empty image_url`;
+      }
+      if (!isSupportedImageUrl(part.image_url)) {
+        return `${prefix} image_url must be an HTTP(S) URL or an image data URI`;
+      }
+      if (part.detail != null && !['auto', 'low', 'high'].includes(part.detail as string)) {
+        return `${prefix} detail must be auto, low, or high`;
+      }
+      continue;
+    }
+    for (const field of ['file_data', 'file_url', 'filename']) {
+      if (part[field] != null && typeof part[field] !== 'string') {
+        return `${prefix} ${field} must be a string or null`;
+      }
+    }
+    for (const field of ['file_data', 'file_url']) {
+      if (part[field] != null && !isNonEmptyString(part[field])) {
+        return `${prefix} ${field} must be a non-empty string or null`;
+      }
+    }
+    // Semantic source selection: nullable/omitted fields are absent sources.
+    if (Number(part.file_data != null) + Number(part.file_url != null) !== 1) {
+      return `${prefix} requires exactly one of file_data or file_url`;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Validates the replayed tool exchanges in `input`.
  *
@@ -223,8 +294,9 @@ export function validateInputToolExchanges(
       if (!isNonEmptyString(output.call_id)) {
         return 'each function_call_output requires a non-empty string call_id';
       }
-      if (typeof output.output !== 'string') {
-        return `function_call_output ${output.call_id} requires output as a string`;
+      const outputError = validateFunctionCallOutput(output.output);
+      if (outputError !== undefined) {
+        return `function_call_output ${output.call_id} ${outputError}`;
       }
       if (outputCallIds.has(output.call_id)) {
         return `duplicate function_call_output call_id: ${output.call_id}`;
@@ -269,8 +341,8 @@ export interface InternalToolCallPart {
     name: string;
     /** Raw JSON string as the caller sent it; `formatAgentMessages` parses it. */
     args: string;
-    /** The caller's result for this call. Present on every replayed pair. */
-    output: string;
+    /** One complete ToolMessage result, including all media parts, for this call. */
+    output: ToolMessage['content'];
   };
 }
 
@@ -430,12 +502,41 @@ export function convertInputToMessages(input: string | InputItem[]): InternalMes
 }
 
 /** Indexes every `function_call_output` in the input by its `call_id`. */
-function collectFunctionCallOutputs(input: InputItem[]): Map<string, string> {
-  const outputs = new Map<string, string>();
+function collectFunctionCallOutputs(input: InputItem[]): Map<string, ToolMessage['content']> {
+  const outputs = new Map<string, ToolMessage['content']>();
   for (const item of input) {
     if (item.type === 'function_call_output') {
       const fcoItem = item as FunctionCallOutputItemParam;
-      outputs.set(fcoItem.call_id, fcoItem.output);
+      // Preserve one output per call, with the original part order. In particular,
+      // do not promote media into HumanMessages or stringify it into text.
+      const output = fcoItem.output;
+      outputs.set(
+        fcoItem.call_id,
+        typeof output === 'string'
+          ? output
+          : output.map((part) => {
+              if (part.type === 'input_text') {
+                return { type: 'text', text: part.text };
+              }
+              if (part.type === 'input_image') {
+                return {
+                  type: 'image_url',
+                  image_url: {
+                    url: part.image_url!,
+                    ...(part.detail != null ? { detail: part.detail } : {}),
+                  },
+                };
+              }
+              return {
+                type: 'file',
+                file: {
+                  ...(part.filename != null ? { filename: part.filename } : {}),
+                  ...(part.file_data != null ? { file_data: part.file_data } : {}),
+                  ...(part.file_url != null ? { file_url: part.file_url } : {}),
+                },
+              };
+            }),
+      );
     }
   }
   return outputs;

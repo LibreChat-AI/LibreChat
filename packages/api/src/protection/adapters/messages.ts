@@ -151,6 +151,7 @@ const PART_SNAPSHOT_KEYS = [
   'image_url',
   'file_id',
   'file_data',
+  'file_url',
   'filename',
   'source',
   'input_audio',
@@ -159,13 +160,44 @@ const PART_SNAPSHOT_KEYS = [
 const SNAPSHOT_KEYS_BY_PARENT_KEY: Readonly<Record<string, readonly string[]>> = {
   source: ['type', 'data', 'url'],
   image_url: ['url'],
-  file: ['file_id', 'file_data', 'filename'],
+  file: ['file_id', 'file_data', 'file_url', 'filename'],
   input_audio: ['data', 'format'],
   tool_call: ['name', 'args', 'arguments', 'function', 'code_interpreter', 'output'],
   function: ['name', 'arguments', 'output'],
   code_interpreter: ['input', 'outputs'],
 };
 const OMIT_SNAPSHOT_VALUE = Symbol('omit-snapshot-value');
+
+/** Media leaves inside a persisted assistant tool result need the same file
+ * attribution as top-level attachments; generic nested traversal excludes them. */
+function nestedToolMediaField(path: string): 'uri' | 'name' | 'content' | undefined {
+  const match =
+    /\/tool_call\/output\/\d+\/(image_url(?:\/url)?|file\/(file_url|filename|file_data))$/.exec(
+      path,
+    );
+  if (match == null) {
+    return undefined;
+  }
+  if (match[2] === 'filename') {
+    return 'name';
+  }
+  return match[2] === 'file_data' ? 'content' : 'uri';
+}
+
+const shouldIncludeMessageNestedText: typeof shouldIncludeNestedSubmittedText = (
+  value,
+  context,
+) => {
+  if (nestedToolMediaField(context.path) != null) {
+    // includeKeys also visits property names: only actual submitted values count.
+    return (
+      context.key != null &&
+      (context.parent as Record<string, unknown> | undefined)?.[context.key] === value &&
+      !isDataUri(value)
+    );
+  }
+  return shouldIncludeNestedSubmittedText(value, context);
+};
 
 interface SnapshotState {
   remaining: number;
@@ -585,7 +617,7 @@ export function snapshotExternalMessages(
             shouldVisit: ({ path, value }) =>
               !handledPaths.has(path) &&
               !(path === `${basePath}/source` && typeof value === 'string' && value === 'source'),
-            shouldInclude: shouldIncludeNestedSubmittedText,
+            shouldInclude: shouldIncludeMessageNestedText,
           });
           remainingNestedSnapshotWork -= snapshotTraversalBudget.visitedNodes;
           content.push(stablePart as ExternalMessagePart);
@@ -1250,6 +1282,7 @@ export function* extractMessageContent(
           nestedValue,
           basePath,
           (nestedText, nestedPath) => {
+            const mediaField = nestedToolMediaField(nestedPath);
             appendAssembledText(nestedText);
             if (emittedFragments + nestedFragments.length >= MAX_EXTERNAL_MESSAGE_FRAGMENTS) {
               markTraversalIncomplete();
@@ -1261,9 +1294,39 @@ export function* extractMessageContent(
                 nestedPath,
                 nestedText,
                 'message',
-                'content_part',
+                mediaField != null && mediaField !== 'content'
+                  ? 'attachment_reference'
+                  : 'content_part',
+                mediaField === 'uri' ? 'uri' : 'plain',
+                mediaField != null ? 'inspect_only' : undefined,
               ),
             );
+            if (mediaField != null) {
+              if (emittedFragments + nestedFragments.length + 2 > MAX_EXTERNAL_MESSAGE_FRAGMENTS) {
+                markTraversalIncomplete();
+                return;
+              }
+              nestedFragments.push(
+                createMessageFragment(
+                  `external-message.${messageIndex}.part.${partIndex}.nested.${nestedIndex}.file`,
+                  nestedPath,
+                  nestedText,
+                  'file',
+                  mediaField,
+                  mediaField === 'uri' ? 'uri' : 'plain',
+                  'inspect_only',
+                ),
+                createMessageFragment(
+                  `external-message.${messageIndex}.part.${partIndex}.nested.${nestedIndex}.tool-media`,
+                  nestedPath,
+                  nestedText,
+                  'tool_argument',
+                  'output',
+                  'plain',
+                  'inspect_only',
+                ),
+              );
+            }
             if (isInstruction) {
               if (emittedFragments + nestedFragments.length >= MAX_EXTERNAL_MESSAGE_FRAGMENTS) {
                 markTraversalIncomplete();
@@ -1305,7 +1368,7 @@ export function* extractMessageContent(
             shouldVisit: ({ path, value }) =>
               !handledPaths.has(path) &&
               !(path === `${basePath}/source` && typeof value === 'string' && value === 'source'),
-            shouldInclude: shouldIncludeNestedSubmittedText,
+            shouldInclude: shouldIncludeMessageNestedText,
           },
         );
         for (const fragment of nestedFragments) {
