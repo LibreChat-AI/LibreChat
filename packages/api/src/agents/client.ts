@@ -498,7 +498,13 @@ export function countRetainedToolTokens({
     if (typeof output !== 'string' || output.length === 0) {
       continue;
     }
-    workCounted += getExactCountWork(output);
+    /** Work is never below length, so oversized output is refused before any scan,
+     *  and the scan itself stops at the remaining budget. */
+    const remaining = maxCountChars - workCounted;
+    if (output.length > remaining) {
+      return undefined;
+    }
+    workCounted += getExactCountWork(output, remaining);
     if (workCounted > maxCountChars) {
       return undefined;
     }

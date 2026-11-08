@@ -369,6 +369,19 @@ describe('countRetainedToolTokens', () => {
     expect(counted).not.toHaveBeenCalled();
   });
 
+  it('refuses output longer than the remaining budget without scanning it', () => {
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', 'word '.repeat(100))],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+        maxCountChars: 100,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
   it('still counts ordinary text up to the ceiling', () => {
     const output = 'The quick brown fox jumps over the lazy dog. '.repeat(20_000);
     expect(

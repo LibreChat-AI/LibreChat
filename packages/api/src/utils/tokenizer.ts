@@ -47,12 +47,19 @@ function runWork(length: number): number {
  * character budget keeps meaning time. Digits split into groups of three and
  * never form a long piece. Letter runs that change case may split into several
  * pieces, so the figure can overstate the work but does not understate it.
+ *
+ * With `limit`, the scan stops as soon as the work exceeds it and returns the
+ * figure reached so far (still above `limit`), so rejecting huge input costs no
+ * more than the budget it is checked against.
  */
-export function getExactCountWork(text: string): number {
+export function getExactCountWork(text: string, limit = Number.POSITIVE_INFINITY): number {
   let work = 0;
   let run = 0;
   let previous = 0;
   for (let index = 0; index < text.length; index++) {
+    if (work + runWork(run) > limit) {
+      return work + runWork(run);
+    }
     const code = text.charCodeAt(index);
     let runClass: number;
     if (code < 128) {

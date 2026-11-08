@@ -269,6 +269,17 @@ describe('Tokenizer', () => {
       expect(getExactCountWork(digits)).toBe(digits.length);
     });
 
+    it('stops scanning once the work passes the limit', () => {
+      /** Rejecting huge input must cost no more than the budget it is checked against. */
+      const huge = ' '.repeat(10_000_000);
+      const start = performance.now();
+      const work = getExactCountWork(huge, 1_000);
+      expect(work).toBeGreaterThan(1_000);
+      expect(work).toBeLessThan(2_000);
+      expect(performance.now() - start).toBeLessThan(50);
+      expect(getExactCountWork('ordinary words', 1_000)).toBe('ordinary words'.length);
+    });
+
     it('reads astral characters as one character of their own class', () => {
       /** A surrogate pair must not split a letter run in two. */
       const run = '\u{1D400}'.repeat(100);
