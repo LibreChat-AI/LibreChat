@@ -174,7 +174,13 @@ export function toToolApprovalPattern(pattern: string): string {
   }
   const server = rest.slice(0, separator);
   const tool = rest.slice(separator + 1);
-  const serverKey = server.includes('*') ? server : normalizeServerName(server);
+  /** Globbed names keep their `*` but get the same character replacement on the literal parts. */
+  const serverKey = server.includes('*')
+    ? server
+        .split('*')
+        .map((part) => part.replace(/[^a-zA-Z0-9_.-]/g, '_'))
+        .join('*')
+    : normalizeServerName(server);
   return `${tool}${Constants.mcp_delimiter}${serverKey}`;
 }
 

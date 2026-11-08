@@ -233,6 +233,17 @@ describe('mapToolApprovalPolicy', () => {
         mapToolApprovalPolicy({ ask: ['mcp:My Server:run', 'mcp:*:search', 'mcp:x', 'read_*'] }),
       ).toEqual({ ask: ['run_mcp_My_Server', 'search_mcp_*', 'mcp:x', 'read_*'] });
     });
+
+    test('normalizes the literal parts of a globbed server name', () => {
+      const deny = mapToolApprovalPolicy({ deny: ['mcp:My Server*:delete_file'] });
+      expect(deny).toEqual({ deny: ['delete_file_mcp_My_Server*'] });
+      expect(
+        isToolDeniedByApprovalPolicy(
+          { enabled: true, deny: ['mcp:My Server*:delete_file'] },
+          'delete_file_mcp_My_Server_1',
+        ),
+      ).toBe(true);
+    });
   });
 
   test('strips enabled regardless of value (LibreChat-only field)', () => {
