@@ -213,6 +213,9 @@ function getSafeTypedErrorText(
 export interface GenerationErrorConfig {
   readonly filters?: FiltersConfig | null;
   readonly messageFilter?: { readonly pii?: MessageFilterPiiConfig | null } | null;
+  readonly endpoints?: {
+    readonly agents?: { readonly maxProviderErrorChars?: number } | null;
+  } | null;
 }
 
 /**
@@ -245,6 +248,7 @@ export function getUserFacingGenerationError(
   }
   const classified = safelyResolveLangChainError(error, {
     includeProviderMessage: !protectionEnabled,
+    maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
     formatProviderMessage: (text) => redactMessage(getSafeErrorText(text)),
   });
   if (classified != null) {

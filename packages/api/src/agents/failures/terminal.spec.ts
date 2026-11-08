@@ -508,6 +508,15 @@ describe('getUserFacingGenerationError', () => {
     expect(payload.type).toBe(ErrorTypes.MODEL_RATE_LIMIT);
     expect(payload.info).toContain('Budget exhausted for');
     expect(payload.info).not.toContain('user@example.com');
+
+    const limited = JSON.parse(
+      getUserFacingGenerationError(
+        error,
+        { endpoints: { agents: { maxProviderErrorChars: 12 } } },
+        'Generation failed',
+      ),
+    );
+    expect(limited.info).toBe('Budget e');
   });
 
   it('keeps the host-authored message of a content policy block under protection', () => {
