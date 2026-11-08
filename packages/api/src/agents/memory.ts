@@ -43,8 +43,8 @@ import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
 import { inspectContent } from '~/protection/runtime';
 import { checkAccess } from '~/middleware/access';
+import { countTokens } from '~/utils/tokenizer';
 import { isMemoryEnabled } from '~/memory';
-import Tokenizer from '~/utils/tokenizer';
 
 type RequiredMemoryMethods = Pick<
   MemoryMethods,
@@ -203,7 +203,7 @@ export const createMemoryTool = ({
             return [`Invalid key "${key}". Must be one of: ${validKeys.join(', ')}`, undefined];
           }
 
-          const tokenCount = Tokenizer.getTokenCount(value, 'o200k_base');
+          const tokenCount = await countTokens(value);
           /** Total excluding this key's prior persisted or in-instance value,
            *  so a rewrite is measured as a replacement rather than an addition. */
           const baseTotalTokens = currentTotalTokens - (currentTokensByKey.get(key) ?? 0);
