@@ -1,5 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import axios from 'axios';
+
+if (typeof window !== 'undefined') {
+  /** Auth is a bearer token; no route reads an XSRF header. Axios ≥1.21 otherwise awaits
+   *  `cookieStore.get` before every same-origin send, and a browser whose cookie store never
+   *  answers then strands every request behind it. */
+  axios.defaults.withXSRFToken = false;
+}
 import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import type * as t from './types';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from './config';
