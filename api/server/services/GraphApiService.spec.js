@@ -1,6 +1,10 @@
 jest.mock('@microsoft/microsoft-graph-client');
 jest.mock('~/strategies/openidStrategy');
 jest.mock('~/cache/getLogStores');
+jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
+  getOpenIdProxyDispatcher: jest.fn(),
+}));
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
   logger: {
@@ -28,6 +32,7 @@ const mongoose = require('mongoose');
 const client = require('openid-client');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const { Client } = require('@microsoft/microsoft-graph-client');
+const { getOpenIdProxyDispatcher } = require('@librechat/api');
 const { getOpenIdConfig } = require('~/strategies/openidStrategy');
 const getLogStores = require('~/cache/getLogStores');
 const GraphApiService = require('./GraphApiService');
@@ -88,6 +93,7 @@ describe('GraphApiService', () => {
       issuer: 'https://test-issuer.com',
     };
     getOpenIdConfig.mockReturnValue(mockOpenIdConfig);
+    getOpenIdProxyDispatcher.mockReturnValue(undefined);
 
     // Mock openid-client (using the existing jest mock configuration)
     if (client.genericGrantRequest) {
@@ -144,6 +150,18 @@ describe('GraphApiService', () => {
   });
 
   describe('createGraphClient', () => {
+    it('should pass the configured proxy dispatcher to the Graph client', async () => {
+      const dispatcher = { dispatch: jest.fn() };
+      getOpenIdProxyDispatcher.mockReturnValue(dispatcher);
+
+      await GraphApiService.createGraphClient('test-access-token', 'test-user-id');
+
+      expect(Client.init).toHaveBeenCalledWith({
+        authProvider: expect.any(Function),
+        fetchOptions: { dispatcher },
+      });
+    });
+
     it('should create graph client with exchanged token', async () => {
       const accessToken = 'test-access-token';
       const sub = 'test-user-id';
