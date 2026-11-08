@@ -37,6 +37,7 @@ const {
   getCodeFileInfo,
   getCodeFileContextLine,
   appendCodeFileContextLine,
+  formatMissingCodeFilesNote,
   getUploadedCodeEnvFilename,
   checkCodeFileActive: checkIfActive,
   CODE_OUTPUT_PREFLIGHT_MAX_BYTES,
@@ -689,6 +690,7 @@ const getReuploadFailureCategory = (error) => {
  * @returns {Promise<{
  * files: Array<{ id: string; session_id: string; name: string }>,
  * toolContext: string,
+ * missingFilesContext?: string,
  * contextFiles?: import('@librechat/api').CodeContextEntry[],
  * }>}
  */
@@ -763,6 +765,8 @@ const primeFiles = async (options) => {
   let reuploadFailures = 0;
   let requiredCodeFiles = 0;
   const reuploadFailureCategories = new Set();
+  /** Files storage no longer holds: named to the model rather than failing the turn. */
+  const missingFilenames = [];
 
   for (const { file, ref, sourceRef, sandboxName, isActive, getUploadTime } of selected) {
     requiredCodeFiles += 1;
@@ -926,7 +930,11 @@ const primeFiles = async (options) => {
         signal?.throwIfAborted();
         reuploadFailures += 1;
         const failureCategory = getReuploadFailureCategory(error);
-        reuploadFailureCategories.add(failureCategory);
+        if (failureCategory === 'missing_backing_object') {
+          missingFilenames.push(file.filename || file.file_id);
+        } else {
+          reuploadFailureCategories.add(failureCategory);
+        }
         const { requestId, runId } = getPrimingCorrelation(req);
         logger.error(
           `[primeCodeFiles] reupload-failed requestId=${requestId} runId=${runId} ` +
@@ -971,12 +979,16 @@ const primeFiles = async (options) => {
    * the per-path trail leading up to it. */
   const primedCodeFiles = files.length;
   const allRequiredResourcesFailed =
-    requiredCodeFiles > 0 && primedCodeFiles === 0 && reuploadFailures === requiredCodeFiles;
+    requiredCodeFiles > 0 &&
+    primedCodeFiles === 0 &&
+    reuploadFailures === requiredCodeFiles &&
+    reuploadFailureCategories.size > 0;
   const { requestId, runId } = getPrimingCorrelation(req);
   logger.debug(
     `[primeCodeFiles] out: returned=${files.length} ` +
       `required=${requiredCodeFiles} skippedNoRef=${skippedNoRef} ` +
-      `skippedSuperseded=${skippedSuperseded} reuploadFailures=${reuploadFailures}`,
+      `skippedSuperseded=${skippedSuperseded} reuploadFailures=${reuploadFailures} ` +
+      `missing=${missingFilenames.length}`,
   );
 
   if (allRequiredResourcesFailed) {
@@ -996,7 +1008,13 @@ const primeFiles = async (options) => {
     });
   }
 
-  return { files, toolContext, ...(contextFiles?.length ? { contextFiles } : {}) };
+  const missingFilesContext = formatMissingCodeFilesNote(missingFilenames);
+  return {
+    files,
+    toolContext,
+    ...(missingFilesContext ? { missingFilesContext } : {}),
+    ...(contextFiles?.length ? { contextFiles } : {}),
+  };
 };
 
 /**

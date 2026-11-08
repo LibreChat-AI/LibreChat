@@ -315,3 +315,21 @@ export function appendCodeFileContextLine(
   }
   return `${CODE_FILE_CONTEXT_HEADERS[location]}${contextLine}`;
 }
+
+/** Dynamic tool context key for code files whose stored copy was deleted. */
+export const MISSING_CODE_FILES_CONTEXT_KEY = 'missing_code_files';
+
+/**
+ * Names the conversation files that could not be restored into the code environment because
+ * storage no longer has them, so the model does not look for them there.
+ */
+export function formatMissingCodeFilesNote(filenames: string[]): string {
+  if (!filenames.length) {
+    return '';
+  }
+  const names = filenames.map((name) => `"${name}"`).join(', ');
+  return (
+    `The following conversation files were deleted from storage and are not available in the code environment: ${names}. ` +
+    'If they are needed, ask the user to upload them again.'
+  );
+}
