@@ -158,6 +158,7 @@ jest.mock('openid-client/passport', () => {
     this.verify = verify;
   });
   mockStrategy.prototype.authorizationRequestParams = jest.fn(() => new URLSearchParams());
+  mockStrategy.prototype.authorizationCodeGrantParameters = jest.fn(() => ({}));
 
   return {
     Strategy: mockStrategy,
@@ -251,6 +252,7 @@ describe('setupOpenId', () => {
     delete process.env.OPENID_NAME_CLAIM;
     delete process.env.OPENID_EMAIL_CLAIM;
     delete process.env.OPENID_AUDIENCE;
+    delete process.env.OPENID_RESOURCE;
     delete process.env.OPENID_AVATAR_AUTHORIZED_ORIGINS;
     delete process.env.PROXY;
     delete process.env.OPENID_USE_PKCE;
@@ -408,6 +410,60 @@ describe('setupOpenId', () => {
       const params = getLoginStrategy().authorizationRequestParams({}, {});
 
       expect(params.has('audience')).toBe(false);
+    });
+
+    it('adds the OPENID_RESOURCE indicator for providers that ignore audience', () => {
+      process.env.OPENID_RESOURCE = ' https://api.example.com ';
+
+      const params = getLoginStrategy().authorizationRequestParams({}, { state: 'login-state' });
+
+      expect(params.get('resource')).toBe('https://api.example.com');
+      expect(params.has('audience')).toBe(false);
+      expect(params.get('state')).toBe('login-state');
+    });
+
+    it('sends resource alongside audience when both are configured', () => {
+      process.env.OPENID_AUDIENCE = 'https://api.example.com';
+      process.env.OPENID_RESOURCE = 'https://api.example.com';
+
+      const params = getLoginStrategy().authorizationRequestParams({}, {});
+
+      expect(params.get('audience')).toBe('https://api.example.com');
+      expect(params.get('resource')).toBe('https://api.example.com');
+    });
+
+    it('does not add a resource when OPENID_RESOURCE is blank', () => {
+      process.env.OPENID_RESOURCE = '  ';
+
+      const params = getLoginStrategy().authorizationRequestParams({}, {});
+
+      expect(params.has('resource')).toBe(false);
+    });
+
+    it('applies the resource to the admin login strategy too', () => {
+      process.env.OPENID_RESOURCE = 'https://api.example.com';
+
+      const params = require('openid-client/passport')
+        .__getStrategyByName('openidAdmin')
+        .authorizationRequestParams({}, {});
+
+      expect(params.get('resource')).toBe('https://api.example.com');
+    });
+  });
+
+  describe('authorizationCodeGrantParameters', () => {
+    const getLoginStrategy = () => require('openid-client/passport').__getStrategyByName('openid');
+
+    it('sends the OPENID_RESOURCE indicator on the authorization-code token request', () => {
+      process.env.OPENID_RESOURCE = 'https://api.example.com';
+
+      expect(getLoginStrategy().authorizationCodeGrantParameters({}, {})).toEqual({
+        resource: 'https://api.example.com',
+      });
+    });
+
+    it('adds no token request parameters when OPENID_RESOURCE is unset', () => {
+      expect(getLoginStrategy().authorizationCodeGrantParameters({}, {})).toEqual({});
     });
   });
 

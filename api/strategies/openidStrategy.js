@@ -13,6 +13,7 @@ const {
   findOpenIDUser,
   getOpenIdEmail,
   getOpenIdIssuer,
+  getOpenIdResource,
   createOpenIDUser,
   getBalanceConfig,
   selectOpenIdRole,
@@ -149,6 +150,12 @@ class CustomOpenIDStrategy extends OpenIDStrategy {
       );
     }
 
+    const resource = getOpenIdResource();
+    if (resource) {
+      params.set('resource', resource);
+      logger.debug(`[openidStrategy] Adding resource to authorization request: ${resource}`);
+    }
+
     /** Generate nonce for federated providers that require it */
     const shouldGenerateNonce = isEnabled(process.env.OPENID_GENERATE_NONCE);
     if (shouldGenerateNonce && !params.has('nonce') && this._sessionKey) {
@@ -159,6 +166,13 @@ class CustomOpenIDStrategy extends OpenIDStrategy {
     }
 
     return params;
+  }
+
+  /** RFC 8707 also allows `resource` on the token request, and some providers only read it there */
+  authorizationCodeGrantParameters(req, options) {
+    const params = super.authorizationCodeGrantParameters(req, options);
+    const resource = getOpenIdResource();
+    return resource ? { ...params, resource } : params;
   }
 }
 
