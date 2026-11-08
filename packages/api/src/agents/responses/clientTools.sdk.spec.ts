@@ -371,6 +371,94 @@ describe('caller tool handoff through the pinned SDK', () => {
     );
   });
 
+  it('hands off when a delta-only call streams its name in fragments', async () => {
+    const { events, graph, metadata, stream } = setup();
+    const sdk = new ChatModelStreamHandler();
+    // The chunk contract permits substring names: assemble before matching.
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ id: 'call_a', name: 'submit_sql', index: 0, args: '' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ index: 0, args: '{"sql":"SELECT 1"}' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ id: 'call_b', name: 'submit', index: 1, args: '' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ id: 'call_b', name: '_sql', index: 1, args: '' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ index: 1, args: '{"sql":"SELECT 2"}' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+
+    const calls = [
+      { id: 'call_a', name: 'submit_sql', args: { sql: 'SELECT 1' } },
+      { id: 'call_b', name: 'submit_sql', args: { sql: 'SELECT 2' } },
+    ];
+    expect(
+      toolsCondition(
+        { messages: [{ tool_calls: calls }] } as unknown as Parameters<typeof toolsCondition>[0],
+        'tools',
+        graph.invokedToolIds,
+      ),
+    ).not.toBe('tools');
+
+    stream.handlers.on_chat_model_end.handle('on_chat_model_end', {
+      output: { tool_calls: calls },
+    });
+    stream.finalizeStream();
+
+    expect(completed(events)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call',
+          call_id: 'call_b',
+          name: 'submit_sql',
+        }),
+      ]),
+    );
+  });
+
   it('never eagerly answers a client-only call when its name is excluded', async () => {
     const { events, handoff, graph, metadata, stream } = setup();
     graph.eagerEventToolExecution = {
