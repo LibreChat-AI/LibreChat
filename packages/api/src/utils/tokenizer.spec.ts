@@ -1,6 +1,6 @@
 import { Tokenizer as AiTokenizer } from 'ai-tokenizer';
 import type { EncodingName } from './tokenizer';
-import Tokenizer, { countTokens } from './tokenizer';
+import Tokenizer, { countTokens, getExactCountWork } from './tokenizer';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -243,6 +243,36 @@ describe('Tokenizer', () => {
         const cold = require('./tokenizer').default as typeof Tokenizer;
         expect(cold.countExactTokens('Uncounted tool result', 'o200k_base')).toBeUndefined();
       });
+    });
+  });
+
+  describe('getExactCountWork', () => {
+    it('costs ordinary text its length', () => {
+      const prose = 'The quick brown fox, the lazy dog; 42 times.\n\tIndented   line.';
+      expect(getExactCountWork(prose)).toBe(prose.length);
+      expect(getExactCountWork('')).toBe(0);
+    });
+
+    it('costs a long run of whitespace, letters or punctuation the square of its length', () => {
+      const square = (length: number) => Math.ceil((length * length) / 32);
+      expect(getExactCountWork(' '.repeat(1000))).toBe(square(1000));
+      expect(getExactCountWork('a'.repeat(1000))).toBe(square(1000));
+      expect(getExactCountWork('='.repeat(1000))).toBe(square(1000));
+      /** Separate runs are separate pieces, so their costs add rather than compound. */
+      expect(getExactCountWork(`${'='.repeat(1000)}a${'='.repeat(1000)}`)).toBe(
+        square(1000) * 2 + 1,
+      );
+    });
+
+    it('keeps digits linear, since the encoder splits them into groups of three', () => {
+      const digits = '1234567890'.repeat(1000);
+      expect(getExactCountWork(digits)).toBe(digits.length);
+    });
+
+    it('reads astral characters as one character of their own class', () => {
+      /** A surrogate pair must not split a letter run in two. */
+      const run = '\u{1D400}'.repeat(100);
+      expect(getExactCountWork(run)).toBe(Math.ceil((100 * 100) / 32));
     });
   });
 });

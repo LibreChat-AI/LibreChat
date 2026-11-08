@@ -9,6 +9,71 @@ const MAX_TOKENIZER_INPUT_LENGTH = 4 * 1024;
 /** Bound BPE's quadratic merge work on uninterrupted text, including whitespace. */
 const MAX_TOKENIZER_RUN_LENGTH = 256;
 const WHITESPACE = /\s/u;
+const LETTER = /[\p{L}\p{M}]/u;
+const NUMBER = /\p{N}/u;
+/** Unbroken runs up to this length cost no more than their length to merge. */
+const LINEAR_RUN_LENGTH = 32;
+
+const RUN_SPACE = 1;
+const RUN_LETTER = 2;
+const RUN_NUMBER = 3;
+const RUN_OTHER = 4;
+
+function classifyRunCharacter(character: string): number {
+  if (WHITESPACE.test(character)) {
+    return RUN_SPACE;
+  }
+  if (LETTER.test(character)) {
+    return RUN_LETTER;
+  }
+  return NUMBER.test(character) ? RUN_NUMBER : RUN_OTHER;
+}
+
+const ASCII_RUN_CLASSES = Uint8Array.from({ length: 128 }, (_, code) =>
+  classifyRunCharacter(String.fromCharCode(code)),
+);
+
+function runWork(length: number): number {
+  return length <= LINEAR_RUN_LENGTH ? length : Math.ceil((length * length) / LINEAR_RUN_LENGTH);
+}
+
+/**
+ * Characters' worth of merge work an exact count of `text` costs. The encoder
+ * merges within one pre-tokenized piece at a time (a word, a whitespace run, a
+ * punctuation run), and that work grows with the square of the piece's length:
+ * 200 KB of unbroken whitespace takes ~25 s, while 1 MB of ordinary text takes
+ * ~30 ms. Ordinary text therefore costs its length here, and each long run of
+ * whitespace, letters or punctuation costs the square of its length, so a
+ * character budget keeps meaning time. Digits split into groups of three and
+ * never form a long piece. Letter runs that change case may split into several
+ * pieces, so the figure can overstate the work but does not understate it.
+ */
+export function getExactCountWork(text: string): number {
+  let work = 0;
+  let run = 0;
+  let previous = 0;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    let runClass: number;
+    if (code < 128) {
+      runClass = ASCII_RUN_CLASSES[code];
+    } else {
+      const point = text.codePointAt(index) ?? code;
+      if (point > 0xffff) {
+        index++;
+      }
+      runClass = classifyRunCharacter(String.fromCodePoint(point));
+    }
+    if (runClass === previous && runClass !== RUN_NUMBER) {
+      run++;
+      continue;
+    }
+    work += runWork(run);
+    run = 1;
+    previous = runClass;
+  }
+  return work + runWork(run);
+}
 
 /** Near-exact budgeting count; seams can change BPE merges, but no content is omitted. */
 function countBoundedTokens(text: string, tokenizer: AiTokenizer): number {
@@ -119,9 +184,10 @@ class Tokenizer {
    * approximation must not be added to exact provider accounting.
    *
    * The input is tokenized whole. Counting it in slices would be cheaper but not
-   * exact — seams can change BPE merges — and this caller needs the real number. It costs
-   * ~60 ms/MB, so the caller decides how much content is worth counting
-   * (`endpoints.agents.maxRetainedToolCountChars`) rather than a bound here.
+   * exact, since seams can change BPE merges, and this caller needs the real number. It costs
+   * ~60 ms/MB for ordinary text but grows quadratically on a long unbroken run, so the
+   * caller decides how much work is worth doing, measured by {@link getExactCountWork}
+   * (`endpoints.agents.maxRetainedToolCountChars`), rather than a bound here.
    */
   countExactTokens(text: string, encoding: EncodingName = 'o200k_base'): number | undefined {
     if (text.length === 0) {

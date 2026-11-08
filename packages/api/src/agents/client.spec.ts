@@ -343,8 +343,8 @@ describe('countRetainedToolTokens', () => {
     expect(
       countRetainedToolTokens({
         contentParts: [
-          toolPart('call_1', 'grep', 'a'.repeat(60)),
-          toolPart('call_2', 'read_file', 'b'.repeat(60)),
+          toolPart('call_1', 'grep', 'ab '.repeat(20)),
+          toolPart('call_2', 'read_file', 'cd '.repeat(20)),
         ],
         priorToolCallIds: new Set(),
         countExact: counted,
@@ -353,6 +353,31 @@ describe('countRetainedToolTokens', () => {
     ).toBeUndefined();
     /** It stops at the budget rather than counting the rest for nothing. */
     expect(counted).toHaveBeenCalledTimes(1);
+  });
+
+  it('charges a long unbroken run its quadratic merge work, not its length', () => {
+    /** 200 KB of whitespace is far under the 8 MiB character ceiling, yet merging it as
+     *  one piece blocks the event loop for ~25 s, so the budget must refuse it. */
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'web_search', `results${' '.repeat(200_000)}end`)],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
+  it('still counts ordinary text up to the ceiling', () => {
+    const output = 'The quick brown fox jumps over the lazy dog. '.repeat(20_000);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact,
+      }),
+    ).toBe(countExact(output));
   });
 
   it('defaults the budget to the shipped ceiling', () => {

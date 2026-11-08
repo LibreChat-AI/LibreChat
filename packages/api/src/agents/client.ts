@@ -18,8 +18,8 @@ import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Agent, TMessage } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import { getSafeErrorMetadata, mergeQuotedText, formatQuotesAsMarkdown } from '~/utils';
+import Tokenizer, { getExactCountWork } from '~/utils/tokenizer';
 import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
-import Tokenizer from '~/utils/tokenizer';
 
 export const omitTitleOptions: Set<string> = new Set([
   'stream',
@@ -458,9 +458,12 @@ export function countFormattedMessageTokens(
  * exact provider accounting, so it errs low rather than overstating the context.
  * Non-string outputs are skipped, matching {@link countFormattedMessageTokens}.
  *
- * `maxCountChars` bounds the tokenization this turn may cost — one call can request
- * several tools, so the budget spans all their results — and `countExact` returns
- * `undefined` for content it cannot count exactly. Either limit withdraws the whole
+ * `maxCountChars` bounds the tokenization this turn may cost (one call can request
+ * several tools, so the budget spans all their results). It is spent in characters'
+ * worth of merge work ({@link getExactCountWork}), not characters: one long unbroken
+ * run costs the square of its length, so 200 KB of whitespace from a scraped page or
+ * a program's output cannot block the event loop for seconds under a budget sized
+ * for prose. `countExact` returns `undefined` for content it cannot count exactly. Either limit withdraws the whole
  * figure: a turn whose gauge is missing the retained result is better than one
  * whose exact figures absorbed a guess. The Claude framing correction is applied,
  * matching the counter that produced the snapshot.
@@ -482,7 +485,7 @@ export function countRetainedToolTokens({
     return 0;
   }
   let tokens = 0;
-  let charactersCounted = 0;
+  let workCounted = 0;
   for (const candidate of contentParts) {
     const part = candidate as ContentBlock | null | undefined;
     if (part == null || part.type !== ContentTypes.TOOL_CALL) {
@@ -495,8 +498,8 @@ export function countRetainedToolTokens({
     if (typeof output !== 'string' || output.length === 0) {
       continue;
     }
-    charactersCounted += output.length;
-    if (charactersCounted > maxCountChars) {
+    workCounted += getExactCountWork(output);
+    if (workCounted > maxCountChars) {
       return undefined;
     }
     const counted = countExact(output);
