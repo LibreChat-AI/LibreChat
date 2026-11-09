@@ -257,10 +257,16 @@ export default function useNewChat({
         const record = findFilesRecord(fileList, fileId);
         return [fileId, record?.file_id, record?.temp_file_id].some((id) => isPasteSubmitted(id));
       };
+      const reattachedByIdentity = (fileId: string): boolean => {
+        const record = findFilesRecord(fileList, fileId);
+        return [fileId, record?.file_id, record?.temp_file_id].some(
+          (id) => id != null && reattached.has(id),
+        );
+      };
       const deletable: DeletableRecord[] = [];
       const stillPending: string[] = [];
       for (const fileId of pendingDiscardIds) {
-        if (reattached.has(fileId) || consumedBySubmission(fileId)) {
+        if (reattachedByIdentity(fileId) || consumedBySubmission(fileId)) {
           continue;
         }
         const record = findFilesRecord(fileList, fileId);
@@ -277,10 +283,10 @@ export default function useNewChat({
        * cannot be rebuilt, so they retry here until one succeeds. A file the composer has
        * since reattached, or that a message has since consumed, is no longer ours to retry. */
       const retainedToRetry = retained.filter(
-        (record) => !reattached.has(record.file_id) && !consumedBySubmission(record.file_id),
+        (record) => !reattachedByIdentity(record.file_id) && !consumedBySubmission(record.file_id),
       );
       for (const record of retained) {
-        if (reattached.has(record.file_id) || consumedBySubmission(record.file_id)) {
+        if (reattachedByIdentity(record.file_id) || consumedBySubmission(record.file_id)) {
           clearRetainedFileDeletion(record.file_id);
         }
       }

@@ -2,6 +2,8 @@ const jwt = require('jsonwebtoken');
 
 const mockSetAuthTokens = jest.fn(() => Promise.resolve('auth-token'));
 const mockDeleteAllUserSessions = jest.fn(() => Promise.resolve({ deletedCount: 0 }));
+const mockFindSession = jest.fn(() => Promise.resolve(null));
+const mockDeleteSession = jest.fn(() => Promise.resolve({ deletedCount: 1 }));
 const mockAwaitAuthUserDocEviction = jest.fn(() => Promise.resolve());
 const mockGetTOTPSecret = jest.fn();
 const mockVerifyTOTP = jest.fn();
@@ -9,6 +11,7 @@ const mockVerifyBackupCode = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), warn: jest.fn() },
+  DEFAULT_REFRESH_TOKEN_EXPIRY: 7 * 24 * 60 * 60 * 1000,
 }));
 
 jest.mock('~/server/services/twoFactorService', () => ({
@@ -26,6 +29,8 @@ jest.mock('~/models', () => ({
   getUserById: (...args) => store.getUserById(...args),
   updateTwoFactorEnrollment: (...args) => store.updateTwoFactorEnrollment(...args),
   updateUser: (...args) => store.updateUser(...args),
+  findSession: (...args) => mockFindSession(...args),
+  deleteSession: (...args) => mockDeleteSession(...args),
   deleteAllUserSessions: (...args) => mockDeleteAllUserSessions(...args),
   awaitAuthUserDocEviction: (...args) => mockAwaitAuthUserDocEviction(...args),
 }));
@@ -104,9 +109,11 @@ const {
   confirm2FASetupWithTempToken,
   acknowledge2FASetup,
   finalize2FASetup,
+  cancel2FASetup,
 } = require('./TwoFactorAuthController');
 const {
   generateTwoFactorLoginChallengeToken,
+  requireTwoFactorSetupSignOutToken,
   verifyTwoFactorSetupAcknowledgementToken,
   verifyTwoFactorSetupFinalizationToken,
 } = require('@librechat/api');
@@ -738,6 +745,140 @@ describe('finalize2FASetup', () => {
       email: 'user@example.com',
       provider: 'local',
       twoFactorEnabled: true,
+    });
+  });
+});
+
+describe('cancel2FASetup', () => {
+  const runCancel = async (overrides = {}) => {
+    const req = {
+      user: { id: 'user-1' },
+      cookies: { refreshToken: 'live-session-token' },
+      body: {},
+      ...overrides,
+    };
+    const res = createResponse();
+    await cancel2FASetup(req, res);
+    return res;
+  };
+
+  beforeEach(() => {
+    mockFindSession.mockImplementation(async ({ userId, refreshToken }) =>
+      userId === 'user-1' && refreshToken === 'live-session-token'
+        ? { _id: 'session-1', expiration: new Date(Date.now() + 60_000) }
+        : null,
+    );
+  });
+
+  it('ends the presented session and the staged enrollment in one request', async () => {
+    const res = await runCancel();
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(mockDeleteSession).toHaveBeenCalledWith({ sessionId: 'session-1' });
+    expect(mockDeleteAllUserSessions).not.toHaveBeenCalled();
+    expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+    expect(store.doc).toMatchObject({
+      twoFactorEnabled: false,
+      pendingTotpSecret: null,
+      pendingBackupCodes: [],
+    });
+  });
+
+  it('kills an acknowledgement credential issued before the cancel', async () => {
+    const confirmed = await runConfirm();
+    await runCancel();
+
+    const replay = await runAcknowledge(jsonPayload(confirmed).acknowledgementToken);
+
+    /** The nonce it carried was cleared with the staged state, so it can no longer be redeemed. */
+    expect(replay.status).toHaveBeenCalledWith(400);
+    expect(mockSetAuthTokens).not.toHaveBeenCalled();
+    expect(store.doc.twoFactorEnabled).toBe(false);
+  });
+
+  it('kills a finalization credential issued before the cancel', async () => {
+    const confirmed = await runConfirm();
+    const acknowledged = await runAcknowledge(jsonPayload(confirmed).acknowledgementToken);
+    await runCancel();
+
+    const finalized = await runFinalize(jsonPayload(acknowledged).finalizationToken);
+
+    /** Otherwise the tab the user left could still finish the enrollment and take a session. */
+    expect(finalized.status).toHaveBeenCalledWith(400);
+    expect(mockSetAuthTokens).not.toHaveBeenCalled();
+    expect(store.doc).toMatchObject({ twoFactorEnabled: false, totpSecret: null });
+  });
+
+  it('leaves an enrollment that finalized first alone', async () => {
+    store.reset({ twoFactorEnabled: true, totpSecret: 'live-secret', pendingTotpSecret: null });
+
+    const res = await runCancel();
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(store.doc).toMatchObject({ twoFactorEnabled: true, totpSecret: 'live-secret' });
+  });
+
+  it('rejects a request without a validated setup user', async () => {
+    const res = await runCancel({ user: undefined });
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(mockDeleteSession).not.toHaveBeenCalled();
+    expect(res.clearCookie).not.toHaveBeenCalled();
+  });
+
+  describe('behind the sign-out token check', () => {
+    /** A setup token as it was minted `ageSeconds` ago, so its own ten minutes may already be spent. */
+    const mintSetupToken = (ageSeconds) => {
+      const issuedAt = Math.floor(Date.now() / 1000) - ageSeconds;
+      return jwt.sign(
+        {
+          userId: 'user-1',
+          purpose: 'required_2fa_setup',
+          issuedAtMs: issuedAt * 1000,
+          iat: issuedAt,
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: 10 * 60 },
+      );
+    };
+
+    /** Runs the pipeline the route wires up, so the flag the check sets reaches the controller. */
+    const runPipeline = async (tempToken) => {
+      const req = { body: { tempToken }, cookies: { refreshToken: 'live-session-token' } };
+      const res = createResponse();
+      let authorized = false;
+      requireTwoFactorSetupSignOutToken(req, res, () => {
+        authorized = true;
+      });
+      if (authorized) {
+        await cancel2FASetup(req, res);
+      }
+      return res;
+    };
+
+    it('discards the staged enrollment for a live token', async () => {
+      const res = await runPipeline(mintSetupToken(60));
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockDeleteSession).toHaveBeenCalledWith({ sessionId: 'session-1' });
+      expect(store.doc).toMatchObject({ pendingTotpSecret: null, pendingBackupCodes: [] });
+    });
+
+    it('ends the session but leaves the staged enrollment alone for an expired token', async () => {
+      const res = await runPipeline(mintSetupToken(30 * 60));
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockDeleteSession).toHaveBeenCalledWith({ sessionId: 'session-1' });
+      expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+      expect(store.doc.pendingTotpSecret).toBe('encrypted-secret');
+    });
+
+    it('does nothing for a token past the lifetime of any session it could end', async () => {
+      const res = await runPipeline(mintSetupToken(30 * 24 * 60 * 60));
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(mockDeleteSession).not.toHaveBeenCalled();
+      expect(store.doc.pendingTotpSecret).toBe('encrypted-secret');
     });
   });
 });

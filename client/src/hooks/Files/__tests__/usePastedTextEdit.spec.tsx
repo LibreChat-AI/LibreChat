@@ -259,6 +259,36 @@ describe('usePastedTextEdit', () => {
       setFiles: expect.anything(),
     });
   });
+  it('accepts only one save against an original in the same turn', async () => {
+    const editor = await openEditor();
+    await act(async () =>
+      Promise.all([
+        editor.result.current.saveEdit('first correction'),
+        editor.result.current.saveEdit('second correction'),
+      ]),
+    );
+    expect(mockRouteFiles).toHaveBeenCalledTimes(1);
+    expect(capturedLifecycle?.pastedText).toBe('first correction');
+  });
+
+  it('keeps edit and inline actions locked across original-upload completion', async () => {
+    const pending = pastedFile({ file_id: 'upload-id', progress: 0.2, pastedText: 'original' });
+    const editor = renderEditor(new Map([['upload-id', pending]]));
+    await act(async () => editor.result.current.openEditor(pending));
+    await act(async () => editor.result.current.saveEdit('first correction'));
+    const complete = { ...pending, file_id: 'server-id', temp_file_id: 'upload-id', progress: 1 };
+    editor.rerender({ files: new Map([['upload-id', complete]]) });
+    expect(editor.result.current.isActionPending(complete)).toBe(true);
+    await act(async () => editor.result.current.openEditor(complete));
+    await act(async () => editor.result.current.moveInline(complete));
+    expect(editor.result.current.editing).toBeNull();
+    expect(mockSetValue).not.toHaveBeenCalled();
+    expect(mockDeleteFile).not.toHaveBeenCalled();
+    expect(mockRouteFiles).toHaveBeenCalledTimes(1);
+    await act(async () => capturedLifecycle?.onSuccess?.('replacement-id'));
+    expect(editor.result.current.isActionPending(complete)).toBe(false);
+  });
+
   it('detaches the completed original when editing began during its upload', async () => {
     const pending = pastedFile({ file_id: 'upload-id', progress: 0.2, pastedText: 'original' });
     const editor = renderEditor(new Map([['upload-id', pending]]));
@@ -405,7 +435,7 @@ describe('usePastedTextEdit', () => {
       void editor.result.current.saveEdit('corrected');
     });
 
-    expect(editor.result.current.isActionPending('pasted-file')).toBe(true);
+    expect(editor.result.current.isActionPending({ file_id: 'pasted-file' })).toBe(true);
     await act(async () => {
       await editor.result.current.openEditor(pastedFile());
     });

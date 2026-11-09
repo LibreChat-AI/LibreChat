@@ -300,7 +300,7 @@ const ChatForm = memo(function ChatForm({
    * same original cannot be acted on twice. */
   const { isActionPending } = pastedTextEdit;
   const isPasteActionPending = useCallback(
-    (file: ExtendedFile) => isActionPending(file.file_id),
+    (file: ExtendedFile) => isActionPending(file),
     [isActionPending],
   );
 

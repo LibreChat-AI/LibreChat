@@ -319,6 +319,43 @@ describe('useNewChat', () => {
     expect(mockDeleteFiles).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['temporary-paste', 'server-paste'],
+    ['server-paste', 'temporary-paste'],
+  ])('protects a discarded %s claimed elsewhere as %s', async (discarded, claimed) => {
+    mockState.persistedPendingDiscardIds = [discarded];
+    mockState.fileList = [
+      {
+        file_id: 'server-paste',
+        temp_file_id: 'temporary-paste',
+        filepath: '/uploads/paste.txt',
+        source: 'local',
+      },
+    ];
+    mockState.foreignDraftedIds = [claimed];
+    renderHook(() => useNewChat());
+    await act(async () => {});
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+  });
+
+  it('protects a retained server ID when another draft holds its temporary ID', async () => {
+    mockState.retainedDeletions = [
+      { file_id: 'server-paste', filepath: '/uploads/paste.txt', source: 'local' },
+    ];
+    mockState.fileList = [
+      {
+        file_id: 'server-paste',
+        temp_file_id: 'temporary-paste',
+        filepath: '/uploads/paste.txt',
+        source: 'local',
+      },
+    ];
+    mockState.foreignDraftedIds = ['temporary-paste'];
+    renderHook(() => useNewChat());
+    await act(async () => {});
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+  });
+
   it('clears the outgoing conversation before resetting', () => {
     const { result } = renderHook(() => useNewChat());
 

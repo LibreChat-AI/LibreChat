@@ -525,8 +525,9 @@ const SAMPLING_PARAM_KEYS = ['temperature', 'topP', 'topK', 'presencePenalty', '
 /**
  * Reports the provider request the primary agent resolved, before the fake
  * model replaced it: the model, which sampling params survived (top level or
- * `modelKwargs`), and the context budget left for input. Reads the graph's
- * agent context because the hook's `agents` are the unresolved agent configs.
+ * `modelKwargs`), the `reasoning_effort` it carries, and the context budget
+ * left for input. Reads the graph's agent context because the hook's `agents`
+ * are the unresolved agent configs.
  */
 function llmConfigReportResponses(graph) {
   const agent = graph?.agentContexts?.values().next().value;
@@ -538,6 +539,7 @@ function llmConfigReportResponses(graph) {
   const report = {
     model: clientOptions.model ?? clientOptions.modelName ?? null,
     sampling,
+    reasoningEffort: modelKwargs.reasoning_effort ?? null,
     maxContextTokens: agent?.maxContextTokens ?? null,
   };
   return { responses: [`E2E llm config: ${JSON.stringify(report)}`] };
