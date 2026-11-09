@@ -19,6 +19,7 @@ const {
   resolveAssistantProjectTurn,
   joinChatProjectInstructions,
   applyForcedTemporaryRequest,
+  unmanagedAssistantRun,
 } = require('@librechat/api');
 const {
   Time,
@@ -122,6 +123,8 @@ const chatV2 = async (req, res) => {
 
   const cache = getLogStores(CacheKeys.ABORT_KEYS);
   const cacheKey = `${req.user.id}:${conversationId}`;
+  /** Registered with the account cleanup barrier by the route, so deletion can stop and drain it. */
+  const assistantRun = req.assistantRun ?? unmanagedAssistantRun();
 
   /** @type {Run | undefined} - The completed run, undefined if incomplete */
   let completedRun;
@@ -141,14 +144,17 @@ const chatV2 = async (req, res) => {
     responseMessageId,
   });
 
-  const handleError = createErrorHandler({ req, res, getContext });
+  const handleError = assistantRun.guardErrors(res, createErrorHandler({ req, res, getContext }));
 
   try {
-    res.on('close', async () => {
-      if (!completedRun && !contentRejected) {
-        await handleError(new Error('Request closed'));
-      }
-    });
+    res.on(
+      'close',
+      assistantRun.guard(async () => {
+        if (!completedRun && !contentRejected) {
+          await handleError(new Error('Request closed'));
+        }
+      }),
+    );
     const projectTurn = await resolveAssistantProjectTurn(
       {
         userId: req.user.id,
@@ -387,7 +393,7 @@ const chatV2 = async (req, res) => {
       previousMessages.push(requestMessage);
 
       /* asynchronous */
-      userMessagePromise = saveUserMessage(req, { ...requestMessage, model });
+      userMessagePromise = assistantRun.track(saveUserMessage(req, { ...requestMessage, model }));
 
       const conversationProjectId = projectTurn.membershipProjectId;
       conversation = {
@@ -474,6 +480,7 @@ const chatV2 = async (req, res) => {
         });
 
         run_id = run.id;
+        assistantRun.cancelOnStop(openai, { thread_id, run_id });
         await cache.set(cacheKey, `${thread_id}:${run_id}`, Time.TEN_MINUTES);
         sendInitialResponse();
 
@@ -487,6 +494,7 @@ const chatV2 = async (req, res) => {
         [AssistantStreamEvents.ThreadRunCreated]: async (event) => {
           await cache.set(cacheKey, `${thread_id}:${event.data.id}`, Time.TEN_MINUTES);
           run_id = event.data.id;
+          assistantRun.cancelOnStop(openai, { thread_id, run_id });
           sendInitialResponse();
         },
       };
@@ -537,6 +545,7 @@ const chatV2 = async (req, res) => {
       contentRejected = true;
       return res.status(error.statusCode).json(error.body);
     }
+    assistantRun.throwIfStopped();
     setHeaders(req, res, () => {});
     await processRun();
     logger.debug('[/assistants/chat/] response', {

@@ -49,7 +49,11 @@ export class AgentExecutionEnrollment {
   private providerStarted = false;
   private settlement?: Promise<void>;
 
-  constructor(manager: GenerationJobManagerClass, job: GenerationJob) {
+  constructor(
+    manager: GenerationJobManagerClass,
+    job: GenerationJob,
+    private readonly failureMessage: string = REMOTE_EXECUTION_ERROR,
+  ) {
     const providerExecutionId = job.metadata.providerExecutionId;
     if (!providerExecutionId) {
       throw new Error('Agent execution enrollment is missing its provider identity');
@@ -123,7 +127,7 @@ export class AgentExecutionEnrollment {
     try {
       await this.manager.completeJob(
         this.runId,
-        error == null ? undefined : REMOTE_EXECUTION_ERROR,
+        error == null ? undefined : this.failureMessage,
         this.createdAt,
       );
     } catch (settleError) {
@@ -139,7 +143,7 @@ export class AgentExecutionEnrollment {
       try {
         const completed = await this.manager.completeJob(
           this.runId,
-          error == null ? undefined : REMOTE_EXECUTION_ERROR,
+          error == null ? undefined : this.failureMessage,
           this.createdAt,
         );
         if (!completed) {
