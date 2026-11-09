@@ -1,6 +1,7 @@
 import axios from 'axios';
 import Anthropic from '@anthropic-ai/sdk';
 import { Time, EModelEndpoint, defaultModels, AuthType } from 'librechat-data-provider';
+import type { FetchModelsParams } from './models';
 import type { ServerRequest } from '~/types';
 import {
   fetchModels,
@@ -1332,5 +1333,171 @@ describe('configured model lists skip provider discovery', () => {
     mockedAxios.get.mockResolvedValue({ data: { data: [{ id: 'gpt-discovered' }] } });
     await getOpenAIModels({ user: 'user-1' });
     expect(mockedAxios.get).toHaveBeenCalled();
+  });
+});
+
+describe('fetchModels in-flight sharing', () => {
+  type ModelsResponse = { data: { data: Array<Record<string, unknown>> } };
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    return { promise, resolve, reject };
+  }
+
+  /** Lets every caller pass its cache lookup and reach the provider request. */
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  const listing = (...ids: string[]): ModelsResponse => ({
+    data: { data: ids.map((id) => ({ id })) },
+  });
+
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+  });
+
+  afterAll(() => {
+    mockedAxios.get.mockReset().mockResolvedValue(listing('model-1', 'model-2'));
+  });
+
+  it('sends one provider request for concurrent callers that miss the shared cache', async () => {
+    const gate = deferred<ModelsResponse>();
+    mockedAxios.get.mockReturnValue(gate.promise);
+    const params = { apiKey: 'key', baseURL: 'https://shared.test/v1', name: 'Shared' };
+
+    const calls = Array.from({ length: 5 }, () => fetchModels(params));
+    await flush();
+    gate.resolve(listing('model-a', 'model-b'));
+    const results = await Promise.all(calls);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    expect(results).toEqual(Array.from({ length: 5 }, () => ['model-a', 'model-b']));
+  });
+
+  it('keeps each caller storing the token config under its own key', async () => {
+    const gate = deferred<ModelsResponse>();
+    mockedAxios.get.mockReturnValue(gate.promise);
+    const params = { apiKey: 'key', baseURL: 'https://pricing.test/v1', name: 'Pricing' };
+    const priced = {
+      id: 'model-a',
+      pricing: { prompt: '0.002', completion: '0.001' },
+      context_length: 1024,
+    };
+
+    const calls = ['token-a', 'token-b'].map((tokenKey) => fetchModels({ ...params, tokenKey }));
+    await flush();
+    gate.resolve({ data: { data: [priced] } });
+    await expect(Promise.all(calls)).resolves.toEqual([['model-a'], ['model-a']]);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    for (const tokenKey of ['token-a', 'token-b']) {
+      expect(mockTokenConfigSet).toHaveBeenCalledWith(
+        tokenKey,
+        expect.objectContaining({ 'model-a': expect.objectContaining({ context: 1024 }) }),
+      );
+    }
+  });
+
+  it.each<[string, Partial<FetchModelsParams>]>([
+    ['another base URL', { baseURL: 'https://other.test/v1' }],
+    ['another API key', { apiKey: 'other-key' }],
+    ['another native provider', { provider: EModelEndpoint.anthropic }],
+  ])('does not share requests that differ by %s', async (_label, other) => {
+    const gate = deferred<ModelsResponse>();
+    mockedAxios.get.mockReturnValue(gate.promise);
+    const params = { apiKey: 'key', baseURL: 'https://keyed.test/v1', name: 'Keyed' };
+
+    const calls = [fetchModels(params), fetchModels({ ...params, ...other })];
+    await flush();
+    gate.resolve(listing('model-a'));
+    await Promise.all(calls);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      'headers resolved for a user',
+      { headers: { Authorization: 'Bearer user-token' }, userObject: { id: 'user-1' } },
+    ],
+    ['a user query parameter', { userIdQuery: true, user: 'user-1' }],
+    ['a skipped cache', { skipCache: true }],
+  ])('never shares a request made with %s', async (_label, scoped) => {
+    const gate = deferred<ModelsResponse>();
+    mockedAxios.get.mockReturnValue(gate.promise);
+    const params = { apiKey: 'key', baseURL: 'https://scoped.test/v1', name: 'Scoped', ...scoped };
+
+    const calls = [fetchModels(params), fetchModels(params)];
+    await flush();
+    gate.resolve(listing('model-a'));
+    await Promise.all(calls);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not remember a failed request for later callers', async () => {
+    const gate = deferred<ModelsResponse>();
+    mockedAxios.get.mockReturnValueOnce(gate.promise);
+    const params = { apiKey: 'key', baseURL: 'https://failing.test/v1', name: 'Failing' };
+
+    const calls = Array.from({ length: 3 }, () => fetchModels(params));
+    await flush();
+    gate.reject(new Error('provider unavailable'));
+    await expect(Promise.all(calls)).resolves.toEqual([[], [], []]);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+
+    mockedAxios.get.mockResolvedValueOnce(listing('recovered'));
+    await expect(fetchModels(params)).resolves.toEqual(['recovered']);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not keep a finished request for later callers', async () => {
+    mockedAxios.get.mockResolvedValue(listing('model-a'));
+    const params = { apiKey: 'key', baseURL: 'https://settled.test/v1', name: 'Settled' };
+
+    await fetchModels(params);
+    await fetchModels(params);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares one Ollama request, and one fallback request when it fails', async () => {
+    const tags = deferred<{ data: { models: Array<{ name: string }> } }>();
+    const models = deferred<ModelsResponse>();
+    mockedAxios.get.mockImplementation((url: string) =>
+      url.endsWith('/api/tags') ? tags.promise : models.promise,
+    );
+    const params = { apiKey: 'key', baseURL: 'https://ollama.test/v1', name: 'ollama' };
+
+    const calls = [fetchModels(params), fetchModels(params), fetchModels(params)];
+    await flush();
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    tags.reject(new Error('no tags endpoint'));
+    await flush();
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    models.resolve(listing('llama3'));
+
+    await expect(Promise.all(calls)).resolves.toEqual([['llama3'], ['llama3'], ['llama3']]);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares a successful Ollama request between concurrent callers', async () => {
+    const tags = deferred<{ data: { models: Array<{ name: string }> } }>();
+    mockedAxios.get.mockReturnValue(tags.promise);
+    const params = { apiKey: 'key', baseURL: 'https://ollama-ok.test/v1', name: 'ollama-local' };
+
+    const calls = [fetchModels(params), fetchModels(params)];
+    await flush();
+    tags.resolve({ data: { models: [{ name: 'llama3' }] } });
+
+    await expect(Promise.all(calls)).resolves.toEqual([['llama3'], ['llama3']]);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'https://ollama-ok.test/api/tags',
+      expect.any(Object),
+    );
   });
 });
