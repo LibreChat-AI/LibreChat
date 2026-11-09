@@ -288,4 +288,60 @@ describe('createLocalRefreshHandler provider-session recheck', () => {
 
     expect(deps.setAuthTokens).toHaveBeenCalledWith(USER_ID, res, session, expect.anything());
   });
+
+  it.each<['ldap' | 'passkey']>([['ldap'], ['passkey']])(
+    "mints the required-enrollment setup token with the session's %s authMethod",
+    async (authMethod) => {
+      const refreshToken = signRefreshToken(USER_ID);
+      const generateTwoFactorSetupToken = jest.fn().mockReturnValue('setup-token');
+      const deps = buildDeps({
+        getUserById: jest.fn().mockResolvedValue({ _id: USER_ID, provider: 'local' }),
+        findSession: jest.fn().mockResolvedValue({
+          _id: SESSION_ID,
+          expiration: new Date(Date.now() + 60_000),
+          authMethod,
+        }),
+        isTwoFactorEnrollmentRequired: jest.fn().mockReturnValue(true),
+        generateTwoFactorSetupToken,
+      });
+      const handler = createLocalRefreshHandler(deps as never);
+      const res = buildRes();
+
+      await handler({ query: {} } as never, res, refreshToken);
+
+      expect(generateTwoFactorSetupToken).toHaveBeenCalledWith(
+        USER_ID,
+        expect.any(String),
+        authMethod,
+      );
+      expect(res.send).toHaveBeenCalledWith(
+        expect.objectContaining({ twoFASetupRequired: true, tempToken: 'setup-token' }),
+      );
+    },
+  );
+
+  it('mints the required-enrollment setup token without an authMethod for a legacy session', async () => {
+    const refreshToken = signRefreshToken(USER_ID);
+    const generateTwoFactorSetupToken = jest.fn().mockReturnValue('setup-token');
+    const deps = buildDeps({
+      getUserById: jest.fn().mockResolvedValue({ _id: USER_ID, provider: 'local' }),
+      findSession: jest.fn().mockResolvedValue({
+        _id: SESSION_ID,
+        expiration: new Date(Date.now() + 60_000),
+      }),
+      isTwoFactorEnrollmentRequired: jest.fn().mockReturnValue(true),
+      generateTwoFactorSetupToken,
+    });
+    const handler = createLocalRefreshHandler(deps as never);
+    const res = buildRes();
+
+    await handler({ query: {} } as never, res, refreshToken);
+
+    /** No third argument: the setup-token chain falls back to `'local'` on its own. */
+    expect(generateTwoFactorSetupToken).toHaveBeenCalledWith(
+      USER_ID,
+      expect.any(String),
+      undefined,
+    );
+  });
 });
