@@ -18,6 +18,8 @@ describe.each([false, true])('principal storage with transactions: %s', (transac
       : await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
     await mongoose.connect(mongo.getUri());
     createModels(mongoose);
+    // Transactions must not race the fixture’s background collection/index initialization.
+    await Promise.all([mongoose.models.User.init(), mongoose.models.Group.init()]);
     storage = createPermissionPrincipalMethods(mongoose, invalidate);
   });
   afterAll(async () => {
