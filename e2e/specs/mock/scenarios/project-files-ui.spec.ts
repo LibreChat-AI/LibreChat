@@ -187,6 +187,38 @@ async function uploadFromDevice(page: Page, files: Array<{ name: string; content
   return uploadResponse;
 }
 
+/** Reloads before asserting so the row shows the stored name, not the browser's local File. */
+async function expectUploadStoredAs(
+  page: Page,
+  request: APIRequestContext,
+  sentName: string,
+  storedName: string,
+): Promise<void> {
+  let projectId: string | undefined;
+  const fileIds: string[] = [];
+  try {
+    await enableProjectFiles(page);
+    projectId = await createProject(page, uniqueName('Filename project'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+
+    const uploadResponse = await uploadFromDevice(page, [
+      { name: sentName, content: 'project file with a non-trivial name' },
+    ]);
+    expect(uploadResponse.ok()).toBeTruthy();
+    const uploaded = (await uploadResponse.json()) as UploadedFile;
+    if (uploaded.file_id) {
+      fileIds.push(uploaded.file_id);
+    }
+
+    const row = page.getByRole('listitem').filter({ hasText: storedName });
+    await expect(row).toContainText('Ready', { timeout: 30000 });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(row).toContainText('Ready', { timeout: 30000 });
+  } finally {
+    await cleanupProjectAndFiles(page, request, projectId, fileIds, [storedName]);
+  }
+}
+
 test.describe('project file workspace UI', () => {
   test('selecting several files at once queues every file up to the project limit and reports the excess @scenario:multi-file-upload-queues-to-capacity-and-reports-excess', async ({
     page,
@@ -405,5 +437,23 @@ test.describe('project file workspace UI', () => {
     } finally {
       await cleanupProjectAndFiles(page, request, projectId, fileIds, filenames);
     }
+  });
+
+  test('a project file with a non-Latin name keeps that name after upload @scenario:project-upload-keeps-non-latin-filename', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120000);
+    const name = `Описание-日本語-${randomUUID().slice(0, 8)}.txt`;
+    await expectUploadStoredAs(page, request, name, name);
+  });
+
+  test('a project file with a percent sign in its name uploads instead of being rejected @scenario:project-upload-accepts-percent-filename', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120000);
+    const stem = randomUUID().slice(0, 8);
+    await expectUploadStoredAs(page, request, `100% ${stem}.txt`, `100__${stem}.txt`);
   });
 });

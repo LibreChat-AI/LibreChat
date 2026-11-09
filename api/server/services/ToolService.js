@@ -80,6 +80,8 @@ const {
   resolveMCPClientCapabilityProfile,
   getOutboundTimeoutMs,
   getToolErrorText,
+  setMissingCodeFilesContext,
+  getAssistantRun,
 } = require('@librechat/api');
 const {
   Time,
@@ -370,13 +372,16 @@ const processVisionRequest = async (client, currentAction) => {
   /** @type {ChatCompletion | undefined} */
   const completion = await client.visionPromise;
   if (completion && completion.usage) {
-    recordUsage({
-      user: client.req.user.id,
-      model: client.req.body.model,
-      conversationId: (client.responseMessage ?? client.finalMessage).conversationId,
-      ...completion.usage,
-      transactions: getTransactionsConfig(client.req.config),
-    });
+    /** Not awaited, so the run's drain has to wait for it. */
+    getAssistantRun(client.req).track(
+      recordUsage({
+        user: client.req.user.id,
+        model: client.req.body.model,
+        conversationId: (client.responseMessage ?? client.finalMessage).conversationId,
+        ...completion.usage,
+        transactions: getTransactionsConfig(client.req.config),
+      }),
+    );
   }
   const output = completion?.choices?.[0]?.message?.content ?? 'No image details found.';
   return {
@@ -495,6 +500,8 @@ async function processRequiredActions(client, requiredActions) {
   }, {});
 
   const promises = [];
+  /** A later action that fails to start must not strand the tools already running. */
+  const assistantRun = getAssistantRun(client.req);
 
   let actionSetsData = null;
   let isActionTool = false;
@@ -748,7 +755,7 @@ async function processRequiredActions(client, requiredActions) {
         ._call(currentAction.toolInput)
         .then(handleToolOutput)
         .catch(handleToolError);
-      promises.push(promise);
+      promises.push(assistantRun.track(promise));
     } catch (error) {
       const toolOutputError = handleToolError(error);
       promises.push(Promise.resolve(toolOutputError));
@@ -1556,7 +1563,7 @@ async function loadToolDefinitionsWrapper({
   let codeContextEntries;
   if (hasExecuteCode && tool_resources) {
     try {
-      const { toolContext, files, contextFiles } = await primeCodeFiles({
+      const { toolContext, files, contextFiles, missingFilesContext } = await primeCodeFiles({
         req,
         tool_resources,
         agentId: agent.id,
@@ -1573,6 +1580,7 @@ async function loadToolDefinitionsWrapper({
       if (toolContext) {
         dynamicToolContextMap[Tools.execute_code] = toolContext;
       }
+      setMissingCodeFilesContext(dynamicToolContextMap, missingFilesContext);
       if (files?.length) {
         primedCodeFiles = files;
       }
@@ -1645,6 +1653,7 @@ async function loadToolDefinitionsWrapper({
     dynamicToolContextMap,
     toolDefinitions,
     hasDeferredTools,
+    deferredToolsEnabled,
     mcpToolAliases,
     actionsEnabled,
     primedCodeFiles,

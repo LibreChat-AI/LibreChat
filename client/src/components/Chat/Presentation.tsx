@@ -21,8 +21,8 @@ import { migrateStoredFileDeletions } from '~/utils';
 import store from '~/store';
 
 const Artifacts = lazyWithRecovery(() => import('~/components/Artifacts/Artifacts'));
-const SubagentThreadPanel = lazyWithRecovery(
-  () => import('~/components/Chat/Subagents/SubagentThreadPanel'),
+const SubagentThreadPanel = lazyWithRecovery(() =>
+  import('@librechat/chat/components').then((module) => module.loadSubagentThreadPanel()),
 );
 
 export default function Presentation({

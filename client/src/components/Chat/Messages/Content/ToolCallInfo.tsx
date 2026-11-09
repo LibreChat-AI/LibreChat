@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { hasToolParams } from '@librechat/chat';
-import { useLocalize, useExpandCollapse } from '~/hooks';
+import { useExpandCollapse } from '@librechat/chat/components';
 import { OutputRenderer } from './ToolOutput';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 function isSimpleObject(obj: unknown): obj is Record<string, string | number | boolean | null> {
@@ -100,7 +101,7 @@ export default function ToolCallInfo({ input, output }: { input: string; output?
   const hasParams = useMemo(() => hasToolParams(input), [input]);
 
   return (
-    <div className="w-full px-3 py-3.5">
+    <div className="w-full p-3">
       {output && <OutputRenderer text={output} />}
       {output && hasParams && <div className="border-border-inset my-2 border-t" />}
       {hasParams && (

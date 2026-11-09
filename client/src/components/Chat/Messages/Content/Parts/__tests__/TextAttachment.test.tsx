@@ -22,10 +22,6 @@ jest.mock('~/hooks', () => ({
    * deferred-preview lifecycle. Stub to a no-op for tests that
    * don't exercise the preview flow. */
   useAttachmentPreviewSync: () => ({ status: 'ready', previewError: undefined, isPolling: false }),
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
-    ref: { current: null },
-  }),
 }));
 
 const mockHandleDownload = jest.fn();
@@ -35,6 +31,10 @@ jest.mock('../LogLink', () => ({
 
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
+  useExpandCollapse: (isExpanded: boolean) => ({
+    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
+    ref: { current: null },
+  }),
   FileContainer: ({ file, onClick }: { file: { filename?: string }; onClick?: () => void }) => (
     <button type="button" data-testid="file-container" onClick={onClick}>
       {file.filename ?? ''}

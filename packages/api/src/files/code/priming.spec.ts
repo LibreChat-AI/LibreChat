@@ -1,3 +1,5 @@
+import { createReadStream } from 'node:fs';
+import { PassThrough, Readable } from 'node:stream';
 import { FileContext } from 'librechat-data-provider';
 import type { CodeEnvRef, TFile } from 'librechat-data-provider';
 import {
@@ -5,6 +7,10 @@ import {
   getCodeFileLocation,
   getCodeFileContextLine,
   appendCodeFileContextLine,
+  CodeSourceMissingError,
+  openCodeFileSource,
+  setMissingCodeFilesContext,
+  createCodeReuploadFailures,
 } from './priming';
 
 const file = (id: string, name: string, ref: Partial<CodeEnvRef> = {}, time = 1): TFile =>
@@ -365,5 +371,102 @@ describe('code file context', () => {
     expect(getCodeFileContextLine(output, new Set(), 'chart-1.png', 'programmatic')).toBe(
       '\n\t- $LIBRECHAT_CODE_DATA_DIR/chart-1.png (written earlier as chart.png)',
     );
+  });
+});
+
+describe('openCodeFileSource', () => {
+  it.each([
+    { name: 'NoSuchKey' },
+    { code: 'BlobNotFound', statusCode: 404 },
+    { response: { status: 404 } },
+  ])('names a storage miss %#', async (error) => {
+    await expect(openCodeFileSource(() => Promise.reject(error))).rejects.toBeInstanceOf(
+      CodeSourceMissingError,
+    );
+  });
+
+  it('names a local file that only reports ENOENT once the stream is read', async () => {
+    await expect(
+      openCodeFileSource(async () => createReadStream('/nonexistent/librechat-missing.csv')),
+    ).rejects.toBeInstanceOf(CodeSourceMissingError);
+  });
+
+  it('keeps every byte of a stream it held for its first chunk', async () => {
+    const stream = await openCodeFileSource(async () => Readable.from(['first,', 'second']));
+    const chunks: string[] = [];
+    for await (const chunk of stream) {
+      chunks.push(String(chunk));
+    }
+    expect(chunks.join('')).toBe('first,second');
+  });
+
+  it('destroys a stream it was still holding when the turn is cancelled', async () => {
+    const stream = new PassThrough();
+    const controller = new AbortController();
+    const opened = openCodeFileSource(async () => stream, controller.signal);
+    controller.abort();
+
+    await expect(opened).rejects.toMatchObject({ name: 'AbortError' });
+    expect(stream.destroyed).toBe(true);
+  });
+
+  it('passes other storage failures through unchanged', async () => {
+    const denied = { code: 'AccessDenied', status: 403 };
+    await expect(openCodeFileSource(() => Promise.reject(denied))).rejects.toBe(denied);
+    await expect(openCodeFileSource(async () => 'stream')).resolves.toBe('stream');
+  });
+});
+
+describe('createCodeReuploadFailures', () => {
+  const file = (file_id: string, filename: string) => ({ file_id, filename });
+  const missing = new CodeSourceMissingError();
+
+  it('names files whose source storage deleted without requiring recovery', () => {
+    const failures = createCodeReuploadFailures();
+    failures.add(missing, 'missing_backing_object', file('a', 'report.csv'));
+    failures.add(missing, 'missing_backing_object', file('b', ''));
+
+    expect(failures.count).toBe(2);
+    expect(failures.missingCount).toBe(2);
+    expect(failures.requiresRecovery(2, 0)).toBe(false);
+    expect(failures.missingFilesContext()).toContain('"report.csv", "b"');
+  });
+
+  it('treats a Code API 404 as a recovery failure, not a deleted file', () => {
+    const failures = createCodeReuploadFailures();
+    failures.add({ response: { status: 404 } }, 'missing_backing_object', file('a', 'a.csv'));
+
+    expect(failures.missingCount).toBe(0);
+    expect(failures.requiresRecovery(1, 0)).toBe(true);
+    expect(failures.recoveryCategory()).toBe('missing_backing_object');
+  });
+
+  it('requires recovery when every file failed and one failed for another reason', () => {
+    const failures = createCodeReuploadFailures();
+    failures.add(missing, 'missing_backing_object', file('a', 'gone.csv'));
+    failures.add(new Error('denied'), 'resource_access_denied', file('b', 'denied.csv'));
+
+    expect(failures.requiresRecovery(2, 0)).toBe(true);
+    expect(failures.recoveryCategory()).toBe('resource_access_denied');
+    expect(failures.requiresRecovery(3, 1)).toBe(false);
+  });
+
+  it('reports mixed categories and stays quiet with no failures', () => {
+    const failures = createCodeReuploadFailures();
+    expect(failures.requiresRecovery(0, 0)).toBe(false);
+    expect(failures.missingFilesContext()).toBe('');
+    failures.add(new Error('slow'), 'rate_limited', file('a', 'a.csv'));
+    failures.add(new Error('boom'), 'reupload_failed', file('b', 'b.csv'));
+    expect(failures.recoveryCategory()).toBe('mixed_reupload_failure');
+  });
+});
+
+describe('setMissingCodeFilesContext', () => {
+  it('adds the note under its own key and nothing when there is none', () => {
+    const map: Record<string, unknown> = { execute_code: 'files' };
+    setMissingCodeFilesContext(map, undefined);
+    expect(map).toEqual({ execute_code: 'files' });
+    setMissingCodeFilesContext(map, 'note');
+    expect(Object.values(map)).toEqual(['files', 'note']);
   });
 });

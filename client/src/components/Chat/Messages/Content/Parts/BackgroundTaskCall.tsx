@@ -1,19 +1,26 @@
 import { useMemo, useState, useCallback } from 'react';
-import { TOOL_ROW_CLASSES } from '@librechat/chat/components';
 import { backgroundTaskOutcome, parseBackgroundTaskOutput } from '@librechat/chat';
-import { toolPanelSpacingClassName, useToolCallIntent } from '@librechat/chat/react';
+import {
+  toolPanelSpacingClassName,
+  useToolCallIntent,
+  useLazyCollapseBody,
+} from '@librechat/chat/react';
+import {
+  TOOL_ROW_CLASSES,
+  backgroundListGuidanceKeys,
+  backgroundTaskNoticeKey,
+  useToolPreparation,
+} from '@librechat/chat/components';
 import type { PartMetadata, TAttachment } from 'librechat-data-provider';
-import { backgroundListGuidanceKeys, backgroundTaskNoticeKey } from './guidance';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
-import { useLocalize, useLazyCollapseBody } from '~/hooks';
 import { ToolIcon, OutputRenderer } from '../ToolOutput';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import BackgroundTaskCard from '../BackgroundTaskCard';
-import { useToolPreparation } from '../preparation';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
 import ToolCallInfo from '../ToolCallInfo';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 import './BackgroundTaskCall.css';
 
@@ -73,7 +80,7 @@ export default function BackgroundTaskCall({
     output,
     hasInput: hasParams || (attachments?.length ?? 0) > 0,
     panelReady: display != null,
-    keepRow: intent != null,
+    keepLabelRow: intent != null,
     onExpand,
     runStepStatus,
     extraError: outcome === 'failed',
@@ -137,7 +144,7 @@ export default function BackgroundTaskCall({
         onTransitionEnd={handleTransitionEnd}
         data-tool-call-output-id={toolCallId}
       >
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasContent && shouldRenderBody && (
             <div
               className={cn(

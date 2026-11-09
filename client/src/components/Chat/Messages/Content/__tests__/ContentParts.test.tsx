@@ -69,13 +69,15 @@ jest.mock('../MemoryArtifacts', () => ({
       .hasMemoryArtifacts,
 }));
 
-jest.mock('../Parts/PendingSkillCall', () => ({
-  __esModule: true,
-  default: ({ skillName, loaded }: { skillName: string; loaded: boolean }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  PendingSkillCall: ({ skillName, loaded }: { skillName: string; loaded: boolean }) => (
     <div data-testid="pending-skill-call" data-skill={skillName} data-loaded={String(loaded)} />
   ),
+  Container: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="container">{children}</div>
+  ),
 }));
-
 jest.mock('../Parts/WorkspaceChanges', () => ({
   __esModule: true,
   default: ({ attachments }: { attachments: TAttachment[] }) =>
@@ -128,13 +130,6 @@ jest.mock('../ActivityPhaseGroup', () => ({
     >
       {children}
     </div>
-  ),
-}));
-
-jest.mock('../Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="container">{children}</div>
   ),
 }));
 

@@ -1,5 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
 import '~/Providers/MessagePartsHostContext';
@@ -18,13 +19,21 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
-  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: isExpanded
       ? { display: 'grid', gridTemplateRows: '1fr', opacity: 1 }
       : { display: 'grid', gridTemplateRows: '0fr', opacity: 0 },
     ref: { current: null },
   }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (initialProgress: number) => (initialProgress >= 1 ? 1 : initialProgress),
 }));
 
 jest.mock('../ProgressText', () => ({
@@ -332,4 +341,19 @@ describe('RetrievalCall - file preview resolution', () => {
       2,
     );
   });
+});
+
+it('shows file search results directly beneath a generated single-tool title', () => {
+  render(
+    <RecoilRoot>
+      <GeneratedToolLabelContext.Provider value>
+        <RetrievalCall
+          initialProgress={1}
+          isSubmitting={false}
+          output="File: notes.txt\nRelevance: 0.8\nContent: file results here"
+        />
+      </GeneratedToolLabelContext.Provider>
+    </RecoilRoot>,
+  );
+  expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
 });

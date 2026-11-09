@@ -105,12 +105,15 @@ CI splits the complete suite by recorded duration rather than test count: each s
 suite, and `.github/scripts/playwright-shards.mjs plan` hands out whole spec files longest-first
 to the least-loaded shard using `e2e/timings.mock.json`. A spec with no recorded time is
 estimated from its test count, so new specs need nothing; refresh the timings when the shards
-drift apart. Each shard's report artifact carries a `results.json`, so download a recent run's
-`playwright-report-memory-*` artifacts and rebuild the file from them:
+drift apart. Each shard's report artifact carries a `results.json`, so download the
+`playwright-report-memory-*` artifacts of a few recent runs and rebuild the file from them. A spec
+measured by several runs is recorded at their mean, which keeps one slow runner from skewing it:
 
 ```sh
-gh run download <run-id> --pattern 'playwright-report-memory-*' --dir /tmp/e2e-reports
-node .github/scripts/playwright-shards.mjs record --out e2e/timings.mock.json /tmp/e2e-reports
+for run in <run-id> <run-id> <run-id>; do
+  gh run download "$run" --pattern 'playwright-report-memory-*' --dir "/tmp/e2e-reports/$run"
+done
+node .github/scripts/playwright-shards.mjs record --out e2e/timings.mock.json /tmp/e2e-reports/*
 ```
 
 ## Property-based browser testing

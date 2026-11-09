@@ -9,32 +9,14 @@ import {
   type MouseEvent,
 } from 'react';
 import { Lightbulb, ChevronDown } from 'lucide-react';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import { ChevronUp as ChevronUpNode, ChevronDown as ChevronDownNode } from 'lucide';
+import { ROW_GLYPH_SLOT, CopyButton, useExpandCollapse } from '@librechat/chat/components';
 import type { FocusEvent, FC } from 'react';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import CopyButton from '~/components/Messages/Content/CopyButton';
-import { useLocalize, useExpandCollapse } from '~/hooks';
+import { cn, isRectVisible } from '~/utils';
 import { AnimatedText } from '../animate';
-import { cn } from '~/utils';
-
-/** Whether any part of `el` is inside the viewport and every clipping ancestor. */
-function isRectVisible(el: HTMLElement): boolean {
-  const rect = el.getBoundingClientRect();
-  let top = Math.max(rect.top, 0);
-  let bottom = Math.min(rect.bottom, window.innerHeight);
-  for (let node = el.parentElement; node != null && top < bottom; node = node.parentElement) {
-    const { overflowY } = getComputedStyle(node);
-    if (overflowY === 'visible') {
-      continue;
-    }
-    const clip = node.getBoundingClientRect();
-    top = Math.max(top, clip.top);
-    bottom = Math.min(bottom, clip.bottom);
-  }
-  return top < bottom;
-}
+import { useLocalize } from '~/hooks';
 
 /**
  * Tracks whether the referenced element is within the viewport. Mirrors the
@@ -203,6 +185,7 @@ export const ThinkingButton = memo(
           <CopyButton
             isCopied={isCopied}
             iconOnly
+            compact
             onClick={handleCopy}
             label={localize('com_ui_copy_thoughts_to_clipboard')}
             copiedLabel={localize('com_ui_copied_to_clipboard')}

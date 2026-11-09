@@ -103,11 +103,14 @@ function buildEditArgsPreview(args: ToolCallArgs): TextEditPreview[] {
   })).filter((edit) => edit.oldText || edit.newText);
 }
 
+/** The host-authored summary a successful create or edit returns: one line led by the verb.
+ *  Anything after it (a warning, a syntax-check result) is output the reader still needs. */
+const SUCCESS_SUMMARY = /^(?:Created|Updated|Edited)\b[^\r\n]*$/;
+
 export default function FileAuthoringCall({
   toolName,
   isSubmitting,
   runStepStatus,
-  runStepDurationMs,
   initialProgress = 0.1,
   args,
   output = '',
@@ -119,7 +122,6 @@ export default function FileAuthoringCall({
   initialProgress: number;
   isSubmitting: boolean;
   runStepStatus?: PartMetadata['runStepStatus'];
-  runStepDurationMs?: PartMetadata['runStepDurationMs'];
   args?: string | Record<string, unknown>;
   output?: string;
   attachments?: TAttachment[];
@@ -167,7 +169,7 @@ export default function FileAuthoringCall({
     }
     return parsedDiff ? diffPreviewText(parsedDiff) : output;
   }, [isCreate, authoredContent, outputIsDiff, output, parsedDiff]);
-  const showOutputSection = !!output && preview !== output;
+  const hasOutputSection = !!output && preview !== output;
   let previewLang = 'plaintext';
   if (isCreate && authoredContent && preview === authoredContent) {
     previewLang = fileLang;
@@ -181,7 +183,7 @@ export default function FileAuthoringCall({
     /** An overwrite reads "Updated" on the row while the group header keeps the
      *  `create_file` name, so the row stays the only place that says it. */
     panelReady: !!preview && !overwrote,
-    keepRow: intent != null,
+    keepLabelRow: intent != null,
     onExpand,
     runStepStatus,
   });
@@ -195,6 +197,10 @@ export default function FileAuthoringCall({
     phase === 'running',
     showCode,
   );
+  /** The row already says what happened, so a success summary is not repeated
+   *  under the preview. Anything else, an error above all, stays visible. */
+  const showOutputSection =
+    hasOutputSection && (phase === 'failed' || !SUCCESS_SUMMARY.test(output.trimEnd()));
   const Icon = isCreate && !overwrote ? FilePlus2 : FilePenLine;
   let finishedKey: 'com_ui_created_file' | 'com_ui_updated_file' | 'com_ui_edited_file' =
     'com_ui_edited_file';
@@ -209,7 +215,7 @@ export default function FileAuthoringCall({
 
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
         <div className={TOOL_ROW_CLASSES} ref={rowRef}>
           <ProgressText
@@ -222,7 +228,6 @@ export default function FileAuthoringCall({
               })
             }
             finishedText={finishedText}
-            durationMs={runStepDurationMs}
             icon={
               <Icon
                 className={cn(
@@ -238,7 +243,7 @@ export default function FileAuthoringCall({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {!!preview && (
             <div
               className={cn(
@@ -248,6 +253,7 @@ export default function FileAuthoringCall({
             >
               <CodeWindowHeader
                 language={fileName}
+                label={filePath || undefined}
                 code={preview}
                 diffStats={
                   parsedDiff

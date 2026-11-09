@@ -493,7 +493,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'File size limit exceeded: 5 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -531,7 +531,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'com_error_files_skipped_size',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -605,6 +605,44 @@ describe('useFileHandling', () => {
       }
     });
 
+    it('keeps the toast that lists several errors open until it is dismissed', async () => {
+      jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
+      try {
+        mockFileConfig = mergeFileConfig({
+          endpoints: { default: { fileSizeLimit: 20, totalSizeLimit: 500 } },
+        });
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+
+        await act(async () => {
+          await result.current.handleFiles([
+            makeSizedFile('report.txt', 'text/plain', 1 * megabyte),
+          ]);
+          await Promise.resolve();
+        });
+        /** A duplicate and an oversized file are both skipped, so the batch reports two errors. */
+        await act(async () => {
+          await result.current.handleFiles([
+            makeSizedFile('report.txt', 'text/plain', 1 * megabyte),
+            makeSizedFile('huge.txt', 'text/plain', 21 * megabyte),
+            makeSizedFile('notes.txt', 'text/plain', 2 * megabyte),
+          ]);
+          await Promise.resolve();
+        });
+        await act(async () => {
+          jest.advanceTimersByTime(250);
+        });
+
+        expect(mockShowToast).toHaveBeenCalledWith({
+          message: 'com_error_files_skipped_dupe\n• com_error_files_skipped_size\n',
+          status: 'error',
+          duration: Infinity,
+        });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('does not announce skipped files when the batch is rejected anyway', async () => {
       jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
       try {
@@ -644,7 +682,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -756,7 +794,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -797,7 +835,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -907,7 +945,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'com_error_files_dupe',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -1001,7 +1039,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -1036,7 +1074,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();

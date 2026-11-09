@@ -2,10 +2,14 @@ import { memo, useMemo, useState, useEffect, useCallback, useRef, useId } from '
 import { useAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
 import { Lightbulb, ChevronDown } from 'lucide-react';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
-import { useReasoningDisclosure } from '@librechat/chat/react';
 import { Button, disclosureChevronVariants } from '@librechat/client';
 import { ContentTypes, readableReasoning } from 'librechat-data-provider';
+import { ROW_GLYPH_SLOT, useExpandCollapse, CopyButton } from '@librechat/chat/components';
+import {
+  toolPanelSpacingClassName,
+  useReasoningDisclosure,
+  useLazyCollapseBody,
+} from '@librechat/chat/react';
 import type { MouseEvent, FocusEvent } from 'react';
 import {
   ThinkingContent,
@@ -14,10 +18,8 @@ import {
   FloatingThinkingBar,
   useInViewport,
 } from './Thinking';
-import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
-import CopyButton from '~/components/Messages/Content/CopyButton';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 const stripThinkTags = (reasoning: string): string =>
@@ -94,7 +96,7 @@ export const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
   return (
     <div
       aria-hidden="true"
-      className="border-border-light mt-1 overflow-hidden rounded-2xl border px-4 py-3"
+      className="border-border-light mt-1 overflow-hidden rounded-lg border px-4 py-3"
       data-testid="streaming-thought-peek"
     >
       <div
@@ -170,7 +172,7 @@ const Reasoning = memo((props: ReasoningProps) => {
   const { reasoning, isLast, reasoningLabel, partKeyIndex = 0 } = props;
   const contentId = useId();
   const localize = useLocalize();
-  const { useShowThinking, useMessage } = useMessagePartsHost();
+  const { useShowThinking, useMessage, useSmoothStreaming } = useMessagePartsHost();
   const showThinking = useShowThinking();
   const smoothStreaming = useSmoothStreaming();
   const [expansionOverride, setIsExpanded] = useAtom(useReasoningDisclosure(partKeyIndex));
@@ -306,7 +308,6 @@ type ReasoningCompactProps = {
    *  than read from the app store, so a grouped thought stays movable with
    *  the feature that renders it. */
   showThinking: boolean;
-  isAfterTool?: boolean;
   /** True while this is the reasoning part currently streaming. Drives the
    *  collapsed grok-style live peek. */
   isStreaming?: boolean;
@@ -324,7 +325,6 @@ export const ReasoningCompact = memo(
     reasoning,
     label,
     showThinking,
-    isAfterTool = false,
     isStreaming = false,
     partKeyIndex = 0,
   }: ReasoningCompactProps) => {
@@ -394,13 +394,13 @@ export const ReasoningCompact = memo(
     return (
       <div
         ref={containerRef}
-        className={cn('group/reasoning-compact mb-1', isAfterTool ? 'mt-0' : 'mt-1')}
+        className="group/reasoning-compact"
         onMouseEnter={revealBar}
         onMouseLeave={hideBar}
         onFocus={revealBar}
         onBlur={handleBlur}
       >
-        <div ref={headerRef} className="relative flex h-5 shrink-0 items-center gap-1.5">
+        <div ref={headerRef} className="relative my-1.5 flex h-5 shrink-0 items-center gap-1.5">
           <Button
             variant="disclosure"
             onClick={handleToggle}
@@ -415,7 +415,7 @@ export const ReasoningCompact = memo(
             <ChevronDown
               className={cn(
                 disclosureChevronVariants({ expanded: isExpanded }),
-                'size-4 translate-y-[1px]',
+                'ms-auto size-4 translate-y-[1px]',
               )}
               aria-hidden="true"
             />
@@ -424,11 +424,14 @@ export const ReasoningCompact = memo(
             <CopyButton
               isCopied={isCopied}
               iconOnly
+              compact
               onClick={handleCopy}
               label={localize('com_ui_copy_thoughts_to_clipboard')}
               copiedLabel={localize('com_ui_copied_to_clipboard')}
+              /** Laid over the row's end, inside the chevron, so the chevron
+               *  lines up with every tool row's instead of moving left of it. */
               className={cn(
-                'shrink-0 opacity-0 transition-opacity',
+                'absolute end-6 shrink-0 opacity-0 transition-opacity',
                 'group-focus-within/reasoning-compact:opacity-100 group-hover/reasoning-compact:opacity-100',
                 'focus-visible:opacity-100',
               )}
@@ -446,7 +449,12 @@ export const ReasoningCompact = memo(
         >
           <div className="overflow-hidden" ref={expandRef}>
             {shouldRenderBody && (
-              <div className="border-border-light bg-surface-secondary text-text-secondary relative my-2 rounded-2xl border p-4">
+              <div
+                className={cn(
+                  toolPanelSpacingClassName,
+                  'border-border-light bg-surface-secondary text-text-secondary relative rounded-lg border p-3',
+                )}
+              >
                 <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{reasoningText}</p>
                 <FloatingThinkingBar
                   isVisible={isBarVisible && isExpanded && !headerInViewport}

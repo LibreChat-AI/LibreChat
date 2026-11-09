@@ -68,9 +68,16 @@ describe('createSetBalanceConfig', () => {
       const getAppConfig = jest.fn().mockResolvedValue({
         balance: { enabled: true, startBalance: 1000 },
       });
+      const winnerGrant = new Date('2026-07-01T00:00:00.000Z');
       const findThenCharge = async (id: string) => {
         const record = await findBalanceByUser(id);
-        await Balance.create({ user: id, tokenCredits: 50 });
+        await Balance.create({
+          user: id,
+          tokenCredits: 50,
+          allotment: 1000,
+          allottedAt: winnerGrant,
+          lastRefill: winnerGrant,
+        });
         return record;
       };
 
@@ -83,8 +90,44 @@ describe('createSetBalanceConfig', () => {
 
       await middleware(createMockRequest(userId) as ServerRequest, res as ServerResponse, mockNext);
 
-      expect((await Balance.findOne({ user: userId }).lean())?.tokenCredits).toBe(50);
+      const stored = await Balance.findOne({ user: userId }).lean();
+      expect(stored).toMatchObject({
+        tokenCredits: 50,
+        allotment: 1000,
+        allottedAt: winnerGrant,
+        lastRefill: winnerGrant,
+      });
       expect((res.locals as { balanceData?: IBalance }).balanceData?.tokenCredits).toBe(50);
+    });
+
+    test('stores the start balance as the allotment only when it grants credits', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const config = { enabled: true, startBalance: 1000 };
+      const getAppConfig = jest.fn().mockResolvedValue({ balance: config });
+      const middleware = createSetBalanceConfig({
+        getAppConfig,
+        findBalanceByUser,
+        upsertBalanceFields,
+      });
+
+      await middleware(
+        createMockRequest(userId) as ServerRequest,
+        createMockResponse() as ServerResponse,
+        mockNext,
+      );
+      const created = await Balance.findOne({ user: userId }).lean();
+      expect(created?.allotment).toBe(1000);
+      expect(created?.allottedAt).toEqual(created?.lastRefill);
+
+      getAppConfig.mockResolvedValue({ balance: { ...config, startBalance: 5000 } });
+      await middleware(
+        createMockRequest(userId) as ServerRequest,
+        createMockResponse() as ServerResponse,
+        mockNext,
+      );
+      const record = await Balance.findOne({ user: userId }).lean();
+      expect(record?.tokenCredits).toBe(1000);
+      expect(record?.allotment).toBe(1000);
     });
 
     test('should create balance record for new user with start balance', async () => {
@@ -176,6 +219,26 @@ describe('createSetBalanceConfig', () => {
 
       const balanceRecord = await Balance.findOne({ user: userId });
       expect(balanceRecord).toBeNull();
+    });
+
+    test('resolves user-scoped config for a lean user without `id`', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const getAppConfig = jest.fn().mockResolvedValue({
+        balance: { enabled: true, startBalance: 1000 },
+      });
+
+      const middleware = createSetBalanceConfig({
+        getAppConfig,
+        findBalanceByUser,
+        upsertBalanceFields,
+      });
+      const req = { user: { _id: userId, role: 'USER' } } as unknown as ServerRequest;
+
+      await middleware(req, createMockResponse() as ServerResponse, mockNext);
+
+      expect(getAppConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'USER', userId: userId.toString() }),
+      );
     });
 
     test('should handle user._id as string', async () => {
