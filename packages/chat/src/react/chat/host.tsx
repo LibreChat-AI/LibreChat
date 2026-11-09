@@ -93,6 +93,8 @@ export type TurnServices = {
    * as the app holds them. The package derives the decision; see `resolveTurnCode`.
    */
   readCodeInputs: () => TurnCodeInputs;
+  /** Refuses a send until the host's configuration and selected targets are ready. */
+  canSubmit?: (conversation: TConversation | null) => boolean;
   /** Moves the pane to the route a new chat starts from. */
   openNewChat: (path: string) => void;
   /** Marks composer files as submitted, so draft cleanup keeps them. */
@@ -161,7 +163,7 @@ export interface ChatHost {
    *  live stream. An absent id loads nothing. */
   useMessages(
     conversationId: string | undefined,
-    options: { isStreaming: boolean },
+    options: { isStreaming: boolean; enabled?: boolean },
   ): ChatMessagesQuery;
 }
 

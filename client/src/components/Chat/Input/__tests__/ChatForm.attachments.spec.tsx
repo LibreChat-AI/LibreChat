@@ -18,6 +18,7 @@ import type { ChatFormValues, TAskFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import { getDraft, getPendingDraftId, setDraft } from '~/utils';
 import { ChatContext, ChatFormProvider } from '~/Providers';
+import { TargetContext } from '~/Providers/TargetContext';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { SteerHostTestProvider } from 'test/steerHost';
 import ChatForm from '../ChatForm';
@@ -145,15 +146,19 @@ function Harness() {
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
-        <Profiler id="composer" onRender={() => (commits += 1)}>
-          <ChatForm
-            index={0}
-            isLandingPage={false}
-            speechSettingsInitialized={speechSettingsInitialized}
-            footerBelow={false}
-            centerFormOnLanding={false}
-          />
-        </Profiler>
+        <TargetContext.Provider
+          value={{ ready: true, pending: false, failed: false, retry: () => {} }}
+        >
+          <Profiler id="composer" onRender={() => (commits += 1)}>
+            <ChatForm
+              index={0}
+              isLandingPage={false}
+              speechSettingsInitialized={speechSettingsInitialized}
+              footerBelow={false}
+              centerFormOnLanding={false}
+            />
+          </Profiler>
+        </TargetContext.Provider>
       </ChatContext.Provider>
     </ChatFormProvider>
   );

@@ -18,8 +18,8 @@ import {
   useResumeSubmit,
 } from '~/components/Chat/Messages/Content/ApprovalContext';
 import { getAskAnswerDraftId, morphTransition, getDraft, setDraft } from '~/utils';
-import { useGetMessagesByConvoId } from '~/data-provider';
 import { useOptionalChatFormContext } from '~/Providers';
+import { useCachedMessages } from '~/data-provider';
 
 /**
  * First-class "answer mode" for a live `ask_user_question` pause. A question
@@ -48,10 +48,10 @@ export default function useAskAnswerMode(conversationId?: string | null) {
    * settled ask part untouched, so structural sharing keeps this null (or the
    * same ask object) and the subscription stays quiet until a pause actually
    * starts or resolves. */
-  const { data: liveAskData } = useGetMessagesByConvoId(enabled ? conversationId : '', {
-    enabled,
-    select: findLiveAskUserQuestion,
-  });
+  const { data: liveAskData } = useCachedMessages(
+    enabled ? conversationId : '',
+    findLiveAskUserQuestion,
+  );
   const liveAsk = enabled ? (liveAskData ?? null) : null;
   const [expandedIds, setExpandedIds] = useAtom(expandedAskActionsAtom);
   const [selected, setSelected] = useAtom(askAnswerSelectionAtom);

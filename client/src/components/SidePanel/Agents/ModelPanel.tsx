@@ -161,12 +161,11 @@ export default function ModelPanel({
       </header>
       <div>
         {/* Endpoint aka Provider for Agents */}
-        <div className="mb-3" aria-busy={modelsPending}>
+        <div className="mb-3">
           <label
             id="provider-label"
             className={cn(
               'text-text-secondary text-2xs mb-1 block font-medium tracking-wide uppercase',
-              modelsPending && 'opacity-60',
             )}
             htmlFor="provider"
           >
@@ -215,7 +214,7 @@ export default function ModelPanel({
                     }))}
                     className={cn(error ? 'border-border-destructive border-2' : '')}
                     ariaLabel={localize('com_ui_provider')}
-                    disabled={selectionDisabled}
+                    disabled={providers.length === 0}
                     isCollapsed={false}
                     showCarat={true}
                   />

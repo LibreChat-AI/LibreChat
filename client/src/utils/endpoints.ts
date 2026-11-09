@@ -276,6 +276,10 @@ export function getConvoSwitchLogic(params: ConversationInitParams): InitiatedTe
     conversationId: 'new',
   };
 
+  if (currentEndpoint !== newEndpoint) {
+    template.model = undefined;
+  }
+
   // Reset agent_id if switching to a non-agents endpoint but template has a non-ephemeral agent_id
   if (
     !isAgentsEndpoint(newEndpoint) &&
@@ -568,8 +572,20 @@ export function mergeQuerySettingsWithSpec(
   specPreset: t.TPreset | undefined,
   querySettings: t.TPreset,
 ): t.TPreset {
+  const changesEndpoint =
+    querySettings.endpoint != null && querySettings.endpoint !== specPreset?.endpoint;
   return {
     ...specPreset,
+    ...(changesEndpoint
+      ? {
+          model: undefined,
+          agent_id: undefined,
+          assistant_id: undefined,
+          endpointType: undefined,
+          codeEnvironmentMode: undefined,
+          codeWorkspaces: undefined,
+        }
+      : {}),
     ...querySettings,
     ...(specPreset != null && querySettings.spec == null ? specDisplayFieldReset : {}),
   };

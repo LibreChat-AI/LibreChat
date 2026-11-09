@@ -54,12 +54,15 @@ export const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]
 export async function selectMockEndpoint(page: Page, endpoint: MockEndpoint) {
   const trigger = modelSelectorTrigger(page);
   await trigger.click();
-  await page.getByRole('option', { name: endpoint.label }).click();
-  const modelOption = page.getByRole('option', { name: endpoint.model, exact: true });
-  if (await modelOption.isVisible({ timeout: 1000 }).catch(() => false)) {
-    await modelOption.click();
+  const option = page.getByRole('option', { name: endpoint.label });
+  await expect(option).toBeVisible();
+  const expands = (await option.getAttribute('aria-expanded')) != null;
+  await option.click();
+  if (expands) {
+    await page.getByRole('option', { name: endpoint.model, exact: true }).click();
   }
-  await expect(trigger).not.toHaveText('Select a model');
+  await expect(trigger).toContainText(expands ? endpoint.model : endpoint.label);
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
 }
 
 /** Open the model selector and choose a configured model spec by label. */
