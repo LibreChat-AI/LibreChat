@@ -4,6 +4,7 @@ import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import MarkdownErrorBoundary from './MarkdownErrorBoundary';
 import { FADE_HYDRATION_THRESHOLD } from './animate';
+import useNmbDisplayText from '~/hooks/Nmb/useNmbDisplayText';
 import MarkdownBlocks from './MarkdownBlocks';
 
 type TContentProps = {
@@ -11,9 +12,16 @@ type TContentProps = {
   isLatestMessage: boolean;
 };
 
-const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TContentProps) {
+const Markdown = memo(function Markdown({
+  content: rawContent = '',
+  isLatestMessage,
+}: TContentProps) {
   const { useMessage, useLaTeXParsing } = useMessagePartsHost();
   const { isSubmitting = false } = useMessage();
+  const { text: content } = useNmbDisplayText(rawContent, {
+    isCreatedByUser: false,
+    streaming: isLatestMessage && isSubmitting,
+  });
   const smoothStreaming = useSmoothStreaming();
   const LaTeXParsing = useLaTeXParsing();
   const isInitializing = content === '';

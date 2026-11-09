@@ -53,6 +53,7 @@ export * from './types/runs';
 export * from './types/web';
 export * from './types/graph';
 export * from './types/insights';
+export * from './types/nmb';
 export * from './types/traces';
 export * from './types/transport';
 export type {

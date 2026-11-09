@@ -38,6 +38,7 @@ import { createBalanceModel } from './balance';
 import { createMessageModel } from './message';
 import { createActionModel } from './action';
 import { createBannerModel } from './banner';
+import { createNmbFileHoldModel } from './nmbFileHold';
 import { createPresetModel } from './preset';
 import { createPromptModel } from './prompt';
 import { createMemoryModel } from './memory';
@@ -76,6 +77,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   Assistant: ReturnType<typeof createAssistantModel>;
   File: ReturnType<typeof createFileModel>;
   Banner: ReturnType<typeof createBannerModel>;
+  NmbFileHold: ReturnType<typeof createNmbFileHoldModel>;
   Key: ReturnType<typeof createKeyModel>;
   PluginAuth: ReturnType<typeof createPluginAuthModel>;
   Transaction: ReturnType<typeof createTransactionModel>;
@@ -131,6 +133,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     Assistant: createAssistantModel(mongoose),
     File: createFileModel(mongoose),
     Banner: createBannerModel(mongoose),
+    NmbFileHold: createNmbFileHoldModel(mongoose),
     Key: createKeyModel(mongoose),
     PluginAuth: createPluginAuthModel(mongoose),
     Transaction: createTransactionModel(mongoose),

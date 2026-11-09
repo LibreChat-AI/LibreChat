@@ -46,6 +46,13 @@ export const SystemCapabilities = {
    * would defeat the forensic guarantee.
    */
   READ_AUDIT_LOG: 'read:audit_log',
+  /**
+   * NMB secure gateway: review prompts and attachments held by the scanner, view
+   * their original content, approve them as masked, reject them, and edit the
+   * masked-data list. Never implied by another capability; grant it to the
+   * reviewer role explicitly.
+   */
+  REVIEW_PROMPTS: 'review:prompts',
 } as const;
 
 /** Base capabilities derived from the SystemCapabilities constant. */
@@ -268,6 +275,7 @@ export const CAPABILITY_CATEGORIES: CapabilityCategory[] = [
       SystemCapabilities.READ_USAGE,
       SystemCapabilities.READ_INSIGHTS,
       SystemCapabilities.READ_AUDIT_LOG,
+      SystemCapabilities.REVIEW_PROMPTS,
     ],
   },
 ];

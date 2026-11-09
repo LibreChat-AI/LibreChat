@@ -12,6 +12,7 @@ import ToolCallLimitNotice from './ToolCallLimitNotice';
 import MarkdownLite from './MarkdownLite';
 import EditMessage from './EditMessage';
 import Thinking from './Parts/Thinking';
+import useNmbDisplayText from '~/hooks/Nmb/useNmbDisplayText';
 import { useLocalize } from '~/hooks';
 import Container from './Container';
 import Markdown from './Markdown';
@@ -89,9 +90,19 @@ export const ErrorMessage = ({
   );
 };
 
-export const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: TDisplayProps) => {
+export const DisplayMessage = ({
+  text: rawText,
+  isCreatedByUser,
+  message,
+  showCursor,
+}: TDisplayProps) => {
   const { useMessage, useUserTextPreferences } = useMessagePartsHost();
   const { isSubmitting = false, isLatestMessage = false } = useMessage();
+  const localize = useLocalize();
+  const { text, masked } = useNmbDisplayText(rawText, {
+    isCreatedByUser,
+    streaming: isSubmitting && isLatestMessage,
+  });
   const { enableUserMsgMarkdown, collapseLongUserMessages } = useUserTextPreferences();
   const smoothStreaming = useSmoothStreaming();
 
@@ -126,6 +137,11 @@ export const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: T
         >
           {content}
         </div>
+        {isCreatedByUser && masked && (
+          <p className="text-text-secondary mt-1 text-xs">
+            {localize('com_nmb_chat_masked_notice')}
+          </p>
+        )}
       </CollapsibleText>
     </Container>
   );

@@ -7,6 +7,18 @@ import type {
   TTraceRecordDetail,
 } from './types/traces';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
+import type {
+  TNmbMe,
+  TNmbReview,
+  TNmbOriginal,
+  TNmbRejectBody,
+  TNmbApproveBody,
+  TNmbSubmission,
+  TNmbReviewsResponse,
+  TNmbBlocklistChoice,
+  TNmbBlocklistEntry,
+  TNmbUnmaskResponse,
+} from './types/nmb';
 import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
 import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { TFileConfig } from './file-config';
@@ -48,6 +60,31 @@ export function getInsights(params: TInsightsParams = {}): Promise<TInsightsResp
 export function getInsightsAccess(): Promise<TInsightsAccessResponse> {
   return request.get(endpoints.insightsAccess());
 }
+
+/* NMB secure gateway */
+export const getNmbMe = (): Promise<TNmbMe> => request.get(endpoints.nmbMe());
+export const getNmbReviews = (status?: string): Promise<TNmbReviewsResponse> =>
+  request.get(endpoints.nmbReviews(status));
+export const getNmbReview = (id: string): Promise<TNmbReview> => request.get(endpoints.nmbReview(id));
+export const getNmbReviewOriginal = (id: string): Promise<TNmbOriginal> =>
+  request.get(endpoints.nmbReviewOriginal(id));
+export const approveNmbReview = (
+  id: string,
+  body: TNmbApproveBody,
+): Promise<{ id: string; status: string; findings: number }> =>
+  request.post(endpoints.nmbReviewApprove(id), body);
+export const rejectNmbReview = (
+  id: string,
+  body: TNmbRejectBody,
+): Promise<{ id: string; status: string }> => request.post(endpoints.nmbReviewReject(id), body);
+export const getNmbBlocklist = (): Promise<{ entries: TNmbBlocklistEntry[] }> =>
+  request.get(endpoints.nmbBlocklist());
+export const addNmbBlocklist = (entries: TNmbBlocklistChoice[]): Promise<{ added: number }> =>
+  request.post(endpoints.nmbBlocklist(), { entries });
+export const getNmbSubmission = (id: string): Promise<TNmbSubmission> =>
+  request.get(endpoints.nmbSubmission(id));
+export const unmaskNmbText = (text: string): Promise<TNmbUnmaskResponse> =>
+  request.post(endpoints.nmbUnmask(), { text });
 
 export function getConversationTraceAvailability(
   conversationId: string,

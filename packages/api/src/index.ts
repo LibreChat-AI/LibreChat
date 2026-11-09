@@ -122,6 +122,7 @@ export * from './langfuse';
 export * from './traces';
 /* Insights */
 export * from './insights';
+export * from './nmb';
 /* Cache */
 export * from './cache';
 /* Cluster */

@@ -475,6 +475,7 @@ const startServer = async () => {
   );
   app.use('/api/share', preAuthTenantMiddleware, routes.share);
   app.use('/api/roles', routes.roles);
+  app.use('/api/nmb', routes.nmb);
   app.use('/api/agents/chat', rejectChatStartsUntilReady);
   app.use('/api/agents', routes.agents);
   app.use('/api/banner', routes.banner);

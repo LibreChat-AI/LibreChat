@@ -1318,6 +1318,13 @@ export const AUDIT_ACTIONS = [
   'audit.read',
   'audit.exported',
   'audit.purged',
+  /** NMB secure gateway reviewer actions; target `{ type: 'nmb_review', id: reviewId }`. Never carries prompt content. */
+  'nmb_review.listed',
+  'nmb_review.original_viewed',
+  'nmb_review.approved',
+  'nmb_review.rejected',
+  'nmb_review.blocklist_updated',
+  'nmb_review.denied',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -1362,6 +1369,12 @@ export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'audit.read': 'audit',
   'audit.exported': 'audit',
   'audit.purged': 'audit',
+  'nmb_review.listed': 'approval',
+  'nmb_review.original_viewed': 'approval',
+  'nmb_review.approved': 'approval',
+  'nmb_review.rejected': 'approval',
+  'nmb_review.blocklist_updated': 'approval',
+  'nmb_review.denied': 'approval',
 };
 
 /** Result of the audited operation. Kept first-class instead of being encoded

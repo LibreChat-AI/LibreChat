@@ -557,6 +557,19 @@ export const skillFile = (id: string, relativePath: string) =>
 export const insights = () => `${BASE_URL}/api/insights`;
 export const insightsAccess = () => `${insights()}/access`;
 
+/** NMB secure gateway */
+export const nmb = () => `${BASE_URL}/api/nmb`;
+export const nmbMe = () => `${nmb()}/me`;
+export const nmbReviews = (status?: string) =>
+  `${nmb()}/reviews${status ? `?status=${encodeURIComponent(status)}` : ''}`;
+export const nmbReview = (id: string) => `${nmb()}/reviews/${encodeURIComponent(id)}`;
+export const nmbReviewOriginal = (id: string) => `${nmbReview(id)}/original`;
+export const nmbReviewApprove = (id: string) => `${nmbReview(id)}/approve`;
+export const nmbReviewReject = (id: string) => `${nmbReview(id)}/reject`;
+export const nmbBlocklist = () => `${nmb()}/blocklist`;
+export const nmbSubmission = (id: string) => `${nmb()}/submissions/${encodeURIComponent(id)}`;
+export const nmbUnmask = () => `${nmb()}/unmask`;
+
 /* Conversation traces */
 export const conversationTrace = (conversationId: string) =>
   `${BASE_URL}/api/traces/${encodeURIComponent(conversationId)}`;

@@ -43,6 +43,7 @@ const {
   messageUserLimiter,
   loadStreamKeepaliveMs,
 } = require('~/server/middleware');
+const { chatGateway: nmbChatGateway, blockBypassRoutes } = require('~/server/services/nmb');
 const SteerController = require('~/server/controllers/agents/steer');
 const {
   AgentQueuedTurnEnqueueController,
@@ -137,7 +138,7 @@ const router = express.Router();
  * NOTE: Must be mounted BEFORE /v1 to avoid being caught by the less specific route
  * @see https://openresponses.org/specification
  */
-router.use('/v1/responses', responses);
+router.use('/v1/responses', blockBypassRoutes, responses);
 
 /**
  * Machine-authenticated Agent Management routes.
@@ -151,7 +152,7 @@ router.use('/v1/skills', skills);
  * OpenAI-compatible API routes (API key authentication handled in route file)
  * Mounted at /agents/v1 (full path: /api/agents/v1/chat/completions)
  */
-router.use('/v1', openai);
+router.use('/v1', blockBypassRoutes, openai);
 
 router.use(requireJwtAuth);
 // Capture the short-lived trigger identity immediately after authentication. Downstream
@@ -169,6 +170,9 @@ const privateTextIngress = createPrivateTextIngress({
   getKey: () => process.env.CREDS_KEY ?? '',
 });
 const chatConfigMiddleware = unless((req) => req.config != null, configMiddleware);
+/** NMB secure gateway: screens every model-bound user text first, ahead of denial persistence,
+ * the PII filter and moderation. No-op unless NMB_GATEWAY_ENABLED. */
+router.use('/chat', nmbChatGateway);
 router.use(
   '/chat',
   unless((req) => !isPreDenialTextSubmission(req), configMiddleware),

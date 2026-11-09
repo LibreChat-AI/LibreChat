@@ -1,12 +1,17 @@
 import { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { BarChart3, MessagesSquare } from 'lucide-react';
+import { BarChart3, MessagesSquare, ShieldCheck } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useUserKeyQuery } from 'librechat-data-provider/react-query';
 import { getConfigDefaults, getEndpointField } from 'librechat-data-provider';
 import type { TEndpointsConfig } from 'librechat-data-provider';
 import type { NavLink } from '~/common';
-import { useGetEndpointsQuery, useGetStartupConfig, useInsightsAccessQuery } from '~/data-provider';
+import {
+  useNmbMeQuery,
+  useGetEndpointsQuery,
+  useGetStartupConfig,
+  useInsightsAccessQuery,
+} from '~/data-provider';
 import ConversationsSection from '~/components/UnifiedSidebar/ConversationsSection';
 import useSideNavLinks from '~/hooks/Nav/useSideNavLinks';
 import { useAuthContext } from '~/hooks';
@@ -28,6 +33,8 @@ export default function useUnifiedSidebarLinks() {
     () => startupConfig?.interface ?? defaultInterface,
     [startupConfig],
   );
+  const { data: nmbMe } = useNmbMeQuery({ enabled: !!user });
+  const isNmbReviewer = nmbMe?.enabled === true && nmbMe.reviewer === true;
   const insightsFeatureEnabled = startupConfig?.insightsEnabled === true;
   const isInsightsRoute = location.pathname.startsWith('/insights');
   const { data: insightsAccess, isLoading: isInsightsAccessLoading } = useInsightsAccessQuery(
@@ -72,11 +79,27 @@ export default function useUnifiedSidebarLinks() {
       Component: ConversationsSection,
     };
 
+    const reviewsLinks: NavLink[] = isNmbReviewer
+      ? [
+          {
+            title: 'com_nmb_reviews_navigation',
+            label: '',
+            icon: ShieldCheck,
+            id: 'nmb-reviews',
+            onClick: () => {
+              if (!location.pathname.startsWith('/reviews')) {
+                navigate('/reviews');
+              }
+            },
+          },
+        ]
+      : [];
+
     if (
       !insightsFeatureEnabled ||
       (!isInsightsRoute && !isInsightsAccessLoading && insightsAccess?.access !== true)
     ) {
-      return [conversationLink, ...sideNavLinks];
+      return [conversationLink, ...sideNavLinks, ...reviewsLinks];
     }
 
     const insightsLink: NavLink = {
@@ -95,12 +118,13 @@ export default function useUnifiedSidebarLinks() {
     const nextLinks = [...sideNavLinks];
     nextLinks.splice(mcpIndex >= 0 ? mcpIndex + 1 : nextLinks.length, 0, insightsLink);
 
-    return [conversationLink, ...nextLinks];
+    return [conversationLink, ...nextLinks, ...reviewsLinks];
   }, [
     insightsAccess?.access,
     insightsFeatureEnabled,
     isInsightsAccessLoading,
     isInsightsRoute,
+    isNmbReviewer,
     location.pathname,
     navigate,
     sideNavLinks,

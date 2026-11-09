@@ -5,6 +5,7 @@ export * from './Skills';
 export * from './Files';
 export * from './Langfuse';
 export * from './Insights';
+export * from './Nmb';
 /* Memories */
 export * from './Memories';
 export * from './Messages';

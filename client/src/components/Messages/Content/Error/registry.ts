@@ -10,6 +10,7 @@ import ContextError from './ContextError';
 import ModelError from './ModelError';
 import LimitError from './LimitError';
 import AgentError from './AgentError';
+import NmbError from './NmbError';
 
 /**
  * Codes whose whole rendering is one localized sentence.
@@ -77,4 +78,9 @@ export const errorRenderers: Record<string, ComponentType<ErrorRendererProps>> =
   [ViolationTypes.FILE_UPLOAD_LIMIT]: LimitError,
   [ViolationTypes.TTS_LIMIT]: LimitError,
   [ViolationTypes.STT_LIMIT]: LimitError,
+  nmb_review_pending: NmbError,
+  nmb_rejected: NmbError,
+  nmb_unavailable: NmbError,
+  nmb_file_not_cleared: NmbError,
+  nmb_forbidden: NmbError,
 };

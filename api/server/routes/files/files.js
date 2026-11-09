@@ -55,6 +55,7 @@ const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { getRoleByName } = require('~/models');
 const { checkPermission } = require('~/server/services/PermissionService');
 const { cleanFileName, getContentDisposition } = require('~/server/utils/files');
+const { uploadGate: nmbUploadGate } = require('~/server/services/nmb');
 const { Readable } = require('stream');
 const { getLogStores } = require('~/cache');
 const db = require('~/models');
@@ -874,6 +875,12 @@ const handleFileUpload = async (req, res) => {
       ragConfigured: !!process.env.RAG_API_URL,
       readFile: fs.readFile,
     });
+
+    /* NMB secure gateway: scan the upload and swap it for its sanitised rendering before any
+     * processing (extraction, embedding, native provider delivery). No-op unless enabled. */
+    if (!(await nmbUploadGate(req, res))) {
+      return;
+    }
 
     metadata.temp_file_id = metadata.file_id;
     metadata.file_id = req.file_id;

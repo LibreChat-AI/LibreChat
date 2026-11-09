@@ -10,6 +10,7 @@ const {
 const { restoreTenantContextFromReq } = require('@librechat/api');
 const { avatar: asstAvatarRouter } = require('~/server/routes/assistants/v1');
 const { avatar: agentAvatarRouter } = require('~/server/routes/agents/v1');
+const { blockImageUploads } = require('~/server/services/nmb');
 const { createMulterInstance } = require('./multer');
 
 const files = require('./files');
@@ -57,6 +58,7 @@ const initialize = async () => {
   });
 
   router.post('/', upload.single('file'), restoreTenantContextFromReq);
+  router.post('/images', blockImageUploads);
   router.post('/images', upload.single('file'), restoreTenantContextFromReq);
   router.post('/images/avatar', upload.single('file'), restoreTenantContextFromReq);
   router.post(
