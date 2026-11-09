@@ -80,14 +80,37 @@ async function createAgent(request: APIRequestContext, session: Session) {
   });
 }
 
-/** A GET that starts an OAuth flow: the gate lets reads through, so this route asks for itself. */
-async function initiateOAuth(request: APIRequestContext, session: Session) {
-  return request.get('/api/mcp/e2e-server/oauth/initiate', {
-    headers: session.headers,
-    params: { userId: session.userId, flowId: `${session.userId}:e2e-server` },
-    failOnStatusCode: false,
-    maxRedirects: 0,
-  });
+type OAuthStart = 'mcp' | 'pull-request';
+
+const oauthStarts: OAuthStart[] = ['mcp', 'pull-request'];
+
+/**
+ * What answers a start that gets past the terms check. The mock config has no pull request OAuth
+ * app and no pending MCP flow, so each handler turns the request away with a 404 of its own.
+ */
+const reachedHandler: Record<OAuthStart, Record<string, string>> = {
+  mcp: { error: 'Flow not found' },
+  'pull-request': { code: 'NOT_CONFIGURED' },
+};
+
+/** A read that starts an OAuth flow: the gate lets reads through, so each route asks for itself. */
+async function startOAuth(
+  request: APIRequestContext,
+  session: Session,
+  start: OAuthStart,
+  method: 'GET' | 'HEAD' = 'GET',
+) {
+  const mcp = start === 'mcp';
+  return request.fetch(
+    mcp ? '/api/mcp/e2e-server/oauth/initiate' : '/api/pull-requests/oauth/connect',
+    {
+      method,
+      headers: session.headers,
+      params: mcp ? { userId: session.userId, flowId: `${session.userId}:e2e-server` } : {},
+      failOnStatusCode: false,
+      maxRedirects: 0,
+    },
+  );
 }
 
 async function signIn(page: Page) {
@@ -137,9 +160,16 @@ test.describe('Server-enforced terms acceptance', () => {
     const session = userSession as Session;
     const res = await createAgent(request, session);
     expect(res.status(), await res.text()).toBe(201);
+  });
 
-    const oauthStart = await initiateOAuth(request, session);
-    expect(oauthStart.status()).toBe(404);
+  test('with modalAcceptance off, an unaccepted user starts an OAuth flow as before @scenario:terms-oauth-start-flag-off', async ({
+    request,
+  }) => {
+    for (const start of oauthStarts) {
+      const res = await startOAuth(request, userSession as Session, start);
+      expect(res.status(), start).toBe(404);
+      expect(await res.json(), start).toMatchObject(reachedHandler[start]);
+    }
   });
 
   test('an unaccepted user sees the terms modal and every write is refused @scenario:terms-unaccepted-blocked', async ({
@@ -165,10 +195,6 @@ test.describe('Server-enforced terms acceptance', () => {
     expect(credentialWrite.status()).toBe(403);
     expect(((await credentialWrite.json()) as { code: string }).code).toBe('terms_not_accepted');
 
-    const oauthStart = await initiateOAuth(request, session);
-    expect(oauthStart.status()).toBe(403);
-    expect(((await oauthStart.json()) as { code: string }).code).toBe('terms_not_accepted');
-
     const read = await request.get('/api/user/terms', { headers: session.headers });
     expect(read.ok()).toBeTruthy();
     expect(((await read.json()) as { termsAccepted: boolean }).termsAccepted).toBe(false);
@@ -177,6 +203,22 @@ test.describe('Server-enforced terms acceptance', () => {
     const dialog = page.getByRole('dialog', { name: 'Terms and Conditions' });
     await expect(dialog).toBeVisible({ timeout: 20000 });
     await expect(dialog.getByText('E2E terms body')).toBeVisible();
+  });
+
+  test('an unaccepted user is refused when starting an OAuth flow, by GET or HEAD, without a cookie @scenario:terms-oauth-start-refused', async ({
+    request,
+  }) => {
+    const session = userSession as Session;
+    for (const start of oauthStarts) {
+      const refused = await startOAuth(request, session, start);
+      expect(refused.status(), start).toBe(403);
+      expect(((await refused.json()) as { code: string }).code, start).toBe('terms_not_accepted');
+      expect(refused.headers()['set-cookie'], start).toBeUndefined();
+
+      const head = await startOAuth(request, session, start, 'HEAD');
+      expect(head.status(), `${start} HEAD`).toBe(403);
+      expect(head.headers()['set-cookie'], `${start} HEAD`).toBeUndefined();
+    }
   });
 
   test('accepting the terms lets the same user write again @scenario:terms-accept-unblocks', async ({
@@ -191,10 +233,15 @@ test.describe('Server-enforced terms acceptance', () => {
 
     const res = await createAgent(request, userSession as Session);
     expect(res.status(), await res.text()).toBe(201);
+  });
 
-    /** Past the terms check the route answers for the flow it was asked about, and none exists. */
-    const oauthStart = await initiateOAuth(request, userSession as Session);
-    expect(oauthStart.status()).toBe(404);
-    expect(((await oauthStart.json()) as { error: string }).error).toBe('Flow not found');
+  test('once the terms are accepted the same OAuth start reaches its handler @scenario:terms-oauth-start-after-accept', async ({
+    request,
+  }) => {
+    for (const start of oauthStarts) {
+      const res = await startOAuth(request, userSession as Session, start);
+      expect(res.status(), start).toBe(404);
+      expect(await res.json(), start).toMatchObject(reachedHandler[start]);
+    }
   });
 });
