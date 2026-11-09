@@ -670,12 +670,14 @@ router.delete('/all', configMiddleware, async (req, res) => {
 
 /**
  * Archives or unarchives a conversation.
+ * The config loads before the access check because that check reads the retention mode
+ * from it, and `saveConvo` applies the same mode to the chat it archives.
  * @route POST /archive
  * @param {string} req.body.arg.conversationId - The conversation ID to archive/unarchive.
  * @param {boolean} req.body.arg.isArchived - Whether to archive (true) or unarchive (false).
  * @returns {object} 200 - The updated conversation object.
  */
-router.post('/archive', validateConvoAccess, async (req, res) => {
+router.post('/archive', configMiddleware, validateConvoAccess, async (req, res) => {
   const { conversationId, isArchived } = req.body?.arg ?? {};
 
   if (!conversationId) {

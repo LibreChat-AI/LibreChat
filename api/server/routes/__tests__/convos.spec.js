@@ -2307,6 +2307,61 @@ describe('Convos Routes', () => {
       expect(response.status).toBe(400);
       expect(response.body).toEqual({ error: 'conversationId is required' });
     });
+
+    /** Nothing mounts the config ahead of the convos router, so the route has to load it:
+     * without `interfaceConfig` the retention rules in `saveConvo` never see a mode. */
+    describe('retention config', () => {
+      const { configMiddleware, validateConvoAccess } = require('~/server/middleware');
+      const conversationId = 'conv-retention';
+      const interfaceConfig = { retentionMode: 'ephemeral', temporaryChatRetention: 24 };
+      const expiredAt = new Date('2030-01-01T00:00:00.000Z');
+      let configSeenByAccessCheck;
+
+      beforeEach(() => {
+        configSeenByAccessCheck = undefined;
+        configMiddleware.mockImplementation((req, res, next) => {
+          req.config = { ...req.config, interfaceConfig };
+          next();
+        });
+        validateConvoAccess.mockImplementation((req, res, next) => {
+          configSeenByAccessCheck = req.config?.interfaceConfig;
+          req.resolvedConversation = { conversationId, isTemporary: true, expiredAt };
+          next();
+        });
+        saveConvo.mockResolvedValue({ conversationId });
+      });
+
+      afterEach(() => {
+        configMiddleware.mockImplementation((req, res, next) => next());
+        validateConvoAccess.mockImplementation((req, res, next) => next());
+      });
+
+      it.each([true, false])(
+        'hands the loaded retention config to saveConvo when isArchived is %s',
+        async (isArchived) => {
+          const response = await request(app)
+            .post('/api/convos/archive')
+            .send({ arg: { conversationId, isArchived } });
+
+          expect(response.status).toBe(200);
+          expect(saveConvo).toHaveBeenCalledTimes(1);
+          expect(saveConvo.mock.calls[0][0]).toEqual({
+            userId: 'test-user-123',
+            isTemporary: true,
+            expiredAt,
+            interfaceConfig,
+          });
+        },
+      );
+
+      it('loads the config before the access check, which reads the retention mode from it', async () => {
+        await request(app)
+          .post('/api/convos/archive')
+          .send({ arg: { conversationId, isArchived: true } });
+
+        expect(configSeenByAccessCheck).toEqual(interfaceConfig);
+      });
+    });
   });
 
   describe('POST /archive/all', () => {
