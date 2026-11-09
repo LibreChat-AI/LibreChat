@@ -9,6 +9,7 @@ const {
   formatToolError,
   getHttpsProxyAgent,
   resolveFluxResultRequest,
+  createImageToolArtifact,
 } = require('@librechat/api');
 const { FileContext, ContentTypes } = require('librechat-data-provider');
 
@@ -316,15 +317,7 @@ class FluxAPI extends Tool {
         }
         const imageResponse = await fetch(imageUrl, fetchOptions);
         const arrayBuffer = await imageResponse.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString('base64');
-        const content = [
-          {
-            type: ContentTypes.IMAGE_URL,
-            image_url: {
-              url: `data:image/png;base64,${base64}`,
-            },
-          },
-        ];
+        const artifact = await createImageToolArtifact(Buffer.from(arrayBuffer));
 
         const response = [
           {
@@ -332,7 +325,7 @@ class FluxAPI extends Tool {
             text: displayMessage,
           },
         ];
-        return [response, { content }];
+        return [response, artifact];
       } catch (error) {
         return this.returnValue(formatToolError(error, 'Flux'));
       }
@@ -541,15 +534,7 @@ class FluxAPI extends Tool {
         }
         const imageResponse = await fetch(imageUrl, fetchOptions);
         const arrayBuffer = await imageResponse.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString('base64');
-        const content = [
-          {
-            type: ContentTypes.IMAGE_URL,
-            image_url: {
-              url: `data:image/png;base64,${base64}`,
-            },
-          },
-        ];
+        const artifact = await createImageToolArtifact(Buffer.from(arrayBuffer));
 
         const response = [
           {
@@ -557,7 +542,7 @@ class FluxAPI extends Tool {
             text: displayMessage,
           },
         ];
-        return [response, { content }];
+        return [response, artifact];
       } catch (error) {
         return this.returnValue(formatToolError(error, 'Flux'));
       }

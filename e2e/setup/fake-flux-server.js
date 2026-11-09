@@ -13,6 +13,7 @@
  * spec asserts where the key went rather than only that an image rendered.
  */
 const http = require('http');
+const sharp = require('sharp');
 
 const PORT = Number(process.env.E2E_FLUX_PORT) || 8794;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
@@ -27,6 +28,24 @@ const PNG = Buffer.from(
 
 /** id -> { mode, label } */
 const tasks = new Map();
+const samples = new Map();
+
+async function createSample(size) {
+  // Uncompressed pixels cross the provider byte limit, while the resized color blocks
+  // remains below the SDK's independent tool-content compaction budget.
+  const pixels = Buffer.alloc(size * size * 3);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const index = (y * size + x) * 3;
+      pixels[index] = x < size / 2 ? 220 : 20;
+      pixels[index + 1] = y < size / 2 ? 180 : 40;
+      pixels[index + 2] = 80;
+    }
+  }
+  return sharp(pixels, { raw: { width: size, height: size, channels: 3 } })
+    .png({ compressionLevel: 0 })
+    .toBuffer();
+}
 /** { label, method, path, host, hasKey } in arrival order. */
 const requests = [];
 let taskCount = 0;
@@ -45,7 +64,9 @@ function send(res, status, body) {
 }
 
 function parsePrompt(prompt) {
-  const match = /flux-e2e:(polling|legacy|foreign):([A-Za-z0-9._-]+)/.exec(prompt ?? '');
+  const match = /flux-e2e:(polling|legacy|foreign|large|boundary):([A-Za-z0-9._-]+)/.exec(
+    prompt ?? '',
+  );
   return match ? { mode: match[1], label: match[2] } : { mode: 'legacy', label: 'unlabeled' };
 }
 
@@ -74,6 +95,18 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/__requests') {
     const label = url.searchParams.get('label');
     return send(res, 200, { requests: requests.filter((entry) => entry.label === label) });
+  }
+
+  if (req.method === 'GET' && url.pathname === '/__sample') {
+    const sampleTask = [...tasks.values()].find(
+      (entry) => entry.label === url.searchParams.get('label'),
+    );
+    if (!sampleTask) {
+      return send(res, 404, { detail: 'Task not found' });
+    }
+    const sample = samples.get(sampleTask.mode) ?? PNG;
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': sample.length });
+    return res.end(sample);
   }
 
   if (req.method === 'POST' && url.pathname.startsWith('/v1/')) {
@@ -107,13 +140,32 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname.startsWith('/samples/')) {
-    res.writeHead(200, { 'Content-Type': 'image/png' });
-    return res.end(PNG);
+    const sampleId = url.pathname.slice('/samples/'.length).replace(/\.png$/, '');
+    const sample = samples.get(tasks.get(sampleId)?.mode) ?? PNG;
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': sample.length });
+    return res.end(sample);
   }
 
   return send(res, 404, { detail: 'Not found' });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[fake-flux] listening on ${ORIGIN}`);
-});
+Promise.all([createSample(2048), createSample(1200)])
+  .then(([large, boundary]) => {
+    const limit = 5 * 1024 * 1024;
+    if (
+      large.length <= limit ||
+      boundary.length > limit ||
+      boundary.toString('base64').length <= limit
+    ) {
+      throw new Error('Flux fixtures must exercise both decoded and encoded image limits');
+    }
+    samples.set('large', large);
+    samples.set('boundary', boundary);
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`[fake-flux] listening on ${ORIGIN}`);
+    });
+  })
+  .catch((error) => {
+    console.error('[fake-flux] fixture initialization failed', error);
+    process.exitCode = 1;
+  });
