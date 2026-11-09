@@ -517,6 +517,14 @@ describe('getUserFacingGenerationError', () => {
       ),
     );
     expect(limited.info).toBe('Budget e');
+
+    expect(
+      getUserFacingGenerationError(
+        error,
+        { endpoints: { agents: { maxProviderErrorChars: 0 } } },
+        'Generation failed',
+      ),
+    ).toBe(JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT }));
   });
 
   it('keeps the host-authored message of a content policy block under protection', () => {
