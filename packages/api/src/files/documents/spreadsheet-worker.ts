@@ -13,13 +13,30 @@ async function run(filePath: string): Promise<void> {
     }
     const data = await readFile(filePath);
     if (data.length > SPREADSHEET_LIMITS.inputBytes) throw new SpreadsheetLimitError();
+    let preserveDisplayText = false;
     if (data.length >= 4 && data[0] === 0x50 && data[1] === 0x4b) {
-      await assertSafeZipSize(data, { name: 'spreadsheet' });
+      await assertSafeZipSize(data, {
+        name: 'spreadsheet',
+        onEntry: (name) => {
+          // Same format markers SheetJS uses to select the OpenDocument parser.
+          const marker = name
+            .replace(/^Root Entry[\\/]/, '')
+            .replace(/\\/g, '/')
+            .toLowerCase();
+          if (marker === 'meta-inf/manifest.xml' || marker === 'objectdata.xml') {
+            preserveDisplayText = true;
+          }
+        },
+      });
+    } else {
+      preserveDisplayText = data.includes(
+        Buffer.from('urn:oasis:names:tc:opendocument:xmlns:office:1.0'),
+      );
     }
-    // Avoid eager per-reference formatting and HTML expansion during read().
+    // ODS stores display text in XML. Excel formatting stays deferred and budgeted.
     const workbook = read(data, {
       type: 'buffer',
-      cellText: false,
+      cellText: preserveDisplayText,
       cellNF: true,
       cellHTML: false,
       dense: false,

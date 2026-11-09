@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { utils, write } from 'xlsx';
+import { read, utils, write } from 'xlsx';
 import { performance } from 'node:perf_hooks';
 import { spreadsheetParsingSchema } from 'librechat-data-provider';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
@@ -136,6 +136,67 @@ describe('spreadsheet parser regressions', () => {
     await expect(
       parse(write(workbook, { type: 'buffer', bookType }), `dates-${date1904}.${bookType}`),
     ).resolves.toBe(`Dates:\n${expected},${expected} 12:00:00,36:00,25%\n`);
+  });
+
+  it.each(['ods', 'fods'] as const)(
+    'preserves stored %s display text instead of reformatting it',
+    async (bookType) => {
+      const workbook = utils.book_new();
+      utils.book_append_sheet(
+        workbook,
+        utils.aoa_to_sheet([
+          [
+            { t: 'n', v: 0.25, z: '0%' },
+            { t: 'n', v: 1234.5, z: '#,##0.00' },
+          ],
+        ]),
+        'Display',
+      );
+      const data: Buffer = write(workbook, { type: 'buffer', bookType });
+      const baseline = read(data, { type: 'buffer' });
+      // ODS XML stores 0.25 and 1234.5 as its display text despite the number formats.
+      expect(baseline.Sheets.Display.A1.w).toBe('0.25');
+      const expected = `Display:\n${utils.sheet_to_csv(baseline.Sheets.Display)}\n`;
+      expect(expected).toBe('Display:\n0.25,1234.5\n');
+      await expect(parse(data, `display.${bookType}`)).resolves.toBe(expected);
+    },
+  );
+
+  it('recognizes OpenDocument markers with the same case-insensitive rules as SheetJS', async () => {
+    const workbook = utils.book_new();
+    utils.book_append_sheet(
+      workbook,
+      utils.aoa_to_sheet([[{ t: 'n', v: 0.25, z: '0%' }]]),
+      'Display',
+    );
+    const archive = await JSZip.loadAsync(write(workbook, { type: 'buffer', bookType: 'ods' }));
+    const manifest = archive.file('META-INF/manifest.xml');
+    if (!manifest) throw new Error('Missing generated ODS manifest');
+    archive.file('meta-inf/MANIFEST.XML', await manifest.async('string'));
+    archive.remove('META-INF/manifest.xml');
+    await expect(
+      parse(await archive.generateAsync({ type: 'nodebuffer' }), 'display-case.ods'),
+    ).resolves.toBe('Display:\n0.25\n');
+  });
+
+  it('bounds repeated ODS display text before CSV generation', async () => {
+    const archive = await JSZip.loadAsync(await readFile(path.join(__dirname, 'sample.ods')));
+    archive.file(
+      'content.xml',
+      `<?xml version="1.0"?>
+      <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+        xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+        xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+        <office:body><office:spreadsheet><table:table table:name="Display">
+          <table:table-row table:number-rows-repeated="1024">
+            <table:table-cell office:value-type="float" office:value="1"><text:p>${'x'.repeat(8192)}</text:p>
+          </table:table-cell></table:table-row>
+        </table:table></office:spreadsheet></office:body>
+      </office:document-content>`,
+    );
+    await expect(
+      parse(await archive.generateAsync({ type: 'nodebuffer' }), 'display-repeat.ods'),
+    ).rejects.toMatchObject({ code: 'SPREADSHEET_LIMIT', userErrorStatusCode: 413 });
   });
 
   it('passes the request policy to spreadsheet parsing', async () => {
