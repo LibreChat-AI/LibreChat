@@ -190,6 +190,26 @@ describe('withStatusDeadline', () => {
     expect(clock.pending()).toBe(0);
   });
 
+  it('keeps a read rejected when its answer arrives after the deadline', async () => {
+    const clock = createScheduler();
+    let answer: (status: StreamStatusResponse) => void = () => undefined;
+    const read = withStatusDeadline(
+      jest.fn(
+        () =>
+          new Promise<StreamStatusResponse>((resolve) => {
+            answer = resolve;
+          }),
+      ),
+      clock.scheduler,
+    );
+    const pending = read('c-1');
+    clock.advance(STATUS_READ_TIMEOUT_MS - 1);
+    expect(clock.pending()).toBe(1);
+    clock.advance(1);
+    answer({ active: false, generationProtocolVersion: 2 });
+    await expect(pending).rejects.toBeInstanceOf(StatusReadTimeoutError);
+  });
+
   it('passes a failed read through unchanged', async () => {
     const clock = createScheduler();
     const error = new Error('offline');
