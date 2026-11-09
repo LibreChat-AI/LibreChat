@@ -427,6 +427,11 @@ const ChatForm = memo(function ChatForm({
    *  values and cannot consume files, so an empty draft must stay unsubmittable
    *  there rather than enabling a button whose submit is silently dropped. */
   const submittableFileCount = composerReserved ? 0 : files.size;
+  const hasInlinePaste = useMemo(() => {
+    if (composerReserved || filesLoading) return false;
+    for (const file of files.values()) if (isInlineablePastedText(file)) return true;
+    return false;
+  }, [composerReserved, filesLoading, files]);
 
   const { ref, ...registerProps } = methods.register('text', {
     required: submittableFileCount === 0,
@@ -529,6 +534,7 @@ const ChatForm = memo(function ChatForm({
         onConsumed={consumeComposer}
         enterToSend={enterToSend}
         fileCount={submittableFileCount}
+        hasInlinePaste={hasInlinePaste}
         sendDisabled={
           filesLoading ||
           isPreparingFromUrl ||
@@ -559,6 +565,7 @@ const ChatForm = memo(function ChatForm({
       consumeComposer,
       enterToSend,
       submittableFileCount,
+      hasInlinePaste,
       filesLoading,
       isPreparingFromUrl,
       disableInputs,

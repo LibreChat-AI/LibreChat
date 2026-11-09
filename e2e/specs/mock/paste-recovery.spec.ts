@@ -241,3 +241,59 @@ test('a text-only user rerun excludes an unrelated paste and preserves its uploa
     release();
   }
 });
+
+for (const action of ['queue', 'steer'] as const) {
+  for (const submit of ['Enter', 'click'] as const) {
+    test(`paste-only ${action} submits through ${submit} during a response`, async ({ page }) => {
+      await page.addInitScript(
+        (action) => localStorage.setItem('duringRunDefaultAction', JSON.stringify(action)),
+        action,
+      );
+      await page.goto(NEW_CHAT_PATH);
+      await selectMockEndpoint(page, { label: 'Mock Provider C', model: 'mock-model-c' });
+      await sendMessageAndWaitForCompletion(page, 'E2E_REPLY:paste-only-setup');
+      await sendMessage(page, 'E2E_SLOW_REPLY:paste-only-active-run');
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await page.route('**/api/files', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        await gate;
+        return route.abort();
+      });
+      try {
+        const input = page.getByTestId('text-input');
+        const paste = 'Exact clipboard text without a typed prefix.\n'.repeat(80);
+        await input.evaluate((element, text) => {
+          const clipboardData = new DataTransfer();
+          clipboardData.setData('text/plain', text);
+          element.dispatchEvent(
+            new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }),
+          );
+        }, paste);
+        await expect(input).toHaveValue('');
+        const button = page.getByTestId('during-run-send-button');
+        await expect(button).toHaveAttribute('data-during-run-action', action);
+        await expect(button).toBeEnabled();
+        const expected = `\`\`\`text\n${paste}\n\`\`\``;
+        const sent = page.waitForRequest((request) => {
+          if (
+            request.method() !== 'POST' ||
+            !new URL(request.url()).pathname.startsWith('/api/agents/chat')
+          )
+            return false;
+          return request.postDataJSON()?.text === expected;
+        });
+        if (submit === 'click') await button.click();
+        else await input.press('Enter');
+        const payload = (await sent).postDataJSON();
+        expect(payload.text).toBe(`\`\`\`text\n${paste}\n\`\`\``);
+        expect(payload.files ?? []).toEqual([]);
+        await expect(page.getByTestId('composer-tray')).toHaveCount(0);
+      } finally {
+        release();
+      }
+    });
+  }
+}
