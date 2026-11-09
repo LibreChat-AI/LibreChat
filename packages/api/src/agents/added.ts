@@ -10,6 +10,7 @@ import {
   resolveMCPAppsPolicy,
   resolveSpecUserToggles,
   resolveSpecSkillsEnabled,
+  specWithholdsUserToggles,
 } from 'librechat-data-provider';
 import type { Agent, TModelSpec, TConversation, TEphemeralAgent } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
@@ -90,7 +91,7 @@ interface LoadAddedAgentParams {
   req: {
     user?: { id?: string; role?: string };
     config?: Record<string, unknown>;
-    body?: { ephemeralAgent?: TEphemeralAgent };
+    body?: { ephemeralAgent?: TEphemeralAgent; spec?: string | null };
   };
   conversation: TConversation | null;
   primaryAgent?: Agent | null;
@@ -160,8 +161,15 @@ export async function loadAddedAgent(
   const ephemeralAgent: TEphemeralAgent | undefined =
     requestAgent || paneAgent ? { ...requestAgent, ...paneAgent } : undefined;
 
+  /** The primary's resolved tools stand in for this pane's, since one badge row
+   *  drives both — unless this pane's own spec differs and governs tools the
+   *  primary's resolution never saw: toggles it withholds from the user, or MCP
+   *  servers it pins. Only the full resolution below applies those. */
   const primaryIsEphemeral = primaryAgent && isEphemeralAgentId(primaryAgent.id);
-  if (primaryIsEphemeral && Array.isArray(primaryAgent.tools)) {
+  const governsOwnTools =
+    (spec || '') !== (req.body?.spec || '') &&
+    ((modelSpec?.mcpServers?.length ?? 0) > 0 || specWithholdsUserToggles(modelSpec));
+  if (primaryIsEphemeral && !governsOwnTools && Array.isArray(primaryAgent.tools)) {
     let endpointConfig = (appConfig?.endpoints as Record<string, unknown> | undefined)?.[
       endpoint
     ] as Record<string, unknown> | undefined;

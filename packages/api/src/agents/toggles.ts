@@ -25,8 +25,8 @@ import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { synthesizeDeferralToolOptions } from '~/agents/deferral';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
+import { classifyChatSelectableMCPServers } from '~/mcp/utils';
 import { synthesizeIntentToolOptions } from '~/agents/intent';
-import { filterChatSelectableMCPServers } from '~/mcp/utils';
 
 /** Tool id equipped for each spec-configurable capability. */
 const TOOL_NAMES: Record<string, string> = {
@@ -78,7 +78,9 @@ export interface EphemeralMCPServerSources extends ChatSelectableLookup {
  * selection is narrowed to what the picker may offer and, whenever the request
  * sends one, decides among those servers: an empty selection is a deselection.
  * Spec servers the picker cannot offer were never the user's to deselect, so
- * they stay pinned. One accessibility lookup covers both lists.
+ * they stay pinned. One accessibility lookup covers both lists. When the
+ * catalog cannot be resolved, every spec server stays pinned and the selection
+ * is kept as sent, matching the picker narrowing's own fail-open behavior.
  */
 export async function resolveEphemeralMCPServers({
   selected,
@@ -87,13 +89,15 @@ export async function resolveEphemeralMCPServers({
 }: EphemeralMCPServerSources): Promise<string[]> {
   const requested = Array.isArray(selected) ? selected : undefined;
   const spec = specServers ?? [];
-  const selectable = new Set(
-    await filterChatSelectableMCPServers([...(requested ?? []), ...spec], lookup),
-  );
-  const pinned = spec.filter((server) => !selectable.has(server));
+  const candidates = [...new Set([...(requested ?? []), ...spec])];
+  const classified = await classifyChatSelectableMCPServers(candidates, lookup);
+  if (classified == null) {
+    return [...new Set([...(requested ?? []), ...spec])];
+  }
+  const pinned = spec.filter((server) => !classified.has(server));
   const chosen = resolveSpecMcpServers(
-    requested?.filter((server) => selectable.has(server)),
-    spec.filter((server) => selectable.has(server)),
+    requested?.filter((server) => classified.has(server)),
+    spec.filter((server) => classified.has(server)),
   );
   return [...new Set([...chosen, ...pinned])];
 }

@@ -356,6 +356,18 @@ describe('loadAgent', () => {
       );
     });
 
+    test('keeps every spec server pinned when the catalog lookup fails', async () => {
+      mockGetAccessibleMCPServers.mockRejectedValue(new Error('registry unavailable'));
+      const body = { ephemeralAgent: { mcp: [] as string[] } };
+
+      await loadEphemeral(pinsBoth, body, 'pins-both');
+
+      /** Without a catalog the pickable and non-pickable servers cannot be told
+       *  apart, so none of the spec's servers is treated as deselected. */
+      expect(selectedServerNames()).toEqual(['visible', 'hidden']);
+      expect(body.ephemeralAgent.mcp).toEqual(['visible', 'hidden']);
+    });
+
     test('classifies the selection and the spec servers with one catalog lookup', async () => {
       await loadEphemeral(pinsBoth, { ephemeralAgent: { mcp: ['visible'] } }, 'pins-both');
 
@@ -1494,6 +1506,41 @@ describe('loadAgent', () => {
 
       expect(result?.skills_enabled).toBe(false);
       expect(result?.skills).toEqual([]);
+    });
+
+    test('an added spec that withholds toggles resolves its own tools beside an ephemeral primary', async () => {
+      const { EPHEMERAL_AGENT_ID: EID } = Constants;
+      const result = await loadAddedAgent(
+        {
+          req: addedReq({ web_search: false }, { hideBadgeRow: true, webSearch: true }),
+          conversation: addedConversation,
+          primaryAgent: { id: EID as string, tools: [] } as unknown as LibreChatAgent,
+        },
+        deps,
+      );
+
+      /** The primary turned web search off; this pane's spec does not let the
+       *  shared badge row decide it. */
+      expect(result?.tools).toEqual(['web_search']);
+    });
+
+    test('an added spec that pins MCP servers equips them beside an ephemeral primary', async () => {
+      const { EPHEMERAL_AGENT_ID: EID } = Constants;
+      mockGetAccessibleMCPServers.mockResolvedValue({ crm: { chatMenu: false } });
+      mockGetMCPServerTools.mockImplementation(async (_userId: string, server: string) => ({
+        [`lookup_mcp_${server}`]: {},
+      }));
+
+      const result = await loadAddedAgent(
+        {
+          req: addedReq({ mcp: [] }, { mcpServers: ['crm'] }),
+          conversation: addedConversation,
+          primaryAgent: { id: EID as string, tools: ['web_search'] } as LibreChatAgent,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toContain('lookup_mcp_crm');
     });
 
     test('the mirrored-tools branch applies the spec artifacts too', async () => {
