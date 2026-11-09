@@ -1121,6 +1121,40 @@ describe('useAutoSave — file cache updates', () => {
   });
 
   /**
+   * After a reload the live file map is empty until the server's file list arrives, and the
+   * restore that rebuilds it needs that list. Saving the draft from the empty map in between
+   * erased every attachment the draft held before it could be restored.
+   */
+  it('keeps the saved files draft until the file list has loaded, then restores it', () => {
+    setFilesDraft('convo-1', { fileIds: ['server-file-id'], pendingPastes: {} });
+
+    const { result, rerender } = renderHook(
+      ({ fileList }: { fileList: unknown[] | undefined }) => {
+        const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+        (useGetFiles as jest.Mock).mockReturnValue({ data: fileList });
+        useAutoSave({
+          conversationId: 'convo-1',
+          textAreaRef: makeTextAreaRef(),
+          files,
+          setFiles,
+        });
+        return files;
+      },
+      { initialProps: { fileList: undefined as unknown[] | undefined } },
+    );
+
+    expect(getFilesDraft('convo-1').fileIds).toEqual(['server-file-id']);
+    expect(result.current.size).toBe(0);
+
+    act(() => {
+      rerender({ fileList: [persistedRecord] });
+    });
+
+    expect(result.current.has('server-file-id')).toBe(true);
+    expect(getFilesDraft('convo-1').fileIds).toEqual(['server-file-id']);
+  });
+
+  /**
    * The restore also lands on entries the composer still owns, so it has to layer
    * the persisted record over them rather than replace them: the blob preview the
    * chip renders from and the tool resource the upload was staged under exist only

@@ -1,5 +1,5 @@
 /**
- * Regression tests for image tool agent mode — verifies that invoke() returns
+ * Regression tests for image tool agent mode: verifies that invoke() returns
  * a ToolMessage with base64 in artifact.content rather than serialized into content.
  *
  * Root cause: FluxAPI/StableDiffusion extend LangChain's Tool but did not
@@ -33,7 +33,8 @@ jest.mock('fs', () => ({
   promises: { writeFile: jest.fn(), readFile: jest.fn(), unlink: jest.fn() },
 }));
 
-const FAKE_BASE64 = 'aGVsbG8=';
+const FAKE_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
 const makeToolCall = (name, args) => ({
   id: 'call_test_123',

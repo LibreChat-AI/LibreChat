@@ -27,6 +27,7 @@ export * from './rag';
 export * from './rag/context';
 export * from './rag/search';
 export * from './regexEngine';
+export * from './resize';
 export * from './retention';
 export * from './speech';
 export * from './sse';

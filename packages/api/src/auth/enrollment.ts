@@ -328,12 +328,8 @@ export function createEnrollmentControllers(
     }
   };
 
-  /** Ends only the session this browser presented, and only when it belongs to the setup user. */
-  const endBrowserSession = async (userId: string, refreshToken?: string): Promise<void> => {
-    if (!refreshToken) {
-      return;
-    }
-    const session = await deps.findSession({ userId, refreshToken }, { lean: false });
+  /** Ends the session this browser presented, which the lookup found only if it belongs to the setup user. */
+  const endBrowserSession = async (session: RotatableSession | null): Promise<void> => {
     if (session) {
       await deps.deleteSession({ sessionId: session._id.toString() });
     }
@@ -367,11 +363,16 @@ export function createEnrollmentControllers(
         return res.status(401).json({ message: 'Invalid or expired two-factor setup token' });
       }
 
-      const user = await deps.getUserById(userId, CANCEL_ENROLLMENT_PROJECTION);
+      const refreshToken = req.cookies?.refreshToken;
+      /** Neither lookup needs the other's result, so they start together. */
+      const [user, session] = await Promise.all([
+        deps.getUserById(userId, CANCEL_ENROLLMENT_PROJECTION),
+        refreshToken ? deps.findSession({ userId, refreshToken }, { lean: false }) : null,
+      ]);
       /** Cleared before any fallible write, so a failure cannot leave the credential in the browser. */
       clearSessionCookies(res, user ?? {}, userId, deps);
 
-      const work = [endBrowserSession(userId, req.cookies?.refreshToken)];
+      const work = [endBrowserSession(session)];
       /** An expired token proves who is leaving, not that the staged enrollment is theirs to discard. */
       if (!req.twoFactorSetupExpired) {
         work.push(discardStagedEnrollment(userId, user?.pendingTotpSecret));

@@ -36,6 +36,7 @@ const {
   captureSubagentIdentity,
   feedSubagentAggregator,
   getAttachmentOwnership,
+  getImageAttachmentContent,
   collectToolCallIds,
   createToolTimingAdapter,
   stampCommandExecutor,
@@ -1025,7 +1026,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
 
     if (output.artifact.content) {
       /** @type {FormattedContent[]} */
-      const content = output.artifact.content;
+      const content = getImageAttachmentContent(output.artifact);
       for (let i = 0; i < content.length; i++) {
         const part = content[i];
         if (!part) {
@@ -1391,7 +1392,7 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
 
     if (output.artifact.content) {
       /** @type {FormattedContent[]} */
-      const content = output.artifact.content;
+      const content = getImageAttachmentContent(output.artifact);
       for (let i = 0; i < content.length; i++) {
         const part = content[i];
         if (!part) {

@@ -282,6 +282,12 @@
     "jest-runtime@30": {
       "glob": "^14.0.3"
     },
+    "rimraf": {
+      "glob": "^14.0.4"
+    },
+    "workbox-build": {
+      "glob": "^14.0.4"
+    },
     "@typescript-eslint/typescript-estree@8": {
       "minimatch": "^11.0.3"
     },

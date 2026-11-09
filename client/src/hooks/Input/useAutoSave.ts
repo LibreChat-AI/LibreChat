@@ -728,8 +728,8 @@ export const useAutoSave = ({
     currentDraft,
     currentConversationId,
     fileIds,
-    fileList,
     files,
+    fileList,
     _conversationId,
   ]);
 
