@@ -101,7 +101,7 @@ test.describe('agent builder header', () => {
     const form = await openAgentBuilder(page);
     await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
     const selector = page.getByRole('dialog', { name: 'Agent', exact: true });
-    const toggle = selector.getByRole('button', { name: 'My Agents', exact: true });
+    const toggle = selector.getByRole('button', { name: 'My agents', exact: true });
     await expect(toggle).toBeVisible();
     const secondaryInk = await probeStyle(page, 'text-text-secondary', 'color');
     for (const pressed of ['false', 'true']) {
