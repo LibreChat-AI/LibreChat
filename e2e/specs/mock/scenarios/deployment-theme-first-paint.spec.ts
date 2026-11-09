@@ -26,6 +26,11 @@ import { resolveTheme } from '../../../../packages/data-provider/src/themes/regi
  * before the frame paints.
  */
 
+// Paint samples are the evidence here; DOM trace capture can stall throttled browser calls.
+test.use({
+  trace: { mode: 'retain-on-failure', snapshots: false, screenshots: true, sources: true },
+});
+
 type Mode = 'light' | 'dark';
 
 /** An operator's own `interface.theme`, written inline in librechat.yaml rather than named. */
@@ -155,6 +160,10 @@ async function framesBeforeAnswer(page: Page, answeredAt: number[], reloadedAt: 
   const frames = (await page.evaluate(() => window.__themeFrames ?? [])).filter(
     (frame) => frame.at < answered,
   );
+  await test.info().attach('cached-theme-frames', {
+    body: Buffer.from(JSON.stringify(frames, null, 2)),
+    contentType: 'application/json',
+  });
   expect(frames.find((frame) => frame.shell !== null || frame.app)?.shell).toBeTruthy();
   expect(frames.some((frame) => frame.app)).toBe(true);
   return frames;
@@ -256,7 +265,7 @@ test('a deployment theme removed since the last visit wins once the config answe
   page,
 }) => {
   test.setTimeout(90000);
-  let theme: string | null = 'clickhouse';
+  let theme: ThemeSource | null = 'clickhouse';
   await serveTheme(
     page,
     () => theme,
@@ -518,9 +527,14 @@ async function firstVisitFrames(
   await expect.poll(() => answeredAt.length).toBeGreaterThan(0);
 
   const answered = Math.min(...answeredAt);
-  return (await page.evaluate(() => window.__themeFrames ?? [])).filter(
+  const frames = (await page.evaluate(() => window.__themeFrames ?? [])).filter(
     (frame) => frame.at < answered,
   );
+  await test.info().attach('first-visit-theme-frames', {
+    body: Buffer.from(JSON.stringify(frames, null, 2)),
+    contentType: 'application/json',
+  });
+  return frames;
 }
 
 /** A signed-in first visit: every frame before the answer, shell and app alike, wears the theme. */
