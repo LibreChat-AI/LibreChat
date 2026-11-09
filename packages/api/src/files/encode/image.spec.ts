@@ -517,21 +517,25 @@ describe('encodeAndFormatImages', () => {
 
       const healthy = { ...file, file_id: 'healthy', storageKey: 'healthy' };
       const result = await settleOrHang(
-        encodeAndFormatImages(budgeted(), [healthy], {}, deps).then(
-          (encoded) => encoded.image_urls,
-        ),
+        encodeAndFormatImages(makeReq(), [healthy], {}, deps).then((encoded) => encoded.image_urls),
         5_000,
       );
       expect(result).toBe('resolved');
     });
 
     it('starts the clock when the read starts, not while it waits for a slot', async () => {
+      const imageFetchMs = 100;
       jest.spyOn(memoryGuard, 'runGuardedEncode').mockImplementation(async (_bytes, task) => {
-        await new Promise((resolve) => setTimeout(resolve, budgetMs * 3));
+        await new Promise((resolve) => setTimeout(resolve, imageFetchMs * 2));
         return task();
       });
 
-      const result = await encodeAndFormatImages(budgeted(), [file], {}, deps);
+      const result = await encodeAndFormatImages(
+        makeReq({ timeouts: { imageFetchMs } }),
+        [file],
+        {},
+        deps,
+      );
 
       expect(result.image_urls).toEqual([
         { type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } },
