@@ -167,7 +167,9 @@ test.describe('prose wraps between words', () => {
       [unbroken, [run]],
     ] as const) {
       const row = page.getByRole('listitem').filter({ hasText: name });
-      await row.getByRole('button', { name: 'Delete Bookmark', exact: true }).click();
+      /** Row actions reveal on hover; the keyboard reaches them the way a user would. */
+      await row.getByRole('button', { name: 'Delete Bookmark', exact: true }).focus();
+      await page.keyboard.press('Enter');
       const dialog = page.getByRole('dialog', { name: 'Delete Bookmark' });
       await expect(dialog).toBeVisible();
       const strong = dialog.locator('strong', { hasText: name });
