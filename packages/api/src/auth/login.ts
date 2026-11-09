@@ -27,7 +27,7 @@ export interface LoginDependencies {
   getUserById: (userId: string, projection: string) => Promise<StoredTwoFactorAccount | null>;
   deleteAllUserSessions: (input: { userId: string }) => Promise<object>;
   clearCloudFrontCookies: typeof clearCloudFrontCookies;
-  generate2FATempToken: (userId: UserDocumentId) => string;
+  generate2FATempToken: (userId: UserDocumentId, authMethod?: AuthMethod) => string;
   setAuthTokens: (
     userId: UserDocumentId,
     res: Response,
@@ -73,7 +73,10 @@ export function createLoginController(deps: LoginDependencies) {
       }
 
       if (req.user.twoFactorEnabled) {
-        const tempToken = deps.generate2FATempToken(req.user._id);
+        const tempToken = deps.generate2FATempToken(
+          req.user._id,
+          req.authMethod ?? deps.defaultAuthMethod,
+        );
         if (await wasPasswordRevokedDuringLogin(req.user)) {
           return refuseRevokedLogin(res, req.user);
         }
@@ -89,6 +92,7 @@ export function createLoginController(deps: LoginDependencies) {
         const tempToken = generateTwoFactorSetupToken(
           req.user._id.toString(),
           process.env.JWT_SECRET!,
+          req.authMethod ?? deps.defaultAuthMethod,
         );
         if (await wasPasswordRevokedDuringLogin(req.user)) {
           return refuseRevokedLogin(res, req.user);
