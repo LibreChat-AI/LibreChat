@@ -175,6 +175,45 @@ describe('loadHistoryRows', () => {
     expect(history(rows, 'a2b')).toEqual(history(store.all(), 'a2b'));
   });
 
+  /** A chain of `length` rows ending at `tail`, with `siblings` regenerated answers off its last user row. */
+  const longChain = (length: number, siblings: number): { rows: Stored[]; tail: string } => {
+    const rows: Stored[] = [];
+    let parent = NO_PARENT;
+    for (let i = 0; i < length; i++) {
+      const messageId = `m${i}`;
+      rows.push(stored(messageId, parent, i % 2 === 0));
+      parent = messageId;
+    }
+    const anchor = rows[length - 2].messageId;
+    for (let i = 0; i < siblings; i++) {
+      rows.push(stored(`sibling${i}`, anchor));
+    }
+    return { rows, tail: parent };
+  };
+
+  it('reads the whole conversation when under a tenth of its rows are off the branch', async () => {
+    const { rows: seeded, tail } = longChain(40, 1);
+    const store = createStore(seeded);
+
+    const rows = await load(store, tail, requestOf(readLinks(store.all(), tail)));
+
+    expect(store.getMessages).toHaveBeenCalledTimes(1);
+    expect(issuedFilter(store)).toStrictEqual({ conversationId: CONVERSATION, user: USER });
+    expect(history(rows, tail)).toEqual(history(store.all(), tail));
+  });
+
+  it('fetches only the branch once a tenth of the rows are off it', async () => {
+    const { rows: seeded, tail } = longChain(36, 4);
+    const store = createStore(seeded);
+
+    const rows = await load(store, tail, requestOf(readLinks(store.all(), tail)));
+
+    expect(store.getMessages).toHaveBeenCalledTimes(1);
+    expect(issuedFilter(store).messageId?.$in).toHaveLength(36);
+    expect(rows).toHaveLength(36);
+    expect(history(rows, tail)).toEqual(history(store.all(), tail));
+  });
+
   it('keeps the whole-conversation order of the rows it fetches', async () => {
     const store = createStore(branched());
 

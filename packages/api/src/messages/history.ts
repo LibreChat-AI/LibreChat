@@ -3,6 +3,14 @@ import { Constants } from 'librechat-data-provider';
 /** Fields the history read selects beyond the default projection. */
 const HISTORY_SELECT = '+privateTextTokens';
 
+/**
+ * Share of a conversation's rows a branch-only read must skip to be worth issuing. The narrowed
+ * query sends every branch id to the database, so a long conversation with one regenerated answer
+ * would send thousands of ids to skip a single row: measured locally, that read is no faster than
+ * the whole-conversation one until about a tenth of the rows are off the branch.
+ */
+const MIN_SKIPPED_SHARE = 0.1;
+
 /** One message reduced to the fields the branch walks read. */
 export interface BranchLinkRow {
   messageId: string;
@@ -62,10 +70,10 @@ export function walkBranch(rows: readonly BranchLinkRow[], head: string): Branch
 }
 
 /**
- * The ids to fetch when the links describe this read and the conversation has other branches.
- * `undefined` means read the conversation in full: the links are for another read, the head is not
- * among them (it was saved after they were read), or the branch is every row, so narrowing gains
- * nothing.
+ * The ids to fetch when the links describe this read and enough of the conversation is on other
+ * branches. `undefined` means read the conversation in full: the links are for another read, the
+ * head is not among them (it was saved after they were read), or the branch is all or nearly all
+ * of the rows, so narrowing gains nothing.
  */
 function selectBranchIds(
   links: BranchLinks | undefined,
@@ -83,7 +91,8 @@ function selectBranchIds(
     return undefined;
   }
   const branch = walkBranch(links.rows, parentMessageId);
-  if (branch.length === 0 || branch.length === links.rows.length) {
+  const skipped = links.rows.length - branch.length;
+  if (branch.length === 0 || skipped < links.rows.length * MIN_SKIPPED_SHARE) {
     return undefined;
   }
   return branch.map((row) => row.messageId);
@@ -91,8 +100,8 @@ function selectBranchIds(
 
 /**
  * Reads the rows a turn's history walk starts from. When the request middleware already read this
- * conversation's link rows for the same head, a conversation with other branches fetches only the
- * active branch; every other case is the whole-conversation read it always was. The fetch runs to
+ * conversation's link rows for the same head, a conversation with enough rows on other branches
+ * fetches only the active branch; every other case is the whole-conversation read it always was. The fetch runs to
  * the branch root so the retained-answer scan, which reads past a checkpoint summary, still finds
  * every row it walks.
  *
