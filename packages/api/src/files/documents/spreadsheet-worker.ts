@@ -1,4 +1,4 @@
-import { read, utils } from 'xlsx';
+import { read, utils, SSF } from 'xlsx';
 import { readFile, stat } from 'node:fs/promises';
 import { workbookToText, SPREADSHEET_LIMITS, SpreadsheetLimitError } from './workbook';
 import { assertSafeZipSize, ZipBombError } from './zipSafety';
@@ -24,7 +24,7 @@ async function run(filePath: string): Promise<void> {
       cellHTML: false,
       dense: false,
     });
-    reply = { ok: true, text: workbookToText(workbook, utils) };
+    reply = { ok: true, text: workbookToText(workbook, utils, SSF.format) };
   } catch (error) {
     reply = {
       ok: false,

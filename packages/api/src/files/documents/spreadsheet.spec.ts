@@ -113,6 +113,31 @@ describe('spreadsheet parser regressions', () => {
     ).resolves.toBe(expected);
   });
 
+  it.each([
+    ['xlsx', false, '1900-01-01'],
+    ['xlsx', true, '1904-01-02'],
+    ['xls', false, '1900-01-01'],
+    ['xls', true, '1904-01-02'],
+  ] as const)('preserves %s dates with date1904=%s', async (bookType, date1904, expected) => {
+    const workbook = utils.book_new();
+    workbook.Workbook = { WBProps: { date1904 } };
+    utils.book_append_sheet(
+      workbook,
+      utils.aoa_to_sheet([
+        [
+          { t: 'n', v: 1, z: 'yyyy-mm-dd' },
+          { t: 'n', v: 1.5, z: 'yyyy-mm-dd hh:mm:ss' },
+          { t: 'n', v: 1.5, z: '[h]:mm' },
+          { t: 'n', v: 0.25, z: '0%' },
+        ],
+      ]),
+      'Dates',
+    );
+    await expect(
+      parse(write(workbook, { type: 'buffer', bookType }), `dates-${date1904}.${bookType}`),
+    ).resolves.toBe(`Dates:\n${expected},${expected} 12:00:00,36:00,25%\n`);
+  });
+
   it('passes the request policy to spreadsheet parsing', async () => {
     const file = {
       path: path.join(__dirname, 'sample.xlsx'),

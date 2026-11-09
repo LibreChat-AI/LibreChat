@@ -1,4 +1,4 @@
-import type { WorkBook, CellObject, utils } from 'xlsx';
+import type { WorkBook, CellObject, NumberFormat, utils } from 'xlsx';
 
 // Fixed security ceilings, not throughput tuning: every admitted job must remain bounded.
 export const SPREADSHEET_LIMITS: Readonly<{
@@ -25,10 +25,15 @@ export class SpreadsheetLimitError extends Error {
 }
 
 /** Validate total traversal and expanded text before SheetJS allocates CSV rows. */
-export function workbookToText(workbook: WorkBook, sheetUtils: typeof utils): string {
+export function workbookToText(
+  workbook: WorkBook,
+  sheetUtils: typeof utils,
+  formatNumber: (format: NumberFormat, value: number, options: { date1904: boolean }) => string,
+): string {
   if (workbook.SheetNames.length > SPREADSHEET_LIMITS.sheets) {
     throw new SpreadsheetLimitError();
   }
+  const formatting = { date1904: workbook.Workbook?.WBProps?.date1904 === true };
   let remainingCells: number = SPREADSHEET_LIMITS.cells;
   let remainingBytes: number = SPREADSHEET_LIMITS.outputBytes;
   const reserve = (bytes: number): void => {
@@ -69,6 +74,20 @@ export function workbookToText(workbook: WorkBook, sheetUtils: typeof utils): st
         }
         let formatted = '';
         if (cell.v != null) {
+          // format_cell ignores the workbook epoch; SSF honors it for numeric dates.
+          if (
+            formatting.date1904 &&
+            cell.t === 'n' &&
+            typeof cell.v === 'number' &&
+            cell.z != null &&
+            cell.w === undefined
+          ) {
+            try {
+              cell.w = formatNumber(cell.z, cell.v, formatting);
+            } catch {
+              // Retain format_cell's fallback for malformed number formats.
+            }
+          }
           formatted = sheetUtils.format_cell(cell);
           cell.w = formatted;
         } else if (cell.f != null && !cell.F) {
