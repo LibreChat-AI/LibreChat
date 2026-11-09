@@ -4,6 +4,7 @@ const {
   requirePreAuthTenantContext,
   createSetBalanceConfig,
   requireTwoFactorSetupToken,
+  requireTwoFactorSetupSignOutToken,
   createTwoFactorManagementLimiter,
   forceRefreshCloudFrontAuthCookies,
   blockTwoFactorDisableWhenRequired,
@@ -168,7 +169,7 @@ router.post(
   middleware.setTwoFactorTempUser,
   middleware.twoFactorSetupLimiter,
   middleware.checkBan,
-  requireTwoFactorSetupToken,
+  requireTwoFactorSetupSignOutToken,
   middleware.blockRetiredSetupToken,
   cancel2FASetup,
 );

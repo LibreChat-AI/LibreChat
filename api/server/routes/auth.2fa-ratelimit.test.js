@@ -8,6 +8,7 @@ const mockTwoFactorTempLimiter = jest.fn((req, res, next) => next());
 const mockTwoFactorSetupLimiter = jest.fn((req, res, next) => next());
 const mockCheckBan = jest.fn((req, res, next) => next());
 const mockRequireTwoFactorSetupToken = jest.fn((req, res, next) => next());
+const mockRequireTwoFactorSetupSignOutToken = jest.fn((req, res, next) => next());
 const mockBlockRetiredSetupToken = jest.fn((req, res, next) => next());
 const mockRequireTwoFactorSetupAcknowledgementToken = jest.fn((req, res, next) => next());
 const mockRequireTwoFactorSetupFinalizationToken = jest.fn((req, res, next) => next());
@@ -27,6 +28,7 @@ jest.mock('@librechat/api', () => ({
     ),
   createSetBalanceConfig: jest.fn(() => (req, res, next) => next()),
   requireTwoFactorSetupToken: (...args) => mockRequireTwoFactorSetupToken(...args),
+  requireTwoFactorSetupSignOutToken: (...args) => mockRequireTwoFactorSetupSignOutToken(...args),
   requireTwoFactorSetupAcknowledgementToken: (...args) =>
     mockRequireTwoFactorSetupAcknowledgementToken(...args),
   requireTwoFactorSetupFinalizationToken: (...args) =>
@@ -227,6 +229,7 @@ describe('POST /api/auth/2fa/verify-temp rate limiting', () => {
     mockTwoFactorSetupLimiter.mockImplementation((req, res, next) => next());
     mockCheckBan.mockImplementation((req, res, next) => next());
     mockRequireTwoFactorSetupToken.mockImplementation((req, res, next) => next());
+    mockRequireTwoFactorSetupSignOutToken.mockImplementation((req, res, next) => next());
     mockBlockRetiredSetupToken.mockImplementation((req, res, next) => next());
     mockRequireTwoFactorSetupAcknowledgementToken.mockImplementation((req, res, next) => next());
     mockRequireTwoFactorSetupFinalizationToken.mockImplementation((req, res, next) => next());
@@ -310,8 +313,6 @@ describe('POST /api/auth/2fa/verify-temp rate limiting', () => {
   it.each([
     ['/api/auth/2fa/setup', mockEnable2FA, mockTwoFactorSetupLimiter],
     ['/api/auth/2fa/setup/confirm', mockConfirm2FASetupWithTempToken, mockTwoFactorTempLimiter],
-    /** Leaving checks no guessable code, so it draws on the setup budget and never the code attempts. */
-    ['/api/auth/2fa/setup/cancel', mockCancel2FASetup, mockTwoFactorSetupLimiter],
   ])(
     'protects %s with temp-token limiting and setup validation',
     async (path, controller, limiter) => {
@@ -340,7 +341,6 @@ describe('POST /api/auth/2fa/verify-temp rate limiting', () => {
   it.each([
     ['/api/auth/2fa/setup', mockEnable2FA],
     ['/api/auth/2fa/setup/confirm', mockConfirm2FASetupWithTempToken],
-    ['/api/auth/2fa/setup/cancel', mockCancel2FASetup],
   ])(
     'dates the setup token on %s once its signature has been verified',
     async (path, controller) => {
@@ -356,41 +356,70 @@ describe('POST /api/auth/2fa/verify-temp rate limiting', () => {
     },
   );
 
-  it.each([
-    ['/api/auth/2fa/setup'],
-    ['/api/auth/2fa/setup/confirm'],
-    ['/api/auth/2fa/setup/cancel'],
-  ])('does not act on %s when the setup token has been retired', async (path) => {
-    mockBlockRetiredSetupToken.mockImplementation((req, res) =>
-      res.status(401).json({ message: 'Invalid or expired two-factor setup token' }),
-    );
+  it.each([['/api/auth/2fa/setup'], ['/api/auth/2fa/setup/confirm']])(
+    'does not stage enrollment on %s when the setup token has been retired',
+    async (path) => {
+      mockBlockRetiredSetupToken.mockImplementation((req, res) =>
+        res.status(401).json({ message: 'Invalid or expired two-factor setup token' }),
+      );
 
-    await request(app).post(path).send({ tempToken: 'temp-token' }).expect(401);
+      await request(app).post(path).send({ tempToken: 'temp-token' }).expect(401);
 
-    expect(mockEnable2FA).not.toHaveBeenCalled();
-    expect(mockConfirm2FASetupWithTempToken).not.toHaveBeenCalled();
-    expect(mockCancel2FASetup).not.toHaveBeenCalled();
-  });
+      expect(mockEnable2FA).not.toHaveBeenCalled();
+      expect(mockConfirm2FASetupWithTempToken).not.toHaveBeenCalled();
+    },
+  );
 
-  /** The user in setup holds no bearer, so the route authorizes on the setup token alone. */
-  it('lets a setup-token holder without a bearer cancel enrollment', async () => {
-    await request(app)
-      .post('/api/auth/2fa/setup/cancel')
-      .send({ tempToken: 'temp-token' })
-      .expect(204);
+  describe('POST /api/auth/2fa/setup/cancel', () => {
+    const cancel = (body = { tempToken: 'temp-token' }) =>
+      request(app).post('/api/auth/2fa/setup/cancel').send(body);
 
-    expect(mockCancel2FASetup).toHaveBeenCalledTimes(1);
-  });
+    /** The user in setup holds no bearer, so this request carries no `x-user` and must still get through. */
+    it('limits on the setup budget, checks bans, then authorizes and dates the sign-out token', async () => {
+      await cancel().expect(204);
 
-  it('does not cancel enrollment when the setup token is refused', async () => {
-    mockRequireTwoFactorSetupToken.mockImplementation((req, res) =>
-      res.status(401).json({ message: 'Invalid or expired two-factor setup token' }),
-    );
+      /** Leaving checks no guessable code, so it never draws on the code attempts. */
+      expect(mockTwoFactorTempLimiter).not.toHaveBeenCalled();
+      const chain = [
+        mockSetTwoFactorTempUser,
+        mockTwoFactorSetupLimiter,
+        mockCheckBan,
+        mockRequireTwoFactorSetupSignOutToken,
+        mockBlockRetiredSetupToken,
+        mockCancel2FASetup,
+      ];
+      chain.forEach((middleware) => expect(middleware).toHaveBeenCalledTimes(1));
+      const order = chain.map((middleware) => middleware.mock.invocationCallOrder[0]);
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+    });
 
-    await request(app).post('/api/auth/2fa/setup/cancel').send({ tempToken: 'bogus' }).expect(401);
+    /** Expiry bounds starting an enrollment, not leaving one, so the strict check must not gate this route. */
+    it('does not apply the strict setup-token check that turns away an expired token', async () => {
+      await cancel().expect(204);
 
-    expect(mockBlockRetiredSetupToken).not.toHaveBeenCalled();
-    expect(mockCancel2FASetup).not.toHaveBeenCalled();
+      expect(mockRequireTwoFactorSetupToken).not.toHaveBeenCalled();
+    });
+
+    it('does not cancel when the setup token has been retired', async () => {
+      mockBlockRetiredSetupToken.mockImplementation((req, res) =>
+        res.status(401).json({ message: 'Invalid or expired two-factor setup token' }),
+      );
+
+      await cancel().expect(401);
+
+      expect(mockCancel2FASetup).not.toHaveBeenCalled();
+    });
+
+    it('does not cancel when the sign-out token is refused', async () => {
+      mockRequireTwoFactorSetupSignOutToken.mockImplementation((req, res) =>
+        res.status(401).json({ message: 'Invalid or expired two-factor setup token' }),
+      );
+
+      await cancel({ tempToken: 'bogus' }).expect(401);
+
+      expect(mockBlockRetiredSetupToken).not.toHaveBeenCalled();
+      expect(mockCancel2FASetup).not.toHaveBeenCalled();
+    });
   });
 
   it('sets the temp user before limiting, checking bans, and verifying temp 2FA tokens', async () => {

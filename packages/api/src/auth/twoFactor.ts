@@ -1,13 +1,13 @@
 import jwt from 'jsonwebtoken';
-import { logger } from '@librechat/data-schemas';
 import { createHash, randomBytes } from 'node:crypto';
+import { DEFAULT_REFRESH_TOKEN_EXPIRY, logger } from '@librechat/data-schemas';
 import { SESSION_HINT_COOKIE, isTwoFactorPolicyProvider } from 'librechat-data-provider';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
 import type { NextFunction, Request, Response } from 'express';
 import type { UserDocumentId } from '~/auth/verification';
-import { isEnabled } from '~/utils';
+import { isEnabled, math } from '~/utils';
 
-const TWO_FACTOR_SETUP_TOKEN_EXPIRY = '10m';
+const TWO_FACTOR_SETUP_TOKEN_EXPIRY_SECONDS = 10 * 60;
 const TWO_FACTOR_SETUP_ACKNOWLEDGEMENT_TOKEN_EXPIRY = '5m';
 const TWO_FACTOR_SETUP_FINALIZATION_TOKEN_EXPIRY = '5m';
 const TWO_FACTOR_LOGIN_CHALLENGE_TOKEN_EXPIRY = '5m';
@@ -24,6 +24,9 @@ export const TWO_FACTOR_TOKEN_PURPOSE = {
   REQUIRED_ACKNOWLEDGEMENT: 'required_2fa_acknowledgement',
   REQUIRED_FINALIZATION: 'required_2fa_finalization',
 } as const;
+
+/** The expiry options a setup token's verification may relax; nothing else about it is negotiable. */
+type SetupTokenVerifyOptions = Pick<jwt.VerifyOptions, 'ignoreExpiration' | 'maxAge'>;
 
 interface TwoFactorSetupBody {
   tempToken?: string;
@@ -422,7 +425,7 @@ export function generateTwoFactorSetupToken(userId: string, jwtSecret: string): 
     userId,
     jwtSecret,
     TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_SETUP,
-    TWO_FACTOR_SETUP_TOKEN_EXPIRY,
+    TWO_FACTOR_SETUP_TOKEN_EXPIRY_SECONDS,
   );
 }
 
@@ -439,13 +442,14 @@ function verifyDatedTwoFactorToken(
   token: string | undefined,
   jwtSecret: string | undefined,
   purpose: string,
+  verifyOptions?: SetupTokenVerifyOptions,
 ): TwoFactorTokenCredential | undefined {
   if (!token || !jwtSecret) {
     return undefined;
   }
 
   try {
-    const payload = jwt.verify(token, jwtSecret);
+    const payload = jwt.verify(token, jwtSecret, verifyOptions);
     if (
       typeof payload !== 'object' ||
       payload.purpose !== purpose ||
@@ -547,8 +551,14 @@ export function verifyTwoFactorSetupFinalizationToken(
 export function verifyTwoFactorSetupToken(
   tempToken: string | undefined,
   jwtSecret: string | undefined,
+  verifyOptions?: SetupTokenVerifyOptions,
 ): TwoFactorTokenCredential | undefined {
-  return verifyDatedTwoFactorToken(tempToken, jwtSecret, TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_SETUP);
+  return verifyDatedTwoFactorToken(
+    tempToken,
+    jwtSecret,
+    TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_SETUP,
+    verifyOptions,
+  );
 }
 
 export interface BlockRetiredSetupTokenDependencies {
@@ -603,27 +613,52 @@ export function createBlockRetiredSetupToken(deps: BlockRetiredSetupTokenDepende
   };
 }
 
-export function requireTwoFactorSetupToken(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): Response | void {
-  if (!isEnabled(process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION)) {
-    return res.status(403).json({ message: 'Two-factor authentication setup is not required' });
-  }
+type SetupTokenMiddleware = (req: Request, res: Response, next: NextFunction) => Response | void;
 
-  const tempToken = (req.body as TwoFactorSetupBody | undefined)?.tempToken;
-  const credential = verifyTwoFactorSetupToken(tempToken, process.env.JWT_SECRET);
-  if (!credential) {
-    return res.status(401).json({ message: 'Invalid or expired two-factor setup token' });
-  }
+function createRequireTwoFactorSetupToken(
+  getVerifyOptions?: () => SetupTokenVerifyOptions,
+): SetupTokenMiddleware {
+  return (req, res, next) => {
+    if (!isEnabled(process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION)) {
+      return res.status(403).json({ message: 'Two-factor authentication setup is not required' });
+    }
 
-  const setupRequest = req as TwoFactorEnrollmentRequest;
-  setupRequest.user = { id: credential.userId };
-  setupRequest.twoFactorSetupIssuedAt = credential.issuedAt;
-  setupRequest.twoFactorSetupIssuedAtMs = credential.issuedAtMs;
-  next();
+    const tempToken = (req.body as TwoFactorSetupBody | undefined)?.tempToken;
+    const credential = verifyTwoFactorSetupToken(
+      tempToken,
+      process.env.JWT_SECRET,
+      getVerifyOptions?.(),
+    );
+    if (!credential) {
+      return res.status(401).json({ message: 'Invalid or expired two-factor setup token' });
+    }
+
+    const setupRequest = req as TwoFactorEnrollmentRequest;
+    setupRequest.user = { id: credential.userId };
+    setupRequest.twoFactorSetupIssuedAt = credential.issuedAt;
+    setupRequest.twoFactorSetupIssuedAtMs = credential.issuedAtMs;
+    next();
+  };
 }
+
+export const requireTwoFactorSetupToken: SetupTokenMiddleware = createRequireTwoFactorSetupToken();
+
+/**
+ * Authorizes leaving enrollment. The token's short expiry bounds how long it can start or finish
+ * an enrollment, and signing out does neither: it only ends the session the browser presents and
+ * clears what was staged. A user who sat on the setup screen past those minutes must still be able
+ * to leave, or the session their sign-in left alive sends them straight back into setup. So an
+ * expired token is honored here, but only for as long as the sessions it could end can live, and a
+ * token that account events have retired is still refused by `blockRetiredSetupToken`.
+ */
+export const requireTwoFactorSetupSignOutToken: SetupTokenMiddleware =
+  createRequireTwoFactorSetupToken(() => ({
+    ignoreExpiration: true,
+    maxAge: Math.max(
+      Math.floor(math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY) / 1000),
+      TWO_FACTOR_SETUP_TOKEN_EXPIRY_SECONDS,
+    ),
+  }));
 
 export function requireTwoFactorSetupFinalizationToken(
   req: Request,
