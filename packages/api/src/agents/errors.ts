@@ -124,13 +124,17 @@ export function resolveLangChainError(
   if (type == null) {
     return undefined;
   }
-  const message =
-    options.includeProviderMessage === true
-      ? getProviderErrorMessage(error, options.maxProviderErrorChars)
-          ?.replace(STATUS_PREFIX, '')
-          .trim()
-      : undefined;
-  const info = message ? (options.formatProviderMessage?.(message) ?? message).trim() : '';
+  if (options.includeProviderMessage !== true) {
+    return JSON.stringify({ type });
+  }
+  /** Formats a window past the limit before cutting, so redaction sees a whole address or token
+   *  instead of a fragment the cut left behind. */
+  const limit = getProviderErrorLimit(options.maxProviderErrorChars);
+  const message = getProviderErrorMessage(error, limit + PROVIDER_FORMAT_LOOKAHEAD)
+    ?.replace(STATUS_PREFIX, '')
+    .trim();
+  const formatted = message ? (options.formatProviderMessage?.(message) ?? message) : '';
+  const info = formatted.slice(0, limit).trim();
   return JSON.stringify(info ? { type, info } : { type });
 }
 
@@ -212,6 +216,16 @@ export function getUserFacingProviderError(error: unknown, protectionEnabled: bo
 /** Bounded lookahead covers LangChain's appended troubleshooting label and URL. */
 const TROUBLESHOOTING_LOOKAHEAD = 256;
 
+/** Characters past the limit a disclosure formatter sees, longer than any address or token. */
+const PROVIDER_FORMAT_LOOKAHEAD = 256;
+
+/** `maxProviderErrorChars` as configured, or the default when it is not a non-negative integer. */
+function getProviderErrorLimit(maxChars: number | undefined): number {
+  return maxChars != null && Number.isSafeInteger(maxChars) && maxChars >= 0
+    ? maxChars
+    : DEFAULT_MAX_PROVIDER_ERROR_CHARS;
+}
+
 /**
  * The provider's own words for a failure, or `undefined` when it has none to give. A gateway,
  * proxy or OpenAI-compatible endpoint answers a rejection it alone can explain, and that sentence
@@ -229,8 +243,7 @@ export function getProviderErrorMessage(
   if (typeof raw !== 'string') {
     return undefined;
   }
-  const limit =
-    Number.isSafeInteger(maxChars) && maxChars >= 0 ? maxChars : DEFAULT_MAX_PROVIDER_ERROR_CHARS;
+  const limit = getProviderErrorLimit(maxChars);
   const message = stripLangChainTroubleshootingUrl(raw.slice(0, limit + TROUBLESHOOTING_LOOKAHEAD))
     .slice(0, limit)
     .trim();

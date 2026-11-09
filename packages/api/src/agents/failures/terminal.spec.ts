@@ -516,7 +516,20 @@ describe('getUserFacingGenerationError', () => {
         'Generation failed',
       ),
     );
-    expect(limited.info).toBe('Budget e');
+    expect(limited.info).toBe('Budget exhau');
+
+    const address = Object.assign(new Error('429 Budget exhausted for alice.secret@example.com'), {
+      lc_error_code: 'MODEL_RATE_LIMIT',
+    });
+    const cut = JSON.parse(
+      getUserFacingGenerationError(
+        address,
+        { endpoints: { agents: { maxProviderErrorChars: 33 } } },
+        'Generation failed',
+      ),
+    );
+    expect(cut.info).not.toContain('alice');
+    expect(cut.info).toMatch(/^Budget exhausted for/);
 
     expect(
       getUserFacingGenerationError(
