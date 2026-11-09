@@ -469,6 +469,11 @@ async function _authenticatedFetch(url: string, options?: RequestInit): Promise<
 }
 
 if (typeof window !== 'undefined') {
+  /** Auth is a bearer token and no route reads an XSRF header. Axios 1.21+ otherwise awaits
+   *  `cookieStore.get` before every same-origin send, and a browser whose cookie store never
+   *  answers then strands every request behind it. */
+  axios.defaults.withXSRFToken = false;
+
   axios.interceptors.request.use(async (config) => {
     const token = await refreshBeforeRequest(config.url);
     if (token) {
