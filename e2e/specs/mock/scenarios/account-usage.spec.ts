@@ -1,7 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
-import { openSidebar } from './sidebar';
-import { visible } from './ui-scale.helpers';
+import { openSettings, reachableInSidebar } from './ui-scale.helpers';
 
 test.use({ serviceWorkers: 'block' });
 
@@ -22,9 +21,13 @@ test('opens account credits and manages them in Billing @scenario:account-usage-
     }),
   );
   await page.goto('/c/new');
-  await openSidebar(page);
-  const trigger = visible(page, 'account-usage-button');
+  const trigger = await reachableInSidebar(
+    page,
+    page.getByTestId('account-usage-button'),
+    'the account usage button',
+  );
   await trigger.focus();
+  await expect(trigger).toBeFocused();
   await page.keyboard.press('Enter');
   const usage = page.getByRole('dialog', { name: 'Account usage' });
   await expect(usage).toBeVisible();
@@ -47,7 +50,13 @@ test('opens account credits and manages them in Billing @scenario:account-usage-
   await usage.getByRole('button', { name: 'Manage usage' }).click();
   const settings = page.locator('[id^="headlessui-dialog-panel-"]');
   await expect(settings).toBeVisible();
-  await expect(settings.getByRole('tab', { selected: true })).toHaveText('Account');
+  await expect(
+    settings
+      .getByRole('tab', { name: 'Account', exact: true, selected: true })
+      .or(
+        settings.getByRole('button', { name: 'Back', exact: true }).filter({ hasText: 'Account' }),
+      ),
+  ).toBeVisible();
   const billing = settings.getByRole('heading', { name: 'Billing', exact: true });
   await expect(billing).toBeInViewport();
   await expect(settings.getByTestId('balance-value')).toHaveText('72,000 credits');
@@ -58,8 +67,7 @@ test('opens account credits and manages them in Billing @scenario:account-usage-
   await settings.getByRole('button', { name: 'Close Settings' }).click();
   await expect(settings).toBeHidden();
   await expect(trigger).toBeFocused();
-  await visible(page, 'nav-user').click();
-  await visible(page, 'nav-settings').click();
+  await openSettings(page);
   await expect(settings.getByRole('tab', { selected: true })).toHaveText('General');
   await settings.getByRole('button', { name: 'Close Settings' }).click();
   await expect(settings).toBeHidden();
