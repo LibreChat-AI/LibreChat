@@ -1,0 +1,10 @@
+# Organisation keyword blocklist. Matched case-insensitively on word boundaries.
+# Each entry is either a plain string or a mapping:
+#   - term: "Project Falcon"        # literal
+#     entity: ORG_KEYWORD           # optional, default ORG_KEYWORD (policy decides the action)
+#   - regex: "NMB-[A-Z]{3}-\\d{4}"  # regular expression
+# Entries below are SYNTHETIC examples. Replace with real terms in deployment.
+terms:
+  - "Project Falcon"
+  - "Example Holdings Ltd"
+  - regex: "INTERNAL-[A-Z]{3}-\\d{4}"

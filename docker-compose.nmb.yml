@@ -1,0 +1,33 @@
+# NMB add-on services. Use alongside the stock LibreChat compose file:
+#   docker compose -f docker-compose.yml -f docker-compose.nmb.yml up -d
+services:
+  nmb-scanner:
+    build:
+      context: ./nmb-scanner
+      # args: { SPACY_MODEL: en_core_web_sm }   # optional NER (also set NMB_SPACY_MODEL)
+    container_name: nmb-scanner
+    restart: unless-stopped
+    environment:
+      # Generate once: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      NMB_VAULT_KEY: ${NMB_VAULT_KEY:?set NMB_VAULT_KEY (Fernet key) in .env}
+      NMB_SERVICE_KEY: ${NMB_SERVICE_KEY:?set NMB_SERVICE_KEY (shared secret with the gateway) in .env}
+      NMB_DATA_DIR: /data
+      NMB_POLICY_FILE: /srv/config/policy.yaml
+      NMB_BLOCKLIST_FILE: /srv/config/blocklist.yaml
+      NMB_SPACY_MODEL: ${NMB_SPACY_MODEL:-}
+      NMB_LOG_LEVEL: ${NMB_LOG_LEVEL:-INFO}
+    volumes:
+      - nmb-scanner-data:/data
+      - ./nmb-scanner/config:/srv/config:ro
+    expose:
+      - "8088"          # internal only: do NOT publish this port; only the gateway should reach it
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,os;urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8088/health',headers={'X-NMB-Service-Key':os.environ['NMB_SERVICE_KEY']}))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  nmb-scanner-data:

@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8
+httpx>=0.27
+reportlab>=4

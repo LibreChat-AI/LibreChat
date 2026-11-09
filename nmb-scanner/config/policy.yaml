@@ -1,0 +1,45 @@
+# Per-entity policy. Actions: MASK | BLOCK | ALLOW
+#  MASK  -> replaced by stable placeholder like <ACCOUNT_001>
+#  BLOCK -> whole submission held for human review (or rejected if block_outcome: reject)
+#  ALLOW -> left in place (still reported as a finding)
+default_action: MASK
+min_score: 0.40
+max_findings: 5000
+
+entities:
+  ACCOUNT_NUMBER:  {action: MASK,  type: financial, prefix: ACCOUNT,     reversible: true}
+  SWIFT_BIC:       {action: MASK,  type: financial, prefix: SWIFT,       reversible: true}
+  IBAN:            {action: MASK,  type: financial, prefix: IBAN,        reversible: true}
+  CREDIT_CARD:     {action: MASK,  type: pci,       prefix: CARD,        reversible: false}
+  ZW_NATIONAL_ID:  {action: MASK,  type: pii,       prefix: NATIONAL_ID, reversible: true}
+  US_SSN:          {action: MASK,  type: pii,       prefix: SSN,         reversible: true}
+  PHONE:           {action: MASK,  type: pii,       prefix: PHONE,       reversible: true}
+  EMAIL:           {action: MASK,  type: pii,       prefix: EMAIL,       reversible: true}
+  API_KEY_SECRET:  {action: BLOCK, type: secret,    prefix: SECRET,      reversible: false}
+  PRIVATE_KEY:     {action: BLOCK, type: secret,    prefix: PRIVATE_KEY, reversible: false, block_outcome: reject}
+  ORG_KEYWORD:     {action: MASK,  type: blocklist, prefix: ORG,         reversible: true}
+  # Only produced when a spaCy NER model is configured (NMB_SPACY_MODEL):
+  PERSON:          {action: MASK,  type: pii,       prefix: PERSON,      reversible: true, min_score: 0.6}
+  LOCATION:        {action: ALLOW, type: pii,       prefix: LOCATION,    reversible: true, min_score: 0.6}
+
+# Department overrides: merged over `entities` for requests carrying that department.
+departments:
+  Compliance:
+    entities:
+      PHONE: {action: ALLOW}
+  Risk:
+    entities:
+      ORG_KEYWORD: {action: BLOCK}
+
+files:
+  max_bytes: 26214400          # 25 MB
+  allowed_extensions: [".docx", ".pdf", ".xlsx"]
+  max_segments: 200000
+  scanned_pdf_action: review   # review | reject
+  min_chars_per_pdf_page: 20
+
+unmask:
+  allowed_roles: [user, analyst, reviewer, admin]
+
+review:
+  reviewer_roles: [reviewer, admin]
