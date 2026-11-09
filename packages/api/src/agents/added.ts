@@ -18,6 +18,7 @@ import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
 import type { ParsedServerConfig } from '~/mcp/types';
 import {
   resolveEphemeralTools,
+  withRequestedMCPSelection,
   resolveEphemeralMCPServers,
   synthesizeToggleToolOptions,
 } from '~/agents/toggles';
@@ -156,19 +157,25 @@ export async function loadAddedAgent(
    *  A pane whose spec gives the user no control over its tools is exempt:
    *  those toggles were never offered for it, so the other pane's choices must
    *  not silently strip the capabilities its spec configured. */
-  const requestAgent = resolveSpecUserToggles(req.body?.ephemeralAgent, modelSpec);
+  const requestAgent = resolveSpecUserToggles(
+    withRequestedMCPSelection(req.body?.ephemeralAgent),
+    modelSpec,
+  );
   const paneAgent = resolveSpecUserToggles(rest.ephemeralAgent, modelSpec);
   const ephemeralAgent: TEphemeralAgent | undefined =
     requestAgent || paneAgent ? { ...requestAgent, ...paneAgent } : undefined;
 
   /** The primary's resolved tools stand in for this pane's, since one badge row
    *  drives both — unless this pane's own spec differs and governs tools the
-   *  primary's resolution never saw: toggles it withholds from the user, or MCP
-   *  servers it pins. Only the full resolution below applies those. */
+   *  primary's resolution never saw: toggles it withholds from the user, MCP
+   *  servers it pins, or `askUserQuestion`, which has no badge to carry it.
+   *  Only the full resolution below applies those. */
   const primaryIsEphemeral = primaryAgent && isEphemeralAgentId(primaryAgent.id);
   const governsOwnTools =
     (spec || '') !== (req.body?.spec || '') &&
-    ((modelSpec?.mcpServers?.length ?? 0) > 0 || specWithholdsUserToggles(modelSpec));
+    ((modelSpec?.mcpServers?.length ?? 0) > 0 ||
+      modelSpec?.askUserQuestion != null ||
+      specWithholdsUserToggles(modelSpec));
   if (primaryIsEphemeral && !governsOwnTools && Array.isArray(primaryAgent.tools)) {
     let endpointConfig = (appConfig?.endpoints as Record<string, unknown> | undefined)?.[
       endpoint

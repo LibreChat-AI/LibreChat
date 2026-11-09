@@ -66,6 +66,33 @@ export function resolveEphemeralTools(
   return tools;
 }
 
+/** The selection each request body carried before a loader published over it. */
+const requestedMCPSelections = new WeakMap<TEphemeralAgent, string[]>();
+
+/**
+ * Publishes the servers a request actually uses onto its body, where the
+ * instruction path reads them, while keeping the user's own selection for
+ * `withRequestedMCPSelection`: the added pane resolves its spec against what
+ * the user picked, not against the primary spec's pins.
+ */
+export function publishEphemeralMCPServers(requestAgent: TEphemeralAgent, servers: string[]): void {
+  if (Array.isArray(requestAgent.mcp) && !requestedMCPSelections.has(requestAgent)) {
+    requestedMCPSelections.set(requestAgent, requestAgent.mcp);
+  }
+  requestAgent.mcp = servers;
+}
+
+/** The request's toggles with the MCP selection the user sent, before any publish. */
+export function withRequestedMCPSelection(
+  requestAgent: TEphemeralAgent | null | undefined,
+): TEphemeralAgent | undefined {
+  if (requestAgent == null) {
+    return undefined;
+  }
+  const requested = requestedMCPSelections.get(requestAgent);
+  return requested == null ? requestAgent : { ...requestAgent, mcp: requested };
+}
+
 export interface EphemeralMCPServerSources extends ChatSelectableLookup {
   /** The request's MCP picker selection, after spec authority was applied. */
   selected: string[] | null | undefined;
