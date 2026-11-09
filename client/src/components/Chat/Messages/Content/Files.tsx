@@ -36,16 +36,7 @@ const Files = ({ message }: { message?: TMessage }) => {
         otherFiles.map((file) => (
           <FileContainer
             key={file.file_id}
-            file={
-              {
-                ...file,
-                text:
-                  file.text ??
-                  (shareId || file.type !== 'text/plain'
-                    ? undefined
-                    : fileMap?.[file.file_id!]?.text),
-              } as TFile
-            }
+            file={file as TFile}
             buttonClassName="border-surface-user-message max-w-full bg-transparent"
             containerClassName="max-w-full"
             onClick={() => setSelectedFile(file)}

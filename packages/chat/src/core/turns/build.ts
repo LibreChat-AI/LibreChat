@@ -285,8 +285,15 @@ export function buildTurn({
     // Caller-supplied overrideFiles were consumed elsewhere (queued
     // during-run messages take theirs out of the composer at queue time);
     // clearing here would eat attachments staged for the user's NEXT send.
-    fileEffects = { submittedFileIds, clearComposer: isRegenerate };
-  } else if (!compact && canClearFiles && files && files.size > 0 && overrideFiles == null) {
+    fileEffects = { submittedFileIds, clearComposer: false };
+  } else if (
+    !regenerateShaped &&
+    !isEditOrContinue &&
+    canClearFiles &&
+    files &&
+    files.size > 0 &&
+    overrideFiles == null
+  ) {
     /** A compaction attaches nothing and must not consume files the user
      *  staged in the composer for their next message. */
     // `overrideFiles` (even empty) is authoritative for the submission:

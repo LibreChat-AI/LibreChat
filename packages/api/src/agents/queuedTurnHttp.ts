@@ -29,6 +29,7 @@ import type { SteerFileFetcher } from './steering/request';
 import type { SteerRequestUser } from './steering/refs';
 import { buildOwnerFilter, collectFileIds, toSteerFileRef } from './steering/refs';
 import { createQueuedTurnDeliveryReservation } from './queuedTurns';
+import { sanitizeFileForTransmit } from '../utils/message';
 import { getReferencedQuotes } from '~/utils';
 
 const MAX_QUEUED_TURN_LENGTH = 16_000;
@@ -241,7 +242,8 @@ async function resolveFiles(
   const docs = (await deps.getFiles(filter, {}, {})) ?? [];
   const byId = new Map(docs.map((doc: IMongoFile) => [doc.file_id, doc]));
   const resolved = ids.flatMap((id): TAgentQueuedTurnFileRef[] => {
-    const ref = toSteerFileRef(byId.get(id));
+    const doc = byId.get(id);
+    const ref = doc == null ? null : toSteerFileRef(sanitizeFileForTransmit(doc));
     return ref == null ? [] : [{ ...ref, file_id: id }];
   });
   if (resolved.length !== ids.length) {

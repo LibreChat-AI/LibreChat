@@ -197,6 +197,16 @@ describe('FileContainer text preview', () => {
   const textFile = (overrides: Partial<TFile> = {}) =>
     baseFile({ type: 'text/plain', filename: 'pasted-text.txt', ...overrides });
 
+  it('renders a persisted snippet without full text or the upload cache', () => {
+    const preview = 'This text survives a conversation reload.';
+    render(<FileContainer file={textFile({ textPreview: preview })} />);
+    expect(screen.getByText(preview)).toBeInTheDocument();
+    expect(screen.queryByTestId('file-preview')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'pasted-text.txt' })).toHaveAccessibleDescription(
+      preview,
+    );
+  });
+
   it('shows stored plain text instead of the colored file tile', () => {
     const text = 'The actual clipboard content\nwith a second line';
     render(<FileContainer file={textFile({ text })} />);

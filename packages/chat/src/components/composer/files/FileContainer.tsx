@@ -1,5 +1,6 @@
 import { useId } from 'react';
 import { cn, Spinner } from '@librechat/client';
+import { MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { ExtendedFile } from '../../../core/files';
@@ -77,9 +78,9 @@ const FileContainer = ({
     file.type === 'text/plain' &&
     !('textFormat' in file && file.textFormat === 'html')
   ) {
-    previewText = file.text;
+    previewText = file.textPreview ?? file.text;
   }
-  const snippet = previewText?.trim().slice(0, 240);
+  const snippet = previewText?.trim().slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH);
   const hasTextPreview = snippet != null && snippet !== '';
   const isUploading = 'progress' in file && typeof file.progress === 'number' && file.progress < 1;
   const interactive = onClick != null;

@@ -106,7 +106,9 @@ export default function FileRow({
             };
             const isImage = file.type?.startsWith('image') ?? false;
             const isPastedText = isPastedTextFile?.(file) === true;
-            const textPreview = isPastedText ? (file.pastedText ?? file.text) : null;
+            const textPreview = isPastedText
+              ? (file.pastedText ?? file.textPreview ?? file.text)
+              : null;
             const isEditablePaste =
               onEditPastedText != null &&
               isPastedText &&

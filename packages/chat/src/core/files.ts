@@ -1,3 +1,4 @@
+import { MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type { FileSources, TFile, TMessage, TAttachment } from 'librechat-data-provider';
 
 /** A file attached to a chat pane's composer, from local pick through upload. */
@@ -18,6 +19,8 @@ export interface ExtendedFile {
   replacesFileId?: string;
   /** Server-extracted text for attachment previews. */
   text?: string;
+  /** Bounded display-only text, never an editable source. */
+  textPreview?: string;
   progress: number;
   source?: FileSources;
   attached?: boolean;
@@ -103,7 +106,10 @@ export function partitionComposerFiles(
       width: file.width,
       bytes: file.size,
       ...(/^text\/plain(?:;|$)/i.test(file.type ?? '') && {
-        text: (file.pastedText ?? file.text)?.slice(0, 240),
+        textPreview: (file.pastedText ?? file.textPreview ?? file.text)?.slice(
+          0,
+          MAX_FILE_TEXT_PREVIEW_LENGTH,
+        ),
       }),
     });
     submittedFileIds.push(key, file.file_id, file.temp_file_id);
@@ -119,7 +125,7 @@ export function partitionComposerFiles(
 }
 
 export type FileDeliveryMetadataMap = Readonly<
-  Record<string, Pick<TFile, 'llmDeliveryPath' | 'text'> | undefined>
+  Record<string, Pick<TFile, 'llmDeliveryPath' | 'textPreview' | 'text'> | undefined>
 >;
 
 /** Restores display-only delivery metadata that an older replica may have
@@ -142,12 +148,12 @@ export function hydrateFileDeliveryMetadata(
   const hydrated = persistedFiles.map((file) => {
     const local = file.file_id == null ? undefined : localById.get(file.file_id);
     const stored = file.file_id == null ? undefined : storedFiles?.[file.file_id];
-    const llmDeliveryPath = local?.llmDeliveryPath ?? stored?.llmDeliveryPath;
-    if (file.llmDeliveryPath != null || llmDeliveryPath == null) {
-      return file;
-    }
+    const llmDeliveryPath =
+      file.llmDeliveryPath ?? local?.llmDeliveryPath ?? stored?.llmDeliveryPath;
+    const textPreview = file.textPreview ?? local?.textPreview ?? stored?.textPreview;
+    if (file.llmDeliveryPath === llmDeliveryPath && file.textPreview === textPreview) return file;
     changed = true;
-    return { ...file, llmDeliveryPath };
+    return { ...file, llmDeliveryPath, textPreview };
   });
   return changed ? hydrated : persistedFiles;
 }

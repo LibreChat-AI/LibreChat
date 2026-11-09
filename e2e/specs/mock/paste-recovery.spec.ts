@@ -1,5 +1,10 @@
 import { test, expect } from '@playwright/test';
-import { MOCK_ENDPOINTS, NEW_CHAT_PATH, selectMockEndpoint } from './helpers';
+import {
+  MOCK_ENDPOINTS,
+  NEW_CHAT_PATH,
+  selectMockEndpoint,
+  sendMessageAndWaitForCompletion,
+} from './helpers';
 for (const { failCorrection, failBeforeSave } of [
   { failCorrection: false, failBeforeSave: false },
   { failCorrection: true, failBeforeSave: false },
@@ -78,3 +83,42 @@ for (const { failCorrection, failBeforeSave } of [
     }
   });
 }
+
+test('sent paste previews survive a reload without full text in the file list', async ({
+  page,
+}) => {
+  await page.goto(NEW_CHAT_PATH);
+  await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
+  const input = page.getByTestId('text-input');
+  const paste = 'Persisted preview of the exact clipboard content.\n'.repeat(100);
+  const upload = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().endsWith('/api/files') &&
+      response.ok(),
+  );
+  await input.evaluate((element, text) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', text);
+    element.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }),
+    );
+  }, paste);
+  await upload;
+  await expect(page.getByTestId('send-button')).toBeEnabled();
+  await sendMessageAndWaitForCompletion(page, 'E2E_REPLY:paste preview persisted');
+  const sentFile = page.getByRole('button', { name: 'pasted-text.txt', exact: true });
+  await expect(sentFile).toContainText('Persisted preview of the exact clipboard content.');
+  const history = page.waitForResponse(
+    (response) => response.url().includes('/api/messages/') && response.ok(),
+  );
+  await page.reload();
+  const messages = await (await history).json();
+  const user = messages.find(
+    (message: { isCreatedByUser?: boolean; files?: unknown[] }) =>
+      message.isCreatedByUser && message.files?.length,
+  );
+  expect(user.files[0].text).toBeUndefined();
+  expect(user.files[0].textPreview).toBe(paste.slice(0, 240));
+  await expect(sentFile).toContainText('Persisted preview of the exact clipboard content.');
+});

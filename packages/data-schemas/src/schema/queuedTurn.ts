@@ -1,5 +1,9 @@
 import { Schema } from 'mongoose';
-import { Constants, CODE_APPROVAL_MODES } from 'librechat-data-provider';
+import {
+  Constants,
+  CODE_APPROVAL_MODES,
+  MAX_FILE_TEXT_PREVIEW_LENGTH,
+} from 'librechat-data-provider';
 import type { IAgentQueuedTurnDocument } from '~/types/queuedTurn';
 
 const fileRefSchema = new Schema(
@@ -8,6 +12,7 @@ const fileRefSchema = new Schema(
     type: { type: String, maxlength: 256 },
     filepath: { type: String, maxlength: 2048 },
     filename: { type: String, maxlength: 1024 },
+    textPreview: { type: String, maxlength: MAX_FILE_TEXT_PREVIEW_LENGTH },
     llmDeliveryPath: { type: String, enum: ['provider', 'text', 'none'] },
     height: { type: Number, min: 0 },
     width: { type: Number, min: 0 },

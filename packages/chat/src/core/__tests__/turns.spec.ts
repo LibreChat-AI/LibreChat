@@ -220,6 +220,8 @@ describe('buildTurn', () => {
 
   it.each([
     { compact: true },
+    { isContinued: true },
+    { isEdited: true },
     { overrideFiles: [] },
     { overrideFiles: user.files },
     { isRegenerate: true, targetResponseMessageId: response.messageId },
@@ -294,8 +296,38 @@ describe('buildTurn', () => {
     expect(turn.submission.userMessage.overrideParentMessageId).toBe('user-1');
     expect(turn.submissionMessages.map((message) => message.messageId)).toEqual(['user-1']);
     expect(turn.currentMsg.files).toEqual(user.files);
-    expect(turn.fileEffects?.clearComposer).toBe(true);
+    expect(turn.fileEffects?.clearComposer).toBe(false);
   });
+
+  it.each([undefined, []])(
+    'keeps pending drafts out of regenerations with original files %p',
+    (files) => {
+      const original = { ...user, files };
+      const staged = new Map<string, ExtendedFile>([
+        ['pending', { file_id: 'pending', progress: 0, size: 1, pastedText: 'unrelated draft' }],
+      ]);
+      let turn: ReturnType<typeof buildTurn> | undefined;
+      const regenerate = createRegenerate(
+        (params, options) => {
+          turn = buildTurn(
+            input({
+              text: params.text,
+              params,
+              options: options ?? {},
+              files: staged,
+              cachedMessages: [original, response],
+            }),
+          );
+        },
+        () => [original, response],
+      );
+      regenerate(response);
+      expect(turn?.currentMsg.text).toBe(original.text);
+      expect(turn?.currentMsg.files ?? []).toEqual([]);
+      expect(turn?.fileEffects).toBeUndefined();
+      expect(staged.get('pending')?.pastedText).toBe('unrelated draft');
+    },
+  );
 
   it('edits a content part on a copy, leaving the cached response untouched', () => {
     const turn = buildTurn(

@@ -1,5 +1,10 @@
 import type { ExtendedFile } from '../files';
-import { formatPastedText, isInlineablePastedText, partitionComposerFiles } from '../files';
+import {
+  formatPastedText,
+  isInlineablePastedText,
+  partitionComposerFiles,
+  hydrateFileDeliveryMetadata,
+} from '../files';
 
 const file = (overrides: Partial<ExtendedFile> = {}): ExtendedFile => ({
   file_id: 'upload-1',
@@ -132,10 +137,11 @@ describe('pasted text fallback', () => {
       ]),
     );
     expect(result.text).toBe('Prompt');
-    expect(result.files[0].text).toBe('x'.repeat(240));
-    expect(result.files[1].text).toBe('s'.repeat(240));
-    expect(result.files[2].text).toBeUndefined();
+    expect(result.files[0].textPreview).toBe('x'.repeat(240));
+    expect(result.files[1].textPreview).toBe('s'.repeat(240));
+    expect(result.files[2].textPreview).toBeUndefined();
     expect(result.files[0]).not.toHaveProperty('pastedText');
+    expect(result.files[0]).not.toHaveProperty('text');
   });
 
   it('deduplicates upload aliases without marking them submitted', () => {
@@ -160,5 +166,31 @@ describe('pasted text fallback', () => {
     expect(result.hasIncompleteFiles).toBe(true);
     expect(result.canceledUploadIds).toEqual([]);
     expect(result.files).toHaveLength(1);
+  });
+});
+
+describe('persisted text previews', () => {
+  it('hydrates from a bounded cached snippet without copying full file text', () => {
+    const files = [{ file_id: 'paste', type: 'text/plain' }];
+    expect(
+      hydrateFileDeliveryMetadata(files, undefined, {
+        paste: { textPreview: 'bounded excerpt', text: 'full private content' },
+      }),
+    ).toEqual([{ file_id: 'paste', type: 'text/plain', textPreview: 'bounded excerpt' }]);
+  });
+
+  it('hydrates text metadata even when delivery routing is already present', () => {
+    expect(
+      hydrateFileDeliveryMetadata(
+        [{ file_id: 'paste', llmDeliveryPath: 'text' }],
+        [{ file_id: 'paste', textPreview: 'local excerpt' }],
+        { paste: { textPreview: 'stored excerpt' } },
+      ),
+    ).toEqual([{ file_id: 'paste', llmDeliveryPath: 'text', textPreview: 'local excerpt' }]);
+  });
+
+  it('keeps the persisted snippet without a file-list entry after reload', () => {
+    const files = [{ file_id: 'paste', type: 'text/plain', textPreview: 'persisted excerpt' }];
+    expect(hydrateFileDeliveryMetadata(files, undefined, {})).toBe(files);
   });
 });

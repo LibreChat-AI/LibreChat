@@ -1,3 +1,4 @@
+import { MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type {
   TMessage,
   TAgentQueuedTurnReceipt,
@@ -116,6 +117,9 @@ export function toQueuedTurnFileRefs(
         ...(file.filepath != null && { filepath: file.filepath }),
         ...(file.filename != null && { filename: file.filename }),
         ...(file.llmDeliveryPath != null && { llmDeliveryPath: file.llmDeliveryPath }),
+        ...(file.textPreview != null && {
+          textPreview: file.textPreview.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH),
+        }),
         ...(file.height != null && { height: file.height }),
         ...(file.width != null && { width: file.width }),
         ...(file.bytes != null && { bytes: file.bytes }),
