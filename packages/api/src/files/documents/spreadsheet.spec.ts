@@ -51,7 +51,10 @@ describe('spreadsheet parser regressions', () => {
     let ticks = 0;
     const timer = setInterval(() => ticks++, 1);
     try {
-      await expect(parse(buffer, 'shared.xlsx')).rejects.toThrow('safe processing limits');
+      await expect(parse(buffer, 'shared.xlsx')).rejects.toMatchObject({
+        code: 'SPREADSHEET_LIMIT',
+        userErrorStatusCode: 413,
+      });
       expect(ticks).toBeGreaterThan(0);
     } finally {
       clearInterval(timer);
@@ -151,7 +154,10 @@ describe('spreadsheet process lifecycle', () => {
     try {
       await expect(parser('extra')).rejects.toThrow('busy');
       for (const result of await results) {
-        expect(result).toMatchObject({ status: 'rejected', reason: { code: 'SPREADSHEET_LIMIT' } });
+        expect(result).toMatchObject({
+          status: 'rejected',
+          reason: { code: 'SPREADSHEET_LIMIT', userErrorStatusCode: 413 },
+        });
       }
       expect(ticks).toBeGreaterThan(0);
       await expect(parser('normal')).resolves.toBe('recovered');
@@ -175,7 +181,10 @@ describe('spreadsheet process lifecycle', () => {
         userErrorStatusCode: 503,
       });
       for (const result of await jobs) {
-        expect(result).toMatchObject({ status: 'rejected', reason: { code: 'SPREADSHEET_LIMIT' } });
+        expect(result).toMatchObject({
+          status: 'rejected',
+          reason: { code: 'SPREADSHEET_LIMIT', userErrorStatusCode: 413 },
+        });
       }
       await expect(parser('normal', { maxConcurrent })).resolves.toBe('recovered');
     },

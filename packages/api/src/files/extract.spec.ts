@@ -4,6 +4,7 @@ import {
   extractInspectableFileText,
   getFileExtractionLogDetails,
 } from './extract';
+import { SpreadsheetLimitError } from './documents/workbook';
 import { UninspectableFileError } from '~/protection/files';
 import { SpreadsheetBusyError } from './upload/errors';
 
@@ -50,6 +51,18 @@ describe('extracted file text inspection boundary', () => {
 
   it('preserves retryable admission pressure without bypassing strict extraction', async () => {
     const error = new SpreadsheetBusyError();
+    await expect(
+      extractInspectableFileText({
+        filters: strictExtractedTextFilters,
+        extract: async () => {
+          throw error;
+        },
+      }),
+    ).rejects.toBe(error);
+  });
+
+  it('preserves resource-limit rejection under strict inspection without returning text', async () => {
+    const error = new SpreadsheetLimitError();
     await expect(
       extractInspectableFileText({
         filters: strictExtractedTextFilters,

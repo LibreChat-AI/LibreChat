@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { getContentFilterError } from '~/middleware/contentFilter';
+import { SpreadsheetLimitError } from './documents/workbook';
 import { SpreadsheetBusyError } from './upload/errors';
 import { isEnabled } from '~/utils';
 
@@ -54,8 +55,14 @@ export function sendUploadPolicyError(
   error: unknown,
   context: UploadPolicyErrorContext = {},
 ): boolean {
-  if (error instanceof SpreadsheetBusyError) {
-    const body = { error: error.code, message: error.message, retryable: true, retry_after: 1 };
+  if (error instanceof SpreadsheetBusyError || error instanceof SpreadsheetLimitError) {
+    const retryable = error instanceof SpreadsheetBusyError;
+    const body = {
+      error: error.code,
+      message: error.message,
+      retryable,
+      ...(retryable ? { retry_after: 1 } : {}),
+    };
     if (sseStream) {
       sseStream.sendError({
         ...body,
@@ -65,7 +72,7 @@ export function sendUploadPolicyError(
         display_to_user: true,
       });
     } else {
-      res.setHeader('Retry-After', '1');
+      if (retryable) res.setHeader('Retry-After', '1');
       res.status(error.userErrorStatusCode).json(body);
     }
     return true;

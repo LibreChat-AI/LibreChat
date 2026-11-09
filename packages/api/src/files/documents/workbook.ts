@@ -1,16 +1,23 @@
 import type { WorkBook, CellObject, utils } from 'xlsx';
 
 // Fixed security ceilings, not throughput tuning: every admitted job must remain bounded.
-export const SPREADSHEET_LIMITS = {
+export const SPREADSHEET_LIMITS: Readonly<{
+  inputBytes: number;
+  outputBytes: number;
+  cells: number;
+  sheets: number;
+  heapMb: number;
+}> = {
   inputBytes: 15 * 1024 * 1024,
   outputBytes: 8 * 1024 * 1024,
   cells: 250_000,
   sheets: 100,
   heapMb: 128,
-} as const;
+};
 
 export class SpreadsheetLimitError extends Error {
   readonly code = 'SPREADSHEET_LIMIT';
+  readonly userErrorStatusCode = 413;
   constructor() {
     super('Spreadsheet exceeds the safe processing limits.');
     this.name = 'SpreadsheetLimitError';
