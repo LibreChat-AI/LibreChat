@@ -12,6 +12,7 @@ export default defineConfig({
     'src/credentials.ts',
     'src/agents/files/edit-worker.ts',
     'src/auth/hash-worker.ts',
+    'src/files/documents/spreadsheet-worker.ts',
   ],
   format: ['cjs'],
   platform: 'node',
