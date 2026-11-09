@@ -30,7 +30,10 @@ async function run(filePath: string): Promise<void> {
       });
     } else {
       preserveDisplayText = data.includes(
-        Buffer.from('urn:oasis:names:tc:opendocument:xmlns:office:1.0'),
+        Buffer.from(
+          'urn:oasis:names:tc:opendocument:xmlns:office:1.0',
+          data[0] === 0xff && data[1] === 0xfe ? 'utf16le' : 'utf8',
+        ),
       );
     }
     // ODS stores display text in XML. Excel formatting stays deferred and budgeted.

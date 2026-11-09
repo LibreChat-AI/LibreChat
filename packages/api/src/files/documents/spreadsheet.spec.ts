@@ -162,6 +162,24 @@ describe('spreadsheet parser regressions', () => {
     },
   );
 
+  it('preserves UTF-16 flat OpenDocument display text without decoding the input twice', async () => {
+    const workbook = utils.book_new();
+    utils.book_append_sheet(
+      workbook,
+      utils.aoa_to_sheet([[{ t: 'n', v: 0.25, z: '0%' }, 'stored']]),
+      'Display',
+    );
+    const xml = write(workbook, { type: 'string', bookType: 'fods' }).replace(
+      'encoding="UTF-8"',
+      'encoding="UTF-16"',
+    );
+    const data = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(xml, 'utf16le')]);
+    const baseline = read(data, { type: 'buffer' });
+    const expected = `Display:\n${utils.sheet_to_csv(baseline.Sheets.Display)}\n`;
+    expect(expected).toBe('Display:\n0.25,stored\n');
+    await expect(parse(data, 'display-utf16.ods')).resolves.toBe(expected);
+  });
+
   it('recognizes OpenDocument markers with the same case-insensitive rules as SheetJS', async () => {
     const workbook = utils.book_new();
     utils.book_append_sheet(
