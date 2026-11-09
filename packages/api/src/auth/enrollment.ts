@@ -21,6 +21,7 @@ import {
   isTwoFactorSetupEligible,
   isTokenRetired,
   recheckMintedCredential,
+  clearSessionCookies,
   withdrawMintedSession,
   verifyTwoFactorLoginChallengeToken,
 } from './twoFactor';
@@ -35,6 +36,13 @@ type SetupRequest = Request<Record<string, string>, object, SetupBody> & {
   user?: { id: string };
   twoFactorEnrollmentNonce?: string;
 };
+type CancelRequest = Request & {
+  user?: { id: string };
+  cookies?: { refreshToken?: string };
+};
+
+/** Only the staged secret is read, to condition the discard on it; the rest scopes the cookies. */
+const CANCEL_ENROLLMENT_PROJECTION = '+pendingTotpSecret _id tenantId orgId storageRegion';
 
 export function clearEnrollmentNonces(
   update: TwoFactorEnrollmentUpdate,
@@ -71,6 +79,11 @@ export interface EnrollmentControllerDependencies
     user: StoredTwoFactorAccount;
     backupCode: string;
   }) => Promise<boolean>;
+  findSession: (
+    query: { userId: string; refreshToken: string },
+    options: { lean: false },
+  ) => Promise<RotatableSession | null>;
+  deleteSession: (query: { sessionId: string }) => Promise<unknown>;
   deleteAllUserSessions: (input: { userId: string }) => Promise<object>;
   clearCloudFrontCookies: typeof clearCloudFrontCookies;
   setAuthTokens: (
@@ -91,6 +104,7 @@ interface EnrollmentControllers {
   confirm2FASetupWithTempToken: (req: SetupRequest, res: Response) => Promise<Response>;
   acknowledge2FASetup: (req: SetupRequest, res: Response) => Promise<Response>;
   finalize2FASetup: (req: SetupRequest, res: Response) => Promise<Response>;
+  cancel2FASetup: (req: CancelRequest, res: Response) => Promise<Response>;
 }
 
 /**
@@ -313,11 +327,74 @@ export function createEnrollmentControllers(
     }
   };
 
+  /** Ends only the session this browser presented, and only when it belongs to the setup user. */
+  const endBrowserSession = async (userId: string, refreshToken?: string): Promise<void> => {
+    if (!refreshToken) {
+      return;
+    }
+    const session = await deps.findSession({ userId, refreshToken }, { lean: false });
+    if (session) {
+      await deps.deleteSession({ sessionId: session._id.toString() });
+    }
+  };
+
+  /** Conditioned on the secret it saw, so an enrollment promoted meanwhile is never undone. */
+  const discardStagedEnrollment = async (
+    userId: string,
+    pendingTotpSecret?: string,
+  ): Promise<void> => {
+    if (!pendingTotpSecret) {
+      return;
+    }
+    await deps.updateTwoFactorEnrollment(
+      userId,
+      { pendingTotpSecret },
+      clearEnrollmentNonces({ pendingTotpSecret: null, pendingBackupCodes: [] }),
+    );
+  };
+
+  /**
+   * Lets a user holding only a setup token leave required enrollment. The access-token logout needs
+   * a bearer they do not have, and a refresh session left alive would hand them straight back to
+   * setup on the next visit to the login page. Every outstanding enrollment credential dies with
+   * the staged state, since each is redeemed against it.
+   */
+  const cancel2FASetup = async (req: CancelRequest, res: Response): Promise<Response> => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) {
+        return res.status(401).json({ message: 'Invalid or expired two-factor setup token' });
+      }
+
+      const user = await deps.getUserById(userId, CANCEL_ENROLLMENT_PROJECTION);
+      /** Cleared before any fallible write, so a failure cannot leave the credential in the browser. */
+      clearSessionCookies(res, user ?? {}, userId, deps);
+
+      const outcomes = await Promise.allSettled([
+        endBrowserSession(userId, req.cookies?.refreshToken),
+        discardStagedEnrollment(userId, user?.pendingTotpSecret),
+      ]);
+      const failures = outcomes.filter(
+        (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+      );
+      if (failures.length > 0) {
+        failures.forEach(({ reason }) => logger.error('[cancel2FASetup]', reason));
+        return res.status(500).json({ message: 'Something went wrong' });
+      }
+
+      return res.status(200).json({ message: 'Two-factor setup cancelled' });
+    } catch (err) {
+      logger.error('[cancel2FASetup]', err);
+      return res.status(500).json({ message: 'Something went wrong' });
+    }
+  };
+
   return {
     verify2FAWithTempToken,
     confirm2FASetupWithTempToken,
     acknowledge2FASetup,
     finalize2FASetup,
+    cancel2FASetup,
   };
 }
 
@@ -334,13 +411,10 @@ export interface OptInConfirmationDependencies
     | 'getTOTPSecret'
     | 'verifyTOTP'
     | 'updateUser'
+    | 'findSession'
     | 'clearCloudFrontCookies'
     | 'awaitAuthUserDocEviction'
   > {
-  findSession: (
-    query: { userId: string; refreshToken: string },
-    options: { lean: false },
-  ) => Promise<RotatableSession | null>;
   deleteAllUserSessions: (
     query: { userId: string },
     options?: { excludeCurrentSession: boolean; currentSessionId: string },

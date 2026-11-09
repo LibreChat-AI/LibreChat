@@ -853,6 +853,14 @@ export type TFinalize2FASetupResponse = {
   user: TUser;
 };
 
+export type TCancel2FASetupRequest = {
+  tempToken: string;
+};
+
+export type TCancel2FASetupResponse = {
+  message: string;
+};
+
 export type TVerify2FARequest = TOTPVerificationPayload;
 
 export type TVerify2FAResponse = {

@@ -289,6 +289,23 @@ export interface MintedSessionWithdrawal {
   ) => void;
 }
 
+/** Clears every credential a browser holds for a session: refresh, provider and hint cookies, and the CDN cookies. */
+export function clearSessionCookies(
+  res: Response,
+  user: Pick<TwoFactorAccount, 'tenantId' | 'orgId' | 'storageRegion'>,
+  userId: string,
+  deps: Pick<MintedSessionWithdrawal, 'clearCloudFrontCookies'>,
+): void {
+  res.clearCookie('refreshToken');
+  res.clearCookie('token_provider');
+  res.clearCookie(SESSION_HINT_COOKIE);
+  deps.clearCloudFrontCookies(res, {
+    userId,
+    tenantId: user.tenantId ?? user.orgId,
+    storageRegion: user.storageRegion,
+  });
+}
+
 /**
  * Withdraws a session minted on this response. The cookies are cleared before the fallible session
  * deletion, so a deletion that throws cannot leave the outgoing response carrying the credential.
@@ -299,14 +316,7 @@ export async function withdrawMintedSession(
   userId: string,
   deps: MintedSessionWithdrawal,
 ): Promise<void> {
-  res.clearCookie('refreshToken');
-  res.clearCookie('token_provider');
-  res.clearCookie(SESSION_HINT_COOKIE);
-  deps.clearCloudFrontCookies(res, {
-    userId,
-    tenantId: user.tenantId ?? user.orgId,
-    storageRegion: user.storageRegion,
-  });
+  clearSessionCookies(res, user, userId, deps);
   await deps.deleteAllUserSessions({ userId });
 }
 

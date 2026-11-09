@@ -38,6 +38,7 @@ const {
   confirm2FASetupWithTempToken,
   acknowledge2FASetup,
   finalize2FASetup,
+  cancel2FASetup,
 } = require('~/server/controllers/auth/TwoFactorAuthController');
 const { logoutController } = require('~/server/controllers/auth/LogoutController');
 const { loginController } = require('~/server/controllers/auth/LoginController');
@@ -159,6 +160,17 @@ router.post(
   middleware.checkBan,
   requireTwoFactorSetupFinalizationToken,
   finalize2FASetup,
+);
+router.post(
+  '/2fa/setup/cancel',
+  requirePreAuthTenantContext,
+  middleware.requireSameOrigin,
+  middleware.setTwoFactorTempUser,
+  middleware.twoFactorSetupLimiter,
+  middleware.checkBan,
+  requireTwoFactorSetupToken,
+  middleware.blockRetiredSetupToken,
+  cancel2FASetup,
 );
 router.post(
   '/2fa/verify-temp',

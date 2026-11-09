@@ -10,6 +10,8 @@ const {
   getUserById,
   updateUser,
   updateTwoFactorEnrollment,
+  findSession,
+  deleteSession,
   deleteAllUserSessions,
   awaitAuthUserDocEviction,
 } = require('~/models');
@@ -22,6 +24,8 @@ module.exports = createEnrollmentControllers({
   generateBackupCodes,
   updateTwoFactorEnrollment,
   updateUser,
+  findSession,
+  deleteSession,
   deleteAllUserSessions,
   awaitAuthUserDocEviction,
   setAuthTokens,
