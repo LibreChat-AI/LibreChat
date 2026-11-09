@@ -10,8 +10,8 @@ import {
   useRemScale,
   DIALOG_SCRIM_CLASS,
 } from '@librechat/client';
+import type { SectionId, SettingsTab } from './types';
 import type { TDialogProps } from '~/common';
-import type { SettingsTab } from './types';
 import { useSettingsContext } from './context';
 import { useLocalize } from '~/hooks';
 import Sidebar from './Sidebar';
@@ -19,7 +19,12 @@ import Content from './Content';
 import { TABS } from './types';
 import { cn } from '~/utils';
 
-export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
+export default function SettingsDialog({
+  open,
+  onOpenChange,
+  initialTab,
+  initialSection,
+}: TDialogProps & { initialTab?: SettingsTab; initialSection?: SectionId }) {
   const localize = useLocalize();
   const ctx = useSettingsContext();
   /** The panel is laid out in rem, so the two-column switch has to compare the
@@ -27,9 +32,9 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
    *  layout at scales where the scaled sidebar leaves the content pane too narrow. */
   const remScale = useRemScale();
   const isSmallScreen = useMediaQuery(`(max-width: ${767 * remScale}px)`);
-  const [activeTab, setActiveTab] = useState<SettingsTab>(SettingsTabValues.GENERAL);
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? SettingsTabValues.GENERAL);
   const [query, setQuery] = useState('');
-  const [mobileDetail, setMobileDetail] = useState(!isSmallScreen);
+  const [mobileDetail, setMobileDetail] = useState(initialTab != null || !isSmallScreen);
 
   const searching = query.trim().length > 0;
   const inDetail = isSmallScreen && mobileDetail && !searching;
@@ -142,7 +147,12 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
                           tabIndex={-1}
                           className="focus:outline-hidden"
                         >
-                          <Content activeTab={effectiveTab} query={query} ctx={ctx} />
+                          <Content
+                            activeTab={effectiveTab}
+                            query={query}
+                            ctx={ctx}
+                            initialSection={activeTab === initialTab ? initialSection : undefined}
+                          />
                         </Tabs.Content>
                       )}
                     </div>

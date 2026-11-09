@@ -10,6 +10,7 @@ import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import useDirection, { inlineSide } from '~/hooks/Nav/useDirection';
 import useNewChat from '~/hooks/Conversations/useNewChat';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
+import Credits from '~/components/Balance/Credits';
 import { useLocalize } from '~/hooks';
 
 const AccountSettings = lazyWithRecovery(() => import('~/components/Nav/AccountSettings'));
@@ -194,7 +195,8 @@ function ExpandedPanel({
         ))}
       </div>
 
-      <div className="mt-auto">
+      <div className="mt-auto flex flex-col gap-2">
+        <Credits />
         <Suspense fallback={<Skeleton className="h-9 w-9 rounded-lg" />}>
           <AccountSettings collapsed />
         </Suspense>

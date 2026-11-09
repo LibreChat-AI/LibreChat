@@ -1,7 +1,9 @@
 /* eslint-disable i18next/no-literal-string */
 import userEvent from '@testing-library/user-event';
+import { SettingsTabValues } from 'librechat-data-provider';
 import { render, screen } from 'test/layout-test-utils';
 import SettingsDialog from '../Dialog';
+import Content from '../Content';
 
 jest.mock('../Content', () =>
   jest.fn(({ query }: { activeTab: string; query: string; ctx: unknown }) =>
@@ -28,6 +30,22 @@ describe('SettingsDialog', () => {
     const trigger = screen.getByRole('tab', { selected: true });
     expect(trigger).toHaveAttribute('aria-controls', panel.id);
     expect(panel).toHaveAttribute('aria-labelledby', trigger.id);
+  });
+
+  it('opens Account billing when requested by the usage shortcut', () => {
+    render(
+      <SettingsDialog
+        open
+        onOpenChange={jest.fn()}
+        initialTab={SettingsTabValues.ACCOUNT}
+        initialSection="billing"
+      />,
+    );
+    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('Account');
+    expect(jest.mocked(Content).mock.lastCall?.[0]).toMatchObject({
+      activeTab: SettingsTabValues.ACCOUNT,
+      initialSection: 'billing',
+    });
   });
 
   it('switches to search results when typing a query', async () => {

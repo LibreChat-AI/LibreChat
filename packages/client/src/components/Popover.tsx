@@ -25,7 +25,7 @@ const PopoverContent: React.ForwardRefExoticComponent<
   <PopoverPrimitive.Content
     ref={ref}
     className={cn(
-      'border-border-light bg-surface-secondary text-text-primary data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 rounded-theme-popover z-50 origin-[--radix-popover-content-transform-origin] border shadow-xl motion-reduce:animate-none',
+      'border-border-light bg-surface-secondary text-text-primary motion-safe:data-[state=open]:animate-in motion-safe:data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 rounded-theme-popover z-50 origin-[--radix-popover-content-transform-origin] border shadow-xl motion-reduce:animate-none',
       className,
     )}
     {...props}
