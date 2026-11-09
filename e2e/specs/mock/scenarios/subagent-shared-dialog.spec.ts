@@ -27,6 +27,9 @@ test('a shared link opens a child run in the read-only dialog and reads no priva
   browser,
   baseURL,
   viewport,
+  isMobile,
+  hasTouch,
+  colorScheme,
 }) => {
   test.setTimeout(120_000);
   const label = `shared-${Date.now().toString(36)}`;
@@ -84,7 +87,8 @@ test('a shared link opens a child run in the read-only dialog and reads no priva
     const { shareId } = (await shared.json()) as { shareId?: string };
     expect(shareId).toBeTruthy();
 
-    const reader = await browser.newContext({ baseURL, viewport });
+    /** The reader takes the project's device and color scheme, but not its login. */
+    const reader = await browser.newContext({ baseURL, viewport, isMobile, hasTouch, colorScheme });
     try {
       const readerPage = await reader.newPage();
       const result = `E2E subagent streamed result ${label}`;

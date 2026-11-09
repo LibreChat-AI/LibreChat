@@ -1,20 +1,36 @@
+import { useAtom } from 'jotai';
 import { RecoilRoot } from 'recoil';
-import { useAtomValue } from 'jotai';
 import { activeSubagentPanel } from '@librechat/chat/react';
-import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { ContentTypes, dataService, EModelEndpoint } from 'librechat-data-provider';
-import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
+import { SharedSubagentActivityDialog } from '@librechat/chat/components';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { Constants, ContentTypes, dataService, EModelEndpoint } from 'librechat-data-provider';
+import type {
+  FullToolCall,
+  PartMetadata,
+  TMessage,
+  TMessageContentParts,
+} from 'librechat-data-provider';
 import { ShareMessagesProvider } from './ShareMessagesProvider';
 import { ShareContext } from '~/Providers/ShareContext';
 import { ChatSurfaceHarness } from 'test/harness';
 import MessagesView from './MessagesView';
+import '~/components/Chat/Messages/Content/register';
 import '~/Providers/MessagePartsHostContext';
 import '~/Providers/MessagesHostContext';
 
 const SHARE_ID = 'share-1';
-const CARD = 'com_ui_subagent_complete';
+const CARD = 'Ran agent';
+const PRIVATE_READS = [
+  'getParentSubagents',
+  'getSubagentThread',
+  'getSubagentTaskContent',
+  'getSubagentControlReceipt',
+  'getSubagentAttachmentCalls',
+  'controlSubagentTask',
+] as const;
 
+/** The HTTP boundary: every private subagent endpoint is a spy, so a read from a shared link shows. */
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
   return {
@@ -24,91 +40,45 @@ jest.mock('librechat-data-provider', () => {
       getAIEndpoints: jest.fn().mockResolvedValue({}),
       getParentSubagents: jest.fn(),
       getSubagentThread: jest.fn(),
+      getSubagentTaskContent: jest.fn(),
+      getSubagentControlReceipt: jest.fn(),
+      getSubagentAttachmentCalls: jest.fn(),
+      controlSubagentTask: jest.fn(),
     },
   };
 });
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-  useAttachments: () => ({ attachments: [], searchResults: [] }),
-  ...jest.requireActual('~/hooks/Messages/useCopyToClipboard'),
-}));
+/** MCP server names come from the server's MCP list endpoint, which is not reachable here. */
 jest.mock('~/hooks/MCP', () => ({
   useMCPIconMap: () => new Map(),
   useMCPServerNames: () => [],
 }));
-jest.mock('~/components/Chat/Messages/Content/MessageContent', () => ({
-  __esModule: true,
-  default: ({ text }: { text: string }) => <div>{text}</div>,
-}));
 
-type SubagentToolCall = {
-  id: string;
-  args: Record<string, unknown>;
-  output?: string;
-  progress: number;
-  subagent_content?: TMessageContentParts[];
-};
-
-/** The part dispatcher is the one piece replaced: it renders the real card for each child run, with
- *  the props `Part` derives from the shared payload, inside the real share `Message` context. */
-jest.mock('~/components/Chat/Messages/Content/SearchContent', () => ({
-  __esModule: true,
-  rendersMarkdownLite: () => false,
-  default: function SharedParts({ message }: { message: TMessage }) {
-    const { default: SubagentCall } = jest.requireActual(
-      '~/components/Chat/Messages/Content/Parts/SubagentCall',
-    );
-    const { ContentTypes: Types } = jest.requireActual('librechat-data-provider');
-    const calls = (message.content ?? []).flatMap((part) =>
-      part?.type === Types.TOOL_CALL
-        ? [(part as unknown as { tool_call: SubagentToolCall }).tool_call]
-        : [],
-    );
-    return (
-      <>
-        {calls.map((call) => (
-          <SubagentCall
-            key={call.id}
-            toolCallId={call.id}
-            args={call.args}
-            output={call.output ?? ''}
-            initialProgress={call.progress}
-            persistedContent={call.subagent_content}
-          />
-        ))}
-      </>
-    );
-  },
-}));
-
-/** What the app's shared dialog shows for the card's selection: it belongs to this share. */
-function SharedDialog() {
-  const selected = useAtomValue(activeSubagentPanel);
-  if (selected?.host !== 'share' || selected.shareId !== SHARE_ID) return null;
+/** The shared activity dialog as `ShareView` mounts it, fed by the app's open panel selection. */
+function SharedDialog({ messages }: { messages: TMessage[] }) {
+  const [selected, setSelected] = useAtom(activeSubagentPanel);
   return (
-    <div role="dialog" aria-label="Shared subagent activity">
-      {selected.persistedContent?.map((part, index) =>
-        part.type === ContentTypes.TEXT && typeof part.text === 'string' ? (
-          <span key={index}>{part.text}</span>
-        ) : null,
-      )}
-      {selected.legacyOutput ? <span>{selected.legacyOutput}</span> : null}
-    </div>
+    <SharedSubagentActivityDialog
+      shareId={SHARE_ID}
+      messages={messages}
+      selected={selected}
+      setSelected={setSelected}
+    />
   );
 }
 
-const childRun = (call: Partial<SubagentToolCall> = {}): TMessageContentParts =>
-  ({
-    type: ContentTypes.TOOL_CALL,
-    tool_call: {
-      id: 'call_child',
-      name: 'subagent',
-      args: { subagent_type: 'researcher', description: 'Review the release.' },
-      progress: 1,
-      ...call,
-    },
-  }) as unknown as TMessageContentParts;
+const childRun = (
+  call: Pick<FullToolCall, 'output' | 'subagent_content'> = {},
+): TMessageContentParts => {
+  const toolCall: FullToolCall & PartMetadata = {
+    id: 'call_child',
+    name: String(Constants.SUBAGENT),
+    args: JSON.stringify({ subagent_type: 'researcher', description: 'Review the release.' }),
+    progress: 1,
+    ...call,
+  };
+  return { type: ContentTypes.TOOL_CALL, tool_call: toolCall };
+};
 
 /** A shared thread as the share route returns it: every id is the anonymized, share-scoped one. */
 function renderShared(content: TMessageContentParts[]) {
@@ -129,38 +99,39 @@ function renderShared(content: TMessageContentParts[]) {
     text: '',
     content,
   };
+  const messages = [prompt, reply];
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
       <ChatSurfaceHarness>
         <RecoilRoot>
           <ShareContext.Provider value={{ isSharedConvo: true, shareId: SHARE_ID }}>
-            <ShareMessagesProvider messages={[prompt, reply]}>
+            <ShareMessagesProvider messages={messages}>
               <MessagesView messagesTree={[{ ...prompt, children: [reply] }]} conversationId="x" />
             </ShareMessagesProvider>
-            <SharedDialog />
+            <SharedDialog messages={messages} />
           </ShareContext.Provider>
         </RecoilRoot>
       </ChatSurfaceHarness>
     </QueryClientProvider>,
   );
-  return queryClient;
 }
 
-const expectNoPrivateRead = (queryClient: QueryClient) => {
-  expect(dataService.getParentSubagents).not.toHaveBeenCalled();
-  expect(dataService.getSubagentThread).not.toHaveBeenCalled();
-  expect(queryClient.isFetching()).toBe(0);
+const expectNoPrivateRead = () => {
+  for (const name of PRIVATE_READS) {
+    expect(dataService[name]).not.toHaveBeenCalled();
+  }
 };
 
 describe('a child run card on a shared message', () => {
   beforeEach(() => {
-    jest.mocked(dataService.getParentSubagents).mockClear();
-    jest.mocked(dataService.getSubagentThread).mockClear();
+    for (const name of PRIVATE_READS) {
+      jest.mocked(dataService[name]).mockClear();
+    }
   });
 
-  it('opens the shared activity from the persisted child content without a private read', () => {
-    const queryClient = renderShared([
+  it('opens the shared activity from the persisted child content without a private read', async () => {
+    renderShared([
       childRun({ subagent_content: [{ type: ContentTypes.TEXT, text: 'Shared child result.' }] }),
     ]);
 
@@ -170,27 +141,40 @@ describe('a child run card on a shared message', () => {
 
     fireEvent.click(card);
 
-    expect(screen.getByRole('dialog')).toHaveTextContent('Shared child result.');
-    expectNoPrivateRead(queryClient);
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Shared child result.');
+    expectNoPrivateRead();
   });
 
-  it('opens the shared activity from a legacy run that only recorded its output', () => {
-    const queryClient = renderShared([childRun({ output: 'Legacy child output.' })]);
+  it('closes on Escape and returns focus to the card', async () => {
+    renderShared([
+      childRun({ subagent_content: [{ type: ContentTypes.TEXT, text: 'Shared child result.' }] }),
+    ]);
+    const card = screen.getByRole('button', { name: CARD });
+
+    fireEvent.click(card);
+    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(card).toHaveFocus());
+  });
+
+  it('opens the shared activity from a legacy run that only recorded its output', async () => {
+    renderShared([childRun({ output: 'Legacy child output.' })]);
 
     fireEvent.click(screen.getByRole('button', { name: CARD }));
 
-    expect(screen.getByRole('dialog')).toHaveTextContent('Legacy child output.');
-    expectNoPrivateRead(queryClient);
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Legacy child output.');
+    expectNoPrivateRead();
   });
 
   it('stays closed for a run with nothing recorded to show', () => {
-    const queryClient = renderShared([childRun()]);
+    renderShared([childRun()]);
 
     const card = screen.getByRole('button', { name: CARD });
     expect(card).toBeDisabled();
     fireEvent.click(card);
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expectNoPrivateRead(queryClient);
+    expectNoPrivateRead();
   });
 });
