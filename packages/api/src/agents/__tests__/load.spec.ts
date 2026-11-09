@@ -1543,6 +1543,20 @@ describe('loadAgent', () => {
       expect(result?.tools).toContain('lookup_mcp_crm');
     });
 
+    test('an added spec that hides its badge row but configures nothing still mirrors', async () => {
+      const { EPHEMERAL_AGENT_ID: EID } = Constants;
+      const result = await loadAddedAgent(
+        {
+          req: addedReq({ web_search: false }, { hideBadgeRow: true }),
+          conversation: addedConversation,
+          primaryAgent: { id: EID as string, tools: ['web_search'] } as LibreChatAgent,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['web_search']);
+    });
+
     test('an added spec that enables ask_user_question resolves its own tools', async () => {
       const { EPHEMERAL_AGENT_ID: EID } = Constants;
       const result = await loadAddedAgent(
