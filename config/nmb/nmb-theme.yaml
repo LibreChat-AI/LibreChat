@@ -1,0 +1,176 @@
+# NMB deployment theme for LibreChat (see docs/nmb/BRANDING.md).
+#
+# Merge the `interface:` block below into the deployment's librechat.yaml (or copy
+# just the `theme:` mapping under an existing `interface:`). Colors are space-separated
+# RGB triplets keyed by rgb-* token; unlisted tokens fall back to LibreChat's defaults.
+#
+# Brand colors sampled from the NMB logo (/client/public/assets/nmb-logo.png):
+#   navy #093161 = 9 49 97     gold #E5C577 = 229 197 119
+# Gold is a light colour (1.7:1 on white), so in light mode it is used for decoration
+# only, never for text or focus rings. In dark mode it carries focus rings, the send
+# button and accent text. Contrast ratios: config/nmb/check_contrast.py
+interface:
+  theme:
+    version: 1
+    name: nmb
+    modes:
+      light:
+        colors:
+          # text
+          rgb-text-primary: '16 28 48'            # #101C30
+          rgb-text-secondary: '51 65 85'          # #334155
+          rgb-text-secondary-alt: '71 85 105'     # #475569
+          rgb-text-tertiary: '71 85 105'
+          rgb-text-muted: '71 85 105'
+          rgb-badge-label: '16 28 48'
+          rgb-shimmer-base: '16 28 48'
+          # links and accents
+          rgb-link: '11 79 158'                   # #0B4F9E
+          rgb-link-hover: '9 49 97'               # navy
+          rgb-link-prose: '11 79 158'
+          rgb-link-inline: '11 79 158'
+          rgb-accent-primary: '9 49 97'
+          rgb-accent-primary-hover: '11 79 158'
+          # focus rings (navy: >= 3:1 on every light surface)
+          rgb-ring-primary: '9 49 97'
+          rgb-focus-outline: '9 49 97'
+          rgb-focus-control: '9 49 97'
+          rgb-border-field-focus: '9 49 97'
+          rgb-focus-subtle: '100 116 139'
+          # surfaces
+          rgb-surface-primary: '255 255 255'
+          rgb-surface-primary-alt: '246 248 252'
+          rgb-surface-primary-contrast: '234 239 247'
+          rgb-surface-secondary: '246 248 252'
+          rgb-surface-secondary-alt: '218 226 240'
+          rgb-surface-tertiary: '234 239 247'
+          rgb-surface-sidebar: '244 247 251'
+          rgb-surface-canvas: '246 248 252'
+          rgb-page-canvas: '246 248 252'
+          rgb-surface-card: '246 248 252'
+          rgb-surface-card-hover: '234 239 247'
+          rgb-surface-user-message: '234 239 247'
+          rgb-surface-code: '246 248 252'
+          rgb-surface-code-inline: '218 226 240'
+          rgb-header-hover: '240 244 250'
+          rgb-header-button-hover: '240 244 250'
+          # hover / selected states
+          rgb-surface-hover: '226 233 244'
+          rgb-surface-hover-alt: '203 213 228'
+          rgb-surface-active: '226 233 244'
+          rgb-surface-active-alt: '218 226 240'
+          rgb-surface-pressed: '214 224 241'
+          rgb-surface-composer-hover: '226 233 244'
+          rgb-surface-nav-hover: '232 238 247'
+          rgb-surface-nav-selected: '214 224 241'
+          rgb-surface-tab-selected: '234 239 247'
+          # borders
+          rgb-border-light: '221 228 238'
+          rgb-border-medium: '203 213 228'
+          rgb-border-medium-alt: '203 213 228'
+          rgb-border-heavy: '120 137 163'
+          rgb-border-xheavy: '71 85 105'
+          rgb-border-control: '203 213 228'
+          # primary action: submit buttons (white label) and send/primary buttons
+          rgb-surface-submit: '9 49 97'
+          rgb-surface-submit-hover: '16 70 133'
+          rgb-surface-inverted: '9 49 97'
+          rgb-surface-inverted-hover: '16 70 133'
+          rgb-surface-inverted-pressed: '16 70 133'
+          rgb-button-primary: '9 49 97'
+          rgb-button-primary-hover: '16 70 133'
+          rgb-text-inverted: '255 255 255'
+          # decorative gold
+          rgb-prose-bullet: '229 197 119'
+          rgb-prose-quote-bar: '229 197 119'
+          # scrollbar (alpha is the stock 0.1)
+          rgb-scrollbar-thumb: '9 49 97'
+      dark:
+        colors:
+          # text
+          rgb-text-primary: '236 241 248'         # #ECF1F8
+          rgb-text-secondary: '203 213 228'       # #CBD5E4
+          rgb-text-secondary-alt: '160 174 196'   # #A0AEC4
+          rgb-text-tertiary: '160 174 196'
+          rgb-text-muted: '160 174 196'
+          rgb-badge-label: '236 241 248'
+          rgb-shimmer-base: '236 241 248'
+          # links and accents
+          rgb-link: '125 178 245'                 # #7DB2F5
+          rgb-link-hover: '174 208 250'
+          rgb-link-prose: '236 241 248'
+          rgb-link-inline: '125 178 245'
+          rgb-accent-primary: '229 197 119'       # gold
+          rgb-accent-primary-hover: '240 215 154'
+          # focus rings (gold)
+          rgb-ring-primary: '229 197 119'
+          rgb-focus-outline: '229 197 119'
+          rgb-focus-control: '229 197 119'
+          rgb-border-field-focus: '229 197 119'
+          rgb-focus-subtle: '82 108 150'
+          # surfaces (navy-tinted)
+          rgb-surface-primary: '8 17 31'          # #08111F
+          rgb-surface-primary-alt: '11 22 40'
+          rgb-surface-primary-contrast: '11 22 40'
+          rgb-surface-secondary: '15 29 51'
+          rgb-surface-secondary-alt: '15 29 51'
+          rgb-surface-tertiary: '22 40 69'
+          rgb-surface-tertiary-alt: '22 40 69'
+          rgb-surface-dialog: '11 22 40'
+          rgb-surface-chat: '12 24 43'
+          rgb-surface-composer: '22 40 69'
+          rgb-surface-sidebar: '10 20 36'
+          rgb-surface-canvas: '11 22 40'
+          rgb-page-canvas: '11 22 40'
+          rgb-surface-card: '15 29 51'
+          rgb-surface-card-hover: '22 40 69'
+          rgb-surface-user-message: '22 40 69'
+          rgb-surface-menu: '15 29 51'
+          rgb-surface-popover: '15 29 51'
+          rgb-surface-search: '15 29 51'
+          rgb-surface-code: '15 29 51'
+          rgb-surface-code-body: '11 22 40'
+          rgb-surface-code-inline: '40 64 104'
+          rgb-surface-tooltip: '8 17 31'
+          rgb-presentation: '15 29 51'
+          rgb-header-primary: '15 29 51'
+          rgb-header-hover: '22 40 69'
+          rgb-header-button-hover: '22 40 69'
+          rgb-field-fill: '8 17 31'
+          rgb-checkbox-fill: '8 17 31'
+          rgb-switch-thumb: '8 17 31'
+          rgb-avatar-placeholder: '22 40 69'
+          # hover / selected states
+          rgb-surface-hover: '30 52 88'
+          rgb-surface-hover-alt: '40 64 104'
+          rgb-surface-active: '40 64 104'
+          rgb-surface-active-alt: '27 47 80'
+          rgb-surface-pressed: '30 52 88'
+          rgb-surface-composer-hover: '30 52 88'
+          rgb-surface-nav-hover: '22 40 69'
+          rgb-surface-nav-selected: '31 54 92'
+          rgb-surface-tab-selected: '31 54 92'
+          # borders
+          rgb-border-light: '22 40 69'
+          rgb-border-medium: '40 64 104'
+          rgb-border-medium-alt: '40 64 104'
+          rgb-border-heavy: '82 108 150'
+          rgb-border-xheavy: '140 160 190'
+          rgb-border-control: '40 64 104'
+          rgb-border-menu: '27 47 80'
+          rgb-border-disabled: '40 64 104'
+          # primary action: submit buttons keep a white label, so they use a lighter navy;
+          # the send / primary buttons are gold with a navy label
+          rgb-surface-submit: '37 99 182'         # #2563B6
+          rgb-surface-submit-hover: '29 78 150'
+          rgb-surface-inverted: '229 197 119'
+          rgb-surface-inverted-hover: '240 215 154'
+          rgb-surface-inverted-pressed: '240 215 154'
+          rgb-button-primary: '229 197 119'
+          rgb-button-primary-hover: '240 215 154'
+          rgb-text-inverted: '9 49 97'
+          # decorative gold
+          rgb-prose-bullet: '229 197 119'
+          rgb-prose-quote-bar: '229 197 119'
+          # scrollbar
+          rgb-scrollbar-thumb: '160 174 196'
