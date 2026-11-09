@@ -384,6 +384,8 @@ export function createTransactionMethods(
         $set: {
           tokenCredits: credits,
           lastRefill: now,
+          allotment: record.refillAmount,
+          allottedAt: now,
           pendingRefill,
         },
       },

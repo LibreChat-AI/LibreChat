@@ -36,3 +36,6 @@ export * from './validation';
 export * from './text';
 export * from './list';
 export * from './access';
+
+export { SpreadsheetBusyError } from './upload/errors';
+export { SpreadsheetLimitError } from './documents/workbook';

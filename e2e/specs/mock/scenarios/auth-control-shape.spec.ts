@@ -33,13 +33,17 @@ const MINIMUM_FIELD_THEME = {
   },
 };
 
-async function serveTheme(page: Page, theme: string | Record<string, unknown>) {
+async function serveTheme(page: Page, theme?: string | Record<string, unknown>) {
   await page.route(
     (url) => url.pathname === '/api/config',
     async (route) => {
       const response = await route.fetch();
       const body = await response.json();
-      await route.fulfill({ response, json: { ...body, interface: { ...body.interface, theme } } });
+      await route.fulfill({
+        response,
+        // These scenarios measure the reset form, which is available only with email delivery.
+        json: { ...body, emailEnabled: true, interface: { ...body.interface, theme } },
+      });
     },
   );
 }
@@ -162,6 +166,7 @@ test.describe('sign-in control shape roles', () => {
   test('the stock theme keeps the sign-in field, button and corner it always drew @scenario:sign-in-controls-keep-default-shape', async ({
     page,
   }) => {
+    await serveTheme(page);
     await openLogin(page);
     await expectShape(page, { field: 44, button: 48, radius: '16px' });
     await expectResetLabelCentered(page);
