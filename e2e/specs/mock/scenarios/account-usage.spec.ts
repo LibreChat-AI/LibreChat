@@ -47,6 +47,7 @@ test('opens account credits and manages them in Billing @scenario:account-usage-
   await usage.getByRole('button', { name: 'Manage usage' }).click();
   const settings = page.locator('[id^="headlessui-dialog-panel-"]');
   await expect(settings).toBeVisible();
+  await expect(settings.getByRole('tab', { selected: true })).toHaveText('Account');
   const billing = settings.getByRole('heading', { name: 'Billing', exact: true });
   await expect(billing).toBeInViewport();
   await expect(settings.getByTestId('balance-value')).toHaveText('72,000 credits');
@@ -57,6 +58,11 @@ test('opens account credits and manages them in Billing @scenario:account-usage-
   await settings.getByRole('button', { name: 'Close Settings' }).click();
   await expect(settings).toBeHidden();
   await expect(trigger).toBeFocused();
+  await visible(page, 'nav-user').click();
+  await visible(page, 'nav-settings').click();
+  await expect(settings.getByRole('tab', { selected: true })).toHaveText('General');
+  await settings.getByRole('button', { name: 'Close Settings' }).click();
+  await expect(settings).toBeHidden();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await trigger.click();
   await expect(usage).toBeVisible();

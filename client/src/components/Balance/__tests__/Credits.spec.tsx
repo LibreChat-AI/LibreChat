@@ -1,19 +1,14 @@
-import { Provider, createStore } from 'jotai';
+import { Provider } from 'jotai';
 import userEvent from '@testing-library/user-event';
-import { SettingsTabValues } from 'librechat-data-provider';
 import { act, render, screen, within, waitFor } from '@testing-library/react';
 import type { TBalanceResponse } from 'librechat-data-provider';
-import type { ComponentProps } from 'react';
-import type SettingsDialog from '~/components/Nav/Settings/Dialog';
 import { TokenCredits, AutoRefill } from '~/components/Nav/Settings/BillingControls';
-import Settings, { settingsOpenAtom } from '~/components/Nav/Settings';
 import Credits from '../Credits';
 
 const mockStartupConfig = jest.fn();
 const mockBalance = jest.fn();
 const mockBalanceQuery = jest.fn();
 let mockAuthenticated = true;
-const mockSettingsProps: { current?: ComponentProps<typeof SettingsDialog> } = {};
 
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: mockStartupConfig() }),
@@ -24,13 +19,6 @@ jest.mock('~/data-provider', () => ({
 }));
 jest.mock('~/hooks/AuthContext', () => ({
   useAuthContext: () => ({ isAuthenticated: mockAuthenticated }),
-}));
-jest.mock('~/components/Nav/Settings/Dialog', () => ({
-  __esModule: true,
-  default: (props: ComponentProps<typeof SettingsDialog>) => {
-    mockSettingsProps.current = props;
-    return <div data-testid="settings-dialog" />;
-  },
 }));
 
 const NOW = Date.parse('2026-07-05T00:00:00.000Z');
@@ -49,16 +37,12 @@ const config = ({
   balance: { enabled: balanceEnabled, startBalance: 20_000, display },
   interface: { contextUsage: false, currency: { code: 'USD', rate: 1 } },
 });
-const renderCredits = (mobile = false) => {
-  const store = createStore();
-  const result = render(
-    <Provider store={store}>
+const renderCredits = (mobile = false) =>
+  render(
+    <Provider>
       <Credits mobile={mobile} />
-      <Settings />
     </Provider>,
   );
-  return { ...result, store };
-};
 const openCard = async () => {
   const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
   await user.click(screen.getByRole('button', { name: 'Account usage' }));
@@ -73,7 +57,6 @@ describe('sidebar credits', () => {
     mockBalance.mockReturnValue(balance);
     mockBalanceQuery.mockReset();
     mockAuthenticated = true;
-    mockSettingsProps.current = undefined;
   });
   afterEach(() => jest.useRealTimers());
 
@@ -102,27 +85,6 @@ describe('sidebar credits', () => {
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     await waitFor(() => expect(trigger).toHaveFocus());
-  });
-
-  it('opens Account billing and resets the destination for ordinary Settings opens', async () => {
-    const { store } = renderCredits();
-    const card = await openCard();
-    const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
-    await user.click(within(card).getByRole('button', { name: 'Manage usage' }));
-    await screen.findByTestId('settings-dialog');
-    expect(mockSettingsProps.current).toMatchObject({
-      initialTab: SettingsTabValues.ACCOUNT,
-      initialSection: 'billing',
-    });
-    expect(screen.queryByRole('dialog', { name: 'Account usage' })).not.toBeInTheDocument();
-    act(() => mockSettingsProps.current?.onOpenChange(false));
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Account usage' })).toHaveFocus(),
-    );
-    act(() => store.set(settingsOpenAtom, true));
-    await screen.findByTestId('settings-dialog');
-    expect(mockSettingsProps.current?.initialTab).toBeUndefined();
-    expect(mockSettingsProps.current?.initialSection).toBeUndefined();
   });
 
   it.each(['disabled', 'signed out', 'missing config', 'missing record'])(
