@@ -127,7 +127,9 @@ test.describe('conversation export', () => {
     await expect(options.last()).toContainText('screenshot (.png)');
   });
 
-  test('exports the conversation in every format', async ({ page }) => {
+  test('exports the conversation in every format @scenario:conversation-export-downloads-every-format', async ({
+    page,
+  }) => {
     test.setTimeout(120_000);
     await startMockConversation(page);
     const dialog = await openExportModal(page);
