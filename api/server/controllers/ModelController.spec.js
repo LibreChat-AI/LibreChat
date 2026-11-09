@@ -1,5 +1,4 @@
-const mockLoadDefaultModels = jest.fn();
-const mockLoadConfigModels = jest.fn();
+const mockGetModelsConfig = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -8,50 +7,26 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('~/server/services/Config', () => ({
-  loadDefaultModels: (...args) => mockLoadDefaultModels(...args),
-  loadConfigModels: (...args) => mockLoadConfigModels(...args),
+  getModelsConfig: (...args) => mockGetModelsConfig(...args),
 }));
 
-const { loadModels } = require('./ModelController');
+const { modelController } = require('./ModelController');
 
-function deferred() {
-  let resolve;
-  const promise = new Promise((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
-describe('loadModels', () => {
+describe('ModelController', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('loads default and configured models concurrently while preserving custom precedence', async () => {
-    const defaultModels = deferred();
-    const configuredModels = deferred();
+  /* The merge, its concurrency and the per-request memo are covered where they
+     live: services/Config/__tests__/getModelsConfig.spec.js. */
+  it('sends the resolved config and does not resolve it twice', async () => {
     const req = { user: { id: 'user-1' } };
-    mockLoadDefaultModels.mockReturnValue(defaultModels.promise);
-    mockLoadConfigModels.mockReturnValue(configuredModels.promise);
+    const res = { send: jest.fn() };
+    mockGetModelsConfig.mockResolvedValue({ openAI: ['gpt-4o'] });
 
-    const resultPromise = loadModels(req);
+    await modelController(req, res);
 
-    expect(mockLoadDefaultModels).toHaveBeenCalledWith(req);
-    expect(mockLoadConfigModels).toHaveBeenCalledWith(req);
-
-    configuredModels.resolve({
-      openAI: ['configured-model'],
-      custom: ['custom-model'],
-    });
-    defaultModels.resolve({
-      openAI: ['default-model'],
-      anthropic: ['default-anthropic'],
-    });
-
-    await expect(resultPromise).resolves.toEqual({
-      openAI: ['configured-model'],
-      anthropic: ['default-anthropic'],
-      custom: ['custom-model'],
-    });
+    expect(res.send).toHaveBeenCalledWith({ openAI: ['gpt-4o'] });
+    expect(mockGetModelsConfig).toHaveBeenCalledTimes(1);
   });
 });
