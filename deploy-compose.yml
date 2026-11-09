@@ -58,7 +58,7 @@ services:
       - SESSION_COOKIE_SECURE=${ADMIN_PANEL_SESSION_COOKIE_SECURE:-false}
 
   client:
-    image: nginx:1.27.0-alpine
+    image: docker.io/library/nginx:1.27.0-alpine
     container_name: LibreChat-NGINX
     ports:
       - 80:80
@@ -73,14 +73,14 @@ services:
     container_name: chat-mongodb
     # ports:  # Uncomment this to access mongodb from outside docker, not safe in deployment
     #   - 27018:27017
-    image: mongo:8.0.20
+    image: docker.io/library/mongo:8.0.20
     restart: always
     volumes:
       - ./data-node:/data/db
     command: mongod --noauth
   meilisearch:
     container_name: chat-meilisearch
-    image: getmeili/meilisearch:v1.35.1
+    image: docker.io/getmeili/meilisearch:v1.35.1
     restart: always
     # ports: # Uncomment this to access meilisearch from outside docker
     #   - 7700:7700 # if exposing these ports, make sure your master key is not the default value
@@ -92,7 +92,7 @@ services:
     volumes:
       - ./meili_data_v1.35.1:/meili_data
   vectordb:
-    image: pgvector/pgvector:0.8.0-pg15-trixie
+    image: docker.io/pgvector/pgvector:0.8.0-pg15-trixie
     environment:
       POSTGRES_DB: mydatabase
       POSTGRES_USER: myuser

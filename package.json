@@ -111,6 +111,7 @@
     "test:packages:chat": "npm run build:data-provider && cd packages/chat && npm run test:ci",
     "test:config": "jest --config config/jest.config.js",
     "test:dependencies": "node --test scripts/dependencies.test.mjs",
+    "test:images": "node --test scripts/images.test.mjs",
     "test:all": "npm run test:client && npm run test:api && npm run test:packages:api && npm run test:packages:data-provider && npm run test:packages:data-schemas && npm run test:packages:chat",
     "test:turbo": "turbo run test:ci --concurrency=2",
     "e2e:update": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.local.ts --update-snapshots",
