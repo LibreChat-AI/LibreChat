@@ -80,6 +80,16 @@ async function createAgent(request: APIRequestContext, session: Session) {
   });
 }
 
+/** A GET that starts an OAuth flow: the gate lets reads through, so this route asks for itself. */
+async function initiateOAuth(request: APIRequestContext, session: Session) {
+  return request.get('/api/mcp/e2e-server/oauth/initiate', {
+    headers: session.headers,
+    params: { userId: session.userId, flowId: `${session.userId}:e2e-server` },
+    failOnStatusCode: false,
+    maxRedirects: 0,
+  });
+}
+
 async function signIn(page: Page) {
   await page.goto('/login');
   await expect(page.getByTestId('login-button')).toBeVisible({ timeout: 20000 });
@@ -127,6 +137,9 @@ test.describe('Server-enforced terms acceptance', () => {
     const session = userSession as Session;
     const res = await createAgent(request, session);
     expect(res.status(), await res.text()).toBe(201);
+
+    const oauthStart = await initiateOAuth(request, session);
+    expect(oauthStart.status()).toBe(404);
   });
 
   test('an unaccepted user sees the terms modal and every write is refused @scenario:terms-unaccepted-blocked', async ({
@@ -152,6 +165,10 @@ test.describe('Server-enforced terms acceptance', () => {
     expect(credentialWrite.status()).toBe(403);
     expect(((await credentialWrite.json()) as { code: string }).code).toBe('terms_not_accepted');
 
+    const oauthStart = await initiateOAuth(request, session);
+    expect(oauthStart.status()).toBe(403);
+    expect(((await oauthStart.json()) as { code: string }).code).toBe('terms_not_accepted');
+
     const read = await request.get('/api/user/terms', { headers: session.headers });
     expect(read.ok()).toBeTruthy();
     expect(((await read.json()) as { termsAccepted: boolean }).termsAccepted).toBe(false);
@@ -174,5 +191,10 @@ test.describe('Server-enforced terms acceptance', () => {
 
     const res = await createAgent(request, userSession as Session);
     expect(res.status(), await res.text()).toBe(201);
+
+    /** Past the terms check the route answers for the flow it was asked about, and none exists. */
+    const oauthStart = await initiateOAuth(request, userSession as Session);
+    expect(oauthStart.status()).toBe(404);
+    expect(((await oauthStart.json()) as { error: string }).error).toBe('Flow not found');
   });
 });
