@@ -8,7 +8,8 @@ import { openPanel } from './panels';
 const DISCLOSURE =
   'Custom MCP connectors are not verified by this application. Third-party MCP servers may receive and process conversation content and other data used with their tools under their own privacy practices. Only connect to servers you trust.';
 
-const LONG_URL = `https://example.com/${'privacy-'.repeat(4)}${'a'.repeat(160)}`;
+const UNBROKEN = 'a'.repeat(160);
+const LONG_URL = `https://example.com/${'privacy-'.repeat(4)}${UNBROKEN}`;
 
 /** Phone through desktop: a line that breaks inside a word at any of these is the bug. */
 const WIDTHS = [360, 414, 600, 1024];
@@ -34,7 +35,9 @@ async function serveSubLabel(page: Page, subLabel: string): Promise<void> {
   });
 }
 
-async function openAddServerDialog(page: Page): Promise<Locator> {
+/** Sizes the page first: crossing the mobile breakpoint with the dialog open closes it. */
+async function openAddServerDialog(page: Page, width: number): Promise<Locator> {
+  await page.setViewportSize({ width, height: 900 });
   await page.goto('/c/new');
   await openPanel(page, 'mcp-builder', 'MCP Settings');
   await page.getByRole('button', { name: 'Add MCP', exact: true }).click();
@@ -44,16 +47,17 @@ async function openAddServerDialog(page: Page): Promise<Locator> {
 }
 
 /**
- * The words under `scope` whose glyphs sit on more than one line. Each run of
- * non-space characters is measured as a DOM range, so a word the browser split
- * reports one client rect per line it occupies.
+ * The words under `scope` whose glyphs sit on more than one line. Each run
+ * between spaces, hyphens and slashes (where a line may legitimately break) is
+ * measured as a DOM range, so a word the browser split reports one client rect
+ * per line it occupies.
  */
 function wordsSplitAcrossLines(scope: Locator): Promise<string[]> {
   return scope.evaluate((root) => {
     const split: string[] = [];
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      for (const match of (node.textContent ?? '').matchAll(/\S+/g)) {
+      for (const match of (node.textContent ?? '').matchAll(/[^\s/-]+/g)) {
         const range = document.createRange();
         range.setStart(node, match.index);
         range.setEnd(node, match.index + match[0].length);
@@ -100,14 +104,13 @@ test.describe('prose wraps between words', () => {
   test('@scenario:mcp-trust-disclosure-wraps-between-words a long trust disclosure in the Add MCP Server dialog never breaks inside a word', async ({
     page,
   }) => {
-    test.setTimeout(120000);
+    test.setTimeout(240000);
     await serveSubLabel(page, DISCLOSURE);
-    const dialog = await openAddServerDialog(page);
-    const description = dialog.locator('#trust-description');
-    await expect(description).toHaveText(DISCLOSURE);
 
     for (const width of WIDTHS) {
-      await page.setViewportSize({ width, height: 900 });
+      const dialog = await openAddServerDialog(page, width);
+      const description = dialog.locator('#trust-description');
+      await expect(description).toHaveText(DISCLOSURE);
       await description.scrollIntoViewIfNeeded();
       expect(await wordsSplitAcrossLines(description), `split words at ${width}px`).toEqual([]);
     }
@@ -116,19 +119,20 @@ test.describe('prose wraps between words', () => {
   test('@scenario:mcp-trust-disclosure-contains-long-url an unbroken URL in the trust disclosure wraps inside the dialog', async ({
     page,
   }) => {
-    test.setTimeout(120000);
+    test.setTimeout(240000);
     await serveSubLabel(page, `Read the policy at ${LONG_URL} before you connect.`);
-    const dialog = await openAddServerDialog(page);
-    const description = dialog.locator('#trust-description');
-    await expect(description).toContainText(LONG_URL);
 
     for (const width of WIDTHS) {
-      await page.setViewportSize({ width, height: 900 });
+      const dialog = await openAddServerDialog(page, width);
+      const label = dialog.locator('label[for="trust"]');
+      const description = dialog.locator('#trust-description');
+      await expect(description).toContainText(LONG_URL);
       await description.scrollIntoViewIfNeeded();
-      expect(await textStaysInside(description, LONG_URL, dialog), `URL at ${width}px`).toBe(true);
+      /** The run without a break opportunity is the only one allowed to split. */
       expect(await wordsSplitAcrossLines(description), `split words at ${width}px`).toEqual([
-        LONG_URL,
+        UNBROKEN,
       ]);
+      expect(await textStaysInside(description, LONG_URL, label), `URL at ${width}px`).toBe(true);
     }
   });
 
@@ -136,8 +140,9 @@ test.describe('prose wraps between words', () => {
     page,
   }) => {
     test.setTimeout(120000);
-    const spaced = `${uniqueName('Quarterly')} roadmap planning notes for the platform and infrastructure team`;
-    const unbroken = `${uniqueName('archive')}-${'x'.repeat(120)}`;
+    const spaced = `${uniqueName('Quarterly')} roadmap planning notes for the platform and infrastructure team, with the follow up items from every regional review meeting this autumn`;
+    const run = 'x'.repeat(160);
+    const unbroken = `${uniqueName('archive')}-${run}`;
     const tag = (name: string, position: number): TConversationTag => ({
       _id: `wrap-fixture-${position}`,
       user: 'wrap-fixture-user',
@@ -154,13 +159,12 @@ test.describe('prose wraps between words', () => {
         : route.continue(),
     );
 
-    await page.setViewportSize({ width: 360, height: 900 });
     await page.goto('/c/new');
     await openPanel(page, 'bookmarks', 'Bookmarks');
 
     for (const [name, expectedSplit] of [
       [spaced, []],
-      [unbroken, [unbroken]],
+      [unbroken, [run]],
     ] as const) {
       const row = page.getByRole('listitem').filter({ hasText: name });
       await row.getByRole('button', { name: 'Delete Bookmark', exact: true }).click();
