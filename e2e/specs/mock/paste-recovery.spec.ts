@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
+  messagesView,
   NEW_CHAT_PATH,
   selectMockEndpoint,
   sendMessage,
@@ -177,3 +178,66 @@ for (const action of ['queue', 'steer'] as const) {
     }
   });
 }
+
+test('a text-only user rerun excludes an unrelated paste and preserves its upload', async ({
+  page,
+}) => {
+  await page.goto(NEW_CHAT_PATH);
+  await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
+  const original = 'E2E_REPLY:historical-user-rerun';
+  await sendMessageAndWaitForCompletion(page, original);
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/api/files', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await gate;
+    return route.continue();
+  });
+  try {
+    const input = page.getByTestId('text-input');
+    const paste = 'Unrelated clipboard text belongs to the next message.\n'.repeat(80);
+    await input.fill('Keep this draft');
+    await input.evaluate((element, text) => {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData('text/plain', text);
+      element.dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }),
+      );
+    }, paste);
+    const chip = page.getByRole('button', { name: 'Edit pasted text, pasted-text.txt' });
+    await expect(chip).toBeVisible();
+    await expect(input).toHaveValue('Keep this draft');
+    const row = messagesView(page)
+      .locator('.message-render')
+      .filter({ has: page.locator('.user-turn') })
+      .first();
+    await row.hover();
+    await row.locator('button[id^="edit-"]').first().click();
+    const editor = page.locator('section[aria-label="Edit message"]');
+    await expect(editor).toBeVisible();
+    const submitted = page.waitForRequest(
+      (request) => request.method() === 'POST' && request.url().includes('/api/agents/chat'),
+    );
+    await editor.getByRole('button', { name: 'Rerun', exact: true }).click();
+    const payload = (await submitted).postDataJSON();
+    expect(payload.text).toBe(original);
+    expect(payload.files ?? []).toEqual([]);
+    await expect(input).toHaveValue('Keep this draft');
+    await expect(chip).toHaveAccessibleDescription(/Unrelated clipboard text/);
+    const uploadFinished = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response.url().endsWith('/api/files') &&
+        response.ok(),
+    );
+    release();
+    await uploadFinished;
+    await expect(page.getByTestId('composer-tray')).toContainText(
+      'Unrelated clipboard text belongs to the next message.',
+    );
+  } finally {
+    release();
+  }
+});

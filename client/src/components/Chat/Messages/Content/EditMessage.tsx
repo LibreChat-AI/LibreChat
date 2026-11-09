@@ -81,7 +81,7 @@ const EditMessage = ({
         conversationId,
       },
       {
-        overrideFiles: keptFiles,
+        overrideFiles: keptFiles ?? [],
         /** Pills on the edited user message stay visible after save-and-submit;
          *  carry the picks forward so the new turn primes the same skills
          *  instead of running unprimed. */

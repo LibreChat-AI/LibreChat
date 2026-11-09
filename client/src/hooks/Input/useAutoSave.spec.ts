@@ -130,6 +130,51 @@ describe('useAutoSave — conversation switching', () => {
     }
   });
 
+  it('keeps a live paste when a same-conversation rerun enters and leaves the pending phase', () => {
+    const textAreaRef = makeTextAreaRef();
+    const paste: ExtendedFile = {
+      file_id: 'unsent-rerun-paste',
+      progress: 0.2,
+      size: 100,
+      type: 'text/plain',
+      pastedText: 'unrelated exact clipboard text',
+    };
+    const hook = renderHook(
+      ({ isSubmitting }) => {
+        const [files, setFiles] = React.useState(new Map<string, ExtendedFile>());
+        useAutoSave({
+          conversationId: 'rerun-conversation',
+          isSubmitting,
+          textAreaRef,
+          files,
+          setFiles,
+        });
+        return { files, setFiles };
+      },
+      { initialProps: { isSubmitting: false } },
+    );
+    act(() => hook.result.current.setFiles(new Map([[paste.file_id, paste]])));
+    setFilesDraft('rerun-conversation', {
+      fileIds: [paste.file_id],
+      pendingPastes: { [paste.file_id]: { text: paste.pastedText!, selectionStart: 0 } },
+    });
+    textAreaRef.current!.value = 'Keep this draft';
+    mockSetValue.mockClear();
+    act(() => hook.rerender({ isSubmitting: true }));
+    expect(hook.result.current.files.get(paste.file_id)).toBe(paste);
+    expect(getFilesDraft(getPendingDraftId()).pendingPastes[paste.file_id]?.text).toBe(
+      paste.pastedText,
+    );
+    expect(mockSetValue).not.toHaveBeenCalledWith('text', '');
+    act(() => hook.rerender({ isSubmitting: false }));
+    expect(hook.result.current.files.get(paste.file_id)).toBe(paste);
+    expect(textAreaRef.current!.value).toBe('Keep this draft');
+    expect(getFilesDraft('rerun-conversation').pendingPastes[paste.file_id]?.text).toBe(
+      paste.pastedText,
+    );
+    hook.unmount();
+  });
+
   it('clears the textarea when switching to a conversation with no draft', () => {
     const { rerender } = renderHook(
       ({ conversationId }: { conversationId: string }) =>
