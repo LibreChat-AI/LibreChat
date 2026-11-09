@@ -362,4 +362,53 @@ describe('processAddedConvo', () => {
     );
     expect(mockGetSkillDbMethods).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ['honors the shared skills opt-out for an ordinary added spec', undefined, false],
+    ['ignores it when the added spec hides its badge row', true, true],
+  ])('%s', async (_label, hideBadgeRow, expectedEnabled) => {
+    mockResolveAgentScopedSkillIds.mockReturnValue([]);
+    mockCanAuthorSkillFiles.mockReturnValue(false);
+
+    /** The added pane has no badge row of its own; when its spec hides one,
+     *  the other pane's toggle must not strip what that spec configured. */
+    await processAddedConvo(
+      baseParams({
+        req: {
+          user: { id: 'u1', role: 'USER' },
+          body: { ephemeralAgent: { skills: false } },
+          config: {
+            modelSpecs: {
+              list: [
+                {
+                  name: 'added-spec',
+                  skills: true,
+                  ...(hideBadgeRow ? { hideBadgeRow } : {}),
+                },
+              ],
+            },
+          },
+        },
+        endpointOption: {
+          spec: 'primary-spec',
+          addedConvo: {
+            endpoint: 'openai',
+            model: 'gpt-4o',
+            spec: 'added-spec',
+          },
+        },
+        accessibleSkillIds: [],
+        editableSkillIds: [],
+        skillsCapabilityEnabled: true,
+        ephemeralSkillsToggle: false,
+        skillCreateAllowed: false,
+      }),
+    );
+
+    expect(mockResolveAgentScopedSkillIds).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: expect.objectContaining({ skills_enabled: expectedEnabled }),
+      }),
+    );
+  });
 });

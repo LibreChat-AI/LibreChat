@@ -8,7 +8,10 @@ import {
   isAgentsEndpoint,
   isEphemeralAgentId,
   isAssistantsEndpoint,
+  resolveSpecArtifacts,
   resolveModelSpecEndpoint,
+  resolveSpecSkillsEnabled,
+  specOverridesUserToggle,
 } from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
 import type { LocalizeFunction } from '~/common';
@@ -352,12 +355,20 @@ export function applyModelSpecEphemeralAgent({
     file_search: modelSpec.fileSearch ?? false,
     execute_code: modelSpec.executeCode ?? false,
     memory: modelSpec.memory ?? false,
-    artifacts: modelSpec.artifacts === true ? 'default' : modelSpec.artifacts || '',
+    skills: resolveSpecSkillsEnabled(undefined, modelSpec.skills),
+    artifacts: resolveSpecArtifacts(undefined, modelSpec.artifacts) ?? '',
   };
 
-  // For existing conversations, layer per-conversation localStorage overrides
-  // on top of spec defaults so user modifications persist across navigation.
-  // If localStorage is empty (e.g., cleared), spec values stand alone.
+  /** For existing conversations, layer per-conversation localStorage overrides on
+   *  top of spec defaults so user modifications persist across navigation. If
+   *  localStorage is empty (e.g. cleared), spec values stand alone.
+   *
+   *  Capabilities a hidden-badge spec configures are pinned: with no badge to
+   *  inspect or restore one, a value stored under an earlier configuration
+   *  would silently disable a tool the user cannot see. The pinning is per
+   *  capability, matching the server — a hidden spec silent on a capability
+   *  holds nothing over it, and erasing that stored value here is the one
+   *  divergence the server could not repair. */
   if (key !== Constants.NEW_CONVO) {
     const toolStorageMap: Array<[keyof t.TEphemeralAgent, string]> = [
       ['execute_code', LocalStorageKeys.LAST_CODE_TOGGLE_],
@@ -365,20 +376,34 @@ export function applyModelSpecEphemeralAgent({
       ['file_search', LocalStorageKeys.LAST_FILE_SEARCH_TOGGLE_],
       ['artifacts', LocalStorageKeys.LAST_ARTIFACTS_TOGGLE_],
       ['memory', LocalStorageKeys.LAST_MEMORY_TOGGLE_],
+      ['skills', LocalStorageKeys.LAST_SKILLS_TOGGLE_],
     ];
 
     for (const [toolKey, storagePrefix] of toolStorageMap) {
+      if (specOverridesUserToggle(modelSpec, toolKey)) {
+        continue;
+      }
       const raw = getTimestampedValue(`${storagePrefix}${key}`);
-      if (raw !== null) {
-        try {
-          agent[toolKey] = JSON.parse(raw) as never;
-        } catch {
-          // ignore parse errors
-        }
+      if (raw === null) {
+        continue;
+      }
+      try {
+        const stored = JSON.parse(raw);
+        /** Skills route back through the spec rule so a stored `true` cannot
+         *  lift a spec's `skills: false`, which every server writer enforces. */
+        agent[toolKey] = (
+          toolKey === 'skills'
+            ? resolveSpecSkillsEnabled(stored as boolean | undefined, modelSpec.skills)
+            : stored
+        ) as never;
+      } catch {
+        // ignore parse errors
       }
     }
 
-    const mcpRaw = localStorage.getItem(`${LocalStorageKeys.LAST_MCP_}${key}`);
+    const mcpRaw = specOverridesUserToggle(modelSpec, 'mcp')
+      ? null
+      : localStorage.getItem(`${LocalStorageKeys.LAST_MCP_}${key}`);
     if (mcpRaw !== null) {
       try {
         const parsed = JSON.parse(mcpRaw);
