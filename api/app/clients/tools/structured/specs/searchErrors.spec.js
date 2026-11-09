@@ -91,6 +91,17 @@ describe.each(tools)(
       expect(logged(SECRET)).toBe(false);
     });
 
+    it('cancels the unread body of a failing response so its connection is released', async () => {
+      const cancel = jest.fn().mockResolvedValue(undefined);
+      const json = jest.fn();
+      transport().mockResolvedValue({ ok: false, status: 500, body: { cancel }, json });
+
+      await call();
+
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(json).not.toHaveBeenCalled();
+    });
+
     it('returns the stable fallback for a transport failure and logs only its type', async () => {
       transport().mockRejectedValue(new Error(`connect ECONNREFUSED 10.0.0.5:443 ${SECRET}`));
 

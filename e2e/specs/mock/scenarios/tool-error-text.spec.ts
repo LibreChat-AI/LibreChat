@@ -112,7 +112,7 @@ test.describe('approved tool error text', () => {
       { cwd: apiRoot },
     );
     expect(result.status, result.output).toBe(0);
-    expect(result.output).toMatch(/(?<!\d)16 passed/);
+    expect(result.output).toMatch(/(?<!\d)19 passed/);
   });
 
   test('a failing Flux, Gemini or OpenAI image tool returns approved text, not the provider message @scenario:image-tools-approved-error-text', () => {

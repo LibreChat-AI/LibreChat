@@ -1,11 +1,6 @@
 const { Tool } = require('@librechat/agents/langchain/tools');
 const { getEnvironmentVariable } = require('@librechat/agents/langchain/utils/env');
-const {
-  ToolInputError,
-  formatToolError,
-  formatToolHttpError,
-  toolRequestBudget,
-} = require('@librechat/api');
+const { ToolInputError, runToolRequest, toolRequestBudget } = require('@librechat/api');
 
 const traversaalSearchJsonSchema = {
   type: 'object',
@@ -57,44 +52,43 @@ class TraversaalSearch extends Tool {
     const body = {
       query: [query],
     };
-    try {
-      const response = await fetch('https://api-ares.traversaal.ai/live/predict', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': this.apiKey,
-        },
-        body: JSON.stringify({ ...body }),
-        signal: toolRequestBudget(this.timeouts).signal,
-      });
-      if (!response.ok) {
-        return formatToolHttpError('Traversaal', response.status);
-      }
-      const json = await response.json();
-      if (!json.data) {
-        throw new ToolInputError('Could not parse Traversaal API results. Please try again.');
-      }
+    return runToolRequest({
+      service: 'Traversaal',
+      request: () =>
+        fetch('https://api-ares.traversaal.ai/live/predict', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': this.apiKey,
+          },
+          body: JSON.stringify({ ...body }),
+          signal: toolRequestBudget(this.timeouts).signal,
+        }),
+      read: async (response) => {
+        const json = await response.json();
+        if (!json.data) {
+          throw new ToolInputError('Could not parse Traversaal API results. Please try again.');
+        }
 
-      const baseText = json.data?.response_text ?? '';
-      const sources = json.data?.web_url;
-      const noResponse = 'No response found in Traversaal API results';
+        const baseText = json.data?.response_text ?? '';
+        const sources = json.data?.web_url;
+        const noResponse = 'No response found in Traversaal API results';
 
-      if (!baseText && !sources) {
-        return noResponse;
-      }
+        if (!baseText && !sources) {
+          return noResponse;
+        }
 
-      const sourcesText = sources?.length ? '\n\nSources:\n - ' + sources.join('\n - ') : '';
+        const sourcesText = sources?.length ? '\n\nSources:\n - ' + sources.join('\n - ') : '';
 
-      const result = baseText + sourcesText;
+        const result = baseText + sourcesText;
 
-      if (!result) {
-        return noResponse;
-      }
+        if (!result) {
+          return noResponse;
+        }
 
-      return result;
-    } catch (error) {
-      return formatToolError(error, 'Traversaal');
-    }
+        return result;
+      },
+    });
   }
 }
 
