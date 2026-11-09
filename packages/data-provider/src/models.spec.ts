@@ -1,3 +1,4 @@
+import type { TEphemeralAgent } from './types';
 import type { TModelSpec } from './models';
 import {
   resolveSpecToolFlag,
@@ -102,6 +103,15 @@ describe('model spec defaults vs. explicit user toggles', () => {
       expect(resolveSpecUserToggles(toggles, { webSearch: true } as TModelSpec)).toBe(toggles);
       expect(resolveSpecUserToggles(toggles, null)).toBe(toggles);
       expect(resolveSpecUserToggles(toggles, undefined)).toBe(toggles);
+    });
+
+    it('keeps a request key named __proto__ from restoring a dropped toggle', () => {
+      const toggles = JSON.parse(
+        '{"web_search": false, "__proto__": {"web_search": true}}',
+      ) as TEphemeralAgent;
+      const resolved = resolveSpecUserToggles(toggles, hidden({ webSearch: false }));
+      expect(resolved?.web_search).toBeUndefined();
+      expect(Object.getPrototypeOf(resolved)).toBe(Object.prototype);
     });
 
     it('treats a spec value of false as configured', () => {

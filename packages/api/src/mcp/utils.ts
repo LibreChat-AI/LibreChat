@@ -559,14 +559,31 @@ export interface ChatSelectableLookup {
  */
 export async function filterChatSelectableMCPServers(
   selectedServers: string[] | null | undefined,
-  { userId, role, getAccessibleMCPServers }: ChatSelectableLookup,
+  lookup: ChatSelectableLookup,
 ): Promise<string[]> {
   if (!Array.isArray(selectedServers) || selectedServers.length === 0) {
     return [];
   }
   const uniqueServers = [...new Set(selectedServers)];
-  if (getAccessibleMCPServers == null) {
-    return uniqueServers;
+  const selectable = await classifyChatSelectableMCPServers(uniqueServers, lookup);
+  return selectable == null
+    ? uniqueServers
+    : uniqueServers.filter((serverName) => selectable.has(serverName));
+}
+
+/**
+ * The subset of `serverNames` the chat picker may offer, by the rules
+ * `filterChatSelectableMCPServers` documents. Returns null when the accessible
+ * catalog could not be resolved (no lookup, a failed lookup, or an empty
+ * catalog), so a caller can tell a classification apart from the fail-open
+ * fallback and choose its own conservative behavior.
+ */
+export async function classifyChatSelectableMCPServers(
+  serverNames: string[],
+  { userId, role, getAccessibleMCPServers }: ChatSelectableLookup,
+): Promise<Set<string> | null> {
+  if (serverNames.length === 0 || getAccessibleMCPServers == null) {
+    return null;
   }
 
   let accessible: Record<string, Pick<ParsedServerConfig, 'chatMenu' | 'consumeOnly'>>;
@@ -574,20 +591,22 @@ export async function filterChatSelectableMCPServers(
     accessible = await getAccessibleMCPServers(userId, role);
   } catch (error) {
     logger.warn('[MCP] Could not resolve accessible servers; keeping the chat selection', error);
-    return uniqueServers;
+    return null;
   }
 
   const accessibleNames = Object.keys(accessible ?? {});
   if (accessibleNames.length === 0) {
-    return uniqueServers;
+    return null;
   }
   const aliases = buildServerNameAliases(accessibleNames);
 
-  return uniqueServers.filter((serverName) => {
-    const resolved =
-      accessible[serverName] ?? accessible[aliases.get(normalizeServerName(serverName)) ?? ''];
-    return isChatSelectableMCPServer(resolved);
-  });
+  return new Set(
+    serverNames.filter((serverName) => {
+      const resolved =
+        accessible[serverName] ?? accessible[aliases.get(normalizeServerName(serverName)) ?? ''];
+      return isChatSelectableMCPServer(resolved);
+    }),
+  );
 }
 
 /**
