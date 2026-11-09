@@ -20,8 +20,8 @@ const hasRegistry = (ref) => /^([^/]*[.:][^/]*|localhost)\//.test(ref);
 
 /** The image Compose uses when `${VAR:-default}` is unset, or null when it cannot be known. */
 function resolve(value) {
-  const withDefault = /^\$\{\w+:?-(.*)\}$/.exec(value);
-  if (withDefault) return withDefault[1];
+  const withDefault = /^\$\{\w+:?-([^}]*)\}$/.exec(value);
+  if (withDefault) return withDefault[1] || null;
   return value.includes('$') ? null : value;
 }
 
@@ -35,23 +35,24 @@ function composeImages(text) {
   });
 }
 
-/** `# image:` lines in a template users copy from. A `build:` on the next line marks a local tag. */
+/** Commented-out `image:` lines, as in a template users copy from. A `build:` right after marks a local tag. */
 function commentedImages(text) {
   const lines = text.split('\n');
   return lines.flatMap((line, i) => {
-    const match = /^#(\s+)image:\s*(\S+)\s*$/.exec(line);
-    if (!match || lines[i + 1]?.startsWith(`#${match[1]}build:`)) return [];
+    const match = /^(\s*#\s*)image:\s*(\S+)\s*$/.exec(line);
+    if (!match || lines[i + 1]?.startsWith(`${match[1]}build:`)) return [];
     return [{ at: 'commented', ref: match[2].replace(/^["']|["']$/g, '') }];
   });
 }
 
-/** External images a Dockerfile pulls: FROM and COPY --from, minus stages, scratch and build args. */
+/** External images a Dockerfile pulls: FROM and COPY --from, minus stages, scratch and args without a default. */
 function dockerfileImages(text) {
   const stages = new Set();
   const refs = [];
-  const pull = (at, ref) => {
-    const name = ref.toLowerCase();
-    if (stages.has(name) || name === 'scratch' || /^\d+$/.test(name) || ref.includes('$')) return;
+  const pull = (at, raw) => {
+    const ref = resolve(raw);
+    const name = raw.toLowerCase();
+    if (ref == null || stages.has(name) || name === 'scratch' || /^\d+$/.test(name)) return;
     refs.push({ at, ref });
   };
   for (const line of text.split('\n')) {
@@ -102,6 +103,10 @@ test('composeImages skips local builds and judges the default of an unset variab
     '    image: ${CACHE_IMAGE:-redis:7-alpine}',
     '  proxy:',
     '    image: ${PROXY_IMAGE}',
+    '  empty:',
+    '    image: ${EMPTY_IMAGE:-}',
+    '  joined:',
+    '    image: ${HOST:-x}${NAME:-y}',
     '  bare:',
   ].join('\n');
   assert.deepEqual(composeImages(text), [
@@ -125,19 +130,29 @@ test('commentedImages reads template snippets and exempts a local build tag', ()
     '',
     '#   rag_api:',
     '#     image: "registry.librechat.ai/librechat-ai/librechat-rag-api-dev:latest"',
+    '',
+    'services:',
+    '  db:',
+    '    # image: mongo:4.4.18',
+    '    image: docker.io/library/mongo:8.0.20',
+    '  api:',
+    '    # image: librechat',
+    '    # build: .',
   ].join('\n');
   assert.deepEqual(commentedImages(text), [
     { at: 'commented', ref: 'ollama/ollama:latest' },
     { at: 'commented', ref: 'registry.librechat.ai/librechat-ai/librechat-rag-api-dev:latest' },
+    { at: 'commented', ref: 'mongo:4.4.18' },
   ]);
 });
 
-test('dockerfileImages ignores stages, scratch, stage indexes and build args', () => {
+test('dockerfileImages ignores stages, scratch, stage indexes and args without a default', () => {
   const text = [
     'FROM node:24-alpine AS base',
     'FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26 AS build',
     'FROM base AS dev',
     'FROM ${RUNTIME}',
+    'FROM ${BASE:-alpine:3.22}',
     'FROM scratch',
     'COPY --from=base /a /b',
     'COPY --chown=1:1 --from=ghcr.io/astral-sh/uv:0.9 /uv /bin/uv',
@@ -148,6 +163,7 @@ test('dockerfileImages ignores stages, scratch, stage indexes and build args', (
   assert.deepEqual(dockerfileImages(text), [
     { at: 'FROM', ref: 'node:24-alpine' },
     { at: 'FROM', ref: 'docker.io/library/golang:1.26' },
+    { at: 'FROM', ref: 'alpine:3.22' },
     { at: 'COPY --from', ref: 'ghcr.io/astral-sh/uv:0.9' },
     { at: 'COPY --from', ref: 'pgvector/pgvector:0.8.0' },
   ]);
