@@ -431,7 +431,10 @@ const chatV2 = async (req, res) => {
       }
     }
 
-    const promises = [initializeThread(), balanceReservations.track(checkBalanceBeforeRun())];
+    const promises = [
+      assistantRun.track(initializeThread()),
+      balanceReservations.track(checkBalanceBeforeRun()),
+    ];
     await Promise.all(promises);
 
     const sendInitialResponse = () => {

@@ -5,7 +5,13 @@ import { AgentExecutionAdmissionError, AgentExecutionEnrollment } from '~/agents
 import { GenerationAdmissionDeniedError, GenerationAdmissionUnavailableError } from '~/stream';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
-/** Settlement waits this long for the response to close, so a close handler registers first. */
+/**
+ * Upper bound on how long settlement waits for the response's `close` event, so the close handler
+ * registers first. The event follows `res.end()` within milliseconds; the bound only keeps a
+ * controller that returned without ending its response from holding the account drain, which
+ * has its own timeout. It is an internal protocol constant rather than a limit an operator sets or
+ * a user sees, so it has no `configSchema` field.
+ */
 const RESPONSE_CLOSE_GRACE_MS = 2_000;
 const ACCOUNT_DELETION_MESSAGE = 'Account deletion is in progress';
 const ASSISTANT_RUN_FAILURE = 'Assistant run failed';
@@ -64,7 +70,11 @@ export interface AssistantRunHandle {
   throwIfStopped: () => void;
   /** Cancels the provider run when this run is stopped, at once if it already was. */
   cancelOnStop: (openai: AssistantsRunClient, ids: AssistantRunIds) => void;
-  /** Keeps `work` inside the drain: settlement waits for it. Call it before the run settles. */
+  /**
+   * Keeps `work` inside the drain: settlement waits for it, including for work it tracks in turn.
+   * A failure is logged and stays the caller's to handle. Work started after settlement is
+   * outside the drain.
+   */
   track: <T>(work: Promise<T>) => Promise<T>;
   /**
    * Wraps a callback the response fires on its own, such as `close`. It does nothing for a
@@ -103,6 +113,7 @@ export function unmanagedAssistantRun(): AssistantRunHandle {
 export class AssistantRun implements AssistantRunHandle {
   readonly signal: AbortSignal;
   private settling = false;
+  private readonly tracked: Promise<void>[] = [];
 
   constructor(
     private readonly execution: AgentExecutionEnrollment,
@@ -144,7 +155,19 @@ export class AssistantRun implements AssistantRunHandle {
   }
 
   track<T>(work: Promise<T>): Promise<T> {
-    return this.execution.track(work);
+    if (this.settling) {
+      logger.warn('[AssistantRun] Work started after the run settled is outside the drain');
+      return work;
+    }
+    this.tracked.push(
+      work.then(
+        () => undefined,
+        (error: unknown) => {
+          logger.warn('[AssistantRun] Tracked work failed', getSafeErrorMetadata(error));
+        },
+      ),
+    );
+    return work;
   }
 
   guard<A extends unknown[]>(
@@ -154,7 +177,7 @@ export class AssistantRun implements AssistantRunHandle {
       if (this.signal.aborted || this.settling) {
         return;
       }
-      await this.execution.track(handler(...args));
+      await this.track(handler(...args));
     };
   }
 
@@ -173,10 +196,15 @@ export class AssistantRun implements AssistantRunHandle {
 
   /**
    * Ends the run once the response closed and everything tracked has landed, which is what lets
-   * account erasure proceed. Failures are logged: the drain fails closed on its own.
+   * account erasure proceed. Tracked work can start and track more work, so it drains until none
+   * is left before the run is marked settled. Failures are logged: the drain fails closed on its
+   * own.
    */
   async settle(res: AssistantRunResponse, error?: unknown): Promise<void> {
     await untilClosed(res, this.responseCloseGraceMs);
+    while (this.tracked.length > 0) {
+      await Promise.all(this.tracked.splice(0));
+    }
     this.settling = true;
     try {
       await this.execution.settle(error);

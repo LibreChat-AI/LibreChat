@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { EventEmitter } from 'events';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { createModels, createMethods } from '@librechat/data-schemas';
+import { logger, createModels, createMethods } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream';
 import { AssistantRun, withAssistantRun, enrollAssistantRun, unmanagedAssistantRun } from './run';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
@@ -254,6 +254,61 @@ describe('Assistants run enrollment', () => {
 
       await run.settle(closedResponse());
       await expect(stopping).resolves.toBeUndefined();
+    });
+  });
+
+  describe('track', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('waits for work that tracked work starts', async () => {
+      const run = await enroll();
+      const order: string[] = [];
+      const inner = deferred();
+      run.track(
+        (async () => {
+          await flush();
+          run.track(
+            inner.promise.then(() => {
+              order.push('inner');
+            }),
+          );
+          order.push('outer');
+        })(),
+      );
+
+      const settled = run.settle(closedResponse()).then(() => {
+        order.push('settled');
+      });
+      await flush();
+      await flush();
+      expect(order).toEqual(['outer']);
+
+      inner.resolve();
+      await settled;
+      expect(order).toEqual(['outer', 'inner', 'settled']);
+    });
+
+    it('logs a failure and leaves the rejection to the caller', async () => {
+      const run = await enroll();
+      const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+
+      const failing = run.track(Promise.reject(new Error('save failed')));
+
+      await expect(failing).rejects.toThrow('save failed');
+      await run.settle(closedResponse());
+      expect(warn).toHaveBeenCalledWith('[AssistantRun] Tracked work failed', expect.anything());
+    });
+
+    it('lets work started after settlement run and says it is outside the drain', async () => {
+      const run = await enroll();
+      await run.settle(closedResponse());
+      const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+      const late = Promise.resolve('late');
+
+      expect(run.track(late)).toBe(late);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('after the run settled'));
     });
   });
 
