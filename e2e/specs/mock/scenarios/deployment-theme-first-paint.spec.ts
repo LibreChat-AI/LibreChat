@@ -26,6 +26,10 @@ import { resolveTheme } from '../../../../packages/data-provider/src/themes/regi
  * before the frame paints.
  */
 
+// Use full Chromium locally, matching CI's Chrome, without trace or video capture
+// competing with protocol calls under CPU throttling. Failure screenshots remain enabled.
+test.use({ channel: process.env.E2E_CHROMIUM_CHANNEL ?? 'chromium', trace: 'off', video: 'off' });
+
 type Mode = 'light' | 'dark';
 
 /** An operator's own `interface.theme`, written inline in librechat.yaml rather than named. */
