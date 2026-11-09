@@ -5,6 +5,12 @@ import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useDirection } from '@radix-ui/react-direction';
 import {
+  submitFromComposer,
+  composerClearance,
+  ComposerField,
+  ComposerFrame,
+} from '@librechat/chat/components';
+import {
   PastedTextDialog,
   QuoteButton,
   composerHintId,
@@ -23,13 +29,6 @@ import {
   isAgentsEndpoint,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
-import {
-  submitFromComposer,
-  composerClearance,
-  ComposerField,
-  ComposerFrame,
-  ComposerActions,
-} from '@librechat/chat/components';
 import type { TChatProject, TMessage, TConversation } from 'librechat-data-provider';
 import type { QueuedMessageContext } from '@librechat/chat';
 import type { SetterOrUpdater } from 'recoil';
@@ -84,6 +83,7 @@ import PromptsCommand from './PromptsCommand';
 import SkillsCommand from './SkillsCommand';
 import AutoPlayAudio from './AutoPlayAudio';
 import { mainTextareaId } from '~/common';
+import Actions from './Composer/Actions';
 import ToolDialogs from './ToolDialogs';
 import Queue from './Composer/Queue';
 import Tray from './Composer/Tray';
@@ -510,11 +510,11 @@ const ChatForm = memo(function ChatForm({
   const canStop = steering.canControlGeneration || isAssistantsEndpoint(endpoint);
 
   /* Memoized for `memo(Bar)`: an inline element is a new identity every render,
-     and this component re-renders on every keystroke. */
+     and this component re-renders on every keystroke. `Actions` reads the draft
+     itself, so nothing here changes with it. */
   const actionSlot = useMemo(
     () => (
-      <ComposerActions
-        text={textValue ?? ''}
+      <Actions
         submitButtonRef={submitButtonRef}
         isSubmitting={isSubmitting}
         answersAsk={answerMode.composerAnswers}
@@ -544,7 +544,6 @@ const ChatForm = memo(function ChatForm({
       />
     ),
     [
-      textValue,
       isSubmitting,
       answerMode.composerAnswers,
       answerMode.composerLocked,
@@ -566,6 +565,35 @@ const ChatForm = memo(function ChatForm({
       setShowStopButton,
       handleStopGenerating,
       canStop,
+    ],
+  );
+
+  const approvalSlot = useMemo(
+    () => (
+      <div className="flex items-center gap-1.5">
+        <CodeApprovalMenu
+          conversation={conversation}
+          addedConversation={addedConvo}
+          codeEnvironmentMode={codeWorkspace.mode}
+          setConversation={setConversation}
+          disabled={disableInputs}
+        />
+        {index === 0 && conversationId != null && (
+          <PendingToolApprovalButton
+            conversationId={conversationId}
+            triggerRef={approvalTriggerRef}
+          />
+        )}
+      </div>
+    ),
+    [
+      conversation,
+      addedConvo,
+      codeWorkspace.mode,
+      setConversation,
+      disableInputs,
+      index,
+      conversationId,
     ],
   );
 
@@ -811,23 +839,7 @@ const ChatForm = memo(function ChatForm({
           showSpeech={SpeechToText}
           speechDisabled={speechDisabled}
           dictation={dictation}
-          approvalSlot={
-            <div className="flex items-center gap-1.5">
-              <CodeApprovalMenu
-                conversation={conversation}
-                addedConversation={addedConvo}
-                codeEnvironmentMode={codeWorkspace.mode}
-                setConversation={setConversation}
-                disabled={disableInputs}
-              />
-              {index === 0 && conversationId != null && (
-                <PendingToolApprovalButton
-                  conversationId={conversationId}
-                  triggerRef={approvalTriggerRef}
-                />
-              )}
-            </div>
-          }
+          approvalSlot={approvalSlot}
           actionSlot={actionSlot}
           hasAddedConversation={addedConvo != null}
         />
