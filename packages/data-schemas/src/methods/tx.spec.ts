@@ -3257,6 +3257,21 @@ describe('dot-prefixed Kimi K3 aliases', () => {
   });
 });
 
+describe('Bedrock NVIDIA Nemotron pricing', () => {
+  it.each([
+    ['nvidia.nemotron-super-3-120b', 0.15, 0.65],
+    ['nvidia.nemotron-nano-3-30b', 0.06, 0.24],
+    ['nvidia.nemotron-nano-9b-v2', 0.06, 0.23],
+    ['nvidia.nemotron-nano-12b-v2', 0.2, 0.6],
+  ])('bills %s at its Bedrock rate, not the default', (model, prompt, completion) => {
+    for (const id of [model, `us.${model}`]) {
+      expect(getValueKey(id)).toBe(model);
+      expect(getMultiplier({ model: id, tokenType: 'prompt' })).toBe(prompt);
+      expect(getMultiplier({ model: id, tokenType: 'completion' })).toBe(completion);
+    }
+  });
+});
+
 describe('Grok long-context premium tier', () => {
   it('doubles the rate once a prompt passes the 200K threshold', () => {
     for (const model of ['grok-4.5', 'grok-4.6']) {

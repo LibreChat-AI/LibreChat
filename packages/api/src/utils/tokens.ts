@@ -416,6 +416,15 @@ const openAIBedrockModels = {
   'openai.gpt-6-luna': bedrockOpenAIContext,
 };
 
+// NVIDIA Nemotron models on Bedrock
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
+const nvidiaBedrockModels = {
+  'nvidia.nemotron-nano-9b-v2': 128000,
+  'nvidia.nemotron-nano-12b-v2': 128000,
+  'nvidia.nemotron-nano-3-30b': 256000,
+  'nvidia.nemotron-super-3-120b': 256000,
+};
+
 const bedrockModels = {
   ...mistralModels,
   ...cohereModels,
@@ -425,6 +434,7 @@ const bedrockModels = {
   ...ai21Models,
   ...amazonModels,
   ...openAIBedrockModels,
+  ...nvidiaBedrockModels,
   ...anthropicModels,
 };
 
