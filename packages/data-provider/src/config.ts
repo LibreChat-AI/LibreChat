@@ -2737,7 +2737,7 @@ export const outboundTimeoutsSchema = z.object({
   actionsMs: outboundTimeoutMs,
   /** The OpenAI moderation check that runs before a chat turn. */
   moderationMs: outboundTimeoutMs,
-  /** Fetching a stored image by URL to encode it for a provider. */
+  /** Reading a stored image, by URL or from blob storage, to encode it for a provider. */
   imageFetchMs: outboundTimeoutMs,
   /** Each call a built-in tool makes to its API (weather, Wolfram, web search). */
   toolsMs: outboundTimeoutMs,
