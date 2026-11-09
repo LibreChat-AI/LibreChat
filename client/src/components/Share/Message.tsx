@@ -59,6 +59,9 @@ export default function Message(props: TMessageProps) {
    *  view and wrong here: it is the screen-reader heading for the user turn, and it
    *  would credit every prompt the sharer wrote to the person reading the transcript. */
   const messageLabel = isCreatedByUser ? localize('com_ui_user') : (message.sender ?? '');
+  /** A share view has no conversation of its own, so the id comes from the shared message. A card
+   *  that opens a child run needs it for its parent context, and stays disabled without one. */
+  const conversationId = message.conversationId ?? conversation?.conversationId ?? '';
   const subagentWakeup = wakeupDisplay?.kind === 'subagent' ? wakeupDisplay.tasks[0] : undefined;
   const Row = subagentWakeup == null ? MessageRow : WakeupRow;
   const isUserSide = isCreatedByUser && (wakeupDisplay == null || subagentWakeup != null);
@@ -70,7 +73,7 @@ export default function Message(props: TMessageProps) {
           <Row
             task={subagentWakeup}
             agentsMap={agentsMap}
-            conversationId={message.conversationId ?? conversation?.conversationId ?? ''}
+            conversationId={conversationId}
             message={wakeupDisplay == null ? message : undefined}
             id={messageId}
             icon={<Icon message={message} conversation={conversation} />}
@@ -105,7 +108,7 @@ export default function Message(props: TMessageProps) {
               value={{
                 messageId,
                 isExpanded: false,
-                conversationId: conversation?.conversationId,
+                conversationId,
                 isSubmitting: false,
                 isLatestMessage: false,
               }}
