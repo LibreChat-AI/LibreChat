@@ -1,12 +1,14 @@
 import { logger } from '@librechat/data-schemas';
 import {
-  Tools,
   Constants,
   isAgentsEndpoint,
   isEphemeralAgentId,
   getEphemeralSender,
+  resolveSpecArtifacts,
   encodeEphemeralAgentId,
   resolveMCPAppsPolicy,
+  resolveSpecUserToggles,
+  resolveSpecSkillsEnabled,
 } from 'librechat-data-provider';
 import type {
   AgentModelParameters,
@@ -18,12 +20,8 @@ import type {
 import type { AppConfig } from '@librechat/data-schemas';
 import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
 import type { ParsedServerConfig } from '~/mcp/types';
-import {
-  requiresEphemeralUserConnection,
-  filterChatSelectableMCPServers,
-  validateMCPServerConfig,
-} from '~/mcp/utils';
-import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { requiresEphemeralUserConnection, validateMCPServerConfig } from '~/mcp/utils';
+import { resolveEphemeralTools, resolveEphemeralMCPServers } from '~/agents/toggles';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
@@ -83,52 +81,38 @@ export async function loadEphemeralAgent(
   if (spec != null && spec !== '') {
     modelSpec = modelSpecs?.list?.find((s) => s.name === spec) ?? null;
   }
-  const ephemeralAgent: TEphemeralAgent | undefined = req.body?.ephemeralAgent;
+  const requestAgent: TEphemeralAgent | undefined = req.body?.ephemeralAgent;
+  /** A spec that gives the user no control over its tools makes what it
+   *  configures unconditional, so a request toggle against one is dropped. */
+  const ephemeralAgent: TEphemeralAgent | undefined = resolveSpecUserToggles(
+    requestAgent,
+    modelSpec,
+  );
   const userId = req.user?.id ?? '';
   const capabilityProfile = resolveMCPClientCapabilityProfile(
     resolveMCPAppsPolicy(req.config?.mcpSettings?.apps),
   );
-  /** The picker's own selection is narrowed to what the picker may offer; a
-   *  spec's servers are the operator's choice and are added after, so pinning a
-   *  chat-hidden server to a spec keeps working. */
   const mcpServers = new Set<string>(
-    await filterChatSelectableMCPServers(ephemeralAgent?.mcp, {
+    await resolveEphemeralMCPServers({
+      selected: ephemeralAgent?.mcp,
+      specServers: modelSpec?.mcpServers,
       userId,
       role: req.user?.role,
       getAccessibleMCPServers: deps.getAccessibleMCPServers,
     }),
   );
-  if (modelSpec?.mcpServers) {
-    for (const mcpServer of modelSpec.mcpServers) {
-      mcpServers.add(mcpServer);
-    }
-  }
   /** Publish the servers this request will actually use back onto the body. The
    *  instruction path reads `req.body.ephemeralAgent.mcp` directly and prefers
-   *  it over the agent's tools, so it would otherwise both inject a hidden
-   *  server's `serverInstructions` and omit a spec-pinned server's. */
-  if (ephemeralAgent != null && Array.isArray(ephemeralAgent.mcp)) {
-    ephemeralAgent.mcp = [...mcpServers];
+   *  it over the agent's tools, so it would otherwise both inject a deselected
+   *  or hidden server's `serverInstructions` and omit a spec-pinned server's. */
+  if (requestAgent != null && Array.isArray(requestAgent.mcp)) {
+    requestAgent.mcp = [...mcpServers];
   }
-  const tools: string[] = [];
-  if (ephemeralAgent?.execute_code === true || modelSpec?.executeCode === true) {
-    tools.push(Tools.execute_code);
-  }
-  if (ephemeralAgent?.file_search === true || modelSpec?.fileSearch === true) {
-    tools.push(Tools.file_search);
-  }
-  if (ephemeralAgent?.web_search === true || modelSpec?.webSearch === true) {
-    tools.push(Tools.web_search);
-  }
-  if (ephemeralAgent?.memory === true || modelSpec?.memory === true) {
-    tools.push(Tools.memory);
-  }
-  /** Same downstream gating as persisted agents applies: `createRun` only
-   *  equips the tool when the request is HITL-capable, the agent is not a
-   *  subagent, and the admin hasn't excluded it (filteredTools/includedTools). */
-  if (ephemeralAgent?.ask_user_question === true || modelSpec?.askUserQuestion === true) {
-    tools.push(ASK_USER_QUESTION_TOOL_NAME);
-  }
+  /** Spec flags are defaults an explicit request toggle overrides. Same
+   *  downstream gating as persisted agents still applies: `createRun` only
+   *  equips `ask_user_question` when the request is HITL-capable, the agent is
+   *  not a subagent, and the admin hasn't excluded it. */
+  const tools: string[] = resolveEphemeralTools(ephemeralAgent, modelSpec);
 
   if (mcpServers.size > 0) {
     const serverToolKeys = await mapWithConcurrency(
@@ -209,20 +193,17 @@ export async function loadEphemeralAgent(
     result.tool_options = mergeSynthesizedToolOptions(result.tool_options, intentToolOptions);
   }
 
-  if (ephemeralAgent?.artifacts) {
-    result.artifacts = ephemeralAgent.artifacts;
+  const artifacts = resolveSpecArtifacts(ephemeralAgent?.artifacts, modelSpec?.artifacts);
+  if (artifacts != null) {
+    result.artifacts = artifacts;
   }
   if (modelSpec?.subagents) {
     result.subagents = modelSpec.subagents;
   }
   if (modelSpec && Object.prototype.hasOwnProperty.call(modelSpec, 'skills')) {
-    if (modelSpec.skills === true) {
-      result.skills_enabled = true;
-    } else if (modelSpec.skills === false) {
-      result.skills_enabled = false;
-      result.skills = [];
-    } else if (Array.isArray(modelSpec.skills)) {
-      result.skills_enabled = true;
+    const skillsEnabled = resolveSpecSkillsEnabled(ephemeralAgent?.skills, modelSpec.skills);
+    result.skills_enabled = skillsEnabled;
+    if (!skillsEnabled || Array.isArray(modelSpec.skills)) {
       result.skills = [];
     }
   }
