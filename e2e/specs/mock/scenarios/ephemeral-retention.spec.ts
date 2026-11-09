@@ -445,6 +445,44 @@ test.describe('ephemeral retention', () => {
     expectForcedTemporary(stored);
   });
 
+  test('archiving a converted chat again keeps its deadline @scenario:archiving-a-converted-chat-again-keeps-its-deadline', async ({
+    request,
+  }) => {
+    const conversationId = await seedPermanentConversation(userId, [
+      {
+        messageId: randomUUID(),
+        parentMessageId: NO_PARENT,
+        isCreatedByUser: true,
+        text: 'Question saved before ephemeral',
+      },
+    ]);
+    await setRetentionMode(request, token, userId);
+    const setArchived = (isArchived: boolean) =>
+      requestResult(request, {
+        path: '/api/convos/archive',
+        token,
+        method: 'POST',
+        data: { arg: { conversationId, isArchived } },
+      });
+
+    const first = await setArchived(true);
+    expect(first.ok, `Expected the archive to succeed: ${first.text}`).toBe(true);
+    const converted = await readConversation(conversationId);
+    expectForcedTemporary(converted);
+
+    /** From the second request on, the access check trusts its cached marker and reads nothing,
+     *  so the save has to find the deadline itself rather than open a new window. */
+    for (const isArchived of [false, true]) {
+      const again = await setArchived(isArchived);
+      expect(again.ok, `Expected the request to succeed: ${again.text}`).toBe(true);
+      const stored = await readConversation(conversationId);
+      expect(stored?.isArchived).toBe(isArchived);
+      expect(stored?.expiredAt, 'a repeated request must not extend the deadline').toEqual(
+        converted?.expiredAt,
+      );
+    }
+  });
+
   test('archiving a chat gives a chat saved before all-data retention its deadline @scenario:archiving-a-chat-gives-a-pre-existing-chat-its-deadline', async ({
     request,
   }) => {

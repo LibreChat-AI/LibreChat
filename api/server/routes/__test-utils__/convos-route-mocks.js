@@ -59,9 +59,13 @@ const markConvoSeenHandler = jest.fn();
 const markConvoUnreadHandler = jest.fn();
 const renameConversationHandler = jest.fn((_req, res) => res.status(204).end());
 const renameHandlerInputs = [];
+const archiveConversationHandler = jest.fn((_req, res) => res.status(200).json({}));
+const archiveHandlerInputs = [];
 
 module.exports = {
   archiveAllHandler,
+  archiveConversationHandler,
+  archiveHandlerInputs,
   ownerPrefix,
   generationJobManager,
   subagentActivityHandlerInputs,
@@ -84,6 +88,10 @@ module.exports = {
     createRenameConversationHandler: jest.fn((deps) => {
       renameHandlerInputs.push(deps);
       return renameConversationHandler;
+    }),
+    createArchiveHandler: jest.fn((deps) => {
+      archiveHandlerInputs.push(deps);
+      return archiveConversationHandler;
     }),
     /** Mirrors the real helper so query-flag parsing (`isArchived`, `pinned`) is exercised. */
     isEnabled: jest.fn((value) => {
@@ -276,6 +284,7 @@ module.exports = {
     deleteMessages: jest.fn().mockResolvedValue({ deletedCount: 0 }),
     archiveAllConvos: jest.fn(),
     saveConvo: jest.fn(),
+    getConvoRetention: jest.fn(),
     setConvoPinned: jest.fn(),
     markConvoSeen: jest.fn(),
     markConvoUnread: jest.fn(),
