@@ -26,7 +26,7 @@ function getService() {
     methods,
     getAppConfig,
     findUserById: (userId) =>
-      mongoose.models.User.findById(userId).select('_id tenantId role').lean(),
+      mongoose.models.User.findById(userId).select('_id tenantId role termsAccepted').lean(),
     findBalance: (userId, options) =>
       methods.findBalanceByUser(userId, { includeReservedCredits: true, ...options }),
     upsertBalance: (userId, { set, setOnInsert }) =>
