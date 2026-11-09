@@ -41,6 +41,7 @@ export * from './marketplace';
 export * from './reads';
 export * from './updates';
 export * from './mcpIdentity';
+export * from './restore';
 export * from './orphans';
 export * from './ownerContact';
 export * from './migration';

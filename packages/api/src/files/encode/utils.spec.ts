@@ -4,6 +4,10 @@ import { audioMimeTypes } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import {
   AttachmentObjectNotFoundError,
+  appendMissingAttachmentsNote,
+  createMissingAttachmentCollector,
+  replayMessageAttachments,
+  skipMissingAttachment,
   getAudioFormat,
   getFileStream,
   isConfiguredProviderMediaType,
@@ -196,5 +200,71 @@ describe('getAudioFormat', () => {
       expect(audioMimeTypes.test(mimeType)).toBe(true);
       expect(getAudioFormat(mimeType, 'recording')).toBeDefined();
     }
+  });
+});
+
+describe('missing attachment handling', () => {
+  const missing = { file_id: 'gone-1', filename: 'report.pdf' };
+
+  it('rethrows a miss when no handler is supplied', () => {
+    const error = new AttachmentObjectNotFoundError(missing.file_id);
+    expect(() => skipMissingAttachment(error, missing)).toThrow(error);
+  });
+
+  it('reports a miss to the handler and leaves other errors to the caller', () => {
+    const collector = createMissingAttachmentCollector();
+    const error = new AttachmentObjectNotFoundError(missing.file_id);
+
+    expect(skipMissingAttachment(error, missing, collector.onMissingFile)).toBe(true);
+    expect(skipMissingAttachment(new Error('denied'), missing, collector.onMissingFile)).toBe(
+      false,
+    );
+    expect(collector.files).toEqual([missing]);
+    expect(collector.has(missing.file_id)).toBe(true);
+    expect(collector.has('other')).toBe(false);
+    expect(collector.has(undefined)).toBe(false);
+  });
+
+  it('names the missing files after any extracted text', () => {
+    const note = appendMissingAttachmentsNote('Extracted text', [
+      missing,
+      { file_id: 'gone-2', filename: '' },
+    ]);
+    expect(note).toMatch(/^Extracted text\n\n/);
+    expect(note).toContain('"report.pdf", "gone-2"');
+    expect(note).toContain('deleted from storage');
+    expect(appendMissingAttachmentsNote(undefined, [missing])).not.toMatch(/^\n/);
+    expect(appendMissingAttachmentsNote('kept', [])).toBe('kept');
+  });
+});
+
+describe('replayMessageAttachments', () => {
+  it('notes and excludes files the encoders skipped as missing', async () => {
+    const message: { fileContext?: string } = {};
+    const ids = await replayMessageAttachments({
+      message,
+      addFileContext: async () => {
+        message.fileContext = 'Extracted text';
+      },
+      processAttachments: async (onMissingFile) => {
+        onMissingFile({ file_id: 'gone', filename: 'gone.pdf' });
+        return [{ file_id: 'gone' }, { file_id: 'kept' }, null];
+      },
+    });
+
+    expect([...ids]).toEqual(['kept']);
+    expect(message.fileContext).toMatch(/^Extracted text\n\n.*"gone.pdf"/);
+  });
+
+  it('leaves the file context untouched when nothing is missing', async () => {
+    const message: { fileContext?: string } = {};
+    const ids = await replayMessageAttachments({
+      message,
+      addFileContext: async () => undefined,
+      processAttachments: async () => [{ file_id: 'kept' }],
+    });
+
+    expect([...ids]).toEqual(['kept']);
+    expect(message).not.toHaveProperty('fileContext');
   });
 });

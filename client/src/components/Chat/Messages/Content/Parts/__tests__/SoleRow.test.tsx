@@ -20,11 +20,19 @@ jest.mock('~/hooks', () => ({
   useHasAccess: () => false,
   useLocalize: () => (key: string, values?: Record<string, string>) =>
     key === 'com_ui_duration_seconds' ? `${values?.[0]}s` : key,
-  useProgress: (initialProgress: number) => initialProgress,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
     ref: { current: null },
   }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (initialProgress: number) => initialProgress,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({

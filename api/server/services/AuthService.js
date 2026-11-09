@@ -31,12 +31,15 @@ const {
   createOpenIDSessionIdentity,
   resolveAppConfigForUser,
   resolvePreAuthAppConfig,
-  commitPasswordReset,
+  resetPasswordWithToken,
+  sendPasswordResetNotice,
   getSafeErrorMetadata,
   hashSecret,
   compareSecret,
   issuePasswordReset,
   PASSWORD_RESET_REQUEST_MESSAGE,
+  getOpenIDAppAccessToken,
+  getOpenIDBearerAudiences,
 } = require('@librechat/api');
 const {
   findUser,
@@ -208,7 +211,10 @@ const getUnexpiredOpenIDSessionIdToken = (idToken) => {
 const getOpenIDAppAuthToken = (tokenset, sessionIdToken) =>
   (isExpiredOpenIDIdToken(tokenset?.id_token) ? undefined : tokenset?.id_token) ||
   getUnexpiredOpenIDSessionIdToken(sessionIdToken) ||
-  tokenset?.access_token;
+  getOpenIDAppAccessToken(
+    tokenset?.access_token,
+    getOpenIDBearerAudiences(process.env.OPENID_CLIENT_ID, process.env.OPENID_AUDIENCE),
+  );
 
 const clearOpenIDAuthTokens = (req, res, userId, tenantId) => {
   if (req.session?.openidTokens) {
@@ -550,13 +556,13 @@ const requestPasswordReset = async (req) => {
 /**
  * Reset Password
  *
- * @param {*} userId
- * @param {String} token
- * @param {String} password
- * @returns
+ * @param {string} userId
+ * @param {string} token
+ * @param {string} password
+ * @returns {Promise<import('@librechat/api').PasswordResetResult>}
  */
-const resetPassword = async (userId, token, password) => {
-  const outcome = await commitPasswordReset(
+const resetPassword = (userId, token, password) =>
+  resetPasswordWithToken(
     {
       findResetToken: findPasswordResetToken,
       getUserById,
@@ -564,33 +570,16 @@ const resetPassword = async (userId, token, password) => {
       deleteTokens,
       compareToken: compareSecret,
       hashPassword: hashSecret,
+      consumeResetToken: (resetToken) => deleteTokens(getPasswordResetTokenDeleteQuery(resetToken)),
+      sendResetNotice: (user) =>
+        sendPasswordResetNotice(user, {
+          isEmailConfigured: checkEmailConfig,
+          sendEmail,
+          appTitle: process.env.APP_TITLE,
+        }),
     },
     { userId, token, password },
   );
-
-  if (!outcome.ok) {
-    return new Error('Invalid or expired password reset token');
-  }
-
-  const { user, resetToken: passwordResetToken } = outcome;
-
-  if (checkEmailConfig()) {
-    await sendEmail({
-      email: user.email,
-      subject: 'Password Reset Successfully',
-      payload: {
-        appName: process.env.APP_TITLE || 'LibreChat',
-        name: user.name || user.username || user.email,
-        year: new Date().getFullYear(),
-      },
-      template: 'passwordReset.handlebars',
-    });
-  }
-
-  await deleteTokens(getPasswordResetTokenDeleteQuery(passwordResetToken));
-  logger.info(`[resetPassword] Password reset successful. [User ID: ${userId}]`);
-  return { message: 'Password reset was successful' };
-};
 
 /**
  * Reads the previously issued CloudFront cookie scope used for stale cookie cleanup.

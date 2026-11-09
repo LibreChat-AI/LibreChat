@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import type { MouseEventHandler, RefObject } from 'react';
+import type { ThrottledFunction } from './throttle';
+import { throttle } from './throttle';
 
 type TUseScrollToRef = {
   targetRef: RefObject<HTMLDivElement>;
@@ -7,48 +9,10 @@ type TUseScrollToRef = {
   smoothCallback: () => void;
 };
 
-/** A throttled call that runs on the leading edge and once more on the trailing edge. */
-export type ThrottledFunction = (() => void) & {
-  /** Drops the pending trailing call. */
-  cancel: () => void;
-};
-
 type ScrollToRefReturn = {
   scrollToRef?: ThrottledFunction;
   handleSmoothToRef: MouseEventHandler<HTMLButtonElement>;
 };
-
-/** Runs `run` at once, then at most once per `wait` ms while calls keep arriving: a call
- *  inside the window is deferred to the window's end, and that run opens the next window. */
-function throttle(run: () => void, wait: number): ThrottledFunction {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let pending = false;
-  const closeWindow = () => {
-    if (!pending) {
-      timer = null;
-      return;
-    }
-    pending = false;
-    run();
-    timer = setTimeout(closeWindow, wait);
-  };
-  const throttled = () => {
-    if (timer != null) {
-      pending = true;
-      return;
-    }
-    run();
-    timer = setTimeout(closeWindow, wait);
-  };
-  throttled.cancel = () => {
-    if (timer != null) {
-      clearTimeout(timer);
-    }
-    timer = null;
-    pending = false;
-  };
-  return throttled;
-}
 
 export default function useScrollToRef({
   targetRef,

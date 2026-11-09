@@ -1,5 +1,4 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
-import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { Tools, Constants, ContentTypes, isOpaqueReasoning } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
 import {
@@ -15,34 +14,32 @@ import {
   parseToolName,
   getOutcomeStatus,
   summarizeSpan,
-} from '@librechat/chat';
-import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import type { ToolMeta } from '@librechat/chat';
-import type { PartWithIndex } from './ParallelContent';
-import {
-  cn,
-  getPartKeyIndex,
-  hasPendingAuthInPart,
   getBatchActivityLabelPart,
   getActivityLabelText,
-} from '~/utils';
+} from '@librechat/chat';
 import {
+  FOLD_RAIL_CLASSES,
+  ROW_GLYPH_SLOT,
   FoldRail,
   RailGlyph,
   useFoldPath,
   useRailHover,
   revealFoldHeader,
   FoldHeaderContext,
-} from './rail';
-import {
   FailedRevealContext,
   FailedRevealPill,
   useFailedReveal,
   useFailedRevealTrigger,
-} from './reveal';
-import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
+  ToolAuthWarning,
+  ToolAuthWarningContext,
+  useExpandCollapse,
+} from '@librechat/chat/components';
+import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { ToolMeta } from '@librechat/chat';
+import type { PartWithIndex } from './ParallelContent';
+import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
+import { cn, getPartKeyIndex, hasPendingAuthInPart } from '~/utils';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { MCPAppViews } from '~/components/MCPUIResource';

@@ -14,6 +14,7 @@ const {
   encodeAndFormatVideos,
   getTransactionsConfig,
   encodeAndFormatDocuments,
+  replayMessageAttachments,
   getLangfuseTraceMessageFields,
   isContentFilterError,
   assertModelBoundProviderContent,
@@ -1735,7 +1736,7 @@ class BaseClient {
     );
   }
 
-  async addDocuments(message, attachments) {
+  async addDocuments(message, attachments, onMissingFile) {
     const documentResult = await encodeAndFormatDocuments(
       this.options.req,
       attachments,
@@ -1744,6 +1745,7 @@ class BaseClient {
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
         useResponsesApi: this.usesResponsesApi(),
         model: this.modelOptions?.model ?? this.model,
+        onMissingFile,
       },
       getStrategyFunctions,
     );
@@ -1754,13 +1756,14 @@ class BaseClient {
     return documentResult.files;
   }
 
-  async addVideos(message, attachments) {
+  async addVideos(message, attachments, onMissingFile) {
     const videoResult = await encodeAndFormatVideos(
       this.options.req,
       attachments,
       {
         provider: this.options.agent?.provider ?? this.options.endpoint,
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
+        onMissingFile,
       },
       getStrategyFunctions,
     );
@@ -1769,13 +1772,14 @@ class BaseClient {
     return videoResult.files;
   }
 
-  async addAudios(message, attachments) {
+  async addAudios(message, attachments, onMissingFile) {
     const audioResult = await encodeAndFormatAudios(
       this.options.req,
       attachments,
       {
         provider: this.options.agent?.provider ?? this.options.endpoint,
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
+        onMissingFile,
       },
       getStrategyFunctions,
     );
@@ -1826,7 +1830,7 @@ class BaseClient {
     return resolveTurnLLMDeliveryPath(this.options.agent?.deliveryRouting, file, fileConsumers);
   }
 
-  async processAttachments(message, attachments, fileConsumers) {
+  async processAttachments(message, attachments, fileConsumers, onMissingFile) {
     const categorizedAttachments = {
       images: [],
       videos: [],
@@ -1893,16 +1897,16 @@ class BaseClient {
 
     const [imageFiles] = await Promise.all([
       categorizedAttachments.images.length > 0
-        ? this.addImageURLs(message, categorizedAttachments.images)
+        ? this.addImageURLs(message, categorizedAttachments.images, onMissingFile)
         : Promise.resolve([]),
       categorizedAttachments.documents.length > 0
-        ? this.addDocuments(message, categorizedAttachments.documents)
+        ? this.addDocuments(message, categorizedAttachments.documents, onMissingFile)
         : Promise.resolve([]),
       categorizedAttachments.videos.length > 0
-        ? this.addVideos(message, categorizedAttachments.videos)
+        ? this.addVideos(message, categorizedAttachments.videos, onMissingFile)
         : Promise.resolve([]),
       categorizedAttachments.audios.length > 0
-        ? this.addAudios(message, categorizedAttachments.audios)
+        ? this.addAudios(message, categorizedAttachments.audios, onMissingFile)
         : Promise.resolve([]),
     ]);
 
@@ -2063,14 +2067,12 @@ class BaseClient {
         return message;
       }
 
-      const [, processedFiles] = await Promise.all([
-        this.addFileContextToMessage(message, contextFiles),
-        this.processAttachments(message, contextFiles),
-      ]);
-
-      const processedFileIds = new Set(
-        (processedFiles ?? []).map((file) => file?.file_id).filter(Boolean),
-      );
+      const processedFileIds = await replayMessageAttachments({
+        message,
+        addFileContext: () => this.addFileContextToMessage(message, contextFiles),
+        processAttachments: (onMissingFile) =>
+          this.processAttachments(message, contextFiles, undefined, onMissingFile),
+      });
       this.message_file_map[message.messageId] = contextFiles.filter(
         (file) => processedFileIds.has(file?.file_id) && isModelBoundAttachmentFile(file),
       );

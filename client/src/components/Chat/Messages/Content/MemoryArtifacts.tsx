@@ -3,9 +3,9 @@ import { ChevronDown } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
 import { toolPanelSpacingClassName } from '@librechat/chat/react';
 import { Button, disclosureChevronVariants } from '@librechat/client';
+import { MemoryInfo, useExpandCollapse } from '@librechat/chat/components';
 import type { MemoryArtifact, TAttachment } from 'librechat-data-provider';
-import { useExpandCollapse, useLocalize } from '~/hooks';
-import MemoryInfo from './MemoryInfo';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 /** True for a memory attachment with no originating tool call. A call rendered

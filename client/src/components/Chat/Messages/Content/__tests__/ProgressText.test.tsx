@@ -1,6 +1,6 @@
 import React from 'react';
+import { FailedRevealContext } from '@librechat/chat/components';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { FailedRevealContext } from '../reveal';
 import ProgressText from '../ProgressText';
 
 function mockLocalize(key: string, values?: Record<string, string | number>): string {

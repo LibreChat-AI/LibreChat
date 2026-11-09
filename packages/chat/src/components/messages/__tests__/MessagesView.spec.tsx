@@ -292,3 +292,38 @@ describe('MessagesView', () => {
     expect(scrollable).not.toHaveClass('[overflow-anchor:none]');
   });
 });
+
+describe('MessagesView default rail', () => {
+  const turns = (conversationId: string) =>
+    ['one', 'two', 'three'].map((id, index) => ({
+      messageId: `${conversationId}-${id}`,
+      conversationId,
+      isCreatedByUser: index % 2 === 0,
+      text: id,
+    })) as TMessage[];
+  /** The rail builds its entries from the rendered rows. */
+  const renderThread: MessagesViewProps['renderThread'] = ({ messages }) => (
+    <ol aria-label="Thread">
+      {messages?.map((message) => (
+        <li key={message.messageId} id={message.messageId} className="message-render">
+          {message.text}
+        </li>
+      ))}
+    </ol>
+  );
+
+  it('keeps the rail on same-chat updates and replaces it on a warm switch', async () => {
+    const { rerenderView } = renderView(
+      { messagesTree: turns('convo-1'), messages: turns('convo-1'), renderThread },
+      createHost({ useConversationMessages: (id) => turns(id ?? 'convo-1') }).host,
+    );
+    const rail = await screen.findByRole('navigation');
+
+    rerenderView({ messagesTree: turns('convo-1'), messages: turns('convo-1') });
+    expect(screen.getByRole('navigation')).toBe(rail);
+
+    rerenderView({ messagesTree: turns('convo-2'), messages: turns('convo-2') });
+    expect(rail.isConnected).toBe(false);
+    expect(await screen.findByRole('navigation')).not.toBe(rail);
+  });
+});

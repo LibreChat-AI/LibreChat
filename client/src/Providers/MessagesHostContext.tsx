@@ -2,9 +2,15 @@ import { useCallback, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import { EventSubagentActivityGroup } from '@librechat/chat/components';
-import { setDefaultMessagesHost, revealedQueuedTurnFamily } from '@librechat/chat/react';
+import { useUpdateFeedbackMutation } from 'librechat-data-provider/react-query';
+import {
+  setDefaultMessagesHost,
+  useStreamedAttachments,
+  revealedQueuedTurnFamily,
+} from '@librechat/chat/react';
 import type {
   ForkEvents,
+  MessageFeedbackWrite,
   MessageCopy,
   MessagesHost,
   MessageCopyInput,
@@ -12,7 +18,7 @@ import type {
   ForkConversation,
   MessageAudioProps,
 } from '@librechat/chat/react';
-import type { TMessage } from 'librechat-data-provider';
+import type { Assistant, TMessage } from 'librechat-data-provider';
 import {
   hasCopyableText,
   useNavigateToConvo,
@@ -20,14 +26,20 @@ import {
   useCopyMessageToClipboard,
 } from '~/hooks';
 import { useForkConvoMutation, useGetMessagesByConvoId } from '~/data-provider';
+import { useHideSelectedAuthor } from '~/components/Chat/Menus/Endpoints/shown';
+import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import useConversationSeenSource from '~/hooks/Conversations/seenSource';
+import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { useOptionalMessagesOperations } from './MessagesViewContext';
-import ThreadMessage from '~/components/Chat/Messages/Thread/Message';
+import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import MessageAudio from '~/components/Chat/Messages/MessageAudio';
+import { useAssistantsMapContext } from './AssistantsMapContext';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
+import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
 import { useFileMapContext } from '~/Providers/FileMapContext';
 import Files from '~/components/Chat/Messages/Content/Files';
 import { useScreenshot } from '~/hooks/ScreenshotContext';
+import { useAgentsMapContext } from './AgentsMapContext';
 import useClockFormat from '~/hooks/useClockFormat';
 import { autoScrollAtom } from '~/store/autoScroll';
 import store from '~/store';
@@ -99,6 +111,19 @@ function useAppConversationMessages(
   ).data;
 }
 
+function useAppAssistant(
+  endpoint: string | null | undefined,
+  model: string | null | undefined,
+): Assistant | undefined {
+  const map = useAssistantsMapContext();
+  return map?.[endpoint ?? '']?.[model ?? ''];
+}
+
+function useAppMessageFeedback(conversationId: string, messageId: string): MessageFeedbackWrite {
+  const { mutate } = useUpdateFeedbackMutation(conversationId, messageId);
+  return mutate;
+}
+
 function useAppHasPendingTurn(conversationId: string): boolean {
   return useAtomValue(revealedQueuedTurnFamily(conversationId)) != null;
 }
@@ -114,8 +139,8 @@ function AppMessageAudio(props: MessageAudioProps) {
 
 /** What the message list reads from the app: the viewer's clock format and fork defaults, the
  *  fork request, the rich-text copy, its auto-scroll preference, screenshot and seen reporting, the thread's
- *  file map, and the row pieces that still live here: the message body and the subagent activity
- *  group. Registered as the default when this module loads, so rows read it on every route, the
+ *  file map, and the row pieces that still live here: the message body, wake-up card, owner's text, step
+ *  limit notice, author header and the subagent activity group. Registered as the default when this module loads, so rows read it on every route, the
  *  shared view included. */
 export const appMessagesHost: MessagesHost = {
   useHour12: useClockFormat,
@@ -126,12 +151,21 @@ export const appMessagesHost: MessagesHost = {
   useGetMessages: useAppGetMessages,
   useHasPendingTurn: useAppHasPendingTurn,
   useConversationMessages: useAppConversationMessages,
+  useAssistant: useAppAssistant,
+  useGetAddedConvo,
+  useStreamedAttachments,
+  useMessageFeedback: useAppMessageFeedback,
   renderMessageAudio: (props) => <AppMessageAudio {...props} />,
   useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
   useAutoScroll: () => useAtomValue(autoScrollAtom),
   useSeenSource: useConversationSeenSource,
   renderMessageIcon: (props) => <MessageIcon {...props} />,
-  renderMessageRow: (props) => <ThreadMessage {...props} />,
+  useMaximizeChatSpace: () => useRecoilValue(store.maximizeChatSpace),
+  useHideSelectedAuthor,
+  useAgentsMap: useAgentsMapContext,
+  renderMessageBody: (props) => <MessageContent {...props} />,
+  renderWakeup: (props) => <Wakeup {...props} />,
+  renderPrivateText: (props) => <PrivateText {...props} />,
   renderActivity: (props) => <EventSubagentActivityGroup {...props} />,
   useFileMap: useFileMapContext,
 };

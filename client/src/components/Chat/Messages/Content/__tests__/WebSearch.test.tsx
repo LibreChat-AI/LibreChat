@@ -1,10 +1,10 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { ToolContentRequestContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { ROW_GLYPH_SLOT, FailedRevealContext } from '@librechat/chat/components';
 import type {
   TAttachment,
   SearchResultData,
@@ -12,7 +12,6 @@ import type {
   PartMetadata,
 } from 'librechat-data-provider';
 import { HeaderActionSlotContext } from '../slot';
-import { FailedRevealContext } from '../reveal';
 import { SearchContext } from '~/Providers';
 import WebSearch from '../WebSearch';
 
@@ -31,8 +30,10 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
-  useProgress: (progress: number) => progress,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
@@ -41,6 +42,11 @@ jest.mock('~/hooks', () => ({
     },
     ref: { current: null },
   }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (progress: number) => progress,
 }));
 
 jest.mock('~/hooks/MCP', () => ({

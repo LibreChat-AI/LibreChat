@@ -7,6 +7,7 @@ export * from './steps';
 export * from './steer';
 export * from './types';
 export * from './files';
+export * from './attachments';
 export * from './composer';
 export * from './reducer';
 export * from './executor';

@@ -32,6 +32,8 @@ export type ContentRowProps = {
   assistant?: Assistant;
   /** Whether the sender's name comes from configuration rather than the model. */
   hasConfiguredSender: boolean;
+  /** Drops the avatar and name from a turn by the agent the header's model selector shows. */
+  hideSelectedAuthor?: boolean;
   isLast: boolean;
   isLatestMessage: boolean;
   isSubmitting: boolean;
@@ -74,6 +76,7 @@ export default function ContentRow({
   agent,
   assistant,
   hasConfiguredSender,
+  hideSelectedAuthor = false,
   isLast,
   isLatestMessage,
   isSubmitting,
@@ -98,6 +101,14 @@ export default function ContentRow({
   const showThinking = host.useShowThinking();
   const autoExpandTools = host.useAutoExpandTools();
   const isCreatedByUser = message.isCreatedByUser === true;
+  /** A turn by another agent keeps its author, and so does a subagent's read-only thread, whose
+   *  header has no selector. */
+  const authorHidden =
+    hideSelectedAuthor &&
+    !isCreatedByUser &&
+    agent != null &&
+    agent.id === conversation?.agent_id &&
+    conversation.subagentThread == null;
 
   const author = useMemo(
     () => ({
@@ -120,6 +131,7 @@ export default function ContentRow({
         message.model,
         conversation?.model,
       )}
+      authorHidden={authorHidden}
       timestamp={message.createdAt ?? message.clientTimestamp}
       ariaLabel={getMessageAriaLabel(message, localize)}
       headerPrefix={getHeaderPrefixForScreenReader(message, localize)}
@@ -157,7 +169,7 @@ export default function ContentRow({
               renderOwnerId,
               createdAt,
               showThinking,
-              authorHeader: isCreatedByUser ? undefined : authorHeader,
+              authorHeader: isCreatedByUser || authorHidden ? undefined : authorHeader,
               setSiblingIdx,
               messageId: message.messageId,
               manualSkills: message.manualSkills,

@@ -224,6 +224,76 @@ describe('image tools - agent mode ToolMessage format', () => {
       expect(artifactContent[0].image_url.url).toContain('base64');
     });
 
+    it.each([
+      ['generate', { prompt: 'a box', endpoint: '/v1/flux-dev' }],
+      [
+        'generate_finetuned',
+        { prompt: 'a box', finetune_id: 'ft-abc123', endpoint: '/v1/flux-pro-finetuned' },
+      ],
+    ])('%s polls the cluster polling_url returned by the global endpoint', async (action, args) => {
+      process.env.FLUX_API_BASE_URL = 'https://api.bfl.ai';
+      const pollingUrl = 'https://api.eu2.bfl.ai/v1/get_result?id=task-123';
+      axios.post.mockResolvedValue({ data: { id: 'task-123', polling_url: pollingUrl } });
+
+      try {
+        const flux = new FluxAPI({ isAgent: true });
+        const invokePromise = flux.invoke(makeToolCall('flux', { action, ...args }));
+        await jest.runAllTimersAsync();
+        const result = await invokePromise;
+
+        expect(result.artifact?.content?.[0]?.type).toBe(ContentTypes.IMAGE_URL);
+        expect(axios.get).toHaveBeenCalledWith(
+          pollingUrl,
+          expect.objectContaining({
+            params: undefined,
+            headers: expect.objectContaining({ 'x-key': 'test-flux-key' }),
+          }),
+        );
+      } finally {
+        delete process.env.FLUX_API_BASE_URL;
+      }
+    });
+
+    it('submits to the global endpoint when FLUX_API_BASE_URL is unset', async () => {
+      delete process.env.FLUX_API_BASE_URL;
+
+      const flux = new FluxAPI({ isAgent: true });
+      const invokePromise = flux.invoke(
+        makeToolCall('flux', { prompt: 'a box', endpoint: '/v1/flux-dev' }),
+      );
+      await jest.runAllTimersAsync();
+      await invokePromise;
+
+      expect(axios.post).toHaveBeenCalledWith(
+        'https://api.bfl.ai/v1/flux-dev',
+        expect.any(Object),
+        expect.any(Object),
+      );
+    });
+
+    it('falls back to get_result on the base URL when polling_url is on another domain', async () => {
+      process.env.FLUX_API_BASE_URL = 'https://api.bfl.ai';
+      axios.post.mockResolvedValue({
+        data: { id: 'task-123', polling_url: 'https://evil.example.com/v1/get_result?id=task-123' },
+      });
+
+      try {
+        const flux = new FluxAPI({ isAgent: true });
+        const invokePromise = flux.invoke(
+          makeToolCall('flux', { prompt: 'a box', endpoint: '/v1/flux-dev' }),
+        );
+        await jest.runAllTimersAsync();
+        await invokePromise;
+
+        expect(axios.get).toHaveBeenCalledWith(
+          'https://api.bfl.ai/v1/get_result',
+          expect.objectContaining({ params: { id: 'task-123' } }),
+        );
+      } finally {
+        delete process.env.FLUX_API_BASE_URL;
+      }
+    });
+
     it('invoke() returns ToolMessage with error string in content when task submission fails', async () => {
       axios.post.mockRejectedValue(new Error('Network error'));
 

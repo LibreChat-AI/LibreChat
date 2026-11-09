@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useRef, useEffect } from 'react';
 import { useStore } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { QueryKeys } from 'librechat-data-provider';
@@ -13,10 +13,6 @@ import {
   bindComposerLaunch,
   getRouteChatProjectId,
 } from '~/utils';
-import {
-  withSubmittedCodeDecision,
-  resolveSubmittedCodeApprovalMode,
-} from '~/hooks/Agents/codeDecision';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
@@ -39,11 +35,22 @@ export default function useTurnServices({
   const { getExpiry } = useUserKey(conversation?.endpoint ?? '');
   const getConversation = useGetConversation(index);
   const codeWorkspaceState = useCodeWorkspace(conversation, addedConversation);
-  const { modes: codeApprovalModes, selected: fallbackCodeApprovalMode } = useCodeApprovalMode(
+  const codeApprovalState = useCodeApprovalMode(
     conversation,
     addedConversation,
     codeWorkspaceState.mode,
   );
+
+  /** A send reads the newest render's values, even through a `readCodeInputs` it captured from an
+   *  earlier render. */
+  const codeReaders = useRef({
+    workspace: codeWorkspaceState.readInputs,
+    approval: codeApprovalState.readInputs,
+  });
+  codeReaders.current = {
+    workspace: codeWorkspaceState.readInputs,
+    approval: codeApprovalState.readInputs,
+  };
 
   const store = useStore();
   /** The composer draft follows the conversation a submission launches; the package writes the
@@ -64,32 +71,11 @@ export default function useTurnServices({
     getEphemeralAgent,
     getUserKey: getExpiry,
     getRouteProjectId: getRouteChatProjectId,
-    resolveCode: (submitted) => {
-      const latest = getConversation();
-      const latestApprovalMode = latest?.codeApprovalMode;
-      const workspaceSubmission = codeWorkspaceState.resolveSubmission(
-        latest?.codeWorkspaces ?? submitted?.codeWorkspaces,
-        latest?.codeEnvironmentMode ?? submitted?.codeEnvironmentMode,
-      );
-      if (workspaceSubmission == null) {
-        return null;
-      }
-      const { codeEnvironmentMode, codeWorkspaces } = workspaceSubmission;
-      return {
-        code: {
-          approvalMode: resolveSubmittedCodeApprovalMode({
-            requested: latestApprovalMode,
-            modes: codeApprovalModes,
-            fallback: fallbackCodeApprovalMode,
-            codeEnvironmentMode,
-          }),
-          latestApprovalMode,
-          environmentMode: codeEnvironmentMode,
-          workspaces: codeWorkspaces,
-        },
-        apply: (current) => withSubmittedCodeDecision(current, workspaceSubmission),
-      };
-    },
+    readCodeInputs: () => ({
+      workspace: codeReaders.current.workspace(),
+      approval: codeReaders.current.approval(),
+      latest: getConversation(),
+    }),
     openNewChat: (path) => {
       requestChatFocus();
       navigate(path);

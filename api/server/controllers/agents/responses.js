@@ -35,7 +35,6 @@ const {
   resolveSubagentGraphs,
   inspectContent,
   extractAgentContent,
-  extractFileContent,
   extractMessageContent,
   extractModelParameterContent,
   extractSkillContent,
@@ -71,6 +70,7 @@ const {
   setupStreamingResponse,
   emitResponseInProgress,
   convertInputToMessages,
+  extractResponseInputFileContent,
   validateResponseRequest,
   buildAggregatedResponse,
   buildResponsesUsage,
@@ -264,26 +264,7 @@ function extractResponseRequestContent(request, messageFragments) {
     ...messageFragments,
   ];
 
-  if (Array.isArray(request.input)) {
-    for (const item of request.input) {
-      if (item?.type !== 'message' || !Array.isArray(item.content)) {
-        continue;
-      }
-      for (const part of item.content) {
-        if (part?.type === 'input_file') {
-          fragments.push(...extractFileContent({ name: part.filename }));
-          continue;
-        }
-        if (
-          part?.type === 'input_image' &&
-          typeof part.image_url === 'string' &&
-          !part.image_url.startsWith('data:')
-        ) {
-          fragments.push(...extractFileContent({ uri: part.image_url }));
-        }
-      }
-    }
-  }
+  fragments.push(...extractResponseInputFileContent(request.input));
 
   for (const tool of request.tools ?? []) {
     if (tool?.type !== 'function') {

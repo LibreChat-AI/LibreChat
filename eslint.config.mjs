@@ -330,6 +330,8 @@ export default [
             'slow-pulse',
             'hide-scrollbar',
             'scrollbar-gutter-spacer',
+            'progress-text-wrapper',
+            'progress-text-content',
             'active',
             // put in the DOM by a dependency, not by Tailwind
             'lucide',

@@ -182,6 +182,16 @@ describe('buildSharedLinkStartupPayload', () => {
     });
   });
 
+  it('omits bundler URLs that are set to an empty string', () => {
+    const payload = buildSharedLinkStartupPayload(appConfig({}), {
+      SANDPACK_BUNDLER_URL: '',
+      SANDPACK_STATIC_BUNDLER_URL: '',
+    });
+
+    expect(payload).not.toHaveProperty('bundlerURL');
+    expect(payload).not.toHaveProperty('staticBundlerURL');
+  });
+
   it('never hands an anonymous share viewer a policy link that would run script', () => {
     const payload = buildSharedLinkStartupPayload(
       appConfig({

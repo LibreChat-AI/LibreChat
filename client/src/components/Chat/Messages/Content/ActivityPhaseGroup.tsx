@@ -1,40 +1,47 @@
 import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
 import { ContentTypes } from 'librechat-data-provider';
-import { GeneratedToolLabelContext } from '@librechat/chat/react';
-import { getOutcomeStatus, isSpanFailed, summarizeSpan } from '@librechat/chat';
 import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
-import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '@librechat/chat/components';
-import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import type { CSSProperties, ReactNode } from 'react';
-import type { RailHover } from './rail';
 import {
-  useLocalize,
-  useExpandCollapse,
+  getOutcomeStatus,
+  isSpanFailed,
+  summarizeSpan,
+  getActivityLabelText,
+} from '@librechat/chat';
+import {
+  GeneratedToolLabelContext,
   useLazyCollapseBody,
-  scheduleMessageContentLayoutReconcile,
-  EXPAND_TRANSITION,
-} from '~/hooks';
+  useThrottledValue,
+} from '@librechat/chat/react';
 import {
-  getLiveActivity,
-  getSpanIconNames,
-  LIVE_ACTIVITY_THROTTLE_MS,
-  LIVE_REASONING_HOLD_MS,
-} from './live';
-import {
+  FOLD_RAIL_CLASSES,
+  ROW_GLYPH_SLOT,
+  TOOL_ROW_CLASSES,
   FoldRail,
   RailGlyph,
   useFoldPath,
   useRailHover,
   revealFoldHeader,
   FoldHeaderContext,
-} from './rail';
-import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
+  FailedRevealContext,
+  FailedRevealPill,
+  useFailedRevealTrigger,
+  useExpandCollapse,
+  EXPAND_TRANSITION,
+} from '@librechat/chat/components';
+import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { RailHover } from '@librechat/chat/components';
+import type { CSSProperties, ReactNode } from 'react';
+import {
+  getLiveActivity,
+  getSpanIconNames,
+  LIVE_ACTIVITY_THROTTLE_MS,
+  LIVE_REASONING_HOLD_MS,
+} from './live';
+import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import useThrottledValue from '~/hooks/Messages/useThrottledValue';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
-import { getActivityLabelText } from '~/utils/activityLabels';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { MessageSurfaceContext } from '../ui/surface';
 import { HeaderActionSlotContext } from './slot';

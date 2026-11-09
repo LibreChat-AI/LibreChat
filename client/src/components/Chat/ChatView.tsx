@@ -13,16 +13,19 @@ import {
   ComposerRestoreProvider,
   pendingApprovalActionFamily,
 } from '@librechat/chat/react';
+import type { ChatScreenMessagesSlots } from '@librechat/chat/components';
 import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
+import PendingSteers from './Messages/Content/Parts/PendingSteers';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { OwnerTextProvider } from './Messages/PrivateText';
-import MessagesView from './Messages/MessagesView';
+import PendingTurn from './Messages/PendingTurn';
+import { FLAT_THREAD } from './Messages/Thread';
 import { useAddedResponse } from '~/hooks';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
@@ -32,12 +35,35 @@ import Landing from './Landing';
 import Header from './Header';
 import store from '~/store';
 
+/** The app's pieces of the package message list. */
+const messagesSlots: ChatScreenMessagesSlots = {
+  flatThread: FLAT_THREAD,
+  renderPendingTurn: (props) => <PendingTurn {...props} />,
+  renderPendingSteers: (props) => <PendingSteers {...props} />,
+};
+
 type ChatViewProps = {
   index?: number;
   project?: TChatProject;
   /** The route is loading another conversation, or failed to. */
   routePending?: boolean;
 };
+
+/**
+ * The generic disclaimer and the policy links are the welcome screen's, where the deployment
+ * places them; a deployment's own footer stays with the conversation that always showed it.
+ */
+function renderFooter(placement: 'full' | 'composer' | 'band') {
+  if (placement === 'band') {
+    return <Footer configuredOnly />;
+  }
+  if (placement === 'composer') {
+    return (
+      <Footer className="text-text-muted hidden flex-wrap items-center justify-center gap-2 px-2 pb-2 text-center text-xs sm:flex" />
+    );
+  }
+  return <Footer />;
+}
 
 function ChatViewPane({
   index = 0,
@@ -101,7 +127,7 @@ function ChatViewPane({
                         <Header parentConversationId={parentConversationId} readOnly={readOnly} />
                       )}
                       renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
-                      renderMessages={(thread) => <MessagesView {...thread} />}
+                      messagesSlots={messagesSlots}
                       landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
                       renderColumn={(column) => (
                         <OwnerTextProvider
@@ -127,12 +153,7 @@ function ChatViewPane({
                           centerFormOnLanding={centerFormOnLanding}
                         />
                       )}
-                      /* The generic disclaimer and the policy links are the welcome
-                         screen's; a deployment's own footer stays with the
-                         conversation that always showed it. */
-                      renderFooter={(placement) =>
-                        placement === 'band' ? <Footer configuredOnly /> : <Footer />
-                      }
+                      renderFooter={renderFooter}
                       renderMascot={(bandRef, landing) => (
                         <Lia bandRef={bandRef} landing={landing} submission={rootSubmission} />
                       )}

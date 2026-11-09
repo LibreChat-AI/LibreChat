@@ -1,9 +1,9 @@
 import { Terminal } from 'lucide-react';
-import { useToolExpansion } from '@librechat/chat/react';
+import { useToolExpansion, useProgress } from '@librechat/chat/react';
 import type { ToolCallPhase } from '@librechat/chat';
-import { useProgress, useLocalize } from '~/hooks';
 import ProgressText from './ProgressText';
 import MarkdownLite from './MarkdownLite';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 export default function CodeAnalyze({

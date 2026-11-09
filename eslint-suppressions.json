@@ -75,11 +75,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Input/ConversationStarters.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Input/Files/MyFilesModal.tsx": {
     "shadcn/no-restyle": {
       "count": 2
@@ -114,11 +109,6 @@
     },
     "shadcn/require-static-classes": {
       "count": 3
-    }
-  },
-  "client/src/components/Chat/Input/TokenUsage/Breakdown.tsx": {
-    "shadcn/no-restyle": {
-      "count": 10
     }
   },
   "client/src/components/Chat/Input/chip.ts": {
@@ -177,14 +167,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/DialogImage.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/EditContentParts.tsx": {
     "design/disabled-recipe": {
       "count": 1
@@ -212,11 +194,6 @@
     },
     "shadcn/no-restyle": {
       "count": 6
-    }
-  },
-  "client/src/components/Chat/Messages/Content/MemoryInfo.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/Chat/Messages/Content/MessageContent.tsx": {
@@ -326,11 +303,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/ToolCallLimitNotice.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Messages/Content/ToolOutput/OutputRenderer.tsx": {
     "shadcn/no-restyle": {
       "count": 3
@@ -386,21 +358,6 @@
   "client/src/components/Chat/SubagentThreadLink.tsx": {
     "shadcn/no-restyle": {
       "count": 1
-    }
-  },
-  "client/src/components/Chat/Subagents/SharedSubagentActivityDialog.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Subagents/SubagentConversation.tsx": {
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Subagents/SubagentThreadPanel.tsx": {
-    "shadcn/no-restyle": {
-      "count": 7
     }
   },
   "client/src/components/Chat/Trace/Button.tsx": {
@@ -552,11 +509,6 @@
     },
     "shadcn/require-static-classes": {
       "count": 3
-    }
-  },
-  "client/src/components/Messages/Content/ActionButton.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
     }
   },
   "client/src/components/Messages/Content/Error/parts.tsx": {
