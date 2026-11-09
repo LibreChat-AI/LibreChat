@@ -315,6 +315,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
   const fileConfigRef = useRef(fileConfig);
   fileConfigRef.current = fileConfig;
 
+  /** The reason a file was refused only helps if it can be read, so these stay until dismissed. */
   const displayToast = useCallback(() => {
     if (errors.length > 1) {
       // TODO: this should not be a dynamic localize input!!
@@ -324,7 +325,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       showToast({
         message: errorList,
         status: 'error',
-        duration: 5000,
+        duration: Infinity,
       });
     } else if (errors.length === 1) {
       // TODO: this should not be a dynamic localize input!!
@@ -332,7 +333,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       showToast({
         message,
         status: 'error',
-        duration: 5000,
+        duration: Infinity,
       });
     }
 
