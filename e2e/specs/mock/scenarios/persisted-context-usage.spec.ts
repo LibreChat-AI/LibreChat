@@ -67,7 +67,7 @@ test.afterEach(async () => {
 test.describe('persisted context usage', () => {
   test('separates the selected turn from cumulative cache totals after reload @scenario:last-turn-cache-vs-branch', async ({
     page,
-  }) => {
+  }, testInfo) => {
     test.setTimeout(120000);
     const conversationId = randomUUID();
     cleanupConversationIds.push(conversationId);
@@ -132,15 +132,53 @@ test.describe('persisted context usage', () => {
       if ((await toggle.getAttribute('aria-expanded')) === 'false') {
         await toggle.click();
       }
-      const lastTurn = popover.getByTestId('token-usage-last-turn');
+      const legacyLastTurn = popover.getByTestId('token-usage-last-turn');
       const branch = popover.getByTestId('token-usage-totals');
-      await expect(lastTurn.getByRole('heading', { name: 'Last turn' })).toBeVisible();
-      await expect(lastTurn.getByText('Cache read').locator('../..')).toContainText('400');
-      await expect(lastTurn.getByText('Cache write').locator('../..')).toContainText('50');
+      await expect(legacyLastTurn.getByRole('heading', { name: 'Last turn' })).toBeVisible();
+      await expect(legacyLastTurn.getByText('Cache read').locator('../..')).toContainText('400');
+      await expect(legacyLastTurn.getByText('Cache write').locator('../..')).toContainText('50');
       await expect(branch.getByText('This branch')).toBeVisible();
       await expect(branch.getByText('Cache read').locator('../..')).toContainText('500');
-      await expect(lastTurn.getByTestId('usage-cost')).toContainText('Cost (last turn)');
+      await expect(legacyLastTurn.getByTestId('usage-cost')).toContainText('Cost (last turn)');
       await expect(popover.getByTestId('token-usage-all-branches')).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      const turnButton = page.getByTestId('message-usage-button').last();
+      const copyButton = page.getByTestId('copy-response-button').last();
+      const turnBounds = await turnButton.boundingBox();
+      const copyBounds = await copyButton.boundingBox();
+      expect(turnBounds?.width).toBe(copyBounds?.width);
+      expect(turnBounds?.height).toBe(copyBounds?.height);
+      await turnButton.click();
+      const lastTurn = page.getByTestId('message-turn-usage');
+      await expect(lastTurn.getByRole('heading', { name: 'Turn usage' })).toBeVisible();
+      await expect(lastTurn.getByText('Cache read').locator('../..')).toContainText('400');
+      await expect(lastTurn.getByText('Cache write').locator('../..')).toContainText('50');
+      await expect(lastTurn.getByTestId('usage-cost')).toContainText('$0.02');
+      await testInfo.attach('message-usage', {
+        body: await page.getByRole('dialog', { name: 'Turn usage' }).screenshot(),
+        contentType: 'image/png',
+      });
+      await page.keyboard.press('Escape');
+      await expect(lastTurn).toBeHidden();
+      await page.getByTestId('message-usage-button').first().click();
+      await expect(
+        page.getByTestId('message-turn-usage').getByText('Cache read').locator('../..'),
+      ).toContainText('100');
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('message-turn-usage')).toBeHidden();
+      await page.locator('#export-menu-button:visible, #header-menu-button:visible').click();
+      await page.getByTestId('conversation-info-menu-item').click();
+      const info = page.getByRole('dialog', { name: 'Conversation info' });
+      await expect(info.getByText(conversationId, { exact: true })).toBeVisible();
+      await expect(
+        info.getByTestId('conversation-total-usage').getByText('Cache read').locator('..'),
+      ).toContainText('500');
+      await testInfo.attach('conversation-info-persisted', {
+        body: await info.screenshot(),
+        contentType: 'image/png',
+      });
+      await page.keyboard.press('Escape');
+      await expect(info).toBeHidden();
       await page.keyboard.press('Escape');
     };
 

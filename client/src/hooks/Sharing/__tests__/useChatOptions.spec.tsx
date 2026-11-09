@@ -1,8 +1,9 @@
 import '@testing-library/jest-dom';
-import { QueryKeys } from 'librechat-data-provider';
+import { Constants, QueryKeys } from 'librechat-data-provider';
 import { render, screen, renderHook, act } from '@testing-library/react';
 import type { QueryClient } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
+import type ConversationInfo from '~/components/Chat/Info';
 import type { MenuItemProps } from '~/common';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import useChatOptions from '../useChatOptions';
@@ -60,6 +61,7 @@ jest.mock('~/Providers', () => ({
   useLiveAnnouncer: () => ({ announcePolite: mockAnnounce }),
 }));
 jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({ data: { interface: { contextUsage: true, contextCost: false } } }),
   useGetConvoIdQuery: () => ({ data: mockState.cached }),
   useActiveJobs: () => ({ data: { activeJobIds: mockState.activeJobs } }),
   usePinConversationMutation: () => ({ mutate: mockPin }),
@@ -100,6 +102,14 @@ jest.mock('~/components/Conversations/ConvoOptions/DeleteButton', () => ({
 jest.mock('~/components/Chat/Rename', () => ({
   __esModule: true,
   default: () => <div data-testid="rename-dialog" />,
+}));
+const mockInfoProps: { current?: ComponentProps<typeof ConversationInfo> } = {};
+jest.mock('~/components/Chat/Info', () => ({
+  __esModule: true,
+  default: (props: ComponentProps<typeof ConversationInfo>) => {
+    mockInfoProps.current = props;
+    return props.open ? <div data-testid="info-dialog" /> : null;
+  },
 }));
 jest.mock('../useExportShare', () => ({
   __esModule: true,
@@ -163,6 +173,7 @@ describe('useChatOptions', () => {
     mockState.fetchingNext = false;
     mockState.assigning = undefined;
     mockProjectsConfig.current = undefined;
+    mockInfoProps.current = undefined;
   });
 
   it('lists share and export first, then the sidebar actions for the open chat', () => {
@@ -171,6 +182,7 @@ describe('useChatOptions', () => {
     expect(labels(result.current.items)).toEqual([
       'share',
       'export',
+      'com_ui_conversation_info',
       'com_ui_rename',
       'com_ui_pin',
       'com_ui_change_project',
@@ -189,7 +201,7 @@ describe('useChatOptions', () => {
   it('keeps the dialog-opening items open and anchored so their dialogs can restore focus', () => {
     const { result } = setup();
 
-    for (const label of ['com_ui_rename', 'com_ui_delete']) {
+    for (const label of ['com_ui_conversation_info', 'com_ui_rename', 'com_ui_delete']) {
       const item = find(result.current.items, label);
       expect(item.hideOnClick).toBe(false);
       expect(item.ref).toBeDefined();
@@ -544,11 +556,43 @@ describe('useChatOptions', () => {
     });
   });
 
-  it('offers only share and export on a read-only subagent thread', () => {
+  it('offers share, export, and info on a read-only subagent thread', () => {
     const { result } = setup(true);
 
-    expect(labels(result.current.items)).toEqual(['share', 'export']);
+    expect(labels(result.current.items)).toEqual(['share', 'export', 'com_ui_conversation_info']);
   });
+
+  it.each([false, true])('opens conversation info from the menu, readOnly=%s', (readOnly) => {
+    const { result, rerender } = setup(readOnly);
+    const item = find(result.current.items, 'com_ui_conversation_info');
+    expect(item.ariaHasPopup).toBe('dialog');
+    expect(item.render).toBeDefined();
+    act(() => item.onClick?.({} as never));
+    const { rerender: rerenderDialogs } = render(<>{result.current.dialogs}</>);
+    expect(screen.getByTestId('info-dialog')).toBeInTheDocument();
+    expect(mockInfoProps.current).toMatchObject({
+      conversation: expect.objectContaining({ conversationId: 'convo-1' }),
+      triggerRef: item.ref,
+      showUsage: true,
+      showCost: false,
+    });
+
+    mockState.route = 'convo-2';
+    rerender();
+    rerenderDialogs(<>{result.current.dialogs}</>);
+    expect(screen.queryByTestId('info-dialog')).not.toBeInTheDocument();
+    expect(labels(result.current.items)).not.toContain('com_ui_conversation_info');
+  });
+
+  it.each(['', Constants.NEW_CONVO, Constants.PENDING_CONVO, Constants.SEARCH] as const)(
+    'hides conversation info for an unsaved conversation: %s',
+    (conversationId) => {
+      mockState.conversation = { conversationId };
+      mockState.route = conversationId;
+      const { result } = setup();
+      expect(labels(result.current.items)).not.toContain('com_ui_conversation_info');
+    },
+  );
 
   it('disables rename while the chat is generating without title ownership support', () => {
     mockState.activeJobs = ['convo-1'];
@@ -595,6 +639,7 @@ describe('useChatOptions', () => {
     expect(labels(result.current.items)).toEqual([
       'share',
       'export',
+      'com_ui_conversation_info',
       'com_ui_rename',
       'com_ui_duplicate',
       'com_ui_delete',

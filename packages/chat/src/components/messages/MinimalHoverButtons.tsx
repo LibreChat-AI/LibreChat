@@ -4,7 +4,7 @@ import { Button, MorphIcon, useLocalize, TooltipAnchor } from '@librechat/client
 import type { TMessage, SearchResultData } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { MarkdownVariant } from '../../react/messages/host';
-import { useMessagesHost } from '../../react/messages/host';
+import { MessageUsageSlot, useMessagesHost } from '../../react/messages/host';
 
 type THoverButtons = {
   message: TMessage;
@@ -44,6 +44,7 @@ export default function MinimalHoverButtons({
           </Button>
         }
       />
+      {!message.isCreatedByUser && <MessageUsageSlot message={message} />}
     </div>
   );
 }
