@@ -11,7 +11,7 @@ import {
 } from 'librechat-data-provider';
 import type { FilterQuery, Model, PipelineStage, ProjectionType, Types } from 'mongoose';
 import type { AgentSortOption, AgentToolResources } from 'librechat-data-provider';
-import type { IAgent, IAclEntry, IUser, ActionQuery, CacheStore } from '~/types';
+import type { IAgent, IAclEntry, IMongoFile, IUser, ActionQuery, CacheStore } from '~/types';
 import { evictAuthUserDocsForUsers, isAuthUserDocCacheEnabled } from '~/utils/eviction';
 import { withCodeEnvironmentReferences } from './codeEnvironment';
 import { OWNER_ACL_PERMISSION_BIT_SUPERSETS } from './aclEntry';
@@ -1798,6 +1798,11 @@ export function createAgentMethods(
   /**
    * Removes the given file_ids from every agent's `tool_resources.*.file_ids`
    * so file deletion cannot leave orphaned stubs behind (see issue #12776).
+   *
+   * Only ids that no File document holds are removed. `file_id` is not unique on its own, so a
+   * record another owner keeps under the same id still backs that owner's agent references. The
+   * lookup runs in the caller's tenant scope like the update below, and a failed lookup rejects
+   * before any agent is touched instead of reading as "no holder".
    */
   async function removeAgentResourceFilesFromAllAgents({
     file_ids,
@@ -1808,14 +1813,21 @@ export function createAgentMethods(
       return { matchedCount: 0, modifiedCount: 0 };
     }
 
+    const File = mongoose.models.File as Model<IMongoFile>;
+    const held = new Set(await File.distinct('file_id', { file_id: { $in: file_ids } }));
+    const orphaned = file_ids.filter((fileId) => !held.has(fileId));
+    if (orphaned.length === 0) {
+      return { matchedCount: 0, modifiedCount: 0 };
+    }
+
     const Agent = mongoose.models.Agent as Model<IAgent>;
 
     const orQuery = TOOL_RESOURCE_KEYS.map((key) => ({
-      [`tool_resources.${key}.file_ids`]: { $in: file_ids },
+      [`tool_resources.${key}.file_ids`]: { $in: orphaned },
     }));
 
     const pullAllOps = TOOL_RESOURCE_KEYS.reduce<Record<string, string[]>>((acc, key) => {
-      acc[`tool_resources.${key}.file_ids`] = file_ids;
+      acc[`tool_resources.${key}.file_ids`] = orphaned;
       return acc;
     }, {});
 
