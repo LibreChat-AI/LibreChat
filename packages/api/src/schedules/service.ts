@@ -52,6 +52,7 @@ import { GenerationJobManager } from '../stream/GenerationJobManager';
 import { ScheduledMCPPolicyError } from './authorization/policy';
 import { buildBalanceUpdateFields } from '../middleware/balance';
 import { getAppConfigOptionsFromUser } from '../app/service';
+import { createTermsBlockCheck } from '../middleware/terms';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { ScheduledMCPBearerError } from '../mcp/errors';
 import { startScheduleErasureSweep } from './erasure';
@@ -165,9 +166,12 @@ export interface SchedulesServiceDeps {
     ) => Promise<number>;
   };
   getAppConfig: (options?: GetAppConfigOptions) => Promise<AppConfig | undefined>;
-  findUserById: (
-    userId: string | Types.ObjectId,
-  ) => Promise<{ _id: Types.ObjectId; tenantId?: string; role?: string } | null>;
+  findUserById: (userId: string | Types.ObjectId) => Promise<{
+    _id: Types.ObjectId;
+    tenantId?: string;
+    role?: string;
+    termsAccepted?: boolean;
+  } | null>;
   /** Reads the balance record together with the credits unexpired in-flight reservations hold. */
   findBalance: (userId: string, options?: { applyReset?: boolean }) => Promise<IBalance | null>;
   /**
@@ -694,7 +698,12 @@ export function createSchedulesService(
       if (user == null) {
         return null;
       }
-      return { id: user._id.toString(), tenantId: user.tenantId, role: user.role };
+      return {
+        id: user._id.toString(),
+        tenantId: user.tenantId,
+        role: user.role,
+        termsAccepted: user.termsAccepted,
+      };
     },
     hasScheduleAccess: async (user) => {
       const role = await methods.getRoleByName(user.role);
@@ -951,6 +960,9 @@ export function createSchedulesService(
     // count would let multiple tenants collectively exceed fireConcurrency.
     countActiveRunsGlobal: () => runAsSystem(() => methods.countActiveRuns()),
     isOwnerDeleting: (userId) => deps.isUserDeleting(userId),
+    // The HTTP gate's own check, over this service's config reader, so a fire resolves the
+    // owner's effective `modalAcceptance` exactly as their requests do.
+    isTermsBlocked: createTermsBlockCheck({ getAppConfig: deps.getAppConfig }),
     isGloballyDisabled: async () => {
       // Env first: an incident lever that must work even if the DB/config plane is the
       // thing failing (a kill switch that needs a healthy DB is the one that fails when
