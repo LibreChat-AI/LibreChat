@@ -168,8 +168,9 @@ export async function loadAddedAgent(
 
   /** The primary's resolved tools stand in for this pane's, since one badge row
    *  drives both — unless this pane's own spec differs and governs tools the
-   *  primary's resolution never saw: tool toggles it withholds, MCP servers it
-   *  pins, or `askUserQuestion`, which has no badge to carry it. Withheld
+   *  primary's resolution never saw: tool toggles it withholds (an empty locked
+   *  MCP list included), MCP servers it pins, or `askUserQuestion`, which has no
+   *  badge to carry it. Withheld
    *  non-tool settings (artifacts, skills, background, intent) are resolved by
    *  the mirrored branch itself. Only the full resolution below applies those. */
   const primaryIsEphemeral = primaryAgent && isEphemeralAgentId(primaryAgent.id);
@@ -177,6 +178,7 @@ export async function loadAddedAgent(
   const governsOwnTools =
     (spec || '') !== (req.body?.spec || '') &&
     ((modelSpec?.mcpServers?.length ?? 0) > 0 ||
+      withheldToggles.has('mcp') ||
       modelSpec?.askUserQuestion != null ||
       SPEC_TOOL_TOGGLES.some(([toggleField]) => withheldToggles.has(toggleField)));
   if (primaryIsEphemeral && !governsOwnTools && Array.isArray(primaryAgent.tools)) {

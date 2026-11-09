@@ -1602,6 +1602,20 @@ describe('loadAgent', () => {
       },
     );
 
+    test("an added spec that locks MCP to none drops the primary pane's servers", async () => {
+      const { EPHEMERAL_AGENT_ID: EID } = Constants;
+      const result = await loadAddedAgent(
+        {
+          req: addedReq({ mcp: ['crm'] }, { lockTools: true, mcpServers: [] }),
+          conversation: addedConversation,
+          primaryAgent: { id: EID as string, tools: ['lookup_mcp_crm'] } as LibreChatAgent,
+        },
+        deps,
+      );
+
+      expect(result?.tools).not.toContain('lookup_mcp_crm');
+    });
+
     test('an added spec that locks its tools but configures none still mirrors', async () => {
       const { EPHEMERAL_AGENT_ID: EID } = Constants;
       const result = await loadAddedAgent(
