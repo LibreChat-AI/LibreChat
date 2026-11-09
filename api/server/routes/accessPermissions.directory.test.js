@@ -27,8 +27,6 @@ jest.mock('~/server/services/Config', () => ({}));
 jest.mock('~/server/services/GraphApiService', () => ({
   ...jest.requireActual('~/server/services/GraphApiService'),
   createGraphClient: jest.fn(),
-  getGroupMembers: jest.fn().mockResolvedValue(['trusted-member']),
-  getGroupOwners: jest.fn().mockResolvedValue([]),
 }));
 jest.mock('~/models', () => ({
   ...jest.requireActual('~/models'),
@@ -36,7 +34,7 @@ jest.mock('~/models', () => ({
 }));
 
 const db = require('~/models');
-const { createGraphClient, getGroupMembers } = require('~/server/services/GraphApiService');
+const { createGraphClient } = require('~/server/services/GraphApiService');
 const { grantPermission, checkPermission } = require('~/server/services/PermissionService');
 const router = require('./accessPermissions');
 
@@ -56,6 +54,8 @@ describe('Shared-link directory principal provisioning', () => {
   let owner;
   let resourceId;
   let graphGet;
+  let graphMembers;
+  let graphOwners;
   let User;
   let Group;
   let AclEntry;
@@ -63,6 +63,7 @@ describe('Shared-link directory principal provisioning', () => {
   const originalEnv = {
     USE_ENTRA_ID_FOR_PEOPLE_SEARCH: process.env.USE_ENTRA_ID_FOR_PEOPLE_SEARCH,
     OPENID_REUSE_TOKENS: process.env.OPENID_REUSE_TOKENS,
+    ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS: process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS,
   };
 
   beforeAll(async () => {
@@ -99,6 +100,7 @@ describe('Shared-link directory principal provisioning', () => {
     await Promise.all([User.deleteMany({}), Group.deleteMany({}), AclEntry.deleteMany({})]);
     process.env.USE_ENTRA_ID_FOR_PEOPLE_SEARCH = 'true';
     process.env.OPENID_REUSE_TOKENS = 'true';
+    process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS = 'false';
     owner = await User.create({
       name: 'Link Owner',
       email: 'owner@example.com',
@@ -126,8 +128,23 @@ describe('Shared-link directory principal provisioning', () => {
       },
     });
     graphGet = jest.fn().mockResolvedValue(null);
-    createGraphClient.mockResolvedValue({ api: () => ({ select: () => ({ get: graphGet }) }) });
+    graphMembers = jest.fn().mockResolvedValue({
+      value: [{ id: 'trusted-member', '@odata.type': '#microsoft.graph.user' }],
+    });
+    graphOwners = jest.fn().mockResolvedValue({ value: [] });
+    createGraphClient.mockResolvedValue({
+      api: (path) => ({
+        select: () => ({
+          get: () => graphGet(path),
+          top: () => ({
+            get: () => (path.includes('/owners') ? graphOwners(path) : graphMembers(path)),
+          }),
+        }),
+      }),
+    });
   });
+
+  afterEach(() => jest.restoreAllMocks());
 
   const update = (
     principals,
@@ -322,7 +339,9 @@ describe('Shared-link directory principal provisioning', () => {
       memberIds: ['removed-member', 'active-member'],
     });
     await db.getUserPrincipals({ userId: removed._id.toString(), role: SystemRoles.USER });
-    getGroupMembers.mockResolvedValueOnce(['active-member']);
+    graphMembers.mockResolvedValueOnce({
+      value: [{ id: 'active-member', '@odata.type': '#microsoft.graph.user' }],
+    });
     const response = await update([
       {
         ...forged,
@@ -332,7 +351,7 @@ describe('Shared-link directory principal provisioning', () => {
       },
     ]);
     expect(response.status).toBe(200);
-    expect(getGroupMembers).toHaveBeenCalledWith('test-access-token', 'owner-subject', sourceId);
+    expect(graphMembers).toHaveBeenCalledWith(`/groups/${sourceId}/transitiveMembers`);
     expect((await Group.findById(group._id).lean()).memberIds).toEqual(['active-member']);
     const permission = {
       role: SystemRoles.USER,
@@ -346,7 +365,7 @@ describe('Shared-link directory principal provisioning', () => {
     await expect(checkPermission({ ...permission, userId: active._id.toString() })).resolves.toBe(
       true,
     );
-    expect(createGraphClient).not.toHaveBeenCalled();
+    expect(createGraphClient).toHaveBeenCalledTimes(1);
   });
 
   it.each(['disabled', 'local login', 'token reuse disabled', 'missing token'])(
@@ -482,6 +501,118 @@ describe('Shared-link directory principal provisioning', () => {
     expect(entry.permBits).toBe(viewer.permBits);
     expect(createGraphClient).not.toHaveBeenCalled();
   });
+
+  it.each(['client', 'members', 'owners', 'later page'])(
+    'leaves persisted group membership and unrelated ACLs unchanged on %s failure',
+    async (failure) => {
+      const group = await Group.create({
+        name: 'Stored Group',
+        source: 'entra',
+        idOnTheSource: sourceId,
+        memberIds: ['kept-member'],
+      });
+      const otherResource = new mongoose.Types.ObjectId();
+      await grantPermission({
+        principalType: PrincipalType.GROUP,
+        principalId: group._id,
+        resourceType: ResourceType.SHARED_LINK,
+        resourceId: otherResource,
+        accessRoleId: AccessRoleIds.SHARED_LINK_VIEWER,
+        grantedBy: owner._id,
+      });
+      const before = await AclEntry.find({}).lean();
+      const error = new Error('Private Graph diagnostics');
+      if (failure === 'client') {
+        createGraphClient.mockRejectedValueOnce(error);
+      } else if (failure === 'owners') {
+        process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS = 'true';
+        graphOwners.mockRejectedValueOnce(error);
+      } else if (failure === 'later page') {
+        graphMembers.mockResolvedValueOnce({
+          value: [{ id: 'partial-member', '@odata.type': '#microsoft.graph.user' }],
+          '@odata.nextLink': `https://graph.microsoft.com/v1.0/groups/${sourceId}/transitiveMembers?$skiptoken=next`,
+        });
+        graphMembers.mockRejectedValueOnce(error);
+      } else {
+        graphMembers.mockRejectedValueOnce(error);
+      }
+      const response = await update(
+        [{ ...forged, type: PrincipalType.GROUP, id: group._id.toString() }],
+        undefined,
+        { public: true, publicAccessRoleId: AccessRoleIds.SHARED_LINK_VIEWER },
+      );
+      expect(response.status).toBe(502);
+      expect(response.body).toEqual({
+        error: 'Failed to update permissions',
+        details: 'Directory identity verification failed',
+      });
+      expect((await Group.findById(group._id).lean()).memberIds).toEqual(['kept-member']);
+      expect(await AclEntry.find({}).lean()).toEqual(before);
+    },
+  );
+
+  it('persists a genuinely empty group snapshot when Graph succeeds', async () => {
+    const group = await Group.create({
+      name: 'Stored Group',
+      source: 'entra',
+      idOnTheSource: sourceId,
+      memberIds: ['former-member'],
+    });
+    graphMembers.mockResolvedValueOnce({ value: [] });
+    const response = await update([
+      { ...forged, type: PrincipalType.GROUP, id: group._id.toString() },
+    ]);
+    expect(response.status).toBe(200);
+    expect((await Group.findById(group._id).lean()).memberIds).toEqual([]);
+  });
+
+  it.each(['findUser', 'findGroupById', 'updateGroupById', 'createUser', 'createGroup'])(
+    'returns a sanitized failure without ACL changes when %s fails',
+    async (method) => {
+      const group = await Group.create({
+        name: 'Stored Group',
+        source: 'entra',
+        idOnTheSource: sourceId,
+        memberIds: ['kept-member'],
+      });
+      const local = await User.create({ email: 'local-sharing@example.com' });
+      graphGet.mockResolvedValue({
+        id: sourceId,
+        displayName: 'Trusted',
+        mail: 'trusted@example.com',
+      });
+      const recipient = { ...forged };
+      if (method === 'findGroupById' || method === 'updateGroupById' || method === 'createGroup') {
+        recipient.type = PrincipalType.GROUP;
+        if (method !== 'createGroup') {
+          recipient.id = group._id.toString();
+        } else {
+          recipient.idOnTheSource = 'new-group-id';
+          graphGet.mockResolvedValue({ id: 'new-group-id', displayName: 'Trusted' });
+        }
+      }
+      jest.spyOn(db, method).mockRejectedValueOnce(new Error('Private database diagnostics'));
+      const response = await update(
+        [
+          recipient,
+          {
+            type: PrincipalType.USER,
+            id: local._id.toString(),
+            accessRoleId: AccessRoleIds.SHARED_LINK_VIEWER,
+          },
+        ],
+        undefined,
+        { public: true, publicAccessRoleId: AccessRoleIds.SHARED_LINK_VIEWER },
+      );
+      expect(response.status).toBe(500);
+      expect(response.body).toEqual({
+        error: 'Failed to update permissions',
+        details: 'Principal preparation failed',
+      });
+      expect(await AclEntry.countDocuments()).toBe(1);
+      expect((await Group.findById(group._id).lean()).memberIds).toEqual(['kept-member']);
+    },
+  );
 
   it('preserves local user, local group, role, public sharing, and revocation without Entra', async () => {
     process.env.USE_ENTRA_ID_FOR_PEOPLE_SEARCH = 'false';

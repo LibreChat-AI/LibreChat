@@ -3,6 +3,7 @@ import {
   ensureDirectoryPrincipalUser,
   preparePermissionPrincipals,
   DirectoryVerificationError,
+  InvalidPrincipalError,
   refreshDirectoryGroupMembers,
   resolveDirectoryPrincipal,
   validateLocalPrincipalId,
@@ -318,6 +319,38 @@ describe('preparePermissionPrincipals', () => {
     },
   );
 
+  it.each(['ensureUser', 'ensureGroup'] as const)(
+    'does not omit a principal when %s has an operational failure',
+    async (method) => {
+      const deps = createDeps();
+      deps[method].mockRejectedValue(new Error('Private database diagnostics'));
+      await expect(
+        preparePermissionPrincipals(
+          [
+            {
+              ...principal,
+              type: method === 'ensureUser' ? PrincipalType.USER : PrincipalType.GROUP,
+              id: 'local-id',
+            },
+          ],
+          null,
+          deps,
+        ),
+      ).rejects.toMatchObject({ statusCode: 500, message: 'Principal preparation failed' });
+      expect(deps.logger.error).toHaveBeenCalledWith('Error ensuring principal exists', {
+        type: 'Error',
+      });
+    },
+  );
+
+  it('omits only confirmed invalid or absent principals', async () => {
+    const deps = createDeps();
+    deps.ensureUser.mockRejectedValue(new InvalidPrincipalError('User principal not found'));
+    await expect(
+      preparePermissionPrincipals([{ ...principal, id: 'local-id' }], null, deps),
+    ).resolves.toEqual([]);
+  });
+
   it('propagates verification failures from the persistence boundary', async () => {
     const deps = createDeps();
     deps.ensureUser.mockRejectedValue(new DirectoryVerificationError());
@@ -329,34 +362,44 @@ describe('preparePermissionPrincipals', () => {
 
 describe('refreshDirectoryGroupMembers', () => {
   const group = { source: 'entra' as const, idOnTheSource: 'stored-group-id' };
-  const createMethods = () => ({
-    getGroupMembers: jest.fn().mockResolvedValue(['active-member']),
-    getGroupOwners: jest.fn().mockResolvedValue(['active-member', 'owner']),
-    includeOwners: false,
-    updateMembers: jest.fn().mockResolvedValue(undefined),
-    logger: { error: jest.fn() },
-  });
+  const createMethods = () => {
+    const getGroupMembers = jest.fn().mockResolvedValue({
+      value: [{ id: 'active-member', '@odata.type': '#microsoft.graph.user' }],
+    });
+    const getGroupOwners = jest
+      .fn()
+      .mockResolvedValue({ value: [{ id: 'active-member' }, { id: 'owner' }] });
+    const api = jest.fn((path: string) => ({
+      select: () => ({
+        top: () => ({
+          get: () => (path.includes('/owners') ? getGroupOwners() : getGroupMembers()),
+        }),
+      }),
+    }));
+    return {
+      getGroupMembers,
+      getGroupOwners,
+      api,
+      createClient: jest.fn().mockResolvedValue({ api }),
+      includeOwners: false,
+      updateMembers: jest.fn().mockResolvedValue(undefined),
+      logger: { error: jest.fn() },
+    };
+  };
 
   it('refreshes members by stored external ID and includes owners only when configured', async () => {
     const methods = createMethods();
     methods.includeOwners = true;
     await refreshDirectoryGroupMembers(group, authContext, methods);
-    expect(methods.getGroupMembers).toHaveBeenCalledWith(
-      authContext.accessToken,
-      authContext.sub,
-      group.idOnTheSource,
-    );
-    expect(methods.getGroupOwners).toHaveBeenCalledWith(
-      authContext.accessToken,
-      authContext.sub,
-      group.idOnTheSource,
-    );
+    expect(methods.createClient).toHaveBeenCalledWith(authContext.accessToken, authContext.sub);
+    expect(methods.api).toHaveBeenCalledWith('/groups/stored-group-id/transitiveMembers');
+    expect(methods.api).toHaveBeenCalledWith('/groups/stored-group-id/owners');
     expect(methods.updateMembers).toHaveBeenCalledWith(['active-member', 'owner']);
   });
 
   it('replaces stale members with an empty successful directory response', async () => {
     const methods = createMethods();
-    methods.getGroupMembers.mockResolvedValue([]);
+    methods.getGroupMembers.mockResolvedValue({ value: [] });
     await refreshDirectoryGroupMembers(group, authContext, methods);
     expect(methods.updateMembers).toHaveBeenCalledWith([]);
     expect(methods.getGroupOwners).not.toHaveBeenCalled();
@@ -386,5 +429,78 @@ describe('refreshDirectoryGroupMembers', () => {
       DirectoryVerificationError,
     );
     expect(methods.updateMembers).not.toHaveBeenCalled();
+  });
+});
+
+describe('strict directory membership snapshots', () => {
+  const group = { source: 'entra' as const, idOnTheSource: 'group-id' };
+  const createMethods = () => {
+    const get = jest.fn().mockResolvedValue({ value: [] });
+    const api = jest.fn(() => ({ select: () => ({ top: () => ({ get }) }) }));
+    return {
+      get,
+      api,
+      createClient: jest.fn().mockResolvedValue({ api }),
+      includeOwners: false,
+      updateMembers: jest.fn().mockResolvedValue(undefined),
+      logger: { error: jest.fn() },
+    };
+  };
+
+  it.each(['client', 'members', 'owners', 'later page'])(
+    'preserves persisted membership on a rejected %s lookup',
+    async (failure) => {
+      const methods = createMethods();
+      const error = new Error('Private Graph failure');
+      if (failure === 'client') {
+        methods.createClient.mockRejectedValue(error);
+      } else if (failure === 'later page') {
+        methods.get.mockResolvedValueOnce({
+          value: [{ id: 'first-member', '@odata.type': '#microsoft.graph.user' }],
+          '@odata.nextLink':
+            'https://graph.microsoft.com/v1.0/groups/group-id/transitiveMembers?$skiptoken=next',
+        });
+        methods.get.mockRejectedValueOnce(error);
+      } else if (failure === 'owners') {
+        methods.includeOwners = true;
+        methods.get.mockResolvedValueOnce({
+          value: [{ id: 'member', '@odata.type': '#microsoft.graph.user' }],
+        });
+        methods.get.mockRejectedValueOnce(error);
+      } else {
+        methods.get.mockRejectedValue(error);
+      }
+      await expect(refreshDirectoryGroupMembers(group, authContext, methods)).rejects.toMatchObject(
+        { statusCode: 502, message: 'Directory identity verification failed' },
+      );
+      expect(methods.updateMembers).not.toHaveBeenCalled();
+    },
+  );
+
+  it('combines all successful pages and excludes non-user members', async () => {
+    const methods = createMethods();
+    methods.get.mockResolvedValueOnce({
+      value: [
+        { id: 'member-1', '@odata.type': '#microsoft.graph.user' },
+        { id: 'child', '@odata.type': '#microsoft.graph.group' },
+      ],
+      '@odata.nextLink':
+        'https://graph.microsoft.com/v1.0/groups/group-id/transitiveMembers?$skiptoken=next',
+    });
+    methods.get.mockResolvedValueOnce({
+      value: [{ id: 'member-2', '@odata.type': '#microsoft.graph.user' }],
+    });
+    await refreshDirectoryGroupMembers(group, authContext, methods);
+    expect(methods.updateMembers).toHaveBeenCalledWith(['member-1', 'member-2']);
+    expect(methods.api).toHaveBeenLastCalledWith(
+      '/groups/group-id/transitiveMembers?$skiptoken=next',
+    );
+  });
+
+  it('propagates storage failures without misclassifying them as directory failures', async () => {
+    const methods = createMethods();
+    const error = new Error('Private database failure');
+    methods.updateMembers.mockRejectedValue(error);
+    await expect(refreshDirectoryGroupMembers(group, authContext, methods)).rejects.toBe(error);
   });
 });

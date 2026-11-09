@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const {
   AccessControlService,
   isEnabled,
+  InvalidPrincipalError,
+  getDirectoryGroupMembers,
   ensureDirectoryPrincipalUser,
   resolveDirectoryPrincipal,
   validateLocalPrincipalId,
@@ -20,8 +22,6 @@ const {
   getUserEntraGroups,
   getEntraGroupDetailsBatch,
   createGraphClient,
-  getGroupMembers,
-  getGroupOwners,
 } = require('~/server/services/GraphApiService');
 const db = require('~/models');
 
@@ -40,7 +40,7 @@ const validateResourceType = (resourceType) => {
 const ensureLocalUserPrincipalExists = async (principalId) => {
   const user = await db.findUser({ _id: validateLocalPrincipalId(principalId) }, '_id');
   if (!user) {
-    throw new Error('User principal not found');
+    throw new InvalidPrincipalError('User principal not found');
   }
   return user._id.toString();
 };
@@ -52,11 +52,10 @@ const ensureLocalGroupPrincipalExists = async (principalId, authContext) => {
     idOnTheSource: 1,
   });
   if (!group) {
-    throw new Error('Group principal not found');
+    throw new InvalidPrincipalError('Group principal not found');
   }
   await refreshDirectoryGroupMembers(group, authContext, {
-    getGroupMembers,
-    getGroupOwners,
+    createClient: createGraphClient,
     includeOwners: isEnabled(process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS),
     updateMembers: (memberIds) => db.updateGroupById(group._id, { memberIds }),
     logger,
@@ -380,10 +379,10 @@ const ensurePrincipalExists = async function (
   }
 
   if (principal.type === PrincipalType.GROUP) {
-    throw new Error('Group principals should be handled by group-specific methods');
+    throw new InvalidPrincipalError('Group principals should be handled by group-specific methods');
   }
 
-  throw new Error(`Unsupported principal type: ${principal.type}`);
+  throw new InvalidPrincipalError(`Unsupported principal type: ${principal.type}`);
 };
 
 /**
@@ -410,7 +409,9 @@ const ensureGroupPrincipalExists = async function (
     resolveDirectoryPrincipal(identity, authContext, createGraphClient),
 ) {
   if (principal.type !== PrincipalType.GROUP) {
-    throw new Error(`Invalid principal type: ${principal.type}. Expected '${PrincipalType.GROUP}'`);
+    throw new InvalidPrincipalError(
+      `Invalid principal type: ${principal.type}. Expected '${PrincipalType.GROUP}'`,
+    );
   }
 
   if (principal.id) {
@@ -420,35 +421,14 @@ const ensureGroupPrincipalExists = async function (
   if (principal.source === 'entra') {
     principal = await resolvePrincipal(principal);
     if (!principal?.name || !principal.idOnTheSource) {
-      throw new Error('Entra ID group principals must have name and idOnTheSource');
+      throw new InvalidPrincipalError('Entra ID group principals must have name and idOnTheSource');
     }
 
-    let memberIds = [];
-    if (authContext && authContext.accessToken && authContext.sub) {
-      try {
-        memberIds = await getGroupMembers(
-          authContext.accessToken,
-          authContext.sub,
-          principal.idOnTheSource,
-        );
-
-        // Include group owners as members if feature is enabled
-        if (isEnabled(process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS)) {
-          const ownerIds = await getGroupOwners(
-            authContext.accessToken,
-            authContext.sub,
-            principal.idOnTheSource,
-          );
-          if (ownerIds && ownerIds.length > 0) {
-            memberIds.push(...ownerIds);
-            // Remove duplicates
-            memberIds = [...new Set(memberIds)];
-          }
-        }
-      } catch (error) {
-        logger.error('Failed to fetch group members from Graph API:', error);
-      }
-    }
+    const memberIds = await getDirectoryGroupMembers(principal, authContext, {
+      createClient: createGraphClient,
+      includeOwners: isEnabled(process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS),
+      logger,
+    });
 
     let existingGroup = await db.findGroupByExternalId(principal.idOnTheSource, 'entra');
 
@@ -510,7 +490,7 @@ const ensureGroupPrincipalExists = async function (
     return principal.id;
   }
 
-  throw new Error(`Unsupported group principal source: ${principal.source}`);
+  throw new InvalidPrincipalError(`Unsupported group principal source: ${principal.source}`);
 };
 
 /**

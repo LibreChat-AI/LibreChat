@@ -5,10 +5,12 @@ import { getLookupConcurrency } from '~/utils/concurrency';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { mapWithConcurrency } from '~/utils/promise';
 
+export class InvalidPrincipalError extends Error {}
+
 /** Local principal IDs must be scalar ObjectId strings, never query operators. */
 export function validateLocalPrincipalId(id: unknown): string {
   if (typeof id !== 'string' || !/^[a-f\d]{24}$/i.test(id)) {
-    throw new Error('Invalid local principal ID');
+    throw new InvalidPrincipalError('Invalid local principal ID');
   }
   return id;
 }
@@ -132,7 +134,7 @@ export const ensureDirectoryPrincipalUser = async (
 ): Promise<string> => {
   const resolved = await methods.resolvePrincipal(principal);
   if (resolved?.type !== PrincipalType.USER || !resolved.email || !resolved.idOnTheSource) {
-    throw new Error('Directory user principal is unavailable');
+    throw new InvalidPrincipalError('Directory user principal is unavailable');
   }
 
   const userBySourceId = await methods.findUserBySourceId(resolved.idOnTheSource);
@@ -153,6 +155,14 @@ export const ensureDirectoryPrincipalUser = async (
     idOnTheSource: resolved.idOnTheSource,
   });
 };
+
+export class PrincipalPreparationError extends Error {
+  readonly statusCode: number = 500;
+
+  constructor() {
+    super('Principal preparation failed');
+  }
+}
 
 export class DirectoryVerificationError extends Error {
   readonly statusCode: number = 502;
@@ -242,29 +252,103 @@ export async function preparePermissionPrincipals(
       }
       return { ...principal, id: await result };
     } catch (error) {
+      if (error instanceof InvalidPrincipalError) {
+        return null;
+      }
       if (error instanceof DirectoryVerificationError) {
         throw error;
       }
       methods.logger.error('Error ensuring principal exists', getSafeErrorMetadata(error));
-      return null;
+      throw new PrincipalPreparationError();
     }
   });
   return validated.filter((principal): principal is PermissionPrincipal => principal !== null);
 }
 
+interface DirectoryMember {
+  id: string;
+  '@odata.type'?: string;
+}
+
+interface DirectoryMembershipPage {
+  value: DirectoryMember[];
+  '@odata.nextLink'?: string;
+}
+
+interface DirectoryMembershipClient {
+  api: (path: string) => {
+    select: (fields: string) => {
+      top: (limit: number) => { get: () => Promise<DirectoryMembershipPage> };
+    };
+  };
+}
+
 interface DirectoryGroupMethods {
-  getGroupMembers: (token: string, sub: string, sourceId: string) => Promise<string[]>;
-  getGroupOwners: (token: string, sub: string, sourceId: string) => Promise<string[]>;
+  createClient: (token: string, sub: string) => Promise<DirectoryMembershipClient>;
   includeOwners: boolean;
-  updateMembers: (members: string[]) => Promise<unknown>;
   logger: PermissionPrincipalMethods['logger'];
+}
+
+/** A failed page must never become an empty or partial membership snapshot. */
+async function readDirectoryMembers(
+  client: DirectoryMembershipClient,
+  sourceId: string,
+  relation: 'transitiveMembers' | 'owners',
+): Promise<string[]> {
+  const ids = new Set<string>();
+  let nextLink: string | undefined = `/groups/${encodeURIComponent(sourceId)}/${relation}`;
+  while (nextLink) {
+    const page: DirectoryMembershipPage = await client.api(nextLink).select('id').top(999).get();
+    if (!Array.isArray(page?.value)) {
+      throw new Error('Invalid directory membership response');
+    }
+    for (const member of page.value) {
+      if (
+        typeof member.id === 'string' &&
+        (relation === 'owners' || member['@odata.type'] === '#microsoft.graph.user')
+      ) {
+        ids.add(member.id);
+      }
+    }
+    nextLink = page['@odata.nextLink'];
+    if (nextLink) {
+      const url: URL = new URL(nextLink, 'https://graph.microsoft.com/v1.0/');
+      if (url.origin !== 'https://graph.microsoft.com') {
+        throw new Error('Invalid directory membership continuation');
+      }
+      nextLink = url.pathname.replace(/^\/v1\.0/, '') + url.search;
+    }
+  }
+  return [...ids];
+}
+
+/** Strict membership lookup for permission writes, unlike best-effort search/sync adapters. */
+export async function getDirectoryGroupMembers(
+  group: Pick<TPrincipal, 'idOnTheSource'>,
+  authContext: DirectoryAuthContext | null,
+  methods: DirectoryGroupMethods,
+): Promise<string[]> {
+  if (!group.idOnTheSource || !authContext?.accessToken || !authContext.sub) {
+    throw new InvalidPrincipalError('Directory group principal is unavailable');
+  }
+  try {
+    const client = await methods.createClient(authContext.accessToken, authContext.sub);
+    const [members, owners] = await Promise.all([
+      readDirectoryMembers(client, group.idOnTheSource, 'transitiveMembers'),
+      methods.includeOwners ? readDirectoryMembers(client, group.idOnTheSource, 'owners') : [],
+    ]);
+    return owners.length > 0 ? [...new Set([...members, ...owners])] : members;
+  } catch (error) {
+    methods.logger.error('Directory group membership refresh failed', getSafeErrorMetadata(error));
+    throw new DirectoryVerificationError();
+  }
 }
 
 /** Refresh persisted membership from its stored identity, never the submitted directory fields. */
 export async function refreshDirectoryGroupMembers(
   group: Pick<TPrincipal, 'source' | 'idOnTheSource'>,
   authContext: DirectoryAuthContext | null,
-  methods: DirectoryGroupMethods,
+  methods: DirectoryGroupMethods & { updateMembers: (members: string[]) => Promise<unknown> },
 ): Promise<void> {
   if (
     group.source !== 'entra' ||
@@ -274,18 +358,6 @@ export async function refreshDirectoryGroupMembers(
   ) {
     return;
   }
-  let memberIds: string[];
-  try {
-    const [members, owners] = await Promise.all([
-      methods.getGroupMembers(authContext.accessToken, authContext.sub, group.idOnTheSource),
-      methods.includeOwners
-        ? methods.getGroupOwners(authContext.accessToken, authContext.sub, group.idOnTheSource)
-        : [],
-    ]);
-    memberIds = owners.length > 0 ? [...new Set([...members, ...owners])] : members;
-  } catch (error) {
-    methods.logger.error('Directory group membership refresh failed', getSafeErrorMetadata(error));
-    throw new DirectoryVerificationError();
-  }
+  const memberIds = await getDirectoryGroupMembers(group, authContext, methods);
   await methods.updateMembers(memberIds);
 }
