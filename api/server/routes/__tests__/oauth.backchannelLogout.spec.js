@@ -1,5 +1,6 @@
 const express = require('express');
 const request = require('supertest');
+const createSpaFallback = require('../../utils/fallback');
 
 const callOrder = [];
 const mockGetBackchannelLogoutConfig = jest.fn();
@@ -45,6 +46,7 @@ const ENABLED_CLIENT = { issuer: 'https://idp.example.com', clientId: 'librechat
 
 describe('POST /oauth/openid/backchannel-logout', () => {
   let app;
+  let appWithSpaFallback;
 
   beforeAll(() => {
     process.env.DOMAIN_CLIENT = 'http://localhost:3080';
@@ -56,6 +58,10 @@ describe('POST /oauth/openid/backchannel-logout', () => {
 
     app = express();
     app.use('/oauth', preAuthTenantMiddleware, oauthRouter);
+
+    appWithSpaFallback = express();
+    appWithSpaFallback.use('/oauth', preAuthTenantMiddleware, oauthRouter);
+    appWithSpaFallback.use(createSpaFallback((_req, res) => res.status(200).send('<html></html>')));
   });
 
   beforeEach(() => {
@@ -109,6 +115,32 @@ describe('POST /oauth/openid/backchannel-logout', () => {
 
     expect(response.status).toBe(404);
     expect(mockBackchannelLogoutLimiter).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 with no HTML body when mode is off, instead of falling through to the SPA', async () => {
+    mockGetBackchannelLogoutConfig.mockResolvedValue({ ...ENABLED_CONFIG, mode: 'off' });
+    mockGetProviderSessionClient.mockReturnValue(ENABLED_CLIENT);
+
+    const response = await request(appWithSpaFallback)
+      .post('/oauth/openid/backchannel-logout')
+      .type('form')
+      .send('logout_token=anything');
+
+    expect(response.status).toBe(404);
+    expect(response.text).toBe('');
+  });
+
+  it('returns 404 with no HTML body when there is no OpenID client, instead of falling through to the SPA', async () => {
+    mockGetBackchannelLogoutConfig.mockResolvedValue(ENABLED_CONFIG);
+    mockGetProviderSessionClient.mockReturnValue(null);
+
+    const response = await request(appWithSpaFallback)
+      .post('/oauth/openid/backchannel-logout')
+      .type('form')
+      .send('logout_token=anything');
+
+    expect(response.status).toBe(404);
+    expect(response.text).toBe('');
   });
 
   it('rejects a body over the configured limit with 413, before the handler runs', async () => {
