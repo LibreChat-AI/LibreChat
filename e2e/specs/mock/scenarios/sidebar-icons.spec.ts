@@ -60,6 +60,9 @@ test('leading icons preserve conversation focus after keyboard unpin @scenario:s
 
     await second.getByTestId('convo-unpin-button').click();
     await expect(second).toHaveCount(0);
+    await page.getByRole('button', { name: 'Filter and sort chats', exact: true }).click();
+    await page.getByRole('menuitemcheckbox', { name: 'Show project chats', exact: true }).click();
+    await page.keyboard.press('Escape');
     const regular = page
       .getByTestId('convo-item')
       .filter({ hasText: titles[1] })
