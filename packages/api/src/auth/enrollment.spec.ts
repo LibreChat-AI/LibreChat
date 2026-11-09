@@ -518,6 +518,22 @@ describe('cancel2FASetup', () => {
       expect(await sessionIds()).toEqual([]);
     });
 
+    /** Both lookups come before any cookie or write, so a failed one leaves nothing half done to retry. */
+    it('reports a failure without touching the browser when the session cannot be looked up', async () => {
+      const { deps, controllers } = createHarness();
+      const userId = await seedUser();
+      const session = await seedSession(userId);
+      jest.spyOn(deps, 'findSession').mockRejectedValueOnce(new Error('database unavailable'));
+
+      const res = await cancel(controllers, { userId, refreshToken: session.refreshToken });
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ message: 'Something went wrong' });
+      expect(res.clearCookie).not.toHaveBeenCalled();
+      expect(await sessionIds()).toEqual([session.id]);
+      expect(await readUser(userId)).toMatchObject(STAGED);
+    });
+
     it('reports a failure without touching the browser when the account cannot be read', async () => {
       const { deps, controllers } = createHarness();
       const userId = await seedUser();
