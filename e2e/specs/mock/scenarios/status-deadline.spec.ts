@@ -94,26 +94,36 @@ test.describe('status reads that never answer', () => {
       statusReads.hold();
       await sendAndAwaitStreamEnd(page, `E2E_REPLY:${label}`);
       conversationId = conversationIdOf(page);
-      await expect(messagesView(page).getByText(`E2E reply ${label}`)).toBeVisible();
+      await expect(
+        messagesView(page).getByText(`E2E reply ${label}`, { exact: true }),
+      ).toBeVisible();
       await expectStrandedOnHeldRead(page, statusReads);
 
       statusReads.release();
       await expectComposerIdle(page, RECOVERY_TIMEOUT_MS);
-      await expect(messagesView(page).getByText(`E2E reply ${label}`)).toBeVisible();
+      await expect(
+        messagesView(page).getByText(`E2E reply ${label}`, { exact: true }),
+      ).toBeVisible();
 
       /* The pane is usable again: the next turn sends and finishes on its own. */
       const start = await sendMessage(page, `E2E_REPLY:${label}-next`);
       expect(start.ok()).toBeTruthy();
-      await expect(messagesView(page).getByText(`E2E reply ${label}-next`)).toBeVisible({
+      await expect(
+        messagesView(page).getByText(`E2E reply ${label}-next`, { exact: true }),
+      ).toBeVisible({
         timeout: 20_000,
       });
       await expectComposerIdle(page, 20_000);
 
       await page.reload();
-      await expect(messagesView(page).getByText(`E2E reply ${label}`)).toBeVisible({
-        timeout: 20_000,
-      });
-      await expect(messagesView(page).getByText(`E2E reply ${label}-next`)).toBeVisible();
+      await expect(messagesView(page).getByText(`E2E reply ${label}`, { exact: true })).toBeVisible(
+        {
+          timeout: 20_000,
+        },
+      );
+      await expect(
+        messagesView(page).getByText(`E2E reply ${label}-next`, { exact: true }),
+      ).toBeVisible();
     } finally {
       await statusReads.drop();
       await cleanup(conversationId);
@@ -133,22 +143,30 @@ test.describe('status reads that never answer', () => {
 
       await sendAndAwaitStreamEnd(page, `E2E_REPLY:${label}-first`);
       conversationId = conversationIdOf(page);
-      await expect(messagesView(page).getByText(`E2E reply ${label}-first`)).toBeVisible();
+      await expect(
+        messagesView(page).getByText(`E2E reply ${label}-first`, { exact: true }),
+      ).toBeVisible();
       await expectComposerIdle(page, 20_000);
 
       statusReads.hold();
       await sendAndAwaitStreamEnd(page, `E2E_REPLY:${label}`);
-      await expect(messagesView(page).getByText(`E2E reply ${label}`)).toBeVisible();
+      await expect(
+        messagesView(page).getByText(`E2E reply ${label}`, { exact: true }),
+      ).toBeVisible();
       await expectStrandedOnHeldRead(page, statusReads);
 
       statusReads.release();
       await expectComposerIdle(page, RECOVERY_TIMEOUT_MS);
 
       await page.reload();
-      await expect(messagesView(page).getByText(`E2E reply ${label}-first`)).toBeVisible({
+      await expect(
+        messagesView(page).getByText(`E2E reply ${label}-first`, { exact: true }),
+      ).toBeVisible({
         timeout: 20_000,
       });
-      await expect(messagesView(page).getByText(`E2E reply ${label}`)).toBeVisible();
+      await expect(
+        messagesView(page).getByText(`E2E reply ${label}`, { exact: true }),
+      ).toBeVisible();
     } finally {
       await statusReads.drop();
       await cleanup(conversationId);
