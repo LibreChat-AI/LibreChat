@@ -37,6 +37,11 @@ jest.mock('../NewChat', () => ({
   default: () => <div data-testid="nav-new-chat-fab" />,
 }));
 
+jest.mock('~/components/Balance/Credits', () => ({
+  __esModule: true,
+  default: () => <div data-testid="account-usage" />,
+}));
+
 jest.mock('~/components/Nav/AccountSettings', () => ({
   __esModule: true,
   default: () => <div data-testid="nav-user" />,

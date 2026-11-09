@@ -76,6 +76,11 @@ jest.mock('~/components/Chat/Menus/OpenSidebar', () => ({
   CLOSE_SIDEBAR_ID: 'close-sidebar',
 }));
 
+jest.mock('~/components/Balance/Credits', () => ({
+  __esModule: true,
+  default: () => <div data-testid="account-usage" />,
+}));
+
 jest.mock('~/components/Nav/AccountSettings', () => ({
   __esModule: true,
   default: () => <div data-testid="account-settings" />,

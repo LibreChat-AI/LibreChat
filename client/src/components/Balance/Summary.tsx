@@ -20,10 +20,17 @@ const TONE_TEXT: Record<BalanceTone, string> = {
   danger: 'text-text-destructive',
 };
 
+const COMPACT_LABEL = {
+  credits: 'com_ui_balance_credits_label',
+  currency: 'com_nav_balance',
+  percent: 'com_ui_balance_usage_limit',
+} as const;
+
 interface SummaryProps {
   state: BalanceState;
   currency?: CurrencyConfig;
   className?: string;
+  compact?: boolean;
 }
 
 function useRefillText(summary: BalanceSummary, currency?: CurrencyConfig): string {
@@ -60,7 +67,15 @@ function useRefillText(summary: BalanceSummary, currency?: CurrencyConfig): stri
     : localize('com_ui_balance_refill_amount_when_empty', { 0: amount });
 }
 
-function Reading({ summary, currency }: { summary: BalanceSummary; currency?: CurrencyConfig }) {
+function Reading({
+  summary,
+  currency,
+  compact,
+}: {
+  summary: BalanceSummary;
+  currency?: CurrencyConfig;
+  compact?: boolean;
+}) {
   const localize = useLocalize();
   const refillText = useRefillText(summary, currency);
   const { display, credits, usedPercent, tone } = summary;
@@ -84,6 +99,45 @@ function Reading({ summary, currency }: { summary: BalanceSummary; currency?: Cu
     status = localize('com_ui_balance_empty');
   } else if (display !== 'percent' && usedPercent != null) {
     status = localize('com_ui_balance_used', { 0: String(usedPercent) });
+  }
+
+  if (compact) {
+    const remaining =
+      usedPercent != null
+        ? localize('com_ui_balance_remaining', { 0: String(100 - usedPercent) })
+        : localize('com_ui_balance_usage_unavailable');
+    return (
+      <div className="col-span-2 space-y-3">
+        <dl className="space-y-3 text-sm">
+          {display !== 'percent' && usedPercent != null && (
+            <div className="flex items-baseline justify-between gap-4">
+              <dt>{localize('com_ui_balance_allowance')}</dt>
+              <dd className="font-medium tabular-nums">{remaining}</dd>
+            </div>
+          )}
+          <div className="flex items-baseline justify-between gap-4">
+            <dt>{localize(COMPACT_LABEL[display])}</dt>
+            <dd
+              className={cn(
+                'text-end font-medium tabular-nums',
+                tone !== 'normal' && TONE_TEXT[tone],
+              )}
+              data-testid="balance-value"
+            >
+              {display === 'percent' ? remaining : value}
+            </dd>
+          </div>
+        </dl>
+        <p className="text-text-secondary text-xs" data-testid="balance-refill">
+          {refillText}
+        </p>
+        {tone === 'danger' && (
+          <p className="text-text-destructive text-xs" data-testid="balance-status" role="status">
+            {status}
+          </p>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -118,11 +172,11 @@ function Reading({ summary, currency }: { summary: BalanceSummary; currency?: Cu
 }
 
 /**
- * The balance reading shared by the context gauge popover and the settings dialog:
+ * The balance reading shared by the sidebar popover and the settings dialog:
  * a title with the figure the deployment chose to show, the share of the allotment
  * spent, and when the next refill lands.
  */
-function Summary({ state, currency, className }: SummaryProps) {
+function Summary({ state, currency, className, compact = false }: SummaryProps) {
   const localize = useLocalize();
   const headingId = useId();
 
@@ -138,7 +192,7 @@ function Summary({ state, currency, className }: SummaryProps) {
       data-testid="balance-summary"
       className={cn('grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2', className)}
     >
-      <h3 id={headingId} className="text-text-primary text-sm font-medium">
+      <h3 id={headingId} className={compact ? 'sr-only' : 'text-text-primary text-sm font-medium'}>
         {localize(percentOnly ? 'com_ui_balance_usage_limit' : 'com_nav_balance')}
       </h3>
       {state.status === 'loading' && (
@@ -155,7 +209,9 @@ function Summary({ state, currency, className }: SummaryProps) {
           </p>
         </>
       )}
-      {state.status === 'success' && <Reading summary={state.summary} currency={currency} />}
+      {state.status === 'success' && (
+        <Reading summary={state.summary} currency={currency} compact={compact} />
+      )}
     </section>
   );
 }
