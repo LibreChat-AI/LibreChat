@@ -1201,6 +1201,14 @@ describe('loadAgent', () => {
         deps,
       );
 
+    test('carries the spec deferLoading selection as tool options', async () => {
+      const agent = await load(undefined, { deferLoading: ['execute_code'] });
+      expect(agent?.tool_options).toEqual({
+        '*': { defer_loading: false },
+        execute_code: { defer_loading: true },
+      });
+    });
+
     test('an explicit user "off" disables every spec-enabled tool', async () => {
       const result = await load(
         {

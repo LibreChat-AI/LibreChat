@@ -12,7 +12,6 @@ import {
 } from 'librechat-data-provider';
 import type {
   AgentModelParameters,
-  AgentToolOptions,
   TEphemeralAgent,
   TModelSpec,
   Agent,
@@ -20,12 +19,13 @@ import type {
 import type { AppConfig } from '@librechat/data-schemas';
 import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
 import type { ParsedServerConfig } from '~/mcp/types';
+import {
+  resolveEphemeralTools,
+  resolveEphemeralMCPServers,
+  synthesizeToggleToolOptions,
+} from '~/agents/toggles';
 import { requiresEphemeralUserConnection, validateMCPServerConfig } from '~/mcp/utils';
-import { resolveEphemeralTools, resolveEphemeralMCPServers } from '~/agents/toggles';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
-import { synthesizeBackgroundToolOptions } from '~/agents/background';
-import { mergeSynthesizedToolOptions } from '~/agents/selection';
-import { synthesizeIntentToolOptions } from '~/agents/intent';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { getCustomEndpointConfig } from '~/app/config';
 import { mapWithConcurrency } from '~/utils/promise';
@@ -178,19 +178,9 @@ export async function loadEphemeralAgent(
     tools,
   };
 
-  const backgroundToolOptions: AgentToolOptions | undefined = synthesizeBackgroundToolOptions({
-    ephemeralAgent,
-    modelSpec,
-  });
-  if (backgroundToolOptions) {
-    result.tool_options = backgroundToolOptions;
-  }
-  const intentToolOptions: AgentToolOptions | undefined = synthesizeIntentToolOptions({
-    ephemeralAgent,
-    modelSpec,
-  });
-  if (intentToolOptions) {
-    result.tool_options = mergeSynthesizedToolOptions(result.tool_options, intentToolOptions);
+  const toggleToolOptions = synthesizeToggleToolOptions({ ephemeralAgent, modelSpec });
+  if (toggleToolOptions) {
+    result.tool_options = toggleToolOptions;
   }
 
   const artifacts = resolveSpecArtifacts(ephemeralAgent?.artifacts, modelSpec?.artifacts);

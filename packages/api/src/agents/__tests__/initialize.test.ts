@@ -7051,3 +7051,128 @@ describe('initializeAgent — inference trust boundary', () => {
     });
   });
 });
+
+describe('initializeAgent — deferred system tools', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  /** A loader result shaped like the definitions-only tool loader's. */
+  function mockDeferrableLoad(
+    loadTools: ReturnType<typeof createMocks>['loadTools'],
+    deferredToolsEnabled: boolean,
+  ) {
+    loadTools.mockImplementation(async ({ tools }: { tools: string[] }) => {
+      const loaded = tools
+        .filter((name) => name === Tools.web_search || name === Tools.file_search)
+        .map((name) => ({ name, description: `${name} tool`, parameters: { type: 'object' } }));
+      return {
+        tools: [],
+        toolContextMap: {},
+        userMCPAuthMap: undefined,
+        toolRegistry: new Map(
+          loaded.map((def) => [def.name, { name: def.name, allowed_callers: ['direct'] }]),
+        ),
+        toolDefinitions: loaded,
+        hasDeferredTools: false,
+        deferredToolsEnabled,
+      };
+    });
+  }
+
+  async function initialize(
+    toolOptions: Agent['tool_options'],
+    deferredToolsEnabled = true,
+  ): Promise<Awaited<ReturnType<typeof initializeAgent>>> {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = [Tools.web_search, Tools.file_search, Tools.execute_code];
+    agent.tool_options = toolOptions;
+    mockDeferrableLoad(loadTools, deferredToolsEnabled);
+    return initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+      },
+      db,
+    );
+  }
+
+  const deferred = (result: Awaited<ReturnType<typeof initializeAgent>>): string[] =>
+    (result.toolDefinitions ?? []).filter((d) => d.defer_loading === true).map((d) => d.name);
+
+  it('defers search and code-execution tools registered during initialization', async () => {
+    const result = await initialize({ '*': { defer_loading: true } });
+
+    expect(deferred(result)).toEqual(
+      expect.arrayContaining(['web_search', 'file_search', 'bash_tool', 'read_file']),
+    );
+    expect(result.hasDeferredTools).toBe(true);
+    const names = (result.toolDefinitions ?? []).map((d) => d.name);
+    expect(names.filter((name) => name === 'tool_search')).toHaveLength(1);
+    for (const def of result.toolDefinitions ?? []) {
+      if (def.defer_loading === true) {
+        expect(result.toolRegistry?.get(def.name)).toBe(def);
+      }
+    }
+  });
+
+  it('defers only the tools a capability marker registered', async () => {
+    const result = await initialize({
+      '*': { defer_loading: false },
+      execute_code: { defer_loading: true },
+    });
+    const names = deferred(result);
+    expect(names).toEqual(expect.arrayContaining(['bash_tool', 'read_file']));
+    expect(names).not.toContain('web_search');
+    expect(names).not.toContain('file_search');
+  });
+
+  it('defers nothing when the deferred_tools capability is off', async () => {
+    const result = await initialize({ '*': { defer_loading: true } }, false);
+    expect(deferred(result)).toEqual([]);
+    expect(result.hasDeferredTools).toBe(false);
+    expect((result.toolDefinitions ?? []).map((d) => d.name)).not.toContain('tool_search');
+  });
+});
+
+describe('initializeAgent — deferral without a loader registry', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('defers late registrations when the loader returned early with no capability or registry', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = [Tools.execute_code];
+    agent.tool_options = { '*': { defer_loading: true } };
+    (req as unknown as { config: unknown }).config = {
+      endpoints: { [EModelEndpoint.agents]: { capabilities: [AgentCapabilities.deferred_tools] } },
+    };
+    loadTools.mockResolvedValue({ toolDefinitions: [] });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+      },
+      db,
+    );
+
+    const bash = result.toolDefinitions?.find((d) => d.name === 'bash_tool');
+    expect(bash?.defer_loading).toBe(true);
+    expect(result.toolRegistry?.get('bash_tool')).toBe(bash);
+    expect(result.toolRegistry?.has('tool_search')).toBe(true);
+    expect(result.hasDeferredTools).toBe(true);
+  });
+});

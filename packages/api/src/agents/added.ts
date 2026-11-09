@@ -11,22 +11,17 @@ import {
   resolveSpecUserToggles,
   resolveSpecSkillsEnabled,
 } from 'librechat-data-provider';
-import type {
-  Agent,
-  TModelSpec,
-  TConversation,
-  AgentToolOptions,
-  TEphemeralAgent,
-} from 'librechat-data-provider';
+import type { Agent, TModelSpec, TConversation, TEphemeralAgent } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
 import type { ParsedServerConfig } from '~/mcp/types';
+import {
+  resolveEphemeralTools,
+  resolveEphemeralMCPServers,
+  synthesizeToggleToolOptions,
+} from '~/agents/toggles';
 import { requiresEphemeralUserConnection, validateMCPServerConfig } from '~/mcp/utils';
-import { resolveEphemeralTools, resolveEphemeralMCPServers } from '~/agents/toggles';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
-import { synthesizeBackgroundToolOptions } from '~/agents/background';
-import { mergeSynthesizedToolOptions } from '~/agents/selection';
-import { synthesizeIntentToolOptions } from '~/agents/intent';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { getCustomEndpointConfig } from '~/app/config';
 import { mapWithConcurrency } from '~/utils/promise';
@@ -201,20 +196,9 @@ export async function loadAddedAgent(
     if (mirroredArtifacts != null) {
       result.artifacts = mirroredArtifacts;
     }
-    const primaryBackgroundToolOptions: AgentToolOptions | undefined =
-      synthesizeBackgroundToolOptions({ ephemeralAgent, modelSpec });
-    if (primaryBackgroundToolOptions) {
-      result.tool_options = primaryBackgroundToolOptions;
-    }
-    const primaryIntentToolOptions: AgentToolOptions | undefined = synthesizeIntentToolOptions({
-      ephemeralAgent,
-      modelSpec,
-    });
-    if (primaryIntentToolOptions) {
-      result.tool_options = mergeSynthesizedToolOptions(
-        result.tool_options as AgentToolOptions | undefined,
-        primaryIntentToolOptions,
-      );
+    const primaryToggleToolOptions = synthesizeToggleToolOptions({ ephemeralAgent, modelSpec });
+    if (primaryToggleToolOptions) {
+      result.tool_options = primaryToggleToolOptions;
     }
     return result as unknown as Agent;
   }
@@ -310,22 +294,9 @@ export async function loadAddedAgent(
   applyModelSpecSubagents(result, modelSpec);
   applyModelSpecSkills(result, modelSpec, ephemeralAgent?.skills);
 
-  const backgroundToolOptions: AgentToolOptions | undefined = synthesizeBackgroundToolOptions({
-    ephemeralAgent,
-    modelSpec,
-  });
-  if (backgroundToolOptions) {
-    result.tool_options = backgroundToolOptions;
-  }
-  const intentToolOptions: AgentToolOptions | undefined = synthesizeIntentToolOptions({
-    ephemeralAgent,
-    modelSpec,
-  });
-  if (intentToolOptions) {
-    result.tool_options = mergeSynthesizedToolOptions(
-      result.tool_options as AgentToolOptions | undefined,
-      intentToolOptions,
-    );
+  const toggleToolOptions = synthesizeToggleToolOptions({ ephemeralAgent, modelSpec });
+  if (toggleToolOptions) {
+    result.tool_options = toggleToolOptions;
   }
 
   return result as unknown as Agent;
