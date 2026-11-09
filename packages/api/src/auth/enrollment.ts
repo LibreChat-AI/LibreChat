@@ -35,6 +35,9 @@ type ChallengeRequest = Request<Record<string, string>, object, LoginChallengeBo
 type SetupRequest = Request<Record<string, string>, object, SetupBody> & {
   user?: { id: string };
   twoFactorEnrollmentNonce?: string;
+  /** The login method carried by the setup/acknowledgement/finalization token this request
+   *  presented, stamped by the matching `require...` middleware in `./twoFactor`. */
+  twoFactorEnrollmentAuthMethod?: AuthMethod;
 };
 type CancelRequest = Request & {
   user?: { id: string };
@@ -209,7 +212,7 @@ export function createEnrollmentControllers(
 
       const userData = sanitizeUser(user);
       const authToken = await deps.setAuthTokens(user._id, res, null, req, {
-        authMethod: 'local',
+        authMethod: credential.authMethod ?? 'local',
       });
       const retirement = await recheckMintedCredential(
         () => deps.getUserById(credential.userId, TOKEN_RETIREMENT_FIELDS),
@@ -249,6 +252,7 @@ export function createEnrollmentControllers(
         userId,
         result.acknowledgementNonce,
         process.env.JWT_SECRET!,
+        req.twoFactorEnrollmentAuthMethod,
       );
       return res.status(200).json({ backupCodes: result.plainCodes, acknowledgementToken });
     } catch (err) {
@@ -275,6 +279,7 @@ export function createEnrollmentControllers(
         userId,
         result.finalizationNonce,
         process.env.JWT_SECRET!,
+        req.twoFactorEnrollmentAuthMethod,
       );
       return res.status(200).json({ finalizationToken });
     } catch (err) {
@@ -308,7 +313,7 @@ export function createEnrollmentControllers(
         return res.status(500).json(RETIREMENT_INCOMPLETE_BODY);
       }
       const authToken = await deps.setAuthTokens(result.user._id, res, null, req, {
-        authMethod: 'local',
+        authMethod: req.twoFactorEnrollmentAuthMethod ?? 'local',
       });
       const retirement = await recheckMintedCredential(
         () => deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS),
