@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { v4 } from 'uuid';
 import { useToastContext } from '@librechat/client';
-import { isComposerFileTaken } from '@librechat/chat';
+import { isComposerFileTaken, markComposerFilesTaken } from '@librechat/chat';
 import {
   dataService,
   EToolResources,
@@ -339,6 +339,32 @@ export default function usePastedTextEdit({
     [removeChip, forgetInDrafts],
   );
 
+  /** A successful edit or inline move consumes its entire replacement chain, not just the
+   * newest chip. Mark before detaching so abort callbacks cannot restore superseded edits. */
+  const consumePaste = useCallback(
+    (snapshot: ExtendedFile) => {
+      const consumed = new Map<string, ExtendedFile>();
+      let file: ExtendedFile | undefined = snapshot;
+      while (file != null && !consumed.has(actionIdOf(file))) {
+        consumed.set(actionIdOf(file), file);
+        const sourceId = file.replacesFileId;
+        file = undefined;
+        if (!sourceId) break;
+        for (const [key, candidate] of filesRef.current) {
+          if (key === sourceId || attachmentIdsOf(candidate).includes(sourceId)) {
+            file = candidate;
+            break;
+          }
+        }
+      }
+      for (const consumedFile of consumed.values()) {
+        markComposerFilesTaken(attachmentIdsOf(consumedFile));
+      }
+      for (const consumedFile of consumed.values()) detach(consumedFile);
+    },
+    [detach],
+  );
+
   /** The composer an edit belongs to: same conversation, same unsaved-chat identity. */
   const isOriginatingComposer = useCallback(
     (editConversationId: string | null, editDraftToken: symbol) =>
@@ -445,7 +471,9 @@ export default function usePastedTextEdit({
         pastedText: text,
         replacesFileId: sourceId,
         shouldCommit: () =>
-          isOriginatingComposer(editConversationId, editDraftToken) && isAttachedToComposer(file),
+          !isComposerFileTaken(uploadId) &&
+          isOriginatingComposer(editConversationId, editDraftToken) &&
+          isAttachedToComposer(file),
         onSuccess: () => {
           settleAction();
           /** `shouldCommit` only gates the queue, not the request: the composer can change
@@ -453,10 +481,11 @@ export default function usePastedTextEdit({
            * file belongs to was sent in the meantime. Either way the original is no longer
            * this composer's unsent chip to remove. */
           if (
+            !isComposerFileTaken(uploadId) &&
             isOriginatingComposer(editConversationId, editDraftToken) &&
             isAttachedToComposer(file)
           ) {
-            detach(file);
+            consumePaste(file);
           }
         },
         onError: () => {
@@ -483,6 +512,7 @@ export default function usePastedTextEdit({
         /** A send or navigation already took the original; reopening the editor or toasting a
          * save error would put a replacement into the emptied composer. */
         if (
+          !isComposerFileTaken(uploadId) &&
           isOriginatingComposer(editConversationId, editDraftToken) &&
           isAttachedToComposer(file)
         ) {
@@ -497,7 +527,7 @@ export default function usePastedTextEdit({
       conversation?.endpoint,
       isOriginatingComposer,
       isAttachedToComposer,
-      detach,
+      consumePaste,
       routeFiles,
       showToast,
       localize,
@@ -545,7 +575,7 @@ export default function usePastedTextEdit({
         }
 
         setEditing((current) => (current?.file.file_id === file.file_id ? null : current));
-        detach(file);
+        consumePaste(file);
 
         const textArea = textAreaRef.current;
         const current = textArea?.value ?? methods.getValues('text') ?? '';
@@ -564,7 +594,16 @@ export default function usePastedTextEdit({
         setPendingActionIds(new Set(pendingActionIdsRef.current));
       }
     },
-    [resolveText, showToast, localize, detach, textAreaRef, methods, index, isAttachedToComposer],
+    [
+      resolveText,
+      showToast,
+      localize,
+      consumePaste,
+      textAreaRef,
+      methods,
+      index,
+      isAttachedToComposer,
+    ],
   );
 
   /** Whether a replacement upload or inline move is in flight for a source attachment; the

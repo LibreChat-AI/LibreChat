@@ -925,6 +925,50 @@ describe('useFileHandling', () => {
       }
     });
 
+    it.each([
+      { fileLimit: 1, totalSizeLimit: 500 },
+      { fileLimit: 10, totalSizeLimit: 7 },
+    ])('counts an existing pending upload against a fresh paste: %j', async (limits) => {
+      mockFileConfig = mergeFileConfig({ endpoints: { default: limits } });
+      const ordinary = makeSizedFile('ordinary.txt', 'text/plain', 4 * megabyte);
+      const paste = makeSizedFile('pasted-text.txt', 'text/plain', 4 * megabyte);
+      const sharedState = {
+        files: new Map([
+          [
+            'ordinary-upload',
+            {
+              file_id: 'ordinary-upload',
+              file: ordinary,
+              filename: ordinary.name,
+              type: ordinary.type,
+              size: ordinary.size,
+              progress: 0.2,
+            },
+          ],
+        ]),
+        setFiles: jest.fn(),
+        setFilesLoading: mockSetFilesLoading,
+      };
+      const { useFileHandlingNoChatContext } = await import('../useFileHandling');
+      const { result } = renderHook(() => useFileHandlingNoChatContext(undefined, sharedState));
+      let accepted: boolean | undefined;
+      await act(async () => {
+        accepted = await result.current.handleFiles([paste], EToolResources.context, {
+          fileId: 'fresh-paste',
+          pastedText: 'exact text',
+        });
+      });
+      expect(accepted).toBe(false);
+      expect(mockMutate).not.toHaveBeenCalled();
+      expect(mockPartitionUploads).toHaveBeenCalledWith(
+        expect.objectContaining({
+          files: new Map([
+            ['ordinary-upload', expect.objectContaining({ file_id: 'ordinary-upload' })],
+          ]),
+        }),
+      );
+    });
+
     it('validates a replacement without counting the source attachment', async () => {
       mockFileConfig = mergeFileConfig({
         endpoints: { default: { fileLimit: 1, totalSizeLimit: 7 } },

@@ -724,6 +724,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       }
       const withoutSource = new Map(existingFiles);
       if (stagedPasteId) withoutSource.delete(stagedPasteId);
+      if (!replacesFileId) return withoutSource;
       for (const [key, existingFile] of existingFiles) {
         if (
           key === replacesFileId ||

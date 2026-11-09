@@ -76,6 +76,7 @@ import { getFilesDraft, getPendingDraftId, setFilesDraft } from '~/utils';
 import { useAutoSave } from '~/hooks/Input/useAutoSave';
 import { markPastedTextFile } from '~/utils/files';
 import usePastedTextEdit from '../usePastedTextEdit';
+import { clearUploadRecovery } from '../useFileHandling';
 
 const DRAFT_ID = 'conversation-a';
 const ORIGINAL_ID = 'original-upload';
@@ -192,6 +193,44 @@ describe('usePastedTextEdit with the real composer drafts', () => {
      * still naming the original would re-attach it from the server's file list. */
     expect(attachedFilenames(composer)).toEqual(['pasted-text-2.txt']);
     expect(composer.result.current.edit.isActionPending(originalChip())).toBe(false);
+  });
+
+  it('moves a pending correction inline without restoring its original from drafts', async () => {
+    const composer = renderComposer(new Map([[ORIGINAL_ID, originalChip()]]));
+    await act(async () => composer.result.current.edit.openEditor(originalChip()));
+    await act(async () => composer.result.current.edit.saveEdit('corrected inline'));
+    const lifecycle = mockRouteFiles.mock.calls[0][2] as UploadLifecycleCallbacks;
+    const replacementId = lifecycle.fileId!;
+    const correction = originalChip({
+      file_id: replacementId,
+      temp_file_id: undefined,
+      progress: 0.2,
+      pastedText: 'corrected inline',
+      replacesFileId: ORIGINAL_ID,
+    });
+    act(() =>
+      composer.result.current.setFiles((current) =>
+        new Map(current).set(replacementId, correction),
+      ),
+    );
+    jest.mocked(clearUploadRecovery).mockImplementation((id) => {
+      if (id !== replacementId) return;
+      lifecycle.onAbort?.(id);
+      composer.result.current.setFiles((current) => {
+        const remaining = new Map(current);
+        remaining.delete(id);
+        return remaining;
+      });
+    });
+    await act(async () => composer.result.current.edit.moveInline(correction));
+    expect(composer.result.current.files.size).toBe(0);
+    expect(composer.result.current.edit.editing).toBeNull();
+    expect(mockSetValue).toHaveBeenCalledWith('text', 'corrected inline', expect.anything());
+    const draft = getFilesDraft(DRAFT_ID);
+    expect(draft.fileIds).toEqual([]);
+    expect(draft.pastedTextIds ?? []).toEqual([]);
+    expect(draft.pendingPastes).toEqual({});
+    jest.mocked(clearUploadRecovery).mockReset();
   });
 
   it('drops the replaced original from the files draft and keeps the replacement', async () => {
