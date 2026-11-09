@@ -2980,7 +2980,9 @@ describe('ResumableAgentController resume metadata', () => {
     await nextTick();
 
     const safeError = new AttachmentStorageError();
-    expect(getDownloadStream).toHaveBeenCalledWith(req, file.storageKey);
+    expect(getDownloadStream).toHaveBeenCalledWith(req, file.storageKey, {
+      signal: expect.any(AbortSignal),
+    });
     expect(mockLogger.error).toHaveBeenCalledWith(
       '[ResumableAgentController] Generation error for conversation-123:',
       safeError,

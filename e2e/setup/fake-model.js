@@ -109,6 +109,11 @@ const ASK_USER_QUESTIONS_MARKER = 'E2E_ASK_USER_QUESTIONS:';
 const ASK_USER_LONG_QUESTIONS_MARKER = 'E2E_ASK_USER_LONG_QUESTIONS:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
+/** `<CODE>:<label>`: throws mid-stream the way LangChain classifies a provider failure, with a
+ *  gateway's explanation after the status code (the `BARE` variant carries the status alone). */
+const GATEWAY_ERROR_MARKER = 'E2E_GATEWAY_ERROR:';
+const BARE_GATEWAY_ERROR_MARKER = 'E2E_BARE_GATEWAY_ERROR:';
+const GATEWAY_ERROR_STATUS = { MODEL_RATE_LIMIT: 429, MODEL_NOT_FOUND: 404 };
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
 const STREAMING_MARKDOWN_REPLY_MARKER = 'E2E_STREAMING_MARKDOWN_REPLY';
 const HIGHLIGHT_CODE_MARKER = 'E2E_HIGHLIGHT_CODE:';
@@ -784,6 +789,19 @@ function replyResponses(text) {
     return {
       responses: [`E2E forced error prelude ${errorName}`],
       thrownError: `E2E forced stream error ${errorName}`,
+    };
+  }
+
+  const gatewayError =
+    getMarkerValue(text, GATEWAY_ERROR_MARKER) || getMarkerValue(text, BARE_GATEWAY_ERROR_MARKER);
+  if (gatewayError) {
+    const [code, label = ''] = gatewayError.split(':');
+    const explanation = text.includes(BARE_GATEWAY_ERROR_MARKER)
+      ? ''
+      : ` Gateway budget for ${label} is spent. Waiting will not help; ask an administrator for more.`;
+    return {
+      responses: [`E2E gateway error prelude ${label}`],
+      thrownError: `${GATEWAY_ERROR_STATUS[code] ?? 400}${explanation}\n\nTroubleshooting URL: https://docs.langchain.com/oss/javascript/langchain/errors/${code}/\n`,
     };
   }
 

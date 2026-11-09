@@ -183,6 +183,23 @@ describe('processDeleteRequest — agent reference cleanup (issue #12776)', () =
     expect(after.tool_resources.file_search.file_ids).toEqual(['other_id']);
   });
 
+  test('keeps the agent references of another user who holds the same file_id', async () => {
+    const ownerId = new mongoose.Types.ObjectId();
+    const otherId = new mongoose.Types.ObjectId();
+    const sharedId = `file_shared_${Math.random().toString(36).slice(2, 10)}`;
+
+    const ownerFile = await seedFile(sharedId, ownerId);
+    await seedFile(sharedId, otherId);
+    const otherAgent = await seedAgent(otherId, { file_search: { file_ids: [sharedId] } });
+
+    await processDeleteRequest({ req: buildReq([ownerFile.toObject()]), files: [ownerFile] });
+
+    expect(await File.countDocuments({ file_id: sharedId, user: ownerId })).toBe(0);
+    expect(await File.countDocuments({ file_id: sharedId, user: otherId })).toBe(1);
+    const after = await Agent.findOne({ id: otherAgent.id }).lean();
+    expect(after.tool_resources.file_search.file_ids).toEqual([sharedId]);
+  });
+
   test('still deletes the file when the agent cleanup step throws', async () => {
     const userId = new mongoose.Types.ObjectId();
     const targetId = `file_target_${Math.random().toString(36).slice(2, 10)}`;

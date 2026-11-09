@@ -10,6 +10,7 @@
 
 const axios = require('axios');
 const fetch = require('node-fetch');
+const { logger } = require('@librechat/data-schemas');
 const { ContentTypes } = require('librechat-data-provider');
 const { ToolMessage } = require('@librechat/agents/langchain/messages');
 const StableDiffusionAPI = require('../StableDiffusion');
@@ -307,8 +308,110 @@ describe('image tools - agent mode ToolMessage format', () => {
       expect(result).toBeInstanceOf(ToolMessage);
       const contentStr =
         typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
-      expect(contentStr).toContain('Something went wrong');
+      expect(contentStr).toBe('Error: The tool request failed.');
+      expect(contentStr).not.toContain('Network error');
       expect(result.artifact).toBeDefined();
+    });
+
+    describe('approved error text', () => {
+      const SECRET = 'PRIVATE-PROVIDER-DETAIL';
+      const FALLBACK = 'Error: The tool request failed.';
+
+      const providerError = (status) =>
+        Object.assign(new Error(`Request failed with status code ${status}`), {
+          isAxiosError: true,
+          response: { status, data: { detail: SECRET } },
+        });
+
+      const contentOf = async (flux, args) => {
+        const invokePromise = flux.invoke(makeToolCall('flux', args));
+        await jest.runAllTimersAsync();
+        const result = await invokePromise;
+        return typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
+      };
+
+      /** True when any logged argument, including an error message, carries the text. */
+      const logged = (text) =>
+        [logger.warn, logger.error, logger.info, logger.debug]
+          .flatMap((method) => method.mock.calls.flat())
+          .some((arg) =>
+            `${arg instanceof Error ? arg.message : JSON.stringify(arg)}`.includes(text),
+          );
+
+      const generate = { prompt: 'a box', endpoint: '/v1/flux-dev' };
+      const finetuned = { action: 'generate_finetuned', prompt: 'a box', finetune_id: 'ft-1' };
+
+      it('words a rejected generation request from its status, never the provider body', async () => {
+        axios.post.mockRejectedValue(providerError(401));
+
+        const content = await contentOf(new FluxAPI({ isAgent: true }), generate);
+
+        expect(content).toBe('Error: Flux rejected the configured credentials (status 401).');
+        expect(logger.warn).toHaveBeenCalledWith('[Flux] Tool request failed', { status: 401 });
+        expect(logged(SECRET)).toBe(false);
+      });
+
+      it('words a rejected finetuned generation request from its status', async () => {
+        axios.post.mockRejectedValue(providerError(429));
+
+        const content = await contentOf(new FluxAPI({ isAgent: true }), finetuned);
+
+        expect(content).toBe(
+          'Error: Flux is rate limiting requests; try again later (status 429).',
+        );
+        expect(logged(SECRET)).toBe(false);
+      });
+
+      it.each([
+        ['generation', generate],
+        ['finetuned generation', finetuned],
+      ])('returns the fallback when the %s image cannot be downloaded', async (_label, args) => {
+        fetch.mockRejectedValue(
+          new Error(`request to https://cdn.example.com/?sig=${SECRET} failed`),
+        );
+
+        const content = await contentOf(new FluxAPI({ isAgent: true }), args);
+
+        expect(content).toBe(FALLBACK);
+        expect(logged(SECRET)).toBe(false);
+      });
+
+      it.each([
+        ['generation', generate],
+        ['finetuned generation', finetuned],
+      ])('returns the fallback when the %s image cannot be saved', async (_label, args) => {
+        const processFileURL = jest
+          .fn()
+          .mockRejectedValue(new Error(`EACCES: permission denied, open '/srv/${SECRET}.png'`));
+        const flux = new FluxAPI({ isAgent: false, processFileURL, userId: 'user-1' });
+
+        const content = await contentOf(flux, args);
+
+        expect(content).toBe(FALLBACK);
+        expect(logged(SECRET)).toBe(false);
+      });
+
+      it('words a failing finetune listing from its status for an agent', async () => {
+        axios.get.mockRejectedValue(providerError(503));
+
+        const content = await contentOf(new FluxAPI({ isAgent: true }), {
+          action: 'list_finetunes',
+        });
+
+        expect(content).toBe('Error: Flux is unavailable; try again later (status 503).');
+        expect(logged(SECRET)).toBe(false);
+      });
+
+      it('keeps the approved text in the error a non-agent finetune listing returns', async () => {
+        axios.get.mockRejectedValue(providerError(503));
+        const flux = new FluxAPI({ isAgent: false, processFileURL: jest.fn() });
+
+        const result = await flux.getMyFinetunes('test-flux-key');
+
+        expect(result).toBeInstanceOf(Error);
+        expect(result.message).toBe('Error: Flux is unavailable; try again later (status 503).');
+        expect(logged(SECRET)).toBe(false);
+      });
     });
 
     it('routes a finetuned endpoint through generateFinetunedImage even when action is left as "generate"', async () => {

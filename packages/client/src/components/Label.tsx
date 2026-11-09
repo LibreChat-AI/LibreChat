@@ -54,7 +54,7 @@ const Label: React.ForwardRefExoticComponent<
     {...props}
     {...{
       className: cn(
-        'block w-full break-all peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
+        'block w-full wrap-anywhere peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
         peerDisabledInkClasses,
         labelVariants({ variant }),
         className,

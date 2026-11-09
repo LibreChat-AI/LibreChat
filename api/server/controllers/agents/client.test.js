@@ -11426,6 +11426,48 @@ describe('AgentClient - resumeCompletion content protection', () => {
     },
   );
 
+  /** A gateway answering 429 for a spent budget says where to ask for more; the localized rate
+   *  limit copy cannot, so the provider's words ride along as the detail. */
+  it('keeps a gateway explanation on a classified rate limit unless protection is on', async () => {
+    const explanation = 'Budget exhausted. It does not reset by waiting; ask the service desk.';
+    const trackRateLimit = () => {
+      const providerError = Object.assign(new Error(`429 ${explanation}`), {
+        status: 429,
+        lc_error_code: 'MODEL_RATE_LIMIT',
+      });
+      mockCreateRun.mockImplementation(async (options) => {
+        const tracker = options.modelCallbacks.find(
+          (callback) => callback.name === 'librechat-upstream-model-error-tracker',
+        );
+        return {
+          resume: jest.fn(async () => {
+            tracker.handleLLMError(providerError, 'resumed-model-run');
+            throw providerError;
+          }),
+          getCalibrationRatio: jest.fn(() => 0),
+        };
+      });
+    };
+
+    trackRateLimit();
+    const context = makeContext(undefined);
+    await AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} });
+    expect(context.contentParts).toContainEqual({
+      type: ContentTypes.ERROR,
+      [ContentTypes.ERROR]: JSON.stringify({ type: 'model_rate_limit', info: explanation }),
+    });
+
+    trackRateLimit();
+    const protectedContext = makeContext({
+      messages: { pii: { fields: ['text'], starterPatterns: ['email'] } },
+    });
+    await AgentClient.prototype.resumeCompletion.call(protectedContext, { resumeValue: {} });
+    expect(protectedContext.contentParts).toContainEqual({
+      type: ContentTypes.ERROR,
+      [ContentTypes.ERROR]: JSON.stringify({ type: 'model_rate_limit' }),
+    });
+  });
+
   it('preserves provider error detail when content protection is disabled', async () => {
     const providerMessage = 'Legacy provider detail';
     mockCreateRun.mockRejectedValue(new Error(providerMessage));
