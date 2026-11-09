@@ -170,6 +170,35 @@ describe('encodeAndFormatImages', () => {
     expect(httpClient.get).not.toHaveBeenCalled();
   });
 
+  it('leaves a missing image out when the caller handles misses', async () => {
+    getDownloadStream.mockImplementation(async (_req, key: string) => {
+      if (key === 'gone') {
+        throw { name: 'NoSuchKey' };
+      }
+      return Readable.from(imageBytes);
+    });
+    const gone = { ...file, file_id: 'image-gone', storageKey: 'gone' };
+    const onMissingFile = jest.fn();
+
+    const result = await encodeAndFormatImages(makeReq(), [gone, file], { onMissingFile }, deps);
+
+    expect(onMissingFile).toHaveBeenCalledWith(gone);
+    expect(result.files.map((entry) => entry.file_id)).toEqual([file.file_id]);
+    expect(result.image_urls).toEqual([
+      { type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } },
+    ]);
+    expect(httpClient.get).not.toHaveBeenCalled();
+  });
+
+  it('keeps failing other storage errors when the caller handles misses', async () => {
+    getDownloadStream.mockRejectedValue(new Error('denied'));
+    const onMissingFile = jest.fn();
+    await expect(encodeAndFormatImages(makeReq(), [file], { onMissingFile }, deps)).rejects.toEqual(
+      new AttachmentStorageError(),
+    );
+    expect(onMissingFile).not.toHaveBeenCalled();
+  });
+
   it('discards buffered image bytes and hides storage error details', async () => {
     const failure = new Error('private storage path');
     getDownloadStream.mockResolvedValue(

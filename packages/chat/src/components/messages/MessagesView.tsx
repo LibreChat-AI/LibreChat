@@ -1,44 +1,25 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Constants } from 'librechat-data-provider';
 import { cn, useLocalize } from '@librechat/client';
-import type {
-  Dispatch,
-  RefObject,
-  ReactNode,
-  MouseEvent,
-  ReactElement,
-  SetStateAction,
-} from 'react';
+import type { RefObject, ReactNode, ReactElement } from 'react';
 import type { TMessage } from 'librechat-data-provider';
+import type { MessagesScrollButtonProps } from './ScrollButton';
+import type { MessagesThreadProps } from './thread/Thread';
 import {
   RowMountProvider,
   useProgressiveRowMount,
 } from '../../react/messages/useProgressiveRowMount';
+import useMessageScrolling from '../../react/messages/useMessageScrolling';
+import useConversationSeen from '../../react/messages/useConversationSeen';
 import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
 import { useMessagesHost } from '../../react/messages/host';
 import { useChatContext } from '../../react/chat/context';
 import { useMessagePartsHost } from '../../react/host';
+import ScrollButton from './ScrollButton';
+import MessageNav from './MessageNav';
+import Thread from './thread/Thread';
 
-/** What the thread slot renders the conversation from. */
-export type MessagesThreadProps = {
-  messagesTree?: TMessage[];
-  messages?: TMessage[] | null;
-  /** The conversation that owns the rendered tree. */
-  conversationId?: string | null;
-  currentEditId: string | number | null;
-  setCurrentEditId: Dispatch<SetStateAction<string | number | null>>;
-};
-
-/** What the scroll-to-bottom slot needs to watch the end marker and scroll to it. */
-export type MessagesScrollButtonProps = {
-  conversationId: string;
-  enabled: boolean;
-  maximizeChatSpace: boolean;
-  scrollableRef: RefObject<HTMLDivElement>;
-  messagesEndRef: RefObject<HTMLDivElement>;
-  scrollHandler: (event: MouseEvent<HTMLButtonElement>) => void;
-  onNearBottomChange: (isNearBottom: boolean) => void;
-};
+export type { MessagesThreadProps, MessagesScrollButtonProps };
 
 export type MessagesViewProps = {
   messagesTree?: TMessage[] | null;
@@ -47,8 +28,10 @@ export type MessagesViewProps = {
   showScrollButton: boolean;
   /** The viewer's chat-width preference. */
   maximizeChatSpace: boolean;
-  /** Renders the conversation's rows. */
-  renderThread: (props: MessagesThreadProps) => ReactNode;
+  /** Renders the thread as a flat row list (the default) or, when `false`, as a recursive tree. */
+  flatThread?: boolean;
+  /** Renders the conversation's rows; the package thread by default. */
+  renderThread?: (props: MessagesThreadProps) => ReactNode;
   /** Renders the turn the reader just sent, ahead of its reply, at the thread's tail. */
   renderPendingTurn?: (props: {
     scrollableRef: RefObject<HTMLDivElement>;
@@ -61,14 +44,26 @@ export type MessagesViewProps = {
     index: number;
     fullWidth: boolean;
   }) => ReactNode;
-  /** Renders the scroll-to-bottom control. */
+  /** Renders the scroll-to-bottom control; the package control by default. */
   renderScrollButton?: (props: MessagesScrollButtonProps) => ReactNode;
-  /** Renders the in-thread navigation rail. */
+  /** Renders the in-thread navigation rail; the package rail by default. */
   renderNav?: (props: {
     conversationId?: string | null;
     scrollableRef: RefObject<HTMLDivElement>;
   }) => ReactNode;
 };
+
+const renderDefaultThread = (props: MessagesThreadProps): ReactNode => <Thread {...props} />;
+const renderDefaultScrollButton = (props: MessagesScrollButtonProps): ReactNode => (
+  <ScrollButton {...props} />
+);
+/** Keyed so a warm switch releases the outgoing conversation's rail. */
+const renderDefaultNav: NonNullable<MessagesViewProps['renderNav']> = ({
+  conversationId,
+  scrollableRef,
+}) => (
+  <MessageNav key={conversationId} conversationId={conversationId} scrollableRef={scrollableRef} />
+);
 
 /**
  * The message list: the scroll container, the rendered thread with its progressive mount
@@ -80,11 +75,12 @@ export default function MessagesView({
   messages,
   showScrollButton,
   maximizeChatSpace,
-  renderThread,
+  flatThread = true,
+  renderThread = renderDefaultThread,
   renderPendingTurn,
   renderPendingSteers,
-  renderScrollButton,
-  renderNav,
+  renderScrollButton = renderDefaultScrollButton,
+  renderNav = renderDefaultNav,
 }: MessagesViewProps): ReactElement {
   const localize = useLocalize();
   const host = useMessagesHost();
@@ -93,25 +89,40 @@ export default function MessagesView({
   const [currentEditId, setCurrentEditId] = useState<string | number | null>(-1);
 
   const {
-    conversationId,
+    index,
+    conversation,
+    isSubmitting,
+    abortScroll,
+    setAbortScroll,
+    latestMessageId,
+    latestMessageDepth,
+    messagesKey,
+  } = useChatContext();
+  const conversationId = conversation?.conversationId;
+  const autoScroll = host.useAutoScroll();
+  const {
     contentRef,
     scrollableRef,
     messagesEndRef,
     handleSmoothToRef,
     debouncedHandleScroll,
     handleNearBottomChange,
-  } = host.useScrolling(messagesTree);
+  } = useMessageScrolling({
+    messagesTree,
+    conversationId,
+    isSubmitting,
+    abortScroll,
+    setAbortScroll,
+    autoScroll,
+  });
 
   useScrollbarGutter(scrollableRef);
 
-  const { index, isSubmitting, latestMessageId, latestMessageDepth, messagesKey } =
-    useChatContext();
   /** Re-arm from the conversation that owns the RENDERED tree: the app's conversation id lags
    *  the route during warm-cache navigation, and keying off it would first mount the new tree
    *  unwindowed, then narrow it after the fact, visibly unmounting rows the user is already
    *  reading. An empty tree has no message to name its owner, so the route's key stands in. */
   const treeConversationId = messagesTree?.[0]?.conversationId ?? (messagesKey || conversationId);
-  const autoScroll = host.useAutoScroll();
 
   /** Direct measurement for the one trigger the observer cannot serve: after a messages
    *  revalidation commits, the end marker may sit where no threshold was crossed, so no
@@ -146,7 +157,8 @@ export default function MessagesView({
 
   /** Piggybacks the messages-end observer rather than adding a second one, and stays a plain
    *  callback so intersection flips keep re-rendering only the scroll control. */
-  const reportNearBottom = host.useConversationSeen(
+  const reportNearBottom = useConversationSeen(
+    host.useSeenSource(),
     conversationId ?? undefined,
     isSubmitting,
     measureNearBottom,
@@ -215,6 +227,7 @@ export default function MessagesView({
                       messagesTree,
                       messages,
                       conversationId: treeConversationId,
+                      flat: flatThread,
                       currentEditId,
                       setCurrentEditId,
                     })}

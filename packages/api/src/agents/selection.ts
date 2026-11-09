@@ -52,7 +52,7 @@ export const TOOL_SELECTION_WILDCARD = '*';
  */
 export type CapabilityToolNames = ReadonlyMap<string, readonly string[]>;
 
-type SelectionField = 'describe_intent' | 'run_in_background';
+type SelectionField = 'describe_intent' | 'run_in_background' | 'defer_loading';
 
 export interface ResolvedToolOption {
   value: boolean;

@@ -3,24 +3,16 @@ import { Provider } from 'jotai';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
 import { act, renderHook } from '@testing-library/react';
+import { useEventHandlers } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, EModelEndpoint, QueryKeys } from 'librechat-data-provider';
 import type { EventSubmission, TConversation } from 'librechat-data-provider';
 import { markTitleGenerationProcessed } from '~/data-provider/SSE/queries';
-import useEventHandlers from '../useEventHandlers';
+import { StreamHostTestProvider } from 'test/streamHost';
 
 jest.mock('~/hooks/Agents', () => ({ useApplyAgentTemplate: () => jest.fn() }));
 jest.mock('~/hooks/AuthContext', () => ({ useAuthContext: () => ({ token: 'test' }) }));
 jest.mock('~/Providers', () => ({ useLiveAnnouncer: () => ({ announcePolite: jest.fn() }) }));
-jest.mock('../useContentHandler', () => () => ({}));
-jest.mock('../useAttachmentHandler', () => () => jest.fn());
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useStepHandler: () => ({
-    resetSubagentAtoms: jest.fn(),
-    resetPtcAtoms: jest.fn(),
-  }),
-}));
 
 const initialConversation = {
   conversationId: 'saved-chat',
@@ -61,7 +53,9 @@ function setup() {
     <QueryClientProvider client={queryClient}>
       <Provider>
         <RecoilRoot>
-          <MemoryRouter initialEntries={['/c/saved-chat']}>{children}</MemoryRouter>
+          <MemoryRouter initialEntries={['/c/saved-chat']}>
+            <StreamHostTestProvider>{children}</StreamHostTestProvider>
+          </MemoryRouter>
         </RecoilRoot>
       </Provider>
     </QueryClientProvider>

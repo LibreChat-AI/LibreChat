@@ -44,7 +44,7 @@ export default function ItemDialog({ item, agentId, onClose }: Props) {
         data-testid="item-dialog"
       >
         {item && (
-          <div className="flex max-h-[85dvh] flex-col">
+          <div className="flex max-h-[85dvh] min-w-0 flex-col">
             <ItemDialogHeader item={item} />
             <div
               className={cn(

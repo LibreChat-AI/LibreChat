@@ -330,6 +330,8 @@ export default [
             'slow-pulse',
             'hide-scrollbar',
             'scrollbar-gutter-spacer',
+            'progress-text-wrapper',
+            'progress-text-content',
             'active',
             // put in the DOM by a dependency, not by Tailwind
             'lucide',
@@ -352,6 +354,7 @@ export default [
             // that stylesheet, so its lint has no Tailwind entry that declares them.
             'markdown',
             'prose',
+            'prose-sm',
             'message-content',
             'submitting',
             'result-streaming',
@@ -361,6 +364,18 @@ export default [
             'message-render',
             'message-timestamp',
             'popover-animate',
+            // The thinking-level slider's spring curves, which have no theme token.
+            'composer-effort-glide',
+            'composer-effort-thumb',
+            'composer-effort-fill',
+            // The thinking button's label roll and the composer popover clock it resizes on.
+            'composer-slot-resize',
+            'composer-label-in-up',
+            'composer-label-in-down',
+            'composer-label-out-up',
+            'composer-label-out-down',
+            'animate-composer-icon',
+            'animate-composer-popover',
           ],
         },
       ],

@@ -1,12 +1,14 @@
 import { RecoilRoot } from 'recoil';
+import { MemoryRouter } from 'react-router-dom';
 import { ContentTypes, dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ContentRender, MessageRender } from '@librechat/chat/components';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageChatContext } from '~/common';
 import { OwnerTextProvider } from '~/components/Chat/Messages/PrivateText';
-import MessageRender from '~/components/Chat/Messages/ui/MessageRender';
-import ContentRender from '../ContentRender';
+import '~/Providers/MessagesHostContext';
+import '~/components/Chat/Messages/Content/register';
 import '~/Providers/MessagesHostContext';
 
 jest.mock('librechat-data-provider', () => ({
@@ -20,33 +22,20 @@ jest.mock('librechat-data-provider', () => ({
 jest.mock('~/hooks/AuthContext', () => ({
   useAuthContext: () => ({ user: { id: 'owner', tenantId: 'tenant' } }),
 }));
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-  useAttachments: () => ({}),
-  useContentMetadata: () => ({ hasParallelContent: false }),
-  useMessageActions: () => ({
-    edit: false,
-    index: 0,
-    conversation: { conversationId: 'protected-conversation', endpoint: 'agents' },
-    messageLabel: 'You',
-    getCanCopy: () => true,
-  }),
-}));
+jest.mock('~/hooks', () => {
+  const { getMessageClipboardSource, hasCopyableText, useCopyMessageToClipboard } =
+    jest.requireActual('~/hooks/Messages/useCopyToClipboard');
+  return {
+    getMessageClipboardSource,
+    hasCopyableText,
+    useCopyMessageToClipboard,
+    useLocalize: () => (key: string) => key,
+  };
+});
 jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   __esModule: true,
   default: () => null,
 }));
-jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  SiblingSwitch: () => null,
-  Elapsed: () => null,
-  shouldShowElapsed: () => false,
-}));
-
 const canonical: TMessage = {
   messageId: 'protected-message',
   parentMessageId: 'parent',
@@ -91,13 +80,15 @@ for (const [name, Row] of [
       return render(
         <QueryClientProvider client={queryClient}>
           <RecoilRoot>
-            <OwnerTextProvider
-              messages={[current]}
-              conversationId={current.conversationId ?? undefined}
-              isSubmitting={false}
-            >
-              <Row message={current} chatContext={chatContext} currentEditId={null} />
-            </OwnerTextProvider>
+            <MemoryRouter>
+              <OwnerTextProvider
+                messages={[current]}
+                conversationId={current.conversationId ?? undefined}
+                isSubmitting={false}
+              >
+                <Row message={current} chatContext={chatContext} currentEditId={null} />
+              </OwnerTextProvider>
+            </MemoryRouter>
           </RecoilRoot>
         </QueryClientProvider>,
       );

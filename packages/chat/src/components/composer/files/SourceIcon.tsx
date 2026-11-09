@@ -11,7 +11,7 @@ const sourceToEndpoint = (): Partial<Record<string, EModelEndpoint>> => ({
 });
 
 const sourceToClassname = (): Partial<Record<string, string>> => ({
-  [FileSources.openai]: 'bg-white/75 dark:bg-black/65',
+  [FileSources.openai]: 'bg-surface-media-chip',
   [FileSources.azure]: 'azure-bg-color',
   [FileSources.azure_blob]: 'azure-bg-color',
   [FileSources.execute_code]: 'bg-surface-media-overlay text-text-on-media opacity-85',
@@ -23,7 +23,7 @@ const sourceToClassname = (): Partial<Record<string, string>> => ({
 });
 
 const defaultClassName =
-  'absolute inset-e-0 bottom-0 rounded-full p-[0.15rem] text-text-secondary transition-colors';
+  'absolute inset-e-0 bottom-0 rounded-full p-0.5 text-text-secondary transition-colors';
 
 export default function SourceIcon({
   source,

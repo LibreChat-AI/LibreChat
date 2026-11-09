@@ -1,5 +1,7 @@
 import fs from 'fs';
 import path from 'path';
+import { hash } from 'bcryptjs';
+import { randomBytes } from 'node:crypto';
 import { MongoClient, ObjectId } from 'mongodb';
 import type { Db } from 'mongodb';
 
@@ -124,6 +126,8 @@ export interface SeedMessage {
   content?: Record<string, unknown>[];
   /** Why the turn stopped; the hover Continue is offered only for some values. */
   finish_reason?: string;
+  /** A turn the server left incomplete, such as one that ran out of agent steps. */
+  unfinished?: boolean;
   model?: string;
   /** Attachments on the turn, as the client renders them (an image opens the lightbox). */
   files?: Record<string, unknown>[];
@@ -149,7 +153,7 @@ export async function seedMessages(
       user: userId,
       endpoint: 'openAI',
       error: false,
-      unfinished: false,
+      unfinished: message.unfinished ?? false,
       createdAt: new Date(start + index * 1000),
       updatedAt: new Date(start + index * 1000),
       __v: 0,
@@ -234,4 +238,22 @@ export async function deleteUserByEmail(userEmail: string): Promise<void> {
     ]);
     await db.collection('users').deleteOne({ _id: user._id });
   });
+}
+
+/** Test-only recovery credential, independent of the public reset request response. */
+export async function seedPasswordReset(userEmail: string): Promise<string> {
+  const token = randomBytes(32).toString('hex');
+  const tokenHash = await hash(token, 4);
+  await withMongo(async (db) => {
+    const userId = new ObjectId(await resolveUserId(db, userEmail));
+    await db.collection('tokens').insertOne({
+      userId,
+      email: userEmail.toLowerCase(),
+      type: 'password_reset',
+      token: tokenHash,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 900_000),
+    });
+  });
+  return token;
 }

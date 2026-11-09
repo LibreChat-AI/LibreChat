@@ -18,6 +18,7 @@ on:
       - 'eslint-suppressions.json'
       - '**/eslint-suppressions.json'
       - '.github/workflows/static-checks.yml'
+      - '.husky/pre-push'
       - '!**.md'
 
 permissions:
@@ -44,8 +45,12 @@ jobs:
         with:
           # Full history is load-bearing: changed-file steps diff against the
           # PR base and the ESLint regression gate reads the base ref's
-          # config via git show — a shallow checkout breaks both.
+          # config via git show, so a shallow checkout breaks both. Blobless
+          # keeps every commit and tree (merge-base, three-dot diffs) and
+          # fetches only the base-side file contents a step actually reads,
+          # instead of every blob on every branch.
           fetch-depth: 0
+          filter: blob:none
 
       # scripts/static-checks.mts mirrors these filters to run the same checks
       # locally on a commit's diff — keep the two in sync.
@@ -132,7 +137,9 @@ jobs:
               - '!**.md'
             runner:
               - 'scripts/i18n*.mts'
+              - 'scripts/pre-push*.mts'
               - 'scripts/static-checks.mts'
+              - '.husky/pre-push'
               - '.github/workflows/static-checks.yml'
             unused_packages:
               - 'api/**'
@@ -147,6 +154,7 @@ jobs:
               - 'packages/data-schemas/package.json'
               - 'package.json'
               - 'package-lock.json'
+              - 'scripts/imports*.mts'
               - '.github/workflows/static-checks.yml'
               - '!**.md'
 
@@ -156,10 +164,51 @@ jobs:
           node-version: '24.22.1'
           cache: npm
 
+      # Same key and path list as the E2E workflows, so one installed tree per
+      # lockfile serves both. Exact key only: a tree installed from another
+      # lockfile is never restored. Saved separately, and only after a
+      # successful install, because that step is continue-on-error and a
+      # partial tree must never become the cache every later job restores.
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+
       - name: Install dependencies
         id: install_dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         continue-on-error: true
         run: npm ci
+
+      - name: Save node_modules cache
+        if: steps.install_dependencies.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
+
+      - name: Test scoped dependency overrides
+        if: steps.cache-node-modules.outputs.cache-hit == 'true' || steps.install_dependencies.outcome == 'success'
+        run: npm run test:dependencies
 
       # The @shadcn/lint design rules read each primitive's `cva` variants through
       # the @librechat/client entry point, which resolves to packages/client/dist.
@@ -308,6 +357,8 @@ jobs:
           # script-only PR activates no group — so neither would exercise the
           # execution path this step exists to protect.
           node scripts/static-checks.mts package.json --only json
+          # The pre-push hook, driven through real pushes to local bare remotes.
+          node --test scripts/pre-push.test.mts
 
       - name: Validate ESLint config on config changes
         id: eslint_config
@@ -468,60 +519,16 @@ jobs:
         if: always() && steps.paths.outputs.unused_packages == 'true'
         id: extract-used-code
         continue-on-error: true
+        # Source files only, as git lists them: installed node_modules and build
+        # output are excluded, and one listing covers every nested directory.
         run: |
-          extract_deps_from_code() {
-            local folder=$1
-            local output_file=$2
-
-            # Initialize empty output file
-            > "$output_file"
-
-            if [[ -d "$folder" ]]; then
-              # Extract require() statements (use explicit includes for portability)
-              grep -rEho "require\\(['\"]([a-zA-Z0-9@/._-]+)['\"]\\)" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/require\\(['\"]([a-zA-Z0-9@/._-]+)['\"]\\)/\1/" >> "$output_file" || true
-
-              # Extract ES6 imports - import x from 'module'
-              grep -rEho "import .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/import .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # import 'module' (side-effect imports)
-              grep -rEho "import ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/import ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # export { x } from 'module' or export * from 'module'
-              grep -rEho "export .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/export .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # import type { x } from 'module' (TypeScript)
-              grep -rEho "import type .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.ts' --include='*.tsx' 2>/dev/null | \
-                sed -E "s/import type .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # Remove subpath imports but keep the base package
-              # For scoped packages: '@scope/pkg/subpath' -> '@scope/pkg'
-              # For regular packages: 'pkg/subpath' -> 'pkg'
-              # Scoped packages (must keep @scope/package, strip anything after)
-              sed -i -E 's|^(@[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)/.*|\1|' "$output_file" 2>/dev/null || true
-              # Non-scoped packages (keep package name, strip subpath)
-              sed -i -E 's|^([a-zA-Z0-9_-]+)/.*|\1|' "$output_file" 2>/dev/null || true
-
-              sort -u "$output_file" -o "$output_file"
-            fi
-          }
-
-          extract_deps_from_code "." root_used_code.txt
-          extract_deps_from_code "client" client_used_code.txt
-          extract_deps_from_code "api" api_used_code.txt
-
-          # Extract dependencies used by workspace packages
-          # These packages are used in the workspace but dependencies are provided by parent package.json
-          extract_deps_from_code "packages/client" packages_client_used_code.txt
-          extract_deps_from_code "packages/api" packages_api_used_code.txt
+          node --test scripts/imports.test.mts
+          node scripts/imports.mts \
+            .=root_used_code.txt \
+            client=client_used_code.txt \
+            api=api_used_code.txt \
+            packages/client=packages_client_used_code.txt \
+            packages/api=packages_api_used_code.txt
 
       - name: Get @librechat/client dependencies
         if: always() && steps.paths.outputs.unused_packages == 'true'
@@ -798,9 +805,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          # fetch-depth: 0 is load-bearing — the gate reads the base ref's
+          # fetch-depth: 0 is load-bearing: the gate reads the base ref's
           # config via `git show`, which a shallow checkout cannot resolve.
+          # Blobless still has every commit and tree; `git show` fetches the
+          # one base blob it needs on demand.
           fetch-depth: 0
+          filter: blob:none
 
       - name: Detect config changes
         id: paths

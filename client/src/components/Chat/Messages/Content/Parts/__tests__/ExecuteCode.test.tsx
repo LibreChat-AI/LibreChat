@@ -13,15 +13,11 @@ jest.mock('~/hooks', () => ({
     () =>
     (key: string): string =>
       key,
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useProgress: (initialProgress: number) => initialProgress,
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-      opacity: isExpanded ? 1 : 0,
-    },
-    ref: { current: null },
-  }),
 }));
 
 jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
@@ -40,6 +36,14 @@ jest.mock('../Attachment', () => ({
 
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
+  useExpandCollapse: (isExpanded: boolean) => ({
+    style: {
+      display: 'grid',
+      gridTemplateRows: isExpanded ? '1fr' : '0fr',
+      opacity: isExpanded ? 1 : 0,
+    },
+    ref: { current: null },
+  }),
   Stdout: () => <div data-testid="stdout" />,
 }));
 
@@ -59,7 +63,6 @@ jest.mock('../useLazyHighlight', () => {
 });
 
 jest.mock('~/utils', () => ({
-  ...jest.requireActual<typeof import('~/utils/toolLabels')>('~/utils/toolLabels'),
   ...jest.requireActual<typeof import('~/utils/runStepDuration')>('~/utils/runStepDuration'),
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
 }));

@@ -8,7 +8,7 @@ import { invalidateRecentFiles } from '~/utils/files';
 import { handleMemoryArtifact } from '~/utils/memory';
 
 /** Keeps the app's file, memory and preview caches in step with a streamed attachment. */
-function updateAttachmentCaches(queryClient: QueryClient, data: TAttachment): void {
+export function updateAttachmentCaches(queryClient: QueryClient, data: TAttachment): void {
   const fileId = (data as Partial<TFile>).file_id;
   const fileData = data as TFile;
   if (fileData?.file_id && fileData?.filepath && !fileData.filepath.includes('/api/files')) {

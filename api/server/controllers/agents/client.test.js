@@ -6964,6 +6964,55 @@ describe('AgentClient - titleConvo', () => {
       },
     );
 
+    it('replays history without a file storage deleted, and tells the model it is gone', async () => {
+      client.options.resendFiles = true;
+      client.options.attachments = [];
+      const gone = makeUploadedFile('history-gone', 'expired.pdf', 'application/pdf');
+      const kept = makeUploadedFile('history-kept', 'kept.pdf', 'application/pdf');
+      require('~/models').getFiles.mockResolvedValue([gone, kept]);
+      client.addDocuments = jest.fn(async (targetMessage, attachments, onMissingFile) => {
+        onMissingFile(gone);
+        targetMessage.documents = [{ type: 'input_file', filename: kept.filename }];
+        return [kept];
+      });
+
+      const [replayed] = await client.addPreviousAttachments([
+        {
+          messageId: 'history-message',
+          isCreatedByUser: true,
+          text: 'Summarize these.',
+          files: [{ file_id: gone.file_id }, { file_id: kept.file_id }],
+        },
+      ]);
+
+      expect(client.addDocuments).toHaveBeenCalledWith(
+        replayed,
+        [gone, kept],
+        expect.any(Function),
+      );
+      expect(replayed.fileContext).toContain('"expired.pdf"');
+      expect(replayed.fileContext).toContain('deleted from storage');
+      expect(replayed.fileContext).not.toContain('kept.pdf');
+      expect(client.message_file_map['history-message'].map((file) => file.file_id)).toEqual([
+        kept.file_id,
+      ]);
+    });
+
+    it('keeps a storage miss on a current attachment fatal', async () => {
+      const current = makeUploadedFile('current-gone', 'current.pdf', 'application/pdf');
+      const missing = new (require('@librechat/api').AttachmentObjectNotFoundError)(
+        current.file_id,
+      );
+      client.addDocuments = jest.fn(async (_message, _attachments, onMissingFile) => {
+        expect(onMissingFile).toBeUndefined();
+        throw missing;
+      });
+
+      await expect(
+        client.processAttachments({ messageId: 'current-message' }, [current]),
+      ).rejects.toBe(missing);
+    });
+
     it('rejects combined historical and current bytes before either batch is encoded', async () => {
       mockAgent.endpoint = 'Moonshot';
       client.options.endpointType = EModelEndpoint.custom;
@@ -7601,7 +7650,7 @@ describe('AgentClient - titleConvo', () => {
 
         const files = await client.processAttachments(message, [currentFile]);
 
-        expect(client.addDocuments).toHaveBeenCalledWith(message, [currentFile]);
+        expect(client.addDocuments).toHaveBeenCalledWith(message, [currentFile], undefined);
         expect(message.documents).toEqual([
           expect.objectContaining({
             type: 'input_file',

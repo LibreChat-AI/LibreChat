@@ -1,12 +1,17 @@
 import { RecoilRoot } from 'recoil';
+import { MemoryRouter } from 'react-router-dom';
 import { render, screen } from '@testing-library/react';
+import { MessageRender } from '@librechat/chat/components';
 import { ContentTypes, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ParentSubagentsProvider, StreamHostProvider } from '@librechat/chat/react';
 import type { ParentSubagentSummary, TMessage } from 'librechat-data-provider';
 import type { TMessageChatContext } from '~/common';
 import { ShareMessagesProvider } from '~/components/Share/ShareMessagesProvider';
 import { ShareContext } from '~/Providers/ShareContext';
-import MessageRender from '../MessageRender';
+import '~/Providers/MessagePartsHostContext';
+import '~/Providers/MessagesHostContext';
+import { appStreamHost } from '~/Providers/StreamHostContext';
 
 const mockAgentsMap = {
   agent_reviewer: { id: 'agent_reviewer', name: 'Code Reviewer' },
@@ -14,34 +19,16 @@ const mockAgentsMap = {
 };
 
 let mockChildren = new Map<string, ParentSubagentSummary>();
-jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
-  useParentSubagents: () => ({ byThreadId: mockChildren }),
-}));
 
-jest.mock('~/Providers', () => ({
-  ...jest.requireActual('~/Providers/MessageContext'),
+jest.mock('~/Providers/AgentsMapContext', () => ({
+  ...jest.requireActual('~/Providers/AgentsMapContext'),
   useAgentsMapContext: () => mockAgentsMap,
 }));
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-  useContentMetadata: () => ({ hasParallelContent: false }),
-  useMessageActions: ({ message }: { message: TMessage }) => ({
-    ask: jest.fn(),
-    edit: false,
-    index: 0,
-    agent: mockAgentsMap.agent_lia,
-    assistant: undefined,
-    enterEdit: jest.fn(),
-    conversation: { conversationId: 'conversation-1', endpoint: 'agents' },
-    messageLabel: message.isCreatedByUser ? 'Danny' : 'Lia',
-    handleFeedback: jest.fn(),
-    handleContinue: jest.fn(),
-    copyToClipboard: jest.fn(),
-    getCanCopy: () => true,
-    regenerateMessage: jest.fn(),
-    hasConfiguredSender: false,
-  }),
+/** Keys echo back, except the generic subagent name, which the spec asserts as the English word. */
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => (key === 'com_ui_subagent_actor' ? 'Agent' : key),
 }));
 
 /** The author glyph reduced to whose face it is. */
@@ -59,18 +46,15 @@ jest.mock('~/components/Chat/Messages/Content/MessageContent', () => ({
   __esModule: true,
   default: () => <div data-testid="message-content" />,
 }));
-jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
-  __esModule: true,
-  default: () => null,
-}));
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
-  SiblingSwitch: ({ className }: { className?: string }) => (
-    <span data-testid="sibling-footer" className={className} />
-  ),
+  HoverButtons: () => null,
 }));
 
-const chatContext = { latestMessageId: 'wake' } as unknown as TMessageChatContext;
+const chatContext = {
+  latestMessageId: 'wake',
+  conversation: { conversationId: 'conversation-1', endpoint: 'agents', agent_id: 'agent_lia' },
+} as unknown as TMessageChatContext;
 
 const subagentWakeup = (subagentType: string) =>
   [
@@ -103,6 +87,7 @@ function renderMessage(
   shared = false,
   submitted = false,
   dispatch?: TMessage,
+  siblings: { siblingIdx?: number; siblingCount?: number } = {},
 ) {
   const queryClient = new QueryClient();
   queryClient.setQueryData(
@@ -118,6 +103,11 @@ function renderMessage(
       },
     ],
   );
+  queryClient.setQueryData([QueryKeys.parentSubagents, 'conversation-1'], {
+    parentConversationId: 'conversation-1',
+    children: [...mockChildren.values()],
+    childrenTruncated: false,
+  });
   const message = {
     messageId: 'wake',
     parentMessageId: 'parent',
@@ -126,7 +116,19 @@ function renderMessage(
     isUserSubmitted: submitted,
     text,
   } as unknown as TMessage;
-  const row = <MessageRender message={message} chatContext={chatContext} currentEditId={null} />;
+  const row = (
+    <StreamHostProvider host={appStreamHost}>
+      <ParentSubagentsProvider conversationId="conversation-1" enabled>
+        <MessageRender
+          message={message}
+          chatContext={chatContext}
+          currentEditId={null}
+          setSiblingIdx={() => undefined}
+          {...siblings}
+        />
+      </ParentSubagentsProvider>
+    </StreamHostProvider>
+  );
   const sharedReply: TMessage = {
     messageId: 'shared-reply',
     parentMessageId: 'wake',
@@ -141,19 +143,21 @@ function renderMessage(
   return render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
-        {shared ? (
-          <ShareContext.Provider value={{ isSharedConvo: true, shareId: 'share-1' }}>
-            <ShareMessagesProvider messages={[message, sharedReply]}>{row}</ShareMessagesProvider>
-          </ShareContext.Provider>
-        ) : (
-          <ShareMessagesProvider
-            messages={
-              queryClient.getQueryData<TMessage[]>([QueryKeys.messages, 'conversation-1']) ?? []
-            }
-          >
-            {row}
-          </ShareMessagesProvider>
-        )}
+        <MemoryRouter>
+          {shared ? (
+            <ShareContext.Provider value={{ isSharedConvo: true, shareId: 'share-1' }}>
+              <ShareMessagesProvider messages={[message, sharedReply]}>{row}</ShareMessagesProvider>
+            </ShareContext.Provider>
+          ) : (
+            <ShareMessagesProvider
+              messages={
+                queryClient.getQueryData<TMessage[]>([QueryKeys.messages, 'conversation-1']) ?? []
+              }
+            >
+              {row}
+            </ShareMessagesProvider>
+          )}
+        </MemoryRouter>
       </RecoilRoot>
     </QueryClientProvider>,
   );
@@ -266,7 +270,7 @@ describe('MessageRender wake-up rows', () => {
     });
     renderMessage(subagentWakeup('agent_unknown'));
 
-    expect(screen.getByRole('heading', { name: /com_ui_subagent_actor$/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Agent' })).toBeInTheDocument();
     expect(screen.queryByText(/agent_unknown/)).not.toBeInTheDocument();
   });
 
@@ -363,10 +367,24 @@ it('uses the validated spawning lane for a private self wake-up', () => {
 });
 
 it('aligns a System event footer with its transcript body', () => {
-  renderMessage(backgroundWakeup);
-  expect(screen.getByTestId('sibling-footer').parentElement).not.toHaveClass('justify-end');
+  renderMessage(backgroundWakeup, undefined, false, false, undefined, {
+    siblingIdx: 0,
+    siblingCount: 2,
+  });
+  expect(screen.getByRole('navigation').parentElement).not.toHaveClass('justify-end');
 });
 it('does not reorder System sibling controls to the user edge', () => {
-  renderMessage(backgroundWakeup);
-  expect(screen.getByTestId('sibling-footer')).not.toHaveClass('order-last');
+  renderMessage(backgroundWakeup, undefined, false, false, undefined, {
+    siblingIdx: 0,
+    siblingCount: 2,
+  });
+  expect(screen.getByRole('navigation')).not.toHaveClass('order-last');
+});
+it('keeps a user prompt footer at the user edge with its sibling controls last', () => {
+  renderMessage('Plain question', undefined, false, true, undefined, {
+    siblingIdx: 0,
+    siblingCount: 2,
+  });
+  expect(screen.getByRole('navigation').parentElement).toHaveClass('justify-end');
+  expect(screen.getByRole('navigation')).toHaveClass('order-last');
 });

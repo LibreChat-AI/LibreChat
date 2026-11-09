@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtom } from 'jotai';
 import {
-  collapsedAskActionsAtom,
+  ASK_USER_DECLINED_ANSWER,
+  findLiveAskUserQuestion,
+  splitOtherOption,
+} from '@librechat/chat';
+import {
+  expandedAskActionsAtom,
   askAnswerSelectionAtom,
   askAnswerCheckedAtom,
   askAnswerTextAtom,
@@ -12,17 +17,14 @@ import {
   useAskSubmitStatus,
   useResumeSubmit,
 } from '~/components/Chat/Messages/Content/ApprovalContext';
-import {
-  ASK_USER_DECLINED_ANSWER,
-  findLiveAskUserQuestion,
-  splitOtherOption,
-} from '~/utils/approval';
-import { getAskAnswerDraftId, morphTransition, setDraft } from '~/utils';
+import { getAskAnswerDraftId, morphTransition, getDraft, setDraft } from '~/utils';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { useOptionalChatFormContext } from '~/Providers';
 
 /**
- * First-class "answer mode" for a live `ask_user_question` pause. Clicking an
+ * First-class "answer mode" for a live `ask_user_question` pause. A question
+ * starts in the chat card; answer mode is the opt-in composer popover the
+ * card's chevron (`expand`) moves it into. Clicking an
  * option submits it immediately (multi-select clicks toggle instead, confirmed
  * by an explicit Submit); arrows/digits from the EMPTY composer steer a
  * keyboard highlight that Enter fires — but only while the popover is visible,
@@ -51,7 +53,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     select: findLiveAskUserQuestion,
   });
   const liveAsk = enabled ? (liveAskData ?? null) : null;
-  const [collapsedIds, setCollapsedIds] = useAtom(collapsedAskActionsAtom);
+  const [expandedIds, setExpandedIds] = useAtom(expandedAskActionsAtom);
   const [selected, setSelected] = useAtom(askAnswerSelectionAtom);
   const [checked, setChecked] = useAtom(askAnswerCheckedAtom);
   const [answerDrafts, setAnswerDrafts] = useAtom(askAnswerTextAtom);
@@ -110,14 +112,16 @@ export default function useAskAnswerMode(conversationId?: string | null) {
    * answered question with every option greyed out.
    */
   const answerable = liveAsk != null && status !== 'expired' && status !== 'submitted';
-  /** Moved to the chat: the card owns the question and the composer is free. */
-  const collapsed = answerable && collapsedIds.includes(liveAsk.actionId);
+  /** Moved to the composer: the popover owns the question. */
+  const expanded = answerable && expandedIds.includes(liveAsk.actionId);
+  /** In the chat, the default: the card owns the question and the composer is free. */
+  const collapsed = answerable && !expanded;
   /**
    * Answer mode: the popover is up AND the composer is the free-form answer
    * box. The two are deliberately the same condition because the composer's answer
    * role is only discoverable while the popover explains it.
    */
-  const active = answerable && !collapsed;
+  const active = expanded;
   const popoverVisible = active;
   const batchMode = (liveAsk?.questions?.length ?? 0) > 0;
   const composerAnswers = active && !batchMode;
@@ -204,7 +208,33 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     releasedComposerText,
     setReleasedComposerText,
   ]);
-  const answerText = liveAsk != null ? (answerDrafts[liveAsk.actionId] ?? '') : '';
+  /**
+   * The answer saved under the question's own draft key. Autosave restores it
+   * only into the composer, which answers a question moved there; the chat
+   * card, where a question starts, reads it from here so a reload or a return
+   * to a still-pending question shows what was typed. Once restored it is
+   * held in memory like any typed answer, so turning draft saving off later
+   * leaves the visible answer in place, as it does for the composer.
+   */
+  const savedAnswerActionId = liveAsk != null && !batchMode ? liveAsk.actionId : null;
+  const savedAnswer = useMemo(
+    () =>
+      saveDrafts && savedAnswerActionId != null
+        ? (getDraft(getAskAnswerDraftId(savedAnswerActionId)) ?? '')
+        : '',
+    [saveDrafts, savedAnswerActionId],
+  );
+  useEffect(() => {
+    if (savedAnswerActionId == null || savedAnswer.length === 0) {
+      return;
+    }
+    setAnswerDrafts((current) =>
+      current[savedAnswerActionId] != null
+        ? current
+        : { ...current, [savedAnswerActionId]: savedAnswer },
+    );
+  }, [savedAnswerActionId, savedAnswer, setAnswerDrafts]);
+  const answerText = liveAsk != null ? (answerDrafts[liveAsk.actionId] ?? savedAnswer) : '';
   const setAnswerText = useCallback(
     (text: string) => {
       if (liveAsk && !batchMode) {
@@ -219,6 +249,16 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     },
     [batchMode, liveAsk, saveDrafts, setAnswerDrafts],
   );
+
+  /** An expired question can never be answered, so its saved answer has
+   *  nothing left to restore into. */
+  const expiredActionId =
+    liveAsk != null && !batchMode && status === 'expired' ? liveAsk.actionId : null;
+  useEffect(() => {
+    if (expiredActionId != null) {
+      setDraft({ id: getAskAnswerDraftId(expiredActionId), value: '' });
+    }
+  }, [expiredActionId]);
 
   /** Selection state is per-question: a new pause must never inherit a stale
    *  highlight (or checks) whose Enter would submit the previous question's
@@ -261,9 +301,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
             formContext?.reset();
           }
         }
-        setCollapsedIds((prev) =>
-          prev.includes(liveAsk.actionId) ? prev : [...prev, liveAsk.actionId],
-        );
+        setExpandedIds((prev) => prev.filter((id) => id !== liveAsk.actionId));
       });
     }
   }, [
@@ -275,7 +313,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     releasedComposerText,
     setReleasedComposerText,
     setAnswerDrafts,
-    setCollapsedIds,
+    setExpandedIds,
     runHandoff,
   ]);
 
@@ -305,7 +343,9 @@ export default function useAskAnswerMode(conversationId?: string | null) {
            *  `setAnswerText` writes both while saving is on. */
           setDraft({ id: getAskAnswerDraftId(liveAsk.actionId), value: answerText });
         }
-        setCollapsedIds((prev) => prev.filter((id) => id !== liveAsk.actionId));
+        setExpandedIds((prev) =>
+          prev.includes(liveAsk.actionId) ? prev : [...prev, liveAsk.actionId],
+        );
       });
     }
   }, [
@@ -316,7 +356,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     formContext,
     answerText,
     setReleasedComposerText,
-    setCollapsedIds,
+    setExpandedIds,
     runHandoff,
   ]);
 
@@ -360,9 +400,17 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       const wasActive = active;
       const submittedConversationId = conversationId;
       const submittedActionId = liveAsk.actionId;
+      const submittedSingle = !batchMode;
       const submittedComposerText = formContext?.getValues('text') ?? '';
       submitAskAnswer(liveAsk.actionId, values.join(', '), {
         onSuccess: () => {
+          /** The question is answered wherever the user went meanwhile, so its
+           *  saved answer goes now. Answered from the composer, autosave would
+           *  clear it with the composer; answered from the card, nothing else
+           *  ever reads that key again. */
+          if (submittedSingle) {
+            setDraft({ id: getAskAnswerDraftId(submittedActionId), value: '' });
+          }
           const currentScope = currentScopeRef.current;
           if (
             !mountedRef.current ||
@@ -418,6 +466,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       liveAsk,
       locked,
       active,
+      batchMode,
       saveDrafts,
       conversationId,
       setReleasedComposerText,

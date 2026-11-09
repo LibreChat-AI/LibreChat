@@ -8,7 +8,11 @@ const {
   loadAddedAgent: loadAddedAgentFn,
   hasEntityEmbeddings,
 } = require('@librechat/api');
-const { isEphemeralAgentId } = require('librechat-data-provider');
+const {
+  isEphemeralAgentId,
+  resolveSpecUserToggle,
+  resolveSpecSkillsEnabled,
+} = require('librechat-data-provider');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { getMCPServerTools } = require('~/server/services/Config');
 const { getAccessibleMcpServerNames, getAccessibleMCPServers } = require('~/server/services/MCP');
@@ -151,10 +155,17 @@ const processAddedConvo = async ({
       selectedModelSpec &&
       Object.hasOwn(selectedModelSpec, 'skills')
     ) {
-      if (selectedModelSpec.skills === true) {
-        addedAgent.skills_enabled = true;
-        delete addedAgent.skills;
-      } else if (selectedModelSpec.skills === false) {
+      /** Mirrors the primary agent: the spec's `skills` config is a default the
+       *  added conversation's own toggle overrides (`false` stays a hard opt-out). */
+      const specSkillsEnabled = resolveSpecSkillsEnabled(
+        resolveSpecUserToggle(
+          addedConvo.ephemeralAgent?.skills ?? req.body?.ephemeralAgent?.skills,
+          selectedModelSpec,
+          'skills',
+        ),
+        selectedModelSpec.skills,
+      );
+      if (!specSkillsEnabled) {
         addedAgent.skills_enabled = false;
         addedAgent.skills = [];
       } else if (Array.isArray(selectedModelSpec.skills)) {
@@ -166,6 +177,9 @@ const processAddedConvo = async ({
         });
         addedAgent.skills_enabled = true;
         addedAgent.skills = resolvedSkillIds.map((id) => id.toString());
+      } else {
+        addedAgent.skills_enabled = true;
+        delete addedAgent.skills;
       }
     }
 

@@ -56,6 +56,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-surface-overlay': '0 0 0', // #000 (black)
   'rgb-surface-media-overlay': '0 0 0', // #000 (black, over the user's media in both modes)
   'rgb-text-on-media': '255 255 255', // #fff (white)
+  'rgb-surface-media-chip': '0 0 0', // #000 (black), carried at 0.65 alpha
   'rgb-surface-submit': '4 120 87', // #047857 (green-700)
   'rgb-surface-submit-hover': '6 95 70', // #065f46 (green-800)
   'rgb-surface-destructive': '153 27 27', // #991b1b (red-800)

@@ -2,14 +2,13 @@ import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
 import { TriangleAlert } from 'lucide-react';
 import { Input, Button } from '@librechat/client';
 import { AskOptions } from '@librechat/chat/components';
-import { isCancelKey, isReboundSubmitChord } from '@librechat/chat';
+import { useOptionalChatSurface } from '@librechat/chat/react';
+import { isCancelKey, isReboundSubmitChord, splitOtherOption } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { useOptionalChatSurface } from '~/components/Chat/Subagents/surface';
+import useArrivalFocus, { isFocusIdle } from '~/hooks/Input/useArrivalFocus';
 import useAskQuestionsForm from '~/hooks/Input/useAskQuestionsForm';
-import { splitOtherOption } from '~/utils/approval';
 import { AutoHeight } from '~/components/ui';
-import { mainTextareaId } from '~/common';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -25,6 +24,7 @@ export default function AskUserQuestions({
   className,
   headerAction,
   focusOnArrival = false,
+  focusOnHandoff = false,
   onEscape,
 }: {
   actionId: string;
@@ -33,6 +33,9 @@ export default function AskUserQuestions({
   /** This surface is the live pause's visible one, so the batch arriving may
    *  take focus. A Share view or a hidden footprint copy leaves it alone. */
   focusOnArrival?: boolean;
+  /** The batch was just moved onto this surface, which is on screen: it takes
+   *  focus whenever focus is idle, even after an earlier arrival did. */
+  focusOnHandoff?: boolean;
   /** The surface's own control (move to chat, move back), set in the
    *  question's header row so it shares the form's inset. */
   headerAction?: ReactNode;
@@ -120,32 +123,42 @@ export default function AskUserQuestions({
   }, [activeIndex, focusStep]);
 
   /**
-   * An arriving batch puts the user on the first question's controls, but
-   * only when focus is idle (nowhere, or the empty composer that just sent
-   * the turn), so a draft or any other control the user is in keeps focus.
-   * It happens once per batch: moving it between the popover and the chat
-   * remounts it, and that is not a new arrival.
+   * A batch moved onto this surface by the user's own handoff always takes
+   * focus: the control that did it is gone or hidden (Safari keeps focus on a
+   * clicked button's previous owner, which may be the now-inert card), so
+   * there is nothing of the user's to protect.
    */
   useEffect(() => {
-    if (!focusOnArrival || form.locked || form.arrivalFocused) {
-      return;
-    }
-    const active = document.activeElement;
-    const idle =
-      active == null ||
-      active === document.body ||
-      (active instanceof HTMLTextAreaElement &&
-        active.id === mainTextareaId &&
-        active.value.trim().length === 0);
-    if (!idle) {
+    if (!focusOnHandoff || form.locked) {
       return;
     }
     focusStep({ firstOption: true, preventScroll: true });
-    if (stepRef.current?.contains(document.activeElement) === true) {
-      form.markArrivalFocused();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- arrival only
+    form.markArrivalFocused();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handoff happens on mount
   }, []);
+
+  /**
+   * An arriving batch puts the user on the first question's controls once it
+   * is on screen, but only when focus is idle then, so a draft or any other
+   * control the user is in keeps focus. It happens once per batch: moving it
+   * between the popover and the chat is not a new arrival.
+   */
+  const latestFormRef = useRef(form);
+  latestFormRef.current = form;
+  useArrivalFocus(
+    focusOnArrival && !focusOnHandoff && !form.locked && !form.arrivalFocused,
+    stepRef,
+    () => {
+      const current = latestFormRef.current;
+      if (current.locked || current.arrivalFocused || !isFocusIdle()) {
+        return;
+      }
+      focusStep({ firstOption: true, preventScroll: true });
+      if (stepRef.current?.contains(document.activeElement) === true) {
+        current.markArrivalFocused();
+      }
+    },
+  );
 
   if (form.status === 'submitted') {
     return null;

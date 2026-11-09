@@ -7,7 +7,7 @@ function HelpText({ endpoint }: { endpoint: string }) {
   const textMap = {
     [EModelEndpoint.google]: (
       <>
-        <small className="mt-4 break-all text-text-secondary">
+        <small className="text-text-secondary mt-4 break-all">
           {localize('com_endpoint_config_google_service_key')}
           {': '}
           {localize('com_endpoint_config_key_google_need_to')}{' '}
@@ -31,7 +31,7 @@ function HelpText({ endpoint }: { endpoint: string }) {
           {'. '}
           {localize('com_endpoint_config_key_google_vertex_api_role')}
         </small>
-        <small className="break-all text-text-secondary">
+        <small className="text-text-secondary break-all">
           {localize('com_endpoint_config_google_api_key')}
           {': '}
           {localize('com_endpoint_config_google_api_info')}{' '}

@@ -1091,6 +1091,40 @@ describe('initializeClient — processAgent ACL gate', () => {
     expect(initializeParams.skillAuthoringAvailable).toBe(true);
   });
 
+  it.each([
+    ['honors a skills opt-out against an ordinary spec', false, false],
+    ['ignores a skills opt-out against a spec that hides the badge row', true, true],
+  ])('%s', async (_label, hideBadgeRow, expectedEnabled) => {
+    const endpointOption = makeEndpointOption();
+    endpointOption.spec = 'spec-skills';
+    endpointOption.agent = Promise.resolve({
+      id: Constants.EPHEMERAL_AGENT_ID,
+      name: 'Ephemeral Primary',
+      provider: 'openai',
+      model: 'gpt-4',
+      tools: [],
+    });
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+    const req = makeReq();
+    req.config.endpoints.agents = { capabilities: ['skills'] };
+    req.config.modelSpecs = {
+      list: [{ name: 'spec-skills', skills: true, ...(hideBadgeRow ? { hideBadgeRow } : {}) }],
+    };
+    /** Only an API caller can post this against a hidden badge row, so the
+     *  spec's own configuration stays authoritative there. */
+    req.body.ephemeralAgent = { skills: false };
+
+    await initializeClient({
+      req,
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption,
+    });
+
+    const initializeParams = mockInitializeAgent.mock.calls[0][0];
+    expect(initializeParams.agent.skills_enabled).toBe(expectedEnabled);
+  });
+
   it('loads model validation and skill permissions without serial waits', async () => {
     const models = deferred();
     const createPermission = deferred();

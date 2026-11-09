@@ -1,4 +1,5 @@
 export * from './state';
+export * from './redaction';
 export * from './stream';
 export * from './status';
 export * from './prompt';
@@ -8,3 +9,11 @@ export * from './adapters';
 export * from './recovery';
 export * from './eventSelection';
 export * from './attachments';
+export * from './parents';
+export * from './author';
+export * from './surface';
+export * from './provider';
+export * from './task';
+export * from './scope';
+export * from './host';
+export * from './thread';

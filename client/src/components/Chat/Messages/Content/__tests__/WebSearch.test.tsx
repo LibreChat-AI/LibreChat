@@ -1,16 +1,17 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { ToolContentRequestContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { ROW_GLYPH_SLOT, FailedRevealContext } from '@librechat/chat/components';
 import type {
   TAttachment,
   SearchResultData,
   ValidSource,
   PartMetadata,
 } from 'librechat-data-provider';
-import { FailedRevealContext } from '../reveal';
+import { HeaderActionSlotContext } from '../slot';
 import { SearchContext } from '~/Providers';
 import WebSearch from '../WebSearch';
 
@@ -29,8 +30,10 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
-  useProgress: (progress: number) => progress,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
@@ -39,6 +42,11 @@ jest.mock('~/hooks', () => ({
     },
     ref: { current: null },
   }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (progress: number) => progress,
 }));
 
 jest.mock('~/hooks/MCP', () => ({
@@ -522,7 +530,7 @@ describe('WebSearch', () => {
       expect(screen.getByText('(812)')).toBeInTheDocument();
     });
 
-    it('uses standard tool-row spacing and reveals its chevron on hover or focus', () => {
+    it('uses standard tool-row spacing and always shows its chevron', () => {
       const searchResults = makeSearchResults({
         0: { organic: [makeSource('https://example.com', 'Example')] },
       });
@@ -535,11 +543,7 @@ describe('WebSearch', () => {
       expect(button).not.toHaveClass('py-1');
       expect(button).not.toHaveClass('transition-colors');
       const chevron = screen.getByTestId('chevron-icon');
-      expect(chevron).toHaveClass(
-        'opacity-0',
-        'group-hover/disclosure:opacity-100',
-        'group-focus-within/disclosure:opacity-100',
-      );
+      expect(chevron).not.toHaveClass('opacity-0');
       expect(chevron).toHaveClass('transition-transform');
       expect(chevron.className).not.toContain('transition-opacity');
     });
@@ -601,5 +605,57 @@ describe('WebSearch', () => {
       const matches = screen.getAllByText('Searching again');
       expect(matches.length).toBeGreaterThanOrEqual(1);
     });
+  });
+});
+
+describe('generated single-search label', () => {
+  const search = () =>
+    render(
+      <RecoilRoot>
+        <SearchContext.Provider
+          value={{
+            searchResults: makeSearchResults({
+              0: { organic: [makeSource('https://example.com', 'Example result')] },
+            }),
+          }}
+        >
+          <GeneratedToolLabelContext.Provider value>
+            <WebSearch initialProgress={1} isSubmitting={false} args={{ query: 'example' }} />
+          </GeneratedToolLabelContext.Provider>
+        </SearchContext.Provider>
+      </RecoilRoot>,
+    );
+  it('does not render a redundant searched-the-web disclosure', () => {
+    search();
+    expect(screen.queryByRole('button', { name: /Searched the web/ })).not.toBeInTheDocument();
+  });
+  it('shows the source links directly', () => {
+    search();
+    expect(screen.getByRole('link', { name: /Example result/ })).toBeInTheDocument();
+  });
+  it('puts its details on the title line when the header offers a slot', () => {
+    const slot = document.createElement('span');
+    document.body.appendChild(slot);
+    render(
+      <RecoilRoot>
+        <SearchContext.Provider
+          value={{
+            searchResults: makeSearchResults({
+              0: { organic: [makeSource('https://example.com', 'Example result')] },
+            }),
+          }}
+        >
+          <HeaderActionSlotContext.Provider value={slot}>
+            <GeneratedToolLabelContext.Provider value>
+              <WebSearch initialProgress={1} isSubmitting={false} args={{ query: 'example' }} />
+            </GeneratedToolLabelContext.Provider>
+          </HeaderActionSlotContext.Provider>
+        </SearchContext.Provider>
+      </RecoilRoot>,
+    );
+    const details = screen.getByRole('button', { name: 'Search details' });
+    expect(slot).toContainElement(details);
+    expect(details).not.toHaveClass('opacity-0');
+    slot.remove();
   });
 });

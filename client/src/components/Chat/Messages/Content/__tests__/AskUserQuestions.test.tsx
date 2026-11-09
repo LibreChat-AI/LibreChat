@@ -1,9 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { ASK_USER_DECLINED_ANSWER } from '@librechat/chat';
+import { ChatSurfaceProvider } from '@librechat/chat/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
-import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
-import { ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
 import AskUserQuestions from '../AskUserQuestions';
 
 const mockSubmitAskAnswer = jest.fn();
@@ -360,7 +360,17 @@ describe('AskUserQuestions', () => {
   });
 
   describe('focus on arrival', () => {
+    /* jsdom has no layout, so without an observer `useArrivalFocus` arrives at once. The shared
+       inert observer never reports, so nothing would arrive and the negative cases would pass
+       without testing anything. */
+    const inertObserver = window.IntersectionObserver;
+
+    beforeEach(() => {
+      Reflect.deleteProperty(window, 'IntersectionObserver');
+    });
+
     afterEach(() => {
+      window.IntersectionObserver = inertObserver;
       document.getElementById('prompt-textarea')?.remove();
     });
 
@@ -407,6 +417,89 @@ describe('AskUserQuestions', () => {
 
       renderBatch('ask-focus-draft');
       expect(composer).toHaveFocus();
+    });
+
+    test('takes focus again when the batch is moved onto a new surface', () => {
+      const view = render(
+        <RecoilRoot>
+          <AskUserQuestions actionId="ask-focus-handoff" questions={questions} focusOnArrival />
+        </RecoilRoot>,
+      );
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+      view.unmount();
+
+      render(
+        <RecoilRoot>
+          <AskUserQuestions actionId="ask-focus-handoff" questions={questions} focusOnHandoff />
+        </RecoilRoot>,
+      );
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+    });
+
+    test('takes focus on a handoff even when focus stayed in the card it left', () => {
+      /* Safari leaves focus where it was when a button is clicked, which can be
+         the answer field of the now-hidden chat card. */
+      const leftBehind = document.createElement('input');
+      document.body.appendChild(leftBehind);
+      leftBehind.focus();
+
+      render(
+        <RecoilRoot>
+          <AskUserQuestions actionId="ask-focus-left-behind" questions={questions} focusOnHandoff />
+        </RecoilRoot>,
+      );
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+      leftBehind.remove();
+    });
+
+    describe('below a reader who has scrolled up', () => {
+      const originalObserver = global.IntersectionObserver;
+      let notify: () => void = () => undefined;
+      let onScreen = false;
+      let rectSpy: jest.SpyInstance;
+
+      beforeEach(() => {
+        onScreen = false;
+        global.IntersectionObserver = jest.fn((callback: IntersectionObserverCallback) => {
+          notify = () => callback([], {} as IntersectionObserver);
+          return { observe: jest.fn(), disconnect: jest.fn() };
+        }) as unknown as typeof IntersectionObserver;
+        rectSpy = jest
+          .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+          .mockImplementation(() =>
+            onScreen
+              ? ({ top: 100, bottom: 300 } as DOMRect)
+              : ({ top: window.innerHeight + 200, bottom: window.innerHeight + 400 } as DOMRect),
+          );
+      });
+
+      afterEach(() => {
+        global.IntersectionObserver = originalObserver;
+        rectSpy.mockRestore();
+      });
+
+      test('waits until the card is on screen before taking focus', () => {
+        renderBatch('ask-focus-offscreen');
+        act(() => notify());
+        expect(document.body).toHaveFocus();
+
+        onScreen = true;
+        act(() => notify());
+        expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+      });
+
+      test('does not take focus once the reader has started typing elsewhere', () => {
+        renderBatch('ask-focus-offscreen-busy');
+        const composer = document.createElement('textarea');
+        composer.id = 'prompt-textarea';
+        composer.value = 'typing while it arrived';
+        document.body.appendChild(composer);
+        composer.focus();
+
+        onScreen = true;
+        act(() => notify());
+        expect(composer).toHaveFocus();
+      });
     });
   });
 

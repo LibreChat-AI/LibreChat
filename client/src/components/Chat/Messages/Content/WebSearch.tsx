@@ -1,14 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useContext } from 'react';
+import { createPortal } from 'react-dom';
 import { Tools } from 'librechat-data-provider';
 import { parseJsonField } from '@librechat/chat';
 import { Globe, ChevronDown, Info } from 'lucide-react';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
-import {
-  useToolExpansion,
-  useToolContentRequest,
-  toolPanelSpacingClassName,
-  useToolCallIntent,
-} from '@librechat/chat/react';
+import { ROW_GLYPH_SLOT, useToolPreparation, useExpandCollapse } from '@librechat/chat/components';
 import {
   Button,
   HoverCard,
@@ -17,6 +12,15 @@ import {
   HoverCardContent,
   disclosureChevronVariants,
 } from '@librechat/client';
+import {
+  useRowHandoff,
+  GeneratedToolLabelContext,
+  useToolExpansion,
+  useToolContentRequest,
+  toolPanelSpacingClassName,
+  useToolCallIntent,
+  useLazyCollapseBody,
+} from '@librechat/chat/react';
 import type {
   TAttachment,
   ValidSource,
@@ -25,13 +29,13 @@ import type {
   AnswerBoxResult,
 } from 'librechat-data-provider';
 import { FaviconImage, getCleanDomain } from '~/components/Web/SourceHovercard';
-import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { isError } from './ToolOutput/OutputRenderer';
-import { useToolPreparation } from './preparation';
+import { HeaderActionSlotContext } from './slot';
 import { useSearchContext } from '~/Providers';
 import SearchVerticals from './verticals';
+import { useLocalize } from '~/hooks';
 import ToolCall from './ToolCall';
 import cn from '~/utils/cn';
 
@@ -206,10 +210,16 @@ export default function WebSearch({
   }, [ownTurn, localize, showSources, finalizing, preparationText]);
   const progressText = preparationText ?? intent ?? genericProgressText;
 
+  const generatedLabel = useContext(GeneratedToolLabelContext);
+  const headerSlot = useContext(HeaderActionSlotContext);
+  const bare = generatedLabel && complete && !error && !cancelled && allSources.length > 0;
+  const rowRef = useRowHandoff(bare);
   const sourceCount = allSources.length;
   const [showDetails, setShowDetails] = useState(false);
   useToolContentRequest(showDetails);
-  const [showSourceList, setShowSourceList] = useToolExpansion(sourceCount > 0);
+  const [expandedSources, setShowSourceList] = useToolExpansion(sourceCount > 0);
+  const showSourceList = bare || expandedSources;
+  useToolContentRequest(bare);
   const { style: sourceExpandStyle, ref: sourceExpandRef } = useExpandCollapse(showSourceList);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showSourceList);
 
@@ -248,110 +258,118 @@ export default function WebSearch({
     const query = parseJsonField(args, 'query');
     const hasDetails = !!query || !!answerBox;
 
+    /** A generated title replaced the row, so its action moves to the title line. */
+    const inHeader = bare && headerSlot != null;
+    const details = (
+      <HoverCard openDelay={50} open={showDetails} onOpenChange={setShowDetails}>
+        {/* Composed through `asChild` so the shared Button owns the
+          rounding, hover fill, focus ring and motion (and gives a real
+          <button> instead of Radix's default anchor). Only the
+          hover-card reveal and the icon geometry stay local. */}
+        <HoverCardTrigger asChild>
+          <Button
+            variant="quiet"
+            size="icon"
+            className={cn(
+              'ms-auto size-auto cursor-help rounded-md p-1',
+              /** On the title line it sits beside the always-visible chevron. */
+              !inHeader &&
+                'opacity-0 group-focus-within/websearch:opacity-100 group-hover/websearch:opacity-100 focus-visible:opacity-100',
+            )}
+            onFocus={() => setShowDetails(true)}
+            onBlur={() => setShowDetails(false)}
+            aria-label={localize('com_ui_web_search_details')}
+          >
+            <Info className="size-3.5" aria-hidden="true" />
+          </Button>
+        </HoverCardTrigger>
+        <HoverCardPortal>
+          <HoverCardContent side="top" className="z-[999] w-80">
+            <div className="max-h-[60vh] space-y-2 overflow-y-auto">
+              {query && (
+                <div>
+                  <div className="text-text-secondary text-3xs font-medium tracking-wide uppercase">
+                    {localize('com_ui_search_query')}
+                  </div>
+                  <div className="text-text-primary mt-0.5 text-sm">{query}</div>
+                </div>
+              )}
+              <div className="text-text-secondary text-xs">
+                {localize(
+                  sourceCount === 1 ? 'com_ui_web_search_source' : 'com_ui_web_search_sources',
+                  { count: sourceCount },
+                )}
+              </div>
+              {answerBox && (answerBox.title || answerText) && (
+                <div className="border-border-inset border-t pt-2">
+                  {answerBox.title && (
+                    <div className="text-text-primary text-sm font-medium">{answerBox.title}</div>
+                  )}
+                  {answerText && (
+                    <div className="text-text-secondary mt-1 text-xs leading-relaxed">
+                      {answerText}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </HoverCardContent>
+        </HoverCardPortal>
+      </HoverCard>
+    );
+
     return (
       <div className="group/websearch my-1">
         <span className="sr-only" aria-live="polite" aria-atomic="true">
           {completedText}
         </span>
-        <div className="relative flex h-5 items-center gap-1.5">
-          <Button
-            variant="disclosure"
-            className={cn(
-              'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 rounded-full font-normal',
-              /** This row is a status line, not a padded control: the shared
-               *  recipe's color transition would turn its hover into a fade,
-               *  and the chevron reveal beside it is deliberately instant. */
-              'transition-none',
-              !hasSourceData && 'pointer-events-none disabled:opacity-100',
-            )}
-            disabled={!hasSourceData}
-            onClick={hasSourceData ? handleToggleSources : undefined}
-            aria-expanded={hasSourceData ? showSourceList : undefined}
-            aria-label={
-              hasSourceData
-                ? `${completedText} - ${localize(sourceCount === 1 ? 'com_ui_web_search_source' : 'com_ui_web_search_sources', { count: sourceCount })}`
-                : completedText
-            }
-          >
-            <span className={ROW_GLYPH_SLOT} aria-hidden="true">
-              {hasSourceData ? (
-                <SourceFaviconStack sources={allSources} />
-              ) : (
-                <Globe className="text-text-secondary size-4 shrink-0" />
+        <div className={cn('relative flex items-center gap-1.5', bare ? 'h-0' : 'h-5')}>
+          {!bare && (
+            <Button
+              ref={rowRef}
+              variant="disclosure"
+              className={cn(
+                'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 rounded-full font-normal',
+                /** This row is a status line, not a padded control: the shared
+                 *  recipe's color transition would turn its hover into a fade,
+                 *  and the chevron reveal beside it is deliberately instant. */
+                'transition-none',
+                !hasSourceData && 'pointer-events-none disabled:opacity-100',
               )}
-            </span>
-            <span className="min-w-0 truncate font-medium">{completedText}</span>
-            {hasSourceData && (
-              <ChevronDown
-                className={cn(disclosureChevronVariants({ expanded: showSourceList }), 'size-3.5')}
-                aria-hidden="true"
-              />
-            )}
-          </Button>
-          {hasDetails && (
-            <HoverCard openDelay={50} open={showDetails} onOpenChange={setShowDetails}>
-              {/* Composed through `asChild` so the shared Button owns the
-                  rounding, hover fill, focus ring and motion (and gives a real
-                  <button> instead of Radix's default anchor). Only the
-                  hover-card reveal and the icon geometry stay local. */}
-              <HoverCardTrigger asChild>
-                <Button
-                  variant="quiet"
-                  size="icon"
+              disabled={!hasSourceData}
+              onClick={hasSourceData ? handleToggleSources : undefined}
+              aria-expanded={hasSourceData ? showSourceList : undefined}
+              aria-label={
+                hasSourceData
+                  ? `${completedText} - ${localize(sourceCount === 1 ? 'com_ui_web_search_source' : 'com_ui_web_search_sources', { count: sourceCount })}`
+                  : completedText
+              }
+            >
+              <span className={ROW_GLYPH_SLOT} aria-hidden="true">
+                {hasSourceData ? (
+                  <SourceFaviconStack sources={allSources} />
+                ) : (
+                  <Globe className="text-text-secondary size-4 shrink-0" />
+                )}
+              </span>
+              <span className="min-w-0 truncate font-medium">{completedText}</span>
+              {hasSourceData && (
+                <ChevronDown
                   className={cn(
-                    'ms-auto size-auto cursor-help rounded-md p-1 opacity-0',
-                    'group-focus-within/websearch:opacity-100 group-hover/websearch:opacity-100',
-                    'focus-visible:opacity-100',
+                    disclosureChevronVariants({ expanded: showSourceList }),
+                    'ms-auto size-3.5',
                   )}
-                  onFocus={() => setShowDetails(true)}
-                  onBlur={() => setShowDetails(false)}
-                  aria-label={localize('com_ui_web_search_details')}
-                >
-                  <Info className="size-3.5" aria-hidden="true" />
-                </Button>
-              </HoverCardTrigger>
-              <HoverCardPortal>
-                <HoverCardContent side="top" className="z-[999] w-80">
-                  <div className="max-h-[60vh] space-y-2 overflow-y-auto">
-                    {query && (
-                      <div>
-                        <div className="text-text-secondary text-3xs font-medium tracking-wide uppercase">
-                          {localize('com_ui_search_query')}
-                        </div>
-                        <div className="text-text-primary mt-0.5 text-sm">{query}</div>
-                      </div>
-                    )}
-                    <div className="text-text-secondary text-xs">
-                      {localize(
-                        sourceCount === 1
-                          ? 'com_ui_web_search_source'
-                          : 'com_ui_web_search_sources',
-                        { count: sourceCount },
-                      )}
-                    </div>
-                    {answerBox && (answerBox.title || answerText) && (
-                      <div className="border-border-inset border-t pt-2">
-                        {answerBox.title && (
-                          <div className="text-text-primary text-sm font-medium">
-                            {answerBox.title}
-                          </div>
-                        )}
-                        {answerText && (
-                          <div className="text-text-secondary mt-1 text-xs leading-relaxed">
-                            {answerText}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </HoverCardContent>
-              </HoverCardPortal>
-            </HoverCard>
+                  aria-hidden="true"
+                />
+              )}
+            </Button>
           )}
+          {hasDetails && !bare && details}
+          {hasDetails && inHeader && headerSlot && createPortal(details, headerSlot)}
         </div>
         {hasSourceData && (
           <div style={sourceExpandStyle} onTransitionEnd={handleTransitionEnd}>
-            <div className="overflow-hidden" ref={sourceExpandRef}>
+            <div className="min-h-0 overflow-hidden" ref={sourceExpandRef}>
               {shouldRenderBody && (
                 <div
                   className={cn(

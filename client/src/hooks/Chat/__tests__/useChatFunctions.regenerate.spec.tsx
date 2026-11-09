@@ -2,27 +2,29 @@ import { renderHook, act } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import {
-  Constants,
-  ContentTypes,
-  EModelEndpoint,
-  QueryKeys,
-  createPayload,
-} from 'librechat-data-provider';
-import {
   revealedQueuedTurnFamily,
   submissionStartFamily,
   showStopButtonByIndex,
 } from '@librechat/chat/react';
+import {
+  Tools,
+  Constants,
+  QueryKeys,
+  ContentTypes,
+  EModelEndpoint,
+  createPayload,
+  CODE_ENVIRONMENT_DECISION_VERSION,
+} from 'librechat-data-provider';
 import type {
   Agent,
-  CodeEnvironmentMode,
-  CodeWorkspaceSelection,
+  TConfig,
   TConversation,
   TMessage,
   TSubmission,
   TReasoningOverride,
   TEphemeralAgent,
 } from 'librechat-data-provider';
+import type { CodeApprovalModeInputs, CodeWorkspaceInputs } from '@librechat/chat';
 import type { ReactNode } from 'react';
 import type { ExtendedFile } from '~/common';
 import {
@@ -66,13 +68,10 @@ const mockGetQueryData = jest.fn((queryKey: readonly unknown[]) => {
 const mockLoggerWarn = jest.fn();
 const mockGetLatestConversation = jest.fn(() => null as TConversation | null);
 const mockSetConversation = jest.fn();
-const mockResolveCodeWorkspaceSubmission = jest.fn<
-  | { codeEnvironmentMode?: CodeEnvironmentMode; codeWorkspaces?: CodeWorkspaceSelection[] }
-  | undefined,
-  [CodeWorkspaceSelection[]?, CodeEnvironmentMode?]
->(() => ({}));
+const mockReadWorkspaceInputs = jest.fn<CodeWorkspaceInputs, []>();
+const mockReadApprovalInputs = jest.fn<Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'>, []>();
 const mockCodeWorkspace = {
-  resolveSubmission: mockResolveCodeWorkspaceSubmission,
+  readInputs: mockReadWorkspaceInputs,
   rememberSelection: jest.fn(),
 };
 
@@ -106,8 +105,7 @@ jest.mock('recoil', () => ({
 
 jest.mock('~/hooks/Files/useSetFilesToDelete', () => () => mockSetFilesToDelete);
 jest.mock('~/hooks/Agents/useCodeApprovalMode', () => () => ({
-  modes: ['ask', 'acceptEdits'],
-  selected: 'ask',
+  readInputs: mockReadApprovalInputs,
 }));
 jest.mock('~/hooks/Agents/useCodeWorkspace', () => () => mockCodeWorkspace);
 jest.mock('~/hooks/Conversations/useGetConversation', () => () => mockGetLatestConversation);
@@ -170,6 +168,84 @@ const conversation = (conversationId: string) =>
     model: 'gpt-4o',
     agent_id: 'agent-1',
   }) as TConversation;
+
+const codeAgent: Agent = {
+  id: 'agent_primary',
+  name: null,
+  description: null,
+  created_at: 0,
+  avatar: null,
+  provider: EModelEndpoint.openAI,
+  model: null,
+  model_parameters: {
+    temperature: null,
+    maxContextTokens: null,
+    max_context_tokens: null,
+    max_output_tokens: null,
+    top_p: null,
+    frequency_penalty: null,
+    presence_penalty: null,
+  },
+  stateful_code_sessions: true,
+  tools: [Tools.execute_code],
+  code_environment_id: 'personal-vm',
+};
+
+const statefulCodeSessions: TConfig['statefulCodeSessions'] = {
+  allowedEnvironments: ['user'],
+  approvalsEnabled: true,
+  approvalModes: ['ask', 'acceptEdits'],
+  environments: [
+    {
+      id: 'personal-vm',
+      name: 'Personal VM',
+      type: 'attached',
+      configSchema: {
+        permissions: {
+          fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+          commandExecution: { allowed: ['ask'], default: 'ask' },
+        },
+      },
+    },
+  ],
+};
+
+/** The inputs of a chat that runs no code: the workspace resolves to an empty decision. */
+const workspaceInputs = (overrides: Partial<CodeWorkspaceInputs> = {}): CodeWorkspaceInputs => ({
+  conversation: conversation('new'),
+  primaryAgent: codeAgent,
+  agentsMap: {},
+  statefulCodeSessions,
+  startupConfig: { codeEnvironmentDecisionVersion: CODE_ENVIRONMENT_DECISION_VERSION },
+  canRunCode: false,
+  capabilities: ['execute_code', 'stateful_code_sessions'],
+  configurationLoaded: true,
+  recoveryPending: false,
+  replacingDecision: false,
+  statuses: {
+    'personal-vm': {
+      data: { environmentId: 'personal-vm', status: 'ready', workspaces: [{ id: 'project-a' }] },
+      isLoading: false,
+      isError: false,
+    },
+  },
+  getPreferredWorkspace: () => undefined,
+  ...overrides,
+});
+
+/** The inputs of a new agents chat whose one ready workspace is required. */
+const attachedInputs = (overrides: Partial<CodeWorkspaceInputs> = {}): CodeWorkspaceInputs =>
+  workspaceInputs({
+    conversation: conversation('new'),
+    canRunCode: true,
+    ...overrides,
+  });
+
+const approvalInputs = (): Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'> => ({
+  conversation: conversation('conversation-1'),
+  statefulCodeSessions,
+  reachable: { agents: [codeAgent], complete: true },
+});
 
 const settingsWrapper = ({ children }: { children: ReactNode }) => (
   <ChatSettingsContext.Provider
@@ -242,7 +318,8 @@ describe('useChatFunctions ask', () => {
     jest.clearAllMocks();
     mockAgentQueryData.current = undefined;
     mockGetLatestConversation.mockReturnValue(null);
-    mockResolveCodeWorkspaceSubmission.mockReturnValue({});
+    mockReadWorkspaceInputs.mockReturnValue(workspaceInputs());
+    mockReadApprovalInputs.mockReturnValue(approvalInputs());
   });
 
   it.each([EModelEndpoint.agents, EModelEndpoint.openAI])(
@@ -331,7 +408,14 @@ describe('useChatFunctions ask', () => {
   });
 
   it('sends the gated ask for a turn without a workspace while keeping the chat pick', () => {
-    mockResolveCodeWorkspaceSubmission.mockReturnValue({ codeEnvironmentMode: 'without_attached' });
+    mockReadWorkspaceInputs.mockReturnValue(
+      attachedInputs({
+        conversation: {
+          ...conversation('conversation-1'),
+          codeEnvironmentMode: 'without_attached',
+        },
+      }),
+    );
     mockGetLatestConversation.mockReturnValue({
       ...conversation('conversation-1'),
       codeApprovalMode: 'acceptEdits',
@@ -370,7 +454,7 @@ describe('useChatFunctions ask', () => {
 
   it('submits the latest validated workspace selection', () => {
     const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
-    mockResolveCodeWorkspaceSubmission.mockReturnValue({ codeWorkspaces: [selection] });
+    mockReadWorkspaceInputs.mockReturnValue(attachedInputs());
     mockGetLatestConversation.mockReturnValue({
       ...conversation('conversation-1'),
       codeEnvironmentMode: 'attached',
@@ -383,7 +467,7 @@ describe('useChatFunctions ask', () => {
     });
 
     const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
-    expect(mockResolveCodeWorkspaceSubmission).toHaveBeenCalledWith([selection], 'attached');
+    expect(submission.codeEnvironmentMode).toBe('attached');
     expect(submission.codeWorkspaces).toEqual([selection]);
   });
 
@@ -392,10 +476,7 @@ describe('useChatFunctions ask', () => {
    * workspace" with Send disabled until the page reloads. */
   it('records the decision the run establishes on the conversation it belongs to', () => {
     const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
-    mockResolveCodeWorkspaceSubmission.mockReturnValue({
-      codeEnvironmentMode: 'attached',
-      codeWorkspaces: [selection],
-    });
+    mockReadWorkspaceInputs.mockReturnValue(attachedInputs());
     const { result } = renderAsk([]);
 
     act(() => {
@@ -417,10 +498,7 @@ describe('useChatFunctions ask', () => {
 
   it('leaves a conversation that already holds the decision untouched', () => {
     const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
-    mockResolveCodeWorkspaceSubmission.mockReturnValue({
-      codeEnvironmentMode: 'attached',
-      codeWorkspaces: [selection],
-    });
+    mockReadWorkspaceInputs.mockReturnValue(attachedInputs());
     const sealed = {
       ...conversation('conversation-1'),
       codeEnvironmentMode: 'attached' as const,
@@ -452,7 +530,7 @@ describe('useChatFunctions ask', () => {
       expect(
         result.current.ask({ text: 'rerun', parentMessageId: 'earlier' }, { isRegenerate: true }),
       ).toBe(false);
-      expect(mockResolveCodeWorkspaceSubmission).not.toHaveBeenCalled();
+      expect(mockReadWorkspaceInputs).not.toHaveBeenCalled();
       expect(getMessages).not.toHaveBeenCalled();
       expect(setSubmission).not.toHaveBeenCalled();
       expect(mockSetFilesToDelete).not.toHaveBeenCalled();
@@ -462,7 +540,7 @@ describe('useChatFunctions ask', () => {
   });
 
   it('refuses to send when workspace submission resolution is not ready', () => {
-    mockResolveCodeWorkspaceSubmission.mockReturnValue(undefined);
+    mockReadWorkspaceInputs.mockReturnValue(attachedInputs({ recoveryPending: true }));
     const { result, setSubmission } = renderAsk([]);
 
     expect(result.current.ask({ text: 'Edit the file', conversationId: 'conversation-1' })).toBe(
@@ -1347,7 +1425,8 @@ describe('useChatFunctions ask compaction', () => {
     expect(submission.compact).toBe(true);
     expect(submission.isRegenerate).toBe(true);
     expect(submission.initialResponse?.parentMessageId).toBe('a1');
-    expect(submission.initialResponse?.messageId).toBe('a1_');
+    expect(submission.initialResponse?.messageId).toMatch(/_$/);
+    expect(submission.initialResponse?.messageId).not.toBe('a1_');
     /** The leaf stands in for the user message so an error lands under it. */
     expect(submission.userMessage.messageId).toBe('a1');
     expect(submission.userMessage.overrideParentMessageId).toBeNull();
@@ -1359,7 +1438,11 @@ describe('useChatFunctions ask compaction', () => {
     ]);
 
     const rendered = setMessages.mock.calls[0][0] as TMessage[];
-    expect(rendered.map((message) => message.messageId)).toEqual(['u1', 'a1', 'a1_']);
+    expect(rendered.map((message) => message.messageId)).toEqual([
+      'u1',
+      'a1',
+      submission.initialResponse?.messageId,
+    ]);
   });
 
   it('does not re-attach the leaf files a user-message leaf carries', () => {

@@ -1,18 +1,20 @@
 import { memo, useMemo, Fragment } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
-import type { TMessageContentParts, SearchResultData, TAttachment } from 'librechat-data-provider';
+import { Container } from '@librechat/chat/components';
 import {
+  MIN_PARALLEL_LANES,
+  UNATTRIBUTED_LANE,
+  isLaneMarkerPart,
   getActivityLabelPart,
   getActivityLabelText,
   lastCursorContentIdx,
-} from '~/utils/activityLabels';
-import { MIN_PARALLEL_LANES, UNATTRIBUTED_LANE, isLaneMarkerPart } from '~/utils/lanes';
+} from '@librechat/chat';
+import type { TMessageContentParts, SearchResultData, TAttachment } from 'librechat-data-provider';
 import MemoryArtifacts from './MemoryArtifacts';
 import { cn, getPartKeyIndex } from '~/utils';
 import { SearchContext } from '~/Providers';
 import SiblingHeader from './SiblingHeader';
 import { EmptyText } from './Parts';
-import Container from './Container';
 
 export type PartWithIndex = { part: TMessageContentParts; idx: number };
 

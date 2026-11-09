@@ -306,3 +306,29 @@ export const preserveStreamedContentIdentity = (
  * must keep using the live index. */
 export const getPartKeyIndex = (part: TMessageContentParts | undefined, idx: number): number =>
   part?.streamedIndex ?? idx;
+
+/** The plain text of a message: its `text`, else its text parts joined by line. */
+export const getAllContentText = (message?: TMessage | null): string => {
+  if (!message) {
+    return '';
+  }
+
+  if (message.text) {
+    return message.text;
+  }
+
+  if (message.content && message.content.length > 0) {
+    return message.content
+      .filter((part) => part != null && part.type === ContentTypes.TEXT)
+      .map((part) => {
+        if (!('text' in part)) return '';
+        const text = part.text;
+        if (typeof text === 'string') return text;
+        return text?.value || '';
+      })
+      .filter((text) => text.length > 0)
+      .join('\n');
+  }
+
+  return '';
+};

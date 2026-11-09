@@ -1,21 +1,25 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useContext } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { TooltipAnchor } from '@librechat/client';
+import { useRowHandoff } from '@librechat/chat/react';
+import { resolveToolCallPhase } from '@librechat/chat';
+import { useToolPreparation, useExpandCollapse } from '@librechat/chat/components';
 import { FileText, FileSpreadsheet, FileCode, FileImage, File } from 'lucide-react';
 import {
   toolPanelSpacingClassName,
+  useToolContentRequest,
+  GeneratedToolLabelContext,
   useToolExpansion,
   useToolCallIntent,
+  useProgress,
 } from '@librechat/chat/react';
 import type { TAttachment, TFile, PartMetadata } from 'librechat-data-provider';
-import { useLocalize, useProgress, useExpandCollapse } from '~/hooks';
 import { ToolIcon, OutputRenderer, isError } from './ToolOutput';
-import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import FilePreviewDialog from './FilePreviewDialog';
 import { sortPagesByRelevance, cn } from '~/utils';
-import { useToolPreparation } from './preparation';
 import { useGetFiles } from '~/data-provider';
 import ProgressText from './ProgressText';
+import { useLocalize } from '~/hooks';
 
 interface FileSource {
   fileId: string;
@@ -317,7 +321,7 @@ function FileHeader({
           className="flex cursor-help items-center"
         >
           <span
-            className="bg-surface-tertiary text-text-secondary text-2xs shrink-0 cursor-help rounded px-1.5 py-0.5 leading-none tabular-nums"
+            className="bg-surface-tertiary text-text-secondary text-2xs shrink-0 cursor-help rounded p-1 leading-none tabular-nums"
             aria-label={`${localize('com_ui_relevance')}: ${Math.round(relevance * 100)}%`}
           >
             {Math.round(relevance * 100)}%
@@ -405,7 +409,11 @@ export default function RetrievalCall({
   const hasResults = displayResults.length > 0;
   const hasExpandableContent = phase !== 'failed' && hasResults;
   const [expanded, setExpanded] = useToolExpansion(hasExpandableContent);
-  const showOutput = hasExpandableContent && expanded;
+  const generatedLabel = useContext(GeneratedToolLabelContext);
+  const bare = generatedLabel && phase === 'completed' && hasExpandableContent;
+  const rowRef = useRowHandoff(bare);
+  useToolContentRequest(bare);
+  const showOutput = hasExpandableContent && (bare || expanded);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showOutput);
 
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
@@ -467,26 +475,28 @@ export default function RetrievalCall({
           return intent ?? localize('com_ui_retrieved_files');
         })()}
       </span>
-      <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5">
-        <ProgressText
-          phase={phase}
-          onClick={hasExpandableContent ? handleToggleOutput : undefined}
-          inProgressText={intent ?? localize('com_ui_searching_files')}
-          /** A cancelled step must not read "Retrieved files" beside a
-           *  cancellation icon while the live region says "Cancelled". */
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (intent ?? localize('com_ui_retrieved_files'))
-          }
-          durationMs={runStepDurationMs}
-          icon={<ToolIcon type="file_search" isAnimating={phase === 'running'} />}
-          hasInput={hasExpandableContent}
-          isExpanded={showOutput}
-        />
-      </div>
+      {!bare && (
+        <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5" ref={rowRef}>
+          <ProgressText
+            phase={phase}
+            onClick={hasExpandableContent ? handleToggleOutput : undefined}
+            inProgressText={intent ?? localize('com_ui_searching_files')}
+            /** A cancelled step must not read "Retrieved files" beside a
+             *  cancellation icon while the live region says "Cancelled". */
+            finishedText={
+              phase === 'cancelled'
+                ? localize('com_ui_cancelled')
+                : (intent ?? localize('com_ui_retrieved_files'))
+            }
+            durationMs={runStepDurationMs}
+            icon={<ToolIcon type="file_search" isAnimating={phase === 'running'} />}
+            hasInput={hasExpandableContent}
+            isExpanded={showOutput}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasExpandableContent && (
             <div className={cn(toolPanelSpacingClassName, 'flex flex-col gap-2')}>
               {displayResults.map((item, i) => {

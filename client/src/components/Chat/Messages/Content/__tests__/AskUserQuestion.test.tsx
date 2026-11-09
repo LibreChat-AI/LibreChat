@@ -1,10 +1,10 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { ASK_USER_DECLINED_ANSWER } from '@librechat/chat';
+import { ChatSurfaceProvider } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ShortcutBinding } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
-import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
-import { ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
 import ApprovalProvider from '../ApprovalContext';
 import AskUserQuestion from '../AskUserQuestion';
 
@@ -74,6 +74,7 @@ const tree = (
   key: string,
   question: Agents.AskUserQuestionRequest = { question: 'Which environment?' },
   enterToSend = true,
+  actionId = 'ask-1',
 ) => (
   <RecoilRoot>
     <ChatSurfaceProvider
@@ -87,11 +88,19 @@ const tree = (
       }}
     >
       <ApprovalProvider>
-        <AskUserQuestion key={key} actionId="ask-1" question={question} />
+        <AskUserQuestion key={key} actionId={actionId} question={question} />
       </ApprovalProvider>
     </ChatSurfaceProvider>
   </RecoilRoot>
 );
+
+const withOptions: Agents.AskUserQuestionRequest = {
+  question: 'Which environment?',
+  options: [
+    { label: 'Staging', value: 'staging' },
+    { label: 'Production', value: 'production' },
+  ],
+};
 
 describe('AskUserQuestion', () => {
   beforeEach(() => {
@@ -233,6 +242,79 @@ describe('AskUserQuestion', () => {
       fireEvent.keyDown(answerBox(), { key: 'Escape', isComposing: true });
       fireEvent.keyDown(answerBox(), { key: 'Escape', shiftKey: true });
       expect(mockSubmitAnswer).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('arrival focus', () => {
+    /* jsdom has no layout, so without an observer `useArrivalFocus` arrives at once. The shared
+       inert observer never reports, so nothing would arrive and the negative cases would pass
+       without testing anything. */
+    const inertObserver = window.IntersectionObserver;
+
+    beforeEach(() => {
+      Reflect.deleteProperty(window, 'IntersectionObserver');
+    });
+
+    afterEach(() => {
+      window.IntersectionObserver = inertObserver;
+      document.getElementById('prompt-textarea')?.remove();
+    });
+
+    test('puts the user on the first option when a live question arrives', () => {
+      mockLiveActionId = 'arrive-option';
+      render(tree('arrive', withOptions, true, 'arrive-option'));
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+    });
+
+    test('puts the user in the answer field when the question has no options', () => {
+      mockLiveActionId = 'arrive-field';
+      render(tree('arrive', { question: 'Which environment?' }, true, 'arrive-field'));
+      expect(screen.getByRole('textbox', { name: 'Your answer' })).toHaveFocus();
+    });
+
+    test('takes focus from the empty composer that sent the turn', () => {
+      const composer = document.createElement('textarea');
+      composer.id = 'prompt-textarea';
+      document.body.appendChild(composer);
+      composer.focus();
+
+      mockLiveActionId = 'arrive-composer';
+      render(tree('arrive', withOptions, true, 'arrive-composer'));
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+    });
+
+    test('leaves focus alone while the user is drafting in the composer', () => {
+      const composer = document.createElement('textarea');
+      composer.id = 'prompt-textarea';
+      composer.value = 'half a thought';
+      document.body.appendChild(composer);
+      composer.focus();
+
+      mockLiveActionId = 'arrive-draft';
+      render(tree('arrive', withOptions, true, 'arrive-draft'));
+      expect(composer).toHaveFocus();
+    });
+
+    test('arrives once, not again when the card remounts', () => {
+      mockLiveActionId = 'arrive-once';
+      const view = render(tree('arrive', withOptions, true, 'arrive-once'));
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+      view.unmount();
+
+      render(tree('arrive', withOptions, true, 'arrive-once'));
+      expect(document.body).toHaveFocus();
+    });
+
+    test('does not take focus while the question is in the composer popover', () => {
+      mockLiveActionId = 'arrive-popover';
+      mockPopoverVisible = true;
+      render(tree('arrive', withOptions, true, 'arrive-popover'));
+      expect(document.body).toHaveFocus();
+    });
+
+    test('does not take focus for a question that is not the live pause', () => {
+      render(tree('arrive', withOptions, true, 'arrive-not-live'));
+      expect(document.body).toHaveFocus();
     });
   });
 });

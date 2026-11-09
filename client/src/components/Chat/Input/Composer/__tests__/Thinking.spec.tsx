@@ -127,7 +127,7 @@ describe('Thinking', () => {
     } as SettingDefinition;
     renderInComposer({ index: 1 });
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Thinking/ }));
     const slider = screen.getByRole('slider');
     slider.focus();
     fireEvent.keyDown(slider, { key: 'ArrowRight' });
@@ -175,9 +175,7 @@ describe('Thinking', () => {
     mockPendingOverride = { key: 'reasoning_effort', value: ReasoningEffort.high };
     renderInComposer();
 
-    expect(screen.getByTestId('composer-thinking-button')).toHaveAccessibleName(
-      'com_ui_composer_thinking_value:High',
-    );
+    expect(screen.getByTestId('composer-thinking-button')).toHaveAccessibleName('Thinking: High');
     fireEvent.click(screen.getByTestId('composer-thinking-button'));
     fireEvent.click(screen.getByRole('radio', { name: 'Low' }));
 
@@ -251,9 +249,7 @@ describe('Thinking', () => {
     } as unknown as TConversation;
     renderInComposer();
 
-    expect(screen.getByTestId('composer-thinking-button')).toHaveAccessibleName(
-      'com_ui_composer_thinking_value:Off',
-    );
+    expect(screen.getByTestId('composer-thinking-button')).toHaveAccessibleName('Thinking: Off');
 
     fireEvent.click(screen.getByTestId('composer-thinking-button'));
     const off = screen.getByRole('button', { name: 'Off' });
@@ -310,9 +306,7 @@ describe('Thinking', () => {
     ]);
     try {
       renderInComposer();
-      expect(screen.getByTestId('composer-thinking-button')).toHaveAccessibleName(
-        'com_ui_composer_thinking_value:High',
-      );
+      expect(screen.getByTestId('composer-thinking-button')).toHaveAccessibleName('Thinking: High');
     } finally {
       store.set(queuedMessagesByConvoId('convo-1'), []);
     }
@@ -330,9 +324,7 @@ describe('Thinking', () => {
     ]);
     try {
       renderInComposer();
-      expect(screen.getByTestId('composer-thinking-button')).toHaveAccessibleName(
-        'com_ui_composer_thinking_value:Low',
-      );
+      expect(screen.getByTestId('composer-thinking-button')).toHaveAccessibleName('Thinking: Low');
     } finally {
       store.set(queuedMessagesByConvoId('convo-1'), []);
     }

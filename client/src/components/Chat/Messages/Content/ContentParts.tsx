@@ -1,6 +1,15 @@
 import { memo, useRef, useMemo, useEffect, useCallback, useContext, Fragment } from 'react';
 import { useStore } from 'jotai';
 import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
+import { PendingSkillCall, Container } from '@librechat/chat/components';
+import {
+  hasParallelLanes,
+  parallelLaneGroups,
+  hasPendingApprovalInPart,
+  groupActivityPhases,
+  lastCursorContentIdx,
+  getActivityLabelText,
+} from '@librechat/chat';
 import {
   ReasoningDisclosureContext,
   reasoningDisclosure,
@@ -21,9 +30,9 @@ import type {
   Agents,
 } from 'librechat-data-provider';
 import type { ReasoningDisclosures, ToolDisclosures, NestedCall } from '@librechat/chat/react';
+import type { ActivityPhaseSegment } from '@librechat/chat';
 import type { ReactNode, ReactElement } from 'react';
 import type { ToolCallGroupExpansionState } from './ToolCallGroup';
-import type { ActivityPhaseSegment } from '~/utils/activityLabels';
 import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
 import {
   mapAttachments,
@@ -33,11 +42,6 @@ import {
   filterAttachmentsForPart,
   groupSequentialToolCalls,
 } from '~/utils';
-import {
-  groupActivityPhases,
-  lastCursorContentIdx,
-  getActivityLabelText,
-} from '~/utils/activityLabels';
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
 import { MCPAppSuppressionContext, MCPAppViews } from '~/components/MCPUIResource';
 import { useStoredSubagentHints } from '~/components/Chat/Subagents/attachments';
@@ -45,19 +49,15 @@ import { ParallelContentRenderer, type PartWithIndex } from './ParallelContent';
 import { isPreviewedToolCallPart, PreviewedToolCallPart } from './hydration';
 import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
-import { hasParallelLanes, parallelLaneGroups } from '~/utils/lanes';
 import { useMCPAppsPolicy } from '~/Providers/MCPAppsPolicyContext';
 import { selectToolCallUIResources } from '~/utils/mcpApps';
-import PendingSkillCall from './Parts/PendingSkillCall';
 import ActivityPhaseGroup from './ActivityPhaseGroup';
-import { hasPendingApprovalInPart } from '~/utils';
 import EditContentParts from './EditContentParts';
 import { EmptyText, AgentUpdate } from './Parts';
 import ApprovalProvider from './ApprovalContext';
 import Sources from '~/components/Web/Sources';
 import ToolCallGroup from './ToolCallGroup';
 import { blocksLiveFold } from './live';
-import Container from './Container';
 import Part from './Part';
 
 /** An empty TEXT part — the placeholder some endpoints seed in
@@ -955,8 +955,14 @@ const ContentPartsBody = memo(function ContentPartsBody({
   const relativeLastContentIdx = lastCursorContentIdx(safeContent);
   const lastContentIdx = relativeLastContentIdx < 0 ? -1 : absoluteIndexAt(relativeLastContentIdx);
 
-  const renderGroups = (groups: ReturnType<typeof groupParts>, lastContentIdx: number) =>
-    groups.flatMap((group) => {
+  const renderGroups = (groups: ReturnType<typeof groupParts>, lastContentIdx: number) => {
+    let lastProseIndex = -1;
+    for (const group of groups) {
+      if (group.type === 'single' && group.part.part.type === ContentTypes.TEXT) {
+        lastProseIndex = Math.max(lastProseIndex, group.part.idx);
+      }
+    }
+    return groups.flatMap((group) => {
       const first = group.type === 'single' ? group.part : group.parts[0];
       const firstIdx = first?.idx ?? -1;
       const nodes: ReactElement[] = [];
@@ -977,6 +983,9 @@ const ContentPartsBody = memo(function ContentPartsBody({
         <ToolCallGroup
           key={`tool-group-${groupId}`}
           parts={group.parts}
+          followedByAnswer={
+            lastProseIndex > (group.labelPart?.idx ?? group.parts[group.parts.length - 1].idx)
+          }
           isSubmitting={effectiveIsSubmitting}
           /** The label part is CONSUMED into the header, not listed in
            *  `parts` — a filled label at the content tail must still
@@ -1001,6 +1010,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
       );
       return nodes;
     });
+  };
 
   const hasParallelContent = hasParallelLanes(content, messageLaneGroups);
   let phaseContent: ReactElement[] | undefined;

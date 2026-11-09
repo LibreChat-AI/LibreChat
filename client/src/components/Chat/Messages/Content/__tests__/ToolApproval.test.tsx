@@ -5,11 +5,11 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import {
   approvalPanelOpenFamily,
   pendingApprovalActionFamily,
+  ChatSurfaceProvider,
   activeGenerationCreatedAtByConvoId,
 } from '@librechat/chat/react';
 import type { ShortcutBinding } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
-import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
 import ApprovalProvider, { useApprovalContext } from '../ApprovalContext';
 import { ChatContext } from '~/Providers/ChatContext';
 import ToolApproval from '../ToolApproval';

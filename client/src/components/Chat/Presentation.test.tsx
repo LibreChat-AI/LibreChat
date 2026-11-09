@@ -9,6 +9,7 @@ import type { JotaiStore } from 'test/harness';
 import type { Artifact } from '~/common';
 import { prepareUndockedDocument } from '~/components/Artifacts/undockedWindow';
 import { undockedArtifacts } from '~/components/Artifacts/state';
+import { SubagentIndexHostProvider } from 'test/streamHost';
 import { ChatSurfaceHarness } from 'test/harness';
 import Presentation from './Presentation';
 import store from '~/store';
@@ -17,7 +18,9 @@ const renderPresentation = (element: React.ReactElement) => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(element, {
     wrapper: ({ children }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      <QueryClientProvider client={client}>
+        <SubagentIndexHostProvider>{children}</SubagentIndexHostProvider>
+      </QueryClientProvider>
     ),
   });
 };
@@ -48,22 +51,26 @@ jest.mock('~/components/Artifacts/Artifacts', () => {
   };
 });
 
-jest.mock('~/components/Chat/Subagents/SubagentThreadPanel', () => {
-  const { useParentSubagents } = jest.requireActual<
-    typeof import('~/components/Chat/Subagents/ParentSubagentsProvider')
-  >('~/components/Chat/Subagents/ParentSubagentsProvider');
+jest.mock('@librechat/chat/components', () => {
+  const { useParentSubagents } =
+    jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
   return {
-    __esModule: true,
-    default: function MockSubagentThreadPanel() {
-      const parent = useParentSubagents();
-      return (
-        <aside>
-          {mockChildPanelLabel}
-          <span data-testid="panel-parent">{parent.conversationId}</span>
-          <input aria-label="Panel draft" />
-        </aside>
-      );
-    },
+    ...jest.requireActual<typeof import('@librechat/chat/components')>(
+      '@librechat/chat/components',
+    ),
+    loadSubagentThreadPanel: () =>
+      Promise.resolve({
+        default: function MockSubagentThreadPanel() {
+          const parent = useParentSubagents();
+          return (
+            <aside>
+              {mockChildPanelLabel}
+              <span data-testid="panel-parent">{parent.conversationId}</span>
+              <input aria-label="Panel draft" />
+            </aside>
+          );
+        },
+      }),
   };
 });
 

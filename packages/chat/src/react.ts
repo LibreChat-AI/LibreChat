@@ -4,6 +4,7 @@ export * from './react/stream';
 export * from './react/subagents';
 export * from './react/usage';
 export * from './react/thread';
+export * from './react/latest';
 export * from './react/approval';
 export { MessageContext, MessagePartIndex, useMessageContext } from './react/message';
 export {
@@ -15,8 +16,12 @@ export type {
   MessagePartsHost,
   MessagePartsUser,
   MessagePartsToast,
+  MessagePartsShare,
+  ContentPartsSlotProps,
   MessagePartMessage,
   MessagePartsMarkdownProps,
+  MessagePartsImageProps,
+  MessagePartsFilePreviewProps,
   MessagePartsUserTextPreferences,
 } from './react/host';
 export {
@@ -71,6 +76,7 @@ export {
   submissionStartFamily,
   showStopButtonByIndex,
   abortScrollFamily,
+  launchedConversationFamily,
 } from './react/generation';
 export { SteerHostProvider, useSteerHost } from './react/steer/host';
 export type {
@@ -123,20 +129,90 @@ export { composerLiftFamily } from './react/lift';
 export { showSkillsPopoverFamily } from './react/skills';
 export { useComposerOverlay, composerOverlayCountFamily } from './react/overlay';
 export { default as useTimeTick } from './react/tick';
+export { default as useGenerationsByLatest } from './react/messages/generations';
+export type { Generations, TUseGenerations } from './react/messages/generations';
+export { default as useConversationSeen } from './react/messages/useConversationSeen';
+export {
+  reconcileMessageContentLayout,
+  getRenderedContentMaxScrollTop,
+  scheduleMessageContentLayoutReconcile,
+} from './react/messages/messageLayout';
 export {
   useMessagesHost,
   MessagesHostProvider,
   setDefaultMessagesHost,
+  MessageIconSlot,
 } from './react/messages/host';
 export type {
   ForkEvents,
+  MessageCopy,
   MessagesHost,
+  MarkdownVariant,
+  MessageCopyInput,
+  MessageFeedbackWrite,
+  MessageFeedbackEvents,
   ForkPreferences,
   ForkConversation,
-  MessagesScrolling,
+  ActivitySlotProps,
   ReportNearBottom,
+  SeenReply,
+  ReplyProofSource,
+  ConversationSeenSource,
+  MessageIconData,
+  MessageIconProps,
+  MessageAudioProps,
+  MessageAudioButtonProps,
+  MessageSlotProps,
+  WakeupSlotProps,
+  MessageBodySlotProps,
 } from './react/messages/host';
+export { default as useStreamedAttachments } from './react/messages/useStreamedAttachments';
+export { default as useMessageProcess } from './react/messages/useMessageProcess';
+export type { MessageProcess } from './react/messages/useMessageProcess';
+export { default as useContentMetadata } from './react/messages/useContentMetadata';
+export type { ContentMetadataResult } from './react/messages/useContentMetadata';
+export { default as useMemoizedChatContext } from './react/messages/useMemoizedChatContext';
+export type { MemoizedChatContext } from './react/messages/useMemoizedChatContext';
+export type {
+  TMessageChatContext,
+  TMessageProps,
+  ThreadMessageProps,
+} from './react/messages/types';
 export {
+  areMessageFilesEqual,
+  areMessageFieldsEqual,
+  isSameTailRelation,
+  areMessageRowPropsEqual,
+} from './react/messages/equal';
+export { AuthorContext, useAuthorContext } from './react/messages/author';
+export type { TMessageAuthor } from './react/messages/author';
+export { ErrorSourceProvider, useErrorSource } from './react/messages/error';
+export type { ErrorSource } from './react/messages/error';
+export { MessageSurfaceContext } from './react/messages/surface';
+export {
+  MessagesViewContext,
+  MessagesViewProvider,
+  useMessagesSubmission,
+  useMessagesOperations,
+  useMessagesViewContext,
+  useMessagesIsSubmitting,
+  useMessagesConversation,
+  MessagesOperationsContext,
+  MessagesSubmittingContext,
+  useIsMessagesViewReadOnly,
+  useOptionalMessagesOperations,
+  useOptionalMessagesConversation,
+} from './react/messages/view';
+export type {
+  MessagesEditing,
+  MessagesOperations,
+  MessagesSubmission,
+  MessagesConversation,
+  MessagesViewContextValue,
+} from './react/messages/view';
+export type { MessageSurface } from './react/messages/surface';
+export {
+  GeneratedToolLabelContext,
   SoleToolContext,
   LoneGroupContext,
   useToolExpansion,
@@ -169,12 +245,14 @@ export {
   askAnswerCheckedAtom,
   AskAnswerHostProvider,
   askAnswerSelectionAtom,
-  collapsedAskActionsAtom,
+  expandedAskActionsAtom,
   releasedComposerTextAtom,
 } from './react/parts/ask';
 export type { AskAnswerStatus, ReleasedComposerStash } from './react/parts/ask';
+export { default as useComposerItems } from './react/items';
+export type { ComposerItem, ComposerItemKind } from './react/items';
 export { useFilesHost, FilesHostProvider } from './react/files';
-export type { FilesHost } from './react/files';
+export type { FilesHost, FileDeleteScope, FileMapSetter } from './react/files';
 export { default as useReducedMotion } from './react/motion';
 export { default as useElementSize } from './react/size';
 export { default as useAudioLevels, frameLevel } from './react/levels';
@@ -198,3 +276,8 @@ export {
   useScrollbarGutterSeed,
   SCROLLBAR_GUTTER_PROPERTY,
 } from './react/messages/useScrollbarGutter';
+
+/** Part disclosure and layout helpers moved from the app. */
+export { default as useProgress } from './react/parts/useProgress';
+export { default as useThrottledValue } from './react/parts/useThrottledValue';
+export { default as useLazyCollapseBody } from './react/parts/useLazyCollapseBody';

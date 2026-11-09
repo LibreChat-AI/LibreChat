@@ -1,10 +1,13 @@
 import { useContext } from 'react';
 import { MessageCircleQuestion } from 'lucide-react';
-import { parseJsonField, parseJsonFieldOccurrences } from '@librechat/chat';
-import { collectLiveAskToolCallIds } from '~/utils/approval';
+import { useToolPreparation } from '@librechat/chat/components';
+import {
+  parseJsonField,
+  parseJsonFieldOccurrences,
+  collectLiveAskToolCallIds,
+} from '@librechat/chat';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { ChatContext } from '~/Providers/ChatContext';
-import { useToolPreparation } from './preparation';
 import { useLocalize } from '~/hooks';
 
 /**

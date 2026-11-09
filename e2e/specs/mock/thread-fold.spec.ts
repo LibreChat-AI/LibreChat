@@ -10,6 +10,7 @@ import {
   sendMessage,
 } from './helpers';
 import { sendCompactionHistory } from './compaction.helpers';
+import { withMongo } from './db';
 
 /**
  * Regression suite for the "folded thread" incident (PR: order-robust message
@@ -53,6 +54,22 @@ async function sendAndExpectReply(page: Page, prompt: string, reply: string) {
   const response = await sendMessage(page, prompt);
   expect(response.ok()).toBeTruthy();
   await expect(messagesView(page).getByText(reply)).toBeVisible({ timeout: 30000 });
+}
+
+/** Restored and continued replies may retain their streaming underscore suffix. */
+async function restoreUnderscoredLeaf(page: Page) {
+  const conversationId = new URL(page.url()).pathname.split('/').pop();
+  await withMongo(async (db) => {
+    const leaf = await db
+      .collection('messages')
+      .findOne({ conversationId, isCreatedByUser: false }, { sort: { createdAt: -1 } });
+    expect(leaf).not.toBeNull();
+    await db
+      .collection('messages')
+      .updateOne({ _id: leaf!._id }, { $set: { messageId: `${leaf!.messageId}_` } });
+  });
+  await page.reload({ timeout: 15000 });
+  await expect(page.getByTestId('token-usage')).toBeVisible({ timeout: 30000 });
 }
 
 async function clickSibling(page: Page, messageTextValue: string, direction: 'Previous' | 'Next') {
@@ -211,6 +228,8 @@ test.describe('thread fold regressions', () => {
     await sendAndExpectReply(page, latestPrompt, latestReply);
     await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15000 });
 
+    await restoreUnderscoredLeaf(page);
+
     const behavior = await request.post(`${LABEL_SERVER}/__e2e/behavior`, {
       data: { delayMs: 10000 },
     });
@@ -275,6 +294,8 @@ test.describe('thread fold regressions', () => {
     await sendAndExpectReply(page, setupPrompt, setupReply);
     await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15000 });
 
+    await restoreUnderscoredLeaf(page);
+
     /** Hold the summarizer so the compaction is still running when the page
      *  comes back and the pane resumes it. */
     const behavior = await request.post(`${LABEL_SERVER}/__e2e/behavior`, {
@@ -303,6 +324,8 @@ test.describe('thread fold regressions', () => {
     await expect(page.getByRole('navigation', { name: 'Sibling message navigation' })).toHaveCount(
       0,
     );
+
+    await expect(messagesView(page).getByText('Summarizing...')).toBeVisible();
 
     /** The summary then settles under that answer, thread intact. */
     await expect(messagesView(page).getByText('You compacted the context')).toBeVisible({

@@ -12,8 +12,6 @@ import Wakeup from '../Wakeup';
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, vars?: Record<string, string>) =>
     vars == null ? key : `${key}:${Object.values(vars).join(',')}`,
-  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
 }));
 
 jest.mock('~/hooks/MCP', () => ({
@@ -69,7 +67,8 @@ const child: ParentSubagentSummary = {
   title: 'Subagent: self',
 } as ParentSubagentSummary;
 
-jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useParentSubagents: () => ({
     byThreadId: new Map([['thread-1', child]]),
     byMessageId: new Map(),

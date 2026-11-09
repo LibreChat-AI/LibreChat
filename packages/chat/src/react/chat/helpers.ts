@@ -5,8 +5,11 @@ import type { MouseEvent } from 'react';
 import type { ChatContract } from './contract';
 import { isSubmittingFamily, submissionByIndex, useIsSubmitting } from '../submission';
 import { presetFamily, filesFamily, optionSettingsFamily } from '../pane';
+import { useBranchTail, useBranchTailId } from '../latest';
+import { siblingIdxFamily, siblingKey } from '../thread';
 import { useLiveAttachments } from '../stream/atoms';
 import { abortScrollFamily } from '../generation';
+import { getMappingOptions } from '../../core';
 import { getMessageCacheIds } from './cache';
 import { useStopGenerating } from './stop';
 import { useChatHost } from './host';
@@ -33,14 +36,16 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
 
   const isSubmitting = useIsSubmitting(index);
   const setIsSubmitting = useSetAtom(isSubmittingFamily(index));
-  const latestMessage = host.useLatestMessage(index, queryParam);
+  const tailRootKey = conversationId ?? null;
+  const tailQueryId = conversationId ? queryParam : null;
+  const latestMessage = useBranchTail(tailRootKey, tailQueryId);
 
-  const latestMessageId = host.useLatestMessageId(index, queryParam) ?? undefined;
+  const latestMessageId = useBranchTailId(tailRootKey, tailQueryId) ?? undefined;
   const latestMessageDepth = latestMessage?.depth;
   const latestMessageRef = useRef(latestMessage);
   latestMessageRef.current = latestMessage;
 
-  const setSiblingIdx = host.useSetSiblingIdx(latestMessage?.parentMessageId ?? null);
+  const setSiblingIdx = useSetAtom(siblingIdxFamily(siblingKey(latestMessage?.parentMessageId)));
   /** The setter is rebound whenever the tail's parent changes (every turn); the
    *  ref keeps `handleContinue` referentially stable so rows do not re-render. */
   const setSiblingIdxRef = useRef(setSiblingIdx);
@@ -168,7 +173,6 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   /** Read once per chat rather than per message row: message rows never unmount, so a
    *  per-row settings read would accumulate for the length of the conversation. */
   const feedbackEnabled = host.useFeedbackEnabled();
-  const { getMappingOptions } = host;
 
   return useMemo(
     (): ChatContract => ({
@@ -238,7 +242,6 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       filesLoading,
       setFilesLoading,
       feedbackEnabled,
-      getMappingOptions,
     ],
   );
 }

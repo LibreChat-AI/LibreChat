@@ -649,6 +649,72 @@ describe('applyRequestReasoningOverride', () => {
   });
 });
 
+describe('resolveReasoningOverride: declared Azure deployment efforts', () => {
+  const endpointsConfig = {
+    [EModelEndpoint.azureOpenAI]: {
+      userProvide: false,
+      order: 0,
+      modelReasoningEfforts: { 'production-west': ['low', 'high'] },
+    },
+  };
+  const direct = (model: string, overrides: Partial<ReasoningOverrideInput> = {}) =>
+    resolve({
+      endpoint: EModelEndpoint.azureOpenAI,
+      isAgent: false,
+      endpointsConfig,
+      endpointOption: { agent: undefined, model_parameters: { model } },
+      ...overrides,
+    });
+
+  it('applies a declared effort to the request for a named deployment', async () => {
+    const result = await direct('production-west');
+    expect(result).toMatchObject({
+      ok: true,
+      modelParameters: { model: 'production-west', reasoning_effort: ReasoningEffort.high },
+    });
+  });
+
+  it('applies a declared effort for an agent on the deployment', async () => {
+    const result = await direct('production-west', {
+      isAgent: true,
+      endpoint: EModelEndpoint.agents,
+      endpointOption: {
+        model_parameters: {},
+        agent: Promise.resolve({
+          provider: EModelEndpoint.azureOpenAI,
+          model: 'production-west',
+        }),
+      },
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      modelParameters: { reasoning_effort: ReasoningEffort.high },
+    });
+  });
+
+  it('refuses an effort the deployment does not declare', async () => {
+    const result = await direct('production-west', {
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.medium },
+    });
+    expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
+  });
+
+  it.each(['production-chat', 'constructor'])(
+    'refuses an override for the undeclared model %s',
+    async (model) => {
+      const result = await direct(model);
+      expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
+    },
+  );
+
+  it('refuses an override on a deployment whose effort a model spec locks', async () => {
+    const result = await direct('production-west', {
+      enforcedModelSpecFields: new Set(['reasoning_effort']),
+    });
+    expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
+  });
+});
+
 describe('resolveReasoningOverride: OpenRouter per-model efforts', () => {
   const model = 'openai/gpt-6.1-sol';
   const openRouterInput = (

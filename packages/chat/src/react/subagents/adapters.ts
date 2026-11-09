@@ -13,7 +13,7 @@ import type {
   FullToolCall,
 } from 'librechat-data-provider';
 import type { SubagentProgress } from './state';
-import { REDACTED_REASONING_MARKER } from './state';
+import { REDACTED_REASONING_MARKER } from './redaction';
 
 export type ChildActivityItem =
   | Extract<SubagentActivityItem, { type: 'steer' }>

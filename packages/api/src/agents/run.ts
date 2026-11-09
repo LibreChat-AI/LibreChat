@@ -129,6 +129,7 @@ import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
+import { shareDeferredDefinitions } from '~/agents/deferral';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
 import { getAgentCheckpointer } from '~/agents/checkpointer';
 import { getPluginHookSource } from '~/agents/hooks/source';
@@ -339,6 +340,28 @@ export function overrideDeferLoadingForDiscoveredTools(
     }
   }
   return overrideCount;
+}
+
+/**
+ * Clones an agent's registry and definitions for a subagent child so later
+ * parent-graph builds cannot mutate what the child holds. A definition that is
+ * the same object as its parent registry entry (every deferred tool) becomes the
+ * same cloned object on the child, so the child keeps the parent's guarantee
+ * that restoring a discovered tool in the registry rebinds its definition.
+ */
+export function cloneSubagentToolSurface(
+  parentRegistry: LCToolRegistry,
+  parentDefinitions: LCTool[],
+): { toolRegistry: LCToolRegistry; toolDefinitions: LCTool[] } {
+  const toolRegistry: LCToolRegistry = new Map();
+  for (const [name, tool] of parentRegistry) {
+    toolRegistry.set(name, { ...tool });
+  }
+  const toolDefinitions = parentDefinitions.map((def) => {
+    const cloned = parentRegistry.get(def.name) === def ? toolRegistry.get(def.name) : undefined;
+    return cloned ?? { ...def };
+  });
+  return { toolRegistry, toolDefinitions };
 }
 
 const customProviders = new Set([
@@ -1897,6 +1920,10 @@ function buildIsolatedAgentInputs(
       child.intentToolNames,
     );
   }
+  childInputs.toolDefinitions = shareDeferredDefinitions(
+    childInputs.toolDefinitions,
+    childInputs.toolRegistry,
+  );
   return childInputs;
 }
 
@@ -1948,12 +1975,15 @@ function buildSubagentConfigs(
         ? {
             agentInputs: {
               ...agentInput,
-              toolDefinitions: stripIntentFromToolDefinitions(
-                stripBackgroundFromToolDefinitions(
-                  agentInput.toolDefinitions,
-                  agent.backgroundToolNames,
+              toolDefinitions: shareDeferredDefinitions(
+                stripIntentFromToolDefinitions(
+                  stripBackgroundFromToolDefinitions(
+                    agentInput.toolDefinitions,
+                    agent.backgroundToolNames,
+                  ),
+                  agent.intentToolNames,
                 ),
-                agent.intentToolNames,
+                sanitizedToolRegistry,
               ),
               /** `registerBackgroundTaskTool` mutates the parent registry after
                * configs are built. Detach its self-child snapshot so the host
@@ -2554,14 +2584,9 @@ export async function createRun({
        * through to the tool object itself, so a shallow Map copy
        * alone wouldn't isolate the flag.
        */
-      toolRegistry = new Map();
-      for (const [name, tool] of agent.toolRegistry.entries()) {
-        toolRegistry.set(name, { ...tool });
-      }
-      /** Child's own `toolDefinitions` list gets the same shallow-
-       *  copied view so any later parent mutation of shared definitions
-       *  is contained to the parent-graph path. */
-      toolDefinitions = toolDefinitions.map((def) => ({ ...def }));
+      const childSurface = cloneSubagentToolSurface(agent.toolRegistry, toolDefinitions);
+      toolRegistry = childSurface.toolRegistry;
+      toolDefinitions = childSurface.toolDefinitions;
     }
 
     /**

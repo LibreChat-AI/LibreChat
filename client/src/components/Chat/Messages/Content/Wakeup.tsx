@@ -1,21 +1,27 @@
 import { memo, useCallback, useMemo, useState } from 'react';
 import { Button } from '@librechat/client';
-import { subagentStatusIcon, subagentStatusLabelKey } from '@librechat/chat/react';
+import { getToolDisplayLabel } from '@librechat/chat';
 import {
   SystemEventHeader,
   SystemEventIcon,
   systemEventHeaderClasses,
+  useExpandCollapse,
 } from '@librechat/chat/components';
+import {
+  useSubagentTaskPanel,
+  subagentStatusIcon,
+  subagentStatusLabelKey,
+  useLazyCollapseBody,
+} from '@librechat/chat/react';
 import type { WakeupDisplay, WakeupTask } from '@librechat/chat';
 import type { TranslationKeys } from '~/hooks';
-import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { useSubagentTaskPanel } from '~/components/Chat/Subagents/task';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import BackgroundTaskCard from './BackgroundTaskCard';
-import { cn, getToolDisplayLabel } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
 import MarkdownLite from './MarkdownLite';
+import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 const SUBAGENT_HEADER_KEYS = {
   completed: 'com_ui_wakeup_subagent_completed',

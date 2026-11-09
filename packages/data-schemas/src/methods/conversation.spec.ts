@@ -2604,6 +2604,127 @@ describe('Conversation Operations', () => {
       expect(result?.expiredAt).not.toBeNull();
     });
 
+    /** Archive and unarchive are retention-aware saves: the route passes the stored chat type
+     * and deadline through, so a chat that predates the mode is brought under it like any other. */
+    describe('archiving a conversation that predates the retention mode', () => {
+      const anchor = new Date('2026-03-05T22:17:14.997Z');
+      const HOUR = 3600000;
+
+      const seedLegacyConvo = async (isArchived: boolean) => {
+        const conversationId = uuidv4();
+        await Conversation.collection.insertOne({
+          conversationId,
+          user: 'user123',
+          title: 'chat saved before the retention mode',
+          endpoint: EModelEndpoint.openAI,
+          expiredAt: null,
+          isArchived,
+          createdAt: anchor,
+          updatedAt: anchor,
+        });
+        return conversationId;
+      };
+
+      const setArchived = (
+        conversationId: string,
+        isArchived: boolean,
+        interfaceConfig: AppConfig['interfaceConfig'],
+      ) =>
+        saveConvo(
+          { userId: 'user123', interfaceConfig },
+          { conversationId, isArchived },
+          { preserveUpdatedAt: true, noUpsert: true, appendMessageIds: [] },
+        );
+
+      it.each([true, false])(
+        'gives it the general-chat deadline when isArchived is %s under RetentionMode.ALL',
+        async (isArchived) => {
+          const conversationId = await seedLegacyConvo(!isArchived);
+          const before = Date.now();
+
+          await setArchived(conversationId, isArchived, {
+            retentionMode: RetentionMode.ALL,
+            temporaryChatRetention: 1,
+            generalChatRetention: 2160,
+          });
+
+          const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
+          expect(stored?.isArchived).toBe(isArchived);
+          expect(stored?.isTemporary).toBe(false);
+          expect(stored?.expiredAt?.getTime()).toBeGreaterThanOrEqual(before + 2160 * HOUR);
+          expect(stored?.expiredAt?.getTime()).toBeLessThan(Date.now() + 2160 * HOUR + 5000);
+          expect(stored?.updatedAt?.toISOString()).toBe(anchor.toISOString());
+        },
+      );
+
+      it.each([true, false])(
+        'converts it to a temporary chat when isArchived is %s under RetentionMode.EPHEMERAL',
+        async (isArchived) => {
+          const conversationId = await seedLegacyConvo(!isArchived);
+          const before = Date.now();
+
+          await setArchived(conversationId, isArchived, {
+            retentionMode: RetentionMode.EPHEMERAL,
+            temporaryChatRetention: 24,
+          });
+
+          const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
+          expect(stored?.isArchived).toBe(isArchived);
+          expect(stored?.isTemporary).toBe(true);
+          expect(stored?.expiredAt?.getTime()).toBeGreaterThanOrEqual(before + 24 * HOUR);
+          expect(stored?.expiredAt?.getTime()).toBeLessThan(Date.now() + 24 * HOUR + 5000);
+          expect(stored?.updatedAt?.toISOString()).toBe(anchor.toISOString());
+        },
+      );
+
+      it.each([
+        [
+          'RetentionMode.EPHEMERAL',
+          { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 24 },
+        ],
+        [
+          'RetentionMode.ALL',
+          {
+            retentionMode: RetentionMode.ALL,
+            temporaryChatRetention: 1,
+            generalChatRetention: 2160,
+          },
+        ],
+      ] as Array<[string, AppConfig['interfaceConfig']]>)(
+        'keeps the deadline it already holds under %s',
+        async (_name, interfaceConfig) => {
+          const conversationId = uuidv4();
+          const held = new Date(Date.now() + 2 * HOUR);
+          await Conversation.collection.insertOne({
+            conversationId,
+            user: 'user123',
+            title: 'chat that already holds a deadline',
+            endpoint: EModelEndpoint.openAI,
+            isArchived: false,
+            isTemporary: interfaceConfig?.retentionMode === RetentionMode.EPHEMERAL,
+            expiredAt: held,
+            createdAt: anchor,
+            updatedAt: anchor,
+          });
+
+          await saveConvo(
+            {
+              userId: 'user123',
+              isTemporary: interfaceConfig?.retentionMode === RetentionMode.EPHEMERAL,
+              expiredAt: held,
+              interfaceConfig,
+            },
+            { conversationId, isArchived: true },
+            { preserveUpdatedAt: true, noUpsert: true, appendMessageIds: [] },
+          );
+
+          const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
+          expect(stored?.isArchived).toBe(true);
+          expect(stored?.expiredAt).toEqual(held);
+        },
+      );
+    });
+
     it('should filter out temporary conversations in getConvosByCursor', async () => {
       // Create some test conversations
       const newNonTemporaryConvo = await Conversation.create({

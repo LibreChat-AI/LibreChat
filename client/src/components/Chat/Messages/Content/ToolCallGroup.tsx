@@ -1,43 +1,50 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
-import { LoneGroupContext, SoleToolContext } from '@librechat/chat/react';
-import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { Tools, Constants, ContentTypes, isOpaqueReasoning } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
-import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import type { PartWithIndex } from './ParallelContent';
-import type { ToolMeta } from './outcome';
 import {
-  cn,
-  getToolDisplayLabel,
-  getPartKeyIndex,
-  hasPendingAuthInPart,
+  LoneGroupContext,
+  SoleToolContext,
+  GeneratedToolLabelContext,
+} from '@librechat/chat/react';
+import {
   hasPendingApprovalInPart,
+  ASK_USER_QUESTION,
+  getSubmittedAskAnswer,
+  getToolDisplayLabel,
+  parseToolName,
+  getOutcomeStatus,
+  summarizeSpan,
   getBatchActivityLabelPart,
   getActivityLabelText,
-} from '~/utils';
+} from '@librechat/chat';
 import {
+  FOLD_RAIL_CLASSES,
+  ROW_GLYPH_SLOT,
   FoldRail,
   RailGlyph,
   useFoldPath,
   useRailHover,
   revealFoldHeader,
   FoldHeaderContext,
-} from './rail';
-import {
   FailedRevealContext,
   FailedRevealPill,
   useFailedReveal,
   useFailedRevealTrigger,
-} from './reveal';
-import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
-import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
+  ToolAuthWarning,
+  ToolAuthWarningContext,
+  useExpandCollapse,
+} from '@librechat/chat/components';
+import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { ToolMeta } from '@librechat/chat';
+import type { PartWithIndex } from './ParallelContent';
+import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
+import { cn, getPartKeyIndex, hasPendingAuthInPart } from '~/utils';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
-import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { parseToolName } from '~/utils/toolLabels';
+import { PhaseLabel } from './ActivityPhaseGroup';
+import { HeaderActionSlotContext } from './slot';
 import { StackedToolIcons } from './ToolOutput';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
@@ -48,6 +55,8 @@ interface ToolCallGroupProps {
   isSubmitting: boolean;
   isLast: boolean;
   showThinking: boolean;
+  /** Prose after this batch ends its streaming expansion window. */
+  followedByAnswer?: boolean;
   renderPart: (
     part: TMessageContentParts,
     idx: number,
@@ -86,6 +95,7 @@ export default function ToolCallGroup({
   isSubmitting,
   isLast,
   showThinking,
+  followedByAnswer = false,
   renderPart,
   lastContentIdx,
   groupAttachments,
@@ -97,6 +107,8 @@ export default function ToolCallGroup({
   parentPhaseOwnsFailurePill = false,
 }: ToolCallGroupProps) {
   const localize = useLocalize();
+  /** The host's preference, so an embedding host that turns smoothing off is honored. */
+  const smoothStreaming = useMessagePartsHost().useSmoothStreaming();
   const mcpIconMap = useMCPIconMap();
   const mcpServerNames = useMCPServerNames();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -123,7 +135,11 @@ export default function ToolCallGroup({
     return parts.map(({ part }) => summary.metaOf(part)).filter((m): m is ToolMeta => m != null);
   }, [parts, attachmentsByToolCallId]);
   const count = toolMetadata.length;
+  const generatedPhaseLabel = useContext(GeneratedToolLabelContext);
   const phaseSole = useContext(SoleToolContext);
+  const parentActionSlot = useContext(HeaderActionSlotContext);
+  const [actionSlot, setActionSlot] = useState<HTMLSpanElement | null>(null);
+  const flattenGroup = generatedPhaseLabel && count === 1;
   /** Approval state is read from the RAW parts, not `toolMetadata`: a pending
    *  call can be nested inside a subagent's content, which never surfaces as
    *  a tool entry here. */
@@ -169,11 +185,9 @@ export default function ToolCallGroup({
   );
   const iconToolNames = useMemo(() => toolMetadata.map((m) => m.iconName), [toolMetadata]);
 
-  /** Turn raw tool ids into an activity summary. Repeated calls retain their
-   *  count (`Web Search ×3`) instead of disappearing behind de-duplication,
-   *  while the primary label can use an outcome verb such as "Searched". */
+  /** Summarize tool families and outcomes without repeating call counts. */
   const activitySummary = useMemo(() => {
-    const labelCounts = new Map<string, number>();
+    const toolLabels = new Set<string>();
     let webSearchCount = 0;
     let fileSearchCount = 0;
     let subagentCount = 0;
@@ -213,12 +227,10 @@ export default function ToolCallGroup({
         continue;
       }
       const label = getToolDisplayLabel(tool.name, localize, mcpServerNames);
-      labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+      toolLabels.add(label);
     }
 
-    const labels = Array.from(labelCounts, ([label, labelCount]) =>
-      labelCount > 1 ? `${label} ×${labelCount}` : label,
-    );
+    const labels = Array.from(toolLabels);
     const toolNameSummary =
       labels.length <= 3
         ? labels.join(', ')
@@ -245,6 +257,10 @@ export default function ToolCallGroup({
     () => parts.some((p) => p.part.type === ContentTypes.THINK),
     [parts],
   );
+  /** A lone call and nothing else has no tree to draw, so it lays out like the
+   *  same call without a title: no rail, no indent. Inside a phase the group is
+   *  one branch of the phase's tree and keeps its own. */
+  const soleCall = count === 1 && !hasReasoning && !withinActivityPhase;
 
   /** Subagent tool calls get their own label verb ("Running/Ran N agents")
    *  since "Used N tools" reads oddly when the "tools" are actually child
@@ -334,6 +350,7 @@ export default function ToolCallGroup({
     !autoExpand &&
     !(showThinking && hasReasoning) &&
     allCompleted &&
+    (!isSubmitting || labelSettled || followedByAnswer) &&
     (count >= 1 || activityLabelText.length > 0);
   const suppressAutoExpand = withinActivityPhase && !hasPendingApproval;
   const initialState = initialExpansionState?.userOverride === true ? initialExpansionState : null;
@@ -344,7 +361,7 @@ export default function ToolCallGroup({
   const [shouldRenderBody, setShouldRenderBody] = useState(isExpanded);
   useFoldPath(rootRef, shouldRenderBody);
   const previousIsExpandedRef = useRef(isExpanded);
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
+  const { style: expandStyle, ref: expandRef } = useExpandCollapse(flattenGroup || isExpanded);
   const notifyLayoutChange = useCallback(() => {
     cancelLayoutReconcileRef.current?.();
     cancelLayoutReconcileRef.current = scheduleMessageContentLayoutReconcile(rootRef.current);
@@ -591,15 +608,9 @@ export default function ToolCallGroup({
   const groupAriaLabel = [groupLabel, groupDetail, hasReasoning ? localize('com_ui_thoughts') : '']
     .filter(Boolean)
     .join(', ');
-  /** Standing alone, the group shows its failure count on the pill beside
-   *  the header, which is also the way to the failed rows; the text keeps it
-   *  only for the accessible name. Inside a phase the pill is the phase's,
-   *  so the group's detail says it in text. */
-  const showsFailurePill =
-    !withinActivityPhase && !parentPhaseOwnsFailurePill && activitySummary.failedCount > 0;
-  const visibleGroupDetail = showsFailurePill
-    ? groupDetailParts.filter((part) => part && part !== failedNote).join(' · ')
-    : groupDetail;
+  const visibleGroupDetail = groupDetailParts
+    .filter((part) => part && part !== failedNote)
+    .join(' · ');
   /** Single category glyph for homogeneous groups (else StackedToolIcons). */
   let CategoryIcon = ListChecks;
   if (allSubagents) {
@@ -635,172 +646,204 @@ export default function ToolCallGroup({
   }, [hasActiveToolCall, userOverride, suppressAutoExpand]);
 
   return (
-    <div className="mt-1 mb-2" ref={rootRef} data-fold-root="">
-      <div className="flex w-full items-center gap-2" ref={headerRef}>
-        <button
-          type="button"
+    <HeaderActionSlotContext.Provider value={flattenGroup ? parentActionSlot : actionSlot}>
+      <div className="mt-1 mb-2" ref={rootRef} data-fold-root={flattenGroup ? undefined : ''}>
+        <div
           className={cn(
-            'text-text-secondary hover:text-text-secondary focus-visible:ring-focus-subtle inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
-            /** An open header is the title of the rows under it, so it is the
-             *  one line in the fold set in the primary colour. */
-            isExpanded && 'text-text-primary hover:text-text-primary',
+            'relative w-full items-center gap-2 pe-6',
+            flattenGroup ? 'hidden' : 'flex',
           )}
-          onClick={handleToggle}
-          aria-expanded={isExpanded}
-          aria-label={groupAriaLabel}
+          hidden={flattenGroup}
+          ref={headerRef}
         >
-          <RailGlyph hover={railHover}>
-            {partialMarkerFallback && (
-              <TriangleAlert className="text-status-warning size-4 shrink-0" aria-hidden="true" />
-            )}
-            {!partialMarkerFallback &&
-              (iconStatus == null && (allSubagents || allAskQuestions || allTaskChecks) ? (
-                /** Homogeneous categories keep the same glyph as their individual
-                 *  cards instead of stacking identical tool icons. */
-                <div
-                  className={cn(
-                    ROW_GLYPH_SLOT,
-                    'text-text-secondary',
-                    isGroupLive && 'text-text-primary animate-pulse',
-                  )}
-                  aria-hidden="true"
-                >
-                  <CategoryIcon size={14} />
-                </div>
-              ) : (
-                <div className={ROW_GLYPH_SLOT} aria-hidden="true">
-                  <StackedToolIcons
-                    toolNames={iconToolNames}
-                    mcpIconMap={mcpIconMap}
-                    maxIcons={4}
-                    sourceDomains={sourceDomains}
-                    status={iconStatus}
-                    isAnimating={isGroupLive}
-                  />
-                </div>
-              ))}
-          </RailGlyph>
-          <span
-            className="tool-status-text min-w-0 truncate font-medium"
-            role="status"
-            title={groupLabel}
-          >
-            {groupLabel}
-          </span>
-          {visibleGroupDetail && (
-            <span
-              className="text-text-secondary max-w-[40%] min-w-0 truncate text-xs font-normal"
-              title={visibleGroupDetail}
-            >
-              · {visibleGroupDetail}
-            </span>
-          )}
-          <ChevronDown
+          <button
+            type="button"
             className={cn(
-              'text-text-secondary size-4 shrink-0 transition-transform duration-200 ease-out',
-              isExpanded && 'rotate-180',
+              'text-text-secondary hover:text-text-secondary focus-visible:ring-focus-subtle inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
+              /** An open header is the title of the rows under it, so it is the
+               *  one line in the fold set in the primary colour. */
+              isExpanded && 'text-text-primary hover:text-text-primary',
             )}
-            aria-hidden="true"
-          />
-        </button>
-        {!withinActivityPhase && !parentPhaseOwnsFailurePill && (
-          <FailedRevealPill
-            count={activitySummary.failedCount}
-            total={count}
-            onReveal={handleRevealFailed}
-          />
-        )}
-      </div>
-      <div
-        style={expandStyle}
-        onTransitionEnd={handleTransitionEnd}
-        aria-hidden={!isExpanded}
-        data-testid="tool-call-group-panel"
-      >
-        {shouldRenderBody && (
-          <div
-            className={cn('overflow-hidden', FOLD_RAIL_CLASSES)}
-            ref={expandRef}
-            data-fold-panel=""
+            onClick={handleToggle}
+            aria-expanded={isExpanded}
+            aria-label={groupAriaLabel}
           >
-            <FoldRail
-              hover={railHover}
-              expanded={isExpanded && (phaseHeader?.expanded ?? true)}
-              onCollapse={handleRailCollapse}
+            <RailGlyph hover={railHover}>
+              {partialMarkerFallback && (
+                <TriangleAlert className="text-status-warning size-4 shrink-0" aria-hidden="true" />
+              )}
+              {!partialMarkerFallback &&
+                (iconStatus == null && (allSubagents || allAskQuestions || allTaskChecks) ? (
+                  /** Homogeneous categories keep the same glyph as their individual
+                   *  cards instead of stacking identical tool icons. */
+                  <div
+                    className={cn(
+                      ROW_GLYPH_SLOT,
+                      'text-text-secondary',
+                      isGroupLive && 'text-text-primary animate-pulse',
+                    )}
+                    aria-hidden="true"
+                  >
+                    <CategoryIcon size={14} />
+                  </div>
+                ) : (
+                  <div className={ROW_GLYPH_SLOT} aria-hidden="true">
+                    <StackedToolIcons
+                      toolNames={iconToolNames}
+                      mcpIconMap={mcpIconMap}
+                      maxIcons={4}
+                      sourceDomains={sourceDomains}
+                      status={iconStatus}
+                      isAnimating={isGroupLive}
+                    />
+                  </div>
+                ))}
+            </RailGlyph>
+            <span
+              className="tool-status-text min-w-0 truncate font-medium"
+              role="status"
+              title={groupLabel}
+            >
+              <PhaseLabel text={groupLabel} animate={smoothStreaming} />
+            </span>
+            {visibleGroupDetail && (
+              <span
+                className="text-text-secondary max-w-[40%] min-w-0 truncate text-xs font-normal"
+                title={visibleGroupDetail}
+              >
+                · {visibleGroupDetail}
+              </span>
+            )}
+            <ChevronDown
+              className={cn(
+                'text-text-secondary absolute end-0 size-4 shrink-0 transition-transform duration-200 ease-out',
+                isExpanded && 'rotate-180',
+              )}
+              aria-hidden="true"
             />
-            <ToolAuthWarningContext.Provider value>
-              <FailedRevealContext.Provider value={revealValue}>
-                <LoneGroupContext.Provider value={count === 1}>
-                  <SoleToolContext.Provider value={phaseSole ?? count === 1}>
-                    <div className="flex flex-col py-0.5">
-                      {parts.map(({ part, idx }, partIndex) => {
-                        if (part.type === ContentTypes.THINK) {
-                          const think = part.think;
-                          const reasoning =
-                            typeof think === 'string' ? think : (think?.value ?? '');
-                          /** A detached-subagent projection carries an empty THINK
-                           *  part flagged `reasoning_unavailable`, and encrypted
-                           *  reasoning has no readable text; `Part` renders both as a
-                           *  `ReasoningMarker`. `ReasoningCompact` would show the
-                           *  encoded payload or return null, so the marker has to
-                           *  keep going through the standalone path or it vanishes
-                           *  the moment its call joins a group. */
-                          if (
-                            (reasoning.trim() === '' && part.reasoning_unavailable === true) ||
-                            isOpaqueReasoning(reasoning)
-                          ) {
-                            return renderPart(
-                              part,
-                              idx,
-                              isLast && idx === lastContentIdx,
-                              handleToolExpand,
+          </button>
+          {!withinActivityPhase && !parentPhaseOwnsFailurePill && (
+            <FailedRevealPill
+              count={activitySummary.failedCount}
+              total={count}
+              onReveal={handleRevealFailed}
+            />
+          )}
+          <span ref={setActionSlot} className="flex shrink-0 items-center empty:hidden" />
+        </div>
+        <div
+          style={flattenGroup ? undefined : expandStyle}
+          onTransitionEnd={handleTransitionEnd}
+          aria-hidden={!flattenGroup && !isExpanded}
+          data-testid="tool-call-group-panel"
+        >
+          {(flattenGroup || shouldRenderBody) && (
+            <div
+              className={cn(
+                'min-h-0 overflow-hidden',
+                !flattenGroup && !soleCall && FOLD_RAIL_CLASSES,
+              )}
+              ref={expandRef}
+              data-fold-panel={flattenGroup ? undefined : ''}
+            >
+              {!flattenGroup && !soleCall && (
+                <FoldRail
+                  hover={railHover}
+                  expanded={isExpanded && (phaseHeader?.expanded ?? true)}
+                  onCollapse={handleRailCollapse}
+                />
+              )}
+              <ToolAuthWarningContext.Provider value>
+                <FailedRevealContext.Provider value={revealValue}>
+                  <GeneratedToolLabelContext.Provider
+                    value={
+                      count === 1 &&
+                      !hasReasoning &&
+                      (activityLabelText.length > 0 || generatedPhaseLabel)
+                    }
+                  >
+                    <LoneGroupContext.Provider value={count === 1 && !hasReasoning}>
+                      <SoleToolContext.Provider value={!hasReasoning && (phaseSole ?? count === 1)}>
+                        <div className="flex flex-col py-0.5">
+                          {parts.map(({ part, idx }) => {
+                            if (part.type === ContentTypes.THINK) {
+                              const think = part.think;
+                              const reasoning =
+                                typeof think === 'string' ? think : (think?.value ?? '');
+                              /** A detached-subagent projection carries an empty THINK
+                               *  part flagged `reasoning_unavailable`, and encrypted
+                               *  reasoning has no readable text; `Part` renders both as a
+                               *  `ReasoningMarker`. `ReasoningCompact` would show the
+                               *  encoded payload or return null, so the marker has to
+                               *  keep going through the standalone path or it vanishes
+                               *  the moment its call joins a group. */
+                              if (
+                                (reasoning.trim() === '' && part.reasoning_unavailable === true) ||
+                                isOpaqueReasoning(reasoning)
+                              ) {
+                                return renderPart(
+                                  part,
+                                  idx,
+                                  isLast && idx === lastContentIdx,
+                                  handleToolExpand,
+                                );
+                              }
+                              const streaming = isSubmitting && idx === lastContentIdx;
+                              /** Mirrors the standalone `Reasoning` path: the authored
+                               *  label wins, generic text is only a fallback. */
+                              const generatedLabel = part.reasoning_label?.trim();
+                              const label =
+                                generatedLabel ||
+                                (streaming
+                                  ? localize('com_ui_thinking')
+                                  : localize('com_ui_thoughts'));
+                              return (
+                                <ReasoningCompact
+                                  key={`reasoning-${idx}`}
+                                  partKeyIndex={getPartKeyIndex(part, idx)}
+                                  reasoning={reasoning}
+                                  label={label}
+                                  showThinking={showThinking}
+                                  isStreaming={streaming}
+                                />
+                              );
+                            }
+                            return (
+                              <div
+                                key={`tool-${getPartKeyIndex(part, idx)}`}
+                                className={cn(
+                                  isSubmitting &&
+                                    smoothStreaming &&
+                                    'animate-in fade-in-0 slide-in-from-top-1 duration-200 motion-reduce:animate-none',
+                                )}
+                              >
+                                {renderPart(
+                                  part,
+                                  idx,
+                                  isLast && idx === lastContentIdx,
+                                  handleToolExpand,
+                                )}
+                              </div>
                             );
-                          }
-                          const streaming = isSubmitting && idx === lastContentIdx;
-                          const isAfterTool =
-                            partIndex > 0 &&
-                            parts[partIndex - 1]?.part.type === ContentTypes.TOOL_CALL;
-                          /** Mirrors the standalone `Reasoning` path: the authored
-                           *  label wins, generic text is only a fallback. */
-                          const generatedLabel = part.reasoning_label?.trim();
-                          const label =
-                            generatedLabel ||
-                            (streaming ? localize('com_ui_thinking') : localize('com_ui_thoughts'));
-                          return (
-                            <ReasoningCompact
-                              key={`reasoning-${idx}`}
-                              partKeyIndex={getPartKeyIndex(part, idx)}
-                              reasoning={reasoning}
-                              label={label}
-                              showThinking={showThinking}
-                              isAfterTool={isAfterTool}
-                              isStreaming={streaming}
-                            />
-                          );
-                        }
-                        return renderPart(
-                          part,
-                          idx,
-                          isLast && idx === lastContentIdx,
-                          handleToolExpand,
-                        );
-                      })}
-                    </div>
-                  </SoleToolContext.Provider>
-                </LoneGroupContext.Provider>
-              </FailedRevealContext.Provider>
-            </ToolAuthWarningContext.Provider>
-            {hasPendingAuthRequest && <ToolAuthWarning className="mt-2.5 mb-1" />}
-          </div>
+                          })}
+                        </div>
+                      </SoleToolContext.Provider>
+                    </LoneGroupContext.Provider>
+                  </GeneratedToolLabelContext.Provider>
+                </FailedRevealContext.Provider>
+              </ToolAuthWarningContext.Provider>
+              {hasPendingAuthRequest && <ToolAuthWarning className="mt-2.5 mb-1" />}
+            </div>
+          )}
+        </div>
+        {groupAttachments && groupAttachments.length > 0 && (
+          <>
+            <SearchVerticals attachments={groupAttachments} />
+            <AttachmentGroup attachments={groupAttachments} />
+            <MCPAppViews attachments={groupAttachments} />
+          </>
         )}
       </div>
-      {groupAttachments && groupAttachments.length > 0 && (
-        <>
-          <SearchVerticals attachments={groupAttachments} />
-          <AttachmentGroup attachments={groupAttachments} />
-          <MCPAppViews attachments={groupAttachments} />
-        </>
-      )}
-    </div>
+    </HeaderActionSlotContext.Provider>
   );
 }

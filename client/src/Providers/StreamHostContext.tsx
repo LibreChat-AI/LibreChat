@@ -6,11 +6,12 @@ import {
   useAgentQueuedTurns,
   extendActiveJobsGrace,
 } from '~/data-provider';
+import { useParentSubagentIndex } from '~/data-provider/Subagents/parents';
+import useEventServices, { useLegacyServices } from '~/hooks/SSE/services';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useResumableServices } from '~/hooks/SSE/resumable';
 import { useAuthContext } from '~/hooks/AuthContext';
-import useSSE from '~/hooks/SSE/useSSE';
 
 function useTransport() {
   const { token, isAuthenticated } = useAuthContext();
@@ -26,7 +27,7 @@ function useTransport() {
  *  other feeds attach through. */
 export const appStreamHost: StreamHost = {
   useResumableServices,
-  useLegacyStream: useSSE,
+  useLegacyServices,
   useTransport,
   /** Observes the receipts `useSteering` fetches, without competing for the fetch. */
   useQueuedTurnReceipts: (conversationId) => useAgentQueuedTurns(conversationId, false),
@@ -41,6 +42,8 @@ export const appStreamHost: StreamHost = {
       conversation: usePaneConversation(runIndex),
     };
   },
+  useParentSubagentIndex,
+  useEventServices,
 };
 
 export { StreamHostProvider, useStreamHost } from '@librechat/chat/react';

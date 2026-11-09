@@ -1,7 +1,13 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import { Button } from '@librechat/client';
-import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES, BareStatus } from '@librechat/chat/components';
+import {
+  PANE_COPY_REVEAL,
+  TOOL_ROW_CLASSES,
+  BareStatus,
+  CopyButton,
+  LangIcon,
+} from '@librechat/chat/components';
 import {
   toolPanelSpacingClassName,
   useToolContentPending,
@@ -18,8 +24,7 @@ import {
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import CopyButton from '~/components/Messages/Content/CopyButton';
-import LangIcon from '~/components/Messages/Content/LangIcon';
+import CommandTime, { useCommandClock } from './CommandTime';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
 import { OutputRenderer } from '../ToolOutput';
@@ -146,8 +151,11 @@ export default function BashCall({
       runStepStatus,
       extraError: backgroundFailed || result?.failed === true,
       extraCancelled: cancelledInBackground,
-      keepRow: backgroundHandle != null || intent != null,
+      keepRow: backgroundHandle != null,
+      keepLabelRow: intent != null,
     });
+  /** Measured once per card, so the time survives moving from the row into the panel. */
+  const commandMs = useCommandClock(phase, runStepDurationMs);
 
   const highlighted = useLazyHighlight(showCode ? command || undefined : undefined, 'bash');
   const { ref: commandPaneRef, onScroll: onCommandPaneScroll } = useFollowScroll<HTMLDivElement>(
@@ -193,9 +201,11 @@ export default function BashCall({
       ? localize('com_ui_cancelled')
       : (backgroundFinishedText ?? intent ?? localize('com_ui_command_finished'));
 
+  const showPaneTime = bare && backgroundHandle == null && backgrounded !== true;
+
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
         <div
           className={TOOL_ROW_CLASSES}
@@ -214,8 +224,10 @@ export default function BashCall({
              *  covers the live card; the persisted `backgrounded` marker covers
              *  the card after harvest replaces the handle with real stdout
              *  (and after any reload), when no transient signal survives. */
-            durationMs={
-              backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
+            timer={
+              backgroundHandle == null && backgrounded !== true ? (
+                <CommandTime phase={phase} ms={commandMs} />
+              ) : undefined
             }
             icon={
               <LangIcon
@@ -233,7 +245,7 @@ export default function BashCall({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           <div
             className={cn(
               toolPanelSpacingClassName,
@@ -246,15 +258,20 @@ export default function BashCall({
               // cannot reach: the previous dark-only gray-950 fill was Tailwind's blue-black,
               // outside this palette entirely.
               <div className="bg-surface-code group/copy relative">
+                {/* With no row of its own, the time rides the command's line,
+                    just inside the copy control. */}
+                {showPaneTime && (
+                  <span className="absolute end-9 top-2 z-[1]">
+                    <CommandTime phase={phase} ms={commandMs} />
+                  </span>
+                )}
                 <CopyButton
                   iconOnly
+                  compact
                   isCopied={isCopied}
                   onClick={handleCopy}
                   disabled={contentPending}
-                  className={cn(
-                    'bg-surface-code absolute inset-e-1.5 top-1 z-[1]',
-                    PANE_COPY_REVEAL,
-                  )}
+                  className={cn('bg-surface-code absolute inset-e-2 top-2 z-[1]', PANE_COPY_REVEAL)}
                   label={localize('com_ui_copy_code')}
                 />
                 <div
@@ -264,7 +281,10 @@ export default function BashCall({
                 >
                   <pre
                     dir="ltr"
-                    className="px-3 py-2.5 font-mono text-xs break-words whitespace-pre-wrap"
+                    className={cn(
+                      'py-2.5 ps-3 font-mono text-xs break-words whitespace-pre-wrap',
+                      showPaneTime ? 'pe-20' : 'pe-8',
+                    )}
                   >
                     <span className="text-text-tertiary select-none" aria-hidden="true">
                       {'$ '}
@@ -285,7 +305,7 @@ export default function BashCall({
               className={cn(command && 'border-border-inset border-t')}
             />
             {hasOutput && backgroundHandle == null && (
-              <div className={cn('px-3 py-2.5', command && 'border-border-inset border-t')}>
+              <div className={cn('p-3', command && 'border-border-inset border-t')}>
                 {outputIsEmpty ? (
                   <p className="text-text-secondary text-xs italic">
                     {localize('com_ui_no_output')}
