@@ -207,6 +207,7 @@ const APPROVAL_TOOL_CALL_PREFIX = 'call_e2e_approval_';
 const BACKGROUND_DISPATCH_TOOL_CALL_ID = 'call_e2e_background_dispatch';
 const BACKGROUND_COLLECT_TOOL_CALL_ID = 'call_e2e_background_collect';
 const EXECUTE_CODE_MARKER = 'E2E_EXECUTE_CODE:';
+const READ_THEN_BASH_MARKER = 'E2E_READ_THEN_BASH:';
 const EXEC_UPLOADED_MARKER = 'E2E_EXEC_UPLOADED:';
 const EXEC_PERSIST_MARKER = 'E2E_EXEC_PERSIST:';
 const FILE_SEARCH_MARKER = 'E2E_FILE_SEARCH:';
@@ -2353,6 +2354,33 @@ function runFilesResponses(text) {
   };
 }
 
+/** One turn whose first batch reads an attachment with read_file and whose next batch runs
+ *  bash_tool on it: a read_file batch must not take the lazily provisioned file from the
+ *  code call after it. The attachment is `<label>.csv`. */
+function readThenBashResponses(text) {
+  const label = getMarkerValue(text, READ_THEN_BASH_MARKER);
+  if (!label) return null;
+  const path = `/mnt/data/${label}.csv`;
+  const call = (phase, name, args) => ({
+    response: '',
+    toolCalls: [{ id: `call_e2e_read_then_bash_${phase}`, name, args, type: 'tool_call' }],
+  });
+  return {
+    responses: [''],
+    resolveInvocation: (messages) => {
+      if (!findLastToolMessage(messages, 'call_e2e_read_then_bash_read')) {
+        return call('read', 'read_file', { path });
+      }
+      if (!findLastToolMessage(messages, 'call_e2e_read_then_bash_bash')) {
+        return call('bash', 'bash_tool', {
+          command: `cat ${path}\n# ${READ_THEN_BASH_MARKER}${label}`,
+        });
+      }
+      return { response: `E2E read then bash complete: ${label}` };
+    },
+  };
+}
+
 function runFileVersionsResponses(text) {
   const marker = getMarkerValue(text, RUN_FILE_VERSIONS_MARKER);
   if (!marker) return null;
@@ -3677,6 +3705,9 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   if (backgroundCompletion) {
     return backgroundCompletion;
   }
+
+  const readThenBash = readThenBashResponses(text);
+  if (readThenBash) return readThenBash;
 
   const runFileVersions = runFileVersionsResponses(text);
   if (runFileVersions) {
