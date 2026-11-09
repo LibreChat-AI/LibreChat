@@ -216,7 +216,11 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
             storageRegion: user.storageRegion,
           });
           /** The setup token outranks the refresh credential that bought it. */
-          const tempToken = mintSetupToken(userId, process.env.JWT_SECRET ?? '');
+          const tempToken = mintSetupToken(
+            userId,
+            process.env.JWT_SECRET ?? '',
+            session.authMethod,
+          );
           if (await isCredentialRetired(userId, credential)) {
             return withdrawSession(res, user, userId);
           }
