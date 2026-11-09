@@ -449,6 +449,47 @@ function readClaims(tokenset: RefreshTokenset): AdminRefreshClaims {
 }
 
 /**
+ * Preserves the rotated refresh token under the just-spent one so a client retry can recover it,
+ * instead of resending the already-spent `previousRefreshToken` and failing with
+ * `REFRESH_FAILED`. Used by every catch site in {@link applyAdminRefresh} that can run after the
+ * IdP grant has rotated the token but before the response is returned; mirrors
+ * `storeSessionSaveFailureBridge` in the main refresh path (`packages/api/src/auth/openid/session.ts`).
+ * A bridge-store failure is logged and swallowed so the caller still surfaces the original error.
+ */
+async function preserveRotatedRefreshToken(
+  deps: AdminRefreshDeps,
+  options: AdminRefreshOptions,
+  params: {
+    tokenset: RefreshTokenset;
+    userId: string;
+    openidIssuer?: string;
+    providerSession?: ProviderSessionRef | null;
+    logMessage: string;
+  },
+): Promise<void> {
+  if (!deps.storeRefreshTokenBridge) {
+    return;
+  }
+  const rotatedRefreshToken = params.tokenset.refresh_token;
+  if (!rotatedRefreshToken || !options.previousRefreshToken) {
+    return;
+  }
+  try {
+    await deps.storeRefreshTokenBridge({
+      oldRefreshToken: options.previousRefreshToken,
+      newRefreshToken: rotatedRefreshToken,
+      userId: params.userId,
+      tenantId: options.tenantId,
+      openidIssuer: params.openidIssuer,
+      ttl: deps.bridgeGraceMs,
+      providerSession: params.providerSession ?? undefined,
+    });
+  } catch (bridgeError) {
+    logger.warn(params.logMessage, { error: bridgeError });
+  }
+}
+
+/**
  * Looks up the active admin user for a freshly-refreshed OpenID tokenset,
  * mints the bearer the admin panel should send on subsequent requests, and
  * returns the response shape used by `/api/admin/oauth/exchange`.
@@ -540,26 +581,15 @@ export async function applyAdminRefresh(
         legacy: merged.ref == null,
       });
     } catch (error) {
-      if (isProviderSessionUnavailableError(error) && deps.storeRefreshTokenBridge) {
-        const rotatedRefreshToken = tokenset.refresh_token;
-        if (rotatedRefreshToken && options.previousRefreshToken) {
-          try {
-            await deps.storeRefreshTokenBridge({
-              oldRefreshToken: options.previousRefreshToken,
-              newRefreshToken: rotatedRefreshToken,
-              userId: String(user._id),
-              tenantId: options.tenantId,
-              openidIssuer: normalizeOpenIdIssuer(options.expectedIssuer),
-              ttl: deps.bridgeGraceMs,
-              providerSession: merged.ref ?? undefined,
-            });
-          } catch (bridgeError) {
-            logger.warn(
-              '[adminRefresh] Failed to preserve the rotated refresh token after an unavailable provider-session check',
-              { error: bridgeError },
-            );
-          }
-        }
+      if (isProviderSessionUnavailableError(error)) {
+        await preserveRotatedRefreshToken(deps, options, {
+          tokenset,
+          userId: String(user._id),
+          openidIssuer: normalizeOpenIdIssuer(options.expectedIssuer),
+          providerSession: merged.ref,
+          logMessage:
+            '[adminRefresh] Failed to preserve the rotated refresh token after an unavailable provider-session check',
+        });
       }
       throw error;
     }
@@ -572,17 +602,29 @@ export async function applyAdminRefresh(
         tokenset.refresh_token ?? options.grantRefreshToken ?? options.previousRefreshToken;
       if (rotatedRefreshToken) {
         const mode = await deps.getMode?.();
-        await storeOpenIdSession(
-          {
+        try {
+          await storeOpenIdSession(
+            {
+              userId: String(user._id),
+              refreshToken: rotatedRefreshToken,
+              tenantId: options.tenantId,
+              previousRefreshToken: options.previousRefreshToken,
+              providerSession: mode === 'off' ? undefined : merged.ref,
+              authMethod: 'openid',
+            },
+            { upsertSession: deps.upsertSession, deleteSession: deps.deleteSession },
+          );
+        } catch (error) {
+          await preserveRotatedRefreshToken(deps, options, {
+            tokenset,
             userId: String(user._id),
-            refreshToken: rotatedRefreshToken,
-            tenantId: options.tenantId,
-            previousRefreshToken: options.previousRefreshToken,
-            providerSession: mode === 'off' ? undefined : merged.ref,
-            authMethod: 'openid',
-          },
-          { upsertSession: deps.upsertSession, deleteSession: deps.deleteSession },
-        );
+            openidIssuer: normalizeOpenIdIssuer(options.expectedIssuer),
+            providerSession: merged.ref,
+            logMessage:
+              '[adminRefresh] Failed to preserve the rotated refresh token after a session store failure',
+          });
+          throw error;
+        }
       }
     }
   }

@@ -3032,6 +3032,7 @@ describe('refreshController – LibreChat path', () => {
     expect(generateTwoFactorSetupToken).toHaveBeenCalledWith(
       'local-user-id',
       process.env.JWT_SECRET,
+      undefined,
     );
     expect(res.send).toHaveBeenCalledWith({
       code: 'TWO_FACTOR_ENROLLMENT_REQUIRED',

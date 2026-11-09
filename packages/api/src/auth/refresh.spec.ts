@@ -925,6 +925,216 @@ describe('applyAdminRefresh', () => {
       expect(upsertSession).not.toHaveBeenCalled();
       expect(deleteSession).not.toHaveBeenCalled();
     });
+
+    it('stores a recovery bridge with the rotated token when storing the session fails after rotation, then rethrows', async () => {
+      const user = makeUser();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const saveError = new Error('session upsert failed');
+      const upsertSession = jest.fn().mockRejectedValue(saveError);
+      const deleteSession = jest.fn().mockResolvedValue({ deletedCount: 0 });
+      const storeRefreshTokenBridge = jest.fn().mockResolvedValue('bridge-version');
+      const deps = makeDepsWithClient(user, {
+        authorizeProviderSession,
+        upsertSession,
+        deleteSession,
+        storeRefreshTokenBridge,
+        bridgeGraceMs: 60000,
+      });
+      const tokenset = makeTokenset({
+        refresh_token: 'rotated-refresh',
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await expect(
+        applyAdminRefresh(tokenset, deps, {
+          previousRefreshToken: 'old-refresh',
+          boundProviderSession: ref,
+          expectedIssuer: ref.issuer,
+        }),
+      ).rejects.toBe(saveError);
+
+      expect(storeRefreshTokenBridge).toHaveBeenCalledWith({
+        oldRefreshToken: 'old-refresh',
+        newRefreshToken: 'rotated-refresh',
+        userId: String(user._id),
+        tenantId: undefined,
+        openidIssuer: ref.issuer,
+        ttl: 60000,
+        providerSession: ref,
+      });
+    });
+
+    it('still rethrows the original session-store error when the bridge store itself throws', async () => {
+      const user = makeUser();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const saveError = new Error('session delete failed');
+      const bridgeError = new Error('bridge store failed');
+      const upsertSession = jest.fn().mockResolvedValue({});
+      const deleteSession = jest.fn().mockRejectedValue(saveError);
+      const storeRefreshTokenBridge = jest.fn().mockRejectedValue(bridgeError);
+      const deps = makeDepsWithClient(user, {
+        authorizeProviderSession,
+        upsertSession,
+        deleteSession,
+        storeRefreshTokenBridge,
+      });
+      const tokenset = makeTokenset({
+        refresh_token: 'rotated-refresh',
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await expect(
+        applyAdminRefresh(tokenset, deps, {
+          previousRefreshToken: 'old-refresh',
+          boundProviderSession: ref,
+        }),
+      ).rejects.toBe(saveError);
+
+      expect(storeRefreshTokenBridge).toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        '[adminRefresh] Failed to preserve the rotated refresh token after a session store failure',
+        { error: bridgeError },
+      );
+    });
+
+    it('logs the unavailable-provider-session bridge message when its own bridge store throws', async () => {
+      const user = makeUser();
+      const unavailableError = new ProviderSessionUnavailableError('db down');
+      const authorizeProviderSession = jest.fn().mockRejectedValue(unavailableError);
+      const bridgeError = new Error('bridge store failed');
+      const storeRefreshTokenBridge = jest.fn().mockRejectedValue(bridgeError);
+      const deps = makeDepsWithClient(user, { authorizeProviderSession, storeRefreshTokenBridge });
+      const tokenset = makeTokenset({
+        refresh_token: 'rotated-refresh',
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await expect(
+        applyAdminRefresh(tokenset, deps, {
+          previousRefreshToken: 'old-refresh',
+          boundProviderSession: ref,
+        }),
+      ).rejects.toBe(unavailableError);
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        '[adminRefresh] Failed to preserve the rotated refresh token after an unavailable provider-session check',
+        { error: bridgeError },
+      );
+    });
+
+    it('never attempts a bridge store when the provider-session check throws an unrelated error', async () => {
+      const user = makeUser();
+      const unrelatedError = new Error('network blip');
+      const authorizeProviderSession = jest.fn().mockRejectedValue(unrelatedError);
+      const storeRefreshTokenBridge = jest.fn();
+      const deps = makeDepsWithClient(user, { authorizeProviderSession, storeRefreshTokenBridge });
+      const tokenset = makeTokenset({
+        refresh_token: 'rotated-refresh',
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await expect(
+        applyAdminRefresh(tokenset, deps, {
+          previousRefreshToken: 'old-refresh',
+          boundProviderSession: ref,
+        }),
+      ).rejects.toBe(unrelatedError);
+
+      expect(storeRefreshTokenBridge).not.toHaveBeenCalled();
+    });
+
+    it('never attempts a bridge store when storeRefreshTokenBridge is not configured, even after a session-store failure', async () => {
+      const user = makeUser();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const saveError = new Error('session upsert failed');
+      const upsertSession = jest.fn().mockRejectedValue(saveError);
+      const deleteSession = jest.fn().mockResolvedValue({ deletedCount: 0 });
+      const deps = makeDepsWithClient(user, {
+        authorizeProviderSession,
+        upsertSession,
+        deleteSession,
+      });
+      const tokenset = makeTokenset({
+        refresh_token: 'rotated-refresh',
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await expect(
+        applyAdminRefresh(tokenset, deps, {
+          previousRefreshToken: 'old-refresh',
+          boundProviderSession: ref,
+        }),
+      ).rejects.toBe(saveError);
+
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('does not call getMode or store the session when the IdP grant has no rotated or bridged token', async () => {
+      const user = makeUser();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const upsertSession = jest.fn().mockResolvedValue({});
+      const deleteSession = jest.fn().mockResolvedValue({ deletedCount: 0 });
+      const getMode = jest.fn().mockResolvedValue('enforce');
+      const deps = makeDepsWithClient(user, {
+        authorizeProviderSession,
+        upsertSession,
+        deleteSession,
+        getMode,
+      });
+      const tokenset = makeTokenset({
+        refresh_token: undefined,
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await applyAdminRefresh(tokenset, deps, { boundProviderSession: ref });
+
+      expect(getMode).not.toHaveBeenCalled();
+      expect(upsertSession).not.toHaveBeenCalled();
+    });
+
+    it('skips storing the session when only one of upsertSession/deleteSession is configured', async () => {
+      const user = makeUser();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const upsertSession = jest.fn().mockResolvedValue({});
+      const deps = makeDepsWithClient(user, { authorizeProviderSession, upsertSession });
+      const tokenset = makeTokenset({
+        refresh_token: 'rotated-refresh',
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await applyAdminRefresh(tokenset, deps, { boundProviderSession: ref });
+
+      expect(upsertSession).not.toHaveBeenCalled();
+    });
+
+    it('stores no recovery bridge when the IdP did not rotate the refresh token, even if storing the session fails', async () => {
+      const user = makeUser();
+      const authorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+      const saveError = new Error('session upsert failed');
+      const upsertSession = jest.fn().mockRejectedValue(saveError);
+      const deleteSession = jest.fn().mockResolvedValue({ deletedCount: 0 });
+      const storeRefreshTokenBridge = jest.fn();
+      const deps = makeDepsWithClient(user, {
+        authorizeProviderSession,
+        upsertSession,
+        deleteSession,
+        storeRefreshTokenBridge,
+      });
+      const tokenset = makeTokenset({
+        refresh_token: undefined,
+        claims: () => ({ sub: SUB, iss: ref.issuer, sid: ref.sid }),
+      });
+
+      await expect(
+        applyAdminRefresh(tokenset, deps, {
+          previousRefreshToken: 'old-refresh',
+          grantRefreshToken: 'bridged-token-b',
+          boundProviderSession: ref,
+        }),
+      ).rejects.toBe(saveError);
+
+      expect(storeRefreshTokenBridge).not.toHaveBeenCalled();
+    });
   });
 });
 
