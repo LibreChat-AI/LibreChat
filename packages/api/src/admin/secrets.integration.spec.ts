@@ -143,6 +143,14 @@ const SECRET_FIELD_CASES: SecretFieldCase[] = [
     siblingValue: 8000,
   },
   {
+    path: 'webSearch.kagiApiKey',
+    previewPath: 'webSearch.kagiApiKeyPreview',
+    section: 'webSearch',
+    object: { kagiApiKey: SECRET, searchProvider: 'kagi', scraperProvider: 'kagi' },
+    siblingPath: 'webSearch.scraperTimeout',
+    siblingValue: 9000,
+  },
+  {
     path: 'webSearch.keenableApiKey',
     previewPath: 'webSearch.keenableApiKeyPreview',
     section: 'webSearch',

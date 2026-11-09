@@ -64,6 +64,7 @@ const CONFIG_SECRET_FIELDS: readonly ConfigSecretField[] = (
     { path: 'webSearch.searxngApiKey', allowEnvPlaceholder: true, opaque: true },
     { path: 'webSearch.firecrawlApiKey', allowEnvPlaceholder: true, opaque: true },
     { path: 'webSearch.tavilyApiKey', allowEnvPlaceholder: true, opaque: true },
+    { path: 'webSearch.kagiApiKey', allowEnvPlaceholder: true, opaque: true },
     { path: 'webSearch.keenableApiKey', allowEnvPlaceholder: true, opaque: true },
     { path: 'webSearch.jinaApiKey', allowEnvPlaceholder: true, opaque: true },
     { path: 'webSearch.cohereApiKey', allowEnvPlaceholder: true, opaque: true },
