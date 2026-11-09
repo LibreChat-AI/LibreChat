@@ -1,6 +1,12 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef } from 'react';
 import { useSetRecoilState } from 'recoil';
-import { Tools, Constants, LocalStorageKeys, AgentCapabilities } from 'librechat-data-provider';
+import {
+  Tools,
+  Constants,
+  LocalStorageKeys,
+  AgentCapabilities,
+  getWithheldToggles,
+} from 'librechat-data-provider';
 import type { TAgentsEndpoint, TEphemeralAgent } from 'librechat-data-provider';
 import {
   useMCPServerManager,
@@ -11,6 +17,7 @@ import {
 import { getTimestampedValue } from '~/utils/timestamps';
 import { useGetStartupConfig } from '~/data-provider';
 import { ephemeralAgentByConvoId } from '~/store';
+import { getModelSpec } from '~/utils/endpoints';
 
 interface BadgeRowContextType {
   conversationId?: string | null;
@@ -24,6 +31,9 @@ interface BadgeRowContextType {
   codeInterpreter: ReturnType<typeof useToolToggle>;
   searchApiKeyForm: ReturnType<typeof useSearchApiKeyForm>;
   mcpServerManager: ReturnType<typeof useMCPServerManager>;
+  /** Toggles the active spec holds authority over (`lockTools`), whose
+   *  controls the composer leaves out. */
+  lockedToggles: ReadonlySet<keyof TEphemeralAgent>;
 }
 
 const BadgeRowContext = createContext<BadgeRowContextType | undefined>(undefined);
@@ -53,6 +63,10 @@ export default function BadgeRowProvider({
   const { data: startupConfig } = useGetStartupConfig();
   const key = conversationId ?? Constants.NEW_CONVO;
   const hasModelSpecs = (startupConfig?.modelSpecs?.list?.length ?? 0) > 0;
+  const lockedToggles = useMemo(
+    () => getWithheldToggles(getModelSpec({ specName, startupConfig })),
+    [specName, startupConfig],
+  );
 
   /**
    * Compute the storage context key for non-spec persistence:
@@ -297,6 +311,7 @@ export default function BadgeRowProvider({
       codeInterpreter,
       searchApiKeyForm,
       mcpServerManager,
+      lockedToggles,
     }),
     [
       skills,
@@ -310,6 +325,7 @@ export default function BadgeRowProvider({
       codeInterpreter,
       searchApiKeyForm,
       mcpServerManager,
+      lockedToggles,
     ],
   );
 

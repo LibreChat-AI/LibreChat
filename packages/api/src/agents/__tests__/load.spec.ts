@@ -1363,6 +1363,31 @@ describe('loadAgent', () => {
 
     /** A spec left out of the menu never reaches the client's config, so the
      *  badges sent beside it were seeded from the user's own defaults. */
+    test('a spec that locks its tools holds authority while its badge row stays visible', async () => {
+      const req = hiddenReq({ execute_code: false, web_search: false, file_search: true });
+      const spec = (
+        req.config as unknown as { modelSpecs: { list: Array<Record<string, unknown>> } }
+      ).modelSpecs.list[0];
+      delete spec.hideBadgeRow;
+      spec.lockTools = true;
+      delete spec.mcpServers;
+
+      const result = await loadAgent(
+        {
+          req,
+          spec: 'hidden-spec',
+          agent_id: EPHEMERAL_AGENT_ID as string,
+          endpoint: 'openai',
+          model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+        },
+        deps,
+      );
+
+      /** `executeCode` and `webSearch` are locked on; `file_search` is
+       *  unconfigured, so the user's own toggle still decides it. */
+      expect(result?.tools).toEqual(['execute_code', 'file_search', 'web_search']);
+    });
+
     test('a spec left out of the menu holds the same authority', async () => {
       const req = hiddenReq({ web_search: false, file_search: true });
       const spec = (
@@ -1548,6 +1573,20 @@ describe('loadAgent', () => {
       const result = await loadAddedAgent(
         {
           req: addedReq({ web_search: false }, { hideBadgeRow: true }),
+          conversation: addedConversation,
+          primaryAgent: { id: EID as string, tools: ['web_search'] } as LibreChatAgent,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['web_search']);
+    });
+
+    test('an added spec that locks its tools but configures none still mirrors', async () => {
+      const { EPHEMERAL_AGENT_ID: EID } = Constants;
+      const result = await loadAddedAgent(
+        {
+          req: addedReq({ web_search: false }, { lockTools: true }),
           conversation: addedConversation,
           primaryAgent: { id: EID as string, tools: ['web_search'] } as LibreChatAgent,
         },

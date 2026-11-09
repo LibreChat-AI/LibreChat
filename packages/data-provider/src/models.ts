@@ -52,6 +52,13 @@ export type TModelSpec = {
   authType?: AuthType;
   /** Hide the chat input tool badge row while this model spec is active. */
   hideBadgeRow?: boolean;
+  /**
+   * Make the tool settings this spec configures binding: users cannot switch
+   * them off or on, stored per-conversation toggles are ignored for them, and
+   * their badges are hidden. Tools the spec does not configure stay the
+   * user's, and the rest of the badge row stays visible.
+   */
+  lockTools?: boolean;
   webSearch?: boolean;
   fileSearch?: boolean;
   executeCode?: boolean;
@@ -216,6 +223,7 @@ export const tModelSpecSchema = z.object({
   iconURL: z.union([z.string(), eModelEndpointSchema]).optional(),
   authType: authTypeSchema.optional(),
   hideBadgeRow: z.boolean().optional(),
+  lockTools: z.boolean().optional(),
   webSearch: z.boolean().optional(),
   fileSearch: z.boolean().optional(),
   executeCode: z.boolean().optional(),
@@ -282,15 +290,20 @@ export const SPEC_CAPABILITY_FIELDS: ReadonlyArray<
 const SPEC_FIELD_BY_TOGGLE = new Map<string, keyof TModelSpec>(SPEC_CAPABILITY_FIELDS);
 
 /**
- * Whether a spec gives the user no control over its tools: it hides the badge
- * row, or it is left out of the model menu (`showInMenu: false`). A hidden spec
- * never reaches the client's config, so the badges shown beside it were never
- * seeded from it and a toggle sent against it does not answer its defaults.
+ * Whether a spec withholds user control over the tools it configures: it
+ * locks them (`lockTools`), hides the badge row, or is left out of the model
+ * menu (`showInMenu: false`). A hidden spec never reaches the client's config,
+ * so the badges shown beside it were never seeded from it and a toggle sent
+ * against it does not answer its defaults.
  */
-export function specWithholdsUserToggles<T extends Pick<TModelSpec, 'hideBadgeRow' | 'showInMenu'>>(
-  modelSpec: T | null | undefined,
-): modelSpec is T {
-  return modelSpec?.hideBadgeRow === true || modelSpec?.showInMenu === false;
+export function specWithholdsUserToggles<
+  T extends Pick<TModelSpec, 'hideBadgeRow' | 'showInMenu' | 'lockTools'>,
+>(modelSpec: T | null | undefined): modelSpec is T {
+  return (
+    modelSpec?.lockTools === true ||
+    modelSpec?.hideBadgeRow === true ||
+    modelSpec?.showInMenu === false
+  );
 }
 
 /**
@@ -320,6 +333,7 @@ const NO_WITHHELD_TOGGLES: ReadonlySet<keyof TEphemeralAgent> = new Set();
 /**
  * The toggles a spec holds authority over, by `specOverridesUserToggle`'s rule.
  * Empty for a spec that withholds toggles but configures none of them.
+ * The composer hides these controls, since a change to one would be dropped.
  */
 export function getWithheldToggles(
   modelSpec: TModelSpec | null | undefined,

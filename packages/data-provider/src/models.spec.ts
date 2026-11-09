@@ -123,6 +123,11 @@ describe('model spec defaults vs. explicit user toggles', () => {
   });
 
   describe('getWithheldToggles', () => {
+    it('lists the toggles a locked spec configures', () => {
+      const spec = { lockTools: true, memory: false, skills: true } as TModelSpec;
+      expect([...getWithheldToggles(spec)].sort()).toEqual(['memory', 'skills']);
+    });
+
     it('lists exactly the toggles a withholding spec configures', () => {
       const spec = {
         hideBadgeRow: true,
@@ -136,6 +141,7 @@ describe('model spec defaults vs. explicit user toggles', () => {
     it('is empty for an ordinary spec, a withholding spec that configures nothing, or no spec', () => {
       expect(getWithheldToggles({ webSearch: true } as TModelSpec).size).toBe(0);
       expect(getWithheldToggles({ hideBadgeRow: true } as TModelSpec).size).toBe(0);
+      expect(getWithheldToggles({ lockTools: true } as TModelSpec).size).toBe(0);
       expect(getWithheldToggles(undefined).size).toBe(0);
     });
   });
@@ -146,6 +152,8 @@ describe('model spec defaults vs. explicit user toggles', () => {
       ['a spec listed in the menu', { showInMenu: true }, false],
       ['a spec that hides the badge row', { hideBadgeRow: true }, true],
       ['a spec left out of the menu', { showInMenu: false }, true],
+      ['a spec that locks its tools', { lockTools: true }, true],
+      ['a spec that leaves its tools unlocked', { lockTools: false }, false],
     ])('%s', (_label, spec, expected) => {
       expect(specWithholdsUserToggles(spec as TModelSpec)).toBe(expected);
     });
@@ -153,6 +161,16 @@ describe('model spec defaults vs. explicit user toggles', () => {
     it('is false without a spec', () => {
       expect(specWithholdsUserToggles(null)).toBe(false);
       expect(specWithholdsUserToggles(undefined)).toBe(false);
+    });
+
+    it('gives a locked spec authority only over what it configures', () => {
+      const spec = { lockTools: true, executeCode: true, webSearch: false } as TModelSpec;
+      expect(
+        resolveSpecUserToggles(
+          { execute_code: false, web_search: true, file_search: true, memory: false },
+          spec,
+        ),
+      ).toEqual({ file_search: true, memory: false });
     });
 
     it('gives a spec left out of the menu authority over what it configures', () => {

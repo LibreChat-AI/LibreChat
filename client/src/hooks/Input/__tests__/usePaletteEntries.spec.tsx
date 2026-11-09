@@ -101,6 +101,7 @@ const fullContext = (): ContextFixture => ({
     toggleServerSelection: jest.fn(),
   },
   agentsConfig: { capabilities: [] },
+  lockedToggles: new Set<string>(),
 });
 
 const allPermissions = {
@@ -203,6 +204,16 @@ describe('usePaletteEntries', () => {
       'builtin:artifacts',
       'mcp:github',
       'mcp:spotify',
+    ]);
+  });
+
+  it('leaves out the controls a locked spec holds authority over', () => {
+    mockContext = { ...fullContext(), lockedToggles: new Set(['web_search', 'memory', 'mcp']) };
+    expect(keysOf(entries().result)).toEqual([
+      'builtin:execute_code',
+      'builtin:file_search',
+      'builtin:skills',
+      'builtin:artifacts',
     ]);
   });
 
