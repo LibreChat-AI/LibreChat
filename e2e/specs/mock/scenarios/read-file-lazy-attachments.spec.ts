@@ -36,9 +36,10 @@ test('an attachment a read_file call provisions stays mounted for the next bash 
   ).toBeVisible({ timeout: 15000 });
 
   await sendMessageAndWaitForCompletion(page, `E2E_READ_THEN_BASH:${label}`);
-  await expect(page.getByText(`E2E read then bash complete: ${label}`)).toBeVisible({
-    timeout: 30000,
-  });
+  /* Scoped to the message view: the live region announces the same final text. */
+  await expect(
+    page.getByTestId('screenshot-target').getByText(`E2E read then bash complete: ${label}`),
+  ).toBeVisible({ timeout: 30000 });
 
   const execs = (await getCodeExecs(page)).filter((exec) => exec.code.includes(fileName));
   const bash = execs.filter((exec) => exec.code.includes(`E2E_READ_THEN_BASH:${label}`));
