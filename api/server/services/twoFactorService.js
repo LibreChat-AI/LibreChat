@@ -177,10 +177,12 @@ const getTOTPSecret = async (storedSecret) => {
 /**
  * Generates a temporary JWT token for 2FA verification that expires in 5 minutes.
  * @param {string} userId
+ * @param {import('@librechat/data-schemas').AuthMethod} [authMethod] - The method `createLoginController`
+ *   resolved for this login, carried so the session minted once 2FA is verified records it.
  * @returns {string}
  */
-const generate2FATempToken = (userId) => {
-  return generateTwoFactorLoginChallengeToken(userId, process.env.JWT_SECRET);
+const generate2FATempToken = (userId, authMethod) => {
+  return generateTwoFactorLoginChallengeToken(userId, process.env.JWT_SECRET, authMethod);
 };
 
 module.exports = {

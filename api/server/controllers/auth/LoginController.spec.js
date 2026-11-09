@@ -73,12 +73,41 @@ describe('loginController', () => {
 
     await loginController(req, res);
 
-    expect(mockGenerate2FATempToken).toHaveBeenCalledWith('user-1');
+    expect(mockGenerate2FATempToken).toHaveBeenCalledWith('user-1', 'local');
     expect(res.json).toHaveBeenCalledWith({
       twoFAPending: true,
       tempToken: 'challenge-token',
     });
     expect(mockSetAuthTokens).not.toHaveBeenCalled();
+  });
+
+  /** A caller chained ahead of the controller (passkey) overrides the deployment default, so the
+   *  2FA challenge carries the method that actually authenticated this request. */
+  it('carries the overriding auth method into the 2FA challenge', async () => {
+    const req = {
+      user: { _id: 'user-1', twoFactorEnabled: true },
+      authMethod: 'passkey',
+    };
+    const res = createResponse();
+
+    await loginController(req, res);
+
+    expect(mockGenerate2FATempToken).toHaveBeenCalledWith('user-1', 'passkey');
+  });
+
+  it('carries the overriding auth method into the enrollment-required setup token', async () => {
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+    const req = {
+      user: { _id: 'user-2', twoFactorEnabled: false },
+      authMethod: 'passkey',
+    };
+    const res = createResponse();
+
+    await loginController(req, res);
+
+    expect(verifyTwoFactorSetupToken(res.json.mock.calls[0][0].tempToken, 'jwt-secret')).toEqual(
+      expect.objectContaining({ userId: 'user-2', authMethod: 'passkey' }),
+    );
   });
 
   it('requires purpose-scoped enrollment before issuing auth tokens', async () => {
@@ -346,7 +375,7 @@ describe('loginController', () => {
 
       await loginController(req, res);
 
-      expect(mockGenerate2FATempToken).toHaveBeenCalledWith('user-9');
+      expect(mockGenerate2FATempToken).toHaveBeenCalledWith('user-9', 'local');
       expect(res.status).toHaveBeenCalledWith(401);
       expect(res.json).toHaveBeenCalledWith({ message: 'Invalid credentials' });
       expect(res.json).not.toHaveBeenCalledWith(

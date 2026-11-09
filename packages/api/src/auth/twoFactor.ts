@@ -2,7 +2,11 @@ import jwt from 'jsonwebtoken';
 import { createHash, randomBytes } from 'node:crypto';
 import { DEFAULT_REFRESH_TOKEN_EXPIRY, logger } from '@librechat/data-schemas';
 import { SESSION_HINT_COOKIE, isTwoFactorPolicyProvider } from 'librechat-data-provider';
-import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
+import type {
+  AuthMethod,
+  TwoFactorEnrollmentGuard,
+  TwoFactorEnrollmentUpdate,
+} from '@librechat/data-schemas';
 import type { NextFunction, Request, Response } from 'express';
 import type { UserDocumentId } from '~/auth/verification';
 import { isEnabled, math } from '~/utils';
@@ -24,6 +28,15 @@ export const TWO_FACTOR_TOKEN_PURPOSE = {
   REQUIRED_ACKNOWLEDGEMENT: 'required_2fa_acknowledgement',
   REQUIRED_FINALIZATION: 'required_2fa_finalization',
 } as const;
+
+/** Every method a Session doc's `authMethod` may carry; a claim outside this set is read back as absent. */
+const AUTH_METHODS = new Set<AuthMethod>(['local', 'ldap', 'saml', 'openid', 'social', 'passkey']);
+
+function readAuthMethodClaim(value: unknown): AuthMethod | undefined {
+  return typeof value === 'string' && AUTH_METHODS.has(value as AuthMethod)
+    ? (value as AuthMethod)
+    : undefined;
+}
 
 /** The expiry options a setup token's verification may relax; nothing else about it is negotiable. */
 type SetupTokenVerifyOptions = Pick<jwt.VerifyOptions, 'ignoreExpiration' | 'maxAge'>;
@@ -84,6 +97,8 @@ export const TOKEN_RETIREMENT_FIELDS = 'twoFactorEnrolledAt credentialsChangedAt
 export interface TwoFactorEnrollmentCredential {
   userId: string;
   nonce: string;
+  /** The login method the setup token that started this chain carried, if any; see {@link TwoFactorTokenCredential.authMethod}. */
+  authMethod?: AuthMethod;
 }
 
 /**
@@ -101,12 +116,20 @@ export interface TokenIssuance {
 /** Identity plus the mint time that lets a later account event retire the credential. */
 export interface TwoFactorTokenCredential extends TokenIssuance {
   userId: string;
+  /** The method `createLoginController` recorded for the login this credential continues, so the
+   *  session it eventually mints can record the same method instead of defaulting to `'local'`.
+   *  Absent on a credential minted outside a login (for example, enrollment forced onto an already
+   *  authenticated session) or on one minted before this claim existed. */
+  authMethod?: AuthMethod;
 }
 
 /** An Express request that a required-enrollment credential has been validated for. */
 export type TwoFactorEnrollmentRequest = Request & {
   user?: { id: string };
   twoFactorEnrollmentNonce?: string;
+  /** The login method carried by the setup, acknowledgement, or finalization token this request
+   *  presented; read by the next step of the chain so it reaches the session the chain ends in. */
+  twoFactorEnrollmentAuthMethod?: AuthMethod;
   twoFactorSetupIssuedAt?: number;
   twoFactorSetupIssuedAtMs?: number;
   /** Set when the setup token was honored past its own expiry, which only a sign-out may do. */
@@ -418,25 +441,40 @@ function generateDatedTwoFactorToken(
   jwtSecret: string,
   purpose: string,
   expiresIn: jwt.SignOptions['expiresIn'],
+  authMethod?: AuthMethod,
 ): string {
-  return jwt.sign({ userId, purpose, issuedAtMs: Date.now() }, jwtSecret, { expiresIn });
+  return jwt.sign(
+    { userId, purpose, issuedAtMs: Date.now(), ...(authMethod ? { authMethod } : {}) },
+    jwtSecret,
+    { expiresIn },
+  );
 }
 
-export function generateTwoFactorSetupToken(userId: string, jwtSecret: string): string {
+export function generateTwoFactorSetupToken(
+  userId: string,
+  jwtSecret: string,
+  authMethod?: AuthMethod,
+): string {
   return generateDatedTwoFactorToken(
     userId,
     jwtSecret,
     TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_SETUP,
     TWO_FACTOR_SETUP_TOKEN_EXPIRY_SECONDS,
+    authMethod,
   );
 }
 
-export function generateTwoFactorLoginChallengeToken(userId: string, jwtSecret: string): string {
+export function generateTwoFactorLoginChallengeToken(
+  userId: string,
+  jwtSecret: string,
+  authMethod?: AuthMethod,
+): string {
   return generateDatedTwoFactorToken(
     userId,
     jwtSecret,
     TWO_FACTOR_TOKEN_PURPOSE.LOGIN_CHALLENGE,
     TWO_FACTOR_LOGIN_CHALLENGE_TOKEN_EXPIRY,
+    authMethod,
   );
 }
 
@@ -464,6 +502,7 @@ function verifyDatedTwoFactorToken(
       userId: payload.userId,
       issuedAt: payload.iat,
       issuedAtMs: typeof payload.issuedAtMs === 'number' ? payload.issuedAtMs : undefined,
+      authMethod: readAuthMethodClaim(payload.authMethod),
     };
   } catch {
     return undefined;
@@ -481,9 +520,15 @@ export function generateTwoFactorSetupFinalizationToken(
   userId: string,
   nonce: string,
   jwtSecret: string,
+  authMethod?: AuthMethod,
 ): string {
   return jwt.sign(
-    { userId, nonce, purpose: TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_FINALIZATION },
+    {
+      userId,
+      nonce,
+      purpose: TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_FINALIZATION,
+      ...(authMethod ? { authMethod } : {}),
+    },
     jwtSecret,
     { expiresIn: TWO_FACTOR_SETUP_FINALIZATION_TOKEN_EXPIRY },
   );
@@ -493,9 +538,15 @@ export function generateTwoFactorSetupAcknowledgementToken(
   userId: string,
   nonce: string,
   jwtSecret: string,
+  authMethod?: AuthMethod,
 ): string {
   return jwt.sign(
-    { userId, nonce, purpose: TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_ACKNOWLEDGEMENT },
+    {
+      userId,
+      nonce,
+      purpose: TWO_FACTOR_TOKEN_PURPOSE.REQUIRED_ACKNOWLEDGEMENT,
+      ...(authMethod ? { authMethod } : {}),
+    },
     jwtSecret,
     { expiresIn: TWO_FACTOR_SETUP_ACKNOWLEDGEMENT_TOKEN_EXPIRY },
   );
@@ -522,7 +573,11 @@ function verifyEnrollmentCredential(
     ) {
       return undefined;
     }
-    return { userId: payload.userId, nonce: payload.nonce };
+    return {
+      userId: payload.userId,
+      nonce: payload.nonce,
+      authMethod: readAuthMethodClaim(payload.authMethod),
+    };
   } catch {
     return undefined;
   }
@@ -639,6 +694,7 @@ function createRequireTwoFactorSetupToken(
     setupRequest.user = { id: credential.userId };
     setupRequest.twoFactorSetupIssuedAt = credential.issuedAt;
     setupRequest.twoFactorSetupIssuedAtMs = credential.issuedAtMs;
+    setupRequest.twoFactorEnrollmentAuthMethod = credential.authMethod;
     /** The signature was just verified, so the claim is read back rather than trusted blind. */
     const expiresAt = (jwt.decode(tempToken as string) as jwt.JwtPayload | null)?.exp;
     setupRequest.twoFactorSetupExpired =
@@ -689,6 +745,7 @@ export function requireTwoFactorSetupFinalizationToken(
   const setupRequest = req as TwoFactorEnrollmentRequest;
   setupRequest.user = { id: credential.userId };
   setupRequest.twoFactorEnrollmentNonce = credential.nonce;
+  setupRequest.twoFactorEnrollmentAuthMethod = credential.authMethod;
   next();
 }
 
@@ -713,6 +770,7 @@ export function requireTwoFactorSetupAcknowledgementToken(
   const setupRequest = req as TwoFactorEnrollmentRequest;
   setupRequest.user = { id: credential.userId };
   setupRequest.twoFactorEnrollmentNonce = credential.nonce;
+  setupRequest.twoFactorEnrollmentAuthMethod = credential.authMethod;
   next();
 }
 
