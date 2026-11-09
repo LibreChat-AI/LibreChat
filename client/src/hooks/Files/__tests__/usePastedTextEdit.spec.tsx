@@ -259,6 +259,166 @@ describe('usePastedTextEdit', () => {
       setFiles: expect.anything(),
     });
   });
+
+  it('drops the replaced original from the composer draft', async () => {
+    /** The replacement's upload writes the file cache in the same turn the original is detached,
+     * and the restore that write schedules reads the draft before autosave rewrites it. A draft
+     * still naming the original would re-attach it as a restored chip with no copy of its text. */
+    mockState.draftsById = {
+      'conversation-a:0:idle': {
+        fileIds: ['pasted-file', 'other-file'],
+        pendingPastes: {},
+        pastedTextIds: ['pasted-file'],
+      },
+    };
+    const editor = await openEditor();
+
+    await act(async () => {
+      await editor.result.current.saveEdit('corrected');
+    });
+    await act(async () => {
+      capturedLifecycle?.onSuccess?.('replacement-file');
+    });
+
+    const draft = mockState.draftsById['conversation-a:0:idle'];
+    expect(draft.fileIds).toEqual(['other-file']);
+    expect(draft.pastedTextIds).not.toContain('pasted-file');
+    /** The replacement keeps the provenance recorded for it before the upload. */
+    expect(draft.pastedTextIds).toHaveLength(1);
+  });
+
+  it('drops every identity of the replaced original from the draft', async () => {
+    const restored = pastedFile({ file_id: 'server-id', temp_file_id: 'temp-key' });
+    mockState.draftsById = {
+      'conversation-a:0:idle': {
+        fileIds: ['temp-key'],
+        pendingPastes: {},
+        pastedTextIds: ['temp-key', 'server-id'],
+      },
+    };
+    const editor = renderEditor(new Map([['temp-key', restored]]));
+
+    await act(async () => {
+      await editor.result.current.openEditor(restored);
+    });
+    await act(async () => {
+      await editor.result.current.saveEdit('corrected');
+    });
+    await act(async () => {
+      capturedLifecycle?.onSuccess?.('replacement-file');
+    });
+
+    const draft = mockState.draftsById['conversation-a:0:idle'];
+    expect(draft.fileIds).toEqual([]);
+    expect(draft.pastedTextIds).not.toContain('temp-key');
+    expect(draft.pastedTextIds).not.toContain('server-id');
+  });
+
+  it('drops the replaced original from the pending draft key a finishing run left it on', async () => {
+    mockState.draftsById = {
+      'conversation-a:0:pending': {
+        fileIds: ['pasted-file'],
+        pendingPastes: {},
+        pastedTextIds: ['pasted-file'],
+      },
+    };
+    const editor = await openEditor();
+
+    await act(async () => {
+      await editor.result.current.saveEdit('corrected');
+    });
+    await act(async () => {
+      capturedLifecycle?.onSuccess?.('replacement-file');
+    });
+
+    expect(mockState.draftsById['conversation-a:0:pending'].fileIds).toEqual([]);
+  });
+
+  it('leaves a draft another tab owns alone when the original is replaced', async () => {
+    mockState.draftsById = {
+      'conversation-a:0:idle': {
+        fileIds: ['pasted-file'],
+        pendingPastes: {},
+        pastedTextIds: ['pasted-file'],
+        tabId: 'other-tab',
+      },
+    };
+    const editor = await openEditor();
+
+    await act(async () => {
+      await editor.result.current.saveEdit('corrected');
+    });
+    await act(async () => {
+      capturedLifecycle?.onSuccess?.('replacement-file');
+    });
+
+    expect(mockDeleteFile).toHaveBeenCalledTimes(1);
+    expect(mockRemovePendingTextAttachmentDraft).not.toHaveBeenCalled();
+    expect(mockState.draftsById['conversation-a:0:idle'].fileIds).toEqual(['pasted-file']);
+  });
+
+  it('leaves drafts that do not name the replaced original alone', async () => {
+    mockState.draftsById = {
+      'conversation-a:0:idle': {
+        fileIds: ['other-file'],
+        pendingPastes: {},
+        pastedTextIds: ['other-file'],
+      },
+    };
+    const editor = await openEditor();
+
+    await act(async () => {
+      await editor.result.current.saveEdit('corrected');
+    });
+    await act(async () => {
+      capturedLifecycle?.onSuccess?.('replacement-file');
+    });
+
+    expect(mockRemovePendingTextAttachmentDraft).not.toHaveBeenCalled();
+    expect(mockState.draftsById['conversation-a:0:pending']).toBeUndefined();
+  });
+
+  it('does not touch the draft when draft saving is off', async () => {
+    mockState.saveDrafts = false;
+    mockState.draftsById = {
+      'conversation-a:0:idle': {
+        fileIds: ['pasted-file'],
+        pendingPastes: {},
+        pastedTextIds: ['pasted-file'],
+      },
+    };
+    const editor = await openEditor();
+
+    await act(async () => {
+      await editor.result.current.saveEdit('corrected');
+    });
+    await act(async () => {
+      capturedLifecycle?.onSuccess?.('replacement-file');
+    });
+
+    expect(mockDeleteFile).toHaveBeenCalledTimes(1);
+    expect(mockRemovePendingTextAttachmentDraft).not.toHaveBeenCalled();
+  });
+
+  it('drops a paste moved back inline from the composer draft', async () => {
+    mockState.draftsById = {
+      'conversation-a:0:idle': {
+        fileIds: ['pasted-file'],
+        pendingPastes: {},
+        pastedTextIds: ['pasted-file'],
+      },
+    };
+    const editor = renderEditor();
+
+    await act(async () => {
+      await editor.result.current.moveInline(pastedFile());
+    });
+
+    expect(mockDeleteFile).toHaveBeenCalledTimes(1);
+    expect(mockState.draftsById['conversation-a:0:idle'].fileIds).toEqual([]);
+    expect(mockState.draftsById['conversation-a:0:idle'].pastedTextIds).toEqual([]);
+  });
+
   it('removes a live paste claimed by another tab without scheduling deletion or retry', async () => {
     const live = pastedFile({ file_id: 'claimed-live-file' });
     mockState.draftsById['other-tab-draft'] = {
