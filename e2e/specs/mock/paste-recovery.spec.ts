@@ -163,9 +163,12 @@ for (const action of ['queue', 'steer'] as const) {
       );
       await input.press('Enter');
       await expect(
-        page.getByText(
-          'This paste is too long to send inline during a response. Wait for its upload to finish, then try again.',
-        ),
+        page
+          .getByRole('region', { name: 'Notifications (F8)' })
+          .getByText(
+            'This paste is too long to send inline during a response. Wait for its upload to finish, then try again.',
+            { exact: true },
+          ),
       ).toBeVisible();
       await expect(chip).toBeVisible();
       await expect(input).toHaveValue('Review this');
