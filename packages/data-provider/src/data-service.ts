@@ -1788,6 +1788,12 @@ export function finalizeTwoFactorSetup(
   return request.post(endpoints.finalizeTwoFactorSetup(), payload);
 }
 
+export function cancelTwoFactorSetup(
+  payload: t.TCancel2FASetupRequest,
+): Promise<t.TCancel2FASetupResponse> {
+  return request.post(endpoints.cancelTwoFactorSetup(), payload);
+}
+
 export function verifyTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify2FAResponse> {
   return request.post(endpoints.verifyTwoFactor(), payload);
 }
