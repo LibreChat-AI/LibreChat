@@ -81,7 +81,7 @@ const {
   getOutboundTimeoutMs,
   getToolErrorText,
   setMissingCodeFilesContext,
-  unmanagedAssistantRun,
+  getAssistantRun,
 } = require('@librechat/api');
 const {
   Time,
@@ -373,7 +373,7 @@ const processVisionRequest = async (client, currentAction) => {
   const completion = await client.visionPromise;
   if (completion && completion.usage) {
     /** Not awaited, so the run's drain has to wait for it. */
-    (client.req.assistantRun ?? unmanagedAssistantRun()).track(
+    getAssistantRun(client.req).track(
       recordUsage({
         user: client.req.user.id,
         model: client.req.body.model,
@@ -501,7 +501,7 @@ async function processRequiredActions(client, requiredActions) {
 
   const promises = [];
   /** A later action that fails to start must not strand the tools already running. */
-  const assistantRun = client.req.assistantRun ?? unmanagedAssistantRun();
+  const assistantRun = getAssistantRun(client.req);
 
   let actionSetsData = null;
   let isActionTool = false;

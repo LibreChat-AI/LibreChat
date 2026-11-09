@@ -96,6 +96,11 @@ export interface AssistantRunRequest {
   assistantRun?: AssistantRunHandle;
 }
 
+/** The run a route enrolled for this request, or an unmanaged one when it was not enrolled. */
+export function getAssistantRun(req: AssistantRunRequest): AssistantRunHandle {
+  return req.assistantRun ?? unmanagedAssistantRun();
+}
+
 /** A run with nothing to drain, for controllers invoked outside {@link withAssistantRun}. */
 export function unmanagedAssistantRun(): AssistantRunHandle {
   const { signal } = new AbortController();

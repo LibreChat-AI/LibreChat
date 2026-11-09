@@ -1,5 +1,5 @@
 const { sleep } = require('@librechat/agents');
-const { sendEvent, unmanagedAssistantRun } = require('@librechat/api');
+const { sendEvent, getAssistantRun } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const {
   Constants,
@@ -39,7 +39,7 @@ class StreamRunManager {
     /** @type {ServerRequest} */
     this.req = fields.req;
     /** The run's handle on the account cleanup barrier, for the work started without an await. */
-    this.assistantRun = fields.req.assistantRun ?? unmanagedAssistantRun();
+    this.assistantRun = getAssistantRun(fields.req);
     /** @type {Express.Response} */
     this.res = fields.res;
     /** @type {OpenAI} */

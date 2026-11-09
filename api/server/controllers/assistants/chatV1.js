@@ -20,7 +20,7 @@ const {
   resolveAssistantProjectTurn,
   joinChatProjectInstructions,
   applyForcedTemporaryRequest,
-  unmanagedAssistantRun,
+  getAssistantRun,
 } = require('@librechat/api');
 const {
   Time,
@@ -132,7 +132,7 @@ const chatV1 = async (req, res) => {
   const cache = getLogStores(CacheKeys.ABORT_KEYS);
   const cacheKey = `${req.user.id}:${conversationId}`;
   /** Registered with the account cleanup barrier by the route, so deletion can stop and drain it. */
-  const assistantRun = req.assistantRun ?? unmanagedAssistantRun();
+  const assistantRun = getAssistantRun(req);
 
   /** @type {Run | undefined} - The completed run, undefined if incomplete */
   let completedRun;

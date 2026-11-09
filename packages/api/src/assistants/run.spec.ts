@@ -3,7 +3,13 @@ import { EventEmitter } from 'events';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { logger, createModels, createMethods } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream';
-import { AssistantRun, withAssistantRun, enrollAssistantRun, unmanagedAssistantRun } from './run';
+import {
+  AssistantRun,
+  getAssistantRun,
+  withAssistantRun,
+  enrollAssistantRun,
+  unmanagedAssistantRun,
+} from './run';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass as JobManager } from '~/stream';
@@ -506,6 +512,24 @@ describe('Assistants run enrollment', () => {
 
       await handler(request({ endpoint: 'azureAssistants', assistant_id: 'asst_9' }), res);
     });
+  });
+});
+
+describe('getAssistantRun', () => {
+  it('returns the run a route enrolled for the request, and an unmanaged one otherwise', async () => {
+    const manager = createManager();
+    try {
+      const run = await enrollAssistantRun(
+        { userId: 'user-1' },
+        { manager, isPrincipalActive: async () => true },
+      );
+
+      expect(getAssistantRun({ assistantRun: run })).toBe(run);
+      expect(getAssistantRun({}).stopped).toBe(false);
+      await run.settle(closedResponse());
+    } finally {
+      await manager.destroy();
+    }
   });
 });
 
