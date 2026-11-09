@@ -3,7 +3,10 @@ import type { TerminalContext, StreamStatusResponse } from '../resumable';
 import {
   ResumableRun,
   handoffToReplacement,
+  withStatusDeadline,
   ResumableSubscription,
+  STATUS_READ_TIMEOUT_MS,
+  StatusReadTimeoutError,
   authorizeTerminalTeardown,
   reconcileGenerationLifecycle,
 } from '../resumable';
@@ -56,6 +59,24 @@ describe('authorizeTerminalTeardown', () => {
     clock.advance(249);
     expect(host.subscribe).not.toHaveBeenCalled();
     clock.advance(1);
+    expect(host.subscribe).toHaveBeenCalledWith(
+      expect.objectContaining({ streamId: 'c-1', isResume: true, generationCreatedAt: 2000 }),
+    );
+  });
+
+  it('re-attaches instead of stranding the pane when the status read never answers', async () => {
+    const { ctx, fetchStatus, clock, host } = setup();
+    fetchStatus.mockReturnValue(new Promise<never>(() => undefined));
+    host.fetchStatus = withStatusDeadline(fetchStatus, clock.scheduler);
+    const authorized = authorizeTerminalTeardown(ctx, 'c-1', 'FINAL');
+    clock.advance(STATUS_READ_TIMEOUT_MS);
+    await expect(authorized).resolves.toBe(false);
+    expect(host.logger.warn).toHaveBeenCalledWith(
+      'ResumableSSE',
+      'Could not verify FINAL generation status',
+      expect.objectContaining({ error: expect.any(StatusReadTimeoutError) }),
+    );
+    clock.advance(250);
     expect(host.subscribe).toHaveBeenCalledWith(
       expect.objectContaining({ streamId: 'c-1', isResume: true, generationCreatedAt: 2000 }),
     );
@@ -157,5 +178,43 @@ describe('reconcileGenerationLifecycle', () => {
     expect(host.pane.publishRunEnd).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: 'aborted' }),
     );
+  });
+});
+
+describe('withStatusDeadline', () => {
+  it('passes an answered read through and cancels its deadline', async () => {
+    const clock = createScheduler();
+    const status: StreamStatusResponse = { active: false, generationProtocolVersion: 2 };
+    const read = withStatusDeadline(jest.fn().mockResolvedValue(status), clock.scheduler);
+    await expect(read('c-1')).resolves.toBe(status);
+    expect(clock.pending()).toBe(0);
+  });
+
+  it('keeps a read rejected when its answer arrives after the deadline', async () => {
+    const clock = createScheduler();
+    let answer: (status: StreamStatusResponse) => void = () => undefined;
+    const read = withStatusDeadline(
+      jest.fn(
+        () =>
+          new Promise<StreamStatusResponse>((resolve) => {
+            answer = resolve;
+          }),
+      ),
+      clock.scheduler,
+    );
+    const pending = read('c-1');
+    clock.advance(STATUS_READ_TIMEOUT_MS - 1);
+    expect(clock.pending()).toBe(1);
+    clock.advance(1);
+    answer({ active: false, generationProtocolVersion: 2 });
+    await expect(pending).rejects.toBeInstanceOf(StatusReadTimeoutError);
+  });
+
+  it('passes a failed read through unchanged', async () => {
+    const clock = createScheduler();
+    const error = new Error('offline');
+    const read = withStatusDeadline(jest.fn().mockRejectedValue(error), clock.scheduler);
+    await expect(read('c-1')).rejects.toBe(error);
+    expect(clock.pending()).toBe(0);
   });
 });
