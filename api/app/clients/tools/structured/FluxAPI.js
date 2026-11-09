@@ -6,6 +6,7 @@ const { Tool } = require('@librechat/agents/langchain/tools');
 const {
   applyAxiosProxyConfig,
   createMinimalRetentionRequest,
+  formatToolError,
   getHttpsProxyAgent,
   resolveFluxResultRequest,
 } = require('@librechat/api');
@@ -255,13 +256,7 @@ class FluxAPI extends Tool {
         ...this.getAxiosConfig(),
       });
     } catch (error) {
-      const details = this.getDetails(error?.response?.data || error.message);
-      logger.error('[FluxAPI] Error while submitting task:', details);
-
-      return this.returnValue(
-        `Something went wrong when trying to generate the image. The Flux API may be unavailable:
-        Error Message: ${details}`,
-      );
+      return this.returnValue(formatToolError(error, 'Flux'));
     }
 
     const resultRequest = resolveFluxResultRequest(
@@ -339,8 +334,7 @@ class FluxAPI extends Tool {
         ];
         return [response, { content }];
       } catch (error) {
-        logger.error('Error processing image for agent:', error);
-        return this.returnValue(`Failed to process the image. ${error.message}`);
+        return this.returnValue(formatToolError(error, 'Flux'));
       }
     }
 
@@ -371,9 +365,7 @@ class FluxAPI extends Tool {
       this.result = this.returnMetadata ? result : this.wrapInMarkdown(result.filepath);
       return this.returnValue(this.result);
     } catch (error) {
-      const details = this.getDetails(error?.message ?? 'No additional error details.');
-      logger.error('Error while saving the image:', details);
-      return this.returnValue(`Failed to save the image locally. ${details}`);
+      return this.returnValue(formatToolError(error, 'Flux'));
     }
   }
 
@@ -423,9 +415,7 @@ class FluxAPI extends Tool {
       }
       return JSON.stringify(finetuneDetails);
     } catch (error) {
-      const details = this.getDetails(error?.response?.data || error.message);
-      logger.error('[FluxAPI] Error while getting finetunes:', details);
-      const errorMsg = `Failed to get finetunes: ${details}`;
+      const errorMsg = formatToolError(error, 'Flux');
       return this.isAgent ? this.returnValue([errorMsg, {}]) : new Error(errorMsg);
     }
   }
@@ -493,12 +483,7 @@ class FluxAPI extends Tool {
         ...this.getAxiosConfig(),
       });
     } catch (error) {
-      const details = this.getDetails(error?.response?.data || error.message);
-      logger.error('[FluxAPI] Error while submitting finetuned task:', details);
-      return this.returnValue(
-        `Something went wrong when trying to generate the finetuned image. The Flux API may be unavailable:
-        Error Message: ${details}`,
-      );
+      return this.returnValue(formatToolError(error, 'Flux'));
     }
 
     const resultRequest = resolveFluxResultRequest(
@@ -574,8 +559,7 @@ class FluxAPI extends Tool {
         ];
         return [response, { content }];
       } catch (error) {
-        logger.error('[FluxAPI] Error processing finetuned image for agent:', error);
-        return this.returnValue(`Failed to process the finetuned image. ${error.message}`);
+        return this.returnValue(formatToolError(error, 'Flux'));
       }
     }
 
@@ -597,9 +581,7 @@ class FluxAPI extends Tool {
       this.result = this.returnMetadata ? result : this.wrapInMarkdown(result.filepath);
       return this.returnValue(this.result);
     } catch (error) {
-      const details = this.getDetails(error?.message ?? 'No additional error details.');
-      logger.error('Error while saving the finetuned image:', details);
-      return this.returnValue(`Failed to save the finetuned image locally. ${details}`);
+      return this.returnValue(formatToolError(error, 'Flux'));
     }
   }
 }

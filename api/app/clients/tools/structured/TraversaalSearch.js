@@ -1,7 +1,11 @@
-const { logger } = require('@librechat/data-schemas');
-const { toolRequestBudget } = require('@librechat/api');
 const { Tool } = require('@librechat/agents/langchain/tools');
 const { getEnvironmentVariable } = require('@librechat/agents/langchain/utils/env');
+const {
+  ToolInputError,
+  formatToolError,
+  formatToolHttpError,
+  toolRequestBudget,
+} = require('@librechat/api');
 
 const traversaalSearchJsonSchema = {
   type: 'object',
@@ -63,14 +67,12 @@ class TraversaalSearch extends Tool {
         body: JSON.stringify({ ...body }),
         signal: toolRequestBudget(this.timeouts).signal,
       });
-      const json = await response.json();
       if (!response.ok) {
-        throw new Error(
-          `Request failed with status code ${response.status}: ${json.error ?? json.message}`,
-        );
+        return formatToolHttpError('Traversaal', response.status);
       }
+      const json = await response.json();
       if (!json.data) {
-        throw new Error('Could not parse Traversaal API results. Please try again.');
+        throw new ToolInputError('Could not parse Traversaal API results. Please try again.');
       }
 
       const baseText = json.data?.response_text ?? '';
@@ -91,8 +93,7 @@ class TraversaalSearch extends Tool {
 
       return result;
     } catch (error) {
-      logger.error('Traversaal API request failed', error);
-      return `Traversaal API request failed: ${error.message}`;
+      return formatToolError(error, 'Traversaal');
     }
   }
 }

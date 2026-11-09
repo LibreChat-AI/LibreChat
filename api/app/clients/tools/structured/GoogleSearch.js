@@ -1,6 +1,6 @@
-const { toolRequestBudget } = require('@librechat/api');
 const { Tool } = require('@librechat/agents/langchain/tools');
 const { getEnvironmentVariable } = require('@librechat/agents/langchain/utils/env');
+const { formatToolError, formatToolHttpError, toolRequestBudget } = require('@librechat/api');
 
 const googleSearchJsonSchema = {
   type: 'object',
@@ -57,25 +57,28 @@ class GoogleSearchResults extends Tool {
   async _call(input) {
     const { query, max_results = 5 } = input;
 
-    const response = await fetch(
-      `https://www.googleapis.com/customsearch/v1?key=${this.apiKey}&cx=${
-        this.searchEngineId
-      }&q=${encodeURIComponent(query)}&num=${max_results}`,
-      {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
+    try {
+      const response = await fetch(
+        `https://www.googleapis.com/customsearch/v1?key=${this.apiKey}&cx=${
+          this.searchEngineId
+        }&q=${encodeURIComponent(query)}&num=${max_results}`,
+        {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          signal: toolRequestBudget(this.timeouts).signal,
         },
-        signal: toolRequestBudget(this.timeouts).signal,
-      },
-    );
+      );
 
-    const json = await response.json();
-    if (!response.ok) {
-      throw new Error(`Request failed with status ${response.status}: ${json.error.message}`);
+      if (!response.ok) {
+        return formatToolHttpError('Google Search', response.status);
+      }
+
+      return JSON.stringify(await response.json());
+    } catch (error) {
+      return formatToolError(error, 'Google Search');
     }
-
-    return JSON.stringify(json);
   }
 }
 
