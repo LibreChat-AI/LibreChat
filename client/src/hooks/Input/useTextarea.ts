@@ -523,9 +523,15 @@ export default function useTextarea({
         const { pendingPastes } = getFilesDraft(draftId);
         return pendingPastes[fileId] != null || pendingPastes[pendingFileId] != null;
       };
+      let canceled = false;
       const restorePasteAfterUploadFailure = (fileId: string): boolean => {
         const currentTextArea = textAreaRef.current;
-        if (!currentTextArea || answerModeActiveRef.current || !isOriginatingComposer()) {
+        if (
+          canceled ||
+          !currentTextArea ||
+          answerModeActiveRef.current ||
+          !isOriginatingComposer()
+        ) {
           return false;
         }
         const composerUnchanged = currentTextArea.value === composerValue;
@@ -572,10 +578,12 @@ export default function useTextarea({
           removePendingTextAttachmentDraft({ id: currentDraftId, fileId, removeFile });
         }
       };
-      let canceled = false;
       const uploadLifecycle: UploadLifecycleCallbacks = {
         fileId: pendingFileId,
         pastedText,
+        onRecoveryTransferred: () => {
+          canceled = true;
+        },
         shouldCommit: isOriginatingComposer,
         onStart: (fileId) => {
           markPastedTextFile(fileId);

@@ -120,6 +120,8 @@ jest.mock('~/Providers', () => ({
   }),
 }));
 
+jest.mock('../useFileHandling', () => ({ retainPasteUpload: jest.fn() }));
+
 jest.mock('../useFileUploadRouter', () => ({
   __esModule: true,
   default: () => mockRouteFiles,
@@ -170,6 +172,7 @@ jest.mock('librechat-data-provider', () => ({
 }));
 
 import usePastedTextEdit from '../usePastedTextEdit';
+import { retainPasteUpload } from '../useFileHandling';
 
 const pastedFile = (overrides: Partial<ExtendedFile> = {}): ExtendedFile => ({
   file_id: 'pasted-file',
@@ -270,6 +273,21 @@ describe('usePastedTextEdit', () => {
     );
     expect(mockRouteFiles).toHaveBeenCalledTimes(1);
     expect(capturedLifecycle?.pastedText).toBe('first correction');
+  });
+
+  it('takes failure recovery from the original before staging a pending edit', async () => {
+    const original = pastedFile({
+      file_id: 'pending-original',
+      progress: 0.2,
+      pastedText: 'original',
+    });
+    const editor = renderEditor(new Map([[original.file_id, original]]));
+    await act(async () => editor.result.current.openEditor(original));
+    expect(retainPasteUpload).toHaveBeenCalledWith(['pending-original']);
+    await act(async () => editor.result.current.saveEdit('corrected'));
+    expect(jest.mocked(retainPasteUpload).mock.invocationCallOrder[0]).toBeLessThan(
+      mockRouteFiles.mock.invocationCallOrder[0],
+    );
   });
 
   it('keeps edit and inline actions locked across original-upload completion', async () => {

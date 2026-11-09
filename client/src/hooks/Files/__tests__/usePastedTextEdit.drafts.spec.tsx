@@ -63,6 +63,7 @@ jest.mock('../useFileUploadRouter', () => ({
 }));
 
 jest.mock('../useFileHandling', () => ({
+  retainPasteUpload: jest.fn(),
   clearUploadRecovery: jest.fn(),
   hasInFlightUpload: jest.fn(() => false),
 }));

@@ -31,6 +31,7 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useChatContext, useChatFormContext } from '~/Providers';
 import useFileUploadRouter from './useFileUploadRouter';
 import { getNewConversationDraftToken } from '~/utils';
+import { retainPasteUpload } from './useFileHandling';
 import { useAuthContext } from '~/hooks/AuthContext';
 import useFileDeletion from './useFileDeletion';
 import { useLocalize } from '~/hooks';
@@ -200,6 +201,7 @@ export default function usePastedTextEdit({
         showToast({ message: localize('com_ui_pasted_text_unavailable'), status: 'error' });
         return;
       }
+      retainPasteUpload(attachmentIdsOf(file));
       setEditing({
         file,
         text,
@@ -442,6 +444,7 @@ export default function usePastedTextEdit({
       setFailedEdits((queue) =>
         queue.filter((failed) => !attachmentIdsOf(failed.file).some((id) => sourceIds.has(id))),
       );
+      retainPasteUpload(attachmentIdsOf(file));
       setEditing(null);
       /** The original stays until the replacement is stored, but it stops accepting actions:
        * a second edit or a Move back against the same original would double-replace it. */

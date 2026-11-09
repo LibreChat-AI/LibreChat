@@ -319,6 +319,27 @@ describe('useTextarea long-paste fallback', () => {
     expect(mockInsertTextAtCursor).not.toHaveBeenCalled();
   });
 
+  it('does not restore a superseded source after its editor takes recovery', async () => {
+    let finish!: (accepted: boolean) => void;
+    mockRouteFiles.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const { result } = renderTextareaHook();
+    act(() =>
+      result.current.handlePaste(
+        createPasteEvent() as unknown as React.ClipboardEvent<HTMLTextAreaElement>,
+      ),
+    );
+    const lifecycle = mockRouteFiles.mock.calls[0][2] as UploadLifecycleCallbacks;
+    act(() => lifecycle.onRecoveryTransferred?.());
+    act(() => lifecycle.onError?.(lifecycle.fileId!));
+    await act(async () => finish(false));
+    expect(mockInsertTextAtCursor).not.toHaveBeenCalled();
+  });
+
   it('replaces selected draft text when the attachment is accepted', async () => {
     mockRouteFiles.mockResolvedValueOnce(true);
     const { result, textArea } = renderTextareaHook();

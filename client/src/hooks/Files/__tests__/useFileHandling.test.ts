@@ -403,6 +403,100 @@ describe('useFileHandling', () => {
     ]);
   });
 
+  it('keeps an edited source local when its original request fails', async () => {
+    const {
+      default: useFileHandling,
+      retainPasteUpload,
+      clearUploadRecovery,
+      hasInFlightUpload,
+    } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    const onError = jest.fn();
+    const onRecoveryTransferred = jest.fn();
+    await act(async () =>
+      result.current.handleFiles(
+        [new File(['original'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'edited-source', pastedText: 'original', onError, onRecoveryTransferred },
+      ),
+    );
+    const body = mockMutate.mock.calls[0][0] as FormData;
+    act(() => {
+      retainPasteUpload(['edited-source']);
+      retainPasteUpload(['edited-source']);
+      mockUploadOptions.onError?.(new Error('source request failed'), body);
+    });
+    expect(onRecoveryTransferred).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(mockDeleteFileById).not.toHaveBeenCalled();
+    expect(hasInFlightUpload('edited-source')).toBe(false);
+    act(() => clearUploadRecovery('edited-source'));
+    expect(mockDeleteFileById).toHaveBeenCalledWith('edited-source', expect.any(Function));
+  });
+
+  it('keeps a source fallback when validation rejects it after editing began', async () => {
+    mockIsConfigPending = true;
+    let release!: () => void;
+    mockWaitForConfig.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const {
+      default: useFileHandling,
+      retainPasteUpload,
+      clearUploadRecovery,
+      hasInFlightUpload,
+    } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    const onRecoveryTransferred = jest.fn();
+    let pending!: Promise<boolean>;
+    act(() => {
+      pending = result.current.handleFiles(
+        [new File(['original'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'queued-source', pastedText: 'original', onRecoveryTransferred },
+      );
+      retainPasteUpload(['queued-source']);
+    });
+    mockValidateFiles.mockReturnValueOnce(false);
+    await act(async () => {
+      release();
+      expect(await pending).toBe(false);
+    });
+    expect(onRecoveryTransferred).toHaveBeenCalledTimes(1);
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(mockDeleteFileById).not.toHaveBeenCalled();
+    expect(hasInFlightUpload('queued-source')).toBe(false);
+    act(() => clearUploadRecovery('queued-source'));
+    expect(mockDeleteFileById).toHaveBeenCalledWith('queued-source', expect.any(Function));
+  });
+
+  it('does not retain a failed source in a composer that no longer owns it', async () => {
+    let isCurrent = true;
+    const {
+      default: useFileHandling,
+      retainPasteUpload,
+      clearUploadRecovery,
+    } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    await act(async () =>
+      result.current.handleFiles(
+        [new File(['original'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'stale-source', pastedText: 'original', isCurrent: () => isCurrent },
+      ),
+    );
+    const body = mockMutate.mock.calls[0][0] as FormData;
+    act(() => {
+      retainPasteUpload(['stale-source']);
+      isCurrent = false;
+      mockUploadOptions.onError?.(new Error('source request failed'), body);
+    });
+    expect(mockDeleteFileById).toHaveBeenCalledWith('stale-source', expect.any(Function));
+    act(() => clearUploadRecovery('stale-source'));
+  });
+
   it('retains a late successful response for cleanup after its paste was sent inline', async () => {
     const { default: useFileHandling, cancelUploads } = await import('../useFileHandling');
     const { result } = renderHook(() => useFileHandling());
