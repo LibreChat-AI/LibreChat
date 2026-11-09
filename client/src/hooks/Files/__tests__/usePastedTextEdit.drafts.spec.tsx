@@ -191,7 +191,7 @@ describe('usePastedTextEdit with the real composer drafts', () => {
     /** The restore the cache write schedules runs before autosave rewrites the draft, so a draft
      * still naming the original would re-attach it from the server's file list. */
     expect(attachedFilenames(composer)).toEqual(['pasted-text-2.txt']);
-    expect(composer.result.current.edit.isActionPending(ORIGINAL_SERVER_ID)).toBe(false);
+    expect(composer.result.current.edit.isActionPending(originalChip())).toBe(false);
   });
 
   it('drops the replaced original from the files draft and keeps the replacement', async () => {
