@@ -19,7 +19,7 @@ import { useLocalize } from '~/hooks';
 
 export const useUploadFileMutation = (
   _options?: t.UploadMutationOptions,
-  signal?: AbortSignal | null,
+  signal?: AbortSignal | null | ((body: FormData) => AbortSignal | undefined),
 ): UseMutationResult<
   t.TFileUpload, // response data
   unknown, // error
@@ -32,19 +32,20 @@ export const useUploadFileMutation = (
   const { onSuccess, ...options } = _options || {};
   return useMutation([MutationKeys.fileUpload], {
     mutationFn: (body: FormData) => {
+      const uploadSignal = typeof signal === 'function' ? signal(body) : signal;
       const width = body.get('width') ?? '';
       const height = body.get('height') ?? '';
       const version = body.get('version') ?? '';
       const endpoint = (body.get('endpoint') ?? '') as string;
       if (isAssistantsEndpoint(endpoint) && version === '2') {
-        return dataService.uploadFile(body, signal, sseEnabled);
+        return dataService.uploadFile(body, uploadSignal, sseEnabled);
       }
 
       if (width !== '' && height !== '') {
-        return dataService.uploadImage(body, signal, sseEnabled);
+        return dataService.uploadImage(body, uploadSignal, sseEnabled);
       }
 
-      return dataService.uploadFile(body, signal, sseEnabled);
+      return dataService.uploadFile(body, uploadSignal, sseEnabled);
     },
     ...options,
     onSuccess: (data, formData, context) => {

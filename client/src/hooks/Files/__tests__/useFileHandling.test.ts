@@ -55,6 +55,11 @@ let mockHeicModuleError: Error | undefined;
 const mockShowToast = jest.fn();
 const mockSetFilesLoading = jest.fn();
 const mockMutate = jest.fn();
+let mockUploadSignal:
+  | AbortSignal
+  | null
+  | ((body: FormData) => AbortSignal | undefined)
+  | undefined;
 let mockEphemeralAgent: { file_search?: boolean; execute_code?: boolean } = {};
 const mockSetEphemeralAgent = jest.fn(
   (update: (previous: typeof mockEphemeralAgent) => typeof mockEphemeralAgent, _key?: string) => {
@@ -138,10 +143,13 @@ jest.mock('~/data-provider', () => ({
   useGetFileConfig: jest.fn(() => ({ data: mockFileConfig })),
   useGetEndpointsQuery: jest.fn(() => ({ data: mockEndpointsConfig })),
   useGetAgentByIdQuery: jest.fn(() => ({ data: mockAgentQueryData })),
-  useUploadFileMutation: jest.fn((opts: MockUploadMutationOptions) => {
-    mockUploadOptions = opts;
-    return { mutate: mockMutate };
-  }),
+  useUploadFileMutation: jest.fn(
+    (opts: MockUploadMutationOptions, signal: typeof mockUploadSignal) => {
+      mockUploadOptions = opts;
+      mockUploadSignal = signal;
+      return { mutate: mockMutate };
+    },
+  ),
 }));
 
 jest.mock('~/hooks/useLocalize', () => {
@@ -220,6 +228,7 @@ jest.mock('~/utils', () => {
     cachePreview: jest.fn(),
     getCachedPreview: jest.fn(() => undefined),
     removePreviewEntry: jest.fn(),
+    retainFileDeletion: jest.fn(),
   };
 });
 
@@ -315,6 +324,92 @@ describe('useFileHandling', () => {
     });
     expect(mockMutate).toHaveBeenCalledTimes(2);
     consoleLog.mockRestore();
+  });
+
+  it('stages exact pasted text synchronously while config is pending and cancels without uploading', async () => {
+    mockIsConfigPending = true;
+    let release!: () => void;
+    mockWaitForConfig.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const { default: useFileHandling, cancelUploads } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    const onAbort = jest.fn();
+    let pending!: Promise<boolean>;
+    act(() => {
+      pending = result.current.handleFiles(
+        [new File(['exact paste'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'queued-paste', pastedText: 'exact paste', onAbort },
+      );
+    });
+    expect(mockAddFile).toHaveBeenCalledWith(
+      expect.objectContaining({ file_id: 'queued-paste', pastedText: 'exact paste', progress: 0 }),
+      expect.any(Function),
+    );
+    act(() => cancelUploads(['queued-paste']));
+    expect(onAbort).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      release();
+      expect(await pending).toBe(false);
+    });
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
+
+  it('aborts only the selected request even when another hook owns the tray', async () => {
+    const { default: useFileHandling, cancelUploads } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    await act(async () => {
+      await result.current.handleFiles([new File(['a'], 'first.txt', { type: 'text/plain' })]);
+      await result.current.handleFiles([new File(['b'], 'second.txt', { type: 'text/plain' })]);
+    });
+    const first = mockMutate.mock.calls[0][0] as FormData;
+    const second = mockMutate.mock.calls[1][0] as FormData;
+    expect(typeof mockUploadSignal).toBe('function');
+    if (typeof mockUploadSignal !== 'function')
+      throw new Error('Missing per-request signal resolver');
+    const firstSignal = mockUploadSignal(first);
+    const secondSignal = mockUploadSignal(second);
+    expect(firstSignal?.aborted).toBe(false);
+    expect(secondSignal?.aborted).toBe(false);
+    act(() => cancelUploads([first.get('file_id') as string]));
+    expect(firstSignal?.aborted).toBe(true);
+    expect(mockUploadSignal(first)).toBe(firstSignal);
+    expect(secondSignal?.aborted).toBe(false);
+  });
+
+  it('retains a late successful response for cleanup after its paste was sent inline', async () => {
+    const { default: useFileHandling, cancelUploads } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    await act(async () => {
+      await result.current.handleFiles(
+        [new File(['paste'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'late-paste', pastedText: 'paste' },
+      );
+    });
+    const body = mockMutate.mock.calls[0][0] as FormData;
+    act(() => cancelUploads(['late-paste']));
+    act(() =>
+      mockUploadOptions.onSuccess?.(
+        {
+          temp_file_id: 'late-paste',
+          file_id: 'orphan',
+          filepath: '/uploads/orphan.txt',
+          type: 'text/plain',
+          filename: 'pasted-text.txt',
+          source: 'local',
+          embedded: false,
+        },
+        body,
+      ),
+    );
+    expect(jest.requireMock('~/utils').retainFileDeletion).toHaveBeenCalledWith(
+      expect.objectContaining({ file_id: 'orphan', filepath: '/uploads/orphan.txt' }),
+    );
+    expect(mockUpdateFileById).not.toHaveBeenCalled();
   });
 
   describe('endpointOverride', () => {

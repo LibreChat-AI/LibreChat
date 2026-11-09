@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { v4 } from 'uuid';
 import { useToastContext } from '@librechat/client';
+import { isComposerFileTaken } from '@librechat/chat';
 import {
   dataService,
   EToolResources,
@@ -102,6 +103,8 @@ export default function usePastedTextEdit({
    * only copy left once the composer was rebuilt from a draft. */
   const resolveText = useCallback(
     async (file: ExtendedFile): Promise<string | null> => {
+      if (file.pastedText != null) return file.pastedText;
+      if (file.text != null) return file.text;
       if (file.file != null) {
         try {
           return await file.file.text();
@@ -353,7 +356,11 @@ export default function usePastedTextEdit({
        * another chip's dialog is open, the failed edit queues for the freed dialog instead of
        * being dropped: the failed upload's callback was its only remaining owner. */
       const restoreEdits = () => {
-        if (!isOriginatingComposer(editConversationId, editDraftToken)) {
+        if (
+          !isOriginatingComposer(editConversationId, editDraftToken) ||
+          isComposerFileTaken(uploadId) ||
+          !isAttachedToComposer(file)
+        ) {
           return;
         }
         const revived = {
@@ -370,6 +377,7 @@ export default function usePastedTextEdit({
       };
       const accepted = await routeFiles([replacement], toolResource, {
         fileId: uploadId,
+        pastedText: text,
         replacesFileId: sourceId,
         shouldCommit: () =>
           isOriginatingComposer(editConversationId, editDraftToken) && isAttachedToComposer(file),

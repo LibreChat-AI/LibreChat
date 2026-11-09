@@ -25,6 +25,7 @@ import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import { streamStatusQueryKey } from '~/data-provider/SSE/queries';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
+import { cancelUploads } from '~/hooks/Files/useFileHandling';
 import { useSetFilesToDelete } from '~/hooks/Files';
 import { useFileMapContext } from '~/Providers';
 import useLocalize from '~/hooks/useLocalize';
@@ -101,6 +102,7 @@ function useSettings(): SteerSettings {
 /** The app's services behind the steer and queue hooks: its transport-backed mutations and
  *  queries, toasts, translations, file map and chat settings. */
 export const appSteerHost: SteerHost = {
+  cancelUploads,
   useSteerMessage,
   useSteerMessageAsync: () => useSteerMessageMutation().mutateAsync,
   useCancelSteer: () => useCancelSteerMutation().mutateAsync,

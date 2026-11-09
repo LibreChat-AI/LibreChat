@@ -14,11 +14,13 @@ import {
   getRouteChatProjectId,
 } from '~/utils';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
+import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
+import { cancelUploads } from '~/hooks/Files/useFileHandling';
 import useUserKey from '~/hooks/Input/useUserKey';
 import { isTargetReady } from './ask/guards';
 
@@ -30,6 +32,7 @@ export default function useTurnServices({
 }: Pick<ChatTurnsParams, 'index' | 'conversation'>): TurnServices {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const discardFiles = useDiscardPastedFiles(index, conversation?.conversationId);
   const setFilesToDelete = useSetFilesToDelete();
   const agentsMap = useAgentsMapContext();
   const { isTemporary, config, auth, getEphemeralAgent, addedConversation } = useChatSettings();
@@ -92,6 +95,8 @@ export default function useTurnServices({
       requestChatFocus();
       navigate(path);
     },
+    cancelUploads,
+    discardFiles,
     releaseFiles: (fileIds) => markPasteSubmitted(...fileIds),
     clearFilesToDelete: () => setFilesToDelete({}),
   };

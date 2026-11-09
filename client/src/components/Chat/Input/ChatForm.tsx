@@ -3,6 +3,7 @@ import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
 import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
+import { isInlineablePastedText } from '@librechat/chat';
 import { useDirection } from '@radix-ui/react-direction';
 import {
   PastedTextDialog,
@@ -65,6 +66,7 @@ import {
   PendingToolApprovalButton,
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
+import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
 import useComposerRestore from '~/hooks/Input/useComposerRestore';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
@@ -275,6 +277,7 @@ const ChatForm = memo(function ChatForm({
     onPromptSettled: settleText,
   });
 
+  const discardFiles = useDiscardPastedFiles(index, conversationId);
   const pastedTextEdit = usePastedTextEdit({ index, files, setFiles, textAreaRef });
 
   /** Provenance, not the filename, decides which chips are pastes: a user can deliberately
@@ -348,6 +351,7 @@ const ChatForm = memo(function ChatForm({
     return () => publishComposerRestore(null);
   }, [publishComposerRestore, restoreReclaimedSteer]);
   const steering = useSteering({
+    discardFiles,
     consumeDraft,
     addedConversation: addedConvo,
     index,
@@ -498,7 +502,7 @@ const ChatForm = memo(function ChatForm({
   const uploadingCount = useMemo(() => {
     let count = 0;
     for (const file of files.values()) {
-      if (file.progress < 1) {
+      if (file.progress < 1 && !isInlineablePastedText(file)) {
         count++;
       }
     }

@@ -73,8 +73,8 @@ export type QueuedTurnCache = {
 };
 
 /**
- * What the steer and queue hooks need from the app that hosts them. Every member is a hook,
- * called by a steer hook exactly where it needs the service, so the host can back each one with
+ * What the steer and queue hooks need from the app that hosts them. Members named `use*` are
+ * hooks, called unconditionally where needed, so the host can back each one with
  * its own query cache, router or store without the package reaching into any of them.
  */
 export interface SteerHost {
@@ -131,6 +131,8 @@ export interface SteerHost {
   useFileMap(): FileDeliveryMetadataMap | undefined;
   /** Drops the composer's pending file deletions once its attachments ride a message. */
   useClearFilesToDelete(): () => void;
+  /** Cancels uploads whose exact local paste was accepted inline, without marking them submitted. */
+  cancelUploads?: (fileIds: string[]) => void;
   useSettings(): SteerSettings;
 }
 
