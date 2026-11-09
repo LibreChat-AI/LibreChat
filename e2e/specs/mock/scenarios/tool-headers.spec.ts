@@ -216,6 +216,26 @@ test.describe('tool activity headers', () => {
     await expect(messagesView(page).getByText(/matched 0 locations/)).toBeVisible();
   });
 
+  test('a file card keeps a warning that follows its success summary @scenario:file-card-keeps-warning-after-summary', async ({
+    page,
+  }) => {
+    await openConversation(page, [
+      call(
+        'w1',
+        'create_file',
+        { file_path: 'skills/demo/SKILL.md', content: '# Demo\n\nUse this skill for testing.' },
+        [
+          'Created skills/demo/SKILL.md (35 chars).',
+          '',
+          'Warnings:',
+          '- frontmatter.owner [UNKNOWN_KEY]: "owner" is not a recognized frontmatter key and is stored as-is',
+        ].join('\n'),
+      ),
+    ]);
+    await expand(page, /SKILL\.md/);
+    await expect(messagesView(page).getByText(/not a recognized frontmatter key/)).toBeVisible();
+  });
+
   test('a titled failed command opens on its error with the time on the command line @scenario:titled-failed-command-shows-error-and-time', async ({
     page,
   }) => {
