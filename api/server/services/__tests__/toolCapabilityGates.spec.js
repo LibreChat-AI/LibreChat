@@ -56,6 +56,12 @@ const CLASSIFIED = {
   // -- Not gates ---------------------------------------------------------------
   /** The upload-resource map entry, and one mention in a doc comment. */
   'packages/api/src/tools/rolePermissions.ts': 2,
+  /** `buildHistoricalToolNames` predicts the names a lazy agent's history may
+   *  hold, and binds nothing: one read in the never-bound marker set, one as the
+   *  bookkeeping key for names registered only when `codeExecutionAvailable`,
+   *  which the lazy history resolver receives already paired with the `runCode`
+   *  grant (`codeEnvAvailable` in agents/initialize.js). */
+  'packages/api/src/agents/tools.ts': 2,
   /** Default capability list shipped in config. */
   'packages/data-provider/src/config.ts': 2,
   /** Config normalization only: strips stale `tool_options` when the capability
