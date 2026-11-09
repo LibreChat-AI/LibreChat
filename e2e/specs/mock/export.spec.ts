@@ -30,8 +30,9 @@ const MIN_PIXEL_RATIO = 0.5;
 
 const OVERSIZED_TITLE = 'Oversized export fixture';
 const OVERSIZED_PARAGRAPH = 'Oversized export fixture paragraph';
-const OVERSIZED_MESSAGES = 80;
-const OVERSIZED_PARAGRAPHS_PER_MESSAGE = 50;
+/** Keep the same 4,000 paragraphs without a deeply nested message tree. */
+const OVERSIZED_MESSAGES = 8;
+const OVERSIZED_PARAGRAPHS_PER_MESSAGE = 500;
 
 const userEmail = getE2EUser().email;
 const cleanupConversationIds: string[] = [];
@@ -180,8 +181,7 @@ test.describe('conversation export', () => {
       timeout: 60000,
     });
 
-    /** Measure without snapshotting the enormous transcript for a locator action.
-     *  Both area and edge limits can make the fixture too large to capture. */
+    /** Both area and edge limits can make the fixture too large to capture. */
     await expect
       .poll(
         () =>
