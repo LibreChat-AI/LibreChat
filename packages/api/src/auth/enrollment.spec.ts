@@ -102,7 +102,11 @@ function createHarness(overrides: Partial<StoredTwoFactorAccount> = {}) {
   );
 
   const run = async (
-    request: { user?: { id: string }; cookies?: Record<string, string> } = {
+    request: {
+      user?: { id: string };
+      cookies?: Record<string, string>;
+      twoFactorSetupExpired?: boolean;
+    } = {
       user: { id: USER_ID },
       cookies: { refreshToken: BROWSER_REFRESH_TOKEN },
     },
@@ -257,6 +261,40 @@ describe('cancel2FASetup', () => {
     expect(deps.deleteSession).not.toHaveBeenCalled();
     expect(res.clearCookie).not.toHaveBeenCalled();
     expect(sessions).toHaveLength(3);
+  });
+
+  describe('with a setup token that expired while the user was on the screen', () => {
+    const expired = {
+      user: { id: USER_ID },
+      cookies: { refreshToken: BROWSER_REFRESH_TOKEN },
+      twoFactorSetupExpired: true,
+    };
+
+    it('ends the presented session and clears the browser', async () => {
+      const { run, deps, sessions } = createHarness();
+
+      const res = await run(expired);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+      expect(deps.deleteSession).toHaveBeenCalledWith({ sessionId: 'session-1' });
+      expect(sessions.map((session) => session._id)).toEqual(['session-2', 'session-3']);
+    });
+
+    /** An old token that leaked must not be able to wipe an enrollment someone is in the middle of. */
+    it('leaves the staged enrollment alone', async () => {
+      const { run, deps, getDoc } = createHarness();
+
+      await run(expired);
+
+      expect(deps.updateTwoFactorEnrollment).not.toHaveBeenCalled();
+      expect(getDoc()).toMatchObject({
+        pendingTotpSecret: 'encrypted-secret',
+        pendingBackupCodes: [{ codeHash: 'staged-hash', used: false }],
+        twoFactorAcknowledgementNonceHash: 'ack-hash',
+        twoFactorFinalizationNonceHash: 'finalization-hash',
+      });
+    });
   });
 
   describe('when a write fails', () => {

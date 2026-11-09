@@ -109,6 +109,8 @@ export type TwoFactorEnrollmentRequest = Request & {
   twoFactorEnrollmentNonce?: string;
   twoFactorSetupIssuedAt?: number;
   twoFactorSetupIssuedAtMs?: number;
+  /** Set when the setup token was honored past its own expiry, which only a sign-out may do. */
+  twoFactorSetupExpired?: boolean;
 };
 
 export type TwoFactorSetupUser = Pick<
@@ -637,6 +639,10 @@ function createRequireTwoFactorSetupToken(
     setupRequest.user = { id: credential.userId };
     setupRequest.twoFactorSetupIssuedAt = credential.issuedAt;
     setupRequest.twoFactorSetupIssuedAtMs = credential.issuedAtMs;
+    /** The signature was just verified, so the claim is read back rather than trusted blind. */
+    const expiresAt = (jwt.decode(tempToken as string) as jwt.JwtPayload | null)?.exp;
+    setupRequest.twoFactorSetupExpired =
+      typeof expiresAt === 'number' && expiresAt * 1000 <= Date.now();
     next();
   };
 }
@@ -649,7 +655,9 @@ export const requireTwoFactorSetupToken: SetupTokenMiddleware = createRequireTwo
  * clears what was staged. A user who sat on the setup screen past those minutes must still be able
  * to leave, or the session their sign-in left alive sends them straight back into setup. So an
  * expired token is honored here, but only for as long as the sessions it could end can live, and a
- * token that account events have retired is still refused by `blockRetiredSetupToken`.
+ * token that account events have retired is still refused by `blockRetiredSetupToken`. The request
+ * is marked `twoFactorSetupExpired`, and an expired token may end only the session the request
+ * itself presents: it never reaches into the account's staged enrollment.
  */
 export const requireTwoFactorSetupSignOutToken: SetupTokenMiddleware =
   createRequireTwoFactorSetupToken(() => ({

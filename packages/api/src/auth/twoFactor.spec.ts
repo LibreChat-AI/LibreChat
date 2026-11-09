@@ -869,6 +869,16 @@ describe('requireTwoFactorSetupSignOutToken', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
+  it('marks a token honored past its expiry, so the controller can limit what it does', () => {
+    const expired = run(mintAged(30 * 60)).req as TwoFactorEnrollmentRequest;
+    const live = run(mintAged(60)).req as TwoFactorEnrollmentRequest;
+    const strict = run(mintAged(60), requireTwoFactorSetupToken).req as TwoFactorEnrollmentRequest;
+
+    expect(expired.twoFactorSetupExpired).toBe(true);
+    expect(live.twoFactorSetupExpired).toBe(false);
+    expect(strict.twoFactorSetupExpired).toBe(false);
+  });
+
   it('keeps dating an expired token, so account events still retire it', () => {
     const { req } = run(mintAged(30 * 60));
     const { twoFactorSetupIssuedAt, twoFactorSetupIssuedAtMs } = req as TwoFactorEnrollmentRequest;

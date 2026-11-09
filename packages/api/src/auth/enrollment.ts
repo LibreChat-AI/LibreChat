@@ -39,6 +39,7 @@ type SetupRequest = Request<Record<string, string>, object, SetupBody> & {
 type CancelRequest = Request & {
   user?: { id: string };
   cookies?: { refreshToken?: string };
+  twoFactorSetupExpired?: boolean;
 };
 
 /** Only the staged secret is read, to condition the discard on it; the rest scopes the cookies. */
@@ -370,10 +371,12 @@ export function createEnrollmentControllers(
       /** Cleared before any fallible write, so a failure cannot leave the credential in the browser. */
       clearSessionCookies(res, user ?? {}, userId, deps);
 
-      const outcomes = await Promise.allSettled([
-        endBrowserSession(userId, req.cookies?.refreshToken),
-        discardStagedEnrollment(userId, user?.pendingTotpSecret),
-      ]);
+      const work = [endBrowserSession(userId, req.cookies?.refreshToken)];
+      /** An expired token proves who is leaving, not that the staged enrollment is theirs to discard. */
+      if (!req.twoFactorSetupExpired) {
+        work.push(discardStagedEnrollment(userId, user?.pendingTotpSecret));
+      }
+      const outcomes = await Promise.allSettled(work);
       const failures = outcomes.filter(
         (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
       );

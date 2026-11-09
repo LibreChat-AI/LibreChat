@@ -11,6 +11,7 @@ const mockVerifyBackupCode = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), warn: jest.fn() },
+  DEFAULT_REFRESH_TOKEN_EXPIRY: 7 * 24 * 60 * 60 * 1000,
 }));
 
 jest.mock('~/server/services/twoFactorService', () => ({
@@ -112,6 +113,7 @@ const {
 } = require('./TwoFactorAuthController');
 const {
   generateTwoFactorLoginChallengeToken,
+  requireTwoFactorSetupSignOutToken,
   verifyTwoFactorSetupAcknowledgementToken,
   verifyTwoFactorSetupFinalizationToken,
 } = require('@librechat/api');
@@ -822,5 +824,61 @@ describe('cancel2FASetup', () => {
     expect(res.status).toHaveBeenCalledWith(401);
     expect(mockDeleteSession).not.toHaveBeenCalled();
     expect(res.clearCookie).not.toHaveBeenCalled();
+  });
+
+  describe('behind the sign-out token check', () => {
+    /** A setup token as it was minted `ageSeconds` ago, so its own ten minutes may already be spent. */
+    const mintSetupToken = (ageSeconds) => {
+      const issuedAt = Math.floor(Date.now() / 1000) - ageSeconds;
+      return jwt.sign(
+        {
+          userId: 'user-1',
+          purpose: 'required_2fa_setup',
+          issuedAtMs: issuedAt * 1000,
+          iat: issuedAt,
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: 10 * 60 },
+      );
+    };
+
+    /** Runs the pipeline the route wires up, so the flag the check sets reaches the controller. */
+    const runPipeline = async (tempToken) => {
+      const req = { body: { tempToken }, cookies: { refreshToken: 'live-session-token' } };
+      const res = createResponse();
+      let authorized = false;
+      requireTwoFactorSetupSignOutToken(req, res, () => {
+        authorized = true;
+      });
+      if (authorized) {
+        await cancel2FASetup(req, res);
+      }
+      return res;
+    };
+
+    it('discards the staged enrollment for a live token', async () => {
+      const res = await runPipeline(mintSetupToken(60));
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockDeleteSession).toHaveBeenCalledWith({ sessionId: 'session-1' });
+      expect(store.doc).toMatchObject({ pendingTotpSecret: null, pendingBackupCodes: [] });
+    });
+
+    it('ends the session but leaves the staged enrollment alone for an expired token', async () => {
+      const res = await runPipeline(mintSetupToken(30 * 60));
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockDeleteSession).toHaveBeenCalledWith({ sessionId: 'session-1' });
+      expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+      expect(store.doc.pendingTotpSecret).toBe('encrypted-secret');
+    });
+
+    it('does nothing for a token past the lifetime of any session it could end', async () => {
+      const res = await runPipeline(mintSetupToken(30 * 24 * 60 * 60));
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(mockDeleteSession).not.toHaveBeenCalled();
+      expect(store.doc.pendingTotpSecret).toBe('encrypted-secret');
+    });
   });
 });
