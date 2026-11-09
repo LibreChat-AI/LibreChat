@@ -1,4 +1,5 @@
 import getStream from 'get-stream';
+import { addAbortSignal } from 'node:stream';
 import { Providers } from '@librechat/agents';
 import { logger } from '@librechat/data-schemas';
 import {
@@ -9,7 +10,9 @@ import {
 } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest, StrategyFunctions, ProcessedFile } from '~/types';
+import type { outboundRequestBudget } from '~/utils/timeouts';
 import type { StoredFileRef } from '~/storage/path';
+import { getOutboundTimeout } from '~/utils/timeouts';
 import { resolveDownloadPath } from '~/storage/path';
 
 export class AttachmentObjectNotFoundError extends Error {
@@ -273,12 +276,18 @@ export const getAudioFormat = (mimeType: string, filename: string): string | und
   return extension && supportedAudioFormats.has(extension) ? extension : undefined;
 };
 
+/** The `outboundRequestBudget` fields a stream read needs: the deadline and its overrun message. */
+type ReadBudget = Pick<ReturnType<typeof outboundRequestBudget>, 'signal' | 'timeoutErrorMessage'>;
+
 /**
  * Processes a file by downloading and encoding it to base64
  * @param req - Express request object
  * @param file - File object to process
  * @param encodingMethods - Cache of encoding methods by source
  * @param getStrategyFunctions - Function to get strategy functions for a source
+ * @param budget - Wall-clock budget for the whole read. The strategy receives its signal, and a
+ * stream still open when the signal aborts is destroyed, so a stalled read ends with an
+ * `OutboundTimeoutError` instead of holding the caller. Without one the read is unbounded.
  * @returns Processed file with content and metadata, or null if no download reference exists
  */
 export async function getFileStream<T extends ProcessedFile['metadata'] & StoredFileRef>(
@@ -286,6 +295,7 @@ export async function getFileStream<T extends ProcessedFile['metadata'] & Stored
   file: T,
   encodingMethods: Record<string, StrategyFunctions>,
   getStrategyFunctions: (source: string) => StrategyFunctions,
+  budget?: ReadBudget,
 ): Promise<ProcessedFile<T> | null> {
   if (!file?.filepath && !file?.storageKey) {
     return null;
@@ -297,9 +307,14 @@ export async function getFileStream<T extends ProcessedFile['metadata'] & Stored
   }
 
   const { getDownloadStream } = encodingMethods[source];
+  const downloadPath = resolveDownloadPath(file);
   try {
-    const stream = await getDownloadStream(req, resolveDownloadPath(file));
-    let buffer: Buffer | null = await getStream.buffer(stream);
+    const stream = budget
+      ? await getDownloadStream(req, downloadPath, { signal: budget.signal })
+      : await getDownloadStream(req, downloadPath);
+    let buffer: Buffer | null = await getStream.buffer(
+      budget ? addAbortSignal(budget.signal, stream) : stream,
+    );
     const content = buffer.toString('base64');
     buffer = null;
 
@@ -316,6 +331,12 @@ export async function getFileStream<T extends ProcessedFile['metadata'] & Stored
       },
     };
   } catch (error) {
+    /** A budget has the shape of the request config `getOutboundTimeout` reads its deadline from. */
+    const overrun = budget && getOutboundTimeout({ config: budget });
+    if (overrun) {
+      logger.warn(`[getFileStream] ${overrun.message} (file ${file.file_id}, source ${source})`);
+      throw overrun;
+    }
     if (isStorageNotFoundError(error)) {
       throw new AttachmentObjectNotFoundError(file.file_id);
     }
