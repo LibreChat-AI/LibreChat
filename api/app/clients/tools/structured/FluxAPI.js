@@ -9,16 +9,9 @@ const {
   formatToolError,
   getHttpsProxyAgent,
   resolveFluxResultRequest,
-  resizeImageToFit,
+  createImageToolArtifact,
 } = require('@librechat/api');
-const { FileContext, ContentTypes, mbToBytes } = require('librechat-data-provider');
-
-/**
- * Agent-returned images are re-sent to the model as tool results on the next
- * turn. Cap them at Anthropic's 5 MB per-image limit — the smallest among
- * supported providers — so large generations don't break the conversation.
- */
-const MAX_AGENT_IMAGE_BYTES = mbToBytes(5);
+const { FileContext, ContentTypes } = require('librechat-data-provider');
 
 const fluxApiJsonSchema = {
   type: 'object',
@@ -324,16 +317,7 @@ class FluxAPI extends Tool {
         }
         const imageResponse = await fetch(imageUrl, fetchOptions);
         const arrayBuffer = await imageResponse.arrayBuffer();
-        const imageBuffer = await resizeImageToFit(Buffer.from(arrayBuffer), MAX_AGENT_IMAGE_BYTES);
-        const base64 = imageBuffer.toString('base64');
-        const content = [
-          {
-            type: ContentTypes.IMAGE_URL,
-            image_url: {
-              url: `data:image/png;base64,${base64}`,
-            },
-          },
-        ];
+        const artifact = await createImageToolArtifact(Buffer.from(arrayBuffer));
 
         const response = [
           {
@@ -341,7 +325,7 @@ class FluxAPI extends Tool {
             text: displayMessage,
           },
         ];
-        return [response, { content }];
+        return [response, artifact];
       } catch (error) {
         return this.returnValue(formatToolError(error, 'Flux'));
       }
@@ -550,16 +534,7 @@ class FluxAPI extends Tool {
         }
         const imageResponse = await fetch(imageUrl, fetchOptions);
         const arrayBuffer = await imageResponse.arrayBuffer();
-        const imageBuffer = await resizeImageToFit(Buffer.from(arrayBuffer), MAX_AGENT_IMAGE_BYTES);
-        const base64 = imageBuffer.toString('base64');
-        const content = [
-          {
-            type: ContentTypes.IMAGE_URL,
-            image_url: {
-              url: `data:image/png;base64,${base64}`,
-            },
-          },
-        ];
+        const artifact = await createImageToolArtifact(Buffer.from(arrayBuffer));
 
         const response = [
           {
@@ -567,7 +542,7 @@ class FluxAPI extends Tool {
             text: displayMessage,
           },
         ];
-        return [response, { content }];
+        return [response, artifact];
       } catch (error) {
         return this.returnValue(formatToolError(error, 'Flux'));
       }

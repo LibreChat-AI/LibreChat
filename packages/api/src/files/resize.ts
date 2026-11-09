@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import type { Artifacts, FormattedContent } from '~/mcp/types';
 
 /**
  * Downscales an image buffer until its encoded size fits within `maxBytes`,
@@ -50,4 +51,42 @@ export async function resizeImageToFit(inputBuffer: Buffer, maxBytes: number): P
   }
 
   return output;
+}
+
+// Bedrock accepts at most 5 MiB of base64 per image, including encoding expansion.
+const MAX_IMAGE_BYTES = Math.floor((5 * 1024 * 1024) / 4) * 3;
+
+/** Keep original generation bytes for storage and a bounded copy for model input. */
+export async function createImageToolArtifact(input: Buffer): Promise<NonNullable<Artifacts>> {
+  const { format } = await sharp(input).metadata();
+  if (format !== 'png' && format !== 'jpeg' && format !== 'webp' && format !== 'gif') {
+    throw new Error('Unsupported generated image format');
+  }
+  const modelImage = await resizeImageToFit(input, MAX_IMAGE_BYTES);
+  if (modelImage.length > MAX_IMAGE_BYTES) {
+    throw new Error('Generated image exceeds the model image limit');
+  }
+  const content: FormattedContent[] = [
+    {
+      type: 'image_url',
+      image_url: { url: `data:image/${format};base64,${modelImage.toString('base64')}` },
+    },
+  ];
+  if (modelImage === input) {
+    return { content };
+  }
+  return {
+    content,
+    imageAttachments: [
+      {
+        type: 'image_url',
+        image_url: { url: `data:image/${format};base64,${input.toString('base64')}` },
+      },
+    ],
+  };
+}
+
+/** Existing storage policy applies to originals, including configured resolution. */
+export function getImageAttachmentContent(artifact: NonNullable<Artifacts>): FormattedContent[] {
+  return artifact.imageAttachments ?? artifact.content ?? [];
 }

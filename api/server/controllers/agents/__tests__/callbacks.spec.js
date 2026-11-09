@@ -40,6 +40,7 @@ jest.mock('@librechat/api', () => ({
   isCodeArtifactToolOutput: jest.requireActual('@librechat/api').isCodeArtifactToolOutput,
   isCodeSessionToolName: jest.requireActual('@librechat/api').isCodeSessionToolName,
   collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
+  getImageAttachmentContent: jest.requireActual('@librechat/api').getImageAttachmentContent,
   captureSubagentIdentity: jest.requireActual('@librechat/api').captureSubagentIdentity,
   feedSubagentAggregator: jest.requireActual('@librechat/api').feedSubagentAggregator,
   createToolTimingAdapter: jest.requireActual('@librechat/api').createToolTimingAdapter,
@@ -759,6 +760,32 @@ describe('createToolEndCallback', () => {
       { owner: 'agent-b', link: 'https://example.com/agent-b' },
     ]);
   });
+
+  it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+    '%s persists original images while leaving model content bounded',
+    async (factoryName) => {
+      const { saveBase64Image } = require('~/server/services/Files/process');
+      saveBase64Image.mockResolvedValue({ file_id: 'original-image' });
+      const callback = require('../callbacks')[factoryName]({ req, res, artifactPromises });
+      const content = [{ type: 'image_url', image_url: { url: 'data:image/png;base64,model' } }];
+      const artifact = {
+        content,
+        imageAttachments: [
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,original' } },
+        ],
+      };
+      await callback(
+        { output: { name: 'flux', tool_call_id: 'image-call', artifact } },
+        { run_id: 'run-image', thread_id: 'thread-image', provider: 'anthropic' },
+      );
+      await Promise.all(artifactPromises);
+      expect(saveBase64Image).toHaveBeenCalledWith(
+        'data:image/png;base64,original',
+        expect.objectContaining({ req, endpoint: 'anthropic' }),
+      );
+      expect(artifact.content).toBe(content);
+    },
+  );
 
   it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
     '%s preserves memory payloads and their execution owner',

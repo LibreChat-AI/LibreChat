@@ -9,6 +9,7 @@
  * without a live provider or a standalone HTTP mock server: responses are decided
  * from the conversation and the agents' advertised tools.
  */
+const sharp = require('sharp');
 const { FakeChatModel } = require('@librechat/agents');
 const { ChatGenerationChunk } = require('@langchain/core/outputs');
 const { AIMessageChunk } = require('@langchain/core/messages');
@@ -2630,6 +2631,51 @@ function fluxImageResponses(value, toolNames) {
   const finetuned = action === 'finetuned';
   return {
     responses: ['', `Flux image ready for ${label}.`],
+    resolveInvocation: async (messages) => {
+      if (mode !== 'large' && mode !== 'boundary') {
+        return null;
+      }
+      const result = findLastToolMessage(messages, `call_e2e_flux_${label}`);
+      if (!result) {
+        return null;
+      }
+      // OpenAI projects tool images into a following human message; Anthropic keeps them
+      // in the tool result. Inspect only model-visible content after this tool call.
+      const image = messages
+        .slice(messages.indexOf(result))
+        .flatMap((message) =>
+          Array.isArray(message.content)
+            ? message.content.filter((part) => part.type === 'image_url')
+            : [],
+        );
+      const failed = (reason) => ({
+        response: `Flux image budget failed for ${label}: ${reason}.`,
+      });
+      if (image.length !== 1) {
+        return failed(`image count ${image.length}`);
+      }
+      const match = /^data:image\/png;base64,([A-Za-z0-9+/]+=*)$/.exec(
+        image[0].image_url?.url ?? '',
+      );
+      if (!match || match[1].length > 5 * 1024 * 1024) {
+        return failed(`encoded bytes ${match?.[1]?.length ?? 'invalid URL'}`);
+      }
+      try {
+        const metadata = await sharp(Buffer.from(match[1], 'base64')).metadata();
+        const originalSize = mode === 'large' ? 2048 : 1200;
+        if (
+          !metadata.width ||
+          !metadata.height ||
+          metadata.width >= originalSize ||
+          metadata.height >= originalSize
+        ) {
+          return failed(`dimensions ${metadata.width}x${metadata.height}`);
+        }
+        return { response: `Flux image budget verified for ${label}.` };
+      } catch {
+        return failed('invalid image bytes');
+      }
+    },
     toolCalls: [
       {
         id: `call_e2e_flux_${label}`,
