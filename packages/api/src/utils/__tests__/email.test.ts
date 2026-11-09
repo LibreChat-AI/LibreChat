@@ -1,8 +1,8 @@
 import { logger } from '@librechat/data-schemas';
-import { checkEmailConfig } from '../email';
+import { checkEmailConfig, handleEmailError } from '../email';
 
 jest.mock('@librechat/data-schemas', () => ({
-  logger: { warn: jest.fn() },
+  logger: { warn: jest.fn(), error: jest.fn() },
 }));
 
 const savedEnv = { ...process.env };
@@ -116,5 +116,39 @@ describe('checkEmailConfig', () => {
       process.env.MAILGUN_API_KEY = 'key-abc123';
       expect(checkEmailConfig()).toBe(false);
     });
+  });
+});
+
+describe('handleEmailError', () => {
+  const secret = 'private-recovery-content';
+  const providerError = Object.assign(new Error(secret), {
+    response: { status: 503, headers: { secret }, data: { html: secret } },
+    config: { headers: { Authorization: secret } },
+  });
+
+  it('throws only a new fixed-message error with safe metadata', () => {
+    let failure;
+    try {
+      handleEmailError(providerError, true);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBe(providerError);
+    expect(failure).toMatchObject({ message: 'Email delivery failed', type: 'Error', status: 503 });
+    expect(failure).not.toHaveProperty('cause');
+    expect(failure).not.toHaveProperty('response');
+    expect(failure).not.toHaveProperty('config');
+    expect(JSON.stringify(failure)).not.toContain(secret);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('returns only the sanitized error when throwing is disabled', () => {
+    const failure = handleEmailError(providerError, false);
+    expect(failure.message).toBe('Email delivery failed');
+    expect(failure.stack).not.toContain(secret);
+    expect(JSON.stringify(failure)).not.toContain(secret);
+    expect(logger.error).toHaveBeenCalledWith('[sendEmail]', { type: 'Error', status: 503 });
+    expect(JSON.stringify(jest.mocked(logger.error).mock.calls)).not.toContain(secret);
   });
 });

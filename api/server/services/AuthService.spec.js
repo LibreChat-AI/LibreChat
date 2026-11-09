@@ -74,6 +74,7 @@ jest.mock(
       resolvePreAuthAppConfig: jest.fn((getAppConfig) =>
         getAppConfig({ skipRuntimeAugmentation: true, failClosed: true }),
       ),
+      ...jest.requireActual('../../../packages/api/src/auth/resetRequest'),
       resetPasswordWithToken: jest.fn(),
       /** The notice policy is covered by passwordReset.spec.ts; this double keeps the wiring. */
       sendPasswordResetNotice: jest.fn(async (user, deps) => {
@@ -1008,6 +1009,8 @@ describe('verifyEmail public response handling', () => {
 describe('requestPasswordReset', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    checkEmailConfig.mockReturnValue(true);
+    sendEmail.mockReset().mockResolvedValue(undefined);
     isEmailDomainAllowed.mockReturnValue(true);
     getAppConfig.mockResolvedValue({
       registration: { allowedDomains: ['example.com'] },
@@ -1016,6 +1019,35 @@ describe('requestPasswordReset', () => {
       registration: { allowedDomains: ['example.com'] },
     });
   });
+
+  it.each([false, true])(
+    'never returns recovery credentials (email enabled: %s)',
+    async (enabled) => {
+      checkEmailConfig.mockReturnValue(enabled);
+      findUser.mockResolvedValue({ _id: 'user-reset', email: 'user@example.com' });
+
+      const known = await requestPasswordReset({ body: { email: 'user@example.com' } });
+      findUser.mockResolvedValue(null);
+      const unknown = await requestPasswordReset({ body: { email: 'nobody@example.com' } });
+
+      expect(known).toEqual({
+        message: 'If an account with that email exists, a password reset link has been sent to it.',
+      });
+      expect(unknown).toEqual(known);
+      expect(known).not.toHaveProperty('link');
+      expect(known).not.toHaveProperty('token');
+      if (enabled) {
+        const { link } = sendEmail.mock.calls[0][0].payload;
+        expect(link).toContain('/reset-password?token=');
+        expect(createToken).toHaveBeenCalledTimes(1);
+        expect(loggedText()).not.toContain(link);
+      } else {
+        expect(deleteTokens).not.toHaveBeenCalled();
+        expect(createToken).not.toHaveBeenCalled();
+        expect(sendEmail).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it('should fast-fail with the pre-auth config before DB lookup for blocked domains', async () => {
     isEmailDomainAllowed.mockReturnValue(false);
