@@ -10,6 +10,15 @@ Each job has a 45-minute limit. A timeout is a failed run, not a quality score.
    during module loading or a shared test hook. Stryker reruns the related tests
    for each mutated file.
    The artifact includes an HTML report and a JSON report with mutation locations.
+   The live Actions log shows progress every 30 seconds. It separates static mutations
+   from other mutations and lists each unfinished function. A completion line shows
+   the result counts for each finished function. Elapsed time and time since the last
+   result help identify slow work. Pending means unfinished; it does not identify
+   which mutation a worker is currently running.
+   `progress.jsonl` saves each result as it arrives. `progress.json` contains the latest
+   progress snapshot and marks whether the report is complete. Failed runs upload
+   partial output when the artifact step can still run. Runner loss or a hard timeout
+   can prevent that upload.
 2. Change risk uses the same function selection. The selector compares each function's
    code with the base version. Comments and spacing do not count as code changes.
    An edit that only deletes code still selects the containing function.

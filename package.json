@@ -186,6 +186,7 @@
     "@eslint/js": "^9.20.0",
     "@playwright/test": "^1.62.1",
     "@shadcn/lint": "^0.1.0",
+    "@stryker-mutator/api": "10.1.1",
     "@stryker-mutator/core": "10.1.1",
     "@stryker-mutator/instrumenter": "10.1.1",
     "@stryker-mutator/jest-runner": "10.1.1",

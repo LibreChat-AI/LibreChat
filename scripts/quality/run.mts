@@ -3,7 +3,14 @@ import { createRequire } from 'node:module';
 import { resolve, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Stryker } from '@stryker-mutator/core';
-import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 
 import { mutationSelection, riskMarkdown, riskReport } from './risk.mts';
 import { changes, git, WORKSPACES, workspaceFor } from './changes.mts';
@@ -106,7 +113,7 @@ if (values.check === 'risk') {
   }
   const started = Date.now();
   const stryker = new Stryker({
-    plugins: ['@stryker-mutator/jest-runner'],
+    plugins: ['@stryker-mutator/jest-runner', new URL('./progress.mts', import.meta.url).href],
     testRunner: 'jest',
     jest: {
       projectType: 'custom',
@@ -131,7 +138,7 @@ if (values.check === 'risk') {
     concurrency: 2,
     incremental: false,
     allowEmpty: true,
-    reporters: ['clear-text', 'progress', 'json', 'html'],
+    reporters: ['clear-text', 'function-progress', 'json', 'html'],
     jsonReporter: { fileName: `${output}/mutation.json` },
     htmlReporter: { fileName: `${output}/mutation.html` },
     thresholds: { high: 90, low: 70, break: 0 },
@@ -153,6 +160,10 @@ if (values.check === 'risk') {
   });
   try {
     const results = await stryker.runMutationTest();
+    const progress = JSON.parse(readFileSync(`${output}/progress.json`, 'utf8'));
+    if (!progress.complete || progress.completed !== results.length) {
+      throw new Error('Mutation progress report is incomplete');
+    }
     const counts = new Map<string, number>();
     for (const mutant of results) counts.set(mutant.status, (counts.get(mutant.status) ?? 0) + 1);
     const detected = (counts.get('Killed') ?? 0) + (counts.get('Timeout') ?? 0);

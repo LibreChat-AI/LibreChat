@@ -9,7 +9,7 @@ import type { Rule } from 'eslint';
 import type { ChangedFile } from './changes.mts';
 
 import { git, literalGlob, overlaps } from './changes.mts';
-import { createReport } from '../crap.mts';
+import { createReport, measureFunctions } from '../crap.mts';
 
 interface FunctionLocation {
   line: number;
@@ -181,6 +181,7 @@ export function mutationTarget(
   before?: string,
 ) {
   const functions = selectedFunctions(file, source, ranges, before);
+  const names = measureFunctions(file, source);
   const intervals: [number, number][] = [];
   for (const fn of functions.filter((item) => item.selected)) {
     let start = fn.nodeRange[0];
@@ -196,13 +197,24 @@ export function mutationTarget(
     if (last && interval[0] <= last[1]) last[1] = Math.max(last[1], interval[1]);
     else merged.push([...interval]);
   }
-  const position = (offset: number) => {
+  const point = (offset: number) => {
     const lines = source.slice(0, offset).split(/\r\n|[\n\r\u2028\u2029]/u);
-    return `${lines.length}:${lines.at(-1)!.length}`;
+    return { line: lines.length, column: lines.at(-1)!.length + 1 };
   };
+  const position = (offset: number) => `${point(offset).line}:${point(offset).column - 1}`;
   return {
     file,
-    functions: functions.filter((fn) => fn.selected).map(({ line, column }) => ({ line, column })),
+    functions: functions
+      .filter((fn) => fn.selected)
+      .map(({ line, column, nodeRange }) => ({
+        line,
+        column,
+        function: names.find((fn) => fn.line === line && fn.column === column)!.function,
+        location: {
+          start: { line, column },
+          end: point(nodeRange[1]),
+        },
+      })),
     // Match the exclusive node ends used by Stryker's Babel range comparison.
     mutate: merged.map(
       ([start, end]) => `${literalGlob(file)}:${position(start)}-${position(end)}`,
