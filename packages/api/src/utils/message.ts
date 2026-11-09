@@ -64,10 +64,11 @@ type GetMessagesByParentId = (
 /** Fields to strip before deriving the display-only preview. */
 const FILE_STRIP_FIELDS = ['text', 'textPreview', '_id', '__v'] as const;
 
-type SanitizedFile<T extends Partial<Omit<TFile, '_id'>>> = Omit<
-  T,
-  (typeof FILE_STRIP_FIELDS)[number]
-> &
+type FilePreviewSource = Partial<
+  Pick<TFile, 'file_id' | 'filename' | 'type' | 'text' | 'textFormat' | 'textPreview'>
+>;
+
+type SanitizedFile<T extends FilePreviewSource> = Omit<T, (typeof FILE_STRIP_FIELDS)[number]> &
   Pick<TFile, 'textPreview'>;
 
 /** Fields to strip from messages before client transmission.
@@ -93,9 +94,7 @@ const MESSAGE_STRIP_FIELDS = ['fileContext', 'image_urls'] as const;
  *   }
  * }
  */
-export function sanitizeFileForTransmit<T extends Partial<Omit<TFile, '_id'>>>(
-  file: T,
-): SanitizedFile<T> {
+export function sanitizeFileForTransmit<T extends FilePreviewSource>(file: T): SanitizedFile<T> {
   const sanitized = { ...file };
   for (const field of FILE_STRIP_FIELDS) {
     delete sanitized[field as keyof typeof sanitized];
@@ -110,7 +109,7 @@ export function sanitizeFileForTransmit<T extends Partial<Omit<TFile, '_id'>>>(
 }
 
 /** Filters server-authorized attachments by request file IDs; request metadata is never copied. */
-export function buildMessageFiles<T extends Partial<Omit<TFile, '_id'>>>(
+export function buildMessageFiles<T extends FilePreviewSource>(
   requestFiles: RequestFile[],
   attachments: T[],
 ): SanitizedFile<T>[] {

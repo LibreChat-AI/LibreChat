@@ -331,6 +331,20 @@ describe('isUnpersistedPreliminaryParent', () => {
   });
 });
 
+it('sanitizes plain database identity objects without stringifying them for preview derivation', () => {
+  const file = {
+    file_id: 'mongo-paste',
+    type: 'text/plain',
+    text: 'stored paste',
+    _id: { toString: () => 'document-id' },
+    user: { toString: () => 'owner-id' },
+  };
+  const result = sanitizeFileForTransmit(file);
+  expect(result.textPreview).toBe('stored paste');
+  expect(result).not.toHaveProperty('_id');
+  expect(result).not.toHaveProperty('text');
+});
+
 describe('buildMessageFiles', () => {
   const baseAttachment = {
     file_id: 'file-1',
