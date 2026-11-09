@@ -67,4 +67,26 @@ test.describe('vendor chunk rules', () => {
       ]),
     ).toEqual(['mermaid', 'vendor', 'validation', 'locale-de']);
   });
+
+  test('on-demand packages get their own chunks and zod stays with the data layer @scenario:vendor-chunks-keep-on-demand-packages-out-of-vendor', () => {
+    expect(
+      chunkNames([
+        '/home/dev/LibreChat/node_modules/@mcp-ui/client/dist/index.mjs',
+        '/home/dev/LibreChat/node_modules/@modelcontextprotocol/ext-apps/dist/src/app-bridge.js',
+        '/home/dev/LibreChat/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js',
+        '/home/dev/LibreChat/node_modules/html-to-image/es/index.js',
+        '/home/dev/LibreChat/node_modules/export-from-json/dist/esm/index.js',
+        '/home/dev/LibreChat/node_modules/downloadjs/download.js',
+        '/home/dev/LibreChat/node_modules/zod/v4/classic/schemas.js',
+      ]),
+    ).toEqual([
+      'mcp-ui',
+      'mcp-apps',
+      'mcp-apps',
+      'export-tools',
+      'export-tools',
+      'export-tools',
+      'validation',
+    ]);
+  });
 });
