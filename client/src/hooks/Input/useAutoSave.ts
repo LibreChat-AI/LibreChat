@@ -82,6 +82,7 @@ export const useAutoSave = ({
   const currentConversationId = currentDraft?.id ?? null;
   const fileIds = useMemo(() => Array.from(files.keys()), [files]);
   const { data: fileList } = useGetFiles<TFile[]>();
+  const restoringFileIds = useRef<{ id: string; ids: Set<string> } | null>(null);
   const filesRef = useRef(files);
   filesRef.current = files;
   const preservedTextRef = useRef<{ id: string; text: string } | null>(null);
@@ -186,6 +187,11 @@ export const useAutoSave = ({
             markPastedTextFile(fileToRecover.file_id);
           }
           delete pendingPastes[fileId];
+          if (!filesRef.current.has(fileIdToRecover)) {
+            if (restoringFileIds.current?.id !== id)
+              restoringFileIds.current = { id, ids: new Set() };
+            restoringFileIds.current.ids.add(fileIdToRecover);
+          }
           setFiles((currentFiles) => {
             if (!ownsDraft()) return currentFiles;
             /** The same entry may still be live in the composer — this path also
@@ -199,6 +205,8 @@ export const useAutoSave = ({
             const restored = {
               ...live,
               ...fileToRecover,
+              textPreview:
+                live?.textPreview ?? fileToRecover.textPreview ?? filesDraft.textPreviews?.[fileId],
               preview: live?.preview ?? fileToRecover.preview,
               progress: 1,
               attached: live ? (live.attached ?? false) : true,
@@ -647,8 +655,13 @@ export const useAutoSave = ({
       return;
     }
 
-    if (!saveDrafts || draftStorageId == null || draftStorageId === '') {
+    if (!saveDrafts || draftStorageId == null || draftStorageId === '' || fileList == null) {
       return;
+    }
+    const restoring = restoringFileIds.current;
+    if (restoring?.id === draftStorageId) {
+      if (Array.from(restoring.ids).some((id) => !files.has(id))) return;
+      restoringFileIds.current = null;
     }
 
     const existingDraft = getFilesDraft(draftStorageId);
@@ -697,7 +710,14 @@ export const useAutoSave = ({
         claimed.add(id);
       }
     }
+    const textPreviews = { ...existingDraft.textPreviews };
+    for (const [id, file] of files) {
+      if (!claimed.has(id) && !claimed.has(file.file_id)) continue;
+      const text = file.pastedText ?? file.textPreview ?? file.text;
+      if (text != null) textPreviews[id] = text;
+    }
     setFilesDraft(draftStorageId, {
+      textPreviews,
       fileIds: draftFileIds,
       pastedTextIds,
       pendingPastes: existingDraft.pendingPastes,
@@ -708,6 +728,7 @@ export const useAutoSave = ({
     currentDraft,
     currentConversationId,
     fileIds,
+    fileList,
     files,
     _conversationId,
   ]);

@@ -31,7 +31,7 @@ const ABORT_CSS_AREA = 4 * MAX_CAPTURE_AREA;
 const OVERSIZED_TITLE = 'Oversized export fixture';
 const OVERSIZED_PARAGRAPH = 'Oversized export fixture paragraph';
 const OVERSIZED_MESSAGES = 80;
-const OVERSIZED_PARAGRAPHS_PER_MESSAGE = 50;
+const OVERSIZED_PARAGRAPHS_PER_MESSAGE = 100;
 
 const userEmail = getE2EUser().email;
 const cleanupConversationIds: string[] = [];
@@ -91,7 +91,8 @@ function buildOversizedMessages(): SeedMessage[] {
     messages.push({
       messageId,
       parentMessageId,
-      text,
+      /** Long user messages collapse by default; keep the oversized content in replies. */
+      text: i % 2 === 0 ? 'Export fixture prompt' : text,
       isCreatedByUser: i % 2 === 0,
       sender: i % 2 === 0 ? 'User' : 'Assistant',
     });
@@ -177,10 +178,9 @@ test.describe('conversation export', () => {
     });
 
     const target = page.getByTestId('screenshot-target');
-    /** Long threads mount progressively from the scroll anchor, so the full
-     *  area lands a few frames after first paint — poll until it converges.
-     *  (The capture path itself force-completes the mount; this precondition
-     *  samples the DOM directly and must wait on its own.) */
+    await expect(target.getByTestId('message-body')).toHaveCount(OVERSIZED_MESSAGES, {
+      timeout: 60_000,
+    });
     await expect
       .poll(() => target.evaluate((node) => node.scrollWidth * node.scrollHeight), {
         timeout: 60_000,

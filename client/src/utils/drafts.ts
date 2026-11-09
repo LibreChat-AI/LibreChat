@@ -1,4 +1,4 @@
-import { Constants, LocalStorageKeys } from 'librechat-data-provider';
+import { Constants, LocalStorageKeys, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import { isPasteSubmitted } from './files';
 
 export type PendingTextAttachmentDraft = {
@@ -19,6 +19,8 @@ export type FilesDraft = {
   /** Paste-generated attachment ids, kept after `pendingPastes` is consumed so provenance
    * survives reloads without holding the (much larger) paste text indefinitely. */
   pastedTextIds?: string[];
+  /** Bounded display text, not the source used by editing or inline submission. */
+  textPreviews?: Record<string, string>;
   /** The browser tab that first wrote the draft. Every draft key is reachable from more than
    * one tab (the unsaved-chat key by every default composer, a conversation key by every tab
    * viewing it), so destructive actions read this to leave other tabs' composers alone.
@@ -40,6 +42,7 @@ type StoredPendingTextAttachmentDraft = {
 
 type StoredFilesDraft = {
   fileIds: string[];
+  textPreviews?: Record<string, string>;
   pendingPastes: Record<string, StoredPendingTextAttachmentDraft>;
   pastedTextIds?: string[];
   tabId?: string;
@@ -750,6 +753,14 @@ export const getFilesDraft = (id: string): FilesDraft => {
     return {
       fileIds: Array.isArray(storedDraft.fileIds) ? storedDraft.fileIds : [],
       pendingPastes,
+      ...(storedDraft.textPreviews &&
+        typeof storedDraft.textPreviews === 'object' && {
+          textPreviews: Object.fromEntries(
+            Object.entries(storedDraft.textPreviews)
+              .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+              .map(([id, text]) => [id, text.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH)]),
+          ),
+        }),
       pastedTextIds: Array.isArray(storedDraft.pastedTextIds) ? storedDraft.pastedTextIds : [],
       tabId: typeof storedDraft.tabId === 'string' ? storedDraft.tabId : undefined,
     };
@@ -1220,6 +1231,14 @@ export const addPastedTextDraftFile = ({ id, fileId }: { id: string; fileId: str
 export const setFilesDraft = (id: string, draft: FilesDraft): void => {
   const key = `${LocalStorageKeys.FILES_DRAFT}${id}`;
   const pendingPasteEntries = Object.entries(draft.pendingPastes);
+  const previewIds = new Set([...draft.fileIds, ...(draft.pastedTextIds ?? [])]);
+  const textPreviews = Object.fromEntries(
+    Object.entries({ ...getFilesDraft(id).textPreviews, ...draft.textPreviews })
+      .filter(([fileId, text]) => previewIds.has(fileId) && typeof text === 'string')
+      .map(([fileId, text]) => [fileId, text.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH)]),
+  );
+  const previewFields = Object.keys(textPreviews).length > 0 ? { textPreviews } : {};
+
   /** Stamp only the first writer, and only for as long as that writer is still open. A later
    * restore or autosave from another live tab must not steal ownership: that stamp is what keeps
    * Edit / Move back / New Chat from deleting a file the original tab still has attached. Once
@@ -1250,7 +1269,8 @@ export const setFilesDraft = (id: string, draft: FilesDraft): void => {
 
   if (pendingPasteEntries.length === 0) {
     /** Keep the bare array shape when there is nothing to add, so older readers are unaffected. */
-    const bareFileIds = !draft.pastedTextIds?.length && !tabId;
+    const bareFileIds =
+      !draft.pastedTextIds?.length && !tabId && Object.keys(textPreviews).length === 0;
     setLocalStorageItem(
       key,
       JSON.stringify(
@@ -1258,6 +1278,7 @@ export const setFilesDraft = (id: string, draft: FilesDraft): void => {
           ? draft.fileIds
           : {
               fileIds: draft.fileIds,
+              ...previewFields,
               ...(draft.pastedTextIds?.length ? { pastedTextIds: draft.pastedTextIds } : {}),
               ...(tabId ? { tabId } : {}),
             },
@@ -1298,6 +1319,7 @@ export const setFilesDraft = (id: string, draft: FilesDraft): void => {
     JSON.stringify({
       fileIds: draft.fileIds,
       pendingPastes,
+      ...previewFields,
       ...(draft.pastedTextIds?.length ? { pastedTextIds: draft.pastedTextIds } : {}),
       ...(tabId ? { tabId } : {}),
     } satisfies StoredFilesDraft),

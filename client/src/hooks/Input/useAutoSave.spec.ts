@@ -1054,6 +1054,43 @@ describe('useAutoSave — file cache updates', () => {
    * would drop an attachment the user just added (and, with no text typed, leave
    * them with nothing submittable).
    */
+  it.each([true, false])(
+    'restores a completed unsent paste before persisting an empty mount (delayed list: %s)',
+    (delayed) => {
+      const record = { ...persistedRecord, type: 'text/plain', filename: 'pasted-text.txt' };
+      setFilesDraft('new', {
+        fileIds: ['client-temp-id'],
+        pastedTextIds: ['client-temp-id'],
+        textPreviews: { 'client-temp-id': 'exact saved snippet' },
+        pendingPastes: {},
+      });
+      const hook = renderHook(
+        ({ loaded }) => {
+          (useGetFiles as jest.Mock).mockReturnValue({ data: loaded ? [record] : undefined });
+          const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+          useAutoSave({
+            conversationId: 'new',
+            isSubmitting: false,
+            textAreaRef: makeTextAreaRef(),
+            files,
+            setFiles,
+          });
+          return files;
+        },
+        { initialProps: { loaded: !delayed } },
+      );
+      expect(getFilesDraft('new').fileIds).toContain('client-temp-id');
+      if (delayed) act(() => hook.rerender({ loaded: true }));
+      expect(hook.result.current.get('client-temp-id')).toMatchObject({
+        file_id: record.file_id,
+        progress: 1,
+        textPreview: 'exact saved snippet',
+      });
+      expect(getFilesDraft('new').fileIds).toContain('client-temp-id');
+      hook.unmount();
+    },
+  );
+
   it('leaves live attachments alone when the file cache changes with no saved draft', () => {
     const setFiles = jest.fn();
     const files = new Map([['client-temp-id', liveAttachment]]);
