@@ -1,9 +1,15 @@
 import { PrincipalType } from 'librechat-data-provider';
+import type {
+  AppConfig,
+  PermissionPrincipalStorage,
+  PermissionPrincipalChange,
+  PermissionPrincipalData,
+} from '@librechat/data-schemas';
 import type { TPrincipal, TGraphPerson, TGraphGroup } from 'librechat-data-provider';
-import type { AppConfig } from '@librechat/data-schemas';
+import { PRINCIPAL_PREPARATION_FAILED, DIRECTORY_VERIFICATION_UNAVAILABLE } from './codes';
+import { mapWithConcurrency, createConcurrencyLimiter } from '~/utils/promise';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { getSafeErrorMetadata } from '~/utils/errors';
-import { mapWithConcurrency } from '~/utils/promise';
 
 export class InvalidPrincipalError extends Error {}
 
@@ -157,6 +163,7 @@ export const ensureDirectoryPrincipalUser = async (
 };
 
 export class PrincipalPreparationError extends Error {
+  readonly code: string = PRINCIPAL_PREPARATION_FAILED;
   readonly statusCode: number = 500;
 
   constructor() {
@@ -165,6 +172,7 @@ export class PrincipalPreparationError extends Error {
 }
 
 export class DirectoryVerificationError extends Error {
+  readonly code: string = DIRECTORY_VERIFICATION_UNAVAILABLE;
   readonly statusCode: number = 502;
 
   constructor() {
@@ -172,22 +180,29 @@ export class DirectoryVerificationError extends Error {
   }
 }
 
-type PermissionPrincipal = Omit<TPrincipal, 'id'> & { id?: string | null };
-type ResolveDirectoryPrincipal = (principal: DirectoryPrincipal) => Promise<TPrincipal | null>;
-type EnsurePrincipal = (
-  principal: PermissionPrincipal,
-  authContext: DirectoryAuthContext | null,
-  resolvePrincipal: ResolveDirectoryPrincipal,
-) => Promise<string | null>;
+export type PermissionPrincipal = Omit<TPrincipal, 'id'> & { id?: string | null };
 
-interface PermissionPrincipalMethods {
-  createClient: CreateDirectoryClient;
-  ensureUser: EnsurePrincipal;
-  ensureGroup: EnsurePrincipal;
+interface PermissionGraphClient {
+  api: (path: string) => {
+    select: (fields: string) => {
+      get: () => Promise<DirectoryRecord | null>;
+      top: (count: number) => { get: () => Promise<DirectoryMembershipPage> };
+    };
+  };
+}
+
+interface PermissionPrincipalMethods extends PermissionPrincipalStorage {
+  createClient: (token: string, sub: string) => Promise<PermissionGraphClient>;
+  includeOwners: boolean;
   logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
 }
 
-/** Verify every external identity before provisioning or ACL writes. Never hide provider outages. */
+interface PrincipalPlan {
+  id?: string | null;
+  change?: PermissionPrincipalChange;
+}
+
+/** All reads finish before persistence. A shared limiter bounds individual Graph requests. */
 export async function preparePermissionPrincipals(
   principals: readonly PermissionPrincipal[],
   authContext: DirectoryAuthContext | null,
@@ -195,74 +210,186 @@ export async function preparePermissionPrincipals(
   appConfig?: Pick<AppConfig, 'concurrency'>,
 ): Promise<PermissionPrincipal[]> {
   const concurrency = getLookupConcurrency(appConfig, 'permissionPrincipalLookups');
-  let client: Promise<DirectoryGraphClient> | undefined;
-  const identities = new Map<string, Promise<TPrincipal | null>>();
-  const resolvePrincipal: ResolveDirectoryPrincipal = (principal) => {
-    const key = JSON.stringify([principal.type, principal.idOnTheSource]);
-    let result = identities.get(key);
-    if (!result) {
-      result = resolveDirectoryPrincipal(principal, authContext, (token, sub) => {
-        client ??= methods.createClient(token, sub);
-        return client;
-      }).catch((error) => {
-        methods.logger.error('Directory identity verification failed', getSafeErrorMetadata(error));
-        throw new DirectoryVerificationError();
-      });
-      identities.set(key, result);
-    }
-    return result;
+  const limit = createConcurrencyLimiter(concurrency);
+  let client: Promise<PermissionGraphClient> | undefined;
+  const createClient = (token: string, sub: string) => {
+    client ??= methods.createClient(token, sub).then((graph) => ({
+      api: (path: string) => ({
+        select: (fields: string) => ({
+          get: () => limit(() => graph.api(path).select(fields).get()),
+          top: (count: number) => ({
+            get: () => limit(() => graph.api(path).select(fields).top(count).get()),
+          }),
+        }),
+      }),
+    }));
+    return client;
   };
-
-  await mapWithConcurrency(principals, concurrency, async (principal) => {
-    if (
-      !principal.id &&
-      principal.source === 'entra' &&
-      (principal.type === PrincipalType.USER || principal.type === PrincipalType.GROUP)
-    ) {
-      await resolvePrincipal(principal);
+  const directoryMethods = { ...methods, createClient };
+  const plans = new Map<string, Promise<PrincipalPlan | null>>();
+  const read = async (principal: PermissionPrincipal): Promise<PrincipalPlan> => {
+    if (principal.type === PrincipalType.PUBLIC) return { id: null };
+    if (principal.type === PrincipalType.ROLE) return { id: principal.id };
+    if (principal.type !== PrincipalType.USER && principal.type !== PrincipalType.GROUP) {
+      throw new InvalidPrincipalError('Unsupported principal type');
     }
-  });
-
-  const pending = new Map<string, Promise<string | null>>();
-  const validated = await mapWithConcurrency(principals, concurrency, async (principal) => {
+    const user = principal.type === PrincipalType.USER;
+    if (principal.id) {
+      const id = validateLocalPrincipalId(principal.id);
+      const stored = await (user
+        ? methods.findPermissionUser({ id })
+        : methods.findPermissionGroup({ id }));
+      if (!stored)
+        throw new InvalidPrincipalError(
+          user ? 'User principal not found' : 'Group principal not found',
+        );
+      if (
+        !user &&
+        stored.source === 'entra' &&
+        authContext?.accessToken &&
+        authContext.sub &&
+        stored.idOnTheSource
+      ) {
+        const memberIds = await getDirectoryGroupMembers(stored, authContext, directoryMethods);
+        return { id: stored.id, change: { kind: 'group', id: stored.id, data: { memberIds } } };
+      }
+      return { id: stored.id };
+    }
+    if (principal.source !== 'entra') throw new InvalidPrincipalError('Principal is unavailable');
+    let resolved: TPrincipal | null;
     try {
-      if (principal.type === PrincipalType.PUBLIC) {
-        return { ...principal, id: null };
-      }
-      if (principal.type === PrincipalType.ROLE) {
-        return principal;
-      }
-      const ensure = {
-        [PrincipalType.USER]: methods.ensureUser,
-        [PrincipalType.GROUP]: methods.ensureGroup,
-      }[principal.type];
-      if (!ensure) {
-        return null;
-      }
+      resolved = await resolveDirectoryPrincipal(principal, authContext, createClient);
+    } catch (error) {
+      methods.logger.error('Directory identity verification failed', getSafeErrorMetadata(error));
+      throw new DirectoryVerificationError();
+    }
+    if (!resolved?.idOnTheSource || !resolved.name || (user && !resolved.email)) {
+      throw new InvalidPrincipalError('Directory principal is unavailable');
+    }
+    if (user) {
+      const stored =
+        (await methods.findPermissionUser({ idOnTheSource: resolved.idOnTheSource })) ??
+        (await methods.findPermissionUser({ email: resolved.email }));
+      return stored
+        ? { id: stored.id }
+        : {
+            change: {
+              kind: 'user',
+              data: {
+                name: resolved.name,
+                email: resolved.email,
+                idOnTheSource: resolved.idOnTheSource,
+                provider: 'openid',
+                emailVerified: false,
+              },
+            },
+          };
+    }
+    const memberIds = await getDirectoryGroupMembers(resolved, authContext, directoryMethods);
+    const stored =
+      (await methods.findPermissionGroup({
+        idOnTheSource: resolved.idOnTheSource,
+        source: 'entra',
+      })) ?? (resolved.email ? await methods.findPermissionGroup({ email: resolved.email }) : null);
+    const data: PermissionPrincipalData = {
+      memberIds,
+      ...(!stored && {
+        name: resolved.name,
+        source: 'entra' as const,
+        idOnTheSource: resolved.idOnTheSource,
+      }),
+      ...(stored &&
+        !stored.idOnTheSource && {
+          source: 'entra' as const,
+          idOnTheSource: resolved.idOnTheSource,
+        }),
+      ...(resolved.email && { email: resolved.email }),
+      ...(resolved.description && { description: resolved.description }),
+    };
+    return { id: stored?.id, change: { kind: 'group', id: stored?.id, data } };
+  };
+  try {
+    const staged = await mapWithConcurrency(principals, concurrency, async (principal) => {
       const key = JSON.stringify([
         principal.type,
-        principal.id,
-        principal.source,
-        principal.idOnTheSource,
+        principal.id || null,
+        principal.id ? null : principal.source,
+        principal.id ? null : principal.idOnTheSource,
       ]);
-      let result = pending.get(key);
-      if (!result) {
-        result = ensure(principal, authContext, resolvePrincipal);
-        pending.set(key, result);
+      let plan = plans.get(key);
+      if (!plan) {
+        plan = read(principal).catch((error) => {
+          if (error instanceof InvalidPrincipalError) return null;
+          throw error;
+        });
+        plans.set(key, plan);
       }
-      return { ...principal, id: await result };
-    } catch (error) {
-      if (error instanceof InvalidPrincipalError) {
-        return null;
+      return { principal, plan: await plan };
+    });
+    const changes: PermissionPrincipalChange[] = [];
+    const indices = new Map<PrincipalPlan, number>();
+    const identities = new Map<string, number>();
+    for (const { plan } of staged) {
+      if (!plan?.change || indices.has(plan)) continue;
+      const change = plan.change;
+      const key = JSON.stringify([
+        change.kind,
+        change.id ?? change.data.email ?? change.data.idOnTheSource,
+      ]);
+      let index = identities.get(key);
+      if (index === undefined) {
+        index = changes.length;
+        changes.push(change);
+        identities.set(key, index);
       }
-      if (error instanceof DirectoryVerificationError) {
-        throw error;
-      }
-      methods.logger.error('Error ensuring principal exists', getSafeErrorMetadata(error));
-      throw new PrincipalPreparationError();
+      indices.set(plan, index);
     }
-  });
-  return validated.filter((principal): principal is PermissionPrincipal => principal !== null);
+    const ids = await methods.persistPermissionPrincipals(changes);
+    return staged.flatMap(({ principal, plan }) =>
+      plan ? [{ ...principal, id: plan.change ? ids[indices.get(plan)!] : plan.id }] : [],
+    );
+  } catch (error) {
+    if (error instanceof DirectoryVerificationError) throw error;
+    methods.logger.error('Error preparing permission principals', getSafeErrorMetadata(error));
+    throw new PrincipalPreparationError();
+  }
+}
+
+/** Legacy exports delegate to the same batch boundary, never a separate policy implementation. */
+export function createPrincipalService(methods: PermissionPrincipalMethods): {
+  prepare: (
+    principals: readonly PermissionPrincipal[],
+    auth: DirectoryAuthContext | null,
+    config?: Pick<AppConfig, 'concurrency'>,
+  ) => Promise<PermissionPrincipal[]>;
+  ensureUser: (
+    principal: PermissionPrincipal,
+    auth?: DirectoryAuthContext | null,
+  ) => Promise<string | null>;
+  ensureGroup: (
+    principal: PermissionPrincipal,
+    auth?: DirectoryAuthContext | null,
+  ) => Promise<string | null>;
+} {
+  const prepare = (
+    principals: readonly PermissionPrincipal[],
+    auth: DirectoryAuthContext | null,
+    config?: Pick<AppConfig, 'concurrency'>,
+  ) => preparePermissionPrincipals(principals, auth, methods, config);
+  const ensure = async (
+    principal: PermissionPrincipal,
+    auth: DirectoryAuthContext | null = null,
+  ) => {
+    const [prepared] = await prepare([principal], auth);
+    if (!prepared)
+      throw new InvalidPrincipalError(
+        principal.type === PrincipalType.GROUP
+          ? 'Group principal not found'
+          : 'User principal not found',
+      );
+    return prepared.id ?? null;
+  };
+  return { prepare, ensureUser: ensure, ensureGroup: ensure };
 }
 
 interface DirectoryMember {

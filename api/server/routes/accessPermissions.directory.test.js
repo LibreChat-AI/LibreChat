@@ -235,6 +235,7 @@ describe('Shared-link directory principal provisioning', () => {
       expect(response.body).toEqual({
         error: 'Failed to update permissions',
         details: 'Directory identity verification failed',
+        code: 'DIRECTORY_VERIFICATION_UNAVAILABLE',
       });
       expect(JSON.stringify(response.body)).not.toContain(existing._id.toString());
       expect(await User.countDocuments()).toBe(2);
@@ -545,6 +546,7 @@ describe('Shared-link directory principal provisioning', () => {
       expect(response.body).toEqual({
         error: 'Failed to update permissions',
         details: 'Directory identity verification failed',
+        code: 'DIRECTORY_VERIFICATION_UNAVAILABLE',
       });
       expect((await Group.findById(group._id).lean()).memberIds).toEqual(['kept-member']);
       expect(await AclEntry.find({}).lean()).toEqual(before);
@@ -566,7 +568,7 @@ describe('Shared-link directory principal provisioning', () => {
     expect((await Group.findById(group._id).lean()).memberIds).toEqual([]);
   });
 
-  it.each(['findUser', 'findGroupById', 'updateGroupById', 'createUser', 'createGroup'])(
+  it.each(['findPermissionUser', 'findPermissionGroup', 'persistPermissionPrincipals'])(
     'returns a sanitized failure without ACL changes when %s fails',
     async (method) => {
       const group = await Group.create({
@@ -582,14 +584,9 @@ describe('Shared-link directory principal provisioning', () => {
         mail: 'trusted@example.com',
       });
       const recipient = { ...forged };
-      if (method === 'findGroupById' || method === 'updateGroupById' || method === 'createGroup') {
+      if (method === 'findPermissionGroup' || method === 'persistPermissionPrincipals') {
         recipient.type = PrincipalType.GROUP;
-        if (method !== 'createGroup') {
-          recipient.id = group._id.toString();
-        } else {
-          recipient.idOnTheSource = 'new-group-id';
-          graphGet.mockResolvedValue({ id: 'new-group-id', displayName: 'Trusted' });
-        }
+        recipient.id = group._id.toString();
       }
       jest.spyOn(db, method).mockRejectedValueOnce(new Error('Private database diagnostics'));
       const response = await update(
@@ -608,9 +605,70 @@ describe('Shared-link directory principal provisioning', () => {
       expect(response.body).toEqual({
         error: 'Failed to update permissions',
         details: 'Principal preparation failed',
+        code: 'PRINCIPAL_PREPARATION_FAILED',
       });
       expect(await AclEntry.countDocuments()).toBe(1);
       expect((await Group.findById(group._id).lean()).memberIds).toEqual(['kept-member']);
+    },
+  );
+
+  it.each(['members', 'database'])(
+    'does not persist a staged refresh or new account when a later %s read fails',
+    async (failure) => {
+      const group = await Group.create({
+        name: 'Existing',
+        source: 'entra',
+        idOnTheSource: sourceId,
+        memberIds: ['kept-member'],
+      });
+      const failing = await Group.create({
+        name: 'Later',
+        source: 'entra',
+        idOnTheSource: 'failing-group',
+        memberIds: ['other-member'],
+      });
+      graphGet.mockResolvedValue({
+        id: 'new-user',
+        displayName: 'New User',
+        mail: 'new-user@example.com',
+      });
+      let release;
+      const blocked = new Promise((resolve) => {
+        release = resolve;
+      });
+      graphMembers.mockImplementation(async (path) => {
+        if (path.includes('failing-group')) {
+          await blocked;
+          throw new Error('Private provider failure');
+        }
+        return { value: [{ id: 'new-member', '@odata.type': '#microsoft.graph.user' }] };
+      });
+      if (failure === 'database') {
+        const find = db.findPermissionGroup;
+        jest.spyOn(db, 'findPermissionGroup').mockImplementation(async (query) => {
+          if (query.id === failing._id.toString()) {
+            await blocked;
+            throw new Error('Private database failure');
+          }
+          return find(query);
+        });
+      }
+      const persist = jest.spyOn(db, 'persistPermissionPrincipals');
+      const pending = update([
+        { ...forged, idOnTheSource: 'new-user' },
+        { ...forged, type: PrincipalType.GROUP, id: group._id.toString() },
+        { ...forged, type: PrincipalType.GROUP, id: failing._id.toString() },
+      ]).then((response) => response);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(persist).not.toHaveBeenCalled();
+      release();
+      const response = await pending;
+      expect(response.status).toBe(failure === 'database' ? 500 : 502);
+      expect(persist).not.toHaveBeenCalled();
+      expect(await User.findOne({ email: 'new-user@example.com' })).toBeNull();
+      expect((await Group.findById(group._id).lean()).memberIds).toEqual(['kept-member']);
+      expect((await Group.findById(failing._id).lean()).memberIds).toEqual(['other-member']);
+      expect(await AclEntry.countDocuments()).toBe(1);
     },
   );
 

@@ -3,11 +3,12 @@ import {
   ensureDirectoryPrincipalUser,
   preparePermissionPrincipals,
   DirectoryVerificationError,
-  InvalidPrincipalError,
+  PrincipalPreparationError,
   refreshDirectoryGroupMembers,
   resolveDirectoryPrincipal,
   validateLocalPrincipalId,
 } from './principals';
+import { permissionErrorCode } from './accessControlService';
 
 const principal = {
   type: PrincipalType.USER,
@@ -227,8 +228,12 @@ describe('validateLocalPrincipalId', () => {
 describe('preparePermissionPrincipals', () => {
   const createDeps = () => ({
     createClient: jest.fn(),
-    ensureUser: jest.fn().mockResolvedValue('user-id'),
-    ensureGroup: jest.fn().mockResolvedValue('group-id'),
+    findPermissionUser: jest.fn().mockResolvedValue(null),
+    findPermissionGroup: jest.fn().mockResolvedValue(null),
+    persistPermissionPrincipals: jest
+      .fn()
+      .mockImplementation(async (changes) => changes.map(() => 'user-id')),
+    includeOwners: false,
     logger: { error: jest.fn() },
   });
   const external = (id: string) => ({ ...principal, source: 'entra' as const, idOnTheSource: id });
@@ -259,14 +264,14 @@ describe('preparePermissionPrincipals', () => {
     });
     await flush();
     expect(get).toHaveBeenCalledTimes(2);
-    expect(deps.ensureUser).not.toHaveBeenCalled();
+    expect(deps.persistPermissionPrincipals).not.toHaveBeenCalled();
     releases
       .splice(0)
       .reverse()
       .forEach((release) => release());
     await flush();
     expect(get).toHaveBeenCalledTimes(4);
-    expect(deps.ensureUser).not.toHaveBeenCalled();
+    expect(deps.persistPermissionPrincipals).not.toHaveBeenCalled();
     releases
       .splice(0)
       .reverse()
@@ -274,10 +279,10 @@ describe('preparePermissionPrincipals', () => {
     await expect(work).resolves.toEqual(principals.map((p) => ({ ...p, id: 'user-id' })));
     expect(peak).toBe(2);
     expect(deps.createClient).toHaveBeenCalledTimes(1);
-    expect(deps.ensureUser).toHaveBeenCalledTimes(4);
+    expect(deps.persistPermissionPrincipals).toHaveBeenCalledTimes(1);
   });
 
-  it('deduplicates verification and persistence for repeated external identities', async () => {
+  it('deduplicates reads and persistence for repeated external identities', async () => {
     const deps = createDeps();
     const get = jest
       .fn()
@@ -285,7 +290,7 @@ describe('preparePermissionPrincipals', () => {
     deps.createClient.mockResolvedValue({ api: () => ({ select: () => ({ get }) }) });
     await preparePermissionPrincipals([external('a'), external('a')], authContext, deps);
     expect(get).toHaveBeenCalledTimes(1);
-    expect(deps.ensureUser).toHaveBeenCalledTimes(1);
+    expect(deps.persistPermissionPrincipals.mock.calls[0][0]).toHaveLength(1);
   });
 
   it.each(['client', 'lookup'])(
@@ -293,9 +298,8 @@ describe('preparePermissionPrincipals', () => {
     async (failure) => {
       const deps = createDeps();
       const error = new Error('Sensitive provider detail');
-      if (failure === 'client') {
-        deps.createClient.mockRejectedValue(error);
-      } else {
+      if (failure === 'client') deps.createClient.mockRejectedValue(error);
+      else
         deps.createClient.mockResolvedValue({
           api: () => ({
             select: () => ({
@@ -305,22 +309,15 @@ describe('preparePermissionPrincipals', () => {
             }),
           }),
         });
-      }
       await expect(
         preparePermissionPrincipals([external('a')], authContext, deps),
-      ).rejects.toMatchObject({
-        statusCode: 502,
-        message: 'Directory identity verification failed',
-      });
-      expect(deps.ensureUser).not.toHaveBeenCalled();
-      expect(deps.logger.error).toHaveBeenCalledWith('Directory identity verification failed', {
-        type: 'Error',
-      });
+      ).rejects.toMatchObject({ statusCode: 502, code: 'DIRECTORY_VERIFICATION_UNAVAILABLE' });
+      expect(deps.persistPermissionPrincipals).not.toHaveBeenCalled();
     },
   );
 
-  it.each(['ensureUser', 'ensureGroup'] as const)(
-    'does not omit a principal when %s has an operational failure',
+  it.each(['findPermissionUser', 'findPermissionGroup'] as const)(
+    'does not persist when %s fails after another principal is staged',
     async (method) => {
       const deps = createDeps();
       deps[method].mockRejectedValue(new Error('Private database diagnostics'));
@@ -329,35 +326,69 @@ describe('preparePermissionPrincipals', () => {
           [
             {
               ...principal,
-              type: method === 'ensureUser' ? PrincipalType.USER : PrincipalType.GROUP,
-              id: 'local-id',
+              type: method === 'findPermissionUser' ? PrincipalType.USER : PrincipalType.GROUP,
+              id: '507f1f77bcf86cd799439011',
             },
           ],
           null,
           deps,
         ),
-      ).rejects.toMatchObject({ statusCode: 500, message: 'Principal preparation failed' });
-      expect(deps.logger.error).toHaveBeenCalledWith('Error ensuring principal exists', {
-        type: 'Error',
-      });
+      ).rejects.toMatchObject({ statusCode: 500, code: 'PRINCIPAL_PREPARATION_FAILED' });
+      expect(deps.persistPermissionPrincipals).not.toHaveBeenCalled();
     },
   );
 
-  it('omits only confirmed invalid or absent principals', async () => {
+  it('omits confirmed absent principals without writes', async () => {
     const deps = createDeps();
-    deps.ensureUser.mockRejectedValue(new InvalidPrincipalError('User principal not found'));
     await expect(
-      preparePermissionPrincipals([{ ...principal, id: 'local-id' }], null, deps),
+      preparePermissionPrincipals([{ ...principal, id: '507f1f77bcf86cd799439011' }], null, deps),
     ).resolves.toEqual([]);
+    expect(deps.persistPermissionPrincipals).toHaveBeenCalledWith([]);
   });
 
-  it('propagates verification failures from the persistence boundary', async () => {
-    const deps = createDeps();
-    deps.ensureUser.mockRejectedValue(new DirectoryVerificationError());
-    await expect(
-      preparePermissionPrincipals([{ ...principal, id: 'local-id' }], null, deps),
-    ).rejects.toBeInstanceOf(DirectoryVerificationError);
-  });
+  it.each([1, 2])(
+    'bounds members, owners and pagination to %i actual Graph requests',
+    async (concurrency) => {
+      const deps = createDeps();
+      deps.includeOwners = true;
+      deps.findPermissionGroup.mockImplementation(async ({ id }) => ({
+        id,
+        source: 'entra',
+        idOnTheSource: id,
+      }));
+      let active = 0;
+      let peak = 0;
+      const paths: string[] = [];
+      const get = async (path: string) => {
+        paths.push(path);
+        active++;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active--;
+        return {
+          value: [],
+          ...(!path.includes('?') && {
+            '@odata.nextLink': `https://graph.microsoft.com/v1.0${path}?page=2`,
+          }),
+        };
+      };
+      deps.createClient.mockResolvedValue({
+        api: (path: string) => ({ select: () => ({ top: () => ({ get: () => get(path) }) }) }),
+      });
+      await preparePermissionPrincipals(
+        ['507f1f77bcf86cd799439011', '507f1f77bcf86cd799439012'].map((id) => ({
+          type: PrincipalType.GROUP,
+          id,
+        })),
+        authContext,
+        deps,
+        { concurrency: { permissionPrincipalLookups: concurrency } },
+      );
+      expect(peak).toBe(concurrency);
+      expect(paths).toHaveLength(8);
+      expect(deps.createClient).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 describe('refreshDirectoryGroupMembers', () => {
@@ -502,5 +533,14 @@ describe('strict directory membership snapshots', () => {
     const error = new Error('Private database failure');
     methods.updateMembers.mockRejectedValue(error);
     await expect(refreshDirectoryGroupMembers(group, authContext, methods)).rejects.toBe(error);
+  });
+});
+
+describe('principal failure codes', () => {
+  it.each([
+    [new PrincipalPreparationError(), 'PRINCIPAL_PREPARATION_FAILED'],
+    [new DirectoryVerificationError(), 'DIRECTORY_VERIFICATION_UNAVAILABLE'],
+  ])('approves the stable error code for %p', (error, code) => {
+    expect(permissionErrorCode(error)).toEqual({ code });
   });
 });

@@ -8,7 +8,6 @@ const { ResourceType, PrincipalType, PermissionBits } = require('librechat-data-
 const {
   enrichRemoteAgentPrincipals,
   createPrincipalSearch,
-  preparePermissionPrincipals,
   backfillRemoteAgentPermissions,
   runAuditedPermissionUpdate,
   permissionErrorCode,
@@ -19,15 +18,13 @@ const {
 } = require('@librechat/api');
 const {
   bulkUpdateResourcePermissions,
-  ensureGroupPrincipalExists,
+  preparePermissionPrincipals,
   getResourcePermissionsMap,
   findAccessibleResources,
   getEffectivePermissions,
-  ensurePrincipalExists,
   getAvailableRoles,
 } = require('~/server/services/PermissionService');
 const {
-  createGraphClient,
   entraIdPrincipalFeatureEnabled,
   searchEntraIdPrincipals,
 } = require('~/server/services/GraphApiService');
@@ -122,12 +119,6 @@ const updateResourcePermissions = async (req, res) => {
     const validatedPrincipals = await preparePermissionPrincipals(
       updatedPrincipals,
       authContext,
-      {
-        createClient: createGraphClient,
-        ensureUser: ensurePrincipalExists,
-        ensureGroup: ensureGroupPrincipalExists,
-        logger,
-      },
       req.config,
     );
 
