@@ -1543,6 +1543,80 @@ describe('loadAgent', () => {
       expect(result?.tools).toContain('lookup_mcp_crm');
     });
 
+    test('an added spec that enables ask_user_question resolves its own tools', async () => {
+      const { EPHEMERAL_AGENT_ID: EID } = Constants;
+      const result = await loadAddedAgent(
+        {
+          req: addedReq(undefined, { askUserQuestion: true }),
+          conversation: addedConversation,
+          primaryAgent: { id: EID as string, tools: [] } as unknown as LibreChatAgent,
+        },
+        deps,
+      );
+
+      /** No badge carries this tool, so the primary's mirrored tools cannot. */
+      expect(result?.tools).toContain('ask_user_question');
+    });
+
+    test("the added pane resolves against the user's selection, not the primary's published pins", async () => {
+      const { EPHEMERAL_AGENT_ID: EID } = Constants;
+      mockGetAccessibleMCPServers.mockRejectedValue(new Error('registry unavailable'));
+      mockGetMCPServerTools.mockImplementation(async (_userId: string, server: string) => ({
+        [`lookup_mcp_${server}`]: {},
+      }));
+      const ephemeralAgent: TEphemeralAgent = { mcp: [] };
+      const config = {
+        config: {},
+        fileStrategy: FileSources.local,
+        imageOutputType: 'png',
+        modelSpecs: {
+          list: [
+            {
+              name: 'primary-spec',
+              label: 'Primary',
+              preset: { endpoint: 'openai', model: 'gpt-4' },
+              mcpServers: ['a'],
+            },
+            {
+              name: 'added-spec',
+              label: 'Added',
+              preset: { endpoint: 'openai', model: 'gpt-4' },
+              mcpServers: ['b'],
+            },
+          ],
+        },
+      };
+      const req = {
+        user: { id: 'user123' },
+        body: { ephemeralAgent, spec: 'primary-spec' },
+        config,
+      } as unknown as LoadAgentParams['req'];
+
+      const primary = await loadAgent(
+        {
+          req,
+          spec: 'primary-spec',
+          agent_id: EID as string,
+          endpoint: 'openai',
+          model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+        },
+        deps,
+      );
+      expect(ephemeralAgent.mcp).toEqual(['a']);
+
+      const added = await loadAddedAgent(
+        {
+          req: req as unknown as Parameters<typeof loadAddedAgent>[0]['req'],
+          conversation: addedConversation,
+          primaryAgent: primary as LibreChatAgent,
+        },
+        deps,
+      );
+
+      expect(added?.tools).toContain('lookup_mcp_b');
+      expect(added?.tools).not.toContain('lookup_mcp_a');
+    });
+
     test('the mirrored-tools branch applies the spec artifacts too', async () => {
       const { EPHEMERAL_AGENT_ID: EID } = Constants;
       const req = addedReq(undefined, { artifacts: true });

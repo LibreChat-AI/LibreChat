@@ -22,6 +22,7 @@ import type { ParsedServerConfig } from '~/mcp/types';
 import {
   resolveEphemeralTools,
   resolveEphemeralMCPServers,
+  publishEphemeralMCPServers,
   synthesizeToggleToolOptions,
 } from '~/agents/toggles';
 import { requiresEphemeralUserConnection, validateMCPServerConfig } from '~/mcp/utils';
@@ -106,7 +107,7 @@ export async function loadEphemeralAgent(
    *  it over the agent's tools, so it would otherwise both inject a deselected
    *  or hidden server's `serverInstructions` and omit a spec-pinned server's. */
   if (requestAgent != null && Array.isArray(requestAgent.mcp)) {
-    requestAgent.mcp = [...mcpServers];
+    publishEphemeralMCPServers(requestAgent, [...mcpServers]);
   }
   /** Spec flags are defaults an explicit request toggle overrides. Same
    *  downstream gating as persisted agents still applies: `createRun` only
