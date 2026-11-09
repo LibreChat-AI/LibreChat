@@ -119,3 +119,85 @@
   font-size: inherit;
   line-height: inherit;
 }
+
+/* Ariakit owns presence and interrupts transitions on reopen. Keep every child
+ * exit shorter than the shell: only its duration determines when to unmount. */
+[data-usage-popover] {
+  --usage-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: var(--popover-transform-origin, bottom);
+  transform: translateY(6px) scale(0.97);
+  opacity: 0;
+  transition:
+    transform 360ms var(--usage-ease),
+    opacity 360ms var(--usage-ease);
+}
+
+[data-usage-popover][data-enter] {
+  transform: translateY(0) scale(1);
+  opacity: 1;
+}
+
+[data-usage-popover][data-leave] {
+  transform: translateY(4px) scale(0.985);
+  transition-duration: 180ms;
+  pointer-events: none;
+}
+
+[data-usage-popover] [data-usage-stage] {
+  opacity: 0;
+  filter: blur(3px);
+  transform: translateY(4px);
+  transition:
+    opacity 220ms var(--usage-ease),
+    filter 220ms var(--usage-ease),
+    transform 220ms var(--usage-ease);
+}
+
+[data-usage-popover] [data-usage-stage='details'] {
+  --usage-delay: 85ms;
+}
+
+[data-usage-popover] [data-usage-stage='footer'] {
+  --usage-delay: 140ms;
+}
+
+[data-usage-popover] [data-usage-stage='meter'] {
+  --usage-delay: 45ms;
+  filter: none;
+  transform: translateY(0) scaleX(0);
+  transform-origin: left;
+  transition-property: opacity, transform;
+  transition-duration: 300ms;
+}
+
+[data-usage-popover] [data-usage-stage='meter']:dir(rtl) {
+  transform-origin: right;
+}
+
+[data-usage-popover][data-enter] [data-usage-stage] {
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0) scaleX(1);
+  transition-delay: var(--usage-delay, 0ms);
+}
+
+[data-usage-popover][data-leave] [data-usage-stage] {
+  transform: translateY(2px);
+  transition-delay: 0ms;
+  transition-duration: 120ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-usage-popover],
+  [data-usage-popover]:is([data-enter], [data-leave]),
+  [data-usage-popover] [data-usage-stage],
+  [data-usage-popover]:is([data-enter], [data-leave]) [data-usage-stage] {
+    transition: none;
+    transform: none;
+    filter: none;
+  }
+
+  [data-usage-popover] [data-usage-stage] {
+    opacity: 1;
+  }
+}

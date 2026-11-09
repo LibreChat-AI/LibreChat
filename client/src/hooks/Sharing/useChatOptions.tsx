@@ -1,14 +1,16 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useToastContext } from '@librechat/client';
+import { Constants } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Pen, Pin, Trash, Archive, CopyPlus, ArchiveRestore } from 'lucide-react';
+import { Pen, Pin, Info, Trash, Archive, CopyPlus, ArchiveRestore } from 'lucide-react';
 import type { TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type * as t from '~/common';
 import {
   useActiveJobs,
+  useGetStartupConfig,
   useGetConvoIdQuery,
   useArchiveConvoMutation,
   usePinConversationMutation,
@@ -20,6 +22,7 @@ import { useLocalize, useNavigateToConvo, useNewConvo } from '~/hooks';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useProjectMenuItem from '~/hooks/Chat/useProjectMenuItem';
 import { useChatContext, useLiveAnnouncer } from '~/Providers';
+import ConversationInfo from '~/components/Chat/Info';
 import { NotificationSeverity } from '~/common';
 import useExportShare from './useExportShare';
 import Rename from '~/components/Chat/Rename';
@@ -33,7 +36,7 @@ export type UseChatOptionsResult = {
   dialogs: ReactNode;
 };
 
-type DialogKind = 'rename' | 'delete';
+type DialogKind = 'rename' | 'delete' | 'info';
 
 const iconClass = 'size-4 text-text-secondary';
 const noop = () => {};
@@ -53,7 +56,7 @@ export default function useChatOptions({
   closeMenu: () => void;
   /** The project list behind "Change project" is only fetched while the menu is open. */
   isMenuOpen?: boolean;
-  /** A durable subagent thread is a canonical record of its parent's run: only share and export apply. */
+  /** A durable subagent thread allows information, sharing and export without editing. */
   readOnly?: boolean;
 }): UseChatOptionsResult {
   const localize = useLocalize();
@@ -64,6 +67,7 @@ export default function useChatOptions({
   const { setConversation } = useChatContext();
   const { navigateToConvo } = useNavigateToConvo(0);
   const { config } = useChatSettings();
+  const { data: startupConfig } = useGetStartupConfig();
   const { data: activeJobs } = useActiveJobs();
   const { conversationId: routeConversationId } = useParams();
   /** A request outlives the click: the route that matters is the one open when it resolves. */
@@ -95,6 +99,14 @@ export default function useChatOptions({
 
   const renameRef = useRef<HTMLButtonElement>(null);
   const deleteRef = useRef<HTMLButtonElement>(null);
+  const infoRef = useRef<HTMLButtonElement>(null);
+  const canShowInfo =
+    current != null &&
+    conversationId !== '' &&
+    conversationId !== Constants.NEW_CONVO &&
+    conversationId !== Constants.PENDING_CONVO &&
+    conversationId !== Constants.SEARCH &&
+    conversationId === routeConversationId;
   /** ChatView stays mounted across a route change, so a dialog is tied to the chat it was opened
    *  for rather than to whichever chat is open when it renders. */
   const [openDialog, setOpenDialog] = useState<{ kind: DialogKind; id: string } | null>(null);
@@ -113,12 +125,13 @@ export default function useChatOptions({
     closeMenuRef.current();
   }, [conversationId, routeConversationId, readOnly]);
   const isDialogOpen = (kind: DialogKind) =>
-    !readOnly &&
+    (!readOnly || kind === 'info') &&
     openDialog?.kind === kind &&
     openDialog.id === conversationId &&
     (routeConversationId == null || routeConversationId === conversationId);
   const showRename = isDialogOpen('rename');
   const showDelete = isDialogOpen('delete');
+  const showInfo = canShowInfo && isDialogOpen('info');
   /** A close only clears the dialog it belongs to: a delete that settles after another chat
    *  opened its own dialog must not take that one down. */
   const toggleDialog = (kind: DialogKind) => (open: boolean) =>
@@ -130,6 +143,7 @@ export default function useChatOptions({
     });
   const setShowRename = toggleDialog('rename');
   const setShowDelete = toggleDialog('delete');
+  const setShowInfo = toggleDialog('info');
 
   const pinMutation = usePinConversationMutation();
   const archiveMutation = useArchiveConvoMutation();
@@ -204,8 +218,23 @@ export default function useChatOptions({
    *  organizing it would report success and show nowhere. */
   const canOrganize = !isTemporary;
 
-  const items: t.MenuItemProps[] = [
+  const sharedItems: t.MenuItemProps[] = [
     ...exportShare.items,
+    {
+      label: localize('com_ui_conversation_info'),
+      icon: <Info className={iconClass} aria-hidden="true" />,
+      onClick: () => setShowInfo(true),
+      show: canShowInfo,
+      ariaHasPopup: 'dialog',
+      // Preserve the menu item while the dialog owns focus, matching Share and Export.
+      hideOnClick: false,
+      ref: infoRef,
+      render: (props) => <button {...props} data-testid="conversation-info-menu-item" />,
+    },
+  ];
+
+  const items: t.MenuItemProps[] = [
+    ...sharedItems,
     { separate: true },
     {
       label: localize('com_ui_rename'),
@@ -257,11 +286,23 @@ export default function useChatOptions({
 
   return {
     show: exportShare.show,
-    items: readOnly ? exportShare.items : items,
+    items: readOnly ? sharedItems : items,
     hasSharedLink: exportShare.hasSharedLink,
     dialogs: exportShare.show ? (
       <>
         {exportShare.dialogs}
+        {current != null && canShowInfo && (
+          <ConversationInfo
+            key={conversationId}
+            conversation={current}
+            open={showInfo}
+            onOpenChange={setShowInfo}
+            triggerRef={infoRef}
+            showUsage={startupConfig != null && startupConfig.interface?.contextUsage !== false}
+            showCost={startupConfig?.interface?.contextCost === true}
+            currency={startupConfig?.interface?.currency}
+          />
+        )}
         {showRename && (
           <Rename
             open={showRename}

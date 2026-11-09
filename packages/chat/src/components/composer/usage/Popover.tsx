@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { cn } from '@librechat/client';
 import * as Ariakit from '@ariakit/react';
+import { Button } from '@librechat/client';
 import type { ReactNode } from 'react';
 
 /** Hover pacing: a brief intent delay so sweeping past the gauge doesn't pop
@@ -16,6 +17,8 @@ export interface UsagePopoverProps {
   /** Accessible name of the opened card */
   cardLabel: string;
   busy?: boolean;
+  triggerVariant?: 'message-hover' | 'message-hover-reveal';
+  testId?: string;
   /** The gauge face; receives whether the card is open */
   trigger: (open: boolean) => ReactNode;
   /** Card content, mounted only while the card is open */
@@ -31,6 +34,8 @@ export default function UsagePopover({
   label,
   cardLabel,
   busy = false,
+  triggerVariant,
+  testId = 'token-usage',
   trigger,
   children,
 }: UsagePopoverProps): React.JSX.Element {
@@ -113,7 +118,15 @@ export default function UsagePopover({
         ref={disclosureRef}
         store={popover}
         type="button"
-        data-testid="token-usage"
+        render={
+          <Button
+            variant={triggerVariant ?? 'ghost'}
+            size={triggerVariant == null ? 'icon-theme' : 'default'}
+            shape={triggerVariant == null ? 'round' : undefined}
+            data-hover-active={popoverOpen || undefined}
+          />
+        }
+        data-testid={testId}
         aria-label={label}
         aria-busy={busy}
         aria-haspopup="dialog"
@@ -150,9 +163,8 @@ export default function UsagePopover({
           popover.show();
         }}
         className={cn(
-          'size-theme-control rounded-theme-control-round flex items-center justify-center transition-colors',
-          'hover:bg-surface-hover focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
-          'animate-in fade-in zoom-in-95 duration-300',
+          triggerVariant == null &&
+            'animate-in fade-in zoom-in-95 duration-300 motion-reduce:animate-none',
         )}
       >
         {trigger(popoverOpen)}
@@ -165,6 +177,7 @@ export default function UsagePopover({
       <Ariakit.Popover
         store={popover}
         gutter={8}
+        data-usage-popover
         portal
         unmountOnHide
         autoFocusOnShow={focusOnShow}
@@ -182,12 +195,7 @@ export default function UsagePopover({
             scheduleHide();
           }
         }}
-        className={cn(
-          'border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel z-[200] max-h-[calc(100dvh-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain border p-3 shadow-lg focus:outline-hidden',
-          'origin-bottom translate-y-1 scale-95 opacity-0 transition duration-150 ease-out motion-reduce:transition-none',
-          'data-[enter]:translate-y-0 data-[enter]:scale-100 data-[enter]:opacity-100',
-          'data-[leave]:translate-y-1 data-[leave]:scale-95 data-[leave]:opacity-0',
-        )}
+        className="border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel z-[200] max-h-[calc(100dvh-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain border p-3 shadow-lg focus:outline-hidden"
       >
         {children}
       </Ariakit.Popover>

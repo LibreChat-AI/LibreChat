@@ -33,6 +33,7 @@ import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { useOptionalMessagesOperations } from './MessagesViewContext';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import MessageAudio from '~/components/Chat/Messages/MessageAudio';
+import MessageUsage from '~/components/Chat/Input/TokenUsage/Turn';
 import { useAssistantsMapContext } from './AssistantsMapContext';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
@@ -151,6 +152,7 @@ export const appMessagesHost: MessagesHost = {
   useStreamedAttachments,
   useMessageFeedback: useAppMessageFeedback,
   renderMessageAudio: (props) => <AppMessageAudio {...props} />,
+  renderMessageUsage: (props) => <MessageUsage {...props} />,
   useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
   useAutoScroll: () => useAtomValue(autoScrollAtom),
   useSeenSource: useConversationSeenSource,
