@@ -54,6 +54,9 @@ const CLASSIFIED = {
   'packages/api/src/agents/initialize.ts': 4,
 
   // -- Not gates ---------------------------------------------------------------
+  /** Capability-marker set and history-name expansion from the caller's gated
+   *  codeExecutionAvailable flag. Predicts names; never instantiates tools. */
+  'packages/api/src/agents/tools.ts': 2,
   /** The upload-resource map entry, and one mention in a doc comment. */
   'packages/api/src/tools/rolePermissions.ts': 2,
   /** Default capability list shipped in config. */
