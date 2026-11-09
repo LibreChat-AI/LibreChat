@@ -50,16 +50,25 @@ test('leading icons preserve conversation focus after keyboard unpin @scenario:s
     const pinned = page.locator('[data-pinned-section]').filter({ visible: true });
     const first = pinned.getByTestId('convo-item').filter({ hasText: titles[0] });
     const second = pinned.getByTestId('convo-item').filter({ hasText: titles[1] });
+    await expect(second.getByTestId('convo-pull-request')).toBeVisible();
+    const unpin = first.getByTestId('convo-unpin-button');
+    await unpin.focus();
+    await unpin.press('Enter');
+    await expect(first).toHaveCount(0);
+    await expect(second.locator('[data-conversation-link]')).toBeFocused();
+    await expect(page.getByRole('dialog', { name: 'Pull request', exact: true })).toBeHidden();
+
+    await second.getByTestId('convo-unpin-button').click();
+    await expect(second).toHaveCount(0);
     const regular = page
       .getByTestId('convo-item')
       .filter({ hasText: titles[1] })
-      .filter({ has: page.getByTestId('convo-project-badge') })
       .filter({ visible: true });
     const project = regular.getByTestId('convo-project-badge');
     const pr = regular.getByTestId('convo-pull-request');
     const title = regular.locator('[data-conversation-link]');
-    await expect(pr).toBeVisible();
     await expect(project).toBeVisible();
+    await expect(pr).toBeVisible();
     const projectBox = await project.boundingBox();
     const prBox = await pr.boundingBox();
     const titleBox = await title.boundingBox();
@@ -70,12 +79,6 @@ test('leading icons preserve conversation focus after keyboard unpin @scenario:s
     await expect(menu).toBeVisible();
     const menuBox = await menu.boundingBox();
     expect(menuBox!.x).toBeGreaterThan(titleBox!.x);
-    const unpin = first.getByTestId('convo-unpin-button');
-    await unpin.focus();
-    await unpin.press('Enter');
-    await expect(first).toHaveCount(0);
-    await expect(second.locator('[data-conversation-link]')).toBeFocused();
-    await expect(page.getByRole('dialog', { name: 'Pull request', exact: true })).toBeHidden();
   } finally {
     await deleteConversations(ids);
     await deleteProjects(projects);
