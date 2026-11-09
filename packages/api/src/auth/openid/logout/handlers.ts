@@ -78,9 +78,8 @@ export function createBackchannelLogoutHandlers(
     }
     const client = deps.getClient();
     if (!isBackchannelLogoutEnabled(config, client) || !client) {
-      /** Skips the rest of this route, not just this middleware, so the request falls through to
-       *  the app's ordinary 404 instead of continuing into the next handler in this route's chain. */
-      next('route');
+      /** Mode off, or no OpenID client configured for this provider: the endpoint does not exist. */
+      res.status(404).end();
       return;
     }
     res.set('Cache-Control', 'no-store');

@@ -64,7 +64,7 @@ function buildApp(options: CreateBackchannelLogoutHandlersOptions) {
     handleBackchannelLogout,
   );
   app.use((_req: Request, res: Response) => {
-    res.status(404).end();
+    res.status(200).end();
   });
   return app;
 }
@@ -94,6 +94,23 @@ describe('createBackchannelLogoutHandlers', () => {
     const app = buildApp({
       getConfig: jest.fn().mockResolvedValue(makeConfig({ mode: 'off' })),
       getClient: jest.fn().mockReturnValue(CLIENT),
+      resolveKey: jest.fn(),
+      revokeProviderSession: jest.fn(),
+      logger: makeLogger(),
+    });
+
+    const response = await request(app)
+      .post('/oauth/openid/backchannel-logout')
+      .type('form')
+      .send('logout_token=anything');
+
+    expect(response.status).toBe(404);
+  });
+
+  it('answers 404 when there is no OpenID client configured, even when the mode is enabled', async () => {
+    const app = buildApp({
+      getConfig: jest.fn().mockResolvedValue(makeConfig()),
+      getClient: jest.fn().mockReturnValue(null),
       resolveKey: jest.fn(),
       revokeProviderSession: jest.fn(),
       logger: makeLogger(),

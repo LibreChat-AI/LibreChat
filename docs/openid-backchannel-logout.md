@@ -1,10 +1,13 @@
 # OpenID back-channel logout
 
 `registration.openidBackchannelLogout` (see `librechat.example.yaml`) lets the configured OpenID
-provider end a LibreChat session the moment a user signs out at the provider, instead of waiting
-for the access token to expire. The receiver is `POST /oauth/openid/backchannel-logout`. It
-identifies a provider session by `(issuer, clientId, sid)` and ends every LibreChat credential
-bound to that `sid`, across tenants, without a tenant-scoped or user-wide cutoff.
+provider tell LibreChat that a user signed out. The receiver is `POST /oauth/openid/backchannel-logout`.
+It identifies a provider session by `(issuer, clientId, sid)` and marks every LibreChat credential
+bound to that `sid` as revoked, across tenants, without a tenant-scoped or user-wide cutoff.
+
+LibreChat enforces the logout at the session's next renewal or restoration, not on every request.
+An access token already issued stays valid until it expires (`SESSION_EXPIRY`, default 15 minutes).
+When the browser client's renewal request is denied, it signs the user out.
 
 ## Provider setup
 
