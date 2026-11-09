@@ -7,6 +7,7 @@ import {
   resolveSpecUserToggle,
   resolveSpecUserToggles,
   resolveSpecSkillsEnabled,
+  getWithheldToggles,
   specWithholdsUserToggles,
 } from './models';
 
@@ -118,6 +119,24 @@ describe('model spec defaults vs. explicit user toggles', () => {
       expect(
         resolveSpecUserToggles({ web_search: true }, hidden({ webSearch: false })),
       ).toBeUndefined();
+    });
+  });
+
+  describe('getWithheldToggles', () => {
+    it('lists exactly the toggles a withholding spec configures', () => {
+      const spec = {
+        hideBadgeRow: true,
+        webSearch: true,
+        executeCode: false,
+        mcpServers: ['crm'],
+      } as TModelSpec;
+      expect([...getWithheldToggles(spec)].sort()).toEqual(['execute_code', 'mcp', 'web_search']);
+    });
+
+    it('is empty for an ordinary spec, a withholding spec that configures nothing, or no spec', () => {
+      expect(getWithheldToggles({ webSearch: true } as TModelSpec).size).toBe(0);
+      expect(getWithheldToggles({ hideBadgeRow: true } as TModelSpec).size).toBe(0);
+      expect(getWithheldToggles(undefined).size).toBe(0);
     });
   });
 

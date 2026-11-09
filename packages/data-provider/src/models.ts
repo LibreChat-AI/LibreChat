@@ -315,6 +315,25 @@ export function specOverridesUserToggle(
   return specField != null && modelSpec[specField] != null;
 }
 
+const NO_WITHHELD_TOGGLES: ReadonlySet<keyof TEphemeralAgent> = new Set();
+
+/**
+ * The toggles a spec holds authority over, by `specOverridesUserToggle`'s rule.
+ * Empty for a spec that withholds toggles but configures none of them.
+ */
+export function getWithheldToggles(
+  modelSpec: TModelSpec | null | undefined,
+): ReadonlySet<keyof TEphemeralAgent> {
+  if (!specWithholdsUserToggles(modelSpec)) {
+    return NO_WITHHELD_TOGGLES;
+  }
+  return new Set(
+    SPEC_CAPABILITY_FIELDS.filter(([, specField]) => modelSpec[specField] != null).map(
+      ([toggleField]) => toggleField,
+    ),
+  );
+}
+
 /**
  * Drops the request's toggle for one capability when the spec holds authority
  * over it. For the sites that resolve a single field rather than a whole
