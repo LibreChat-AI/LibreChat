@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
-import { SteerEvents } from 'librechat-data-provider';
+import { SteerEvents, DEFAULT_STEER_MAX_LENGTH } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
 import type {
@@ -22,8 +22,6 @@ import { getReferencedQuotes } from '~/utils';
 
 /** Attachment cap per steer, mirroring the composer's practical limits. */
 export const STEER_MAX_FILES = 10;
-
-const DEFAULT_STEER_MAX_LENGTH = 16000;
 
 /**
  * How long a cancel waits for its disarm to publish before answering anyway.

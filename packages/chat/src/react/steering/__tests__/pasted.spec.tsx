@@ -47,6 +47,7 @@ const createFiles = (): Map<string, ExtendedFile> =>
 const createHost = (
   cancelUploads: SteerHost['cancelUploads'],
   clearFilesToDelete: () => void,
+  notify: ReturnType<SteerHost['useNotify']> = () => undefined,
 ): SteerHost => ({
   useSteerMessage: () => () => undefined,
   useSteerMessageAsync: () => async () => ({
@@ -68,7 +69,7 @@ const createHost = (
   useRouteConversationId: () => undefined,
   useCodeApprovalInputs: () => ({ conversation: null, reachable: { agents: [], complete: true } }),
   useLocalize: () => (key) => key,
-  useNotify: () => () => undefined,
+  useNotify: () => notify,
   useFileMap: () => undefined,
   useClearFilesToDelete: () => clearFilesToDelete,
   useSettings: () => ({
@@ -116,7 +117,8 @@ function setupSteering({
   const takeComposerDraft = jest.fn();
   const armDrainAfterAbort = jest.fn();
   const stopGenerating = jest.fn();
-  const host = createHost(withCancellation ? cancelUploads : undefined, clearFilesToDelete);
+  const notify = jest.fn();
+  const host = createHost(withCancellation ? cancelUploads : undefined, clearFilesToDelete, notify);
   const { result } = renderHook(
     () => {
       const composer = useComposerTake({
@@ -154,6 +156,7 @@ function setupSteering({
   );
   return {
     actions: result.current,
+    notify,
     files: () => currentFiles,
     store,
     setFiles,
@@ -210,6 +213,36 @@ describe('during-run pasted text fallback', () => {
       expect(isComposerFileTaken('pending-paste')).toBe(true);
     },
   );
+
+  it.each([
+    'steerFromComposer',
+    'queueFromComposer',
+    'interruptAndSend',
+    'interruptSteer',
+  ] as const)('preserves an oversized pending paste and its context through %s', (action) => {
+    const file = { ...pending(), pastedText: 'large document '.repeat(1700) };
+    const chat = setupSteering({ files: new Map([['paste-key', file]]) });
+    chat.store.set(pendingQuotesByConvoId(conversationId), ['keep this quote']);
+    act(() => expect(chat.actions[action]('Review this')).toBe(false));
+    expect(chat.files().get('paste-key')).toBe(file);
+    expect(chat.cancelUploads).not.toHaveBeenCalled();
+    expect(chat.setFiles).not.toHaveBeenCalled();
+    expect(chat.enqueue).not.toHaveBeenCalled();
+    expect(chat.submitSteer).not.toHaveBeenCalled();
+    expect(chat.takeComposerDraft).not.toHaveBeenCalled();
+    expect(chat.stopGenerating).not.toHaveBeenCalled();
+    expect(chat.store.get(pendingQuotesByConvoId(conversationId))).toEqual(['keep this quote']);
+    expect(chat.notify).toHaveBeenCalledWith({
+      message: 'com_ui_pasted_text_wait_upload',
+      status: 'warning',
+    });
+    const completed = setupSteering({
+      files: new Map([['paste-key', { ...file, progress: 1, file_id: 'stored-paste' }]]),
+    });
+    act(() => expect(completed.actions[action]('Review this')).toBe(true));
+    expect(completed.cancelUploads).not.toHaveBeenCalled();
+    expect(completed.files().size).toBe(0);
+  });
 
   it('steers completed file refs beside inline pending text, then cancels only the pending paste', () => {
     const chat = setupSteering();

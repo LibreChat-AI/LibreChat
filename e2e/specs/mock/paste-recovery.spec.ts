@@ -3,6 +3,7 @@ import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   selectMockEndpoint,
+  sendMessage,
   sendMessageAndWaitForCompletion,
 } from './helpers';
 for (const { failCorrection, failBeforeSave } of [
@@ -122,3 +123,57 @@ test('sent paste previews survive a reload without full text in the file list', 
   expect(user.files[0].textPreview).toBe(paste.slice(0, 240));
   await expect(sentFile).toContainText('Persisted preview of the exact clipboard content.');
 });
+
+for (const action of ['queue', 'steer'] as const) {
+  test(`oversized pending pastes retain their upload during ${action}`, async ({ page }) => {
+    await page.addInitScript(
+      (action) => localStorage.setItem('duringRunDefaultAction', JSON.stringify(action)),
+      action,
+    );
+    await page.goto(NEW_CHAT_PATH);
+    await selectMockEndpoint(page, { label: 'Mock Provider C', model: 'mock-model-c' });
+    await sendMessageAndWaitForCompletion(page, 'E2E_REPLY:large-paste-setup');
+    await sendMessage(page, 'E2E_SLOW_REPLY:large-paste-limit');
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route('**/api/files', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      await gate;
+      return route.abort();
+    });
+    try {
+      const input = page.getByTestId('text-input');
+      const paste = 'Large clipboard document.\n'.repeat(900);
+      await input.fill('Review this');
+      await input.evaluate((element, text) => {
+        const clipboardData = new DataTransfer();
+        clipboardData.setData('text/plain', text);
+        element.dispatchEvent(
+          new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }),
+        );
+      }, paste);
+      const chip = page.getByRole('button', { name: 'Edit pasted text, pasted-text.txt' });
+      await expect(chip).toHaveAccessibleDescription(/Large clipboard document/);
+      await expect(page.getByTestId('during-run-send-button')).toHaveAttribute(
+        'data-during-run-action',
+        action,
+      );
+      await input.press('Enter');
+      await expect(
+        page.getByText(
+          'This paste is too long to send inline during a response. Wait for its upload to finish, then try again.',
+        ),
+      ).toBeVisible();
+      await expect(chip).toBeVisible();
+      await expect(input).toHaveValue('Review this');
+      await expect(page.getByTestId('queued-message-row')).toHaveCount(0);
+      await expect(page.getByTestId('pending-steers')).toHaveCount(0);
+      await chip.click();
+      await expect(page.getByRole('textbox', { name: 'Edit pasted text' })).toHaveValue(paste);
+    } finally {
+      release();
+    }
+  });
+}

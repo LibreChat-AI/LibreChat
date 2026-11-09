@@ -38,7 +38,8 @@ export type SteerMessageKey =
   | 'com_ui_steer_arm_unconfirmed'
   | 'com_ui_steer_cancel_failed'
   | 'com_ui_steer_paused_queued'
-  | 'com_ui_steer_preempt_unsupported';
+  | 'com_ui_steer_preempt_unsupported'
+  | 'com_ui_pasted_text_wait_upload';
 
 /** One mounted chat pane and the conversation it shows. */
 export type SteerPane = {

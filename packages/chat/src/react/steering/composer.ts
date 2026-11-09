@@ -1,5 +1,9 @@
 import { useCallback, useMemo } from 'react';
 import { useStore } from 'jotai';
+import {
+  DEFAULT_STEER_MAX_LENGTH,
+  MAX_AGENT_QUEUED_TURN_TEXT_LENGTH,
+} from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ComposerFile, ComposerFileSetter } from './types';
 import type { QueuedMessageContext } from '../../core';
@@ -39,6 +43,8 @@ export default function useComposerTake<File extends ComposerFile>({
   const reasoningStore = useStore();
   const host = useSteerHost();
   const clearFilesToDelete = host.useClearFilesToDelete();
+  const localize = host.useLocalize();
+  const notify = host.useNotify();
 
   /** Prepares refs and inline text without side effects; consumes only after
    * the submission accepts them. Removal by identity preserves newer uploads. */
@@ -49,6 +55,13 @@ export default function useComposerTake<File extends ComposerFile>({
       }
       const prepared = partitionComposerFiles(text, files);
       if (prepared.hasIncompleteFiles || prepared.text.length === 0) {
+        return false;
+      }
+      if (
+        prepared.canceledUploadIds.length > 0 &&
+        prepared.text.length > Math.min(DEFAULT_STEER_MAX_LENGTH, MAX_AGENT_QUEUED_TURN_TEXT_LENGTH)
+      ) {
+        notify({ message: localize('com_ui_pasted_text_wait_upload'), status: 'warning' });
         return false;
       }
       if (!submit(prepared.text, prepared.files)) {
@@ -77,7 +90,7 @@ export default function useComposerTake<File extends ComposerFile>({
       clearFilesToDelete();
       return true;
     },
-    [files, setFiles, discardFiles, clearFilesToDelete, host],
+    [files, setFiles, discardFiles, clearFilesToDelete, host, localize, notify],
   );
 
   /** Consumes staged quote chips + manual skill picks (mirroring `ask()`'s

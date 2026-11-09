@@ -1,15 +1,16 @@
 import { Types } from 'mongoose';
 import {
-  enqueueAgentQueuedTurnSchema,
-  isAgentsEndpoint,
-  isEphemeralAgentId,
-} from 'librechat-data-provider';
-import {
   logger,
   AgentQueuedTurnCapacityError,
   AgentQueuedTurnConflictError,
   AgentQueuedTurnLaneRetiredError,
 } from '@librechat/data-schemas';
+import {
+  enqueueAgentQueuedTurnSchema,
+  MAX_AGENT_QUEUED_TURN_TEXT_LENGTH,
+  isAgentsEndpoint,
+  isEphemeralAgentId,
+} from 'librechat-data-provider';
 import type {
   CodeApprovalMode,
   TAgentQueuedTurnFileRef,
@@ -32,7 +33,7 @@ import { createQueuedTurnDeliveryReservation } from './queuedTurns';
 import { sanitizeFileForTransmit } from '../utils/message';
 import { getReferencedQuotes } from '~/utils';
 
-const MAX_QUEUED_TURN_LENGTH = 16_000;
+const MAX_QUEUED_TURN_LENGTH = MAX_AGENT_QUEUED_TURN_TEXT_LENGTH;
 const MAX_QUEUED_TURN_FILES = 10;
 const CAPABILITY = { supported: true, durability: 'durable', protocolVersion: 2 } as const;
 

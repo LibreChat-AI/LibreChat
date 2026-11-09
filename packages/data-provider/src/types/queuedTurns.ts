@@ -4,6 +4,10 @@ import { MAX_FILE_TEXT_PREVIEW_LENGTH } from './files';
 import { reasoningOverrideSchema } from '../schemas';
 import { Constants } from '../config';
 
+/** Existing transport bounds, shared with send-time paste fallback. */
+export const MAX_AGENT_QUEUED_TURN_TEXT_LENGTH = 16_000;
+export const DEFAULT_STEER_MAX_LENGTH = 16_000;
+
 export const agentQueuedTurnStatuses = [
   'queued',
   'claimed',
