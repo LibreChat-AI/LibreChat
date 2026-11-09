@@ -10,6 +10,7 @@ import {
   resolveMCPAppsPolicy,
   resolveSpecUserToggles,
   resolveSpecSkillsEnabled,
+  SPEC_TOOL_TOGGLES,
   getWithheldToggles,
 } from 'librechat-data-provider';
 import type { Agent, TModelSpec, TConversation, TEphemeralAgent } from 'librechat-data-provider';
@@ -167,15 +168,17 @@ export async function loadAddedAgent(
 
   /** The primary's resolved tools stand in for this pane's, since one badge row
    *  drives both — unless this pane's own spec differs and governs tools the
-   *  primary's resolution never saw: configured toggles it withholds, MCP
-   *  servers it pins, or `askUserQuestion`, which has no badge to carry it.
-   *  Only the full resolution below applies those. */
+   *  primary's resolution never saw: tool toggles it withholds, MCP servers it
+   *  pins, or `askUserQuestion`, which has no badge to carry it. Withheld
+   *  non-tool settings (artifacts, skills, background, intent) are resolved by
+   *  the mirrored branch itself. Only the full resolution below applies those. */
   const primaryIsEphemeral = primaryAgent && isEphemeralAgentId(primaryAgent.id);
+  const withheldToggles = getWithheldToggles(modelSpec);
   const governsOwnTools =
     (spec || '') !== (req.body?.spec || '') &&
     ((modelSpec?.mcpServers?.length ?? 0) > 0 ||
       modelSpec?.askUserQuestion != null ||
-      getWithheldToggles(modelSpec).size > 0);
+      SPEC_TOOL_TOGGLES.some(([toggleField]) => withheldToggles.has(toggleField)));
   if (primaryIsEphemeral && !governsOwnTools && Array.isArray(primaryAgent.tools)) {
     let endpointConfig = (appConfig?.endpoints as Record<string, unknown> | undefined)?.[
       endpoint

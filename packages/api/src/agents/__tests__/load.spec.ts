@@ -1582,6 +1582,26 @@ describe('loadAgent', () => {
       expect(result?.tools).toEqual(['web_search']);
     });
 
+    test.each([
+      ['locks', { lockTools: true, artifacts: true }],
+      ['hides the badge row and', { hideBadgeRow: true, skills: true }],
+    ])(
+      'an added spec that %s withholds only non-tool settings still mirrors',
+      async (_label, spec) => {
+        const { EPHEMERAL_AGENT_ID: EID } = Constants;
+        const result = await loadAddedAgent(
+          {
+            req: addedReq({ web_search: false }, spec),
+            conversation: addedConversation,
+            primaryAgent: { id: EID as string, tools: ['web_search'] } as LibreChatAgent,
+          },
+          deps,
+        );
+
+        expect(result?.tools).toEqual(['web_search']);
+      },
+    );
+
     test('an added spec that locks its tools but configures none still mirrors', async () => {
       const { EPHEMERAL_AGENT_ID: EID } = Constants;
       const result = await loadAddedAgent(
