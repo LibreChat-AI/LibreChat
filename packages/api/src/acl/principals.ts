@@ -1,3 +1,4 @@
+import { setMaxListeners } from 'node:events';
 import { PrincipalType } from 'librechat-data-provider';
 import type {
   AppConfig,
@@ -9,7 +10,9 @@ import type { TPrincipal, TGraphPerson, TGraphGroup } from 'librechat-data-provi
 import { PRINCIPAL_PREPARATION_FAILED, DIRECTORY_VERIFICATION_UNAVAILABLE } from './codes';
 import { mapWithConcurrency, createConcurrencyLimiter } from '~/utils/promise';
 import { getLookupConcurrency } from '~/utils/concurrency';
+import { getOutboundTimeoutMs } from '~/utils/timeouts';
 import { getSafeErrorMetadata } from '~/utils/errors';
+import { runDirectoryOperation } from './directory';
 
 export class InvalidPrincipalError extends Error {}
 
@@ -61,7 +64,7 @@ export interface DirectoryGraphClient {
 
 type CreateDirectoryClient = (accessToken: string, sub: string) => Promise<DirectoryGraphClient>;
 
-/** A successful lookup with no accessible identity returns null. Provider outages propagate. */
+/** Only a confirmed not-found is absence. Authorization and provider failures propagate. */
 async function lookupDirectoryRecord(
   client: DirectoryGraphClient,
   path: string,
@@ -70,11 +73,7 @@ async function lookupDirectoryRecord(
   try {
     return await client.api(path).select(fields).get();
   } catch (error) {
-    if (
-      error instanceof Error &&
-      'statusCode' in error &&
-      (error.statusCode === 403 || error.statusCode === 404)
-    ) {
+    if (getSafeErrorMetadata(error).status === 404) {
       return null;
     }
     throw error;
@@ -100,11 +99,20 @@ export async function resolveDirectoryPrincipal(
   const client = await createClient(authContext.accessToken, authContext.sub);
   const id = encodeURIComponent(principal.idOnTheSource);
   const isGroup = principal.type === PrincipalType.GROUP;
-  let record = await lookupDirectoryRecord(
-    client,
-    `/${isGroup ? 'groups' : 'users'}/${id}`,
-    isGroup ? 'id,displayName,mail,description' : 'id,displayName,mail,userPrincipalName',
-  );
+  let record: DirectoryRecord | null;
+  let denied: unknown;
+  try {
+    record = await lookupDirectoryRecord(
+      client,
+      `/${isGroup ? 'groups' : 'users'}/${id}`,
+      isGroup ? 'id,displayName,mail,description' : 'id,displayName,mail,userPrincipalName',
+    );
+  } catch (error) {
+    if (isGroup || getSafeErrorMetadata(error).status !== 403) throw error;
+    // People.Read can resolve an organizational identity without User.Read.All.
+    denied = error;
+    record = null;
+  }
   let contactEmail: string | undefined;
   if (!record && !isGroup) {
     record = await lookupDirectoryRecord(
@@ -113,15 +121,18 @@ export async function resolveDirectoryPrincipal(
       'id,displayName,userPrincipalName,scoredEmailAddresses,personType',
     );
     if (record?.personType?.subclass !== 'OrganizationUser') {
+      if (denied) throw denied;
       return null;
     }
     contactEmail = record.scoredEmailAddresses?.[0]?.address;
   }
   if (!record || record.id !== principal.idOnTheSource || !record.displayName) {
+    if (denied) throw denied;
     return null;
   }
   const email = record.mail || contactEmail || record.userPrincipalName;
   if (!isGroup && !email) {
+    if (denied) throw denied;
     return null;
   }
   return {
@@ -184,6 +195,8 @@ export type PermissionPrincipal = Omit<TPrincipal, 'id'> & { id?: string | null 
 
 interface PermissionGraphClient {
   api: (path: string) => {
+    options: (options: { signal: AbortSignal }) => ReturnType<PermissionGraphClient['api']>;
+    middlewareOptions: (options: object[]) => ReturnType<PermissionGraphClient['api']>;
     select: (fields: string) => {
       get: () => Promise<DirectoryRecord | null>;
       top: (count: number) => { get: () => Promise<DirectoryMembershipPage> };
@@ -192,7 +205,13 @@ interface PermissionGraphClient {
 }
 
 interface PermissionPrincipalMethods extends PermissionPrincipalStorage {
-  createClient: (token: string, sub: string) => Promise<PermissionGraphClient>;
+  createClient: (
+    token: string,
+    sub: string,
+    signal?: AbortSignal,
+  ) => Promise<PermissionGraphClient>;
+  /** SDK retries sleep without observing abort; strict verification does not retry. */
+  retryOptions: object[];
   includeOwners: boolean;
   logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
 }
@@ -207,22 +226,55 @@ export async function preparePermissionPrincipals(
   principals: readonly PermissionPrincipal[],
   authContext: DirectoryAuthContext | null,
   methods: PermissionPrincipalMethods,
-  appConfig?: Pick<AppConfig, 'concurrency'>,
+  appConfig?: Pick<AppConfig, 'concurrency' | 'timeouts'>,
 ): Promise<PermissionPrincipal[]> {
   const concurrency = getLookupConcurrency(appConfig, 'permissionPrincipalLookups');
   const limit = createConcurrencyLimiter(concurrency);
-  let client: Promise<PermissionGraphClient> | undefined;
+  const controller = new AbortController();
+  // Active Graph calls, their fetch transports, and the preparation boundary share this signal.
+  setMaxListeners(concurrency * 3 + 4, controller.signal);
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  let client: Promise<DirectoryGraphClient & DirectoryMembershipClient> | undefined;
   const createClient = (token: string, sub: string) => {
-    client ??= methods.createClient(token, sub).then((graph) => ({
-      api: (path: string) => ({
-        select: (fields: string) => ({
-          get: () => limit(() => graph.api(path).select(fields).get()),
-          top: (count: number) => ({
-            get: () => limit(() => graph.api(path).select(fields).top(count).get()),
+    const signal = controller.signal;
+    signal.throwIfAborted();
+    deadline ??= setTimeout(
+      () => controller.abort(new DirectoryVerificationError()),
+      getOutboundTimeoutMs(appConfig, 'directoryMs'),
+    );
+    client ??= runDirectoryOperation(signal, () => methods.createClient(token, sub, signal)).then(
+      (graph) => ({
+        api: (path: string) => ({
+          select: (fields: string) => ({
+            get: () =>
+              limit(() =>
+                runDirectoryOperation(signal, () =>
+                  graph
+                    .api(path)
+                    .options({ signal })
+                    .middlewareOptions(methods.retryOptions)
+                    .select(fields)
+                    .get(),
+                ),
+              ),
+            top: (count: number) => ({
+              get: () =>
+                limit(() =>
+                  runDirectoryOperation(signal, () =>
+                    graph
+                      .api(path)
+                      .options({ signal })
+                      .middlewareOptions(methods.retryOptions)
+                      .select(fields)
+                      .top(count)
+                      .get(),
+                  ),
+                ),
+            }),
           }),
         }),
       }),
-    }));
+    );
     return client;
   };
   const directoryMethods = { ...methods, createClient };
@@ -309,23 +361,27 @@ export async function preparePermissionPrincipals(
     return { id: stored?.id, change: { kind: 'group', id: stored?.id, data } };
   };
   try {
-    const staged = await mapWithConcurrency(principals, concurrency, async (principal) => {
-      const key = JSON.stringify([
-        principal.type,
-        principal.id || null,
-        principal.id ? null : principal.source,
-        principal.id ? null : principal.idOnTheSource,
-      ]);
-      let plan = plans.get(key);
-      if (!plan) {
-        plan = read(principal).catch((error) => {
-          if (error instanceof InvalidPrincipalError) return null;
-          throw error;
-        });
-        plans.set(key, plan);
-      }
-      return { principal, plan: await plan };
-    });
+    const staged = await runDirectoryOperation(controller.signal, () =>
+      mapWithConcurrency(principals, concurrency, async (principal) => {
+        const key = JSON.stringify([
+          principal.type,
+          principal.id || null,
+          principal.id ? null : principal.source,
+          principal.id ? null : principal.idOnTheSource,
+        ]);
+        let plan = plans.get(key);
+        if (!plan) {
+          plan = read(principal).catch((error) => {
+            if (error instanceof InvalidPrincipalError) return null;
+            throw error;
+          });
+          plans.set(key, plan);
+        }
+        return { principal, plan: await plan };
+      }),
+    );
+    controller.signal.throwIfAborted();
+    clearTimeout(deadline);
     const changes: PermissionPrincipalChange[] = [];
     const indices = new Map<PrincipalPlan, number>();
     const identities = new Map<string, number>();
@@ -349,9 +405,12 @@ export async function preparePermissionPrincipals(
       plan ? [{ ...principal, id: plan.change ? ids[indices.get(plan)!] : plan.id }] : [],
     );
   } catch (error) {
+    controller.abort(new DirectoryVerificationError());
     if (error instanceof DirectoryVerificationError) throw error;
     methods.logger.error('Error preparing permission principals', getSafeErrorMetadata(error));
     throw new PrincipalPreparationError();
+  } finally {
+    clearTimeout(deadline);
   }
 }
 
@@ -360,7 +419,7 @@ export function createPrincipalService(methods: PermissionPrincipalMethods): {
   prepare: (
     principals: readonly PermissionPrincipal[],
     auth: DirectoryAuthContext | null,
-    config?: Pick<AppConfig, 'concurrency'>,
+    config?: Pick<AppConfig, 'concurrency' | 'timeouts'>,
   ) => Promise<PermissionPrincipal[]>;
   ensureUser: (
     principal: PermissionPrincipal,
@@ -374,7 +433,7 @@ export function createPrincipalService(methods: PermissionPrincipalMethods): {
   const prepare = (
     principals: readonly PermissionPrincipal[],
     auth: DirectoryAuthContext | null,
-    config?: Pick<AppConfig, 'concurrency'>,
+    config?: Pick<AppConfig, 'concurrency' | 'timeouts'>,
   ) => preparePermissionPrincipals(principals, auth, methods, config);
   const ensure = async (
     principal: PermissionPrincipal,

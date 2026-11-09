@@ -3335,3 +3335,16 @@ describe('Permission principal concurrency', () => {
     },
   );
 });
+
+describe('directory verification deadline configuration', () => {
+  it('preserves an explicitly configured directory budget', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', timeouts: { directoryMs: 50 } }).timeouts?.directoryMs,
+    ).toBe(50);
+  });
+  it.each([0, -1, 1.5, 2147483648])('rejects unsafe directory budget %s', (directoryMs) => {
+    expect(configSchema.safeParse({ version: '1.3.5', timeouts: { directoryMs } }).success).toBe(
+      false,
+    );
+  });
+});

@@ -12,6 +12,8 @@ const {
   PermissionBits,
 } = require('librechat-data-provider');
 
+let mockDirectoryConfig = {};
+
 jest.mock('~/server/middleware', () => ({
   requireJwtAuth: (_req, _res, next) => next(),
   checkBan: (_req, _res, next) => next(),
@@ -19,7 +21,7 @@ jest.mock('~/server/middleware', () => ({
   canAccessResource: jest.requireActual('~/server/middleware/accessResources/canAccessResource')
     .canAccessResource,
   configMiddleware: (req, _res, next) => {
-    req.config = {};
+    req.config = mockDirectoryConfig;
     next();
   },
 }));
@@ -97,6 +99,7 @@ describe('Shared-link directory principal provisioning', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     requestTenant = undefined;
+    mockDirectoryConfig = {};
     await Promise.all([User.deleteMany({}), Group.deleteMany({}), AclEntry.deleteMany({})]);
     process.env.USE_ENTRA_ID_FOR_PEOPLE_SEARCH = 'true';
     process.env.OPENID_REUSE_TOKENS = 'true';
@@ -133,14 +136,19 @@ describe('Shared-link directory principal provisioning', () => {
     });
     graphOwners = jest.fn().mockResolvedValue({ value: [] });
     createGraphClient.mockResolvedValue({
-      api: (path) => ({
-        select: () => ({
-          get: () => graphGet(path),
-          top: () => ({
-            get: () => (path.includes('/owners') ? graphOwners(path) : graphMembers(path)),
+      api: (path) => {
+        const request = {
+          options: () => request,
+          middlewareOptions: () => request,
+          select: () => ({
+            get: () => graphGet(path),
+            top: () => ({
+              get: () => (path.includes('/owners') ? graphOwners(path) : graphMembers(path)),
+            }),
           }),
-        }),
-      }),
+        };
+        return request;
+      },
     });
   });
 
@@ -197,17 +205,97 @@ describe('Shared-link directory principal provisioning', () => {
     },
   );
 
-  it.each([403, 404])('fails closed without disclosure on Graph status %i', async (statusCode) => {
+  it.each([
+    [403, 502],
+    [404, 200],
+  ])('fails closed without disclosure on Graph status %i', async (statusCode, status) => {
     const existing = await User.create({ email: forged.email, name: 'Private User' });
     graphGet.mockRejectedValue(Object.assign(new Error('Private upstream detail'), { statusCode }));
     const response = await update([forged]);
-    expect(response.status).toBe(200);
-    expect(response.body.results.principals).toEqual([]);
+    expect(response.status).toBe(status);
+    if (status === 200) expect(response.body.results.principals).toEqual([]);
+    else expect(response.body.code).toBe('DIRECTORY_VERIFICATION_UNAVAILABLE');
     expect(JSON.stringify(response.body)).not.toContain(existing._id.toString());
     expect(JSON.stringify(response.body)).not.toContain('Private upstream detail');
     expect(await User.countDocuments()).toBe(2);
     expect(await AclEntry.countDocuments()).toBe(1);
   });
+
+  it('returns a safe directory failure for an external group denied by Graph', async () => {
+    graphGet.mockRejectedValue(
+      Object.assign(new Error('Private consent details'), { statusCode: 403 }),
+    );
+    const response = await update([{ ...forged, type: PrincipalType.GROUP }]);
+    expect(response.status).toBe(502);
+    expect(response.body.code).toBe('DIRECTORY_VERIFICATION_UNAVAILABLE');
+    expect(await Group.countDocuments()).toBe(0);
+    expect(await AclEntry.countDocuments()).toBe(1);
+    expect(JSON.stringify(response.body)).not.toContain('Private consent');
+  });
+
+  it('preserves sharing when People resolves an organizational user after users is denied', async () => {
+    graphGet.mockRejectedValueOnce(
+      Object.assign(new Error('Missing User.Read.All'), { statusCode: 403 }),
+    );
+    graphGet.mockResolvedValueOnce({
+      id: sourceId,
+      displayName: 'Trusted',
+      personType: { subclass: 'OrganizationUser' },
+      scoredEmailAddresses: [{ address: 'trusted@example.com' }],
+    });
+    const response = await update([forged]);
+    expect(response.status).toBe(200);
+    expect(response.body.results.principals).toHaveLength(1);
+    expect(await User.findOne({ email: 'trusted@example.com' })).not.toBeNull();
+  });
+
+  it.each(['client', 'identity', 'members', 'owners', 'later page'])(
+    'returns a retryable failure with no writes when %s stalls past the configured deadline',
+    async (phase) => {
+      mockDirectoryConfig = {
+        timeouts: { directoryMs: 20 },
+        concurrency: { permissionPrincipalLookups: 1 },
+      };
+      const group = await Group.create({
+        name: 'Stored',
+        source: 'entra',
+        idOnTheSource: sourceId,
+        memberIds: ['kept-member'],
+      });
+      const stalled = () => new Promise(() => undefined);
+      if (phase === 'client') createGraphClient.mockImplementationOnce(stalled);
+      if (phase === 'identity') graphGet.mockImplementationOnce(stalled);
+      if (phase === 'members') graphMembers.mockImplementationOnce(stalled);
+      if (phase === 'owners') {
+        process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS = 'true';
+        graphOwners.mockImplementationOnce(stalled);
+      }
+      if (phase === 'later page') {
+        graphMembers.mockResolvedValueOnce({
+          value: [],
+          '@odata.nextLink': `https://graph.microsoft.com/v1.0/groups/${sourceId}/transitiveMembers?page=2`,
+        });
+        graphMembers.mockImplementationOnce(stalled);
+      }
+      const persist = jest.spyOn(db, 'persistPermissionPrincipals');
+      const response = await update([
+        phase === 'client' || phase === 'identity'
+          ? forged
+          : { ...forged, type: PrincipalType.GROUP, id: group._id.toString() },
+      ]);
+      expect(response.status).toBe(502);
+      expect(response.body).toEqual({
+        error: 'Failed to update permissions',
+        details: 'Directory identity verification failed',
+        code: 'DIRECTORY_VERIFICATION_UNAVAILABLE',
+      });
+      expect(persist).not.toHaveBeenCalled();
+      expect(await User.countDocuments()).toBe(1);
+      expect(await Group.countDocuments()).toBe(1);
+      expect((await Group.findById(group._id).lean()).memberIds).toEqual(['kept-member']);
+      expect(await AclEntry.countDocuments()).toBe(1);
+    },
+  );
 
   it.each(['client', 'lookup'])(
     'returns a safe failure without ACL changes on a provider %s outage',

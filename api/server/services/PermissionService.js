@@ -6,6 +6,7 @@ const {
   logger,
   runAfterTransaction,
 } = require('@librechat/data-schemas');
+const { RetryHandlerOptions } = require('@microsoft/microsoft-graph-client');
 const { ResourceType, PrincipalType } = require('librechat-data-provider');
 const {
   entraIdPrincipalFeatureEnabled,
@@ -303,6 +304,7 @@ const principalService = createPrincipalService({
   findPermissionGroup: (...args) => db.findPermissionGroup(...args),
   persistPermissionPrincipals: (...args) => db.persistPermissionPrincipals(...args),
   createClient: createGraphClient,
+  retryOptions: [new RetryHandlerOptions(0, 0)],
   get includeOwners() {
     return isEnabled(process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS);
   },

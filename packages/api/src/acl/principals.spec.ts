@@ -1,4 +1,5 @@
 import { PrincipalType } from 'librechat-data-provider';
+import { Client, RetryHandlerOptions } from '@microsoft/microsoft-graph-client';
 import {
   ensureDirectoryPrincipalUser,
   preparePermissionPrincipals,
@@ -9,6 +10,18 @@ import {
   validateLocalPrincipalId,
 } from './principals';
 import { permissionErrorCode } from './accessControlService';
+
+function graphRequest<T>(select: () => T) {
+  return {
+    select,
+    options(_options: { signal: AbortSignal }) {
+      return this;
+    },
+    middlewareOptions(_options: object[]) {
+      return this;
+    },
+  };
+}
 
 const principal = {
   type: PrincipalType.USER,
@@ -140,6 +153,36 @@ describe('resolveDirectoryPrincipal', () => {
     expect(client.api).toHaveBeenLastCalledWith('/me/people/directory-user-id');
   });
 
+  it.each([
+    [403, 403],
+    [403, 404],
+    [404, 403],
+  ])('propagates authorization failure when users=%s and People=%s', async (users, people) => {
+    const client = createClient();
+    client.get.mockRejectedValueOnce(
+      Object.assign(new Error('Denied users'), { statusCode: users }),
+    );
+    client.get.mockRejectedValueOnce(
+      Object.assign(new Error('Denied People'), { statusCode: people }),
+    );
+    await expect(
+      resolveDirectoryPrincipal(principal, authContext, client.create),
+    ).rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  it('propagates group authorization failure without a People fallback', async () => {
+    const client = createClient();
+    client.get.mockRejectedValue(Object.assign(new Error('Denied'), { statusCode: 403 }));
+    await expect(
+      resolveDirectoryPrincipal(
+        { ...principal, type: PrincipalType.GROUP },
+        authContext,
+        client.create,
+      ),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(client.get).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects personal contacts instead of provisioning them as directory users', async () => {
     const client = createClient();
     client.get.mockResolvedValueOnce(null).mockResolvedValueOnce({
@@ -228,6 +271,7 @@ describe('validateLocalPrincipalId', () => {
 describe('preparePermissionPrincipals', () => {
   const createDeps = () => ({
     createClient: jest.fn(),
+    retryOptions: [],
     findPermissionUser: jest.fn().mockResolvedValue(null),
     findPermissionGroup: jest.fn().mockResolvedValue(null),
     persistPermissionPrincipals: jest
@@ -256,7 +300,7 @@ describe('preparePermissionPrincipals', () => {
         }),
     );
     deps.createClient.mockResolvedValue({
-      api: (path: string) => ({ select: () => ({ get: () => get(path.split('/').pop()!) }) }),
+      api: (path: string) => graphRequest(() => ({ get: () => get(path.split('/').pop()!) })),
     });
     const principals = ['a', 'b', 'c', 'd'].map(external);
     const work = preparePermissionPrincipals(principals, authContext, deps, {
@@ -287,7 +331,7 @@ describe('preparePermissionPrincipals', () => {
     const get = jest
       .fn()
       .mockResolvedValue({ id: 'a', displayName: 'Trusted', mail: 'a@example.com' });
-    deps.createClient.mockResolvedValue({ api: () => ({ select: () => ({ get }) }) });
+    deps.createClient.mockResolvedValue({ api: () => graphRequest(() => ({ get })) });
     await preparePermissionPrincipals([external('a'), external('a')], authContext, deps);
     expect(get).toHaveBeenCalledTimes(1);
     expect(deps.persistPermissionPrincipals.mock.calls[0][0]).toHaveLength(1);
@@ -301,13 +345,12 @@ describe('preparePermissionPrincipals', () => {
       if (failure === 'client') deps.createClient.mockRejectedValue(error);
       else
         deps.createClient.mockResolvedValue({
-          api: () => ({
-            select: () => ({
+          api: () =>
+            graphRequest(() => ({
               get: async () => {
                 throw error;
               },
-            }),
-          }),
+            })),
         });
       await expect(
         preparePermissionPrincipals([external('a')], authContext, deps),
@@ -373,7 +416,7 @@ describe('preparePermissionPrincipals', () => {
         };
       };
       deps.createClient.mockResolvedValue({
-        api: (path: string) => ({ select: () => ({ top: () => ({ get: () => get(path) }) }) }),
+        api: (path: string) => graphRequest(() => ({ top: () => ({ get: () => get(path) }) })),
       });
       await preparePermissionPrincipals(
         ['507f1f77bcf86cd799439011', '507f1f77bcf86cd799439012'].map((id) => ({
@@ -389,6 +432,133 @@ describe('preparePermissionPrincipals', () => {
       expect(deps.createClient).toHaveBeenCalledTimes(1);
     },
   );
+});
+
+describe('directory preparation deadline', () => {
+  const auth = authContext;
+  const identities = ['a', 'b', 'c'].map((idOnTheSource) => ({
+    ...principal,
+    source: 'entra' as const,
+    idOnTheSource,
+  }));
+  const config = { concurrency: { permissionPrincipalLookups: 1 }, timeouts: { directoryMs: 20 } };
+  const createDeps = () => ({
+    createClient: jest.fn(),
+    retryOptions: [],
+    includeOwners: true,
+    findPermissionUser: jest.fn().mockResolvedValue(null),
+    findPermissionGroup: jest.fn().mockResolvedValue(null),
+    persistPermissionPrincipals: jest.fn().mockResolvedValue([]),
+    logger: { error: jest.fn() },
+  });
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('bounds client creation and never starts Graph or persistence after late resolution', async () => {
+    const deps = createDeps();
+    let complete: (value: object) => void = () => undefined;
+    deps.createClient.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const work = preparePermissionPrincipals(identities, auth, deps, config);
+    const rejected = work.catch((error) => error);
+    await jest.advanceTimersByTimeAsync(20);
+    expect(await rejected).toMatchObject({
+      statusCode: 502,
+      code: 'DIRECTORY_VERIFICATION_UNAVAILABLE',
+    });
+    const signal: AbortSignal = deps.createClient.mock.calls[0][2];
+    expect(signal.aborted).toBe(true);
+    const api = jest.fn();
+    complete({ api });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(api).not.toHaveBeenCalled();
+    expect(deps.persistPermissionPrincipals).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it.each(['identity', 'members', 'owners', 'later page'])(
+    'aborts a stalled %s read, cancels queued calls, and cannot persist late results',
+    async (phase) => {
+      const deps = createDeps();
+      const requests: string[] = [];
+      let complete: (value: object) => void = () => undefined;
+      let transportSignal: AbortSignal | undefined;
+      const query = (path: string) => {
+        const get = async () => {
+          requests.push(path);
+          if (phase === 'members' || phase === 'owners' || phase === 'later page') {
+            if (phase === 'later page' && !path.includes('?'))
+              return {
+                value: [],
+                '@odata.nextLink': `https://graph.microsoft.com/v1.0${path}?page=2`,
+              };
+            if (phase === 'owners' && path.includes('transitiveMembers')) return { value: [] };
+          }
+          return new Promise((resolve) => {
+            complete = resolve;
+          });
+        };
+        const request = graphRequest(() => ({ get, top: () => ({ get }) }));
+        request.options = ({ signal }) => {
+          transportSignal = signal;
+          return request;
+        };
+        return request;
+      };
+      deps.createClient.mockResolvedValue({ api: query });
+      deps.findPermissionGroup.mockResolvedValue({
+        id: '507f1f77bcf86cd799439011',
+        source: 'entra',
+        idOnTheSource: 'group-id',
+      });
+      const recipients =
+        phase === 'identity'
+          ? identities
+          : [{ type: PrincipalType.GROUP, id: '507f1f77bcf86cd799439011' }];
+      const work = preparePermissionPrincipals(recipients, auth, deps, config);
+      const rejected = work.catch((error) => error);
+      await jest.advanceTimersByTimeAsync(20);
+      expect(await rejected).toMatchObject({
+        statusCode: 502,
+        code: 'DIRECTORY_VERIFICATION_UNAVAILABLE',
+      });
+      expect(transportSignal?.aborted).toBe(true);
+      const count = requests.length;
+      complete({
+        id: 'a',
+        displayName: 'Trusted',
+        mail: 'a@example.com',
+        value: [],
+        '@odata.nextLink': 'https://graph.microsoft.com/v1.0/groups/group-id/owners?page=3',
+      });
+      await jest.advanceTimersByTimeAsync(100);
+      expect(requests).toHaveLength(count);
+      expect(deps.persistPermissionPrincipals).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('clears the deadline after successful reads without timing out persistence', async () => {
+    const deps = createDeps();
+    deps.createClient.mockResolvedValue({
+      api: () =>
+        graphRequest(() => ({
+          get: async () => ({ id: 'a', displayName: 'Trusted', mail: 'a@example.com' }),
+        })),
+    });
+    deps.persistPermissionPrincipals.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return ['created'];
+    });
+    const work = preparePermissionPrincipals([identities[0]], auth, deps, config);
+    await jest.advanceTimersByTimeAsync(60);
+    await expect(work).resolves.toMatchObject([{ id: 'created' }]);
+    expect(jest.getTimerCount()).toBe(0);
+  });
 });
 
 describe('refreshDirectoryGroupMembers', () => {
@@ -542,5 +712,40 @@ describe('principal failure codes', () => {
     [new DirectoryVerificationError(), 'DIRECTORY_VERIFICATION_UNAVAILABLE'],
   ])('approves the stable error code for %p', (error, code) => {
     expect(permissionErrorCode(error)).toEqual({ code });
+  });
+});
+
+describe('real Graph SDK verification adapter', () => {
+  afterEach(() => jest.restoreAllMocks());
+  it('passes the abort signal to fetch and disables uncancellable SDK backoff', async () => {
+    let signal: AbortSignal | undefined;
+    const fetch = jest.spyOn(global, 'fetch').mockImplementation(async (_url, options) => {
+      signal = options?.signal ?? undefined;
+      return new Response(
+        JSON.stringify({ error: { code: 'Unavailable', message: 'Private provider message' } }),
+        {
+          status: 503,
+          headers: { 'Content-Type': 'application/json', 'Retry-After': '120' },
+        },
+      );
+    });
+    const deps = {
+      createClient: async () =>
+        Client.init({ authProvider: (done) => done(null, 'test-graph-token') }),
+      retryOptions: [new RetryHandlerOptions(0, 0)],
+      includeOwners: false,
+      findPermissionUser: jest.fn(),
+      findPermissionGroup: jest.fn(),
+      persistPermissionPrincipals: jest.fn(),
+      logger: { error: jest.fn() },
+    };
+    await expect(
+      preparePermissionPrincipals([{ ...principal, source: 'entra' }], authContext, deps, {
+        timeouts: { directoryMs: 1000 },
+      }),
+    ).rejects.toMatchObject({ code: 'DIRECTORY_VERIFICATION_UNAVAILABLE' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(true);
+    expect(deps.persistPermissionPrincipals).not.toHaveBeenCalled();
   });
 });

@@ -2739,6 +2739,8 @@ export type TMCPAppRateLimits = z.infer<typeof mcpAppRateLimitSchema>;
 const outboundTimeoutMs = z.number().int().positive().max(2_147_483_647).optional();
 
 export const outboundTimeoutsSchema = z.object({
+  /** Entire directory verification phase for a permission update, including token exchange and pages. */
+  directoryMs: outboundTimeoutMs,
   /** RAG API queries for file search and message context. */
   ragMs: outboundTimeoutMs,
   /** Each OCR provider call (upload, signed URL, OCR, delete). */

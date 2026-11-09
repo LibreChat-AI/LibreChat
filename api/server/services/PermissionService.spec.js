@@ -306,6 +306,12 @@ describe('PermissionService', () => {
 
       require('~/server/services/GraphApiService').createGraphClient.mockResolvedValue({
         api: () => ({
+          options() {
+            return this;
+          },
+          middlewareOptions() {
+            return this;
+          },
           select: () => ({
             get: async () => ({
               id: 'directory-user-id',
@@ -338,6 +344,12 @@ describe('PermissionService', () => {
 
       require('~/server/services/GraphApiService').createGraphClient.mockResolvedValue({
         api: () => ({
+          options() {
+            return this;
+          },
+          middlewareOptions() {
+            return this;
+          },
           select: () => ({
             get: async () => ({
               id: 'unlinked-directory-id',
