@@ -178,6 +178,8 @@ export function getOpenAIConfig(
      * them from the forwarded `addParams` too so the model does not receive
      * params it rejects. `defaultParams` is applied inside `getGoogleConfig`
      * (and only read here for tool detection), so it needs no sanitizing.
+     * The transform drops `thinkingConfig`, so a selected thinking level reaches
+     * the gateway as `reasoning_effort` instead.
      */
     const transformed = transformToOpenAIConfig({
       addParams: stripGeminiFlashBlockedParams(
@@ -190,6 +192,7 @@ export function getOpenAIConfig(
       tools: googleResult.tools,
       llmConfig: googleResult.llmConfig,
       fromEndpoint: EModelEndpoint.google,
+      reasoningEffort: googleResult.reasoningEffort,
     });
     llmConfig = transformed.llmConfig;
     tools = transformed.tools;
