@@ -15,7 +15,6 @@ import {
   findConvoInAllQueries,
   getResponseStatus,
   isNotFoundError,
-  proveFetchedReplyByIdentity,
   logger,
 } from '~/utils';
 
@@ -365,34 +364,6 @@ export function usePrefetchConversationMessages(conversationId: string, enabled:
         { retry: retryPrefetch },
       );
     }
-    if (!prefetched.has(conversationId)) {
-      return;
-    }
-    /** The record usually lands after the prefetch started, so the fetch captured no reply stamp.
-     *  Prove the prefetched history once both are cached, before the view's seen check reads it.
-     *  True once there is nothing left to prove: proven, replaced, failed, or the view mounted. */
-    const prove = () => {
-      const state = queryClient.getQueryState<t.TMessage[]>(queryKey);
-      if (!prefetched.has(conversationId) || state == null) {
-        return true;
-      }
-      if (state.dataUpdateCount > 1 || state.status === 'error') {
-        return true;
-      }
-      if (state.status !== 'success' || state.data == null) {
-        return false;
-      }
-      return proveFetchedReplyByIdentity(queryClient, conversationId, state.data);
-    };
-    if (prove()) {
-      return;
-    }
-    const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
-      if (event.type === 'updated' && event.action.type === 'success' && prove()) {
-        unsubscribe();
-      }
-    });
-    return unsubscribe;
   }, [conversationId, enabled, queryClient]);
 }
 
@@ -446,3 +417,9 @@ export function refetchMessagesOnMount(query: Query<t.TMessage[], unknown>): boo
     Date.now() - dataUpdatedAt < PREFETCH_FRESH_MS
   );
 }
+
+/** Secondary readers follow the session's history query without starting another fetch on key changes. */
+export const useCachedMessages = <TData = t.TMessage[]>(
+  id: string,
+  select?: (messages: t.TMessage[]) => TData,
+): QueryObserverResult<TData> => useGetMessagesByConvoId(id, { enabled: false, select });

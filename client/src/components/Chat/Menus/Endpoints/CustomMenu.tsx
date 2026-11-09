@@ -13,6 +13,7 @@ export interface CustomMenuProps extends Ariakit.MenuButtonProps<'div'> {
   comboboxLabel?: string;
   trigger?: Ariakit.MenuButtonProps['render'];
   defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(function CustomMenu(
@@ -27,6 +28,7 @@ export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(func
     comboboxLabel,
     trigger,
     defaultOpen,
+    onOpenChange,
     ...props
   },
   ref,
@@ -41,6 +43,7 @@ export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(func
     showTimeout: 100,
     placement: inlineSide(direction, parent ? 'end' : 'start'),
     defaultOpen: defaultOpen,
+    setOpen: onOpenChange,
   });
   const isOpen = menuStore.useState('open');
   const rootMenuStateClass = isOpen

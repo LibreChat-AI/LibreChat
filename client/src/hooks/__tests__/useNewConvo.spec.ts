@@ -5,7 +5,12 @@ import { renderHook, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StreamHostProvider, useEventHandlers } from '@librechat/chat/react';
 import { Constants, LocalStorageKeys, EModelEndpoint } from 'librechat-data-provider';
-import type { EventSubmission, TConversation } from 'librechat-data-provider';
+import type {
+  EventSubmission,
+  TConversation,
+  TPreset,
+  TStartupConfig,
+} from 'librechat-data-provider';
 import type { StreamHost } from '@librechat/chat/react';
 import type { ExtendedFile } from '~/common';
 import {
@@ -28,6 +33,17 @@ import { setFileSearchChoice, transferFileSearchChoice } from '~/utils/choices';
 import { clearUploadRecovery } from '~/hooks/Files/useFileHandling';
 import { useAutoSave } from '~/hooks/Input/useAutoSave';
 
+function QueryWrapper({ children }: { children: React.ReactNode }) {
+  const [client] = React.useState(() => new QueryClient());
+  return React.createElement(QueryClientProvider, { client }, children);
+}
+
+const mockNavigate = jest.fn();
+let mockRunSwitch = false;
+let mockSelectionTests = false;
+let mockDefaultPreset: TPreset | null = null;
+let mockStartup: Partial<TStartupConfig> = {};
+const mockSetConversation = jest.fn();
 const mockDeleteFiles = jest.fn();
 const mockUploadFile = jest.fn();
 let mockUploadOptions: { onSuccess?: (data: object, body: FormData) => void } = {};
@@ -68,7 +84,7 @@ const mockFiles = new Map<
 >();
 
 jest.mock('react-router-dom', () => ({
-  useNavigate: () => jest.fn(),
+  useNavigate: () => mockNavigate,
   useSearchParams: () => [new URLSearchParams()],
 }));
 
@@ -78,16 +94,20 @@ jest.mock('~/Providers/ChatSettingsContext', () => ({
 
 jest.mock('recoil', () => ({
   useRecoilValue: (key: string) => {
+    if (key === 'defaultPreset') return mockDefaultPreset;
     if (key === 'saveBadgesState') {
       return true;
     }
     return null;
   },
   useSetRecoilState: (key: string) => (update: unknown) => mockSetEphemeralAgent(key, update),
-  useRecoilCallback: (callback) =>
-    callback.length === 0
-      ? jest.fn()
-      : callback({ set: (key, update) => mockSetEphemeralAgent(key, update) }),
+  useRecoilCallback: (callback) => {
+    if (callback.length === 0) {
+      if (mockRunSwitch) return callback({});
+      return jest.fn();
+    }
+    return callback({ set: (key, update) => mockSetEphemeralAgent(key, update) });
+  },
 }));
 jest.mock('librechat-data-provider/react-query', () => ({
   useGetModelsQuery: () => ({ data: {} }),
@@ -102,11 +122,19 @@ jest.mock('~/utils', () => ({
   ...jest.requireActual('~/utils/files'),
   ...jest.requireActual('~/utils/previewCache'),
   updateLastSelectedModel: jest.fn(),
-  getLocalStorageItems: () => ({}),
-  getDefaultModelSpec: () => ({}),
-  getDefaultEndpoint: () => undefined,
-  getModelSpecPreset: jest.fn(),
-  hasModelSelection: () => false,
+  getLocalStorageItems: () =>
+    mockSelectionTests ? jest.requireActual('~/utils/localStorage').getLocalStorageItems() : {},
+  getDefaultModelSpec: (...args) =>
+    mockSelectionTests ? jest.requireActual('~/utils/endpoints').getDefaultModelSpec(...args) : {},
+  getDefaultEndpoint: (...args) =>
+    mockSelectionTests
+      ? jest.requireActual('~/utils/getDefaultEndpoint').default(...args)
+      : undefined,
+  getModelSpecPreset: (...args) =>
+    jest.requireActual('~/utils/endpoints').getModelSpecPreset(...args),
+  hasModelSelection: (...args) =>
+    jest.requireActual('~/utils/endpoints').hasModelSelection(...args),
+  buildDefaultConvo: (...args) => jest.requireActual('~/utils/buildDefaultConvo').default(...args),
   isPastedTextFileMarked: (fileId?: string | null) =>
     fileId != null && mockMarkedPasteIds.has(fileId),
   collectForeignAttachmentClaims: (excludeDraftIds: string[], excludeOwnPane?: number | 'tab') =>
@@ -127,8 +155,17 @@ jest.mock('~/utils', () => ({
 
 jest.mock('~/data-provider', () => ({
   useDeleteFilesMutation: () => ({ mutateAsync: mockDeleteFiles }),
-  useGetEndpointsQuery: () => ({ data: {} }),
-  useGetStartupConfig: () => ({ data: {} }),
+  useGetEndpointsQuery: () => ({
+    data: mockSelectionTests
+      ? {
+          agents: { order: 0 },
+          assistants: { order: 1 },
+          azureAssistants: { order: 2 },
+          openAI: { order: 3 },
+        }
+      : {},
+  }),
+  useGetStartupConfig: () => ({ data: mockStartup }),
   useGetFiles: () => ({ data: mockFileList }),
   useGetFileConfig: () => ({ data: null }),
   useGetAgentByIdQuery: () => ({ data: undefined }),
@@ -200,7 +237,7 @@ jest.mock('~/store', () => ({
     defaultPreset: 'defaultPreset',
     saveBadgesState: 'saveBadgesState',
     useClearConvoState: () => jest.fn(),
-    useSetConversationAtom: () => ({ setConversation: jest.fn() }),
+    useSetConversationAtom: () => ({ setConversation: mockSetConversation }),
   },
 }));
 
@@ -1652,7 +1689,7 @@ describe('useNewConvo reset cleanup', () => {
           setFileSearchChoice('origin-conversation', false);
         }
       }
-      const next = renderHook(() => useNewConvo());
+      const next = renderHook(() => useNewConvo(), { wrapper: QueryWrapper });
       act(() => next.result.current.newConversation());
       expect(clearUploadRecovery).toHaveBeenCalledWith('pending-search', mockSaveDrafts);
       expect(getDefaultStore().get(filesFamily(0)).size).toBe(0);
@@ -1734,7 +1771,7 @@ describe('useNewConvo reset cleanup', () => {
         });
       }
       beginFileSearchUpload('answer-upload', 'answer-origin');
-      const next = renderHook(() => useNewConvo(2));
+      const next = renderHook(() => useNewConvo(2), { wrapper: QueryWrapper });
       act(() => next.result.current.newConversation());
       expect(clearUploadRecovery).toHaveBeenCalledWith('answer-upload', mode === 'active');
       next.unmount();
@@ -1760,7 +1797,7 @@ describe('useNewConvo reset cleanup', () => {
 
   it('does not delete a file claimed by another tab but deletes an unclaimed file', () => {
     mockForeignClaims.add('claimed-file');
-    const { result } = renderHook(() => useNewConvo(2));
+    const { result } = renderHook(() => useNewConvo(2), { wrapper: QueryWrapper });
 
     act(() => {
       result.current.newConversation();
@@ -1792,7 +1829,7 @@ describe('useNewConvo reset cleanup', () => {
       progress: 0,
     });
     mockMarkedPasteIds.add('inflight-paste');
-    const { result } = renderHook(() => useNewConvo());
+    const { result } = renderHook(() => useNewConvo(), { wrapper: QueryWrapper });
 
     act(() => {
       result.current.newConversation();
@@ -1800,5 +1837,202 @@ describe('useNewConvo reset cleanup', () => {
 
     expect(mockStorePendingDiscardIds).toHaveBeenCalledWith(0, ['inflight-paste']);
     expect(mockPendingDiscardIds).toEqual(new Set(['inflight-paste']));
+  });
+});
+
+describe('passive route navigation', () => {
+  beforeEach(() => {
+    mockRunSwitch = true;
+    mockNavigate.mockClear();
+  });
+  afterEach(() => {
+    mockRunSwitch = false;
+  });
+
+  it.each([true, false])(
+    'uses explicit replacement intent without catalog data (%s)',
+    async (replace) => {
+      const { result } = renderHook(() => useNewConvo(), { wrapper: QueryWrapper });
+      await act(async () =>
+        result.current.switchToConversation(
+          {
+            conversationId: 'new',
+            endpoint: EModelEndpoint.openAI,
+            model: 'selected',
+            title: '',
+            createdAt: '',
+            updatedAt: '',
+          },
+          null,
+          undefined,
+          false,
+          false,
+          true,
+          undefined,
+          replace,
+        ),
+      );
+      expect(mockNavigate).toHaveBeenCalledWith('/c/new', ...(replace ? [{ replace: true }] : []));
+    },
+  );
+});
+
+describe('remembered New Chat identity', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockSelectionTests = true;
+    mockRunSwitch = true;
+    mockSetConversation.mockClear();
+    mockFiles.clear();
+    mockStartup = {};
+    mockDefaultPreset = null;
+  });
+  afterEach(() => {
+    mockSelectionTests = false;
+    mockRunSwitch = false;
+    mockStartup = {};
+    mockDefaultPreset = null;
+    localStorage.clear();
+  });
+
+  async function open(
+    index = 0,
+    options?: Parameters<ReturnType<typeof useNewConvo>['newConversation']>[0],
+  ) {
+    const hook = renderHook(() => useNewConvo(index), { wrapper: QueryWrapper });
+    await act(async () => hook.result.current.newConversation({ disableFocus: true, ...options }));
+    return mockSetConversation.mock.calls.at(-1)?.[0] as TConversation;
+  }
+
+  it('restores a non-first remembered agent for the applicable pane without its catalog', async () => {
+    localStorage.setItem(
+      `${LocalStorageKeys.LAST_CONVO_SETUP}_0`,
+      JSON.stringify({ endpoint: 'agents' }),
+    );
+    localStorage.setItem(`${LocalStorageKeys.AGENT_ID_PREFIX}0`, 'agent_other_pane');
+    localStorage.setItem(`${LocalStorageKeys.AGENT_ID_PREFIX}1`, 'agent_remembered');
+    expect((await open(1)).agent_id).toBe('agent_remembered');
+  });
+
+  it.each([EModelEndpoint.assistants, EModelEndpoint.azureAssistants])(
+    'restores the remembered %s and its own model alias',
+    async (endpoint) => {
+      localStorage.setItem(
+        `${LocalStorageKeys.LAST_CONVO_SETUP}_0`,
+        JSON.stringify({
+          endpoint,
+          assistant_id: 'asst_remembered',
+          model: 'public-azure-alias',
+        }),
+      );
+      localStorage.setItem(`${LocalStorageKeys.ASST_ID_PREFIX}0${endpoint}`, 'asst_remembered');
+      localStorage.setItem(
+        `${LocalStorageKeys.LAST_MODEL}`,
+        JSON.stringify({ [endpoint]: 'unrelated-model' }),
+      );
+      const selected = await open();
+      expect(selected.assistant_id).toBe('asst_remembered');
+      expect(selected.model).toBe('public-azure-alias');
+    },
+  );
+
+  it('restores an Azure resource alias when returning from a different endpoint', async () => {
+    localStorage.setItem(
+      `${LocalStorageKeys.LAST_CONVO_SETUP}_0`,
+      JSON.stringify({ endpoint: 'openAI', model: 'gpt-4o' }),
+    );
+    localStorage.setItem(`${LocalStorageKeys.ASST_ID_PREFIX}0azureAssistants`, 'asst_remembered');
+    localStorage.setItem(
+      LocalStorageKeys.LAST_MODEL,
+      JSON.stringify({ openAI: 'gpt-4o', azureAssistants: 'remembered-resource' }),
+    );
+    const selected = await open(0, { template: { endpoint: EModelEndpoint.azureAssistants } });
+    expect(selected.assistant_id).toBe('asst_remembered');
+    expect(selected.model).toBe('remembered-resource');
+  });
+
+  it('does not route a remembered assistant using another assistant’s saved alias', async () => {
+    localStorage.setItem(
+      `${LocalStorageKeys.LAST_CONVO_SETUP}_0`,
+      JSON.stringify({
+        endpoint: 'azureAssistants',
+        assistant_id: 'asst_other',
+        model: 'other-resource',
+      }),
+    );
+    localStorage.setItem(`${LocalStorageKeys.ASST_ID_PREFIX}0azureAssistants`, 'asst_remembered');
+    localStorage.setItem(
+      LocalStorageKeys.LAST_MODEL,
+      JSON.stringify({ azureAssistants: 'other-resource' }),
+    );
+    const selected = await open();
+    expect(selected.assistant_id).toBe('asst_remembered');
+    expect(selected.model).toBeUndefined();
+  });
+
+  it.each(['agent_explicit', String(Constants.EPHEMERAL_AGENT_ID)])(
+    'preserves explicit agent choice %s',
+    async (agent_id) => {
+      localStorage.setItem(`${LocalStorageKeys.AGENT_ID_PREFIX}0`, 'agent_remembered');
+      const selected = await open(0, { template: { endpoint: EModelEndpoint.agents, agent_id } });
+      expect(selected.agent_id).toBe(agent_id);
+    },
+  );
+
+  it('preserves an explicit assistant choice', async () => {
+    localStorage.setItem(`${LocalStorageKeys.ASST_ID_PREFIX}0assistants`, 'asst_remembered');
+    expect(
+      (
+        await open(0, {
+          preset: { endpoint: EModelEndpoint.assistants, assistant_id: 'asst_explicit' },
+        })
+      ).assistant_id,
+    ).toBe('asst_explicit');
+  });
+
+  it('lets a default preset decide before remembered entity IDs', async () => {
+    localStorage.setItem(`${LocalStorageKeys.AGENT_ID_PREFIX}0`, 'agent_remembered');
+    mockDefaultPreset = {
+      presetId: 'default',
+      endpoint: EModelEndpoint.agents,
+      agent_id: 'agent_default',
+    } as TPreset;
+    expect((await open()).agent_id).toBe('agent_default');
+  });
+
+  it('does not restore a remembered assistant belonging to another endpoint', async () => {
+    localStorage.setItem(
+      `${LocalStorageKeys.LAST_CONVO_SETUP}_0`,
+      JSON.stringify({ endpoint: 'assistants' }),
+    );
+    localStorage.setItem(`${LocalStorageKeys.ASST_ID_PREFIX}0azureAssistants`, 'asst_azure');
+    expect((await open()).assistant_id).toBeFalsy();
+  });
+
+  it('keeps an explicitly chosen model rather than restoring an entity', async () => {
+    localStorage.setItem(`${LocalStorageKeys.AGENT_ID_PREFIX}0`, 'agent_remembered');
+    const selected = await open(0, {
+      preset: { endpoint: EModelEndpoint.openAI, model: 'explicit-model' },
+    });
+    expect(selected.model).toBe('explicit-model');
+    expect(selected.agent_id).not.toBe('agent_remembered');
+  });
+
+  it('lets a hard model spec decide before remembered entity IDs', async () => {
+    localStorage.setItem(`${LocalStorageKeys.AGENT_ID_PREFIX}0`, 'agent_remembered');
+    mockStartup = {
+      modelSpecs: {
+        prioritize: true,
+        list: [
+          {
+            name: 'hard',
+            label: 'hard',
+            default: true,
+            preset: { endpoint: EModelEndpoint.agents, agent_id: 'agent_spec' },
+          },
+        ],
+      },
+    } as Partial<TStartupConfig>;
+    expect((await open()).agent_id).toBe('agent_spec');
   });
 });

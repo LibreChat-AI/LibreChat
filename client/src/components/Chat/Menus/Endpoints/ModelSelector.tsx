@@ -11,10 +11,18 @@ import { ModelSelectorProvider, useModelSelectorContext } from './ModelSelectorC
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
 import { ModelSelectorChatProvider } from './ModelSelectorChatContext';
 import { getSelectedIcon, getDisplayValue } from './utils';
+import { activateCatalog } from '~/hooks/useCatalogWarmup';
 import { CustomMenu as Menu } from './CustomMenu';
 import { isModelSelectorShown } from './shown';
 import DialogManager from './DialogManager';
 import { useLocalize } from '~/hooks';
+
+function activateSelectorCatalogs(open: boolean) {
+  if (!open) return;
+  activateCatalog('models');
+  activateCatalog('agents');
+  activateCatalog('assistants');
+}
 
 function ModelSelectorContent() {
   const localize = useLocalize();
@@ -88,6 +96,7 @@ function ModelSelectorContent() {
   return (
     <div className="relative flex max-w-[60vw] min-w-0 flex-col items-center gap-2 sm:max-w-xs">
       <Menu
+        onOpenChange={activateSelectorCatalogs}
         values={selectedValues}
         onValuesChange={(values: Record<string, any>) => {
           setSelectedValues({
