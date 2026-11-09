@@ -3,12 +3,14 @@ import { createContentAggregator, GraphEvents } from '@librechat/agents';
 import {
   subagentActivityConfigSchema,
   StepEvents,
+  SteerEvents,
   ContentTypes,
   getRunStepCloseMetadata,
   getRunStepDurationMs,
 } from 'librechat-data-provider';
 import type {
   TSubagentActivityConfig,
+  TSteerAppliedEvent,
   SubagentContentEvent,
   SubagentContentFrame,
   SubagentContentWatermark,
@@ -40,12 +42,14 @@ const CONTENT_GRAPH_EVENTS = {
 };
 
 type SubagentContentUpdate = Pick<SubagentUpdateEvent, 'data'> & {
-  phase: SubagentUpdateEvent['phase'] | 'tool_preparation';
+  phase: SubagentUpdateEvent['phase'] | 'tool_preparation' | 'steer_applied';
 };
 
 /** This boundary accepts only events already intended for the public main-chat stream. */
 export function subagentContentFrame(update: SubagentContentUpdate): SubagentContentFrame | null {
   switch (update.phase) {
+    case 'steer_applied':
+      return { event: SteerEvents.ON_STEER_APPLIED, data: update.data as TSteerAppliedEvent };
     case 'run_step': {
       const data = update.data as Agents.RunStep | undefined;
       return data?.stepDetails == null ? null : { event: StepEvents.ON_RUN_STEP, data };
@@ -481,6 +485,10 @@ export async function readSubagentContent(
         continue;
       }
       const frame = entry.frame;
+      if (frame.event === SteerEvents.ON_STEER_APPLIED) {
+        aggregator.contentParts[frame.data.index] = frame.data.part;
+        continue;
+      }
       if (frame.event === StepEvents.ON_RUN_STEP_CLOSED) {
         const step = aggregator.stepMap.get(frame.data.id);
         if (step != null) step.status = frame.data.status;

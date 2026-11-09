@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { logger } from '@librechat/data-schemas';
 import { Tools, FileContext } from 'librechat-data-provider';
 import { Constants as AgentConstants } from '@librechat/agents';
 import type { TFile, TurnFileConsumers, CodeWorkspaceOperation } from 'librechat-data-provider';
@@ -40,18 +41,25 @@ type WorkspaceRequest = {
  * In-memory stand-in for the Code API and its attached worker, implementing the
  * `import_file` contract: stored objects are copied by reference, a same-digest file is left
  * unchanged, a different file at the path is a conflict, `write_file` is create-only, and
- * `read_file` returns what is stored.
+ * `read_file` returns what is stored. With `missingParents`, it is a worker that predates
+ * LibreChat-AI/code-interpreter#360 on a root registered by path alone: a write or import into a
+ * folder that does not exist yet is `NOT_FOUND`, because that worker never creates one.
  */
 function createFakeWorker({
   objects = new Map<string, string>(),
   delayMs = 0,
   denyWrites = false,
   truncateReads = false,
+  missingParents = false,
+  legacyCodeApi = false,
 }: {
   objects?: Map<string, string>;
   delayMs?: number;
   denyWrites?: boolean;
   truncateReads?: boolean;
+  missingParents?: boolean;
+  /** A Code API that predates `NOT_FOUND` relays it as `INVALID_PATH` with the same message. */
+  legacyCodeApi?: boolean;
 } = {}) {
   const files = new Map<string, string>();
   const requests: WorkspaceRequest[] = [];
@@ -86,6 +94,13 @@ function createFakeWorker({
     }
     if (denyWrites) {
       return reply(403, { code: 'WRITE_DISABLED', error: 'File writes are disabled' });
+    }
+    const folder = key.slice(0, key.lastIndexOf('/') + 1);
+    if (missingParents && ![...files.keys()].some((path) => path.startsWith(folder))) {
+      return reply(422, {
+        code: legacyCodeApi ? 'INVALID_PATH' : 'NOT_FOUND',
+        error: 'Workspace path does not exist',
+      });
     }
     if (request.operation === 'write_file') {
       if (files.has(key) && request.overwrite === false) {
@@ -701,6 +716,67 @@ describe('primeWorkspaceAttachments', () => {
     await primeWorkspaceAttachments({ agents: [agentWith(context, [file])], deps });
 
     expect(worker.files.get('root:.librechat/attachments/report.pdf')).toBe('pdf');
+  });
+
+  it.each([
+    ['NOT_FOUND', false],
+    ['INVALID_PATH', true],
+  ])(
+    'tells the user to update a worker that cannot create the attachments folder (%s)',
+    async (upstreamCode, legacyCodeApi) => {
+      const warn = jest.spyOn(logger, 'warn');
+      const worker = createFakeWorker({ missingParents: true, legacyCodeApi });
+      const { deps, records } = createDeps(worker);
+      const file = remember(chatFile('report.pdf', 'pdf', worker.objects));
+      const agent = agentWith(attachedContext(), [file]);
+
+      await primeWorkspaceAttachments({ agents: [agent], deps });
+
+      expect(worker.requests.map((request) => request.operation)).toEqual(['write_file']);
+      expect(worker.files.size).toBe(0);
+      expect(agent.dynamicToolContextMap?.[Tools.execute_code]).toContain(
+        "report.pdf (attached by user): this machine's LibreChat worker cannot receive attachments yet; updating the worker enables it",
+      );
+      expect(records.every((record) => record.copy == null)).toBe(true);
+      expect(warn).toHaveBeenCalledWith(
+        '[workspaceAttachments] Could not create .librechat/attachments/.gitignore in workspace primary: unsupported',
+        {
+          type: 'WorkspaceToolHttpError',
+          reason: 'rejected',
+          upstreamStatus: 422,
+          upstreamCode,
+        },
+      );
+      warn.mockRestore();
+    },
+  );
+
+  it('logs the worker code of a refused import without its message', async () => {
+    const warn = jest.spyOn(logger, 'warn');
+    const worker = createFakeWorker();
+    const { deps } = createDeps(worker);
+    const file = remember(chatFile('report.pdf', 'pdf', worker.objects));
+    const agent = agentWith(attachedContext(), [file]);
+
+    await primeWorkspaceAttachments({
+      agents: [agent],
+      deps: { ...deps, digestFile: async () => ({ sha256: sha('other bytes'), bytes: 3 }) },
+    });
+
+    expect(agent.dynamicToolContextMap?.[Tools.execute_code]).toContain(
+      'report.pdf (attached by user): copying it to this machine failed',
+    );
+    expect(warn).toHaveBeenCalledWith(
+      `[workspaceAttachments] Import of file ${file.file.file_id} into workspace primary failed: failed`,
+      {
+        type: 'WorkspaceToolHttpError',
+        reason: 'rejected',
+        upstreamStatus: 422,
+        upstreamCode: 'INVALID_REQUEST',
+      },
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('source mismatch');
+    warn.mockRestore();
   });
 
   it('reports a worker-side write refusal instead of a path', async () => {

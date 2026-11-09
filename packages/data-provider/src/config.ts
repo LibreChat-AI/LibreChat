@@ -22,6 +22,14 @@ import {
   MAX_PII_PATTERN_LENGTH,
 } from './filters';
 import {
+  EModelEndpoint,
+  eModelEndpointSchema,
+  isAgentsEndpoint,
+  eReasoningEffortSchema,
+  eReasoningParameterFormatSchema,
+  eReasoningResponseKeySchema,
+} from './schemas';
+import {
   REFILL_INTERVAL_UNITS,
   BALANCE_DISPLAY_MODES,
   BALANCE_REFILL_MODES,
@@ -29,16 +37,10 @@ import {
   DEFAULT_BALANCE_RESERVATION_TTL_MS,
 } from './balance';
 import {
-  EModelEndpoint,
-  eModelEndpointSchema,
-  isAgentsEndpoint,
-  eReasoningParameterFormatSchema,
-  eReasoningResponseKeySchema,
-} from './schemas';
-import {
   scheduledMCPResourceBindingSchema,
   scheduledMCPReadOnlyPolicySchema,
 } from './types/scheduleConsent';
+import { partialWithoutDefaults } from './zod';
 
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
@@ -63,6 +65,8 @@ import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
 import { STATEFUL_CODE_ENVIRONMENTS } from './stateful-code';
 import { specsConfigSchema, TSpecsConfig } from './models';
 import { fileConfigSchema } from './file-config';
+import { clientLimitsSchema } from './clientLimits';
+import type { TClientLimits } from './clientLimits';
 import {
   PULL_REQUEST_PROVIDERS,
   PULL_REQUEST_BATCH_VERSION,
@@ -96,6 +100,8 @@ export const UNSEEN_REPLY_WATERMARK = '1970-01-01T00:00:00.000Z' as const;
 export const defaultSocialLogins = ['google', 'facebook', 'openid', 'github', 'discord', 'saml'];
 
 export const TWO_FACTOR_ENROLLMENT_REQUIRED_CODE = 'TWO_FACTOR_ENROLLMENT_REQUIRED' as const;
+/** A password reset changed the password but could not retire every earlier credential. */
+export const CREDENTIAL_RETIREMENT_INCOMPLETE_CODE = 'CREDENTIAL_RETIREMENT_INCOMPLETE' as const;
 
 /** A write was refused because the deployment requires terms acceptance the user has not given. */
 export const TERMS_NOT_ACCEPTED_CODE = 'terms_not_accepted' as const;
@@ -124,13 +130,78 @@ export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
  * or tenant config document can neither change nor remove them. The pull request provider and
  * host decide where the deployment's token is sent, the OAuth app which credentials users grant
  * and which environment secret is sent with them, and the shared cache's slot count where every
- * replica looks for a shared answer. */
+ * replica looks for a shared answer. Vertex AI always authenticates with the deployment's service
+ * account: its key file (a path, inline JSON or a URL the server fetches) and its region, which
+ * is part of the API host, stay librechat.yaml's. The admin catalog's model-list lifetime is one
+ * value for the whole deployment, which `GET /api/admin/config/meta` reports. */
 export const BASE_ONLY_CONFIG_PATHS = [
   'endpoints.agents.pullRequests.provider',
   'endpoints.agents.pullRequests.host',
   'endpoints.agents.pullRequests.oauth',
   'endpoints.agents.pullRequests.sharedCacheSlots',
+  'endpoints.anthropic.vertex.serviceKeyFile',
+  'endpoints.anthropic.vertex.region',
+  'endpoints.catalogModelsTtlMs',
 ] as const;
+/** Fields the server derives from another librechat.yaml field, which no config document writes:
+ * the merge leaves a document's value or tombstone there out and derives them itself, and writes
+ * skip them (`derived_path`). `vertexConfig` is what `endpoints.anthropic.vertex` resolves to,
+ * its service key file included, which the Anthropic client loads (a path, inline JSON or a URL
+ * it fetches). Each is both an override path and an AppConfig path: its section keeps its name. */
+export const DERIVED_CONFIG_PATHS = ['endpoints.anthropic.vertexConfig'] as const;
+
+/** How long the admin config catalog reuses a scope's model lists unless
+ * `endpoints.catalogModelsTtlMs` sets it: the two minutes a provider's model list is cached for. */
+export const DEFAULT_CATALOG_MODELS_TTL_MS = 120_000;
+
+/**
+ * Why a deployment-only path is set in librechat.yaml only:
+ * - `startup`: read once when the server starts, so a stored value would never apply.
+ * - `operator`: an operator boundary (signed access, rate limits, permission leases, code
+ *   modules, which tools load, the limits and telemetry every browser is sent, list filter
+ *   bounds, cleanup concurrency), read from librechat.yaml itself.
+ * - `unused`: nothing reads it any more.
+ */
+export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
+
+/**
+ * Paths of overridable sections that only librechat.yaml sets, as YAML key paths. No config
+ * document, Base included, stores them: admin writes skip them, and the merge keeps
+ * librechat.yaml's value. Unlike `BASE_ONLY_CONFIG_PATHS`, their readers never took a value from
+ * the merged config (apart from the tool filters, which only gated `ask_user_question` there), so
+ * a stored override had no effect rather than a dangerous one.
+ */
+export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnlyConfigReason>> = {
+  'telemetry.stackTraceLimit': 'operator',
+  'telemetry.rum': 'operator',
+  clientLimits: 'operator',
+  rateLimits: 'operator',
+  cloudfront: 'operator',
+  permissions: 'operator',
+  openapi: 'operator',
+  conversationList: 'operator',
+  skillDeletion: 'startup',
+  passwordHashing: 'startup',
+  includedTools: 'operator',
+  filteredTools: 'operator',
+  'interface.colorModeFromUrl': 'startup',
+  'fileConfig.skills.deletionCleanupConcurrency': 'operator',
+  'registration.openidDiscovery': 'startup',
+  'registration.oauthStateTtlMs': 'startup',
+  'endpoints.agents.subagentActivity': 'startup',
+  'endpoints.agents.eventDriven': 'startup',
+  'endpoints.agents.backgroundTasks.shutdownInterruptGraceMs': 'startup',
+  'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
+  'endpoints.agents.backgroundTasks.completionReceiptBatching': 'startup',
+  'endpoints.agents.toolApproval.hooks': 'operator',
+  'endpoints.agents.managementApi': 'operator',
+  'mcpSettings.oauthFailureRetentionMs': 'startup',
+  'mcpSettings.catalogRecovery.maxStateEntries': 'startup',
+  'mcpSettings.catalogRecovery.maxDetachedDiscoveries': 'startup',
+  'mcpSettings.catalogRecovery.authorizationFenceRetryIntervalMs': 'startup',
+  'mcpSettings.catalogRecovery.authorizationFenceRetryBatchSize': 'startup',
+  cache: 'unused',
+};
 
 export const defaultRetrievalModels = [
   'gpt-4o',
@@ -308,36 +379,60 @@ function parseAllowedAddressEntry(entry: string): { address: string; port: strin
   return { address, port };
 }
 
-const allowedAddressEntrySchema = z
-  .string()
-  .refine((entry) => entry.length > 0 && entry.trim().length > 0, {
-    message: 'allowedAddresses entries must be non-empty',
-  })
-  .refine((entry) => !entry.includes('://') && !entry.includes('/') && !/\s/.test(entry), {
-    message:
-      'allowedAddresses entries must be host:port pairs — no URLs, paths, CIDR ranges, or whitespace',
-  })
-  .refine((entry) => parseAllowedAddressEntry(entry) != null, {
-    message:
-      'allowedAddresses entries must include a port, for example localhost:11434 or [::1]:11434',
-  })
-  .refine(
-    (entry) => {
-      const parsed = parseAllowedAddressEntry(entry);
-      if (!parsed) return false;
-      const stripped = parsed.address;
-      const isIPv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(stripped);
-      const isIPv6 = !isIPv4 && stripped.includes(':');
-      if (!isIPv4 && !isIPv6) {
-        return true; // hostname — checked at runtime via DNS
-      }
-      return isIPv4 ? isPrivateIPv4Literal(stripped) : isPrivateIPv6Literal(stripped);
-    },
-    {
-      message:
-        'allowedAddresses is scoped to private IP space — public IP literals are not permitted (use hostname:port if it resolves to a private IP)',
-    },
-  );
+/**
+ * Why an `allowedAddresses` entry is refused, as the `reason` param of its validation issue:
+ * - `empty`: the entry is empty or only whitespace.
+ * - `format`: a URL, path, CIDR range or whitespace instead of a `host:port` pair.
+ * - `missing_port`: no valid port (`localhost`, `10.0.0.5`).
+ * - `public_ip`: an IP literal outside private, loopback and link-local space.
+ */
+export type AllowedAddressIssue = 'empty' | 'format' | 'missing_port' | 'public_ip';
+
+const ALLOWED_ADDRESS_ISSUE_MESSAGES: Readonly<Record<AllowedAddressIssue, string>> = {
+  empty: 'allowedAddresses entries must be non-empty',
+  format:
+    'allowedAddresses entries must be host:port pairs — no URLs, paths, CIDR ranges, or whitespace',
+  missing_port:
+    'allowedAddresses entries must include a port, for example localhost:11434 or [::1]:11434',
+  public_ip:
+    'allowedAddresses is scoped to private IP space — public IP literals are not permitted (use hostname:port if it resolves to a private IP)',
+};
+
+/**
+ * The first rule an `allowedAddresses` entry fails, checked in the order above, or `null` for an
+ * entry the schema accepts. A hostname passes: its resolved IP is checked at runtime.
+ */
+export function getAllowedAddressEntryIssue(entry: string): AllowedAddressIssue | null {
+  if (entry.trim().length === 0) {
+    return 'empty';
+  }
+  if (entry.includes('://') || entry.includes('/') || /\s/.test(entry)) {
+    return 'format';
+  }
+  const parsed = parseAllowedAddressEntry(entry);
+  if (!parsed) {
+    return 'missing_port';
+  }
+  const { address } = parsed;
+  const isIPv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(address);
+  if (!isIPv4 && !address.includes(':')) {
+    return null;
+  }
+  const isPrivate = isIPv4 ? isPrivateIPv4Literal(address) : isPrivateIPv6Literal(address);
+  return isPrivate ? null : 'public_ip';
+}
+
+/** One issue per refused entry, with its message and `params.reason`. */
+const allowedAddressEntrySchema = z.string().superRefine((entry, ctx) => {
+  const reason = getAllowedAddressEntryIssue(entry);
+  if (reason) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: ALLOWED_ADDRESS_ISSUE_MESSAGES[reason],
+      params: { reason },
+    });
+  }
+});
 
 export const allowedAddressesSchema = z.array(allowedAddressEntrySchema).optional();
 
@@ -629,7 +724,11 @@ type SchemaShape<T> = T extends z.ZodObject<infer U> ? U : never;
 
 // Helper type to determine the default value or undefined based on whether the field has a default
 type DefaultValue<T> =
-  T extends z.ZodDefault<z.ZodTypeAny> ? ReturnType<T['_def']['defaultValue']> : undefined;
+  T extends z.ZodDefault<infer Inner>
+    ? z.output<Inner>
+    : T extends z.ZodPrefault<infer Inner>
+      ? z.input<Inner>
+      : undefined;
 
 // Extract default values or undefined from the schema shape
 type ExtractDefaults<T> = {
@@ -640,14 +739,13 @@ export type SchemaDefaults<T> = ExtractDefaults<SchemaShape<T>>;
 
 export type TConfigDefaults = SchemaDefaults<typeof configSchema>;
 
-export function getSchemaDefaults<Schema extends z.AnyZodObject>(
+export function getSchemaDefaults<Schema extends z.ZodObject>(
   schema: Schema,
 ): ExtractDefaults<SchemaShape<Schema>> {
   const shape = schema.shape;
   const entries = Object.entries(shape).map(([key, value]) => {
-    if (value instanceof z.ZodDefault) {
-      // Extract default value if it exists
-      return [key, value._def.defaultValue()];
+    if (value instanceof z.ZodDefault || value instanceof z.ZodPrefault) {
+      return [key, value.def.defaultValue];
     }
     return [key, undefined];
   });
@@ -661,6 +759,11 @@ export const modelConfigSchema = z
     deploymentName: z.string().optional(),
     version: z.string().optional(),
     assistants: z.boolean().optional(),
+    /**
+     * The `reasoning_effort` values this deployment accepts. A deployment name does not identify
+     * its model, so the composer offers an effort control only for a deployment declaring these.
+     */
+    reasoningEfforts: z.array(eReasoningEffortSchema).min(1).optional(),
   })
   .or(z.boolean());
 
@@ -702,7 +805,7 @@ export const azureBaseSchema = z.object({
   dropParams: z.array(z.string()).optional(),
   version: z.string().optional(),
   baseURL: z.string().optional(),
-  additionalHeaders: z.record(z.string()).optional(),
+  additionalHeaders: z.record(z.string(), z.string()).optional(),
 });
 
 export type TAzureBaseSchema = z.infer<typeof azureBaseSchema>;
@@ -806,7 +909,7 @@ export const baseEndpointSchema = z.object({
    * providers through an AI gateway / reverse proxy that consumes metadata
    * headers (provider-native request shaping is preserved).
    */
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   titlePrompt: z.string().optional(),
   titleModel: z.string().optional(),
   titleConvo: z.boolean().optional(),
@@ -934,7 +1037,7 @@ export const assistantEndpointSchema = baseEndpointSchema.merge(
         userIdQuery: z.boolean().optional(),
       })
       .optional(),
-    headers: z.record(z.string()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
   }),
 );
 
@@ -1157,7 +1260,7 @@ export const toolApprovalHookConfigSchema = z.object({
   /** Optional regex matched against the tool name; omit to run for every tool. */
   matcher: z.string().optional(),
   /** Static options forwarded to the module's builder; the hook's own per-call config. */
-  options: z.record(z.unknown()).optional(),
+  options: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type TToolApprovalHookConfig = z.infer<typeof toolApprovalHookConfigSchema>;
@@ -1610,7 +1713,8 @@ export const agentsEndpointSchema = baseEndpointSchema
           message: 'Use 0 to disable, or at least 1000 ms',
         })
         .default(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS),
-      recursionLimit: z.number().optional(),
+      /** Graph steps an agent run may take; a run with fewer than 1 cannot take a step. */
+      recursionLimit: z.number().int().min(1).optional(),
       disableBuilder: z.boolean().optional().default(false),
       /** Optional workspace guidance acquisition budget, separate from command execution. */
       repositoryInstructions: z
@@ -1647,10 +1751,18 @@ export const agentsEndpointSchema = baseEndpointSchema
                 .default(DEFAULT_CACHE_CLEAR_TIMEOUT_MS),
             })
             .optional()
-            .default({}),
+            .prefault({}),
+          /** Rollout switch for linking an agent's instructions to a Langfuse prompt group. */
+          langfuse: z
+            .object({
+              enabled: z.boolean().optional().default(false),
+            })
+            .optional()
+            .prefault({}),
         })
         .optional(),
-      maxRecursionLimit: z.number().optional(),
+      /** Cap on any agent's `recursion_limit` and on `recursionLimit`. */
+      maxRecursionLimit: z.number().int().min(1).optional(),
       /** Max cumulative bytes a single streamed tool call's arguments may reach before the run
        * aborts. Defaults to 64 KiB in the agents SDK; `0` disables the guard. */
       maxToolCallArgBytes: z.number().optional(),
@@ -1659,7 +1771,7 @@ export const agentsEndpointSchema = baseEndpointSchema
       /** Per-tool overrides of `maxToolCallArgBytes`, keyed by model-facing tool name; `0`
        * disables the guard for that tool only. Merged over LibreChat's shipped default of
        * `{ create_file: 131072 }`. */
-      maxToolCallArgBytesByTool: z.record(z.number()).optional(),
+      maxToolCallArgBytesByTool: z.record(z.string(), z.number()).optional(),
       /** Characters of retained tool output the save path may tokenize exactly for the
        * context gauge when a turn stops at the tool-call limit (see
        * `retainedToolTokens`). Tokenizing costs ~60 ms/MB and runs once per stopped
@@ -2128,7 +2240,7 @@ export const agentsEndpointSchema = baseEndpointSchema
       checkpointer: checkpointerSchema,
     }),
   )
-  .default({
+  .prefault({
     disableBuilder: false,
     capabilities: defaultAgentCapabilities,
     maxCitations: 30,
@@ -2162,7 +2274,7 @@ export const paramDefinitionSchema = z.object({
       path: ['positiveMin'],
     })
     .optional(),
-  enumMappings: z.record(z.union([z.number(), z.boolean(), z.string()])).optional(),
+  enumMappings: z.record(z.string(), z.union([z.number(), z.boolean(), z.string()])).optional(),
   component: z.nativeEnum(ComponentTypes).optional(),
   optionType: z.nativeEnum(OptionTypes).optional(),
   columnSpan: z.number().int().nonnegative().optional(),
@@ -2219,7 +2331,7 @@ export const endpointSchema = baseEndpointSchema.merge(
      * OpenAI-compatible endpoints.
      */
     provider: z.literal(EModelEndpoint.anthropic).optional(),
-    headers: z.record(z.string()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
     addParams: addParamsSchema.optional(),
     dropParams: z.array(z.string()).optional(),
     customParams: z
@@ -2260,6 +2372,7 @@ export const endpointSchema = baseEndpointSchema.merge(
     /** Static per-model token config: context window and per-million-token rates */
     tokenConfig: z
       .record(
+        z.string(),
         z.object({
           prompt: z.number(),
           completion: z.number(),
@@ -2325,13 +2438,42 @@ export type TAzureConfig = Omit<z.infer<typeof azureEndpointSchema>, 'groups'> &
   TAzureConfigValidationResult;
 
 /**
+ * A Vertex AI location as it appears in the API host (`<region>-aiplatform.googleapis.com`):
+ * letters, digits and hyphens only, so no value can name another host.
+ */
+export const VERTEX_REGION_PATTERN = /^[A-Za-z0-9-]+$/;
+
+/**
+ * A Vertex AI project ID or deployment (model) name, each one segment of the request path:
+ * letters, digits, `.`, `_`, `:` (domain-scoped projects), `@` (model versions) and `-`, and not
+ * only dots, so no value can leave its segment.
+ */
+export const VERTEX_PATH_SEGMENT_PATTERN = /^(?!\.+$)[A-Za-z0-9._:@-]+$/;
+
+/**
+ * A whole `${VAR}` reference to one environment variable: a name of letters, digits and
+ * underscores, with nothing around it. Text that only starts with `${` and ends with `}`
+ * (`${A}/x#${A}`) is not one.
+ */
+export const ENV_VAR_REFERENCE_PATTERN = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
+
+/** A Vertex AI setting: a value matching `pattern`, or a whole `${VAR}` reference resolved at load. */
+function vertexSettingSchema(pattern: RegExp, label: string) {
+  return z
+    .string()
+    .refine((value) => ENV_VAR_REFERENCE_PATTERN.test(value) || pattern.test(value), {
+      message: `Must be a valid Vertex AI ${label} or a \${ENV_VAR} reference`,
+    });
+}
+
+/**
  * Vertex AI model configuration - similar to Azure model config
  * Allows specifying deployment name for each model
  */
 export const vertexModelConfigSchema = z
   .object({
     /** The actual model ID/deployment name used by Vertex AI API */
-    deploymentName: z.string().optional(),
+    deploymentName: vertexSettingSchema(VERTEX_PATH_SEGMENT_PATTERN, 'deployment name').optional(),
   })
   .or(z.boolean());
 
@@ -2345,18 +2487,42 @@ export const vertexAISchema = z.object({
   /** Enable Vertex AI mode for Anthropic (defaults to true when vertex config is present) */
   enabled: z.boolean().optional(),
   /** Google Cloud Project ID (optional - auto-detected from service key file if not provided) */
-  projectId: z.string().optional(),
+  projectId: vertexSettingSchema(VERTEX_PATH_SEGMENT_PATTERN, 'project ID').optional(),
   /** Vertex AI region (e.g., 'us-east5', 'europe-west1') */
-  region: z.string().default('us-east5'),
+  region: vertexSettingSchema(VERTEX_REGION_PATTERN, 'region').default('us-east5'),
   /** Optional: Path to service account key file */
   serviceKeyFile: z.string().optional(),
   /** Optional: Default deployment name for all models (can be overridden per model) */
-  deploymentName: z.string().optional(),
+  deploymentName: vertexSettingSchema(VERTEX_PATH_SEGMENT_PATTERN, 'deployment name').optional(),
   /** Optional: Available models - can be string array or object with deploymentName mapping */
   models: z.union([z.array(z.string()), z.record(z.string(), vertexModelConfigSchema)]).optional(),
 });
 
 export type TVertexAISchema = z.infer<typeof vertexAISchema>;
+
+/**
+ * The deployment name a Vertex AI request for `modelName` sends, which the client puts in the
+ * request path as written: a `models` record entry's own `deploymentName`, else the default
+ * `deploymentName` for an entry that is `true` or has none, else (a `models` array, an entry set
+ * to `false`, a model not listed) the model name itself.
+ */
+export function getVertexDeploymentName(
+  modelName: string,
+  vertexConfig?: Pick<TVertexAISchema, 'models' | 'deploymentName'>,
+): string {
+  const models = vertexConfig?.models;
+  if (models == null || Array.isArray(models)) {
+    return modelName;
+  }
+  const modelConfig = models[modelName];
+  if (!modelConfig) {
+    return modelName;
+  }
+  if (typeof modelConfig === 'boolean') {
+    return vertexConfig?.deploymentName || modelName;
+  }
+  return modelConfig.deploymentName || vertexConfig?.deploymentName || modelName;
+}
 
 export type TVertexModelMap = Record<string, string>;
 
@@ -2554,7 +2720,7 @@ export const mcpAppRateLimitSchema = z
     resourcesPerMinute: z.number().int().positive().default(120),
     toolCallsPerMinute: z.number().int().positive().default(60),
   })
-  .default({});
+  .prefault({});
 
 export type TMCPAppRateLimits = z.infer<typeof mcpAppRateLimitSchema>;
 
@@ -2574,9 +2740,40 @@ export const outboundTimeoutsSchema = z.object({
   moderationMs: outboundTimeoutMs,
   /** Fetching a stored image by URL to encode it for a provider. */
   imageFetchMs: outboundTimeoutMs,
+  /** Each call a built-in tool makes to its API (weather, Wolfram, web search). */
+  toolsMs: outboundTimeoutMs,
+  /** Each text-to-speech or speech-to-text provider request. */
+  speechMs: outboundTimeoutMs,
+  /** Each Stable Diffusion image generation request. */
+  imageGenerationMs: outboundTimeoutMs,
+});
+
+/** Retention for the write-only GENERAL violation log kept per user. */
+export const violationLogSchema = z.object({
+  /** Newest entries kept per user; older ones are dropped on the next append. */
+  maxEntries: z.number().int().positive().optional(),
 });
 
 export type TOutboundTimeouts = z.infer<typeof outboundTimeoutsSchema>;
+
+const lookupConcurrency = z.number().int().min(1).max(32).optional();
+
+/** Upper bounds on independent lookups a request runs at once. Omitted keys use the server
+ *  defaults (`DEFAULT_LOOKUP_CONCURRENCY` in `@librechat/api`); `1` restores serial lookups. */
+export const lookupConcurrencySchema = z.object({
+  /** Connected agents initialized together per level while discovering a handoff graph. */
+  connectedAgentLoads: lookupConcurrency,
+  /** MCP tool catalog reads when assembling an ephemeral or added agent. */
+  mcpCatalogLookups: lookupConcurrency,
+  /** Model spec skill name resolutions. */
+  skillNameLookups: lookupConcurrency,
+  /** Bundled skill file inspections before a skill is primed. */
+  skillFileInspections: lookupConcurrency,
+  /** Agent reads while building the resume snapshot of a paused run. */
+  resumeAgentLoads: lookupConcurrency,
+});
+
+export type TLookupConcurrency = z.infer<typeof lookupConcurrencySchema>;
 
 export const rateLimitSchema = z.object({
   twoFactorManagement: z
@@ -2586,6 +2783,13 @@ export const rateLimitSchema = z.object({
     })
     .optional(),
   agentEvents: z
+    .object({
+      userMax: z.number().int().positive().optional(),
+      userWindowInMinutes: z.number().positive().optional(),
+    })
+    .optional(),
+  /** Limits GET /prompts/groups/:groupId/resolve; keyed by the authenticated user. */
+  promptResolve: z
     .object({
       userMax: z.number().int().positive().optional(),
       userWindowInMinutes: z.number().positive().optional(),
@@ -2623,7 +2827,7 @@ export const rateLimitSchema = z.object({
       userWindowInMinutes: z.number().optional(),
     })
     .optional(),
-  mcpApps: mcpAppRateLimitSchema.optional(),
+  mcpApps: mcpAppRateLimitSchema.unwrap().optional(),
   /** Requesting a change of the registered email; keyed by the authenticated user. */
   emailChange: z
     .object({
@@ -2699,7 +2903,7 @@ const termsOfServiceSchema = z.object({
 export type TTermsOfService = z.infer<typeof termsOfServiceSchema>;
 
 // Schema for localized string (either simple string or language-keyed object)
-const localizedStringSchema = z.union([z.string(), z.record(z.string())]);
+const localizedStringSchema = z.union([z.string(), z.record(z.string(), z.string())]);
 
 export const mcpRefreshDefaults = {
   toolsRefreshInterval: 5 * 60 * 1000,
@@ -2836,8 +3040,8 @@ const themeModeSchema = z
       z.string().regex(/^[a-z][a-z0-9-]*$/),
       z.string().regex(/^\d{1,3} \d{1,3} \d{1,3}$/),
     ),
-    appearance: z.record(z.string()),
-    brands: z.record(z.string()),
+    appearance: z.record(z.string(), z.string()),
+    brands: z.record(z.string(), z.string()),
   })
   .partial()
   .strict();
@@ -2851,7 +3055,7 @@ export const themeDefinitionSchema = z
     version: z.literal(1),
     name: z.string().trim().min(1),
     modes: z.object({ light: themeModeSchema, dark: themeModeSchema }).partial().strict(),
-    brands: z.record(z.string()).optional(),
+    brands: z.record(z.string(), z.string()).optional(),
   })
   .strict();
 
@@ -2941,9 +3145,14 @@ export const interfaceSchema = z
      *  selected: its name (`entity`), or the time-of-day greeting with the user's
      *  name (`greeting`) for deployments whose header selector already names it. */
     landingHeading: z.enum(['entity', 'greeting']).optional(),
-    /** Shows the generic disclaimer and policy links beneath the welcome screen's
-     *  composer. A configured `customFooter` still renders when this is false. */
-    landingFooter: z.boolean().optional(),
+    /** Shows the generic disclaimer and policy links on the welcome screen: at the bottom of the
+     *  page (`true`), directly under the composer (`composer`), or not at all (`false`). A
+     *  configured `customFooter` still renders when this is false. */
+    landingFooter: z.union([z.boolean(), z.literal('composer')]).optional(),
+    /** Who a response names above its content: every author (`always`), or only an agent other
+     *  than the one the header's model selector already shows (`whenDifferent`), which drops the
+     *  avatar and name row from that agent's responses. */
+    messageAuthor: z.enum(['always', 'whenDifferent']).optional(),
     mcpServers: mcpServersSchema.optional(),
     modelSelect: z.boolean().optional(),
     /** Set to false during a rolling upgrade, until every API replica supports title ownership and old title jobs drain. */
@@ -3006,6 +3215,11 @@ export const interfaceSchema = z
      *  default; a deployment that cannot use popups can turn it off and keep
      *  the docked pane. */
     artifactUndocking: z.boolean().optional(),
+    /** Asks each viewer for consent before Google Tag Manager (`ANALYTICS_GTM_ID`)
+     *  loads. A deployment that settles consent itself, such as an internal one
+     *  covered by its own policy, can set false to load the container without the
+     *  banner or the Settings toggle. */
+    analyticsConsent: z.boolean().optional(),
     feedback: z.boolean().optional(),
     currency: z
       .object({
@@ -3127,9 +3341,9 @@ export const interfaceSchema = z
             .object({
               enabled: z.boolean().optional(),
               maxLifetimeHours: z.number().int().min(1).max(8760).optional(),
-              resources: z.record(scheduledMCPResourceBindingSchema).optional(),
+              resources: z.record(z.string(), scheduledMCPResourceBindingSchema).optional(),
               /** Trusted service declarations, keyed by raw server and upstream tool name. */
-              readOnlyPolicy: z.record(scheduledMCPReadOnlyPolicySchema).optional(),
+              readOnlyPolicy: z.record(z.string(), scheduledMCPReadOnlyPolicySchema).optional(),
             })
             .optional(),
           /** Bounded exponential receipt retry interval; equal jitter prevents outage waves. */
@@ -3211,7 +3425,7 @@ export const interfaceSchema = z
       .max(Number.MAX_SAFE_INTEGER)
       .default(DEFAULT_HISTORY_CACHE_MAX_BYTES),
   })
-  .default({
+  .prefault({
     modelSelect: true,
     runningChatRename: true,
     codeHighlightThrottleMs: DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS,
@@ -3262,6 +3476,7 @@ export const interfaceSchema = z
     mascot: true,
     landingHeading: 'entity',
     landingFooter: true,
+    messageAuthor: 'always',
     remoteAgents: {
       use: false,
       create: false,
@@ -3320,7 +3535,7 @@ export const turnstileOptionsSchema = z
 
 export const turnstileSchema = z.object({
   siteKey: z.string(),
-  options: turnstileOptionsSchema.optional(),
+  options: turnstileOptionsSchema.unwrap().optional(),
 });
 
 export type TTurnstileConfig = z.infer<typeof turnstileSchema>;
@@ -3330,6 +3545,12 @@ export const RUM_COLLECTOR_ACK_HEADER = 'x-librechat-rum-accepted';
 
 export const telemetrySchema = z
   .object({
+    /**
+     * Frames V8 records per error stack (`Error.stackTraceLimit`), applied when librechat.yaml
+     * loads. Unset keeps the process default: 10, or `--stack-trace-limit` from NODE_OPTIONS.
+     * Deeper stacks cost more on every thrown error.
+     */
+    stackTraceLimit: z.number().int().min(1).max(1000).optional(),
     rum: z
       .object({
         enabled: z.boolean().optional(),
@@ -3473,6 +3694,11 @@ export type TStartupConfig = {
   socialLogins?: string[];
   langfuseFanoutEnabled?: boolean;
   langfuseConnectionAccess?: boolean;
+  langfusePromptSyncAccess?: boolean;
+  /** Whether this admin also holds `manage:prompts`, the capability the server's
+   *  `POST /prompts/sync` route requires in addition to Langfuse settings access. Gates the
+   *  "Sync prompts" action in the connection tab; absent (falsy) for an older server. */
+  langfusePromptManageAccess?: boolean;
   insightsEnabled?: boolean;
   /** Whether pull requests are active (on unless turned off, with a token and a repository scope);
    *  the header does not ask for a pull request without it. */
@@ -3557,6 +3783,7 @@ export type TStartupConfig = {
   titleGenerationTiming?: 'immediate' | 'final';
   analyticsGtmId?: string;
   rum?: TRumConfig;
+  clientLimits?: TClientLimits;
   bundlerURL?: string;
   staticBundlerURL?: string;
   /** Whether the deployment has a configured RAG service. */
@@ -3610,7 +3837,12 @@ export type TStartupConfig = {
 
 export type TSharedLinkStartupInterface = Pick<
   Partial<TInterfaceConfig>,
-  'privacyPolicy' | 'termsOfService' | 'codeHighlightThrottleMs' | 'theme' | 'artifactUndocking'
+  | 'privacyPolicy'
+  | 'termsOfService'
+  | 'codeHighlightThrottleMs'
+  | 'theme'
+  | 'artifactUndocking'
+  | 'analyticsConsent'
 >;
 
 export type TSharedLinkStartupConfig = Pick<TStartupConfig, 'appTitle'> &
@@ -3710,7 +3942,7 @@ export const webSearchSchema = z.object({
       formats: z.array(z.string()).optional(),
       includeTags: z.array(z.string()).optional(),
       excludeTags: z.array(z.string()).optional(),
-      headers: z.record(z.string()).optional(),
+      headers: z.record(z.string(), z.string()).optional(),
       waitFor: z.number().optional(),
       timeout: z.number().int().nonnegative().optional(),
       maxAge: z.number().optional(),
@@ -3731,7 +3963,7 @@ export const webSearchSchema = z.object({
       changeTrackingOptions: z
         .object({
           modes: z.array(z.string()).optional(),
-          schema: z.record(z.unknown()).optional(),
+          schema: z.record(z.string(), z.unknown()).optional(),
           prompt: z.string().optional(),
           tag: z.string().nullable().optional(),
         })
@@ -3860,7 +4092,9 @@ export const memorySchema = z.object({
         provider: z.string(),
         model: z.string(),
         instructions: z.string().optional(),
-        model_parameters: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+        model_parameters: z
+          .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+          .optional(),
       }),
     ])
     .optional(),
@@ -3900,7 +4134,9 @@ export const summarizationConfigSchema = z.object({
   enabled: z.boolean().optional(),
   provider: z.string().optional(),
   model: z.string().optional(),
-  parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+  parameters: z
+    .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))
+    .optional(),
   trigger: summarizationTriggerSchema.optional(),
   prompt: z.string().optional(),
   updatePrompt: z.string().optional(),
@@ -4123,9 +4359,23 @@ export const langfuseConfigSchema = z.object({
    * schema does not yet express — and note the fanout collector forwards only
    * `Authorization` upstream regardless.
    */
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   /** Trace user identity and allowlisted user/request metadata. */
   trace: langfuseTraceConfigSchema.optional(),
+  /** Tenant admin switch for Langfuse prompt sync. Effective only when the
+   *  deployment sets LANGFUSE_PROMPT_SYNC_AVAILABLE.
+   *  - enabled: the tenant admin switch itself.
+   *  - lockLeaseMs: the per-tenant sync lock lease, in milliseconds (default
+   *    300000, clamped to 60000-3600000).
+   *  - maxPages: the page cap for one sync request, in pages of up to 100
+   *    Langfuse prompts each (default 50, clamped to 1-1000). */
+  promptSync: z
+    .object({
+      enabled: z.boolean().optional(),
+      lockLeaseMs: z.number().int().min(60000).max(3600000).optional(),
+      maxPages: z.number().int().min(1).max(1000).optional(),
+    })
+    .optional(),
 });
 
 export type LangfuseConfig = z.infer<typeof langfuseConfigSchema>;
@@ -4166,7 +4416,7 @@ export const chatProjectsConfigSchema = z
       .default(MAX_CHAT_PROJECT_DESCRIPTION_LENGTH),
   })
   .strict()
-  .default({});
+  .prefault({});
 
 export type TChatProjectsConfig = z.infer<typeof chatProjectsConfigSchema>;
 
@@ -4209,6 +4459,8 @@ export const toolCallPreviewsConfigSchema = z.object({
   /** Characters of serialized `args` kept per tool call. JSON arguments stay valid JSON with
    *  every field present; only the longest strings are shortened. */
   argsChars: z.number().int().min(256).max(1_000_000).default(512),
+  /** Transcript nodes and unique scope lookups per message; exhausted calls keep their transcript. */
+  attachmentWorkLimit: z.number().int().min(1).max(1_000_000).default(100_000),
 });
 
 export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchema>;
@@ -4216,6 +4468,7 @@ export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchem
 export const configSchema = z.object({
   version: z.string(),
   telemetry: telemetrySchema.optional(),
+  clientLimits: clientLimitsSchema.optional(),
   permissions: z
     .object({
       maxWriteAttempts: permissionWriteAttemptsSchema,
@@ -4348,13 +4601,21 @@ export const configSchema = z.object({
             .max(256)
             .default(DEFAULT_MCP_APP_OPERATION_LIMITS.maxActive),
         })
-        .default({}),
+        .prefault({}),
     })
-    .default({}),
+    .prefault({}),
   mcpSettings: z
     .object({
       allowedDomains: z.array(z.string()).optional(),
       allowedAddresses: allowedAddressesSchema,
+      /** How long a failed OAuth reconnection is remembered before its attempt count resets.
+       * Defaults to 24 hours. */
+      oauthFailureRetentionMs: z
+        .number()
+        .int()
+        .positive()
+        .max(30 * 24 * 60 * 60_000)
+        .optional(),
       catalogRecovery: z
         .object({
           discoveryBackoffMs: z
@@ -4409,7 +4670,7 @@ export const configSchema = z.object({
             .default(30_000),
           authorizationFenceRetryBatchSize: z.number().int().positive().max(10_000).default(100),
         })
-        .default({}),
+        .prefault({}),
       apps: z.boolean().optional(),
     })
     .optional(),
@@ -4433,7 +4694,7 @@ export const configSchema = z.object({
       /** Milliseconds a started social login may take to reach its callback; defaults to `DEFAULT_OAUTH_STATE_TTL_MS`. */
       oauthStateTtlMs: z.number().int().min(60_000).max(3_600_000).optional(),
       /** OpenID discovery retries; an unset field falls back to its `OPENID_DISCOVERY_RETRY_*` env var, then the schema default. */
-      openidDiscovery: openIdDiscoverySchema.partial().optional(),
+      openidDiscovery: partialWithoutDefaults(openIdDiscoverySchema).optional(),
     })
     .default({ socialLogins: defaultSocialLogins }),
   /** Changing the registered email address. An unset field falls back to its env var, then the
@@ -4472,6 +4733,14 @@ export const configSchema = z.object({
     })
     .optional(),
   timeouts: outboundTimeoutsSchema.optional(),
+  violationLog: violationLogSchema.optional(),
+  messages: z
+    .object({
+      /** Largest `pageSize` accepted by `GET /api/messages`. Defaults to 1000. */
+      maxPageSize: z.number().int().min(1).max(10000).optional(),
+    })
+    .optional(),
+  concurrency: lookupConcurrencySchema.optional(),
   fileConfig: fileConfigSchema.optional(),
   modelSpecs: specsConfigSchema.optional(),
   filters: filtersConfigSchema.optional(),
@@ -4479,6 +4748,13 @@ export const configSchema = z.object({
   endpoints: z
     .object({
       allowedAddresses: allowedAddressesSchema,
+      /**
+       * Milliseconds the admin config catalog (`GET /api/admin/config/catalog`) reuses a scope's
+       * model lists while its endpoint config is unchanged, up to one hour; `0` resolves them on
+       * every read, where a fetched list may still come from the two-minute model-list cache.
+       * Only librechat.yaml sets it. Omission keeps `DEFAULT_CATALOG_MODELS_TTL_MS` (two minutes).
+       */
+      catalogModelsTtlMs: z.number().int().min(0).max(3_600_000).optional(),
       /**
        * Defaults applied to every endpoint. Omit-based, so options added to
        * `baseEndpointSchema` are inherited here automatically — no list to
@@ -4493,7 +4769,7 @@ export const configSchema = z.object({
       [EModelEndpoint.azureOpenAI]: azureEndpointSchema.optional(),
       [EModelEndpoint.azureAssistants]: assistantEndpointSchema.optional(),
       [EModelEndpoint.assistants]: assistantEndpointSchema.optional(),
-      [EModelEndpoint.agents]: agentsEndpointSchema.optional(),
+      [EModelEndpoint.agents]: agentsEndpointSchema.unwrap().optional(),
       [EModelEndpoint.custom]: customEndpointsSchema.optional(),
       [EModelEndpoint.bedrock]: bedrockEndpointSchema.optional(),
     })
@@ -5014,6 +5290,21 @@ export const AUTH_USER_DOC_BY_ID_PREFIX = 'auth-user-doc-byid';
 export const AUTH_USER_DOC_CACHE_TTL_MS = 5000;
 
 /**
+ * Longest a cached auth user document can live after its lookup began: the lookup may take one
+ * cache TTL before the write, and the document lives at most one more.
+ */
+export const AUTH_USER_DOC_MAX_AGE_MS = AUTH_USER_DOC_CACHE_TTL_MS * 2;
+
+/** Per-user marker an eviction leaves so a lookup that began before it cannot be cached or served. */
+export const AUTH_USER_DOC_EVICTED_PREFIX = 'auth-user-doc-evicted';
+
+/**
+ * Lifetime of that marker. A document is only cached when its lookup took at most one cache TTL
+ * and then lives one more, so any document read before an eviction expires within two TTLs of it.
+ */
+export const AUTH_USER_DOC_EVICTION_FENCE_TTL_MS = AUTH_USER_DOC_CACHE_TTL_MS * 3;
+
+/**
  * Enum for violation types, used to identify, log, and cache violations.
  */
 export enum ViolationTypes {
@@ -5363,6 +5654,10 @@ export enum Constants {
   ENCODED_DOMAIN_LENGTH = 10,
   /** Identifier for using current_model in multi-model requests. */
   CURRENT_MODEL = 'current_model',
+  /** Protocol bound for UUIDs, nanoids, and derived user identities. */
+  MAX_MESSAGE_ID_LENGTH = 256,
+  /** A preliminary response reserves one trailing underscore. */
+  MAX_RESPONSE_MESSAGE_ID_LENGTH = MAX_MESSAGE_ID_LENGTH + 1,
   /** Common divider for text values */
   COMMON_DIVIDER = '__',
   /** Max length for commands */

@@ -106,6 +106,43 @@ export function resolveCustomEndpointParameters(
   return withOpenRouterReasoning(endpoint, resolvedBaseURL);
 }
 
+/** A custom endpoint definition the endpoint and model loaders serve. */
+export type ServedCustomEndpoint = Partial<TEndpoint> &
+  Pick<TEndpoint, 'name' | 'apiKey' | 'baseURL'>;
+
+/**
+ * Whether the endpoint and model loaders serve a custom endpoint definition: it names its base
+ * URL and API key, and a model list or a fetch.
+ */
+export function isServedCustomEndpoint(
+  endpoint: Partial<TEndpoint>,
+): endpoint is ServedCustomEndpoint {
+  return Boolean(
+    endpoint.baseURL &&
+      endpoint.apiKey &&
+      endpoint.name &&
+      endpoint.models &&
+      (endpoint.models.fetch || endpoint.models.default),
+  );
+}
+
+/**
+ * The definition each served custom endpoint name resolves to, by served name (`Ollama` is served
+ * as `ollama`): the last served definition of that name, which is the one `/api/endpoints` reports.
+ * Names keep the order they are first served in.
+ */
+export function resolveServedCustomEndpoints(
+  endpoints: readonly Partial<TEndpoint>[],
+): Map<string, ServedCustomEndpoint> {
+  const served = new Map<string, ServedCustomEndpoint>();
+  for (const endpoint of endpoints) {
+    if (isServedCustomEndpoint(endpoint)) {
+      served.set(normalizeEndpointName(endpoint.name), endpoint);
+    }
+  }
+  return served;
+}
+
 /**
  * Load config endpoints from the cached configuration object
  * @param customEndpointsConfig - The configuration object
@@ -120,31 +157,12 @@ export function loadCustomEndpointsConfig(
   const customEndpointsConfig: TCustomEndpointsConfig = {};
 
   if (Array.isArray(customEndpoints)) {
-    const filteredEndpoints = customEndpoints.filter(
-      (endpoint) =>
-        endpoint.baseURL &&
-        endpoint.apiKey &&
-        endpoint.name &&
-        endpoint.models &&
-        (endpoint.models.fetch || endpoint.models.default),
-    );
+    for (const [name, endpoint] of resolveServedCustomEndpoints(customEndpoints)) {
+      const { baseURL, apiKey, iconURL, modelDisplayLabel, customParams, provider, dropParams } =
+        endpoint;
 
-    for (let i = 0; i < filteredEndpoints.length; i++) {
-      const endpoint = filteredEndpoints[i] as TEndpoint;
-      const {
-        baseURL,
-        apiKey,
-        name: configName,
-        iconURL,
-        modelDisplayLabel,
-        customParams,
-        provider,
-        dropParams,
-      } = endpoint;
-      const name = normalizeEndpointName(configName);
-
-      const resolvedApiKey = extractEnvVariable(apiKey ?? '');
-      const resolvedBaseURL = extractEnvVariable(baseURL ?? '');
+      const resolvedApiKey = extractEnvVariable(apiKey);
+      const resolvedBaseURL = extractEnvVariable(baseURL);
       const userProvideURL = isUserProvided(resolvedBaseURL);
 
       /**

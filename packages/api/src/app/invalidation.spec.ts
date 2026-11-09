@@ -242,4 +242,141 @@ describe('createConfigCacheInvalidation', () => {
       expect.anything(),
     );
   });
+
+  describe('reload', () => {
+    it('reports a clear here and a broadcast the other instance acts on', async () => {
+      const broker = createBroker();
+      const first = createInstance(broker, 'first');
+      const second = createInstance(broker, 'second');
+      await flush();
+
+      await expect(first.invalidation.reload('tenant-a')).resolves.toEqual({
+        cleared: true,
+        broadcast: 'sent',
+      });
+      await flush();
+
+      expect(first.clearOverrides).toHaveBeenCalledWith('tenant-a');
+      expect(second.clearOverrides).toHaveBeenCalledWith('tenant-a');
+    });
+
+    it('reports a failed publish, keeping the local clear, instead of only logging it', async () => {
+      jest.spyOn(logger, 'error').mockReturnValue(logger);
+      const clear = jest.fn().mockResolvedValue(undefined);
+      const invalidation = createConfigCacheInvalidation({
+        clears: [{ label: 'clearAppConfigCache', clear }],
+        pubsub: {
+          publisher: { publish: jest.fn().mockRejectedValue(new Error('redis down')) },
+          subscriber: createBroker().subscriber(),
+        },
+      });
+
+      await expect(invalidation.reload()).resolves.toEqual({ cleared: true, broadcast: 'failed' });
+      expect(clear).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a failed local clear, still publishing it to the other instances', async () => {
+      jest.spyOn(logger, 'error').mockReturnValue(logger);
+      const broker = createBroker();
+      const second = createInstance(broker, 'second');
+      const invalidation = createConfigCacheInvalidation({
+        clears: [
+          { label: 'clearAppConfigCache', clear: jest.fn().mockRejectedValue(new Error('x')) },
+          { label: 'clearOverrideCache', clear: jest.fn().mockResolvedValue(undefined) },
+        ],
+        pubsub: { publisher: broker.publisher(), subscriber: broker.subscriber() },
+        instanceId: 'first',
+      });
+      await flush();
+
+      await expect(invalidation.reload()).resolves.toEqual({ cleared: false, broadcast: 'sent' });
+      await flush();
+      expect(second.clearOverrides).toHaveBeenCalledTimes(1);
+    });
+
+    it('loads the config here after the clear and before the broadcast, reporting the load', async () => {
+      const broker = createBroker();
+      const second = createInstance(broker, 'second');
+      const publisher = broker.publisher();
+      const clear = jest.fn().mockResolvedValue(undefined);
+      const load = jest.fn(async () => ({ ok: true as const }));
+      const invalidation = createConfigCacheInvalidation({
+        clears: [{ label: 'clearAppConfigCache', clear }],
+        load,
+        pubsub: { publisher, subscriber: broker.subscriber() },
+        instanceId: 'first',
+      });
+      await flush();
+
+      await expect(invalidation.reload()).resolves.toEqual({
+        cleared: true,
+        loaded: { ok: true },
+        broadcast: 'sent',
+      });
+      await flush();
+
+      const [cleared] = clear.mock.invocationCallOrder;
+      const [loaded] = load.mock.invocationCallOrder;
+      const [published] = publisher.publish.mock.invocationCallOrder;
+      expect(cleared).toBeLessThan(loaded);
+      expect(loaded).toBeLessThan(published);
+      expect(second.clearOverrides).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a failed load and does not tell the other instances, which keep their config', async () => {
+      const broker = createBroker();
+      const second = createInstance(broker, 'second');
+      const publisher = broker.publisher();
+      const clear = jest.fn().mockResolvedValue(undefined);
+      const failure = {
+        code: 'CONFIG_INVALID' as const,
+        issues: [{ path: 'bogus', segments: ['bogus'], code: 'unrecognized_keys' }],
+      };
+      const invalidation = createConfigCacheInvalidation({
+        clears: [{ label: 'clearAppConfigCache', clear }],
+        load: async () => ({ ok: false, error: failure }),
+        pubsub: { publisher, subscriber: broker.subscriber() },
+        instanceId: 'first',
+      });
+      await flush();
+
+      await expect(invalidation.reload()).resolves.toEqual({
+        cleared: true,
+        loaded: { ok: false, error: failure },
+        broadcast: 'skipped',
+      });
+      await flush();
+
+      expect(clear).toHaveBeenCalledTimes(1);
+      expect(publisher.publish).not.toHaveBeenCalled();
+      expect(second.clearOverrides).not.toHaveBeenCalled();
+    });
+
+    it('leaves the load to the next read for a write invalidation', async () => {
+      const load = jest.fn(async () => ({ ok: true as const }));
+      const clear = jest.fn().mockResolvedValue(undefined);
+      const invalidation = createConfigCacheInvalidation({
+        clears: [{ label: 'clearAppConfigCache', clear }],
+        load,
+      });
+
+      await invalidation.invalidate();
+
+      expect(clear).toHaveBeenCalledTimes(1);
+      expect(load).not.toHaveBeenCalled();
+    });
+
+    it('reports no broadcast without a pub/sub', async () => {
+      const clear = jest.fn().mockResolvedValue(undefined);
+      const invalidation = createConfigCacheInvalidation({
+        clears: [{ label: 'clearAppConfigCache', clear }],
+      });
+
+      await expect(invalidation.reload('tenant-a')).resolves.toEqual({
+        cleared: true,
+        broadcast: 'none',
+      });
+      expect(clear).toHaveBeenCalledWith('tenant-a');
+    });
+  });
 });

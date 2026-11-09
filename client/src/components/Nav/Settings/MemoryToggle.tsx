@@ -33,7 +33,7 @@ export default function MemoryToggle() {
     <div className="flex items-center justify-between">
       <div>
         <div id="reference-saved-memories-label">{localize('com_ui_reference_saved_memories')}</div>
-        <div id="reference-saved-memories-description" className="mt-1 text-xs text-text-secondary">
+        <div id="reference-saved-memories-description" className="text-text-secondary mt-1 text-xs">
           {localize('com_ui_reference_saved_memories_description')}
         </div>
       </div>

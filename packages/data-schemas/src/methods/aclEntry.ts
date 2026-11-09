@@ -191,6 +191,10 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     filter: Record<string, unknown>,
     options?: { session?: ClientSession },
   ) => Promise<DeleteResult>;
+  deletePrincipalAclEntries: (principal: {
+    principalType: PrincipalType;
+    principalId: string | Types.ObjectId;
+  }) => Promise<void>;
   moveAclEntriesToPrincipal: (
     principalType: PrincipalType,
     fromPrincipalId: string,
@@ -553,6 +557,27 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
   }
 
   /**
+   * Removes every ACL entry a principal holds, as the principal's deletion does. A role is keyed
+   * by a name every tenant reuses, so only its entries in the caller's tenant partition
+   * (`tenantPartitionFilter`) go: that tenant's, or without a tenant only platform-level ones,
+   * never those of each tenant's own role that shares the name (as `moveAclEntriesToPrincipal`
+   * moves them on a rename). A group or user is addressed by id, passed as stored (an ObjectId).
+   */
+  async function deletePrincipalAclEntries(principal: {
+    principalType: PrincipalType;
+    principalId: string | Types.ObjectId;
+  }): Promise<void> {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    const { principalType, principalId } = principal;
+    await AclEntry.deleteMany({
+      principalType,
+      principalId,
+      ...(principalType === PrincipalType.ROLE &&
+        tenantPartitionFilter('deletePrincipalAclEntries')),
+    });
+  }
+
+  /**
    * Re-keys a role principal's entries to another name (a role rename) and returns the ids it
    * moved; with `ids`, moves only those (how a caller undoes a move). Entries keep their
    * identity and bits. A move that fails part-way is undone before it rethrows; an undo that
@@ -892,6 +917,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     modifyPermissionBits,
     findAccessibleResources,
     deleteAclEntries,
+    deletePrincipalAclEntries,
     replaceRoleBits,
     bulkWriteAclEntries,
     findPublicResourceIds,

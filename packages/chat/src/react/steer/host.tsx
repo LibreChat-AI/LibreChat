@@ -1,9 +1,6 @@
 import { createContext, useContext } from 'react';
 import type {
-  TMessage,
   TConversation,
-  CodeApprovalMode,
-  CodeEnvironmentMode,
   TAgentQueuedTurnReceipt,
   TEnqueueAgentQueuedTurnRequest,
 } from 'librechat-data-provider';
@@ -20,6 +17,7 @@ import type {
 } from '../../core/types';
 import type { StreamStatusResponse } from '../../core/resumable/host';
 import type { FileDeliveryMetadataMap } from '../../core/files';
+import type { CodeApprovalModeInputs } from '../../core/code';
 
 /** Callbacks of a fire-and-forget request, called once it settles. */
 export type SteerRequestCallbacks<Result> = {
@@ -119,14 +117,14 @@ export interface SteerHost {
   useQueuedTurnCache(conversationId: string): QueuedTurnCache;
   /** Reads a conversation's generation state, including steers it could not deliver. */
   useFetchStreamStatus(): (conversationId: string) => Promise<ChatStreamStatus>;
-  /** The latest message of the pane, on the branch on screen. */
-  useLatestMessage(index: number, conversationId: string | null): TMessage | null;
-  /** The code approval mode a new turn would run under. */
-  useCodeApprovalMode(
+  /** The conversation id in the route, when the route names one. */
+  useRouteConversationId(): string | undefined;
+  /** Storage read: the raw values a new turn's code approval mode is computed from, as the app
+   *  holds them. The package derives the mode; see `resolveCodeApprovalModes`. */
+  useCodeApprovalInputs(
     conversation: TConversation | null,
     addedConversation?: TConversation | null,
-    codeEnvironmentMode?: CodeEnvironmentMode,
-  ): CodeApprovalMode | undefined;
+  ): Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'>;
   useLocalize(): (key: SteerMessageKey) => string;
   useNotify(): (notification: SteerNotification) => void;
   /** Delivery metadata of the files the user owns, by id. */

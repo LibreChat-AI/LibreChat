@@ -100,14 +100,22 @@ export function createCodeFileDeleter({
       } catch (error) {
         const response = (error as { response?: { status?: number; data?: { error?: string } } })
           ?.response;
-        if (response?.status !== 404) {
+        // Code API also returns 403 when its user-session ownership record has expired.
+        const unavailableUserSession =
+          response?.status === 403 &&
+          ref.kind === 'user' &&
+          ref.id === (file.user?.toString() ?? req.user?.id);
+        if (response?.status !== 404 && !unavailableUserSession) {
           if (response?.status === 409 && response.data?.error === 'execution_profile_mismatch') {
             skipped = true;
             continue;
           }
           throw error;
         }
-        logger.warn('Code storage copy already absent during delete', getSafeErrorMetadata(error));
+        logger.warn(
+          'Code storage copy unavailable during owner-authorized delete',
+          getSafeErrorMetadata(error),
+        );
       }
       if (file.file_id) {
         try {

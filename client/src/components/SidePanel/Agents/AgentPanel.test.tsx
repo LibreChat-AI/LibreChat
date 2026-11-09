@@ -2,8 +2,8 @@
  * @jest-environment jsdom
  */
 import * as React from 'react';
-import { render, waitFor, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { UseFormReturn } from 'react-hook-form';
 import type { Agent } from 'librechat-data-provider';
 import type { AgentForm, AgentModelPanelProps } from '~/common';
@@ -33,6 +33,7 @@ let mockAgentPanelContext = {
   endpointsConfig: {},
   setCurrentAgentId: jest.fn(),
   agent_id: 'agent-123' as string | undefined,
+  revealChat: undefined as ((start: () => void) => void) | undefined,
 };
 
 // Mock notification severity enum before other imports
@@ -116,8 +117,11 @@ jest.mock('~/utils', () => ({
   })),
 }));
 
+const mockSelectAgent = jest.fn();
+const mockRevealChat = jest.fn();
+
 jest.mock('~/hooks', () => ({
-  useSelectAgent: () => ({ onSelect: jest.fn() }),
+  useSelectAgent: () => ({ onSelect: mockSelectAgent }),
   useLocalize: () => (key: string) => key,
   useAuthContext: () => ({ user: { id: 'user-123', role: mockUserRole } }),
 }));
@@ -340,6 +344,7 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
       endpointsConfig: { openai: {} },
       setCurrentAgentId: jest.fn(),
       agent_id: 'agent-123',
+      revealChat: jest.fn(),
     };
     localStorage.clear();
   });
@@ -1319,5 +1324,43 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         });
       });
     });
+  });
+});
+
+describe('AgentPanel - Select Agent', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockShowToast = jest.fn();
+    mockFormDefaults = {};
+    mockHasPermission = true;
+    mockUserRole = 'USER';
+    mockModelsQuery = {
+      data: { openai: ['gpt-4'] },
+      isFetchedAfterMount: true,
+      isSuccess: true,
+    };
+    mockAgentPanelContext = {
+      activePanel: 'builder',
+      agentsConfig: { allowedProviders: [] },
+      setActivePanel: jest.fn(),
+      endpointsConfig: { openai: {} },
+      setCurrentAgentId: jest.fn(),
+      agent_id: 'agent-123',
+      revealChat: mockRevealChat,
+    };
+    const { mockUseGetAgentByIdQuery } = setupMocks();
+    mockAgentQuery(mockUseGetAgentByIdQuery, {});
+  });
+
+  it('reveals the chat through the host before starting it with the agent', () => {
+    render(<AgentPanel />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_select_agent' }));
+
+    expect(mockRevealChat).toHaveBeenCalledTimes(1);
+    expect(mockSelectAgent).not.toHaveBeenCalled();
+
+    const start = mockRevealChat.mock.calls[0][0] as () => void;
+    start();
+    expect(mockSelectAgent).toHaveBeenCalledWith('agent-123');
   });
 });

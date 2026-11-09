@@ -201,6 +201,9 @@ export interface IMongoFile extends Omit<Document, 'model'> {
   };
   object: 'file';
   embedded?: boolean;
+  /** Absent on legacy records, including partially adopted namespace lists. */
+  embeddingOwnersComplete?: boolean;
+  embeddingOwnersTrackedAt?: Date;
   type: string;
   context?: string;
   usage: number;

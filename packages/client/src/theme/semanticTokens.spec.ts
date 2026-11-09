@@ -17,8 +17,6 @@ const sharedComponents = [
   'Button.tsx',
   'Chip.tsx',
   'SegmentedMeter.tsx',
-  'Dialog.tsx',
-  'DialogTemplate.tsx',
   'IconButton.tsx',
   'OGDialogTemplate.tsx',
   'OriginalDialog.tsx',
@@ -26,13 +24,7 @@ const sharedComponents = [
   'Toast.tsx',
 ];
 
-const sharedDialogComponents = [
-  'AlertDialog.tsx',
-  'Dialog.tsx',
-  'DialogTemplate.tsx',
-  'OGDialogTemplate.tsx',
-  'OriginalDialog.tsx',
-];
+const sharedDialogComponents = ['AlertDialog.tsx', 'OGDialogTemplate.tsx', 'OriginalDialog.tsx'];
 
 describe('shared component color guardrail', () => {
   it('keeps shared primitives free of direct palette utilities and raw colors', () => {

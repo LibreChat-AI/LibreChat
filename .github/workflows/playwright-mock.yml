@@ -222,8 +222,8 @@ jobs:
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
-      - name: Test Playwright matrix selection
-        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs
+      - name: Test Playwright matrix selection and the vote gate
+        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs
 
       - name: Restore data-provider build cache
         id: cache-data-provider

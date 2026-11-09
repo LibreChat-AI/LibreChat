@@ -12,6 +12,7 @@ import type { ServerRequest, GetUserKeyValuesFunction, UserKeyValues } from '~/t
 import type { FetchModelsParams } from '~/endpoints/models';
 import type { GetAppConfigOptions } from '~/app/service';
 import { fetchModels as defaultFetchModels } from '~/endpoints/models';
+import { isServedCustomEndpoint } from '~/endpoints/custom/config';
 import { getTokenConfigKey } from '~/endpoints/custom/initialize';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 
@@ -117,12 +118,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
     }
 
     const customEndpoints = (appConfig.endpoints[EModelEndpoint.custom] as TEndpoint[]).filter(
-      (endpoint) =>
-        endpoint.baseURL &&
-        endpoint.apiKey &&
-        endpoint.name &&
-        endpoint.models &&
-        (endpoint.models.fetch || endpoint.models.default),
+      isServedCustomEndpoint,
     );
 
     const fetchPromisesMap: Record<string, Promise<string[]>> = {};
@@ -202,11 +198,11 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       baseURLIsUserProvided,
     } of resolved) {
       const { models, headers: endpointHeaders } = endpoint;
-      // Include a fingerprint of the configured headers so two admin-trusted
+      // Include the provider and a fingerprint of the headers so two admin-trusted
       // endpoints that happen to share the same baseURL+apiKey but configure
       // different (potentially user-bound) headers don't reuse each other's
       // fetched model list within the same request.
-      const uniqueKey = `${BASE_URL}__${API_KEY}__${headersFingerprint(endpointHeaders)}`;
+      const uniqueKey = `${BASE_URL}__${API_KEY}__${endpoint.provider ?? ''}__${headersFingerprint(endpointHeaders)}`;
 
       if (models?.fetch && !apiKeyIsUserProvided && !baseURLIsUserProvided) {
         if (!fetchPromisesMap[uniqueKey]) {
@@ -216,6 +212,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
           uniqueKeyToTokenKey[uniqueKey] = tokenKey;
           fetchPromisesMap[uniqueKey] = fetchModels({
             name,
+            provider: endpoint.provider,
             apiKey: API_KEY,
             baseURL: BASE_URL,
             baseURLIsUserProvided: false,
@@ -253,6 +250,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
               }
               return fetchModels({
                 name,
+                provider: endpoint.provider,
                 apiKey: resolvedApiKey,
                 baseURL: resolvedBaseURL,
                 baseURLIsUserProvided,

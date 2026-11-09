@@ -567,6 +567,8 @@ const assistantsFileConfig = {
 
 export const fileConfig = {
   retainedFileCleanup: false,
+  deletionRetryLimit: 5,
+  vectorDeletionConcurrency: 4,
   endpoints: {
     [EModelEndpoint.assistants]: assistantsFileConfig,
     [EModelEndpoint.azureAssistants]: assistantsFileConfig,
@@ -637,7 +639,7 @@ export type TDefaultLLMDeliveryPath = z.infer<typeof DefaultLLMDeliveryPath>;
 
 export const defaultLLMDeliveryPathSchema = z.object({
   fallback: DefaultLLMDeliveryPath.optional(),
-  overrides: z.record(DefaultLLMDeliveryPath).optional(),
+  overrides: z.record(z.string(), DefaultLLMDeliveryPath).optional(),
 });
 export type TDefaultLLMDeliveryPathConfig = z.infer<typeof defaultLLMDeliveryPathSchema>;
 type TDeliveryPathOverrides = NonNullable<TDefaultLLMDeliveryPathConfig['overrides']>;
@@ -662,7 +664,12 @@ const skillFileConfigSchema = z.object({
 export const fileConfigSchema = z.object({
   /** Enable only after every replica and rollback target reads retained file destinations. */
   retainedFileCleanup: z.boolean().optional(),
-  endpoints: z.record(endpointFileConfigSchema).optional(),
+  /** Maximum automatic retries per discarded upload, persisted across tab reloads. */
+  deletionRetryLimit: z.number().int().positive().optional(),
+  /** UTC cutoff chosen after all legacy writers and rollback targets are retired. */
+  vectorOwnershipTrackingStart: z.string().datetime().optional(),
+  vectorDeletionConcurrency: z.number().int().min(1).max(16).optional(),
+  endpoints: z.record(z.string(), endpointFileConfigSchema).optional(),
   skills: skillFileConfigSchema.optional(),
   serverFileSizeLimit: z.number().min(0).optional(),
   avatarSizeLimit: z.number().min(0).optional(),
@@ -691,6 +698,11 @@ export const fileConfigSchema = z.object({
     })
     .optional(),
   text: z
+    .object({
+      supportedMimeTypes: supportedMimeTypesSchema.optional(),
+    })
+    .optional(),
+  stt: z
     .object({
       supportedMimeTypes: supportedMimeTypesSchema.optional(),
     })
@@ -1278,6 +1290,17 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
     mergedConfig.retainedFileCleanup = dynamic.retainedFileCleanup;
   }
 
+  if (dynamic.deletionRetryLimit !== undefined) {
+    mergedConfig.deletionRetryLimit = dynamic.deletionRetryLimit;
+  }
+
+  if (dynamic.vectorOwnershipTrackingStart !== undefined) {
+    mergedConfig.vectorOwnershipTrackingStart = dynamic.vectorOwnershipTrackingStart;
+  }
+  if (dynamic.vectorDeletionConcurrency !== undefined) {
+    mergedConfig.vectorDeletionConcurrency = dynamic.vectorDeletionConcurrency;
+  }
+
   if (dynamic.defaultLLMDeliveryPath !== undefined) {
     mergedConfig.defaultLLMDeliveryPath = dynamic.defaultLLMDeliveryPath;
   }
@@ -1359,6 +1382,17 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
     };
     if (textMimeTypes) {
       mergedConfig.text.supportedMimeTypes = convertStringsToRegex(textMimeTypes);
+    }
+  }
+
+  if (dynamic.stt !== undefined) {
+    const { supportedMimeTypes: sttMimeTypes, ...sttRest } = dynamic.stt;
+    mergedConfig.stt = {
+      ...mergedConfig.stt,
+      ...sttRest,
+    };
+    if (sttMimeTypes) {
+      mergedConfig.stt.supportedMimeTypes = convertStringsToRegex(sttMimeTypes);
     }
   }
 

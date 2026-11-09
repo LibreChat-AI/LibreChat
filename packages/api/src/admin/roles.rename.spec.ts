@@ -86,7 +86,7 @@ function createHandlers(overrides: Partial<AdminRolesDeps> = {}) {
   return createAdminRolesHandlers({
     listRoles: methods.listRoles,
     countRoles: methods.countRoles,
-    getRoleByName: methods.getRoleByName,
+    getRoleByName: methods.getPartitionRole,
     createRoleByName: methods.createRoleByName,
     updateRoleByName: methods.updateRoleByName,
     updateAccessPermissions: methods.updateAccessPermissions,
@@ -99,9 +99,7 @@ function createHandlers(overrides: Partial<AdminRolesDeps> = {}) {
     listUsersByRole: methods.listUsersByRole,
     countUsersByRole: methods.countUsersByRole,
     deleteConfig: methods.deleteConfig,
-    deleteAclEntries: async (filter) => {
-      await methods.deleteAclEntries(filter);
-    },
+    deleteAclEntries: methods.deletePrincipalAclEntries,
     deleteGrantsForPrincipal: methods.deleteGrantsForPrincipal,
     restoreConfig: methods.restoreConfig,
     findConfigByPrincipal: methods.findConfigByPrincipal,
@@ -195,14 +193,22 @@ async function seedRole(name: string, description = 'Writes things') {
   return { userId: userId.toString(), resourceId };
 }
 
-/** Everything keyed by `name`: its role document, members, profile, grants and ACL entries. */
+/**
+ * Everything keyed by `name` in the active tenant partition (platform-level outside a tenant):
+ * its role document, members, profile, grants and ACL entries.
+ */
 async function keyedBy(name: string) {
+  const tenantId = dataSchemas.getTenantId();
   const [role, members, profile, grants, aclEntries] = await Promise.all([
-    methods.getRoleByName(name),
+    methods.getPartitionRole(name),
     methods.findUserIdsByRole(name),
     methods.findConfigByPrincipal(PrincipalType.ROLE, name, { includeInactive: true }),
-    methods.findGrantsForPrincipal(PrincipalType.ROLE, name),
-    mongoose.models.AclEntry.find({ principalType: PrincipalType.ROLE, principalId: name })
+    methods.findGrantsForPrincipal(PrincipalType.ROLE, name, { tenantId }),
+    mongoose.models.AclEntry.find({
+      principalType: PrincipalType.ROLE,
+      principalId: name,
+      tenantId: tenantId ?? { $in: [null, ''] },
+    })
       .select('resourceId')
       .lean<Array<{ resourceId: Types.ObjectId }>>(),
   ]);
@@ -691,6 +697,189 @@ describe('role rename without a tenant', () => {
 
     expect(res.statusCode).toBe(200);
     expect(await profileLayout()).toEqual(['-/writer: hello editor', 'tenant-a/writer: tenant-a']);
+  });
+});
+
+describe('role operations without a tenant keep to the platform role', () => {
+  /** A tenant-a role of `name` with one member, created in that tenant. */
+  async function seedTenantRole(name: string, description: string): Promise<string> {
+    return inTenant('tenant-a', async () => {
+      await methods.createRoleByName({ name, description, permissions: {} });
+      const userId = await methods.createUser(
+        { email: `tenant-${name}@example.com`, name, provider: 'local', role: name },
+        undefined,
+        true,
+      );
+      await setWelcome(name, `tenant ${name}`);
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: name,
+        capability: dataSchemas.SystemCapabilities.READ_CONFIGS,
+        tenantId: 'tenant-a',
+      });
+      await methods.grantPermission(
+        PrincipalType.ROLE,
+        name,
+        ResourceType.AGENT,
+        new Types.ObjectId(),
+        PermissionBits.VIEW,
+      );
+      return userId.toString();
+    });
+  }
+
+  /** What tenant-a holds for `name`, read in that tenant. */
+  const tenantKeyedBy = (name: string) => inTenant('tenant-a', () => keyedBy(name));
+
+  async function remove(name: string, tenantId?: string): Promise<MockRes> {
+    const res = mockRes();
+    const req = {
+      params: { name },
+      body: {},
+      query: {},
+      user: { _id: new Types.ObjectId(), id: 'admin', role: 'ADMIN', tenantId },
+    } as Partial<ServerRequest> as ServerRequest;
+    const run = () => createHandlers().deleteRole(req, res);
+    await (tenantId ? inTenant(tenantId, run) : run());
+    return res;
+  }
+
+  it("migrates and renames only the platform role and its members, never a tenant's role", async () => {
+    const { userId } = await seedRole('editor');
+    const tenantUserId = await seedTenantRole('editor', 'Tenant editors');
+    const tenantBefore = await tenantKeyedBy('editor');
+
+    const res = await rename(createHandlers(), 'editor', { name: 'writer', description: 'New' });
+
+    expect(res.statusCode).toBe(200);
+    expect(await keyedBy('writer')).toMatchObject({
+      role: { name: 'writer', description: 'New' },
+      members: [userId],
+    });
+    expect(tenantBefore.members).toEqual([tenantUserId]);
+    expect(await tenantKeyedBy('editor')).toEqual(tenantBefore);
+    expect(await inTenant('tenant-a', () => keyedBy('writer'))).toEqual(nothing);
+  });
+
+  it("serves a platform role created or renamed after a tenant's role of its name to the platform's permission checks", async () => {
+    await seedTenantRole('editor', 'Tenant editors');
+    await seedTenantRole('tenant-only', 'Tenant only');
+    await seedRole('writer');
+    const params: Record<string, string> = {};
+    const body: Record<string, unknown> = { name: 'editor', description: 'Platform editors' };
+    const created = mockRes();
+    await createHandlers().createRole(
+      {
+        params,
+        body,
+        query: {},
+        user: { _id: new Types.ObjectId(), id: 'admin', role: 'ADMIN' },
+      } as Partial<ServerRequest> as ServerRequest,
+      created,
+    );
+    const renamed = await rename(createHandlers(), 'writer', { name: 'tenant-only' });
+    /** `getRoleByName` as every request's permission checks read it, with no cached role. */
+    const served = async (name: string) => (await methods.getRoleByName(name))?.description;
+
+    expect(created.statusCode).toBe(201);
+    expect(renamed.statusCode).toBe(200);
+    expect(await served('editor')).toBe('Platform editors');
+    expect(await served('tenant-only')).toBe('Writes things');
+    expect(await inTenant('tenant-a', () => served('editor'))).toBe('Tenant editors');
+    expect(await inTenant('tenant-a', () => served('tenant-only'))).toBe('Tenant only');
+  });
+
+  it('answers 404 for a role only a tenant holds, renaming nothing in that tenant', async () => {
+    await seedTenantRole('tenant-editor', 'Tenant only');
+    const before = await tenantKeyedBy('tenant-editor');
+
+    const res = await rename(createHandlers(), 'tenant-editor', { name: 'renamed' });
+
+    expect(res.statusCode).toBe(404);
+    expect(await tenantKeyedBy('tenant-editor')).toEqual(before);
+    expect(await inTenant('tenant-a', () => keyedBy('renamed'))).toEqual(nothing);
+  });
+
+  it("deletes only the platform role and what it holds, never a tenant role's members, grants or ACL entries", async () => {
+    await seedRole('editor');
+    await seedTenantRole('editor', 'Tenant editors');
+    const tenantBefore = await tenantKeyedBy('editor');
+
+    const res = await remove('editor');
+
+    expect(res.statusCode).toBe(200);
+    expect(await keyedBy('editor')).toEqual(nothing);
+    expect(await tenantKeyedBy('editor')).toEqual(tenantBefore);
+    expect(tenantBefore).toMatchObject({
+      role: { name: 'editor', description: 'Tenant editors' },
+      grants: [dataSchemas.SystemCapabilities.READ_CONFIGS],
+      aclEntries: [expect.any(String)],
+    });
+  });
+
+  it('answers 404 for a deletion of a role only a tenant holds, removing nothing there', async () => {
+    await seedTenantRole('tenant-editor', 'Tenant only');
+    const before = await tenantKeyedBy('tenant-editor');
+
+    const res = await remove('tenant-editor');
+
+    expect(res.statusCode).toBe(404);
+    expect(await tenantKeyedBy('tenant-editor')).toEqual(before);
+  });
+
+  it("lists, adds and removes only the platform's users as the platform role's members", async () => {
+    const { userId } = await seedRole('editor');
+    const tenantMember = await seedTenantRole('editor', 'Tenant editors');
+    const tenantUser = await inTenant('tenant-a', async () =>
+      (
+        await methods.createUser(
+          { email: 'tenant-user@example.com', name: 'tu', provider: 'local', role: 'USER' },
+          undefined,
+          true,
+        )
+      ).toString(),
+    );
+    const handlers = createHandlers();
+    const call = async (
+      handler: 'getRoleMembers' | 'addRoleMember' | 'removeRoleMember',
+      params: Record<string, string>,
+      body: Record<string, unknown> = {},
+    ): Promise<MockRes> => {
+      const res = mockRes();
+      const req = {
+        params,
+        body,
+        query: {},
+        user: { _id: new Types.ObjectId(), id: 'admin', role: 'ADMIN' },
+      } as Partial<ServerRequest> as ServerRequest;
+      await handlers[handler](req, res);
+      return res;
+    };
+    const roleOf = async (id: string) =>
+      (await mongoose.models.User.collection.findOne({ _id: new Types.ObjectId(id) }))?.role;
+
+    const members = await call('getRoleMembers', { name: 'editor' });
+    const added = await call('addRoleMember', { name: 'editor' }, { userId: tenantUser });
+    const removed = await call('removeRoleMember', { name: 'editor', userId: tenantMember });
+
+    expect(members.statusCode).toBe(200);
+    expect(members.body).toMatchObject({ members: [{ userId }], total: 1 });
+    expect(added.statusCode).toBe(404);
+    expect(removed.statusCode).toBe(404);
+    expect(await roleOf(tenantUser)).toBe('USER');
+    expect(await roleOf(tenantMember)).toBe('editor');
+  });
+
+  it("deletes only the active tenant's role inside it, leaving the platform role", async () => {
+    await seedRole('editor');
+    await seedTenantRole('editor', 'Tenant editors');
+    const platformBefore = await keyedBy('editor');
+
+    const res = await remove('editor', 'tenant-a');
+
+    expect(res.statusCode).toBe(200);
+    expect(await tenantKeyedBy('editor')).toEqual(nothing);
+    expect(await keyedBy('editor')).toEqual(platformBefore);
   });
 });
 

@@ -14,6 +14,12 @@ import {
   MAX_CONFIG_PATH_DEPTH,
   parseConfigPathSegments,
   getTombstonePathsToClear,
+  parseConfigPath,
+  formatKeyedPath,
+  isConfigEntryKey,
+  isKeyedConfigPath,
+  formatConfigLocation,
+  MAX_CONFIG_ENTRY_KEY_LENGTH,
 } from './paths';
 
 function reasonOf(fn: () => unknown): string | undefined {
@@ -220,5 +226,94 @@ describe('client segment paths', () => {
 
   it('accepts a path exactly at the depth limit', () => {
     expect(parseConfigPathSegments(Array(MAX_CONFIG_PATH_DEPTH).fill('a')).ok).toBe(true);
+  });
+});
+
+describe('keyed config paths', () => {
+  const CUSTOM = ['endpoints', 'custom'];
+
+  it('reads a dotted path as its segments and a keyed one as an entry and a path inside it', () => {
+    expect(parseConfigPath('mcpServers.github.headers')).toEqual({
+      segments: ['mcpServers', 'github', 'headers'],
+    });
+    expect(parseConfigPath('endpoints.custom["Gateway"]')).toEqual({
+      segments: CUSTOM,
+      entry: { key: 'Gateway', rest: [] },
+    });
+    expect(parseConfigPath('endpoints.custom["Gateway"].headers.X-Key')).toEqual({
+      segments: CUSTOM,
+      entry: { key: 'Gateway', rest: ['headers', 'X-Key'] },
+    });
+  });
+
+  it('takes any character in a key, since it is a JSON string, and round-trips it', () => {
+    const names = [
+      'My Endpoint',
+      'api.example.com',
+      'quote " inside',
+      'bracket ] and [ "',
+      'back\\slash',
+      'trailing.',
+      'a..b',
+      'cost$',
+      'Ünïcødé 名前 🚀',
+      'line\nbreak',
+    ];
+    for (const name of names) {
+      const path = formatKeyedPath(CUSTOM, name, ['headers', 'X-Key']);
+      expect(isKeyedConfigPath(path)).toBe(true);
+      expect(parseConfigPath(path)).toEqual({
+        segments: CUSTOM,
+        entry: { key: name, rest: ['headers', 'X-Key'] },
+      });
+    }
+    expect(parseConfigPath('endpoints.custom["\\u0041"]')?.entry?.key).toBe('A');
+    expect(formatKeyedPath(CUSTOM, 'A')).toBe('endpoints.custom["A"]');
+  });
+
+  it('refuses a malformed keyed path instead of reading part of it', () => {
+    const malformed = [
+      'endpoints.custom["Gateway"',
+      'endpoints.custom["Gateway]',
+      'endpoints.custom["Gateway"]headers',
+      'endpoints.custom["Gateway"].',
+      'endpoints.custom["Gateway"]..headers',
+      'endpoints.custom["a"]["b"]',
+      'endpoints.custom["a"].headers["b"]',
+      'endpoints.custom[""]',
+      '["Gateway"]',
+      '.custom["Gateway"]',
+      'endpoints..custom["Gateway"]',
+      'endpoints.custom["__proto__"]',
+      'endpoints.custom["constructor"]',
+      'endpoints.custom["$where"]',
+      'endpoints.custom["Gateway"].__proto__',
+      'endpoints.custom["Gateway"].$set',
+      'endpoints.$custom["Gateway"]',
+      'endpoints.custom["bad \\x escape"]',
+      `endpoints.custom[${JSON.stringify('n'.repeat(MAX_CONFIG_ENTRY_KEY_LENGTH + 1))}]`,
+      `endpoints.custom["a"].${Array.from({ length: MAX_CONFIG_PATH_DEPTH }, () => 'x').join('.')}`,
+    ];
+    for (const path of malformed) {
+      expect(parseConfigPath(path)).toBeNull();
+    }
+    expect(parseConfigPath(`endpoints.custom[${JSON.stringify('n'.repeat(256))}]`)).not.toBeNull();
+    expect(isConfigEntryKey('$x')).toBe(false);
+    expect(isConfigEntryKey('x$')).toBe(true);
+  });
+
+  it('treats only `["` as a key step, so other brackets stay part of a dotted key', () => {
+    expect(isKeyedConfigPath('endpoints.custom[0]')).toBe(false);
+    expect(parseConfigPath('endpoints.custom[0]')).toEqual({
+      segments: ['endpoints', 'custom[0]'],
+    });
+  });
+
+  it('never stores a dotted tombstone a later read would take for a keyed one', () => {
+    expect(reasonOf(() => formatTombstonePath(['endpoints', 'custom["x"]']))).toBe('keyed_path');
+    expect(formatConfigLocation({ segments: CUSTOM, entry: { key: 'x', rest: ['a'] } })).toBe(
+      'endpoints.custom["x"].a',
+    );
+    expect(formatConfigLocation({ segments: ['memory', 'agent'] })).toBe('memory.agent');
   });
 });

@@ -18,7 +18,18 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { AppConfigUserLike, GetAppConfigOptions } from '~/app/service';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 
-export type ToolCallPreviewLimits = Pick<TToolCallPreviewsConfig, 'outputChars' | 'argsChars'>;
+export type ToolCallPreviewLimits = Pick<TToolCallPreviewsConfig, 'outputChars' | 'argsChars'> &
+  Partial<Pick<TToolCallPreviewsConfig, 'attachmentWorkLimit'>>;
+
+type AttachmentWorkBudget = { remaining: number };
+
+const DEFAULT_ATTACHMENT_WORK_LIMIT: number = toolCallPreviewsConfigSchema.parse(
+  {},
+).attachmentWorkLimit;
+
+const attachmentWorkBudget = (limits: ToolCallPreviewLimits): AttachmentWorkBudget => ({
+  remaining: limits.attachmentWorkLimit ?? DEFAULT_ATTACHMENT_WORK_LIMIT,
+});
 
 /** Separates the kept start and end of an output preview. */
 export const TOOL_CALL_PREVIEW_ELISION = '\n…\n';
@@ -175,69 +186,120 @@ type AttachmentScope = { agentId?: string; stepId?: string };
 /** Each tool call id a message's attachments were saved under, with the scopes saved with it. */
 type AttachmentScopes = ReadonlyMap<string, readonly AttachmentScope[]>;
 
-/** A scope both sides carry must agree: the ownership rule the client applies. */
-const scopeAgrees = (call: AttachmentScope, file: AttachmentScope): boolean =>
-  (call.agentId == null || file.agentId == null || call.agentId === file.agentId) &&
-  (call.stepId == null || file.stepId == null || call.stepId === file.stepId);
-
 /** The agent a stored subagent call ran, from its persisted identity. */
 const runAgentId = (toolCall: StoredToolCall): string | undefined => {
   const identity = toolCall.subagentIdentity as { subagentAgentId?: unknown } | undefined;
   return typeof identity?.subagentAgentId === 'string' ? identity.subagentAgentId : undefined;
 };
 
-/** Whether the call carries every scope the attachment does. */
-const scopeMatches = (call: AttachmentScope, file: AttachmentScope): boolean =>
-  (file.agentId == null || call.agentId === file.agentId) &&
-  (file.stepId == null || call.stepId === file.stepId);
+type IndexedAttachmentCall = { call: Agents.SubagentAttachmentCall; order: number };
+
+interface AttachmentCallIndex {
+  first: IndexedAttachmentCall;
+  byAgent: Map<string | undefined, IndexedAttachmentCall>;
+  byStep: Map<string | undefined, IndexedAttachmentCall>;
+  byScope: Map<string | undefined, Map<string | undefined, IndexedAttachmentCall>>;
+}
+
+/** First call carrying every field the file scopes, with absent file fields as wildcards. */
+function firstAttachmentCall(
+  index: AttachmentCallIndex,
+  scope: AttachmentScope,
+): IndexedAttachmentCall | undefined {
+  if (scope.agentId == null) {
+    return scope.stepId == null ? index.first : index.byStep.get(scope.stepId);
+  }
+  return scope.stepId == null
+    ? index.byAgent.get(scope.agentId)
+    : index.byScope.get(scope.agentId)?.get(scope.stepId);
+}
+
+/** First compatible call, including calls missing a field the file carries. */
+function firstAgreeingAttachmentCall(
+  index: AttachmentCallIndex,
+  scope: AttachmentScope,
+): IndexedAttachmentCall | undefined {
+  if (scope.agentId == null && scope.stepId == null) {
+    return index.first;
+  }
+  let candidates: Array<IndexedAttachmentCall | undefined>;
+  if (scope.agentId == null) {
+    candidates = [index.byStep.get(scope.stepId), index.byStep.get(undefined)];
+  } else if (scope.stepId == null) {
+    candidates = [index.byAgent.get(scope.agentId), index.byAgent.get(undefined)];
+  } else {
+    candidates = [
+      index.byScope.get(scope.agentId)?.get(scope.stepId),
+      index.byScope.get(undefined)?.get(scope.stepId),
+      index.byScope.get(scope.agentId)?.get(undefined),
+      index.byScope.get(undefined)?.get(undefined),
+    ];
+  }
+  let first: IndexedAttachmentCall | undefined;
+  for (const candidate of candidates) {
+    if (candidate != null && (first == null || candidate.order < first.order)) {
+      first = candidate;
+    }
+  }
+  return first;
+}
 
 /**
  * Tool calls anywhere in the parts, including inside nested subagent runs, that one of the
  * message's attachments can belong to, with the agent and step scope a client checks it against.
  * For each attachment scope only the first call matching it exactly and the first call agreeing
  * with it are kept (the two a client can choose between), so a reused id, or an attachment with
- * no scope to narrow it, does not grow the hint with the transcript.
+ * no scope to narrow it, does not grow the hint with the transcript. Indexing makes each scope
+ * a constant-time lookup rather than a scan for every child call.
  */
 function nestedAttachmentCalls(
   parts: unknown[],
   wanted: AttachmentScopes,
   ownerAgentId?: string,
-): Agents.SubagentAttachmentCall[] {
-  const found = new Map<string, Agents.SubagentAttachmentCall>();
-  const exactFor = new Set<AttachmentScope>();
-  const agreeingFor = new Set<AttachmentScope>();
+  budget?: AttachmentWorkBudget,
+): Agents.SubagentAttachmentCall[] | undefined {
+  const indexes = new Map<string, AttachmentCallIndex>();
+  const ordered: IndexedAttachmentCall[] = [];
   /** Each level carries the agent of the run it belongs to, for parts that do not stamp one. */
   const stack: Array<[unknown[], string | undefined]> = [[parts, ownerAgentId]];
   while (stack.length > 0) {
     const [current, levelOwner] = stack.pop() ?? [[], undefined];
     for (const part of current) {
+      if (budget != null && budget.remaining-- <= 0) {
+        return undefined;
+      }
       if (!isToolCallPart(part)) {
         continue;
       }
       const { id, stepId, subagent_content } = part.tool_call;
-      const scopes = typeof id === 'string' ? wanted.get(id) : undefined;
-      if (scopes != null) {
-        /** The owner is stored on the part, on the call, or on the run that holds it. */
+      if (typeof id === 'string' && wanted.has(id)) {
         const owner = part.agentId ?? part.tool_call.agentId ?? levelOwner;
-        const call: Agents.SubagentAttachmentCall = {
-          id: id as string,
-          ...(typeof owner === 'string' ? { agentId: owner } : {}),
-          ...(typeof stepId === 'string' ? { stepId } : {}),
-        };
-        let useful = false;
-        for (const scope of scopes) {
-          if (!exactFor.has(scope) && scopeMatches(call, scope)) {
-            exactFor.add(scope);
-            useful = true;
+        const agentId = typeof owner === 'string' ? owner : undefined;
+        const step = typeof stepId === 'string' ? stepId : undefined;
+        let index = indexes.get(id);
+        if (index?.byScope.get(agentId)?.has(step) !== true) {
+          const entry: IndexedAttachmentCall = {
+            call: {
+              id,
+              ...(agentId != null ? { agentId } : {}),
+              ...(step != null ? { stepId: step } : {}),
+            },
+            order: ordered.length,
+          };
+          ordered.push(entry);
+          if (index == null) {
+            index = { first: entry, byAgent: new Map(), byStep: new Map(), byScope: new Map() };
+            indexes.set(id, index);
           }
-          if (!agreeingFor.has(scope) && scopeAgrees(call, scope)) {
-            agreeingFor.add(scope);
-            useful = true;
+          if (!index.byAgent.has(agentId)) {
+            index.byAgent.set(agentId, entry);
           }
-        }
-        const identity = [call.id, call.agentId ?? '', call.stepId ?? ''].join('\u0000');
-        if (useful && !found.has(identity)) {
-          found.set(identity, call);
+          if (!index.byStep.has(step)) {
+            index.byStep.set(step, entry);
+          }
+          const steps = index.byScope.get(agentId) ?? new Map();
+          steps.set(step, entry);
+          index.byScope.set(agentId, steps);
         }
       }
       if (Array.isArray(subagent_content)) {
@@ -245,15 +307,40 @@ function nestedAttachmentCalls(
       }
     }
   }
-  return [...found.values()];
+  const selected = new Set<IndexedAttachmentCall>();
+  for (const [id, index] of indexes) {
+    for (const scope of wanted.get(id) ?? []) {
+      if (budget != null && budget.remaining-- <= 0) {
+        return undefined;
+      }
+      const exact = firstAttachmentCall(index, scope);
+      const agreeing = firstAgreeingAttachmentCall(index, scope);
+      if (exact != null) {
+        selected.add(exact);
+      }
+      if (agreeing != null) {
+        selected.add(agreeing);
+      }
+    }
+  }
+  const calls: Agents.SubagentAttachmentCall[] = [];
+  for (const entry of ordered) {
+    if (selected.has(entry)) {
+      calls.push(entry.call);
+    }
+  }
+  return calls;
 }
 
-/** The tool call ids a message's attachments were saved under, with their scopes. */
-function attachmentToolCallIds(message: PreviewableMessage): AttachmentScopes | undefined {
+/** Deduplicates attachment scope tuples before any transcript is matched. */
+function attachmentToolCallIds(message: {
+  attachments?: readonly unknown[] | null;
+}): AttachmentScopes | undefined {
   if (!Array.isArray(message.attachments) || message.attachments.length === 0) {
     return undefined;
   }
   const scopes = new Map<string, AttachmentScope[]>();
+  const seen = new Map<string, Set<string>>();
   for (const attachment of message.attachments) {
     if (!isObject(attachment)) {
       continue;
@@ -266,11 +353,19 @@ function attachmentToolCallIds(message: PreviewableMessage): AttachmentScopes | 
     if (typeof toolCallId !== 'string' || toolCallId === '') {
       continue;
     }
-    const entries = scopes.get(toolCallId) ?? [];
-    entries.push({
+    const scope: AttachmentScope = {
       ...(typeof agentId === 'string' ? { agentId } : {}),
       ...(typeof stepId === 'string' ? { stepId } : {}),
-    });
+    };
+    const key = JSON.stringify([scope.agentId, scope.stepId]);
+    const keys = seen.get(toolCallId) ?? new Set<string>();
+    if (keys.has(key)) {
+      continue;
+    }
+    keys.add(key);
+    seen.set(toolCallId, keys);
+    const entries = scopes.get(toolCallId) ?? [];
+    entries.push(scope);
     scopes.set(toolCallId, entries);
   }
   return scopes.size > 0 ? scopes : undefined;
@@ -297,14 +392,9 @@ export function findSubagentAttachmentCalls(
   content: unknown[],
   files: ReadonlyArray<AttachmentCallQuery>,
 ): SubagentAttachmentCallsEntry[] {
-  const wanted = new Map<string, AttachmentScope[]>();
-  for (const { toolCallId, agentId, stepId } of files) {
-    const scopes = wanted.get(toolCallId) ?? [];
-    scopes.push({ ...(agentId != null ? { agentId } : {}), ...(stepId != null ? { stepId } : {}) });
-    wanted.set(toolCallId, scopes);
-  }
+  const wanted = attachmentToolCallIds({ attachments: files });
   const entries: SubagentAttachmentCallsEntry[] = [];
-  if (wanted.size === 0) {
+  if (wanted == null) {
     return entries;
   }
   for (const part of content) {
@@ -320,7 +410,7 @@ export function findSubagentAttachmentCalls(
       wanted,
       runAgentId(part.tool_call),
     );
-    if (calls.length === 0) {
+    if (calls == null || calls.length === 0) {
       continue;
     }
     entries.push({
@@ -464,7 +554,11 @@ function canonicalDecimal(token: string): string {
   if (significant === '') {
     return '0';
   }
-  const trimmed = significant.replace(/0+$/, '');
+  let end = significant.length;
+  while (significant.charCodeAt(end - 1) === 48) {
+    end--;
+  }
+  const trimmed = significant.slice(0, end);
   const exponent =
     (exponentAt === -1 ? 0 : Number(unsigned.slice(exponentAt + 1))) -
     fraction.length +
@@ -625,6 +719,7 @@ export function previewToolCall<T extends StoredToolCall>(
   limits: ToolCallPreviewLimits,
   revision = '',
   attachmentIds?: AttachmentScopes,
+  budget: AttachmentWorkBudget = attachmentWorkBudget(limits),
 ): T {
   if (!isAgentToolCall(toolCall) || !isSettled(toolCall) || !hasIdentity(toolCall)) {
     return toolCall;
@@ -637,10 +732,22 @@ export function previewToolCall<T extends StoredToolCall>(
   const outputPreview = previewToolCallOutput(toolCall, output, limits.outputChars);
   const argsPreview = previewToolCallArgs(toolCall.args, limits.argsChars);
   const subagentContent = toolCall.subagent_content;
-  const omitSubagentContent =
+  let omitSubagentContent =
     Array.isArray(subagentContent) &&
     subagentContent.length > 0 &&
     !hasPendingApproval(subagentContent);
+
+  let childCalls: Agents.SubagentAttachmentCall[] | undefined;
+  if (omitSubagentContent && attachmentIds != null) {
+    childCalls = nestedAttachmentCalls(
+      subagentContent as unknown[],
+      attachmentIds,
+      runAgentId(toolCall),
+      budget,
+    );
+    // Never omit a transcript with incomplete attachment ownership hints.
+    omitSubagentContent = childCalls != null;
+  }
 
   if (outputPreview === output && argsPreview == null && !omitSubagentContent) {
     return toolCall;
@@ -661,11 +768,7 @@ export function previewToolCall<T extends StoredToolCall>(
     delete next.subagent_content;
     next.subagentContentOmitted = true;
     next.subagentContentParts = (subagentContent as unknown[]).length;
-    const childCalls =
-      attachmentIds == null
-        ? []
-        : nestedAttachmentCalls(subagentContent as unknown[], attachmentIds, runAgentId(toolCall));
-    if (childCalls.length > 0) {
+    if (childCalls != null && childCalls.length > 0) {
       next.subagentAttachmentCalls = childCalls;
     }
   }
@@ -683,10 +786,11 @@ function previewToolCallSafely<T extends StoredToolCall>(
   toolCall: T,
   limits: ToolCallPreviewLimits,
   revision: string,
-  attachmentIds?: AttachmentScopes,
+  attachmentIds: AttachmentScopes | undefined,
+  budget: AttachmentWorkBudget,
 ): T {
   try {
-    return previewToolCall(toolCall, limits, revision, attachmentIds);
+    return previewToolCall(toolCall, limits, revision, attachmentIds, budget);
   } catch (error) {
     logger.warn('[toolCallPreviews] Sending a tool call in full; its preview failed', error);
     return toolCall;
@@ -700,6 +804,7 @@ export function previewContentToolCalls(
   revision = '',
   attachmentIds?: AttachmentScopes,
 ): unknown[] {
+  const budget = attachmentWorkBudget(limits);
   let result: unknown[] | undefined;
   /** First index of each identity; a repeat sends both calls whole (see `toolCallIdentity`). */
   const firstIndex = new Map<string, number>();
@@ -721,7 +826,7 @@ export function previewContentToolCalls(
       continue;
     }
     firstIndex.set(identity, i);
-    const toolCall = previewToolCallSafely(part.tool_call, limits, revision, attachmentIds);
+    const toolCall = previewToolCallSafely(part.tool_call, limits, revision, attachmentIds, budget);
     if (toolCall === part.tool_call) {
       continue;
     }

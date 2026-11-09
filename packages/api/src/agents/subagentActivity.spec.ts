@@ -8,6 +8,7 @@ import type { SubagentActivityEnvelope, SubagentActivityUpdateEvent } from './su
 import type { IEventTransport } from '~/stream/interfaces/IJobStore';
 import type { ServerRequest } from '~/types';
 import {
+  boundSubagentActivityUpdate,
   SubagentActivityStream,
   createSubagentActivityStreamHandler,
   subagentActivityStreamId,
@@ -933,5 +934,35 @@ describe('subagent activity stream authorization', () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+it('bounds applied-steer activity while retaining identity, source timestamp and replay sequence', () => {
+  const event: SubagentActivityUpdateEvent = {
+    runId: 'root',
+    subagentRunId: 'task',
+    subagentType: 'worker',
+    subagentAgentId: 'agent',
+    phase: 'steer_applied',
+    activityEventId: 'task:4',
+    activitySequence: 4,
+    timestamp: '2026-10-23T00:00:00.000Z',
+    data: {
+      index: 2,
+      steerId: 'control',
+      part: { type: 'steer', steer: 'Guidance', steerId: 'control' },
+    },
+  };
+  expect(boundSubagentActivityUpdate(event)).toMatchObject(event);
+  const oversized = boundSubagentActivityUpdate({
+    ...event,
+    data: { body: 'x'.repeat(256 * 1024) },
+  });
+  expect(oversized.data).toBeUndefined();
+  expect(oversized).toMatchObject({
+    phase: 'steer_applied',
+    activityEventId: 'task:4',
+    activitySequence: 4,
+    timestamp: event.timestamp,
   });
 });

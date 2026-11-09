@@ -1432,6 +1432,92 @@ describe('MCP server secrets (record registry)', () => {
   });
 });
 
+describe('custom endpoint secrets of keyed paths and renames', () => {
+  type Entry = Record<string, string>;
+  const customOf = (root: unknown): Entry[] =>
+    (root as { endpoints: { custom: Entry[] } }).endpoints.custom;
+  const entry = (name: string, extra: Entry = {}): Entry => ({
+    name,
+    baseURL: `https://${name}.example.com/v1`,
+    ...extra,
+  });
+
+  it('refuses a keyed path to an entry secret or its preview, and nothing else of the entry', () => {
+    for (const field of ['apiKey', 'apiKeyPreview']) {
+      expect(getConfigSecretInputError(`endpoints.custom["My EP"].${field}`, undefined)).toMatch(
+        /by entry key/,
+      );
+    }
+    expect(getConfigSecretInputError('endpoints.custom["My EP"]', undefined)).toBeNull();
+    expect(getConfigSecretInputError('endpoints.custom["My EP"].headers.X', undefined)).toBeNull();
+    expect(getConfigSecretInputError('endpoints.custom["apiKey"]', undefined)).toBeNull();
+  });
+
+  it('checks a path holding `["` that names no entry by key as the plain path it is', () => {
+    const ciphertext = encryptV3('sk-real');
+    for (const server of ['mcpServers.ab', 'mcpServers.a["b']) {
+      expect(getConfigSecretInputError(`${server}.oauth.client_secret`, ciphertext)).toContain(
+        'Encrypted config secret values',
+      );
+      expect(getConfigSecretInputError(`${server}.oauth.client_secretPreview`, 'x')).toContain(
+        'protected secret preview',
+      );
+      expect(getConfigSecretInputError(server, { oauth: { client_secret: ciphertext } })).toContain(
+        'Encrypted config secret values',
+      );
+    }
+    expect(getConfigSecretInputError('modelSpecs.list["x"].apiKey', undefined)).toBeNull();
+  });
+
+  it('carries a stored endpoint key with its preview to the entry a rename names, by folded name', () => {
+    const existing = encryptConfigSecrets({
+      endpoints: { custom: [entry('Ollama', { apiKey: 'sk-ollama-0001' })] },
+    });
+    const next = { endpoints: { custom: [entry('local'), entry('other')] } };
+
+    carryRenamedConfigSecrets(next, existing, [
+      { path: 'endpoints.custom', previousName: 'ollama', name: 'local' },
+    ]);
+
+    const [stored] = customOf(existing);
+    expect(customOf(next)[0]).toEqual({
+      ...entry('local'),
+      apiKey: stored.apiKey,
+      apiKeyPreview: stored.apiKeyPreview,
+    });
+    expect(customOf(next)[1]).toEqual(entry('other'));
+  });
+
+  it('carries into a patch of the array, never over an entered key, and never a reference', () => {
+    const existing = {
+      endpoints: {
+        custom: [
+          entry('legacy', { apiKey: 'sk-legacy-plaintext-0002' }),
+          entry('ref', { apiKey: '${REF_KEY}' }),
+          entry('kept', { apiKey: 'sk-kept-0003' }),
+        ],
+      },
+    };
+    const value = [entry('a'), entry('b'), entry('c', { apiKey: 'v3:entered' })];
+
+    carryRenamedConfigSecrets(
+      value,
+      existing,
+      [
+        { path: 'endpoints.custom', previousName: 'legacy', name: 'a' },
+        { path: 'endpoints.custom', previousName: 'ref', name: 'b' },
+        { path: 'endpoints.custom', previousName: 'kept', name: 'c' },
+      ],
+      'endpoints.custom',
+    );
+
+    expect(decryptV3(value[0].apiKey)).toBe('sk-legacy-plaintext-0002');
+    expect(value[0].apiKeyPreview).toBe('...0002');
+    expect(value[1].apiKey).toBeUndefined();
+    expect(value[2].apiKey).toBe('v3:entered');
+  });
+});
+
 describe('Azure OpenAI group secrets (array registry)', () => {
   const group = (name: string, apiKey?: string) => ({
     group: name,

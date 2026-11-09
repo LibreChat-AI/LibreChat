@@ -201,7 +201,7 @@ function makeSkill(input: CreateSkillInput): ISkill & { _id: Types.ObjectId } {
     description: input.description,
     body: input.body ?? '',
     frontmatter: input.frontmatter ?? {},
-    author: input.author,
+    author: new Types.ObjectId(input.author),
     authorName: input.authorName,
     version: 1,
     source: input.source ?? 'inline',

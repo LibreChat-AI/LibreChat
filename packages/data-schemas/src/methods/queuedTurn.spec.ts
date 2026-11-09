@@ -87,6 +87,36 @@ function rootLineageId(parentMessageId = 'parent-1') {
 }
 
 describe('agent queued turn methods', () => {
+  it.each(['a'.repeat(257), 'a'.repeat(256) + '_'])(
+    'persists and replays a maximum-length response parent without changing lineage',
+    async (parentMessageId) => {
+      const input = enqueueInput({ parentMessageId });
+      const first = await methods.enqueueAgentQueuedTurn(input);
+      expect(first.turn.parentMessageId).toBe(parentMessageId);
+      await expect(methods.enqueueAgentQueuedTurn(input)).resolves.toMatchObject({
+        replayed: true,
+        turn: { queuedTurnId: first.turn.queuedTurnId, parentMessageId },
+      });
+      const stored = await Turn.findById(first.turn.queuedTurnId).lean();
+      expect(stored?.parentMessageId).toBe(parentMessageId);
+      await expect(
+        methods.getEffectiveAgentQueuedTurnPredecessor({
+          ...input,
+          sequence: first.turn.sequence,
+          rootParentMessageId: parentMessageId,
+        }),
+      ).resolves.toMatchObject({ lineagePredecessorId: rootLineageId(parentMessageId) });
+    },
+  );
+
+  it('rejects oversized response parents before reserving a lane or writing a row', async () => {
+    await expect(
+      methods.enqueueAgentQueuedTurn(enqueueInput({ parentMessageId: 'a'.repeat(258) })),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(await Turn.countDocuments()).toBe(0);
+    expect(await Sequence.countDocuments()).toBe(0);
+  });
+
   it('normalizes payloads, replays the same request, and conflicts on changed content', async () => {
     const input = enqueueInput({
       text: '  follow up  ',

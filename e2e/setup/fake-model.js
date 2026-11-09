@@ -34,6 +34,7 @@ const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
 const REPORT_LLM_CONFIG_MARKER = 'E2E_REPORT_LLM_CONFIG';
+const REPORT_CONTEXT_TOKENS_MARKER = 'E2E_REPORT_CONTEXT_TOKENS';
 const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
 const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
@@ -121,6 +122,10 @@ const TWO_ARTIFACT_REPLY_MARKER = 'E2E_TWO_ARTIFACT_REPLY';
 const BACKGROUND_DISPATCH_MARKER = 'E2E_BACKGROUND_DISPATCH:';
 const BACKGROUND_COLLECT_MARKER = 'E2E_BACKGROUND_COLLECT:';
 const TOOL_APPROVAL_MARKER = 'E2E_TOOL_APPROVAL:';
+/** `E2E_FLUX_IMAGE:<generate|finetuned>:<polling|legacy|foreign>:<label>` calls the Flux tool. */
+const FLUX_IMAGE_MARKER = 'E2E_FLUX_IMAGE:';
+const FLUX_TOOL_NAME = 'flux';
+const INVALID_TOOL_ARGS_MARKER = 'E2E_INVALID_TOOL_ARGS:';
 const TOOL_APPROVAL_BATCH_MARKER = 'E2E_TOOL_APPROVAL_BATCH:';
 const TOOL_APPROVAL_RESTRICTED_MARKER = 'E2E_TOOL_APPROVAL_RESTRICTED:';
 const TOOL_APPROVAL_REWRITE_MARKER = 'E2E_TOOL_APPROVAL_REWRITE:';
@@ -192,6 +197,7 @@ const DEFERRED_OAUTH_TOOL_NAME = 'echo_mcp_e2e-oauth-deferred';
 const ASK_USER_QUESTION_NAME = 'ask_user_question';
 const CHECK_BACKGROUND_TASK_TOOL_NAME = 'check_background_task';
 const APPROVAL_TOOL_NAME = 'approval_probe_mcp_e2e-memory';
+const WORK_ITEM_TOOL_NAME = 'create_work_item_mcp_e2e-memory';
 const APPROVAL_TOOL_CALL_PREFIX = 'call_e2e_approval_';
 const BACKGROUND_DISPATCH_TOOL_CALL_ID = 'call_e2e_background_dispatch';
 const BACKGROUND_COLLECT_TOOL_CALL_ID = 'call_e2e_background_collect';
@@ -343,6 +349,19 @@ function collectToolDefinitions(agents) {
     }
   }
   return definitions;
+}
+
+/** Text a provider bills for one advertised tool: its name, description and JSON schema.
+ *  A zod schema (on a LangChain tool) is skipped, since serializing it reports the
+ *  validator's internals rather than the schema the provider receives. */
+function toolDefinitionText(name, definition) {
+  const schema = definition?.parameters ?? definition?.input_schema ?? definition?.schema;
+  const plainSchema =
+    schema != null && typeof schema === 'object' && typeof schema.safeParse !== 'function'
+      ? JSON.stringify(schema)
+      : '';
+  const description = typeof definition?.description === 'string' ? definition.description : '';
+  return `${name}${description}${plainSchema}`;
 }
 
 function collectToolNames(agents) {
@@ -517,6 +536,25 @@ function llmConfigReportResponses(graph) {
     maxContextTokens: agent?.maxContextTokens ?? null,
   };
   return { responses: [`E2E llm config: ${JSON.stringify(report)}`] };
+}
+
+/**
+ * Reports the precomputed per-message token counts the primary agent prunes against, read
+ * before the fake model runs: the latest message's count and the total for the history.
+ */
+function contextTokensReportResponses(graph) {
+  const agent = graph?.agentContexts?.values().next().value;
+  const tokenMap = agent?.baseIndexTokenCountMap ?? agent?.indexTokenCountMap ?? {};
+  const indices = Object.keys(tokenMap)
+    .map(Number)
+    .filter((index) => Number.isInteger(index));
+  const latestIndex = indices.length > 0 ? Math.max(...indices) : null;
+  const report = {
+    provider: agent?.provider ?? null,
+    latest: latestIndex == null ? null : (tokenMap[latestIndex] ?? null),
+    total: indices.reduce((sum, index) => sum + (tokenMap[index] ?? 0), 0),
+  };
+  return { responses: [`E2E context tokens: ${JSON.stringify(report)}`] };
 }
 
 function collectSystemPromptText(messages) {
@@ -1010,15 +1048,22 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
       outputChars += typeof chunk.text === 'string' ? chunk.text.length : 0;
       yield chunk;
     }
-    const { messages: promptMessages } = await getStreamAgentView({
+    const { messages: promptMessages, toolDefinitions } = await getStreamAgentView({
       graph: this.graph,
       messages: messages ?? [],
       options,
       runManager,
     });
+    /** A provider bills the advertised tool definitions too. The context snapshot counts
+     *  them inside its instruction share and reconciles against this total, so leaving
+     *  them out would leave too little for the messages and the tool results they hold. */
+    let toolChars = 0;
+    for (const [name, definition] of toolDefinitions) {
+      toolChars += toolDefinitionText(name, definition).length;
+    }
     const inputChars = promptMessages.reduce(
       (sum, message) => sum + getContentText(message?.content).length,
-      0,
+      toolChars,
     );
     const input_tokens = Math.max(1, Math.ceil(inputChars / 4));
     const output_tokens = Math.max(1, Math.ceil(outputChars / 4));
@@ -2517,6 +2562,70 @@ function subagentActivityResponses(text) {
   };
 }
 
+/** Calls the work-item tool with a string where the schema declares an object or null,
+ *  then reports the tool result verbatim so a test can read what the model was told. */
+function invalidToolArgsResponses(label, toolNames) {
+  if (!toolNames.has(WORK_ITEM_TOOL_NAME)) {
+    return {
+      responses: [`E2E invalid args unavailable: ${WORK_ITEM_TOOL_NAME} was not advertised.`],
+    };
+  }
+  const toolCallId = `call_e2e_invalid_args_${label}`;
+  return {
+    responses: ['', ''],
+    toolCalls: [
+      {
+        id: toolCallId,
+        name: WORK_ITEM_TOOL_NAME,
+        args: {
+          project: 'e2e',
+          subject: `item-${label}`,
+          confirm: true,
+          custom_fields: `{"secret":"value-${label}"}`,
+        },
+        type: 'tool_call',
+      },
+    ],
+    resolveOnStream: (streamMessages) => {
+      const toolMessage = findLastToolMessage(streamMessages, toolCallId);
+      if (!toolMessage) {
+        return null;
+      }
+      return {
+        responses: [`E2E tool feedback ${label}: ${getContentText(toolMessage.content)}`],
+      };
+    },
+  };
+}
+
+/**
+ * Calls the real Flux tool against `e2e/setup/fake-flux-server.js`; the prompt tells that
+ * fake which BFL routing to simulate, and the tool's own polling decides where it reads.
+ */
+function fluxImageResponses(value, toolNames) {
+  if (!toolNames.has(FLUX_TOOL_NAME)) {
+    return { responses: [`E2E flux unavailable: ${FLUX_TOOL_NAME} was not advertised.`] };
+  }
+  const [action, mode, label] = value.split(':');
+  const finetuned = action === 'finetuned';
+  return {
+    responses: ['', `Flux image ready for ${label}.`],
+    toolCalls: [
+      {
+        id: `call_e2e_flux_${label}`,
+        name: FLUX_TOOL_NAME,
+        args: {
+          action: finetuned ? 'generate_finetuned' : 'generate',
+          prompt: `flux-e2e:${mode}:${label}`,
+          endpoint: finetuned ? '/v1/flux-pro-finetuned' : '/v1/flux-dev',
+          ...(finetuned ? { finetune_id: `ft-${label}` } : {}),
+        },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
 function approvalToolResponses(label, toolNames, review) {
   if (!toolNames.has(APPROVAL_TOOL_NAME)) {
     return {
@@ -3584,6 +3693,16 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return approvalToolResponses(rewrittenApprovalLabel, toolNames, 'rewrite');
   }
 
+  const invalidArgsLabel = getMarkerValue(text, INVALID_TOOL_ARGS_MARKER);
+  if (invalidArgsLabel) {
+    return invalidToolArgsResponses(invalidArgsLabel, toolNames);
+  }
+
+  const fluxImage = getMarkerValue(text, FLUX_IMAGE_MARKER);
+  if (fluxImage) {
+    return fluxImageResponses(fluxImage, toolNames);
+  }
+
   const approvalLabel = getMarkerValue(text, TOOL_APPROVAL_MARKER);
   if (approvalLabel) {
     return approvalToolResponses(approvalLabel, toolNames);
@@ -3722,6 +3841,10 @@ function resolveResponses({ graph, messages, text, toolNames }) {
 
   if (text.includes(REPORT_LLM_CONFIG_MARKER)) {
     return llmConfigReportResponses(graph);
+  }
+
+  if (text.includes(REPORT_CONTEXT_TOKENS_MARKER)) {
+    return contextTokensReportResponses(graph);
   }
 
   if (text.includes(ASSERT_AGENT_CONTEXT_MARKER)) {

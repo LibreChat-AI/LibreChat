@@ -1,16 +1,16 @@
 import {
-  Dialog,
-  DialogTrigger,
   Label,
-  DialogTemplate,
-  useToastContext,
+  Button,
+  OGDialog,
   TrashIcon,
+  OGDialogTrigger,
+  useToastContext,
+  OGDialogTemplate,
 } from '@librechat/client';
 import type { Assistant, AssistantCreateParams, AssistantsEndpoint } from 'librechat-data-provider';
 import type { UseMutationResult } from '@tanstack/react-query';
 import { useDeleteAssistantMutation } from '~/data-provider';
 import { useLocalize, useSetIndexOptions } from '~/hooks';
-import { cn, removeFocusOutlines } from '~/utils';
 import { useChatContext } from '~/Providers';
 
 export default function ContextButton({
@@ -85,21 +85,21 @@ export default function ContextButton({
   }
 
   return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <button
-          className={cn(
-            'btn btn-neutral border-border-light relative h-9 rounded-lg font-medium',
-            removeFocusOutlines,
-          )}
+    <OGDialog>
+      <OGDialogTrigger asChild>
+        <Button
+          size="sm"
+          variant="outline"
+          aria-label={localize('com_ui_delete_assistant')}
+          title={localize('com_ui_delete_assistant')}
           type="button"
         >
           <div className="text-text-destructive flex w-full items-center justify-center gap-2">
             <TrashIcon />
           </div>
-        </button>
-      </DialogTrigger>
-      <DialogTemplate
+        </Button>
+      </OGDialogTrigger>
+      <OGDialogTemplate
         title={localize('com_ui_delete_assistant')}
         className="max-w-[28.125rem]"
         main={
@@ -121,6 +121,6 @@ export default function ContextButton({
           selectText: localize('com_ui_delete'),
         }}
       />
-    </Dialog>
+    </OGDialog>
   );
 }

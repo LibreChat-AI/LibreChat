@@ -1,5 +1,5 @@
 import { Schema } from 'mongoose';
-import { CODE_APPROVAL_MODES } from 'librechat-data-provider';
+import { Constants, CODE_APPROVAL_MODES } from 'librechat-data-provider';
 import type { IAgentQueuedTurnDocument } from '~/types/queuedTurn';
 
 const fileRefSchema = new Schema(
@@ -67,7 +67,11 @@ const queuedTurnSchema: Schema<IAgentQueuedTurnDocument> = new Schema(
     tenantId: { type: String, index: true },
     conversationId: { type: String, required: true, maxlength: 256 },
     agentId: { type: String, required: true, maxlength: 256 },
-    parentMessageId: { type: String, required: true, maxlength: 256 },
+    parentMessageId: {
+      type: String,
+      required: true,
+      maxlength: Number(Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH),
+    },
     clientRequestId: { type: String, required: true, maxlength: 128 },
     fingerprint: { type: String, required: true, minlength: 43, maxlength: 64 },
     laneId: { type: String, required: true, maxlength: 128 },
@@ -186,6 +190,22 @@ queuedTurnSchema.index(
     sequence: 1,
   },
   { name: 'agent_queued_turn_active' },
+);
+/** Delivery retirement looks turns up by `deliveryKey` alone; most turns never carry one. */
+queuedTurnSchema.index(
+  { deliveryKey: 1 },
+  {
+    name: 'agent_queued_turn_delivery_key',
+    partialFilterExpression: { deliveryKey: { $exists: true } },
+  },
+);
+/** Re-fetches the rows a reconciliation sweep just claimed. */
+queuedTurnSchema.index(
+  { reconciliationClaimId: 1 },
+  {
+    name: 'agent_queued_turn_reconciliation_claim',
+    partialFilterExpression: { reconciliationClaimId: { $exists: true } },
+  },
 );
 queuedTurnSchema.index({ tenantId: 1, user: 1, status: 1, claimUntil: 1 });
 queuedTurnSchema.index({ status: 1, createdAt: 1, _id: 1 });

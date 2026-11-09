@@ -43,6 +43,36 @@ describe('applyFilter', () => {
     expect(applyFilter(items, {}).length).toBe(4);
   });
 
+  describe('MCP servers', () => {
+    const server: AgentItem = {
+      kind: 'mcp',
+      id: 'gh-tools-v2',
+      name: 'GitHub',
+      description: 'Repositories and issues',
+      iconKey: 'mcp',
+      server: {
+        serverName: 'gh-tools-v2',
+        tools: [],
+        isConfigured: true,
+        isConnected: false,
+        metadata: makePlugin({ name: 'GitHub', pluginKey: 'gh-tools-v2' }),
+      },
+      toolCount: 0,
+    };
+
+    test('search matches the title', () => {
+      expect(applyFilter([server], { search: 'github' })).toEqual([server]);
+    });
+
+    test('search still matches the server key', () => {
+      expect(applyFilter([server], { search: 'gh-tools' })).toEqual([server]);
+    });
+
+    test('search does not match the id of other item kinds', () => {
+      expect(applyFilter(items, { search: 's2' })).toEqual([]);
+    });
+  });
+
   test('search filters by name', () => {
     const result = applyFilter(items, { search: 'code' });
     expect(result.map((i) => i.id)).toEqual(['execute_code', 's1']);

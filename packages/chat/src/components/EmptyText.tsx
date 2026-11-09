@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { cn } from '@librechat/client';
+import { cn, TooltipAnchor, useLocalize } from '@librechat/client';
 import type { NamedExoticComponent } from 'react';
 
 type EmptyTextPartProps = {
@@ -14,20 +14,33 @@ type EmptyTextPartProps = {
   underHeaderIcon?: boolean;
 };
 
-/** Streaming cursor placeholder — no bottom margin to match Container's structure and prevent CLS */
+/**
+ * Streaming cursor placeholder, with no bottom margin to match Container's structure and prevent
+ * CLS. The tooltip anchors on the wrapper because `.result-thinking` only draws while it is
+ * `:empty:last-child`, which a sibling tooltip node would break.
+ */
 const EmptyTextPart: NamedExoticComponent<EmptyTextPartProps> = memo(
   ({ underHeaderIcon = false }: EmptyTextPartProps) => {
+    const localize = useLocalize();
+    const label = localize('com_ui_thinking');
     return (
       <div
         data-message-text
         className="flex min-h-[1.25rem] flex-col items-start gap-3 overflow-visible"
       >
         <div className="markdown prose light w-full break-words">
-          <div className={cn('absolute', underHeaderIcon && 'ps-1.5')}>
+          <TooltipAnchor
+            description={label}
+            role="img"
+            aria-label={label}
+            /* The dot unmounts when the first token lands, which would drop keyboard focus. */
+            focusable={false}
+            render={<div className={cn('absolute', underHeaderIcon && 'ps-1.5')} />}
+          >
             <p className="submitting relative">
               <span className="result-thinking" />
             </p>
-          </div>
+          </TooltipAnchor>
         </div>
       </div>
     );

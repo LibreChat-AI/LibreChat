@@ -1,5 +1,6 @@
 import mongoose, { Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { PrincipalType, PrincipalModel } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types/http';
@@ -295,6 +296,323 @@ describe('validation on the Base floor (W2-3)', () => {
     expect(patched.statusCode).toBe(200);
     expect((await stored('role', 'editor'))?.overrides).toEqual({
       memory: { agent: { model: 'gpt-4.1' } },
+    });
+  });
+
+  describe("a tenant's group or user profile written by a caller without a tenant", () => {
+    const inTenant = <T>(run: () => Promise<T>): Promise<T> =>
+      dataSchemas.tenantStorage.run({ tenantId: 'tenant-a' }, run);
+    const setModel = { entries: [{ fieldPath: 'memory.agent.model', value: 'gpt-4.1' }] };
+    const welcome = { entries: [{ fieldPath: 'interface.customWelcome', value: 'hi' }] };
+
+    /** A tenant-a group or user with a profile its tenant's admin created. */
+    async function tenantProfile(
+      handlers: AdminConfigHandlers,
+      principalType: 'group' | 'user',
+    ): Promise<{ principalType: string; principalId: string }> {
+      const principalId = await inTenant(() =>
+        principalType === 'group'
+          ? createGroup('Tenant Engineering')
+          : createUser('tenant-person@example.com'),
+      );
+      const params = { principalType, principalId };
+      const created = await inTenant(() =>
+        call(handlers.patchConfigField, { params, body: welcome }),
+      );
+      expect(created.statusCode).toBe(200);
+      expect((await stored(principalType, principalId))?.tenantId).toBe('tenant-a');
+      return params;
+    }
+
+    it("refuses a write that only fails on that tenant's Base, on every write route", async () => {
+      const handlers = createHandlers(providerYaml);
+      await inTenant(() => switchBaseToAgentId(handlers));
+      const group = await tenantProfile(handlers, 'group');
+      const platformGroup = { principalType: 'group', principalId: await createGroup('Platform') };
+
+      const patched = await call(handlers.patchConfigField, { params: group, body: setModel });
+      const replaced = await call(handlers.upsertConfigOverrides, {
+        params: group,
+        body: { overrides: { memory: { agent: { model: 'gpt-4.1' } } } },
+      });
+      const changed = await call(handlers.applyConfigChanges, {
+        params: group,
+        body: { ops: [{ op: 'set', fieldPath: 'memory.agent.model', value: 'gpt-4.1' }] },
+      });
+      const platform = await call(handlers.patchConfigField, {
+        params: platformGroup,
+        body: setModel,
+      });
+
+      for (const res of [patched, replaced, changed]) {
+        expect(res.statusCode).toBe(400);
+        expect(res.body).toMatchObject({
+          code: 'CONFIG_OVERRIDE_INVALID',
+          issues: [expect.objectContaining({ code: 'union_dropped_key' })],
+        });
+      }
+      expect((await stored(group.principalType, group.principalId))?.overrides).toEqual({
+        interface: { customWelcome: 'hi' },
+      });
+      /** A platform group's profile still merges over the platform Base, which allows it. */
+      expect(platform.statusCode).toBe(200);
+    });
+
+    it("accepts a write that is valid only on that tenant's Base, judged on librechat.yaml as the tenant resolves it", async () => {
+      const getAppConfig = jest.fn(async () => ({ config: agentIdYaml }) as never);
+      const handlers = createHandlers(agentIdYaml, { getAppConfig });
+      await inTenant(() => switchBaseToProvider(handlers));
+      const user = await tenantProfile(handlers, 'user');
+      getAppConfig.mockClear();
+
+      const patched = await call(handlers.patchConfigField, { params: user, body: setModel });
+
+      expect(patched.statusCode).toBe(200);
+      expect((await stored(user.principalType, user.principalId))?.overrides).toEqual({
+        interface: { customWelcome: 'hi' },
+        memory: { agent: { model: 'gpt-4.1' } },
+      });
+      expect(getAppConfig).toHaveBeenCalledWith({ tenantId: 'tenant-a', baseOnly: true });
+      expect(getAppConfig).not.toHaveBeenCalledWith({ tenantId: undefined, baseOnly: true });
+    });
+
+    /** librechat.yaml scoped per tenant: `tenantYaml` is what only tenant-a resolves. */
+    const yamlByTenant = (tenantYaml: Partial<TCustomConfig>) =>
+      jest.fn(
+        async (options?: { tenantId?: string }) =>
+          ({
+            config: options?.tenantId === 'tenant-a' ? tenantYaml : {},
+            mcpConfig: options?.tenantId === 'tenant-a' ? tenantYaml.mcpServers : undefined,
+          }) as never,
+      );
+
+    it('allows the env references librechat.yaml uses as that tenant resolves it, on PUT, PATCH and POST …/changes', async () => {
+      /** A custom endpoint librechat.yaml defines for tenant-a only, keyed from the environment. */
+      const regional = {
+        name: 'Regional',
+        tenantId: 'tenant-a',
+        apiKey: '${REGIONAL_KEY}',
+        baseURL: 'https://regional.example.com/v1',
+        models: { default: ['m'] },
+      };
+      const getAppConfig = yamlByTenant({ endpoints: { custom: [regional] } } as never);
+      const handlers = createHandlers({}, { getAppConfig });
+      const group = await tenantProfile(handlers, 'group');
+      const platformGroup = { principalType: 'group', principalId: await createGroup('Platform') };
+      const entry = {
+        name: 'Second Region',
+        apiKey: '${REGIONAL_KEY}',
+        baseURL: 'https://second.example.com/v1',
+        models: { default: ['m'] },
+      };
+      const replace = (params: Record<string, string>) =>
+        call(handlers.upsertConfigOverrides, {
+          params,
+          body: { overrides: { endpoints: { custom: [entry] } } },
+        });
+      getAppConfig.mockClear();
+
+      const replaced = await replace(group);
+      const patched = await call(handlers.patchConfigField, {
+        params: group,
+        body: { entries: [{ fieldPath: 'endpoints.custom', value: [entry] }] },
+      });
+      const changed = await call(handlers.applyConfigChanges, {
+        params: group,
+        body: { ops: [{ op: 'upsertEntry', fieldPath: 'endpoints.custom', entry }] },
+      });
+
+      for (const res of [replaced, patched, changed]) {
+        expect(res.statusCode).toBe(200);
+      }
+      expect(getAppConfig).not.toHaveBeenCalledWith({ tenantId: undefined, baseOnly: true });
+      expect(getAppConfig).toHaveBeenCalledWith({ tenantId: 'tenant-a', baseOnly: true });
+
+      /** The platform group merges over the platform's librechat.yaml, which references no such name. */
+      const platform = await replace(platformGroup);
+      expect(platform.statusCode).toBe(400);
+      expect(platform.body).toMatchObject({
+        code: 'CONFIG_OVERRIDE_INVALID',
+        issues: [expect.objectContaining({ code: 'env_reference_not_allowed' })],
+      });
+    });
+
+    it("judges a field delete's credential re-entry on librechat.yaml as that tenant resolves it", async () => {
+      const url = 'https://tools.tenant.example/mcp';
+      const getAppConfig = yamlByTenant({
+        mcpServers: { tools: { type: 'streamable-http', url } },
+      } as never);
+      const handlers = createHandlers({}, { getAppConfig });
+      const group = await tenantProfile(handlers, 'group');
+      const keyed = await inTenant(() =>
+        call(handlers.patchConfigField, {
+          params: group,
+          body: {
+            entries: [
+              { fieldPath: 'mcpServers.tools.url', value: url },
+              {
+                fieldPath: 'mcpServers.tools.apiKey',
+                value: { source: 'admin', authorization_type: 'bearer', key: 'sk-tenant-key' },
+              },
+            ],
+          },
+        }),
+      );
+      expect(keyed.statusCode).toBe(200);
+
+      /** tenant-a's librechat.yaml still sends the key to the same URL once the profile's goes. */
+      const removed = await call(handlers.deleteConfigField, {
+        params: group,
+        query: { fieldPath: 'mcpServers.tools.url' },
+      });
+
+      expect(removed.statusCode).toBe(200);
+      expect((await stored(group.principalType, group.principalId))?.overrides?.mcpServers).toEqual(
+        { tools: { apiKey: expect.objectContaining({ source: 'admin' }) } },
+      );
+    });
+
+    it('answers 409 when the document moved to another partition after the write resolved it', async () => {
+      const handlers = createHandlers(providerYaml);
+      const group = await tenantProfile(handlers, 'group');
+      let reads = 0;
+      const moving = createHandlers(providerYaml, {
+        findConfigByPrincipal: async (principalType, principalId, options) => {
+          if (principalId === group.principalId && ++reads === 2) {
+            await methods.deleteConfig(PrincipalType.GROUP, group.principalId);
+            await methods.writeConfigDocument(
+              PrincipalType.GROUP,
+              group.principalId,
+              {
+                principalModel: PrincipalModel.GROUP,
+                priority: 20,
+                overrides: {},
+                tombstones: [],
+                isActive: true,
+              },
+              dataSchemas.ABSENT_CONFIG_REVISION,
+            );
+          }
+          return methods.findConfigByPrincipal(principalType, principalId, options);
+        },
+      });
+
+      const patched = await call(moving.patchConfigField, { params: group, body: welcome });
+
+      expect(patched.statusCode).toBe(409);
+      expect(patched.body?.code).toBe('CONFIG_VERSION_CONFLICT');
+      const moved = await stored(group.principalType, group.principalId);
+      expect(moved?.tenantId).toBeUndefined();
+      expect(moved?.overrides).toEqual({});
+    });
+
+    it("reports the credentials the profile drops over that tenant's Base, on every write route", async () => {
+      const handlers = createHandlers();
+      const based = await inTenant(() =>
+        call(handlers.patchConfigField, {
+          params: BASE,
+          body: {
+            entries: [
+              {
+                fieldPath: 'endpoints.custom',
+                value: [
+                  {
+                    name: 'Gateway',
+                    apiKey: 'sk-tenant-gateway-key',
+                    baseURL: 'https://gateway.example.com/v1',
+                    models: { default: ['gpt-4o'] },
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      );
+      expect(based.statusCode).toBe(200);
+      const group = await tenantProfile(handlers, 'group');
+      const moved = await inTenant(() =>
+        call(handlers.patchConfigField, {
+          params: group,
+          body: {
+            entries: [
+              {
+                fieldPath: 'endpoints.custom',
+                value: [{ name: 'Gateway', baseURL: 'https://elsewhere.example/v1' }],
+              },
+              { fieldPath: 'endpoints.agents.disableBuilder', value: true },
+              { fieldPath: 'endpoints.agents.recursionLimit', value: 30 },
+            ],
+          },
+        }),
+      );
+      const dropped = [
+        {
+          path: 'endpoints.custom["Gateway"].apiKey',
+          segments: ['endpoints', 'custom', 'Gateway', 'apiKey'],
+          reason: 'secret_rebinding',
+        },
+      ];
+      expect(moved.body?.ignored).toEqual(dropped);
+
+      const patched = await call(handlers.patchConfigField, {
+        params: group,
+        body: { entries: [{ fieldPath: 'endpoints.agents.recursionLimit', value: 40 }] },
+      });
+      const tombstoned = await call(handlers.tombstoneConfigField, {
+        params: group,
+        body: { fieldPath: 'endpoints.agents.recursionLimit' },
+      });
+      const deleted = await call(handlers.deleteConfigField, {
+        params: group,
+        query: { fieldPath: 'endpoints.agents.disableBuilder' },
+      });
+
+      for (const res of [patched, tombstoned, deleted]) {
+        expect(res.statusCode).toBe(200);
+        expect(res.body?.ignored).toEqual(dropped);
+      }
+
+      /** A read judges the stored profile over the same Base the writes judged it on. */
+      const read = await call(handlers.getConfig, { params: group });
+      expect(read.statusCode).toBe(200);
+      expect(read.body?.ignoredBasis).toBe('base');
+      expect(read.body?.ignored).toEqual(dropped);
+    });
+
+    it("keeps the stdio servers that tenant's librechat.yaml runs out of PUT and tombstones", async () => {
+      const getAppConfig = yamlByTenant({
+        mcpServers: { local: { type: 'stdio', command: 'node', args: ['server.js'] } },
+      } as never);
+      const handlers = createHandlers({}, { getAppConfig });
+      const group = await tenantProfile(handlers, 'group');
+
+      const replaced = await call(handlers.upsertConfigOverrides, {
+        params: group,
+        body: {
+          overrides: {
+            interface: { customWelcome: 'hi' },
+            mcpServers: { local: { title: 'Local' } },
+          },
+        },
+      });
+      const tombstoned = await call(handlers.tombstoneConfigField, {
+        params: group,
+        body: { fieldPath: 'mcpServers.local' },
+      });
+
+      expect(replaced.statusCode).toBe(200);
+      expect(replaced.body?.skipped).toEqual([
+        {
+          path: 'mcpServers.local',
+          segments: ['mcpServers', 'local'],
+          reason: 'process_mcp_server',
+        },
+      ]);
+      expect(tombstoned.statusCode).toBe(400);
+      expect(tombstoned.body?.code).toBe('PROCESS_MCP_SERVER_OVERRIDE');
+      const kept = await stored(group.principalType, group.principalId);
+      expect(kept?.overrides).toEqual({ interface: { customWelcome: 'hi' } });
+      expect(kept?.tombstones ?? []).toEqual([]);
     });
   });
 

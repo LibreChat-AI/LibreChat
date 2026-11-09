@@ -1,5 +1,7 @@
 import axios from 'axios';
+import Anthropic from '@anthropic-ai/sdk';
 import { Time, EModelEndpoint, defaultModels, AuthType } from 'librechat-data-provider';
+import type { ServerRequest } from '~/types';
 import {
   fetchModels,
   splitAndTrim,
@@ -8,6 +10,7 @@ import {
   getBedrockModels,
   getAnthropicModels,
 } from './models';
+import { createLoadConfigModels } from './config/models';
 import { SCOPED_TOKEN_CONFIG_KEY_PREFIX } from './keys';
 
 jest.mock('axios');
@@ -77,6 +80,198 @@ beforeEach(() => {
   mockTokenConfigSet.mockReset().mockResolvedValue(true);
   mockValidateEndpointURL.mockReset().mockResolvedValue(undefined);
   mockCreateSSRFSafeAgents.mockClear();
+});
+
+describe('custom Anthropic discovery', () => {
+  afterAll(() => {
+    mockedAxios.get.mockResolvedValue({ data: { data: [{ id: 'model-1' }, { id: 'model-2' }] } });
+  });
+  beforeEach(() => {
+    mockedAxios.get.mockClear().mockResolvedValue({ data: { data: [{ id: 'claude-test' }] } });
+  });
+
+  it.each([
+    ['https://api.anthropic.com', false, 'MyClaude'],
+    ['https://api.anthropic.com/', false, 'MyClaude'],
+    ['https://gateway.example.com/proxy/anthropic', false, 'MyClaude'],
+    ['https://gateway.example.com/v1/account/gateway/anthropic', true, 'MyClaude'],
+    ['https://api.anthropic.com', false, 'OllamaClaude'],
+  ])('uses the sending base URL %s (direct=%s, name=%s)', async (baseURL, direct, name) => {
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          custom: [
+            {
+              name,
+              provider: EModelEndpoint.anthropic,
+              baseURL,
+              apiKey: 'test-key',
+              directEndpoint: direct,
+              headers: { 'X-Gateway': 'test' },
+              models: { fetch: true, default: ['fallback'] },
+            },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn(),
+    });
+    const result = await loadConfigModels({ user: { id: 'user-1' } } as ServerRequest);
+    const prefix = baseURL.replace(/\/+$/, '');
+    expect(result[name]).toEqual(['claude-test']);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      `${prefix}/v1/models`,
+      expect.objectContaining({
+        headers: {
+          'X-Gateway': 'test',
+          'x-api-key': 'test-key',
+          'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+        },
+      }),
+    );
+    const send = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 'msg-test',
+          type: 'message',
+          role: 'assistant',
+          content: [],
+          model: 'claude-test',
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const client = new Anthropic({ apiKey: 'test-key', baseURL, fetch: send, maxRetries: 0 });
+    await client.messages.create({
+      model: 'claude-test',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'Hi' }],
+    });
+    expect(String(send.mock.calls[0][0])).toBe(`${prefix}/v1/messages`);
+    const sentHeaders = new Headers(send.mock.calls[0][1]?.headers);
+    expect(sentHeaders.get('x-api-key')).toBe('test-key');
+    expect(sentHeaders.get('anthropic-version')).toBe('2023-06-01');
+  });
+
+  it.each([false, true])(
+    'uses Anthropic discovery with user credentials (user URL=%s)',
+    async (userURL) => {
+      const loadConfigModels = createLoadConfigModels({
+        getAppConfig: jest.fn().mockResolvedValue({
+          endpoints: {
+            custom: [
+              {
+                name: 'MyClaude',
+                provider: EModelEndpoint.anthropic,
+                baseURL: userURL ? AuthType.USER_PROVIDED : 'https://api.anthropic.com',
+                apiKey: AuthType.USER_PROVIDED,
+                models: { fetch: true, default: ['fallback'] },
+                headers: { 'X-Gateway': 'test' },
+              },
+            ],
+          },
+        }),
+        getUserKeyValues: jest
+          .fn()
+          .mockResolvedValue({ apiKey: 'user-key', baseURL: 'https://api.anthropic.com' }),
+      });
+      expect(await loadConfigModels({ user: { id: 'user-1' } } as ServerRequest)).toEqual({
+        MyClaude: ['claude-test'],
+      });
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        'https://api.anthropic.com/v1/models',
+        expect.objectContaining({
+          headers: {
+            ...(userURL ? {} : { 'X-Gateway': 'test' }),
+            'x-api-key': 'user-key',
+            'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+          },
+        }),
+      );
+    },
+  );
+
+  it('separates cached discovery when the same models URL uses different providers', async () => {
+    await fetchModels({
+      apiKey: 'test-key',
+      baseURL: 'https://gateway.example.com/v1',
+      name: 'OpenAIProxy',
+    });
+    await fetchModels({
+      apiKey: 'test-key',
+      baseURL: 'https://gateway.example.com',
+      name: 'ClaudeProxy',
+      provider: EModelEndpoint.anthropic,
+    });
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    expect(new Set(mockCacheGet.mock.calls.map(([key]) => key)).size).toBe(2);
+  });
+
+  it('keeps OpenAI-compatible and Anthropic discovery separate for a shared URL and key', async () => {
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          custom: [
+            {
+              name: 'OpenAIProxy',
+              baseURL: 'https://gateway.example.com',
+              apiKey: 'test-key',
+              models: { fetch: true },
+            },
+            {
+              name: 'ClaudeProxy',
+              provider: EModelEndpoint.anthropic,
+              baseURL: 'https://gateway.example.com',
+              apiKey: 'test-key',
+              models: { fetch: true },
+            },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn(),
+    });
+    await loadConfigModels({ user: { id: 'user-1' } } as ServerRequest);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'https://gateway.example.com/models',
+      expect.objectContaining({ headers: { Authorization: 'Bearer test-key' } }),
+    );
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'https://gateway.example.com/v1/models',
+      expect.objectContaining({
+        headers: {
+          'x-api-key': 'test-key',
+          'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+        },
+      }),
+    );
+    expect(new Set(mockCacheGet.mock.calls.map(([key]) => key)).size).toBe(2);
+  });
+
+  it('does not collide when an apiKey containing a colon mimics the provider-suffixed cache key', async () => {
+    // Without an unambiguous serialization, `${baseURL}:${apiKey}:${provider}` for
+    // (baseURL, apiKey='secret', provider='anthropic') collides with
+    // `${baseURL}:${apiKey}` for (baseURL, apiKey='secret:anthropic', no provider),
+    // since both produce the same joined string. These two distinct configs must
+    // use different cache keys.
+    await fetchModels({
+      apiKey: 'secret',
+      baseURL: 'https://gateway.example.com',
+      name: 'ClaudeProxy',
+      provider: EModelEndpoint.anthropic,
+    });
+    await fetchModels({
+      apiKey: 'secret:anthropic',
+      baseURL: 'https://gateway.example.com/v1',
+      name: 'OpenAIProxy',
+    });
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    expect(new Set(mockCacheGet.mock.calls.map(([key]) => key)).size).toBe(2);
+  });
 });
 
 describe('fetchModels', () => {
@@ -889,7 +1084,7 @@ describe('getAnthropicModels', () => {
     });
 
     expect(mockedAxios.get).toHaveBeenCalledWith(
-      expect.any(String),
+      'https://api.anthropic.com/v1/models',
       expect.objectContaining({
         headers: {
           'x-api-key': 'test-anthropic-key',

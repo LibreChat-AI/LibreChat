@@ -123,6 +123,11 @@ export async function dragRowOnto(
   target: Locator,
   fraction: number,
 ): Promise<void> {
+  /* A row below the sidebar's fold is visible to Playwright but has no pixel the
+   * mouse can press: the press lands outside the page and selects text instead of
+   * starting a drag. A person scrolls to it first, and only as far as it takes, so
+   * the row they are dropping on stays on screen. */
+  await source.evaluate((row) => row.scrollIntoView({ block: 'nearest' }));
   const from = await source.boundingBox();
   const to = await target.boundingBox();
   if (!from || !to) {

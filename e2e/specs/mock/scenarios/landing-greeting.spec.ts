@@ -81,6 +81,29 @@ test.describe('welcome screen heading and footer', () => {
     }
   });
 
+  test('an opted-in deployment places the footer directly under the composer @scenario:landing-footer-under-the-composer', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    const name = uniqueAgentName('E2E Landing Composer Footer');
+    let agentId: string | undefined;
+
+    try {
+      agentId = (await createAgent(page, name)).id;
+      await serveInterface(page, { landingFooter: 'composer' });
+      await openAgentLanding(page, agentId);
+
+      const disclaimer = page.getByText(DISCLAIMER);
+      await expect(disclaimer).toBeVisible();
+      await expect.poll(() => composerClearance(page)).toBe(16);
+      const composerBox = await page.locator('form:has(#prompt-textarea)').boundingBox();
+      const disclaimerBox = await disclaimer.boundingBox();
+      expect(disclaimerBox!.y - (composerBox!.y + composerBox!.height)).toBeLessThanOrEqual(24);
+    } finally {
+      await cleanupAgent(page, agentId);
+    }
+  });
+
   test('an opted-in deployment greets the user and drops the footer @scenario:landing-greets-the-user-without-a-footer', async ({
     page,
   }) => {

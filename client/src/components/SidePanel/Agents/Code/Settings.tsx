@@ -1,12 +1,8 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useId } from 'react';
 import { useFormContext } from 'react-hook-form';
 import {
   Switch,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Dropdown,
   HoverCard,
   HoverCardPortal,
   HoverCardContent,
@@ -43,6 +39,7 @@ const WORKSPACE_STATUS_LABELS = {
 } as const;
 
 export default function CodeSettings() {
+  const labelId = useId();
   const localize = useLocalize();
   const { user } = useAuthContext();
   const { agentsConfig } = useGetAgentsConfig();
@@ -205,15 +202,18 @@ export default function CodeSettings() {
         <div className="space-y-2 ps-1">
           {executionEnvironments.length > 0 && (
             <>
-              <label
+              <span
+                id={`${labelId}-code-environment`}
                 className="text-text-secondary text-xs font-medium"
-                htmlFor="code-environment-id"
               >
                 {localize('com_ui_code_environment')}
-              </label>
-              <Select
+              </span>
+              <Dropdown
+                variant="field"
+                testId="code-environment-id"
+                aria-labelledby={`${labelId}-code-environment`}
                 value={codeEnvironmentId ?? DEPLOYMENT_DEFAULT_ENVIRONMENT}
-                onValueChange={(value) => {
+                onChange={(value) => {
                   setValue('code_workspace_id', '', { shouldDirty: true });
                   setValue(
                     'code_environment_id',
@@ -221,24 +221,20 @@ export default function CodeSettings() {
                     { shouldDirty: true },
                   );
                 }}
-              >
-                <SelectTrigger id="code-environment-id" data-testid="code-environment-id">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={DEPLOYMENT_DEFAULT_ENVIRONMENT}>
-                    {localize('com_ui_code_environment_deployment_default')}
-                  </SelectItem>
-                  {executionEnvironments.map((candidate) => (
-                    <SelectItem key={candidate.id} value={candidate.id}>
-                      {candidate.name}
-                      {candidate.type === 'attached'
-                        ? ` (${localize('com_ui_code_environment_attached')})`
-                        : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                options={[
+                  {
+                    value: DEPLOYMENT_DEFAULT_ENVIRONMENT,
+                    label: localize('com_ui_code_environment_deployment_default'),
+                  },
+                  ...executionEnvironments.map((candidate) => ({
+                    value: candidate.id,
+                    label:
+                      candidate.type === 'attached'
+                        ? `${candidate.name} (${localize('com_ui_code_environment_attached')})`
+                        : candidate.name,
+                  })),
+                ]}
+              />
               <p className="text-text-tertiary text-xs">
                 {localize('com_nav_info_code_environment')}
               </p>
@@ -293,52 +289,48 @@ export default function CodeSettings() {
                 )}
             </>
           )}
-          <label
+          <span
+            id={`${labelId}-stateful-code-environment`}
             className="text-text-secondary text-xs font-medium"
-            htmlFor="stateful-code-environment"
           >
             {localize('com_ui_stateful_code_environment')}
-          </label>
-          <Select
+          </span>
+          <Dropdown
+            variant="field"
+            testId="stateful-code-environment"
+            aria-labelledby={`${labelId}-stateful-code-environment`}
             value={environment}
-            onValueChange={(value) => {
+            onChange={(value) => {
               const nextEnvironment = value as StatefulCodeEnvironment;
               if (allowedEnvironments.includes(nextEnvironment)) {
                 setValue('stateful_code_environment', nextEnvironment, { shouldDirty: true });
               }
             }}
-          >
-            <SelectTrigger id="stateful-code-environment" data-testid="stateful-code-environment">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {STATEFUL_CODE_ENVIRONMENTS.filter(
-                (candidate) => allowedEnvironments.includes(candidate) || candidate === environment,
-              ).map((candidate) => (
-                <SelectItem
-                  key={candidate}
-                  value={candidate}
-                  disabled={!allowedEnvironments.includes(candidate)}
-                >
-                  {localize(ENVIRONMENT_LABELS[candidate])}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            options={STATEFUL_CODE_ENVIRONMENTS.filter(
+              (candidate) => allowedEnvironments.includes(candidate) || candidate === environment,
+            ).map((candidate) => ({
+              value: candidate,
+              label: localize(ENVIRONMENT_LABELS[candidate]),
+              disabled: !allowedEnvironments.includes(candidate),
+            }))}
+          />
           <p className="text-text-tertiary text-xs">
             {localize('com_nav_info_stateful_code_environment')}
           </p>
           {showGitIdentity && (
             <div className="space-y-2">
-              <label
-                htmlFor="code-workspace-default"
+              <span
+                id={`${labelId}-code-workspace-default`}
                 className="text-text-secondary text-xs font-medium"
               >
                 {localize('com_ui_code_workspace_default')}
-              </label>
-              <Select
+              </span>
+              <Dropdown
+                variant="field"
+                testId="code-workspace-default"
+                aria-labelledby={`${labelId}-code-workspace-default`}
                 value={workspaceId || '__automatic__'}
-                onValueChange={(value) => {
+                onChange={(value) => {
                   if (value !== '__automatic__' && !workspaces.some(({ id }) => id === value))
                     return;
                   setValue('code_workspace_id', value === '__automatic__' ? '' : value, {
@@ -350,33 +342,26 @@ export default function CodeSettings() {
                     });
                   }
                 }}
-              >
-                <SelectTrigger id="code-workspace-default">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__automatic__">
-                    {localize('com_ui_code_workspace_last_used')}
-                  </SelectItem>
-                  {workspaceId &&
-                    (workspaceDiscoveryState !== 'ready' ||
-                      !workspaces.some(({ id }) => id === workspaceId)) && (
-                      <SelectItem value={workspaceId} disabled>
-                        {workspaceId} —{' '}
-                        {localize(
-                          workspaceDiscoveryState === 'ready'
-                            ? 'com_ui_code_workspace_missing'
-                            : WORKSPACE_STATUS_LABELS[workspaceDiscoveryState],
-                        )}
-                      </SelectItem>
-                    )}
-                  {workspaces.map(({ id, name }) => (
-                    <SelectItem key={id} value={id}>
-                      {name ?? id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                options={[
+                  { value: '__automatic__', label: localize('com_ui_code_workspace_last_used') },
+                  ...(workspaceId &&
+                  (workspaceDiscoveryState !== 'ready' ||
+                    !workspaces.some(({ id }) => id === workspaceId))
+                    ? [
+                        {
+                          value: workspaceId,
+                          label: `${workspaceId} (${localize(
+                            workspaceDiscoveryState === 'ready'
+                              ? 'com_ui_code_workspace_missing'
+                              : WORKSPACE_STATUS_LABELS[workspaceDiscoveryState],
+                          )})`,
+                          disabled: true,
+                        },
+                      ]
+                    : []),
+                  ...workspaces.map(({ id, name }) => ({ value: id, label: name ?? id })),
+                ]}
+              />
               {workspaceDiscoveryState !== 'ready' && (
                 <p className="text-text-tertiary text-xs" role="status">
                   {localize(WORKSPACE_STATUS_LABELS[workspaceDiscoveryState])}
@@ -389,34 +374,27 @@ export default function CodeSettings() {
           )}
           {showGitIdentity && (
             <div className="border-border-light space-y-2 border-t pt-3">
-              <label
-                htmlFor="repository-instructions"
+              <span
+                id={`${labelId}-repository-instructions`}
                 className="text-text-secondary text-xs font-medium"
               >
                 {localize('com_ui_repository_instructions')}
-              </label>
-              <Select
+              </span>
+              <Dropdown
+                variant="field"
+                testId="repository-instructions"
+                aria-labelledby={`${labelId}-repository-instructions`}
                 value={watch('repositoryInstructions') ?? 'prefer'}
-                onValueChange={(value) => {
+                onChange={(value) => {
                   if (value === 'prefer' || value === 'defer' || value === 'off')
                     setValue('repositoryInstructions', value, { shouldDirty: true });
                 }}
-              >
-                <SelectTrigger id="repository-instructions">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="prefer">
-                    {localize('com_ui_repository_instructions_prefer')}
-                  </SelectItem>
-                  <SelectItem value="defer">
-                    {localize('com_ui_repository_instructions_defer')}
-                  </SelectItem>
-                  <SelectItem value="off">
-                    {localize('com_ui_repository_instructions_off')}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+                options={[
+                  { value: 'prefer', label: localize('com_ui_repository_instructions_prefer') },
+                  { value: 'defer', label: localize('com_ui_repository_instructions_defer') },
+                  { value: 'off', label: localize('com_ui_repository_instructions_off') },
+                ]}
+              />
               <p className="text-text-tertiary text-xs">
                 {localize('com_ui_repository_instructions_description')}
               </p>

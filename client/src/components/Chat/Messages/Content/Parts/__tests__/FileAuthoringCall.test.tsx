@@ -45,8 +45,8 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
 
 jest.mock('../CodeWindowHeader', () => ({
   __esModule: true,
-  default: ({ language }: { language: string }) => (
-    <div data-testid="code-window-header" data-language={language} />
+  default: ({ language, label }: { language: string; label?: string }) => (
+    <div data-testid="code-window-header" data-language={language} data-label={label} />
   ),
 }));
 
@@ -118,8 +118,15 @@ describe('FileAuthoringCall', () => {
 
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Created SKILL.md');
     expect(screen.getByTestId('code-window-header')).toHaveAttribute('data-language', 'SKILL.md');
+    expect(screen.getByTestId('code-window-header')).toHaveAttribute(
+      'data-label',
+      'skills/demo/SKILL.md',
+    );
     expect(screen.getByText(/Large generated body stays visible/)).toBeInTheDocument();
-    expect(screen.getByText('Created skills/demo/SKILL.md (4096 chars).')).toBeInTheDocument();
+    /** The row already says it was created; the summary is not repeated. */
+    expect(
+      screen.queryByText('Created skills/demo/SKILL.md (4096 chars).'),
+    ).not.toBeInTheDocument();
   });
 
   it('labels a create_file overwrite as Updated when the output summary says so', () => {
@@ -309,8 +316,33 @@ describe('FileAuthoringCall', () => {
     expect(screen.getByText('status: draft')).toBeInTheDocument();
     expect(screen.getByText('status: published')).toBeInTheDocument();
     expect(
-      screen.getByText('Updated workspace/demo/SKILL.md with 2 exact replacements.'),
-    ).toBeInTheDocument();
+      screen.queryByText('Updated workspace/demo/SKILL.md with 2 exact replacements.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('hides a bare success summary but keeps any other output', () => {
+    const args = { file_path: 'src/a.ts', old_text: 'const a = 1;', new_text: 'const a = 2;' };
+    const { rerender } = render(
+      <FileAuthoringCall
+        toolName="edit_file"
+        initialProgress={1}
+        isSubmitting={false}
+        args={args}
+        output="Edited"
+      />,
+    );
+    expect(screen.queryByText('Edited')).not.toBeInTheDocument();
+
+    rerender(
+      <FileAuthoringCall
+        toolName="edit_file"
+        initialProgress={1}
+        isSubmitting={false}
+        args={args}
+        output="Editor lock held by another process"
+      />,
+    );
+    expect(screen.getByText('Editor lock held by another process')).toBeInTheDocument();
   });
 
   it('renders replacements from JSON-stringified edits entries after workspace update', () => {

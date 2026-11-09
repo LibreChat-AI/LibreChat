@@ -209,6 +209,94 @@ describe('resume agent snapshot budget', () => {
     return graphs;
   };
 
+  it.each(
+    [1, 3, 6].flatMap((concurrency) =>
+      ['handoff', 'legacy', 'ordinary', 'graph'].map((path) => ({ concurrency, path })),
+    ),
+  )(
+    'uses configured lookup concurrency across snapshot phases: %j',
+    async ({ concurrency, path }) => {
+      const primary = agent('primary', path === 'graph' ? teams(6) : []);
+      const ids = Array.from({ length: 6 }, (_, index) => `member-${index}`);
+      if (path === 'handoff') {
+        primary.edges = [{ from: primary.id, to: ids, edgeType: 'handoff' }];
+      }
+      if (path === 'legacy') primary.agent_ids = ids;
+      if (path === 'ordinary') primary.subagents = { enabled: true, agent_ids: ids };
+      let active = 0;
+      let peak = 0;
+      const getAgent = jest.fn(async ({ id }: { id: string }) => {
+        active++;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        return agent(id);
+      });
+      const canAccessAgent = jest.fn(async () => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        active--;
+        return true;
+      });
+      const snapshots = await getResumeAgentSnapshot({
+        primaryAgent: primary,
+        capabilities: ['subagents', 'subagent_graphs'],
+        appConfig: { concurrency: { resumeAgentLoads: concurrency } },
+        getAgent,
+        canAccessAgent,
+      });
+      expect(snapshots).toHaveLength(7);
+      expect(peak).toBe(concurrency);
+      expect(active).toBe(0);
+      expect(getAgent).toHaveBeenCalledTimes(6);
+      expect(canAccessAgent).toHaveBeenCalledTimes(6);
+    },
+  );
+
+  it.each(['missing', 'revoked', 'error'])(
+    'rejects a required member %s without waiting for a stalled sibling or scheduling another chunk',
+    async (state) => {
+      const getAgent = jest.fn(async ({ id }: { id: string }) => {
+        if (id === 'member-0') return new Promise<never>(() => undefined);
+        if (state === 'error') throw new Error('lookup failed');
+        return state === 'missing' ? null : agent(id);
+      });
+      await expect(
+        getResumeAgentSnapshot({
+          primaryAgent: agent('primary', teams(6)),
+          capabilities: ['subagent_graphs'],
+          appConfig: { concurrency: { resumeAgentLoads: 2 } },
+          getAgent,
+          canAccessAgent: async () => false,
+        }),
+      ).rejects.toMatchObject({ code: 'content_filter_uninspectable' });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(getAgent.mock.calls.map(([{ id }]) => id)).toEqual(['member-0', 'member-1']);
+    },
+  );
+
+  it('stops fetching member chunks immediately after the admission budget is exceeded', async () => {
+    const primary = agent('primary', teams(MAX_SUBAGENT_GRAPH_NODES - 1));
+    primary.subagents = { ...primary.subagents, enabled: true, agent_ids: ['child'] };
+    const child = agent('child');
+    child.subagents = {
+      enabled: true,
+      agent_ids: Array.from({ length: 10 }, (_, index) => `extra-${index}`),
+    };
+    const getAgent = jest.fn(async ({ id }: { id: string }) =>
+      id === 'child' ? child : agent(id),
+    );
+    await expect(
+      getResumeAgentSnapshot({
+        primaryAgent: primary,
+        capabilities: ['subagents', 'subagent_graphs'],
+        appConfig: { concurrency: { resumeAgentLoads: 2 } },
+        getAgent,
+      }),
+    ).rejects.toMatchObject({ code: 'content_filter_uninspectable' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(getAgent).toHaveBeenCalledTimes(MAX_SUBAGENT_GRAPH_NODES + 2);
+    expect(getAgent).not.toHaveBeenCalledWith({ id: 'extra-2' });
+  });
+
   it.each([0, 2])(
     'excludes %s additional roots and deduplicates shared members at the exact budget',
     async (rootCount) => {
@@ -575,4 +663,47 @@ describe('resume agent snapshot budget', () => {
       );
     },
   );
+});
+
+describe('getResumeAgentSnapshot', () => {
+  it('stops fetching references once the node budget is exceeded', async () => {
+    const total = MAX_SUBAGENT_GRAPH_NODES * 20;
+    const edges = Array.from({ length: total }, (_, index) => ({
+      from: 'primary',
+      to: `child-${index}`,
+      edgeType: 'handoff' as const,
+    }));
+    const getAgent = jest.fn(async ({ id }: { id: string }) => ({ id }) as never);
+
+    await expect(
+      getResumeAgentSnapshot({
+        primaryAgent: { id: 'primary', edges } as never,
+        capabilities: [],
+        getAgent,
+      }),
+    ).rejects.toThrow();
+    expect(getAgent.mock.calls.length).toBeLessThan(MAX_SUBAGENT_GRAPH_NODES + 10);
+  });
+
+  it('rejects on a failed lookup without waiting for a stalled sibling', async () => {
+    const edges = ['slow', 'fails'].map((to) => ({
+      from: 'primary',
+      to,
+      edgeType: 'handoff' as const,
+    }));
+    const getAgent = jest.fn(async ({ id }: { id: string }) => {
+      if (id === 'slow') {
+        return new Promise<never>(() => undefined);
+      }
+      throw new Error('lookup failed');
+    });
+
+    await expect(
+      getResumeAgentSnapshot({
+        primaryAgent: { id: 'primary', edges } as never,
+        capabilities: [],
+        getAgent,
+      }),
+    ).rejects.toThrow();
+  });
 });

@@ -66,7 +66,11 @@ jest.mock('@librechat/api', () => {
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
   Tools: {},
-  Constants: { mcp_delimiter: '::', mcp_prefix: 'mcp_' },
+  Constants: {
+    ...jest.requireActual('librechat-data-provider').Constants,
+    mcp_delimiter: '::',
+    mcp_prefix: 'mcp_',
+  },
   FileSources: {},
   ResourceType: {},
 }));

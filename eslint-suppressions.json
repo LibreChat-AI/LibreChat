@@ -55,33 +55,9 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/ChatView.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/ExportAndShareMenu.tsx": {
     "design/disabled-recipe": {
       "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/AskUserQuestionPopover.tsx": {
-    "shadcn/no-restyle": {
-      "count": 6
-    }
-  },
-  "client/src/components/Chat/Input/ChatForm.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    },
-    "shadcn/no-inline-styles": {
-      "count": 3
-    },
-    "shadcn/no-restyle": {
-      "count": 3
-    },
-    "shadcn/require-static-classes": {
-      "count": 2
     }
   },
   "client/src/components/Chat/Input/CodeApprovalMenu.tsx": {
@@ -99,55 +75,9 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Input/ConversationStarters.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Input/EscalateNowButton.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/Files/DragDropOverlay.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 3
-    }
-  },
-  "client/src/components/Chat/Input/Files/FileUpload.tsx": {
-    "shadcn/no-restyle": {
-      "count": 11
-    },
-    "shadcn/require-static-classes": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Input/Files/ImagePreview.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 3
-    }
-  },
   "client/src/components/Chat/Input/Files/MyFilesModal.tsx": {
     "shadcn/no-restyle": {
       "count": 2
-    }
-  },
-  "client/src/components/Chat/Input/Files/PastedTextDialog.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Input/Files/ProgressCircle.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/Files/SourceIcon.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Input/Files/Table/ColumnVisibilityDropdown.tsx": {
@@ -173,27 +103,12 @@
       "count": 15
     }
   },
-  "client/src/components/Chat/Input/Mention.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    }
-  },
   "client/src/components/Chat/Input/PopoverButtons.tsx": {
     "shadcn/no-restyle": {
       "count": 11
     },
     "shadcn/require-static-classes": {
       "count": 3
-    }
-  },
-  "client/src/components/Chat/Input/QuoteButton.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/TokenUsage/Breakdown.tsx": {
-    "shadcn/no-restyle": {
-      "count": 10
     }
   },
   "client/src/components/Chat/Input/chip.ts": {
@@ -240,9 +155,6 @@
   "client/src/components/Chat/Messages/Content/AgentHandoff.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 8
     }
   },
   "client/src/components/Chat/Messages/Content/AskUserQuestion.tsx": {
@@ -251,14 +163,6 @@
     }
   },
   "client/src/components/Chat/Messages/Content/AskUserQuestionCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/DialogImage.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-inline-styles": {
       "count": 1
     }
@@ -290,11 +194,6 @@
     },
     "shadcn/no-restyle": {
       "count": 6
-    }
-  },
-  "client/src/components/Chat/Messages/Content/MemoryInfo.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/Chat/Messages/Content/MessageContent.tsx": {
@@ -404,11 +303,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/ToolCallLimitNotice.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Messages/Content/ToolOutput/OutputRenderer.tsx": {
     "shadcn/no-restyle": {
       "count": 3
@@ -456,68 +350,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Feedback.tsx": {
-    "shadcn/no-restyle": {
-      "count": 10
-    },
-    "shadcn/require-static-classes": {
-      "count": 3
-    }
-  },
-  "client/src/components/Chat/Messages/Fork.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    },
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/HoverButtons.tsx": {
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/MessageNav.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
-    },
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/MessagesView.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/MinimalHoverButtons.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    },
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/SiblingSwitch.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Messages/styles.ts": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/ui/HeaderLabel.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 5
-    }
-  },
-  "client/src/components/Chat/Messages/ui/MessageRow.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/ProjectLandingChip.tsx": {
     "shadcn/no-restyle": {
       "count": 14
@@ -526,37 +358,6 @@
   "client/src/components/Chat/SubagentThreadLink.tsx": {
     "shadcn/no-restyle": {
       "count": 1
-    }
-  },
-  "client/src/components/Chat/Subagents/EventSubagentActivityGroup.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
-    },
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 4
-    }
-  },
-  "client/src/components/Chat/Subagents/SharedSubagentActivityDialog.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Subagents/SubagentActivity.tsx": {
-    "shadcn/no-restyle": {
-      "count": 12
-    }
-  },
-  "client/src/components/Chat/Subagents/SubagentConversation.tsx": {
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Subagents/SubagentThreadPanel.tsx": {
-    "shadcn/no-restyle": {
-      "count": 7
     }
   },
   "client/src/components/Chat/Trace/Button.tsx": {
@@ -642,9 +443,6 @@
   "client/src/components/Endpoints/Settings/Assistants.tsx": {
     "shadcn/no-restyle": {
       "count": 1
-    },
-    "shadcn/require-static-classes": {
-      "count": 4
     }
   },
   "client/src/components/Endpoints/Settings/Examples.tsx": {
@@ -713,11 +511,6 @@
       "count": 3
     }
   },
-  "client/src/components/Messages/Content/ActionButton.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
-    }
-  },
   "client/src/components/Messages/Content/Error/parts.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
@@ -766,11 +559,6 @@
     },
     "shadcn/no-restyle": {
       "count": 4
-    }
-  },
-  "client/src/components/Messages/ScrollToBottom.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
     }
   },
   "client/src/components/Nav/AccountSettings.tsx": {
@@ -931,7 +719,7 @@
   },
   "client/src/components/Prompts/fields/PromptName.tsx": {
     "shadcn/no-restyle": {
-      "count": 9
+      "count": 8
     }
   },
   "client/src/components/Prompts/forms/CreatePromptForm.tsx": {
@@ -1181,19 +969,6 @@
       "count": 8
     }
   },
-  "client/src/components/SidePanel/Builder/AssistantPanel.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    },
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Builder/AssistantSelect.tsx": {
-    "shadcn/no-restyle": {
-      "count": 7
-    }
-  },
   "client/src/components/SidePanel/Builder/Retrieval.tsx": {
     "design/disabled-recipe": {
       "count": 1
@@ -1246,7 +1021,7 @@
   },
   "client/src/components/SidePanel/Parameters/DynamicDropdown.tsx": {
     "shadcn/no-restyle": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/SidePanel/Parameters/DynamicInput.tsx": {
@@ -1431,32 +1206,8 @@
       "count": 1
     }
   },
-  "packages/chat/src/components/CollapsibleText.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "packages/chat/src/components/Summary.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 9
-    },
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
   "packages/client/src/components/Badge.tsx": {
     "design/disabled-recipe": {
-      "count": 1
-    }
-  },
-  "packages/client/src/components/Combobox.tsx": {
-    "shadcn/no-inline-styles": {
       "count": 1
     }
   },

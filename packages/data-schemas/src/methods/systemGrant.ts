@@ -158,6 +158,11 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
     move: SystemGrantMove,
   ) => Promise<void>;
 } {
+  /** The grants of exactly one scope: `tenantId`'s, or the platform-level ones without it. */
+  function grantScope(tenantId?: string): FilterQuery<ISystemGrant> {
+    return tenantId != null ? { tenantId } : { tenantId: { $exists: false } };
+  }
+
   function tenantCondition(tenantId?: string): FilterQuery<ISystemGrant> {
     return tenantId != null
       ? { $and: [{ $or: [{ tenantId }, { tenantId: { $exists: false } }] }] }
@@ -581,11 +586,11 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
    * Delete system grants for a principal.
    * Used for cascade cleanup when a principal (group, role) is deleted.
    *
-   * When `tenantId` is provided, only grants scoped to **exactly** that
-   * tenant are removed — platform-level grants (no tenantId) are left
-   * intact so they continue to serve other tenants.
-   * When `tenantId` is omitted, ALL grants for the principal are removed
-   * regardless of tenant scope.
+   * Only the grants of one scope go, as `moveGrantsToPrincipal` moves them on a rename: with
+   * `tenantId`, those scoped to **exactly** that tenant (platform-level grants, with no
+   * tenantId, are left intact so they continue to serve other tenants); without it, only the
+   * platform-level ones. A role is keyed by a name every tenant reuses, so deleting the
+   * platform's role never removes the grants a tenant's own role of that name holds.
    */
   async function deleteGrantsForPrincipal(
     principalType: PrincipalType,
@@ -598,7 +603,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
     const filter: FilterQuery<ISystemGrant> = {
       principalType,
       principalId: normalizedPrincipalId,
-      ...(options?.tenantId != null && { tenantId: options.tenantId }),
+      ...grantScope(options?.tenantId),
     };
     const queryOptions = options?.session ? { session: options.session } : {};
     /** Read the matching grants before deleting so cascade callers (e.g. role
@@ -618,7 +623,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
     return SystemGrant.find({
       principalType,
       principalId: normalizePrincipalId(principalId, principalType),
-      ...(options?.tenantId != null && { tenantId: options.tenantId }),
+      ...grantScope(options?.tenantId),
     }).lean<ISystemGrant[]>();
   }
 
@@ -646,9 +651,9 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
 
   /**
    * Re-keys a principal's grants to another id of the same type (a role rename), in one tenant
-   * scope: exactly `tenantId` when given, platform-level grants (no `tenantId`) otherwise. A
-   * rename re-keys one role, so unlike {@link deleteGrantsForPrincipal} a caller without a
-   * tenant never re-keys the grants of each tenant's own role that shares the name. Each grant
+   * scope: exactly `tenantId` when given, platform-level grants (no `tenantId`) otherwise, as
+   * {@link deleteGrantsForPrincipal} removes them. A rename re-keys one role, so a caller without
+   * a tenant never re-keys the grants of each tenant's own role that shares the name. Each grant
    * keeps its identity and history. One the target already holds in the same scope is removed
    * from the source instead, since the unique index allows one.
    *
@@ -665,13 +670,11 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
     options?: { tenantId?: string },
   ): Promise<SystemGrantMove> {
     const SystemGrant = mongoose.models.SystemGrant as Model<ISystemGrant>;
-    const scope: FilterQuery<ISystemGrant> =
-      options?.tenantId != null ? { tenantId: options.tenantId } : { tenantId: { $exists: false } };
     const source = normalizePrincipalId(fromPrincipalId, principalType);
     const grants = await SystemGrant.find({
       principalType,
       principalId: source,
-      ...scope,
+      ...grantScope(options?.tenantId),
     }).lean<ISystemGrant[]>();
     if (grants.length === 0) {
       return { moved: [], superseded: [] };

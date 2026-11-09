@@ -13,6 +13,7 @@ import {
   readSubagentContent,
 } from './subagentContent';
 import { buildSubagentThreadTaskConfig, SubagentThreadTaskStore } from './subagentThreads';
+import { createSubagentThreadViewHandler } from './view';
 
 let mongo: MongoMemoryServer;
 let methods: AllMethods;
@@ -1293,3 +1294,96 @@ describe('selective task content deletion', () => {
     }
   });
 });
+
+it.each(['long input', 'mismatched input', 'safe boundary', 'append'] as const)(
+  'preserves usable legacy history through the real parent-authorized view with %s',
+  async (condition) => {
+    const { scope } = await runningTask(async () => ({ content: 'Final result.' }));
+    await until(
+      async () =>
+        (await methods.getMessages({ user: scope.user, messageId: `${scope.taskId}:assistant` }))
+          .length === 1,
+    );
+    const prompt = condition === 'long input' ? 'Long current task. '.repeat(575) : 'Current task.';
+    const activity = [
+      { type: 'reasoning', text: 'Saved current reasoning.' },
+      { type: 'writing', text: 'Saved current activity.' },
+    ];
+    const current = [
+      {
+        type: 'human',
+        data: { content: condition === 'mismatched input' ? 'Unrelated prompt.' : prompt },
+      },
+      { type: 'ai', data: { content: 'Before current guidance.' } },
+      {
+        type: 'human',
+        data: {
+          content: 'Current guidance.',
+          additional_kwargs: { injected: true, source: 'steer' },
+        },
+      },
+      { type: 'ai', data: { content: 'After current guidance.' } },
+    ];
+    const previous = [
+      { type: 'human', data: { content: 'Private previous task.' } },
+      {
+        type: 'human',
+        data: {
+          content: 'Private previous guidance.',
+          additional_kwargs: { injected: true, source: 'steer' },
+        },
+      },
+      { type: 'ai', data: { content: 'Private previous activity.' } },
+    ];
+    await mongoose.models.Message.updateOne(
+      { user: scope.user, messageId: `${scope.taskId}:user` },
+      { $set: { text: prompt } },
+    );
+    await mongoose.models.Message.updateOne(
+      { user: scope.user, messageId: `${scope.taskId}:assistant` },
+      {
+        $set: {
+          subagentActivityProjection: {
+            taskId: scope.taskId,
+            version: 1,
+            activityJson: JSON.stringify(activity),
+            truncated: false,
+          },
+          subagentTranscript: {
+            taskId: scope.taskId,
+            mode: condition === 'append' ? 'append' : 'replace',
+            messagesJson: JSON.stringify(
+              condition === 'append' ? current.slice(1) : [...previous, ...current],
+            ),
+          },
+        },
+      },
+    );
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as ServerRequest).user = { id: scope.user } as ServerRequest['user'];
+      next();
+    });
+    const handler = createSubagentThreadViewHandler(methods);
+    app.get('/api/convos/:parentConversationId/subagents/:threadId', (req, res) =>
+      handler(req as ServerRequest, res),
+    );
+    const response = await request(app)
+      .get(
+        `/api/convos/${scope.parentConversationId}/subagents/${scope.conversationId}?taskId=${scope.taskId}`,
+      )
+      .expect(200);
+    expect(response.body.activity).toEqual(
+      condition === 'safe boundary' || condition === 'append'
+        ? [
+            { type: 'writing', text: 'Before current guidance.' },
+            { type: 'steer', steer: 'Current guidance.' },
+            { type: 'writing', text: 'After current guidance.' },
+          ]
+        : activity,
+    );
+    expect(response.body.activityTruncated).toBe(false);
+    expect(JSON.stringify(response.body)).not.toContain('Private previous');
+    expect(response.body).not.toHaveProperty('subagentTranscript');
+  },
+);

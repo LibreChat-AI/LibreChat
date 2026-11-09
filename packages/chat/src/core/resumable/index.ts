@@ -2,6 +2,7 @@ export * from './start';
 export * from './errors';
 export * from './events';
 export * from './resume';
+export * from './placement';
 export * from './messages';
 export * from './run';
 export * from './host';

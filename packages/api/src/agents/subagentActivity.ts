@@ -29,7 +29,8 @@ const SHUTDOWN_SUBSCRIBER_ERROR = 'Server is shutting down';
 
 export type SubagentActivityTerminalStatus = 'completed' | 'failed' | 'cancelled';
 
-export type SubagentActivityUpdateEvent = SubagentUpdateEvent & {
+export type SubagentActivityUpdateEvent = Omit<SubagentUpdateEvent, 'phase'> & {
+  phase: SubagentUpdateEvent['phase'] | 'steer_applied';
   /** Host-assigned identity shared by parent and detached delivery paths. */
   activityEventId?: string;
   /** Host-assigned monotonic sequence shared by parent and detached delivery paths. */

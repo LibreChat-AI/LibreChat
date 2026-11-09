@@ -485,7 +485,10 @@ describe('File Methods', () => {
     });
 
     it('persists each copy without mutating input or invalidating the embedding snapshot', async () => {
-      await seed();
+      await seed({
+        embeddingOwnersComplete: true,
+        embeddingOwnersTrackedAt: new Date('2026-10-20'),
+      });
       const input = structuredClone(snapshot);
       expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(true);
       expect(
@@ -500,6 +503,7 @@ describe('File Methods', () => {
           ...snapshot,
           updatedAt,
           embeddedEntities: metadata.embeddedEntities,
+          ownershipTrackingStart: '2026-10-19T00:00:00.000Z',
         }),
       ).toBe(true);
       const stored = await read();
@@ -513,7 +517,10 @@ describe('File Methods', () => {
       { tenantId: 'tenant-b' },
       { tenantId: undefined },
     ])('returns false without changing an unauthorized file: %p', async (scope) => {
-      await seed();
+      await seed({
+        embeddingOwnersComplete: true,
+        embeddingOwnersTrackedAt: new Date('2026-10-20'),
+      });
       const before = await read();
       expect(await fileMethods.clearFileCodeEnvRefs({ ...snapshot, ...scope })).toBe(false);
       expect(await read()).toEqual(before);
@@ -540,7 +547,10 @@ describe('File Methods', () => {
     it.each([{ tenantId: 'tenant-b' }, { tenantId: undefined }])(
       'does not let tenant middleware replace the caller scope: %p',
       async (scope) => {
-        await seed();
+        await seed({
+          embeddingOwnersComplete: true,
+          embeddingOwnersTrackedAt: new Date('2026-10-20'),
+        });
         const before = await read();
         const cleared = await tenantStorage.run({ tenantId: snapshot.tenantId }, () =>
           fileMethods.clearFileCodeEnvRefs({ ...snapshot, ...scope }),
@@ -693,6 +703,7 @@ describe('File Methods', () => {
     const user = new mongoose.Types.ObjectId();
     const updatedAt = new Date('2026-10-20T00:00:00Z');
     const snapshot = {
+      ownershipTrackingStart: '2026-10-19T00:00:00.000Z',
       file_id: 'retained-file',
       userId: user.toString(),
       tenantId: 'tenant-a',
@@ -706,6 +717,8 @@ describe('File Methods', () => {
         tenantId: snapshot.tenantId,
         updatedAt,
         embedded: true,
+        embeddingOwnersComplete: true,
+        embeddingOwnersTrackedAt: new Date('2026-10-20'),
         metadata: {
           embeddedEntities: snapshot.embeddedEntities,
           codeEnvRef: { file_id: 'still-needed' },
@@ -837,19 +850,21 @@ describe('File Methods', () => {
       },
     );
 
-    it('clears legacy vector flags without an entity list', async () => {
+    it('clears fully tracked unscoped vector flags without an entity list', async () => {
       await seed({ metadata: { destinationChosen: true } });
       const legacy = { ...snapshot, embeddedEntities: undefined };
       expect(await fileMethods.clearFileEmbeddings(legacy)).toBe(true);
     });
 
-    it('retains search intent on markerless legacy records without metadata', async () => {
+    it('retains search intent on fully tracked records without metadata', async () => {
       await File.collection.insertOne({
         file_id: snapshot.file_id,
         user,
         tenantId: snapshot.tenantId,
         updatedAt,
         embedded: true,
+        embeddingOwnersComplete: true,
+        embeddingOwnersTrackedAt: new Date('2026-10-20'),
       });
       expect(
         await fileMethods.clearFileEmbeddings({ ...snapshot, embeddedEntities: undefined }),

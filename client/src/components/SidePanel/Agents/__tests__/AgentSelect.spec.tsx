@@ -1,14 +1,18 @@
 import React from 'react';
 import { useForm, FormProvider } from 'react-hook-form';
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { UseMutationResult, QueryObserverResult } from '@tanstack/react-query';
 import type { Agent, AgentCreateParams } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import AgentSelect from '../AgentSelect';
 
+const mockListAgents = jest.fn<{ data: { id: string; name: string }[] }, unknown[]>(() => ({
+  data: [],
+}));
+
 jest.mock('~/data-provider', () => ({
-  useListAgentsQuery: () => ({ data: [] }),
+  useListAgentsQuery: (...args: unknown[]) => mockListAgents(...args),
   useGetStartupConfig: () => ({ data: undefined }),
 }));
 
@@ -18,7 +22,24 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
-  ControlCombobox: () => <div data-testid="agent-select-combobox" />,
+  ControlCombobox: ({
+    searchActions,
+    items,
+  }: {
+    searchActions?: React.ReactNode;
+    items: { label: string; value: string }[];
+  }) => (
+    <div data-testid="agent-select-combobox">
+      {searchActions}
+      {items.map((item) => (
+        <span key={item.value}>{item.label}</span>
+      ))}
+    </div>
+  ),
+  Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
+    <button {...props}>{children}</button>
+  ),
+  TooltipAnchor: ({ render }: { render: React.ReactNode }) => render,
 }));
 
 /**
@@ -32,7 +53,9 @@ function Harness({
   onMethods,
   instructionsPromptReady,
   defaultValues,
+  selectedAgentId = null,
 }: {
+  selectedAgentId?: string | null;
   agent: Agent;
   onMethods: (methods: UseFormReturn<AgentForm>) => void;
   instructionsPromptReady?: boolean;
@@ -45,11 +68,8 @@ function Harness({
     <FormProvider {...methods}>
       <AgentSelect
         agentQuery={{ data: agent, isSuccess: true } as unknown as QueryObserverResult<Agent>}
-        /** `null`, not `agent.id`: a non-null value with no matching row in the (empty,
-         * mocked) agent list schedules `onSelect`'s "not found" timer, which would reset
-         * the whole form back to defaults out from under this test. The load effect this
-         * test targets keys off `agentQuery.data` alone. */
-        selectedAgentId={null}
+        /** Form-reset tests leave this null to avoid scheduling selection from an empty list. */
+        selectedAgentId={selectedAgentId}
         setCurrentAgentId={jest.fn()}
         createMutation={
           { reset: jest.fn() } as unknown as UseMutationResult<Agent, Error, AgentCreateParams>
@@ -146,5 +166,59 @@ describe('AgentSelect resetAgentForm', () => {
       groupId: 'group_1',
       selection: { type: 'production' },
     });
+  });
+});
+
+describe('AgentSelect ownership filter', () => {
+  it('renders an icon-only ghost filter with an accessible name', () => {
+    render(<Harness agent={createAgent()} onMethods={() => undefined} />);
+    const toggle = screen.getByRole('button', { name: 'com_agents_my_agents' });
+    expect(toggle.textContent).toBe('');
+    expect(toggle).toHaveAttribute('variant', 'ghost');
+  });
+
+  it('changes the icon when ownership filtering is active', () => {
+    render(<Harness agent={createAgent()} onMethods={() => undefined} />);
+    const toggle = screen.getByRole('button', { name: 'com_agents_my_agents' });
+    fireEvent.click(toggle);
+    expect(toggle.querySelector('.lucide-user-round-check')).toBeInTheDocument();
+  });
+
+  it('defaults to the original query and an unpressed filter', () => {
+    render(<Harness agent={createAgent()} onMethods={() => undefined} />);
+    expect(mockListAgents).toHaveBeenLastCalledWith({ requiredPermission: 1 }, expect.any(Object));
+    expect(screen.getByRole('button', { name: 'com_agents_my_agents' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
+  it('requests only authored agents when the filter is enabled', () => {
+    render(<Harness agent={createAgent()} onMethods={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'com_agents_my_agents' }));
+    expect(mockListAgents).toHaveBeenLastCalledWith(
+      { requiredPermission: 1, mine: 1 },
+      expect.any(Object),
+    );
+  });
+
+  it('restores the original query when the filter is disabled', () => {
+    render(<Harness agent={createAgent()} onMethods={() => undefined} />);
+    const toggle = screen.getByRole('button', { name: 'com_agents_my_agents' });
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+    expect(mockListAgents).toHaveBeenLastCalledWith({ requiredPermission: 1 }, expect.any(Object));
+  });
+
+  it('keeps the current agent available when absent from the filtered list', () => {
+    render(
+      <Harness
+        selectedAgentId="agent_1"
+        agent={createAgent({ name: 'Shared agent' })}
+        onMethods={() => undefined}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'com_agents_my_agents' }));
+    expect(screen.getByText('Shared agent')).toBeInTheDocument();
   });
 });

@@ -256,8 +256,15 @@ export default defineConfig(({ command }) => ({
             },
             {
               name(id: string) {
-                const normalizedId = id.replace(/\\/g, '/');
-                if (normalizedId.includes('node_modules')) {
+                const fullId = id.replace(/\\/g, '/');
+                const dependencyStart = fullId.indexOf('/node_modules/');
+                /** Rules match package names, never the checkout: a repository under a path that
+                 *  contains `fetch`, `ky` or `zod` would otherwise send every dependency to that
+                 *  rule's chunk. The first `node_modules` stays, so nested dependencies still
+                 *  match their parent package (mermaid's own lodash-es, for one). */
+                const normalizedId =
+                  dependencyStart === -1 ? fullId : fullId.slice(dependencyStart);
+                if (dependencyStart !== -1) {
                   if (normalizedId.includes('/node_modules/regenerator-runtime/')) {
                     return 'polyfills';
                   }

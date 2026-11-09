@@ -1,7 +1,7 @@
 import { PrincipalType } from 'librechat-data-provider';
 import type { PrincipalModel, TCustomConfig } from 'librechat-data-provider';
+import type { ConfigLocation, ConfigPathSegments } from './paths';
 import type { ConfigOverrideState } from './mutations';
-import type { ConfigPathSegments } from './paths';
 import {
   setConfigFields,
   unsetConfigPaths,
@@ -15,9 +15,9 @@ import {
   sortByConfigPrecedence,
   getDefaultConfigPriority,
 } from './precedence';
+import { parseFieldPath, parseConfigPath, ConfigPathError } from './paths';
 import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
 import { getSafeErrorFields } from '~/utils/errors';
-import { parseFieldPath } from './paths';
 import logger from '~/config/winston';
 
 /**
@@ -329,7 +329,8 @@ export interface ConfigLifecycleOptions extends ConfigWriteOptions {
 
 /**
  * A path a removal or tombstone addresses: a dotted field path, which cannot name a key that
- * contains a dot, or the path's segments, which can.
+ * contains a dot, or the path's segments, which can. A dotted path may name an entry of an
+ * array merged by key by its key (`endpoints.custom["Name"].headers`, see `parseConfigPath`).
  */
 export type ConfigPathInput = string | { segments: ConfigPathSegments };
 
@@ -377,12 +378,20 @@ function writtenRecord(outcome: ConfigMutationOutcome<never>): ConfigRecord {
   return outcome.record;
 }
 
-function toSegments(path: ConfigPathInput): ConfigPathSegments {
-  return typeof path === 'string' ? parseFieldPath(path) : path.segments;
+/** A path input as a location; a malformed keyed path throws a `ConfigPathError`. */
+function toLocation(path: ConfigPathInput): ConfigLocation {
+  if (typeof path !== 'string') {
+    return { segments: path.segments };
+  }
+  const location = parseConfigPath(path);
+  if (!location) {
+    throw new ConfigPathError(parseFieldPath(path), 'keyed_path');
+  }
+  return location;
 }
 
-function toPathList(paths: ConfigPathInputs): ConfigPathSegments[] {
-  return Array.isArray(paths) ? paths.map(toSegments) : [toSegments(paths as ConfigPathInput)];
+function toPathList(paths: ConfigPathInputs): ConfigLocation[] {
+  return Array.isArray(paths) ? paths.map(toLocation) : [toLocation(paths as ConfigPathInput)];
 }
 
 function isPathOrDescendant(path: string, fieldPath: string): boolean {

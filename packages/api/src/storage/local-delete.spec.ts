@@ -37,6 +37,13 @@ describe('local file deletion', () => {
     expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'user-1', file });
   });
 
+  it('preserves bytes when vector cleanup returns false', async () => {
+    const file = uploadedFile('retained.txt');
+    deleteRagFile.mockResolvedValueOnce(false);
+    await expect(remove(req, file)).rejects.toThrow('Vector deletion was not confirmed');
+    expect(fs.existsSync(path.join(root, 'uploads', 'user-1', 'retained.txt'))).toBe(true);
+  });
+
   it('accepts missing storage but rejects other unlink failures', async () => {
     const file = { file_id: 'file-1', filepath: '/uploads/user-1/missing.txt', user: 'user-1' };
     await expect(remove(req, file)).resolves.toBeUndefined();

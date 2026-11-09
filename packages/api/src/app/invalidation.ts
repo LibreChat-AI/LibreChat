@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import type { Cluster, Redis } from 'ioredis';
+import type { ConfigLoadResult } from './loader';
 import { createIoRedisSubscriber, duplicateIoRedisClient } from '~/cache/redisUtils';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
@@ -38,6 +39,21 @@ export interface ConfigCacheClear {
   clear: (tenantId?: string) => Promise<void>;
 }
 
+/** What one reload reached; failures are logged and reported, never thrown. */
+export interface ConfigReloadReport {
+  /** Whether every clear on this instance succeeded. */
+  cleared: boolean;
+  /** Loading the config again on this instance after the clear; absent without a `load` step. */
+  loaded?: ConfigLoadResult;
+  /**
+   * `sent` once published to the other instances, `failed` when publishing failed, `none`
+   * without a pub/sub (no other instance is told), `skipped` when the load here failed, so the
+   * others were not told either. An instance that misses the broadcast keeps its cached
+   * librechat.yaml, which never expires, until it receives a later one or restarts.
+   */
+  broadcast: 'sent' | 'failed' | 'none' | 'skipped';
+}
+
 export interface ConfigCacheInvalidation {
   /**
    * Clears this instance's config caches and tells every other instance to do the same.
@@ -45,6 +61,13 @@ export interface ConfigCacheInvalidation {
    * write that triggered them has already committed.
    */
   invalidate(tenantId?: string): Promise<void>;
+  /**
+   * The same clear, then the `load` step, then the broadcast, resolving with what each reached,
+   * for a reload no write triggered: its caller answers for the outcome, so it must learn of a
+   * failed clear, load or broadcast instead of only having it logged. A reload whose load fails
+   * here is not broadcast, so the other instances keep serving what they have.
+   */
+  reload(tenantId?: string): Promise<ConfigReloadReport>;
   /** Stops listening for other instances' invalidations. */
   close(): Promise<void>;
 }
@@ -77,24 +100,29 @@ function parseMessage(message: string): InvalidationMessage | null {
  */
 export function createConfigCacheInvalidation(params: {
   clears: readonly ConfigCacheClear[];
+  /** Loads the cleared config again on this instance, for `reload` only; never rejects. */
+  load?: () => Promise<ConfigLoadResult>;
   pubsub?: ConfigInvalidationPubSub;
   /** Identifies this instance, so it ignores its own broadcasts. */
   instanceId?: string;
 }): ConfigCacheInvalidation {
-  const { clears, pubsub } = params;
+  const { clears, load, pubsub } = params;
   const instanceId = params.instanceId ?? randomUUID();
   const channel = pubsub?.channel ?? CONFIG_INVALIDATION_CHANNEL;
 
-  async function clearLocal(tenantId?: string): Promise<void> {
+  /** Runs every clear; resolves whether all of them succeeded, logging each that failed. */
+  async function clearLocal(tenantId?: string): Promise<boolean> {
     const results = await Promise.allSettled(clears.map(({ clear }) => clear(tenantId)));
-    results.forEach((result, index) => {
-      if (result.status === 'rejected') {
-        logger.error(
-          `[invalidateConfigCaches] ${clears[index].label} failed:`,
-          getSafeErrorMetadata(result.reason),
-        );
+    return results.reduce((cleared, result, index) => {
+      if (result.status === 'fulfilled') {
+        return cleared;
       }
-    });
+      logger.error(
+        `[invalidateConfigCaches] ${clears[index].label} failed:`,
+        getSafeErrorMetadata(result.reason),
+      );
+      return false;
+    }, true);
   }
 
   const onMessage = (received: string, message: string): void => {
@@ -144,22 +172,40 @@ export function createConfigCacheInvalidation(params: {
     subscribe();
   }
 
-  async function invalidate(tenantId?: string): Promise<void> {
-    await clearLocal(tenantId);
+  async function broadcast(tenantId?: string): Promise<ConfigReloadReport['broadcast']> {
     if (!pubsub) {
-      return;
+      return 'none';
     }
     const message: InvalidationMessage = tenantId
       ? { origin: instanceId, tenantId }
       : { origin: instanceId };
     try {
       await pubsub.publisher.publish(channel, JSON.stringify(message));
+      return 'sent';
     } catch (error) {
       logger.error(
-        '[invalidateConfigCaches] Publishing to other instances failed; they may serve cached config until it expires:',
+        '[invalidateConfigCaches] Publishing to other instances failed; they keep their cached librechat.yaml and serve cached merged configs until those expire:',
         getSafeErrorMetadata(error),
       );
+      return 'failed';
     }
+  }
+
+  async function reload(tenantId?: string): Promise<ConfigReloadReport> {
+    const cleared = await clearLocal(tenantId);
+    if (!load) {
+      return { cleared, broadcast: await broadcast(tenantId) };
+    }
+    const loaded = await load();
+    if (!loaded.ok) {
+      return { cleared, loaded, broadcast: 'skipped' };
+    }
+    return { cleared, loaded, broadcast: await broadcast(tenantId) };
+  }
+
+  async function invalidate(tenantId?: string): Promise<void> {
+    await clearLocal(tenantId);
+    await broadcast(tenantId);
   }
 
   async function close(): Promise<void> {
@@ -172,7 +218,7 @@ export function createConfigCacheInvalidation(params: {
     await pubsub.subscriber.unsubscribe(channel);
   }
 
-  return { invalidate, close };
+  return { invalidate, reload, close };
 }
 
 /**

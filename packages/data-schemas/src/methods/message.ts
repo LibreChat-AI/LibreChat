@@ -809,6 +809,7 @@ export interface MessageMethods {
     taskId: string;
     invocationId: string;
     tenantId?: string;
+    activeOnly?: boolean;
   }): Promise<NonNullable<NonNullable<IMessage['subagentTask']>['controlReceipts']>[number] | null>;
   getSubagentTaskControlReplay(input: {
     userId: string;
@@ -942,6 +943,11 @@ export interface MessageMethods {
     limitPerThread: number;
   }): Promise<ParentSubagentTaskRecord[]>;
   getMessage(params: { user: string; messageId: string }): Promise<IMessage | null>;
+  getBranchReasoningOverride(params: {
+    user: string;
+    conversationId: string;
+    parentMessageId: string;
+  }): Promise<IMessage['reasoningOverride'] | null>;
   getMessagesByCursor(
     filter: FilterQuery<IMessage>,
     options?: {
@@ -949,6 +955,7 @@ export interface MessageMethods {
       sortOrder?: 1 | -1;
       limit?: number;
       cursor?: string | null;
+      select?: string;
     },
   ): Promise<{ messages: IMessage[]; nextCursor: string | null }>;
   searchMessages(
@@ -957,6 +964,58 @@ export interface MessageMethods {
     hydrate?: boolean,
   ): Promise<Awaited<ReturnType<SchemaWithMeiliMethods['meiliSearch']>>>;
   deleteMessages(filter: FilterQuery<IMessage>): Promise<DeleteResult>;
+}
+
+const DATE_SORT_FIELDS = new Set(['createdAt', 'updatedAt']);
+/** Cursor marker for a null or missing sort value, which MongoDB orders before every string, '' included. */
+const NULL_SORT_VALUE = '\u0000';
+const OBJECT_ID_PATTERN = /^[0-9a-f]{24}$/i;
+
+/** Encodes the last row of a page as `<sortValue>|<_id>`; dates use ISO strings so milliseconds survive. */
+function formatMessageCursor(value: unknown, id: unknown): string {
+  if (value == null) {
+    return id == null ? NULL_SORT_VALUE : `${NULL_SORT_VALUE}|${String(id)}`;
+  }
+  const sortValue = value instanceof Date ? value.toISOString() : String(value);
+  return id == null ? sortValue : `${sortValue}|${String(id)}`;
+}
+
+/** Accepts both the compound cursor and the legacy bare sort value from older clients. */
+function parseMessageCursor(cursor: string): { value: string; id?: string } {
+  const split = cursor.lastIndexOf('|');
+  if (split >= 0 && OBJECT_ID_PATTERN.test(cursor.slice(split + 1))) {
+    return { value: cursor.slice(0, split), id: cursor.slice(split + 1) };
+  }
+  return { value: cursor };
+}
+
+/** The rows after a cursor, following MongoDB's order: null/missing, then '' (strings only), then values. */
+function buildCursorFilter(
+  sortField: string,
+  op: '$gt' | '$lt',
+  value: string | Date,
+  position: { value: string; id?: Types.ObjectId },
+): FilterQuery<IMessage> {
+  if (position.id == null) {
+    return { [sortField]: { [op]: value } };
+  }
+  const tieId = { _id: { [op]: position.id } };
+  const ascending = op === '$gt';
+  if (position.value === NULL_SORT_VALUE) {
+    return {
+      $or: [
+        { [sortField]: null, ...tieId },
+        ...(ascending ? [{ [sortField]: { $ne: null } }] : []),
+      ],
+    };
+  }
+  return {
+    $or: [
+      { [sortField]: { [op]: value } },
+      { [sortField]: value, ...tieId },
+      ...(ascending ? [] : [{ [sortField]: null }]),
+    ],
+  };
 }
 
 /** The agent-ownership rule shared by background-tool settling and claiming:
@@ -2662,12 +2721,14 @@ export function createMessageMethods(
     taskId,
     invocationId,
     tenantId,
+    activeOnly = false,
   }: {
     userId: string;
     conversationId: string;
     taskId: string;
     invocationId: string;
     tenantId?: string;
+    activeOnly?: boolean;
   }): Promise<StoredSubagentControlReceipt | null> {
     if (
       userId.length === 0 ||
@@ -2682,6 +2743,7 @@ export function createMessageMethods(
     }
     const Message = mongoose.models.Message as Model<IMessage>;
     const input = await Message.findOne({
+      ...(activeOnly ? activeExpirationFilter<IMessage>() : {}),
       user: userId,
       conversationId,
       ...(tenantId == null ? { tenantId: { $exists: false } } : { tenantId }),
@@ -3017,7 +3079,10 @@ export function createMessageMethods(
       };
       const activityProjectionAvailable = {
         $and: [
-          { $eq: ['$subagentActivityProjection.version', 1] },
+          { $in: ['$subagentActivityProjection.version', [1, 2]] },
+          {
+            $eq: ['$messageId', { $concat: ['$subagentActivityProjection.taskId', ':assistant'] }],
+          },
           '$_subagentActivityProjectionSourceIsString',
           {
             $lte: [
@@ -3030,8 +3095,28 @@ export function createMessageMethods(
       const transcriptAvailable = {
         $and: [
           '$_subagentTranscriptSourceIsString',
+          { $eq: ['$messageId', { $concat: ['$subagentTranscript.taskId', ':assistant'] }] },
           {
             $lte: ['$_subagentTranscriptSourceBytes', SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT],
+          },
+        ],
+      };
+      // Legacy reprojection is optional: retain the usable projection until the
+      // API validates the current input boundary against the bounded transcript.
+      const legacySteeringTranscriptAvailable = {
+        $and: [
+          { $eq: ['$subagentActivityProjection.version', 1] },
+          {
+            $cond: [
+              transcriptAvailable,
+              {
+                $gte: [
+                  { $indexOfBytes: ['$subagentTranscript.messagesJson', '"source":"steer"'] },
+                  0,
+                ],
+              },
+              false,
+            ],
           },
         ],
       };
@@ -3093,17 +3178,14 @@ export function createMessageMethods(
         message: {
           $cond: [
             { $eq: [{ $type: '$$receipt.message' }, 'string'] },
-            boundedString('$$receipt.message', SUBAGENT_VIEW_CONTROL_STRING_CODE_POINT_LIMIT),
+            boundedString('$$receipt.message', MAX_SUBAGENT_CONTROL_MESSAGE_LENGTH),
             null,
           ],
         },
         messageTruncated: {
           $or: [
             { $eq: ['$$receipt.messageTruncated', true] },
-            stringProjectionTruncated(
-              '$$receipt.message',
-              SUBAGENT_VIEW_CONTROL_STRING_CODE_POINT_LIMIT,
-            ),
+            stringProjectionTruncated('$$receipt.message', MAX_SUBAGENT_CONTROL_MESSAGE_LENGTH),
           ],
         },
       };
@@ -3566,13 +3648,23 @@ export function createMessageMethods(
         },
         subagentTranscript: {
           $cond: [
-            activityProjectionAvailable,
-            null,
+            {
+              $and: [
+                transcriptAvailable,
+                {
+                  $or: [
+                    { $eq: [activityProjectionAvailable, false] },
+                    legacySteeringTranscriptAvailable,
+                  ],
+                },
+              ],
+            },
             {
               taskId: '$subagentTranscript.taskId',
               mode: '$subagentTranscript.mode',
               messagesJson: '$subagentTranscript.messagesJson',
             },
+            null,
           ],
         },
       };
@@ -3777,6 +3869,9 @@ export function createMessageMethods(
           return {
             ...projected,
             subagentActivityProjectionJson: source.subagentActivityProjectionJson,
+            ...(source.subagentTranscript == null
+              ? {}
+              : { subagentTranscript: source.subagentTranscript }),
             ...(source.subagentActivityProjectionTruncated === true
               ? { subagentActivityProjectionTruncated: true }
               : {}),
@@ -4113,6 +4208,40 @@ export function createMessageMethods(
   }
 
   /**
+   * The reasoning level a branch runs at: the override on the nearest user message at or above
+   * `parentMessageId` that carries one, or `null` when none does. One read of the conversation's
+   * links and levels, projected to those fields; the walk itself is in memory.
+   */
+  async function getBranchReasoningOverride({
+    user,
+    conversationId,
+    parentMessageId,
+  }: {
+    user: string;
+    conversationId: string;
+    parentMessageId: string;
+  }): Promise<IMessage['reasoningOverride'] | null> {
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const rows = await Message.find(
+      { user, conversationId },
+      { _id: 0, messageId: 1, parentMessageId: 1, isCreatedByUser: 1, reasoningOverride: 1 },
+    ).lean<
+      Pick<IMessage, 'messageId' | 'parentMessageId' | 'isCreatedByUser' | 'reasoningOverride'>[]
+    >();
+    const byId = new Map(rows.map((row) => [row.messageId, row]));
+    const visited = new Set<string>();
+    let current = byId.get(parentMessageId);
+    while (current != null && !visited.has(current.messageId)) {
+      visited.add(current.messageId);
+      if (current.isCreatedByUser === true && current.reasoningOverride != null) {
+        return current.reasoningOverride;
+      }
+      current = current.parentMessageId != null ? byId.get(current.parentMessageId) : undefined;
+    }
+    return null;
+  }
+
+  /**
    * Retrieves a single message from the database.
    */
   async function getMessage({ user, messageId }: { user: string; messageId: string }) {
@@ -4210,16 +4339,28 @@ export function createMessageMethods(
   ) {
     const Message = mongoose.models.Message as Model<IMessage>;
     const { sortField = 'createdAt', sortOrder = -1, limit = 25, cursor, select } = options;
-    const queryFilter = { ...filter };
-    if (cursor) {
-      queryFilter[sortField] = sortOrder === 1 ? { $gt: cursor } : { $lt: cursor };
+    const queryFilter: FilterQuery<IMessage> = { ...filter };
+    const position = cursor ? parseMessageCursor(cursor) : null;
+    if (position != null) {
+      const op = sortOrder === 1 ? '$gt' : '$lt';
+      const value =
+        DATE_SORT_FIELDS.has(sortField) && position.value !== NULL_SORT_VALUE
+          ? new Date(position.value)
+          : position.value;
+      const id = position.id == null ? undefined : new mongoose.Types.ObjectId(position.id);
+      const after = buildCursorFilter(sortField, op, value, { value: position.value, id });
+      queryFilter.$and = [...(queryFilter.$and ?? []), after];
     }
     const query = Message.find(queryFilter);
-    if (select) {
-      query.select(select);
+    /** The cursor needs `_id`, so an `-_id` projection is applied after it is read. */
+    const tokens = select ? select.split(/\s+/).filter(Boolean) : [];
+    const omitId = tokens.includes('-_id');
+    if (tokens.length > 0) {
+      query.select(tokens.filter((token) => token !== '-_id').join(' '));
     }
+    /** `_id` makes the order total, so a page boundary inside a run of equal sort values is stable. */
     const messages = await query
-      .sort({ [sortField]: sortOrder })
+      .sort({ [sortField]: sortOrder, _id: sortOrder })
       .limit(limit + 1)
       .lean<IMessage[]>();
 
@@ -4227,9 +4368,12 @@ export function createMessageMethods(
     if (messages.length > limit) {
       messages.pop();
       const last = messages[messages.length - 1];
-      const cursorValue =
-        sortField === 'createdAt' ? last.createdAt : last[sortField as keyof IMessage];
-      nextCursor = String(cursorValue ?? '');
+      nextCursor = formatMessageCursor(last[sortField as keyof IMessage], last._id);
+    }
+    if (omitId) {
+      for (const message of messages) {
+        delete (message as { _id?: unknown })._id;
+      }
     }
     return { messages, nextCursor };
   }
@@ -4340,6 +4484,7 @@ export function createMessageMethods(
     getMessagesForSubagentThreadView,
     listSubagentTasksForThreads,
     getMessage,
+    getBranchReasoningOverride,
     getMessagesByCursor,
     searchMessages,
     deleteMessages,

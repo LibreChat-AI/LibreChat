@@ -5,6 +5,7 @@ import type { TFile } from 'librechat-data-provider';
 import type { ProvisionCallbackDeps, ProvisionToolContext } from '~/files/provision/callback';
 import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
 import type { ServerRequest } from '~/types';
+import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createProvisionFilesCallback } from '~/files/provision/callback';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
@@ -526,6 +527,11 @@ describe('createRun code-tool eager/session wiring', () => {
     expect(runConfig.codeSessionToolNames).toEqual(
       expect.arrayContaining(['create_file', 'edit_file', 'read_file']),
     );
+  });
+
+  it('reports why a subagent could not start instead of leaving the SDK to guess', async () => {
+    const runConfig = await captureRunConfig();
+    expect(runConfig.onSubagentResolutionFailure).toBe(reportSubagentResolutionFailure);
   });
 
   it('passes the trusted per-agent code-session partition to the SDK', async () => {

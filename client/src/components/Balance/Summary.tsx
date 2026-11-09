@@ -1,10 +1,10 @@
 import { memo, useId } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useTimeTick } from '@librechat/chat/react';
 import { Progress, Skeleton } from '@librechat/client';
 import type { BalanceSummary, BalanceTone, CurrencyConfig } from '~/utils';
 import type { BalanceState } from '~/hooks/useBalanceSummary';
 import { formatBalanceAmount, formatTimeUntil } from '~/utils/balance';
-import useTimeTick from '~/hooks/useTimeTick';
 import useLocalize from '~/hooks/useLocalize';
 import cn from '~/utils/cn';
 

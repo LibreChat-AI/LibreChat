@@ -52,6 +52,7 @@ const {
   checkInstructionsPromptWrite,
   applyInstructionsPromptUnset,
   instructionsContentForScan,
+  authorizeAgentRestore,
 } = require('@librechat/api');
 const {
   resolveSubagents,
@@ -547,6 +548,7 @@ const getSubagentReferenceError = async (subagents, req, allowedMissingIds = new
  * @param {Record<string, unknown>} params.availableTools - Global non-MCP tool cache
  * @param {string[]} [params.existingTools] - Tools already persisted on the agent document
  * @param {Record<string, unknown>} [params.configServers] - Config-source MCP servers resolved from appConfig overrides
+ * @param {(tool: string, serverName: string, config: object | undefined) => Promise<boolean>} [params.admitMCPTool] - Final gate for each MCP tool the registry approved
  * @returns {Promise<string[]>} Only the authorized subset of tools
  */
 const filterAuthorizedTools = async ({
@@ -559,6 +561,7 @@ const filterAuthorizedTools = async ({
   existingTools,
   configServers,
   resolvedServerNames,
+  admitMCPTool,
 }) => {
   const filteredTools = [];
   let mcpServerConfigs;
@@ -574,6 +577,8 @@ const filterAuthorizedTools = async ({
         : userCanUseMCPServers(user))
     : true;
   let loggedMCPDenied = false;
+  /** @type {Array<{ position: number, tool: string, serverName: string, admitted: Promise<boolean> }>} */
+  const pendingAdmissions = [];
 
   for (const tool of tools) {
     const isActionToolName = typeof tool === 'string' && isActionTool(tool);
@@ -652,11 +657,41 @@ const filterAuthorizedTools = async ({
       continue;
     }
 
+    if (admitMCPTool) {
+      pendingAdmissions.push({
+        position: filteredTools.length,
+        tool,
+        serverName,
+        admitted: admitMCPTool(tool, serverName, mcpServerConfigs[serverName]),
+      });
+      filteredTools.push(tool);
+      continue;
+    }
+
     resolvedServerNames?.add(serverName);
     filteredTools.push(tool);
   }
 
-  return filteredTools;
+  if (pendingAdmissions.length === 0) {
+    return filteredTools;
+  }
+
+  /** Admission lookups for distinct servers run concurrently; positions keep tool order. */
+  const admissionResults = await Promise.all(pendingAdmissions.map(({ admitted }) => admitted));
+  const rejectedPositions = new Set();
+  pendingAdmissions.forEach(({ position, tool, serverName }, i) => {
+    if (admissionResults[i]) {
+      resolvedServerNames?.add(serverName);
+      return;
+    }
+    logger.warn(
+      `[filterAuthorizedTools] Rejected MCP tool "${tool}" — no live access to server "${serverName}" for user ${userId} outside the agent being changed`,
+    );
+    rejectedPositions.add(position);
+  });
+  return rejectedPositions.size > 0
+    ? filteredTools.filter((_, i) => !rejectedPositions.has(i))
+    : filteredTools;
 };
 
 /**
@@ -837,6 +872,7 @@ const createAgentHandler = async (req, res) => {
       previous: undefined,
       next: agentData.instructionsPrompt,
       filters: req.config?.filters,
+      linkedInstructions: req.config?.endpoints?.agents?.linkedInstructions,
       logger,
       req,
     });
@@ -904,8 +940,8 @@ const createAgentHandler = async (req, res) => {
     res.status(201).json(agent);
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.error('[/Agents] Validation error', error.errors);
-      return res.status(400).json({ error: 'Invalid request data', details: error.errors });
+      logger.error('[/Agents] Validation error', error.issues);
+      return res.status(400).json({ error: 'Invalid request data', details: error.issues });
     }
     logger.error('[/Agents] Error creating agent', error);
     if (error?.statusCode === 409) {
@@ -1238,6 +1274,7 @@ const updateAgentHandler = async (req, res) => {
       previous: existingAgent.instructionsPrompt,
       next: instructionsPromptField,
       filters: req.config?.filters,
+      linkedInstructions: req.config?.endpoints?.agents?.linkedInstructions,
       logger,
       req,
     });
@@ -1406,8 +1443,8 @@ const updateAgentHandler = async (req, res) => {
     return res.json(presentedAgent);
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.error('[/Agents/:id] Validation error', error.errors);
-      return res.status(400).json({ error: 'Invalid request data', details: error.errors });
+      logger.error('[/Agents/:id] Validation error', error.issues);
+      return res.status(400).json({ error: 'Invalid request data', details: error.issues });
     }
 
     logger.error('[/Agents/:id] Error updating Agent', error);
@@ -2135,7 +2172,35 @@ const revertAgentVersionHandler = async (req, res) => {
       return;
     }
 
-    let updatedAgent = await db.revertAgentVersion({ id }, version_index);
+    const revertOptions = await authorizeAgentRestore({
+      agent: existingAgent,
+      versionTools: revertVersion.tools,
+      authorizeTools: async (request) => {
+        const [availableTools, configServers] = await Promise.all([
+          getCachedTools().then((t) => t ?? {}),
+          resolveConfigServers(req),
+        ]);
+        return filterAuthorizedTools({
+          ...request,
+          userId: req.user.id,
+          role: req.user.role,
+          user: req.user,
+          mcpPermissionContext: createMCPPermissionContext(req),
+          availableTools,
+          configServers,
+        });
+      },
+      listAgentIdsForServer: db.getAgentIdsByMCPServerName,
+      getPermissions: (resourceType, resourceIds) =>
+        getResourcePermissionsMap({
+          userId: req.user.id,
+          role: req.user.role,
+          resourceType,
+          resourceIds,
+        }),
+    });
+
+    let updatedAgent = await db.revertAgentVersion({ id }, version_index, revertOptions);
     const revertUpdates = {};
     if (
       hasLegacyEdgeSource ||
@@ -2144,28 +2209,7 @@ const revertAgentVersionHandler = async (req, res) => {
       revertUpdates.edges = revertEdges;
     }
 
-    if (updatedAgent.tools?.length) {
-      const [availableTools, configServers] = await Promise.all([
-        getCachedTools().then((t) => t ?? {}),
-        resolveConfigServers(req),
-      ]);
-      const mcpPermissionContext = createMCPPermissionContext(req);
-      const filteredTools = await filterAuthorizedTools({
-        tools: updatedAgent.tools,
-        userId: req.user.id,
-        role: req.user.role,
-        user: req.user,
-        mcpPermissionContext,
-        availableTools,
-        existingTools: updatedAgent.tools,
-        configServers,
-      });
-      if (filteredTools.length !== updatedAgent.tools.length) {
-        revertUpdates.tools = filteredTools;
-      }
-    }
-
-    const effectiveRevertTools = revertUpdates.tools ?? updatedAgent.tools;
+    const effectiveRevertTools = updatedAgent.tools;
     const hasCodeExecutionCaller = Object.values(updatedAgent.tool_options ?? {}).some((options) =>
       options.allowed_callers?.includes('code_execution'),
     );

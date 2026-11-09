@@ -500,6 +500,42 @@ describe('createAdminUsersHandlers', () => {
       expect(deps.deletePasskeysByUser).toHaveBeenCalledWith(validUserId);
     });
 
+    it("clears the config caches after removing the user's config override, before answering", async () => {
+      let release: () => void = () => undefined;
+      const invalidateConfigCaches = jest.fn(
+        () => new Promise<void>((resolve) => (release = resolve)),
+      );
+      const deps = createDeps({
+        deleteConfig: jest.fn().mockResolvedValue({ principalId: validUserId }),
+        invalidateConfigCaches,
+      });
+      const { req, res, status } = createReqRes({
+        params: { id: validUserId },
+        user: { _id: new Types.ObjectId(), role: 'admin', tenantId: 'tenant-a' },
+      });
+
+      const deleting = createAdminUsersHandlers(deps).deleteUser(req, res);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(invalidateConfigCaches).toHaveBeenCalledWith('tenant-a');
+      expect(status).not.toHaveBeenCalled();
+      release();
+      await deleting;
+
+      expect(status).toHaveBeenCalledWith(200);
+      expect(invalidateConfigCaches).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the config caches alone when the user had no config override', async () => {
+      const invalidateConfigCaches = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({ invalidateConfigCaches });
+      const { req, res, status } = createReqRes({ params: { id: validUserId } });
+
+      await createAdminUsersHandlers(deps).deleteUser(req, res);
+
+      expect(status).toHaveBeenCalledWith(200);
+      expect(invalidateConfigCaches).not.toHaveBeenCalled();
+    });
+
     it('runs the shared erasure cascade for the target before removing the user', async () => {
       const checkpointer = { ttl: 60 };
       const erasureDeps = { marker: true };

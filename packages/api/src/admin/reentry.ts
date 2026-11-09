@@ -5,6 +5,7 @@ import {
   isSameConfigValue,
   resolveAzureGroups,
   foldConfigMergeKey,
+  mergeConfigEntries,
   mergeConfigOverrides,
   applyConfigTombstones,
 } from '@librechat/data-schemas';
@@ -271,32 +272,73 @@ function getGroupMap(azure: JsonRecord): JsonRecord {
   return isPlainRecord(azure.groupMap) ? azure.groupMap : {};
 }
 
+/** librechat.yaml's Azure groups: as written (`groups`), and as they resolve (`groupMap`). */
+export interface BaseAzureGroups {
+  groups: unknown;
+  groupMap: unknown;
+}
+
+const GROUPS_SEGMENTS = [...AZURE_SEGMENTS, 'groups'];
+
+/** librechat.yaml's Azure groups under a document's tombstones. */
+function getBaseUnder(base: BaseAzureGroups, document: StoredDocument | null | undefined) {
+  const azure = getAtPath(
+    applyConfigTombstones(
+      {
+        endpoints: { azureOpenAI: { groups: base.groups, groupMap: base.groupMap } },
+      } as Partial<TCustomConfig>,
+      document?.tombstones,
+    ),
+    AZURE_SEGMENTS,
+  );
+  return {
+    groups: isPlainRecord(azure) ? azure.groups : undefined,
+    groupMap: isPlainRecord(azure) ? azure.groupMap : undefined,
+  };
+}
+
 /**
  * The Azure groups a document resolves to on its own over librechat.yaml, by name, as the merge
- * resolves one layer: its `groups` replace librechat.yaml's whole when they resolve
- * (`resolveAzureGroups`), else librechat.yaml's resolved groups (`baseGroupMap`) stay under its
- * tombstones; its `groupMap` entries merge over either.
+ * resolves one layer: its `groups` merge by `group` over librechat.yaml's and resolve
+ * (`resolveAzureGroups`), else librechat.yaml's resolved groups stay under its tombstones; its
+ * `groupMap` entries merge over either.
  */
 function getEffectiveAzureGroups(
   document: StoredDocument | null | undefined,
-  baseGroupMap: unknown,
+  base: BaseAzureGroups,
 ): Map<string, JsonRecord> {
   const azure = getAzureSection(document?.overrides);
-  const resolved = Array.isArray(azure.groups) ? resolveAzureGroups(azure.groups) : undefined;
-  const below = resolved?.isValid
-    ? resolved.groupMap
-    : getAtPath(
-        applyConfigTombstones(
-          { endpoints: { azureOpenAI: { groupMap: baseGroupMap } } } as Partial<TCustomConfig>,
-          document?.tombstones,
-        ),
-        [...AZURE_SEGMENTS, 'groupMap'],
-      );
+  const under = getBaseUnder(base, document);
+  const resolved = Array.isArray(azure.groups)
+    ? resolveAzureGroups(mergeConfigEntries(GROUPS_SEGMENTS, under.groups, azure.groups))
+    : undefined;
+  const below = resolved?.isValid ? resolved.groupMap : under.groupMap;
   const merged = mergeLayer(below, getGroupMap(azure));
   return new Map(
     Object.entries(isPlainRecord(merged) ? merged : {}).flatMap(([name, group]) =>
       isPlainRecord(group) ? [[name, group]] : [],
     ),
+  );
+}
+
+/**
+ * Each `groups` item a document writes, merged over librechat.yaml's group of its name as the
+ * merge merges them, by name: a group as it would be sent even while the document's groups do not
+ * resolve as a whole.
+ */
+function getMergedGroupItems(
+  document: StoredDocument | null | undefined,
+  base: BaseAzureGroups,
+): Array<[string, JsonRecord]> {
+  const items = getGroupItems(getAzureSection(document?.overrides));
+  const names = new Set(
+    items.flatMap((item) => (typeof item.group === 'string' ? [item.group] : [])),
+  );
+  return mergeConfigEntries(GROUPS_SEGMENTS, getBaseUnder(base, document).groups, items).flatMap(
+    (item): Array<[string, JsonRecord]> =>
+      isPlainRecord(item) && typeof item.group === 'string' && names.has(item.group)
+        ? [[item.group, item]]
+        : [],
   );
 }
 
@@ -328,9 +370,10 @@ function locateGroupField(azure: JsonRecord, name: string, field: string): strin
  * The Azure form of the re-entry rule web search and MCP keys follow: a write that keeps a
  * stored group key (in `groups` or `groupMap`) while changing where the group sends it must enter
  * the key again. Groups are compared as the document resolves them on its own over
- * librechat.yaml ({@link getEffectiveAzureGroups}), and each `groups` item also as written, so
- * groups that do not resolve yet cannot carry a key to a new destination for a later write to
- * put to use; destinations are compared by `diffAzureGroupBinding`. A
+ * librechat.yaml ({@link getEffectiveAzureGroups}), and each `groups` item also merged over
+ * librechat.yaml's group of its name ({@link getMergedGroupItems}), so groups that do not resolve
+ * yet cannot carry a key to a new destination for a later write to put to use; destinations are
+ * compared by `diffAzureGroupBinding`. A
  * key counts as entered again only when the planned document holds a value the request entered;
  * a kept one is compared with every stored group that held the same value, so the write is
  * refused unless one of them sent it where the candidate does. Only keys the stored document
@@ -339,25 +382,22 @@ function locateGroupField(azure: JsonRecord, name: string, field: string): strin
 export function getAzureGroupReentryIssues(params: {
   stored: StoredDocument | null | undefined;
   candidate: ConfigOverrideState;
-  /** librechat.yaml's resolved Azure groups (`endpoints.azureOpenAI.groupMap` of the base config). */
-  baseGroupMap: unknown;
+  /** librechat.yaml's Azure groups, as written and as resolved in the base config. */
+  base: BaseAzureGroups;
   /** The secret values the request itself entered, encrypted. */
   entered: ReadonlySet<string>;
 }): SecretReentryIssue[] {
-  const { stored, candidate, baseGroupMap, entered } = params;
+  const { stored, candidate, base, entered } = params;
   const storedAzure = getAzureSection(stored?.overrides);
   const held = getStoredGroupKeys(storedAzure);
   if (held.length === 0) {
     return [];
   }
   const candidateAzure = getAzureSection(candidate.overrides);
-  /** As the document resolves, and each `groups` item as written, which may not resolve yet. */
+  /** As the document resolves, and each `groups` item merged alone, which may not resolve yet. */
   const candidates: Array<[string, JsonRecord]> = [
-    ...getEffectiveAzureGroups(candidate, baseGroupMap),
-    ...getGroupItems(candidateAzure).flatMap(
-      (item): Array<[string, JsonRecord]> =>
-        typeof item.group === 'string' ? [[item.group, item]] : [],
-    ),
+    ...getEffectiveAzureGroups(candidate, base),
+    ...getMergedGroupItems(candidate, base),
   ];
   let origins: JsonRecord[] | undefined;
   const issues = new Map<string, SecretReentryIssue>();
@@ -370,10 +410,10 @@ export function getAzureGroupReentryIssues(params: {
     ) {
       continue;
     }
-    /** Every stored definition of a group: as it resolved, and each complete `groups` item. */
+    /** Every stored definition of a group: as it resolved, and each `groups` item merged alone. */
     origins ??= [
-      ...getEffectiveAzureGroups(stored, baseGroupMap).values(),
-      ...getGroupItems(storedAzure),
+      ...getEffectiveAzureGroups(stored, base).values(),
+      ...getMergedGroupItems(stored, base).map(([, item]) => item),
     ];
     const fingerprint = getAzureGroupFingerprint(group);
     const changes = origins

@@ -1,26 +1,29 @@
 import { useMemo } from 'react';
+import { parseWakeupMessage } from '@librechat/chat';
+import {
+  SubRow,
+  MessageRow,
+  WakeupRow,
+  AuthorHeader,
+  SiblingSwitch,
+  getHeaderHoverLabel,
+  MinimalHoverButtons,
+} from '@librechat/chat/components';
 import type { TMessageProps } from '~/common';
 import SearchContent, {
   rendersMarkdownLite,
 } from '~/components/Chat/Messages/Content/SearchContent';
-import { parseWakeupMessage } from '~/components/Chat/Messages/Content/Parts/wakeup';
-import AuthorHeader from '~/components/Chat/Messages/Content/Parts/AuthorHeader';
-import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
-import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
+import { MessageContext, useShareContext, useAgentsMapContext } from '~/Providers';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
-import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
-import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
-import WakeupRow from '~/components/Chat/Messages/ui/WakeupRow';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
-import { MessageContext, useShareContext } from '~/Providers';
-import SubRow from '~/components/Chat/Messages/SubRow';
 import { useAttachments, useLocalize } from '~/hooks';
 import MultiMessage from './MultiMessage';
 import Icon from './MessageIcon';
 
 export default function Message(props: TMessageProps) {
   const localize = useLocalize();
+  const agentsMap = useAgentsMapContext();
   const { hasConfiguredSender } = useShareContext();
   const {
     message,
@@ -66,7 +69,9 @@ export default function Message(props: TMessageProps) {
         <div className="m-auto justify-center px-4 py-3 sm:px-0">
           <Row
             task={subagentWakeup}
+            agentsMap={agentsMap}
             conversationId={message.conversationId ?? conversation?.conversationId ?? ''}
+            message={wakeupDisplay == null ? message : undefined}
             id={messageId}
             icon={<Icon message={message} conversation={conversation} />}
             label={messageLabel}

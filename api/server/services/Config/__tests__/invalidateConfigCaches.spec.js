@@ -42,6 +42,8 @@ const mockCreateConfigCacheInvalidation = jest.fn(({ clears }) => ({
   close: async () => undefined,
 }));
 jest.mock('@librechat/api', () => ({
+  isEnabled: (value) => value === 'true',
+  expandCustomEndpoint: jest.fn((endpoint) => endpoint),
   createAppConfigService: jest.fn(() => ({
     getAppConfig: jest.fn().mockResolvedValue({ availableTools: {} }),
     clearAppConfigCache: mockClearAppConfigCache,

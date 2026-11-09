@@ -14,8 +14,8 @@ import type { Response } from 'express';
 import type { ValidationError } from '~/types/error';
 import type { ServerRequest } from '~/types/http';
 import type { RecordAuditEntry } from './audit';
+import { cascadeStep, runCascade, invalidatingConfigStore } from './cascade';
 import { getSafeErrorMetadata } from '~/utils/errors';
-import { cascadeStep, runCascade } from './cascade';
 import { createAdminAuditEmitter } from './audit';
 import { parsePagination } from './pagination';
 
@@ -99,6 +99,9 @@ export interface AdminGroupsDeps {
     principalId: string,
     options?: { includeInactive?: boolean },
   ) => Promise<ConfigRecord | null>;
+  /** Clears the merged-config caches (on every instance, with Redis) after the deletion removes
+   * or restores the group's config override, before the response, as config writes do. */
+  invalidateConfigCaches?: (tenantId?: string) => Promise<void>;
   /** Optional audit emission for group mutations; fail-open unless `auditFailClosed`. */
   recordAuditEntry?: RecordAuditEntry;
   /** When true, a failed audit write surfaces as a 5xx after the mutation has
@@ -135,6 +138,7 @@ export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
     deleteAclEntries,
     restoreConfig,
     findConfigByPrincipal,
+    invalidateConfigCaches,
     recordAuditEntry,
     auditFailClosed,
   } = deps;
@@ -377,6 +381,11 @@ export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
         return res.status(404).json({ error: 'Group not found' });
       }
       const target = groupTarget(existing, id);
+      const { deleteConfig: removeProfile, restoreConfig: restoreProfile } =
+        invalidatingConfigStore(
+          { deleteConfig, restoreConfig },
+          { invalidateConfigCaches, tenantId: req.user?.tenantId, logPrefix: '[adminGroups]' },
+        );
       /**
        * The attempt is recorded as `pending` before any removal so a crash mid-cascade
        * still leaves a trail, but the write is started without being awaited: deleting a
@@ -418,15 +427,15 @@ export function createAdminGroupsHandlers(deps: AdminGroupsDeps): {
         [
           cascadeStep(
             'config',
-            () => deleteConfig(PrincipalType.GROUP, id),
-            restoreConfig
+            () => removeProfile(PrincipalType.GROUP, id),
+            restoreProfile
               ? async (config) => {
                   if (!config) {
                     return;
                   }
                   let restored: boolean;
                   try {
-                    restored = await restoreConfig(config);
+                    restored = await restoreProfile(config);
                     restoreFailed = false;
                   } catch (error) {
                     restoreFailed = true;

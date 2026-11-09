@@ -543,6 +543,7 @@ describe('DB-backed server mutation fencing', () => {
         },
       },
       expect.objectContaining({ source: 'user' }),
+      { strictRevocation: undefined, retainFence: undefined },
     );
     expect(invalidateCachedTools.mock.invocationCallOrder[0]).toBeLessThan(
       mockRegistryInstance.removeServer.mock.invocationCallOrder[0],
@@ -588,6 +589,7 @@ describe('DB-backed server mutation fencing', () => {
         'mcp_github',
         expect.any(Object),
         expect.objectContaining({ dbId: dbId.toString() }),
+        { strictRevocation: undefined, retainFence: undefined },
       );
       expect(require('~/server/services/Config').invalidateCachedTools).toHaveBeenCalledWith({
         userId: sharedUser.id,
@@ -597,6 +599,43 @@ describe('DB-backed server mutation fencing', () => {
     } finally {
       tokenSnapshot.mockRestore();
     }
+  });
+
+  it('fences a viewer who holds no OAuth token when the server is deleted', async () => {
+    const owner = await createUser();
+    const viewer = await createUser();
+    const dbId = new mongoose.Types.ObjectId();
+    await grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: viewer.id,
+      resourceType: ResourceType.MCPSERVER,
+      resourceId: dbId,
+      accessRoleId: AccessRoleIds.MCPSERVER_VIEWER,
+      grantedBy: owner.id,
+    });
+    mockRegistryInstance.getServerConfig.mockResolvedValue(createDbConfig(dbId));
+    mockRegistryInstance.removeServer.mockResolvedValue(undefined);
+    const res = createRes();
+
+    await deleteMCPServerController(
+      { user: owner, params: { serverName: 'github' } },
+      res,
+      mockMaybeUninstallOAuthMCP,
+    );
+
+    expect(require('~/server/services/Config').invalidateCachedTools).toHaveBeenCalledWith({
+      userId: viewer.id,
+      serverName: 'github',
+    });
+    expect(mockMcpManager.disconnectUserConnection).toHaveBeenCalledWith(viewer.id, 'github');
+    expect(mockMaybeUninstallOAuthMCP).toHaveBeenCalledWith(
+      viewer.id,
+      'mcp_github',
+      expect.any(Object),
+      expect.objectContaining({ dbId: dbId.toString() }),
+      { strictRevocation: undefined, retainFence: undefined },
+    );
+    expect(res.status).toHaveBeenCalledWith(200);
   });
 
   it('does not delete the registry entry when the distributed fence fails', async () => {

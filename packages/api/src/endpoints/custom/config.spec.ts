@@ -1,6 +1,10 @@
 import { AuthType, EModelEndpoint, ReasoningParameterFormat } from 'librechat-data-provider';
 import type { TCustomEndpoints } from 'librechat-data-provider';
-import { loadCustomEndpointsConfig, usesOpenRouterCatalog } from './config';
+import {
+  usesOpenRouterCatalog,
+  loadCustomEndpointsConfig,
+  resolveServedCustomEndpoints,
+} from './config';
 
 const baseEndpoint = {
   apiKey: 'sk-test',
@@ -275,6 +279,32 @@ describe('loadCustomEndpointsConfig – user credential prompts', () => {
         userProvideURL: false,
       }),
     );
+  });
+});
+
+describe('resolveServedCustomEndpoints', () => {
+  const endpoints = [
+    { ...baseEndpoint, name: 'Ollama', iconURL: 'first.png' },
+    { ...baseEndpoint, name: 'Gateway', iconURL: 'gateway.png' },
+    { ...baseEndpoint, name: 'ollama', iconURL: 'last.png' },
+    { name: 'Gateway', apiKey: 'sk-unserved', iconURL: 'unserved.png' },
+    { name: 'Unserved', apiKey: 'sk-test' },
+  ];
+
+  it('resolves each served name to its last served definition, in first-served order', () => {
+    const served = resolveServedCustomEndpoints(endpoints);
+    expect([...served.keys()]).toEqual(['ollama', 'Gateway']);
+    expect(served.get('ollama')?.iconURL).toBe('last.png');
+    expect(served.get('Gateway')?.iconURL).toBe('gateway.png');
+  });
+
+  it('is the definition the endpoint config serves under each name', () => {
+    const config = loadCustomEndpointsConfig(endpoints as TCustomEndpoints);
+    const served = resolveServedCustomEndpoints(endpoints);
+    expect(Object.keys(config ?? {})).toEqual([...served.keys()]);
+    for (const [name, endpoint] of served) {
+      expect(config?.[name]?.iconURL).toBe(endpoint.iconURL);
+    }
   });
 });
 

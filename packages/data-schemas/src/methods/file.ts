@@ -23,6 +23,7 @@ import type {
 } from '~/types/file';
 import type { IChatProjectDocument } from '~/types';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { fileContentUpdate } from './fileContent';
 import { escapeRegExp } from '~/utils/string';
 import logger from '../config/winston';
 
@@ -50,6 +51,7 @@ export type ClearFileEmbeddingsParams = {
   tenantId?: string | null;
   updatedAt?: Date | string;
   embeddedEntities?: string[];
+  ownershipTrackingStart?: string;
 };
 
 export const DEFAULT_AVAILABLE_PROJECT_FILES_LIMIT = 20;
@@ -599,6 +601,8 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       object: 'file',
       source: file.source ?? FileSources.local,
       embedded: false,
+      embeddingOwnersComplete: true,
+      embeddingOwnersTrackedAt: new Date(),
       usage: 1,
       llmDeliveryPath: file.llmDeliveryPath ?? 'none',
       metadata: {
@@ -1190,6 +1194,8 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     const File = mongoose.models.File as Model<IMongoFile>;
     const tenantFilter = data.tenantId ? { tenantId: data.tenantId } : { tenantId: null };
     const insertData = {
+      embeddingOwnersComplete: true,
+      embeddingOwnersTrackedAt: new Date(),
       file_id: data.file_id,
       user: data.user,
       ...(data.tenantId ? { tenantId: data.tenantId } : {}),
@@ -1258,7 +1264,10 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
               }
             : {}),
         },
-        fileData,
+        {
+          ...fileContentUpdate(fileData),
+          $setOnInsert: { embeddingOwnersComplete: true, embeddingOwnersTrackedAt: new Date() },
+        },
         { new: true, upsert: true },
       ).lean<IMongoFile>();
     } catch (error) {
@@ -1297,7 +1306,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     const File = mongoose.models.File as Model<IMongoFile>;
     const { file_id, ...update } = data;
     const updateOperation = {
-      $set: update,
+      ...fileContentUpdate(update),
       $unset: { expiresAt: '' },
     };
     const query: FilterQuery<IMongoFile> = extraFilter ? { file_id, ...extraFilter } : { file_id };
@@ -1437,15 +1446,26 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
   /** Clears only the embedding snapshot whose vector deletion was confirmed. */
   async function clearFileEmbeddings(data: ClearFileEmbeddingsParams): Promise<boolean> {
     const File = mongoose.models.File as Model<IMongoFile>;
+    const start =
+      data.ownershipTrackingStart == null ? NaN : Date.parse(data.ownershipTrackingStart);
+    const now = new Date();
+    const ownership =
+      Number.isFinite(start) && start <= now.getTime()
+        ? [
+            {
+              embedded: true,
+              embeddingOwnersComplete: true,
+              embeddingOwnersTrackedAt: { $gte: new Date(start), $lte: now },
+              'metadata.embeddedEntities': data.embeddedEntities ?? null,
+            },
+          ]
+        : [];
     const query: FilterQuery<IMongoFile> = {
       file_id: data.file_id,
       user: data.userId,
       $and: [{ tenantId: data.tenantId ?? null }],
       updatedAt: data.updatedAt ?? { $exists: false },
-      $or: [
-        { embedded: true, 'metadata.embeddedEntities': data.embeddedEntities ?? null },
-        { embedded: false, 'metadata.embeddedEntities': { $exists: false } },
-      ],
+      $or: [...ownership, { embedded: false, 'metadata.embeddedEntities': { $exists: false } }],
     };
     const result = await File.updateOne(
       query,

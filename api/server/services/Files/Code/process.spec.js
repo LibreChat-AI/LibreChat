@@ -1,3 +1,4 @@
+const { Readable } = require('stream');
 // Configurable file size limit for tests - use a getter so it can be changed per test
 const fileSizeLimitConfig = { value: 20 * 1024 * 1024 }; // Default 20MB
 
@@ -72,6 +73,8 @@ jest.mock('@librechat/api', () => {
       jest.requireActual('@librechat/api').prepareCodeOutputBufferForInspection,
     getCodeFileContextLine: jest.requireActual('@librechat/api').getCodeFileContextLine,
     appendCodeFileContextLine: jest.requireActual('@librechat/api').appendCodeFileContextLine,
+    createCodeReuploadFailures: jest.requireActual('@librechat/api').createCodeReuploadFailures,
+    openCodeFileSource: jest.requireActual('@librechat/api').openCodeFileSource,
     resolveDownloadPath: (file) => file.storageKey || file.filepath,
     logAxiosError: jest.fn(),
     /* Behaviourally identical to the real predicate in
@@ -3949,14 +3952,101 @@ describe('Code Process', () => {
       ]);
     });
 
+    const makeMissingObjectFile = (fileId, filename) => ({
+      file_id: fileId,
+      filename,
+      filepath: `https://storage.us-east.example.test/${fileId}`,
+      source: 'local',
+      context: 'execute_code',
+      metadata: {
+        codeEnvRef: {
+          kind: 'user',
+          id: 'user-123',
+          storage_session_id: 'US_EAST_SESSION',
+          file_id: `MISSING_${fileId}`,
+        },
+      },
+    });
+    const primeMissing = (fileIds) =>
+      primeFiles({
+        req: {
+          id: 'request-123',
+          body: { messageId: 'run-123' },
+          user: { id: 'user-123', role: 'USER' },
+        },
+        tool_resources: { execute_code: { file_ids: fileIds, files: [] } },
+        agentId: 'agent-id',
+      });
+
     it.each([
-      ['Axios/CloudFront 404', { response: { status: 404 } }, 'missing_backing_object'],
-      [
-        'AWS SDK NoSuchKey',
-        { name: 'NoSuchKey', $metadata: { httpStatusCode: 404 } },
-        'missing_backing_object',
-      ],
-      ['Azure BlobNotFound', { code: 'BlobNotFound', statusCode: 404 }, 'missing_backing_object'],
+      ['Axios/CloudFront 404', { response: { status: 404 } }],
+      ['AWS SDK NoSuchKey', { name: 'NoSuchKey', $metadata: { httpStatusCode: 404 } }],
+      ['Azure BlobNotFound', { code: 'BlobNotFound', statusCode: 404 }],
+    ])('names a file deleted from storage instead of failing for %s', async (_shape, error) => {
+      const dbFile = makeMissingObjectFile('librechat-file-id', 'cross-region-report.png');
+      const getDownloadStream = jest.fn().mockRejectedValue(error);
+      getFiles.mockResolvedValue([dbFile]);
+      getStrategyFunctions.mockImplementation((source) =>
+        source === 'execute_code' ? { handleFileUpload: jest.fn() } : { getDownloadStream },
+      );
+      mockAxios.mockResolvedValue({ data: null });
+
+      const result = await primeMissing(['librechat-file-id']);
+
+      expect(result.files).toEqual([]);
+      expect(result.missingFilesContext).toContain('"cross-region-report.png"');
+      expect(result.missingFilesContext).toContain('deleted from storage');
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining('resource-recovery-required'),
+      );
+      const failureLogs = logger.error.mock.calls.map(([message]) => message).join('\n');
+      expect(failureLogs).toContain('category=missing_backing_object');
+      expect(failureLogs).not.toContain(dbFile.filename);
+    });
+
+    it('still requires recovery when the Code API upload returns 404', async () => {
+      const dbFile = makeMissingObjectFile('librechat-file-id', 'cross-region-report.png');
+      const getDownloadStream = jest.fn().mockResolvedValue(Readable.from(['source bytes']));
+      const handleFileUpload = jest.fn().mockRejectedValue({ response: { status: 404 } });
+      getFiles.mockResolvedValue([dbFile]);
+      getStrategyFunctions.mockImplementation((source) =>
+        source === 'execute_code' ? { handleFileUpload } : { getDownloadStream },
+      );
+      mockAxios.mockResolvedValue({ data: null });
+
+      await expect(primeMissing(['librechat-file-id'])).rejects.toMatchObject({
+        code: ErrorTypes.RESOURCE_RECOVERY_REQUIRED,
+        details: { required: 1, primed: 0, failed: 1 },
+      });
+      expect(handleFileUpload).toHaveBeenCalled();
+    });
+
+    it('still requires recovery when a file failed for another reason', async () => {
+      const gone = makeMissingObjectFile('gone-id', 'gone.csv');
+      const denied = makeMissingObjectFile('denied-id', 'denied.csv');
+      const getDownloadStream = jest.fn((_req, path) =>
+        Promise.reject(
+          path.includes('gone-id')
+            ? { code: 'BlobNotFound', statusCode: 404 }
+            : { code: 'AccessDenied', status: 403 },
+        ),
+      );
+      getFiles.mockResolvedValue([gone, denied]);
+      getStrategyFunctions.mockImplementation((source) =>
+        source === 'execute_code' ? { handleFileUpload: jest.fn() } : { getDownloadStream },
+      );
+      mockAxios.mockResolvedValue({ data: null });
+
+      await expect(primeMissing(['gone-id', 'denied-id'])).rejects.toMatchObject({
+        code: ErrorTypes.RESOURCE_RECOVERY_REQUIRED,
+        details: { required: 2, primed: 0, failed: 2 },
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('category=resource_access_denied'),
+      );
+    });
+
+    it.each([
       ['storage access denied', { code: 'AccessDenied', status: 403 }, 'resource_access_denied'],
       ['Code API throttling', { code: 'CODE_API_RATE_LIMITED', status: 429 }, 'rate_limited'],
     ])(

@@ -4,6 +4,7 @@ import { AnthropicClientOptions } from '@librechat/agents';
 import {
   THINKING_BINDING_BETA,
   THINKING_DISPLAY_UPDATES_BETA,
+  VERTEX_PATH_SEGMENT_PATTERN,
   requestsThinkingDisplayUpdates,
   clampOutputConfigEffort,
   omitsSamplingParameters,
@@ -224,6 +225,9 @@ function getLLMConfig(
       requestOptions.model ?? '',
       options.vertexConfig,
     );
+    if (deploymentName !== '' && !VERTEX_PATH_SEGMENT_PATTERN.test(deploymentName)) {
+      throw new Error('The Vertex AI deployment name for this model is not a valid model ID.');
+    }
     requestOptions.model = deploymentName;
 
     requestOptions.createClient = () =>

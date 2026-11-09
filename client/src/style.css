@@ -140,9 +140,6 @@ html {
 html.high-contrast {
   /* A 0.5rem bar is a small target to hit and a thin thing to see. */
   --scrollbar-size: 0.75rem;
-  /* Keep both animated text stops at the AAA ratios declared by the palette. */
-  --shimmer-base-alpha: 1;
-  --shimmer-dip-alpha: 1;
 }
 html.high-contrast ::-webkit-scrollbar-thumb {
   /* The 10%-alpha thumb is invisible against a pure black or white canvas. */
@@ -288,36 +285,6 @@ html.high-contrast.dark .btn-neutral:hover {
   background-color: rgb(var(--surface-hover));
 }
 
-.icon-sm {
-  stroke-width: 2;
-  height: 1rem;
-  width: 1rem;
-}
-.icon-md,
-.icon-md-heavy {
-  stroke-width: 1.5;
-  height: 1.125rem;
-  width: 1.125rem;
-}
-.icon-md-heavy {
-  stroke-width: 2.5;
-}
-.icon-lg {
-  stroke-width: 1.5;
-  height: 1.5rem;
-  width: 1.5rem;
-}
-.icon-xl {
-  stroke-width: 1.5;
-  height: 1.75rem;
-  width: 1.75rem;
-}
-.icon-2xl {
-  stroke-width: 1.5;
-  height: 2rem;
-  width: 2rem;
-}
-
 /* Forced-colors overrides the `background-color: currentColor` a masked CustomIcon
  * paints with. */
 @media (forced-colors: active) {
@@ -342,10 +309,26 @@ html.high-contrast.dark .btn-neutral:hover {
     --tw-shadow: 0 0 transparent;
     -webkit-appearance: none;
     appearance: none;
-    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%238e8ea0' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
-    background-position: right 0.5rem center;
+    background-image:
+      linear-gradient(
+        to top right,
+        transparent calc(50% - 0.056em),
+        currentColor calc(50% - 0.056em),
+        currentColor calc(50% + 0.056em),
+        transparent calc(50% + 0.056em)
+      ),
+      linear-gradient(
+        to bottom right,
+        transparent calc(50% - 0.056em),
+        currentColor calc(50% - 0.056em),
+        currentColor calc(50% + 0.056em),
+        transparent calc(50% + 0.056em)
+      );
+    background-position:
+      right calc(0.5rem + 0.75em) center,
+      right calc(0.5rem + 0.45em) center;
     background-repeat: no-repeat;
-    background-size: 1.5em 1.5em;
+    background-size: 0.3em 0.3em;
     padding-inline-end: 2.5rem;
     background-color: rgb(var(--select-fill));
     border-color: rgb(var(--select-edge));
@@ -355,7 +338,18 @@ html.high-contrast.dark .btn-neutral:hover {
     line-height: 1.5rem;
   }
   [dir='rtl'] select {
-    background-position: left 0.5rem center;
+    background-position:
+      left calc(0.5rem + 0.45em) center,
+      left calc(0.5rem + 0.75em) center;
+  }
+}
+
+/* Forced colors computes `background-image` to none unless it holds a `url()`, which
+ * removes the gradient arrow; hand the indicator back to the browser. */
+@media (forced-colors: active) {
+  select {
+    -webkit-appearance: menulist;
+    appearance: menulist;
   }
 }
 
@@ -933,7 +927,7 @@ pre[class*='language-'] {
 /* Tailwind 3 gave every button a pointer cursor and Tailwind 4 leaves the
  * platform default, so this shim is what keeps the affordance. It belongs in
  * `base`: unlayered it would outrank every utility in the sheet, and
- * `cursor-default` on `SelectDropDown` or `disabled:cursor-not-allowed` on a
+ * `cursor-default` on a trigger or `disabled:cursor-not-allowed` on a
  * disabled button would stop meaning anything. */
 @layer base {
   [role='button'],
@@ -1852,8 +1846,7 @@ html {
 
 /* iOS zooms into a focused field under 16px and the installed PWA never zooms back out. */
 @media (any-pointer: coarse) {
-  .message-editor-text,
-  .composer-text {
+  .message-editor-text {
     font-size: max(16px, var(--markdown-font-size, var(--font-size-base)));
   }
 }
@@ -1870,26 +1863,6 @@ html {
 .code-analyze-block pre,
 .code-analyze-block .overflow-y-auto {
   font-size: var(--markdown-font-size, var(--font-size-base));
-}
-
-.tool-status-text {
-  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
-  line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base)));
-}
-
-.progress-text-wrapper {
-  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
-  line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base)));
-}
-
-.progress-text-content {
-  font-size: inherit;
-  line-height: inherit;
-}
-
-.progress-text-wrapper button {
-  font-size: inherit;
-  line-height: inherit;
 }
 
 .tooltip {
@@ -2437,66 +2410,6 @@ html[data-input-modality='keyboard']
 
 .badge-icon {
   transition: transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-}
-
-@keyframes shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
-}
-
-@keyframes shimmer-rtl {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
-}
-
-/* The sweep every in-flight label shares: a running tool call, streaming
-   reasoning, the elapsed timer. Painted from theme roles rather than fixed
-   black/white keyed off `.dark`, so a stored or custom theme restates it the
-   way it restates any other color. Unset, the base falls back to whatever
-   `--text-primary` is in scope AT THE LABEL — resolving it in a `:root`
-   declaration instead would freeze the default and ignore theme scopes applied
-   further down. Dark declares a base outright: its established value is dimmer
-   than that theme's text color rather than equal to it. */
-.shimmer {
-  display: inline-block;
-  position: relative;
-  background: linear-gradient(
-    90deg,
-    rgb(var(--shimmer-base, var(--text-primary)) / var(--shimmer-base-alpha, 1)) 25%,
-    rgb(var(--shimmer-dip) / var(--shimmer-dip-alpha, 1)) 50%,
-    rgb(var(--shimmer-base, var(--text-primary)) / var(--shimmer-base-alpha, 1)) 75%
-  );
-  background-size: 200% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: shimmer 4s linear infinite;
-}
-
-[dir='rtl'] .shimmer,
-.shimmer:dir(rtl) {
-  animation-name: shimmer-rtl;
-}
-
-/* Halting the animation alone is not a fallback: the background would settle
-   at position 0 and show only half the sweep, stranding the tail of the label
-   in the near-invisible dip. Drop the gradient and hand the glyphs back to the
-   color they would have had. */
-@media (prefers-reduced-motion: reduce) {
-  .shimmer,
-  [dir='rtl'] .shimmer {
-    background: none;
-    animation: none;
-    -webkit-text-fill-color: currentcolor;
-  }
 }
 
 .sharepoint-picker-bg {

@@ -1,3 +1,4 @@
+const { GraphEvents } = require('@librechat/agents');
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 require('events').EventEmitter.defaultMaxListeners = 100;
 const { logger, MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH } = require('@librechat/data-schemas');
@@ -51,6 +52,8 @@ const {
   computeAgentRequestFingerprint,
   computeLegacyAgentRequestFingerprint,
   getRunDiscoveredTools,
+  captureAuthoredSkills,
+  restoreAuthoredSkills,
   captureResumeModelParameters,
   pickResumeContext,
   getApprovalTtlMs,
@@ -411,7 +414,7 @@ class AgentClient extends BaseClient {
     );
   }
 
-  async addDocuments(message, attachments) {
+  async addDocuments(message, attachments, onMissingFile) {
     const memoryContext = {
       req: this.options.req,
       conversationId: this.conversationId,
@@ -420,13 +423,13 @@ class AgentClient extends BaseClient {
     };
     logAgentMemorySnapshot('before_encode_documents', memoryContext);
     try {
-      return await super.addDocuments(message, attachments);
+      return await super.addDocuments(message, attachments, onMissingFile);
     } finally {
       logAgentMemorySnapshot('after_encode_documents', memoryContext);
     }
   }
 
-  async processAttachments(message, attachments, fileConsumers) {
+  async processAttachments(message, attachments, fileConsumers, onMissingFile) {
     const modelBoundAttachments = this.getModelBoundAttachmentsForEndpoint(attachments);
     const processableAttachments = this.getProcessableAttachmentsForEndpoint(
       attachments,
@@ -447,7 +450,12 @@ class AgentClient extends BaseClient {
     };
     logAgentMemorySnapshot('before_process_attachments', memoryContext);
     try {
-      return await super.processAttachments(message, processableAttachments, fileConsumers);
+      return await super.processAttachments(
+        message,
+        processableAttachments,
+        fileConsumers,
+        onMissingFile,
+      );
     } finally {
       logAgentMemorySnapshot('after_process_attachments', memoryContext);
     }
@@ -2136,7 +2144,7 @@ class AgentClient extends BaseClient {
    * @param {Array<MongoFile>} attachments
    * @returns {Promise<Array<Partial<MongoFile>>>}
    */
-  async addImageURLs(message, attachments) {
+  async addImageURLs(message, attachments, onMissingFile) {
     const { files, image_urls } = await encodeAndFormat(
       this.options.req,
       attachments,
@@ -2144,6 +2152,7 @@ class AgentClient extends BaseClient {
         provider: this.options.agent.provider,
         endpoint: this.options.endpoint,
         imageDetail: this.options.imageDetail,
+        onMissingFile,
       },
       VisionModes.agents,
     );
@@ -2904,7 +2913,7 @@ class AgentClient extends BaseClient {
       }
     }
     /** After the steer stamp, which adds replayed steers' documents of its own. */
-    dedupeDocumentNames(payload);
+    dedupeDocumentNames(payload, agentsById.values());
     if (hasFileContext) {
       for (let i = 0; i < orderedMessages.length; i++) {
         memoryPayload.push(
@@ -3105,6 +3114,7 @@ class AgentClient extends BaseClient {
         }
         const agentMemoryContext = formatMemoryContext(
           agentHasMemory ? partitionMemories?.withKeys : partitionMemories?.withoutKeys,
+          { announceEmpty: agentHasMemory || memoryAgentEnabled },
         );
         if (agentMemoryContext) {
           agentRunContextParts.push(agentMemoryContext);
@@ -4224,6 +4234,7 @@ class AgentClient extends BaseClient {
     const pauseProjection = {
       expectedCreatedAt: this.jobCreatedAt,
       ...(staged.discoveredTools.length > 0 ? { discoveredTools: staged.discoveredTools } : {}),
+      authoredSkills: staged.authoredSkills,
       ...(staged.activityPhaseSnapshot == null
         ? {}
         : { activityPhaseSnapshot: staged.activityPhaseSnapshot }),
@@ -4524,6 +4535,9 @@ class AgentClient extends BaseClient {
       interruptId: interrupt.interruptId,
       interruptType: interrupt.payload.type,
       discoveredTools,
+      authoredSkills: captureAuthoredSkills(
+        this.options.eventHandlers?.[GraphEvents.ON_TOOL_EXECUTE],
+      ),
       activityPhaseSnapshot: this.activityPhaseWiring?.snapshot?.(),
       compactionSemanticIndex: createCompactionSemanticIndexProjection(
         this.compactionSemanticIndexSnapshot,
@@ -5430,9 +5444,14 @@ class AgentClient extends BaseClient {
     commandOptions,
     userMCPAuthMap,
     discoveredToolNames,
+    authoredSkills,
     activityPhaseSnapshot,
     compactionSemanticIndex,
   }) {
+    restoreAuthoredSkills(
+      this.options.eventHandlers?.[GraphEvents.ON_TOOL_EXECUTE],
+      authoredSkills,
+    );
     /** The seeded state is on the job before the run is rebuilt, so a Stop
      * during rebuild still persists it onto the stopped response. */
     await this.publishRunContextMeta?.();

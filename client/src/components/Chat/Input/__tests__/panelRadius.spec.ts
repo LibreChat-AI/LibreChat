@@ -8,12 +8,17 @@ const PACKAGE_COMPONENTS = path.resolve(
   '../../../../../../packages/client/src/components',
 );
 const PACKAGE_PANELS = [
+  'Popover.tsx',
   'SendActions.tsx',
   'TimePicker.tsx',
   'ControlCombobox.tsx',
   'MultiSelect.tsx',
 ];
 const COMPONENTS_DIR = path.resolve(CHAT_DIR, '..');
+const CHAT_PACKAGE_COMPONENTS = path.resolve(
+  __dirname,
+  '../../../../../../packages/chat/src/components',
+);
 const CLIENT_PANELS = [
   'ui/LocalizedDateRangePicker.tsx',
   'Nav/AccountSettings.tsx',
@@ -23,7 +28,7 @@ const CLIENT_PANELS = [
 const SOURCE = /\.tsx$/;
 const SKIPPED = /(__tests__|\.spec\.|\.test\.)/;
 const PANEL_TAG =
-  /<(?:(?:Ariakit\.)?(?:Popover|SelectPopover|ComboboxPopover|Hovercard)|(?:Ariakit|Menu)\.Menu|(?:Popover\.)?Content)(?![.\w])(?:[^\n]*>$|[\s\S]*?\n\s*\/?>)/gm;
+  /<(?:(?:Ariakit\.)?(?:Popover|SelectPopover|ComboboxPopover|Hovercard)|(?:Ariakit|Menu)\.Menu|(?:Popover\.|PopoverPrimitive\.)?Content)(?![.\w])(?:[^\n]*>$|[\s\S]*?\n\s*\/?>)/gm;
 const PANEL_CLASS = /className="popover\b[^"]*"/g;
 const PANEL_CONSTANT = /const (?:menuClasses|panelClasses|popoverClasses)\b[^;]*;/g;
 const PANEL_ROLE = /\b(?:rounded-theme-(?:menu-panel|compact-panel|popover|surface)|popover-ui)\b/;
@@ -45,6 +50,7 @@ function sourcesUnder(dir: string): string[] {
 describe('menu, popover and picker panels', () => {
   const files = [
     ...SCAN_DIRS.flatMap((dir) => sourcesUnder(path.join(CHAT_DIR, dir))),
+    ...sourcesUnder(CHAT_PACKAGE_COMPONENTS),
     ...PACKAGE_PANELS.map((file) => path.join(PACKAGE_COMPONENTS, file)),
     ...CLIENT_PANELS.map((file) => path.join(COMPONENTS_DIR, file)),
   ];

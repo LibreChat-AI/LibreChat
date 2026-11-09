@@ -23,6 +23,7 @@ import type {
   Usage,
 } from './types';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
+import type { TextContentFragment } from '~/protection/types';
 import {
   writeDone,
   emitResponseCompleted,
@@ -46,6 +47,7 @@ import {
   type StreamHandlerConfig,
 } from './handlers';
 import { declaredClientToolNames, validateClientTools } from './clientTools';
+import { extractFileContent } from '~/protection/adapters/submissions';
 import { aggregateCollectedUsage } from '../usage';
 
 interface ResponseUsageAccumulator {
@@ -166,6 +168,44 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 /**
+ * A `function_call_output.output` is a string or an array of `input_text`,
+ * `input_image` and `input_file` parts. A part that would reach the provider
+ * without its content (an image with no URL, text that is not a string) is
+ * refused here rather than silently dropped during conversion.
+ */
+function validateFunctionCallOutput(output: unknown): string | undefined {
+  if (typeof output === 'string') {
+    return undefined;
+  }
+  if (!Array.isArray(output)) {
+    return 'requires output as a string or an array of input_text, input_image or input_file parts';
+  }
+  for (let index = 0; index < output.length; index++) {
+    const part = output[index] as Partial<Record<string, unknown>> | null;
+    if (part == null || typeof part !== 'object' || Array.isArray(part)) {
+      return `output[${index}] must be a content part object`;
+    }
+    if (part.type === 'input_text') {
+      if (typeof part.text !== 'string') {
+        return `output[${index}] input_text requires text as a string`;
+      }
+      continue;
+    }
+    if (part.type === 'input_image') {
+      if (!isNonEmptyString(part.image_url)) {
+        return `output[${index}] input_image requires a non-empty image_url`;
+      }
+      continue;
+    }
+    if (part.type === 'input_file') {
+      continue;
+    }
+    return `output[${index}] has unsupported type; expected input_text, input_image or input_file`;
+  }
+  return undefined;
+}
+
+/**
  * Validates the replayed tool exchanges in `input`.
  *
  * A turn is persisted as text, so `previous_response_id` does not carry a tool
@@ -223,8 +263,9 @@ export function validateInputToolExchanges(
       if (!isNonEmptyString(output.call_id)) {
         return 'each function_call_output requires a non-empty string call_id';
       }
-      if (typeof output.output !== 'string') {
-        return `function_call_output ${output.call_id} requires output as a string`;
+      const outputError = validateFunctionCallOutput(output.output);
+      if (outputError !== undefined) {
+        return `function_call_output ${output.call_id} ${outputError}`;
       }
       if (outputCallIds.has(output.call_id)) {
         return `duplicate function_call_output call_id: ${output.call_id}`;
@@ -261,6 +302,13 @@ export function isValidationFailure(
  * INPUT CONVERSION
  * ============================================================================= */
 
+/** A text or image content part in the shape LibreChat persists. */
+export interface InternalContentPart {
+  type: string;
+  text?: string;
+  image_url?: unknown;
+}
+
 /** A replayed tool exchange, in the content-part shape LibreChat persists. */
 export interface InternalToolCallPart {
   type: ContentTypes.TOOL_CALL;
@@ -270,7 +318,7 @@ export interface InternalToolCallPart {
     /** Raw JSON string as the caller sent it; `formatAgentMessages` parses it. */
     args: string;
     /** The caller's result for this call. Present on every replayed pair. */
-    output: string;
+    output: string | InternalContentPart[];
   };
 }
 
@@ -285,9 +333,7 @@ export interface InternalToolCallPart {
  */
 export interface InternalMessage {
   role: 'system' | 'user' | 'assistant';
-  content:
-    | string
-    | Array<{ type: string; text?: string; image_url?: unknown } | InternalToolCallPart>;
+  content: string | Array<InternalContentPart | InternalToolCallPart>;
   name?: string;
 }
 
@@ -333,31 +379,7 @@ export function convertInputToMessages(input: string | InputItem[]): InternalMes
       if (typeof messageItem.content === 'string') {
         content = messageItem.content;
       } else if (Array.isArray(messageItem.content)) {
-        content = messageItem.content
-          .filter((part): part is InputContent | ModelContent => part != null)
-          .map((part) => {
-            if (part.type === 'input_text' || part.type === 'output_text') {
-              return { type: 'text', text: (part as { text?: string }).text ?? '' };
-            }
-            if (part.type === 'refusal') {
-              return { type: 'text', text: (part as { refusal?: string }).refusal ?? '' };
-            }
-            if (part.type === 'input_image') {
-              return {
-                type: 'image_url',
-                image_url: {
-                  url: (part as { image_url?: string }).image_url,
-                  detail: (part as { detail?: string }).detail,
-                },
-              };
-            }
-            if (part.type === 'input_file') {
-              const filePart = part as { filename?: string };
-              return { type: 'text', text: `[File: ${filePart.filename ?? 'unknown'}]` };
-            }
-            return null;
-          })
-          .filter((part): part is NonNullable<typeof part> => part != null);
+        content = convertContentParts(messageItem.content);
       } else {
         content = '';
       }
@@ -429,13 +451,87 @@ export function convertInputToMessages(input: string | InputItem[]): InternalMes
   return messages;
 }
 
+/** Maps Open Responses content parts to the content parts LibreChat persists. */
+function convertContentParts(parts: (InputContent | ModelContent)[]): InternalContentPart[] {
+  return parts
+    .filter((part): part is InputContent | ModelContent => part != null)
+    .map((part): InternalContentPart | null => {
+      if (part.type === 'input_text' || part.type === 'output_text') {
+        return { type: 'text', text: (part as { text?: string }).text ?? '' };
+      }
+      if (part.type === 'refusal') {
+        return { type: 'text', text: (part as { refusal?: string }).refusal ?? '' };
+      }
+      if (part.type === 'input_image') {
+        return {
+          type: 'image_url',
+          image_url: {
+            url: (part as { image_url?: string }).image_url,
+            detail: (part as { detail?: string }).detail,
+          },
+        };
+      }
+      if (part.type === 'input_file') {
+        const filePart = part as { filename?: string };
+        return { type: 'text', text: `[File: ${filePart.filename ?? 'unknown'}]` };
+      }
+      return null;
+    })
+    .filter((part): part is InternalContentPart => part != null);
+}
+
+/**
+ * File-policy fragments for the media parts in `input`: each file name and each
+ * non-inline image URL, whether it arrives in a `message` or in a
+ * `function_call_output` content array. Conversion turns these parts into text
+ * and `image_url` blocks, so the message traversal alone never sees them as files.
+ */
+export function extractResponseInputFileContent(
+  input: string | InputItem[] | undefined,
+): TextContentFragment[] {
+  const fragments: TextContentFragment[] = [];
+  if (!Array.isArray(input)) {
+    return fragments;
+  }
+  for (const item of input) {
+    let parts: unknown;
+    if (item?.type === 'message') {
+      parts = (item as { content?: unknown }).content;
+    } else if (item?.type === 'function_call_output') {
+      parts = (item as { output?: unknown }).output;
+    }
+    if (!Array.isArray(parts)) {
+      continue;
+    }
+    for (const part of parts as Array<Partial<InputContent> | null>) {
+      if (part?.type === 'input_file') {
+        fragments.push(...extractFileContent({ name: part.filename }));
+        continue;
+      }
+      if (
+        part?.type === 'input_image' &&
+        typeof part.image_url === 'string' &&
+        !part.image_url.startsWith('data:')
+      ) {
+        fragments.push(...extractFileContent({ uri: part.image_url }));
+      }
+    }
+  }
+  return fragments;
+}
+
 /** Indexes every `function_call_output` in the input by its `call_id`. */
-function collectFunctionCallOutputs(input: InputItem[]): Map<string, string> {
-  const outputs = new Map<string, string>();
+function collectFunctionCallOutputs(
+  input: InputItem[],
+): Map<string, InternalToolCallPart['tool_call']['output']> {
+  const outputs = new Map<string, InternalToolCallPart['tool_call']['output']>();
   for (const item of input) {
     if (item.type === 'function_call_output') {
       const fcoItem = item as FunctionCallOutputItemParam;
-      outputs.set(fcoItem.call_id, fcoItem.output);
+      outputs.set(
+        fcoItem.call_id,
+        typeof fcoItem.output === 'string' ? fcoItem.output : convertContentParts(fcoItem.output),
+      );
     }
   }
   return outputs;

@@ -1,5 +1,6 @@
 import { Provider } from 'jotai';
 import { renderHook } from '@testing-library/react';
+import { resolveCodeApprovalModes } from '@librechat/chat';
 import { LocalStorageKeys } from 'librechat-data-provider';
 import type { Agent, TConversation } from 'librechat-data-provider';
 import useCodeApprovalMode, {
@@ -67,12 +68,24 @@ describe('useCodeApprovalMode', () => {
   test('returns the selected mode when the attached environment permits it', () => {
     const { result } = renderHook(() => useCodeApprovalMode(conversation));
 
-    expect(result.current).toEqual({
+    expect(result.current).toMatchObject({
       available: true,
       modes: ['ask', 'acceptEdits'],
       selected: 'acceptEdits',
     });
   });
+
+  test.each(['attached', 'without_attached'] as const)(
+    'exposes inputs that resolve to what the hook reports under %s',
+    (codeEnvironmentMode) => {
+      const { result } = renderHook(() =>
+        useCodeApprovalMode(conversation, undefined, codeEnvironmentMode),
+      );
+      const { readInputs, ...reported } = result.current;
+
+      expect(resolveCodeApprovalModes({ ...readInputs(), codeEnvironmentMode })).toEqual(reported);
+    },
+  );
 
   test('offers no attached mode once the chat runs without a workspace, and submits ask', () => {
     const { result, rerender } = renderHook(
@@ -81,9 +94,9 @@ describe('useCodeApprovalMode', () => {
       { initialProps: { codeEnvironmentMode: 'without_attached' } },
     );
 
-    expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: 'ask' });
     rerender({ codeEnvironmentMode: 'attached' });
-    expect(result.current).toEqual({
+    expect(result.current).toMatchObject({
       available: true,
       modes: ['ask', 'acceptEdits'],
       selected: 'acceptEdits',
@@ -97,9 +110,9 @@ describe('useCodeApprovalMode', () => {
       { initialProps: { resolved: 'without_attached' } },
     );
 
-    expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: 'ask' });
     rerender({ resolved: 'attached' });
-    expect(result.current).toEqual({
+    expect(result.current).toMatchObject({
       available: true,
       modes: ['ask', 'acceptEdits'],
       selected: 'acceptEdits',
@@ -300,7 +313,7 @@ describe('useCodeApprovalMode', () => {
 
     const { result } = renderHook(() => useCodeApprovalMode(conversation));
 
-    expect(result.current).toEqual({ available: false, modes: [], selected: undefined });
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: undefined });
   });
 
   test('requires an affirmative server approval capability', () => {
@@ -314,7 +327,7 @@ describe('useCodeApprovalMode', () => {
 
     const { result } = renderHook(() => useCodeApprovalMode(conversation));
 
-    expect(result.current).toEqual({ available: false, modes: [], selected: undefined });
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: undefined });
   });
 
   test('keeps ask fail-closed when an older server does not advertise approval modes', () => {
@@ -329,7 +342,7 @@ describe('useCodeApprovalMode', () => {
 
     const { result } = renderHook(() => useCodeApprovalMode(conversation));
 
-    expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: 'ask' });
   });
 
   test('keeps ask fail-closed while agent metadata is unavailable', () => {
@@ -337,7 +350,7 @@ describe('useCodeApprovalMode', () => {
 
     const { result } = renderHook(() => useCodeApprovalMode(conversation));
 
-    expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: 'ask' });
   });
 
   test('removing the graph capability removes graph-member approval requirements', () => {

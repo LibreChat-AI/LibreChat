@@ -20,7 +20,7 @@ import {
 } from '~/protection/files';
 import { ContentTraversalLimitError } from '~/protection/adapters/nested';
 import { createEdgeCollector, resolveReachableGraph } from '../edges';
-import { createConcurrencyLimiter } from '~/utils/promise';
+import { getLookupConcurrency } from '~/utils/concurrency';
 import { collectReachableAgents } from '../traversal';
 
 type ResumeMessage = StoredMessageContentInput & {
@@ -64,6 +64,7 @@ interface ResumeAgentSnapshotInput {
   capabilities: readonly string[];
   getAgent: (filter: { id: string }) => Promise<Agent | null>;
   canAccessAgent?: (agent: Agent) => Promise<boolean>;
+  appConfig?: Pick<AppConfig, 'concurrency'>;
 }
 
 type GetResumeMessages = (filter: {
@@ -146,6 +147,7 @@ export async function getResumeAgentSnapshot({
   capabilities,
   getAgent,
   canAccessAgent,
+  appConfig,
 }: ResumeAgentSnapshotInput): Promise<ResumeSnapshotAgent[]> {
   const primary: ResumeSnapshotAgent = {
     ...primaryAgent,
@@ -155,6 +157,7 @@ export async function getResumeAgentSnapshot({
     },
     subagentAgentConfigs: [],
   };
+  const resumeLoadConcurrency = getLookupConcurrency(appConfig, 'resumeAgentLoads');
   let roots: ResumeSnapshotAgent[] = [primary];
   const byId = new Map<string, ResumeSnapshotAgent>([[primary.id, primary]]);
 
@@ -168,27 +171,33 @@ export async function getResumeAgentSnapshot({
   }
 
   const unavailable = new Set<string>();
-  const loadAgent = createConcurrencyLimiter(4);
   const read = async (id: string): Promise<ResumeSnapshotAgent | null> => {
     const existing = byId.get(id);
     if (existing) return existing;
     if (unavailable.has(id)) return null;
-    return loadAgent(async () => {
-      let loaded: Agent | null;
-      try {
-        loaded = await getAgent({ id });
-        if (loaded && canAccessAgent && !(await canAccessAgent(loaded))) loaded = null;
-      } catch {
-        throw new ContentTraversalLimitError();
-      }
-      if (!loaded) {
-        unavailable.add(id);
-        return null;
-      }
-      const snapshot: ResumeSnapshotAgent = { ...loaded, subagentAgentConfigs: [] };
-      byId.set(id, snapshot);
-      return snapshot;
-    });
+    let loaded: Agent | null;
+    try {
+      loaded = await getAgent({ id });
+      if (loaded && canAccessAgent && !(await canAccessAgent(loaded))) loaded = null;
+    } catch {
+      throw new ContentTraversalLimitError();
+    }
+    if (!loaded) {
+      unavailable.add(id);
+      return null;
+    }
+    const snapshot: ResumeSnapshotAgent = { ...loaded, subagentAgentConfigs: [] };
+    byId.set(id, snapshot);
+    return snapshot;
+  };
+  const readRoots = async (ids: readonly string[]): Promise<Array<ResumeSnapshotAgent | null>> => {
+    const loaded: Array<ResumeSnapshotAgent | null> = [];
+    for (let start = 0; start < ids.length; start += resumeLoadConcurrency) {
+      loaded.push(
+        ...(await Promise.all(ids.slice(start, start + resumeLoadConcurrency).map(read))),
+      );
+    }
+    return loaded;
   };
 
   const rootSeeds = new Set([...byId.keys(), ...(primary.agent_ids ?? [])]);
@@ -204,7 +213,7 @@ export async function getResumeAgentSnapshot({
     agentsToProcess.clear();
     if (rootReads + batch.length > MAX_SUBAGENT_GRAPH_NODES) throw new ContentTraversalLimitError();
     rootReads += batch.length;
-    const loaded = await Promise.all(batch.map(read));
+    const loaded = await readRoots(batch);
     for (const root of loaded) {
       if (!root) continue;
       roots.push(root);
@@ -216,7 +225,7 @@ export async function getResumeAgentSnapshot({
   );
   if (rootReads + legacyIds.length > MAX_SUBAGENT_GRAPH_NODES)
     throw new ContentTraversalLimitError();
-  for (const root of await Promise.all(legacyIds.map(read))) {
+  for (const root of await readRoots(legacyIds)) {
     if (root) roots.push(root);
   }
   const { reachable } = resolveReachableGraph(
@@ -238,22 +247,29 @@ export async function getResumeAgentSnapshot({
     const references = getReferencedAgentIds(agent, capabilities);
     // Saved configurations already cap unique targets, independently of successful admissions.
     if (references.length > MAX_SUBAGENT_GRAPH_NODES) throw new ContentTraversalLimitError();
-    const children = await Promise.all(references.map(({ id }) => read(id)));
     const connected: ResumeSnapshotAgent[] = [];
-    for (let childIndex = 0; childIndex < references.length; childIndex++) {
-      const { id, terminal, required } = references[childIndex];
-      const child = children[childIndex];
-      if (!child) {
-        if (required) throw new ContentTraversalLimitError();
-        continue;
+    // Fold each bounded chunk before fetching more, and reject failures without awaiting siblings.
+    for (let start = 0; start < references.length; start += resumeLoadConcurrency) {
+      const chunk = references.slice(start, start + resumeLoadConcurrency);
+      const children = await Promise.all(
+        chunk.map(async ({ id, required }) => {
+          const child = await read(id);
+          if (!child && required) throw new ContentTraversalLimitError();
+          return child;
+        }),
+      );
+      for (let childIndex = 0; childIndex < chunk.length; childIndex++) {
+        const { id, terminal } = chunk[childIndex];
+        const child = children[childIndex];
+        if (!child) continue;
+        const countsAsMember = !rootIds.has(id) || (!terminal && id !== primary.id);
+        if (countsAsMember && !members.has(id)) {
+          if (members.size >= MAX_SUBAGENT_GRAPH_NODES) throw new ContentTraversalLimitError();
+          members.add(id);
+        }
+        if (!terminal && !expanded.has(id)) pending.push(child);
+        connected.push(child);
       }
-      const countsAsMember = !rootIds.has(id) || (!terminal && id !== primary.id);
-      if (countsAsMember && !members.has(id)) {
-        if (members.size >= MAX_SUBAGENT_GRAPH_NODES) throw new ContentTraversalLimitError();
-        members.add(id);
-      }
-      if (!terminal && !expanded.has(id)) pending.push(child);
-      connected.push(child);
     }
     agent.subagentAgentConfigs = connected;
   }

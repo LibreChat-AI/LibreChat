@@ -7,7 +7,7 @@ import { openSidebar } from './sidebar';
 /**
  * The Assistant Builder's picker shows "Create Assistant" until an assistant is
  * chosen. That label is an empty state, not a value, so it takes the muted tone
- * `SelectDropDown` gives its placeholder, while a chosen assistant reads as the
+ * the picker gives its placeholder, while a chosen assistant reads as the
  * primary value. Both expected colours are resolved from the app's stylesheet,
  * so the assertions hold in light and dark mode alike.
  */

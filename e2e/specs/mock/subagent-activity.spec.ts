@@ -11,8 +11,14 @@ import {
   sendMessage,
   sendMessageAndWaitForCompletion,
 } from './helpers';
-import { cleanupAgent, openAgentBuilder, uniqueAgentName } from './agents.helpers';
+import {
+  cleanupAgent,
+  openAgentBuilder,
+  closeMobileDrawer,
+  uniqueAgentName,
+} from './agents.helpers';
 import history from '../../fixtures/subagent-history.cjs';
+import { openChatHistory } from './scenarios/sidebar';
 
 const DETACHED_ACTIVITY_MARKER = 'E2E_SUBAGENT_ACTIVITY:';
 /** The activity hook's first reconnect is scheduled after 500 ms. */
@@ -43,16 +49,24 @@ async function createAgent(
   });
 }
 
+/** The child panel is a region beside the chat on wide layouts and a modal dialog over it on
+ *  narrow ones, the same element under either role. */
+const childActivityPanel = (page: Page) =>
+  page
+    .getByRole('region', { name: 'Child agent activity' })
+    .or(page.getByRole('dialog', { name: 'Child agent activity' }));
+
 async function selectAgent(page: Page, name: string): Promise<void> {
   const form = await openAgentBuilder(page);
   await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
   await page.getByRole('option', { name }).click();
   await expect(form.getByLabel('Agent name')).toHaveValue(name);
   await form.getByRole('button', { name: 'Select Agent' }).click();
+  await closeMobileDrawer(page);
 }
 
 test.describe('detached subagent activity', () => {
-  test('streams two child runs into the shared panel and restores terminal activity', async ({
+  test('streams two child runs into the shared panel and restores terminal activity @scenario:subagent-panel-streams-child-activity-once', async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -111,7 +125,7 @@ test.describe('detached subagent activity', () => {
       });
       await cards.first().click();
 
-      const panel = page.getByRole('region', { name: 'Child agent activity' });
+      const panel = childActivityPanel(page);
       const activityResponse = await activityResponsePromise;
       await expect(panel).toBeVisible();
       await expect(panel).toContainText('child-1-phase-10');
@@ -149,7 +163,7 @@ test.describe('detached subagent activity', () => {
       await expect(panel.getByText('Completed', { exact: true })).toHaveCount(0);
 
       await panel.getByRole('button', { name: 'Close' }).click();
-      await page.getByRole('button', { name: 'Chat History' }).click();
+      await openChatHistory(page);
       const conversationRows = page.getByTestId('convo-item');
       await expect(conversationRows.locator('button[aria-current="page"]')).toBeVisible();
       for (const child of children) {
@@ -226,6 +240,43 @@ async function assertFullToolDetails(
   await expect(details.getByText(history.payload(label, index), { exact: true })).toBeVisible();
 }
 
+/**
+ * Where the steer sits relative to the text before and after it, in document
+ * order within its conversation. Each text is matched by the innermost element
+ * holding exactly that text, so the check reads the same whether the turn is
+ * still streaming (words split into `[data-lc-fade]` spans) or has settled.
+ */
+async function steerPlacement(
+  steer: Locator,
+  before: string,
+  after: string,
+): Promise<{ before: boolean; after: boolean }> {
+  return steer.evaluate(
+    (node, texts) => {
+      const root = node.closest('[data-subagent-conversation]');
+      const find = (text: string): Element | undefined => {
+        if (root == null) return undefined;
+        return [...root.querySelectorAll('*')].find(
+          (element) =>
+            element.textContent === text &&
+            ![...element.children].some((child) => child.textContent === text),
+        );
+      };
+      const preceding = find(texts.before);
+      const following = find(texts.after);
+      return {
+        before:
+          preceding != null &&
+          Boolean(preceding.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING),
+        after:
+          following != null &&
+          Boolean(node.compareDocumentPosition(following) & Node.DOCUMENT_POSITION_FOLLOWING),
+      };
+    },
+    { before, after },
+  );
+}
+
 async function openHistoryChild(page: Page, label: string): Promise<Locator> {
   const card = page.locator(`[data-subagent-tool-call="${history.dispatchId(label)}"]`);
   await expect
@@ -236,7 +287,7 @@ async function openHistoryChild(page: Page, label: string): Promise<Locator> {
     .toBe(true);
   await expect(card).toHaveCount(1);
   await card.click();
-  const panel = page.getByRole('region', { name: 'Child agent activity' });
+  const panel = childActivityPanel(page);
   await expect(panel).toBeVisible();
   return panel;
 }
@@ -259,7 +310,9 @@ async function historyThreadPath(
 
 test.describe('subagent chat retained-history parity', () => {
   for (const mode of ['normal chat', 'late open', 'cold reload'] as const) {
-    const name = `${mode} restores over-capacity history while running and completes once`;
+    const scenario =
+      mode === 'late open' ? ' @scenario:subagent-panel-replays-history-then-goes-live' : '';
+    const name = `${mode} restores over-capacity history while running and completes once${scenario}`;
     test(name, async ({ page, browser, baseURL }, testInfo) => {
       test.setTimeout(120_000);
       const prefix = `history-${mode.replaceAll(' ', '-')}`;
@@ -269,6 +322,7 @@ test.describe('subagent chat retained-history parity', () => {
       let coldContext: BrowserContext | undefined;
       let activePage = page;
       let activityRequests = 0;
+      let primaryError: unknown;
       page.on('request', (request) => {
         if (ACTIVITY_PATH.test(new URL(request.url()).pathname)) activityRequests++;
       });
@@ -304,8 +358,7 @@ test.describe('subagent chat retained-history parity', () => {
           expect(activityRequests, 'no child stream was opened before the ring overflowed').toBe(0);
         }
         if (mode === 'cold reload') {
-          await page
-            .getByRole('region', { name: 'Child agent activity' })
+          await childActivityPanel(page)
             .getByRole('button', { name: 'Close', exact: true })
             .click();
           const storageState = await page.context().storageState();
@@ -356,6 +409,26 @@ test.describe('subagent chat retained-history parity', () => {
           0,
         );
 
+        const guidance = `Additional parent design checks:\n${'Keep parent guidance in transcript order and preserve complete text.\n'.repeat(18)}END_OF_PARENT_GUIDANCE_${label}`;
+        if (threadPath) {
+          const [threadEndpoint, query] = threadPath.split('?');
+          const controlledTaskId = new URLSearchParams(query).get('taskId');
+          const controlled = await requestJson<{ receipt: { status: string } }>(activePage, {
+            path: `${threadEndpoint}/control`,
+            token: viewerToken,
+            method: 'POST',
+            body: {
+              taskId: controlledTaskId,
+              invocationId: `history-guidance-${label}`,
+              action: 'steer',
+              message: guidance,
+            },
+          });
+          expect(controlled.receipt.status).toBe('accepted');
+          await expect(
+            surface.getByText('Message shortened for display.', { exact: true }),
+          ).toHaveCount(0);
+        }
         await gates.signal('advance');
         await gates.wait('live', { timeoutMs: 15_000 });
         await assertHistoryCalls(surface, label, history.CALL_COUNT + 1);
@@ -400,6 +473,24 @@ test.describe('subagent chat retained-history parity', () => {
         );
         await assertHistoryCalls(surface, label, history.CALL_COUNT + 1);
         await assertFullToolDetails(surface, label, 0);
+        if (threadPath) {
+          const steer = surface
+            .locator('[data-steer-render]')
+            .filter({ hasText: `END_OF_PARENT_GUIDANCE_${label}` });
+          await expect(steer).toHaveCount(1);
+          const expand = steer.getByRole('button', { name: 'Show more', exact: true });
+          if (await expand.isVisible()) await expand.click();
+          await expect(steer).toContainText(`END_OF_PARENT_GUIDANCE_${label}`);
+          await expect(
+            surface.getByText('Message shortened for display.', { exact: true }),
+          ).toHaveCount(0);
+          const placement = { before: true, after: true };
+          const live = history.liveText(label);
+          const completed = history.completionText(label);
+          expect(await steerPlacement(steer, live, completed)).toEqual(placement);
+          await expect(surface.locator('[data-lc-fade]')).toHaveCount(0, { timeout: 20_000 });
+          expect(await steerPlacement(steer, live, completed)).toEqual(placement);
+        }
 
         if (mode !== 'normal chat') {
           await surface.getByRole('button', { name: 'Close', exact: true }).click();
@@ -411,6 +502,16 @@ test.describe('subagent chat retained-history parity', () => {
             : await openHistoryChild(activePage, label);
         await assertHistoryCalls(restored, label, history.CALL_COUNT + 1);
         await assertFullToolDetails(restored, label, 0);
+        if (threadPath) {
+          await expect(
+            restored
+              .locator('[data-steer-render]')
+              .filter({ hasText: `END_OF_PARENT_GUIDANCE_${label}` }),
+          ).toHaveCount(1);
+          await expect(
+            restored.getByText('Message shortened for display.', { exact: true }),
+          ).toHaveCount(0);
+        }
         await expect(
           restored.getByText(history.completionText(label), { exact: true }),
         ).toHaveCount(1);
@@ -418,13 +519,16 @@ test.describe('subagent chat retained-history parity', () => {
           contentType: 'application/json',
           body: JSON.stringify({ mode, hydrateMs, detailsMs, historicalCalls: history.CALL_COUNT }),
         });
+      } catch (error) {
+        primaryError = error;
+        throw error;
       } finally {
         try {
           await gates.release();
-          if (await gates.has('ready')) {
+          if (primaryError == null && (await gates.has('ready'))) {
             await gates.wait('done', { timeoutMs: 10_000 });
-            await rm(gates.directory, { recursive: true, force: true });
           }
+          if (await gates.has('done')) await rm(gates.directory, { recursive: true, force: true });
         } finally {
           try {
             for (const agentId of createdAgentIds.reverse()) {

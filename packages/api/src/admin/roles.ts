@@ -1,8 +1,9 @@
-import { PrincipalType, SystemRoles } from 'librechat-data-provider';
+import { PrincipalType, SystemRoles, partialWithoutDefaults } from 'librechat-data-provider';
 import {
   logger,
   RoleConflictError,
   isConfigMoveRefused,
+  RoleDeletionError,
   isValidObjectIdString,
   BASE_CONFIG_PRINCIPAL_ID,
 } from '@librechat/data-schemas';
@@ -14,16 +15,19 @@ import type {
   ISystemGrant,
   AuditSeverity,
   SystemGrantMove,
+  RoleDeletion,
   ConfigMoveOptions,
 } from '@librechat/data-schemas';
 import type { FilterQuery, Types } from 'mongoose';
 import type { Response } from 'express';
+import type { z } from 'zod';
 import type { ServerRequest } from '~/types/http';
 import type { RecordAuditEntry } from './audit';
 import type { CascadeStep } from './cascade';
 import { createAdminAuditEmitter, diffRolePermissions, configTarget } from './audit';
+import { cascadeStep, runCascade, invalidatingConfigStore } from './cascade';
 import { getSafeErrorMetadata } from '~/utils/errors';
-import { cascadeStep, runCascade } from './cascade';
+import { getActivePartition } from './partition';
 import { parsePagination } from './pagination';
 
 const systemRoleValues = new Set<string>(Object.values(SystemRoles));
@@ -119,20 +123,39 @@ interface RoleMemberParams extends RoleNameParams {
 
 export type RoleListItem = { _id: Types.ObjectId | string; name: string; description?: string };
 
+/**
+ * Role ids are names every tenant reuses, so every role operation here addresses the role of the
+ * caller's tenant partition and what it holds there (members, profile, grants and ACL entries):
+ * the active tenant's, or for an admin without a tenant only the platform-level ones, never each
+ * tenant's own role of the same name. The routes wire the data-schemas methods that keep to that
+ * partition, and a member added or removed by id must be a user of it too.
+ */
 export interface AdminRolesDeps {
+  /** The roles of the caller's tenant partition (`listRoles`). */
   listRoles: (options?: { limit?: number; offset?: number }) => Promise<RoleListItem[]>;
   countRoles: () => Promise<number>;
+  /**
+   * The role of exactly this name in the caller's tenant partition, read as stored
+   * (`getPartitionRole`); a missing system role is created there.
+   */
   getRoleByName: (name: string, fields?: string | string[] | null) => Promise<IRole | null>;
   createRoleByName: (roleData: Partial<IRole>) => Promise<IRole>;
-  updateRoleByName: (name: string, updates: Partial<IRole>) => Promise<IRole | null>;
+  /** With `options.id`, updates only the role document with that `_id`. */
+  updateRoleByName: (
+    name: string,
+    updates: Partial<IRole>,
+    options?: { id?: string },
+  ) => Promise<IRole | null>;
   updateAccessPermissions: (
     name: string,
     perms: Record<string, Record<string, boolean>>,
     roleData?: IRole,
   ) => Promise<void>;
   /** With `options.id`, deletes only the role that still has that `_id`, so a role recreated
-   * under the same name is never removed by a request that targeted the original. */
-  deleteRoleByName: (name: string, options?: { id?: string }) => Promise<IRole | null>;
+   * under the same name is never removed by a request that targeted the original. Reassigns the
+   * role's members in the caller's partition to USER, and resolves to the deleted role with the
+   * ids of the accounts its write moved; `null` when it deleted nothing. */
+  deleteRoleByName: (name: string, options?: { id?: string }) => Promise<RoleDeletion | null>;
   findUser: (
     criteria: FilterQuery<IUser>,
     fields?: string | string[] | null,
@@ -143,7 +166,9 @@ export interface AdminRolesDeps {
     data: Partial<IUser>,
     expectedState?: Record<string, unknown>,
   ) => Promise<IUser | null>;
+  /** Moves the role's members in the caller's partition to `newRole` (a rename's migration). */
   updateUsersByRole: (oldRole: string, newRole: string) => Promise<void>;
+  /** The ids of the role's members in the caller's partition. */
   findUserIdsByRole: (roleName: string) => Promise<string[]>;
   /** With `fromRole`, only users whose role is still that one change. */
   updateUsersRoleByIds: (
@@ -161,15 +186,16 @@ export interface AdminRolesDeps {
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
   ) => Promise<ConfigRecord | null>;
-  /** Removes all ACL entries scoped to this principal. */
+  /** Removes the role's ACL entries in the caller's partition (`deletePrincipalAclEntries`). */
   deleteAclEntries: (filter: {
     principalType: PrincipalType;
     principalId: string | Types.ObjectId;
   }) => Promise<void>;
   /** Drops cached prompt group access IDs; role deletion can remove PROMPTGROUP grants. */
   invalidatePromptGroupAccessContext?: () => Promise<void>;
-  /** Removes all system capability grants held by this principal and returns
-   * the removed grants so each can be audited. */
+  /** Removes the system capability grants this principal holds in one scope (exactly
+   * `tenantId`, or platform-level ones without it) and returns the removed grants so each can be
+   * audited. */
   deleteGrantsForPrincipal: (
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
@@ -235,7 +261,8 @@ export interface AdminRolesDeps {
     toPrincipalId: string,
     options?: { ids?: readonly string[] },
   ) => Promise<string[]>;
-  /** Clears merged-config caches keyed by role name after a rename moved a profile. */
+  /** Clears the merged-config caches (on every instance, with Redis) once a rename moved a
+   * profile, or a deletion removed or restored one, before the response, as config writes do. */
   invalidateConfigCaches?: (tenantId?: string) => Promise<void>;
   /** Optional audit emission for role mutations and the grants removed by the
    * role-deletion cascade. Failure is logged unless `auditFailClosed` is set. */
@@ -255,6 +282,20 @@ function memberChangeSeverity(...roles: Array<string | undefined>): AuditSeverit
 
 function roleTarget(name: string) {
   return { type: 'role', id: name, name };
+}
+
+/**
+ * Whether a user belongs to the caller's tenant partition, the one a role name addresses. Outside
+ * a tenant a user is found by id in any tenant, but a tenant user's `role` names that tenant's own
+ * role, so the platform role's member routes never change it.
+ */
+function isPartitionUser(user: Pick<IUser, 'tenantId'>): boolean {
+  return (user.tenantId || undefined) === getActivePartition();
+}
+
+/** The document a role was read as, so a write changes that role and no other of its name. */
+function roleIdentity(role: Pick<IRole, '_id'>): { id: string } | undefined {
+  return role._id != null ? { id: String(role._id) } : undefined;
 }
 
 /** What a role rename moved to the new name along with the role. */
@@ -357,9 +398,8 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         severity: 'warning',
         target: { type: PrincipalType.ROLE, id: roleName, name: roleName },
         metadata: { capability: grant.capability },
-        /** Scope each entry to the removed grant's own tenant: a platform
-         * admin's role deletion can remove tenant-scoped grants, and those
-         * removals must land in the affected tenant's chain, not the caller's. */
+        /** Scope each entry to the removed grant's own tenant, so a removal
+         * always lands in the chain of the tenant whose grant it was. */
         tenantId: grant.tenantId,
       });
     }
@@ -478,7 +518,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
     }
     try {
-      await updateRoleByName(newName, revert);
+      await updateRoleByName(newName, revert, roleIdentity(existing));
     } catch (revertError) {
       logger.error(
         `[adminRoles] CRITICAL: rename rollback failed — role "${currentName}" is still named "${newName}"`,
@@ -648,7 +688,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     let role: IRole | null;
     try {
       const updates: Partial<IRole> = { name: newName, ...extraUpdates };
-      role = await updateRoleByName(currentName, updates);
+      role = await updateRoleByName(currentName, updates, roleIdentity(existing));
     } catch (error) {
       await rollbackMigratedUsers(migratedIds, currentName, newName);
       throw error;
@@ -759,7 +799,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         return res.status(200).json({ role });
       }
 
-      const role = await updateRoleByName(name, updates);
+      const role = await updateRoleByName(name, updates, roleIdentity(existing));
       if (!role) {
         return res.status(404).json({ error: 'Role not found' });
       }
@@ -779,10 +819,8 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
   }
 
   /**
-   * The re-fetch via `getRoleByName` after `updateAccessPermissions` depends on the
-   * callee having written the updated document to the role cache. If the cache layer
-   * is refactored to stop writing from within `updateAccessPermissions`, this handler
-   * must be updated to perform an explicit uncached DB read.
+   * The re-fetch via `getRoleByName` after `updateAccessPermissions` reads the role as
+   * stored (`getPartitionRole` reads no cache), so it returns what the update wrote.
    */
   async function updateRolePermissionsHandler(req: ServerRequest, res: Response) {
     try {
@@ -881,22 +919,49 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
        * inheriting the leftovers. Every removal is idempotent.
        */
       const tenantId = req.user?.tenantId;
-      /** deleteRoleByName reassigns members to USER, so who held the role is read first. */
-      const memberIds = await findUserIdsByRole(name);
       /** The grants as they were, so removals are audited even when a removal rejects after committing. */
       const grantSnapshot = findGrantsForPrincipal
         ? await findGrantsForPrincipal(PrincipalType.ROLE, name, { tenantId })
         : null;
+      /** Reads the role again to learn whether it still is the one this request targeted. */
+      const lookupRole = () =>
+        getRoleByName(name).then(
+          (role) => ({ known: true, role }),
+          () => ({ known: false, role: null }),
+        );
+      /** A role recreated under the same name is a different role and must not inherit the
+       * old one's dependents. */
+      const isTargetedRole = (role: IRole | null) =>
+        role != null &&
+        (existing._id == null || role._id == null || String(existing._id) === String(role._id));
+
+      const { deleteConfig: removeProfile, restoreConfig: restoreProfile } =
+        invalidatingConfigStore(
+          { deleteConfig, restoreConfig },
+          { invalidateConfigCaches, tenantId, logPrefix: '[adminRoles]' },
+        );
       const configStep = cascadeStep(
         'config',
-        () => deleteConfig(PrincipalType.ROLE, name),
-        restoreConfig
+        () => removeProfile(PrincipalType.ROLE, name),
+        restoreProfile
           ? async (config) => {
               if (!config) {
                 return;
               }
+              /** The profile is keyed by name: put it back only while the name still holds the
+               * targeted role, never onto a role recreated under it. This covers the restore of a
+               * removal that rejected as well as `compensate`. When the role cannot be read, the
+               * restore fails instead, so the cascade keeps the snapshot for `compensate` to retry. */
+              const lookup = await lookupRole();
+              if (!lookup.known) {
+                throw new Error('role unreadable; config restore deferred');
+              }
+              if (!isTargetedRole(lookup.role)) {
+                logger.warn('[adminRoles] config restore skipped, role changed:', name);
+                return;
+              }
               /** Insert-only: an override written after the snapshot is kept. */
-              const restored = await restoreConfig(config);
+              const restored = await restoreProfile(config);
               if (!restored) {
                 logger.warn('[adminRoles] config restore skipped, override exists:', name);
               }
@@ -959,18 +1024,6 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         await emitGrantRemovals(req, name, removed ?? []);
       };
 
-      /** Reads the role again to learn whether it still is the one this request targeted. */
-      const lookupRole = () =>
-        getRoleByName(name).then(
-          (role) => ({ known: true, role }),
-          () => ({ known: false, role: null }),
-        );
-      /** A role recreated under the same name is a different role and must not inherit the
-       * old one's dependents. */
-      const isTargetedRole = (role: IRole | null) =>
-        role != null &&
-        (existing._id == null || role._id == null || String(existing._id) === String(role._id));
-
       if (cascade.failed.length > 0) {
         const lookup = await lookupRole();
         if (lookup.known && isTargetedRole(lookup.role)) {
@@ -983,7 +1036,25 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         return cleanupFailedResponse();
       }
 
-      let deleted: IRole | null;
+      /** Each account the delete moved is recorded (chunked) before the outcome entry. */
+      const auditReassignedMembers = async (userIds: string[]) => {
+        for (let i = 0; i < userIds.length; i += AUDIT_MEMBER_CHUNK) {
+          const chunk = userIds.slice(i, i + AUDIT_MEMBER_CHUNK);
+          await emitRevocationAudit(req, {
+            action: 'role.member_removed',
+            severity: memberChangeSeverity(name),
+            target: roleTarget(name),
+            metadata: {
+              userIds: chunk.join(','),
+              count: chunk.length,
+              newRole: SystemRoles.USER,
+              cause: 'role_deleted',
+            },
+          });
+        }
+      };
+
+      let deleted: RoleDeletion | null;
       try {
         deleted = await deleteRoleByName(name, {
           id: existing._id != null ? String(existing._id) : undefined,
@@ -996,22 +1067,35 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         /** The delete may have committed before it threw. Restoring dependents for a
          * role that is gone would orphan them for a later role with the same name. */
         const lookup = await lookupRole();
+        /** Members moved before the failure stay moved, whatever happened to the role. */
+        const movedBeforeFailure =
+          error instanceof RoleDeletionError ? error.reassignedUserIds : [];
         if (lookup.known && isTargetedRole(lookup.role)) {
           await cascade.compensate();
           await invalidateAccess();
           await auditRemovedGrants();
+          await auditReassignedMembers(movedBeforeFailure);
           await recordOutcome('failure', 'ROLE_CLEANUP_FAILED');
           return res.status(500).json({ error: 'Failed to delete role' });
         }
         await invalidateAccess();
         if (!lookup.known || lookup.role) {
           await auditRemovedGrants();
+          await auditReassignedMembers(movedBeforeFailure);
           await recordOutcome('failure', 'ROLE_STATE_UNVERIFIABLE');
           logger.error('[adminRoles] dependents not restored, role state unverifiable:', name);
           return res.status(500).json({ error: 'Failed to delete role' });
         }
-        /** Confirmed absent: the deletion did commit, so it is audited and reported as one. */
-        deleted = existing;
+        if (error instanceof RoleDeletionError && error.reason !== 'delete_failed') {
+          /** Another request deleted the role; the members this one moved first are audited. */
+          await auditRemovedGrants();
+          await auditReassignedMembers(movedBeforeFailure);
+          await recordOutcome('failure', 'not_found');
+          return res.status(404).json({ error: 'Role not found' });
+        }
+        /** Confirmed absent after the delete itself rejected: it committed with its
+         * acknowledgement lost, so it is audited and reported as one, with the members it moved. */
+        deleted = { role: existing, reassignedUserIds: movedBeforeFailure };
       }
       await invalidateAccess();
       if (!deleted) {
@@ -1021,25 +1105,11 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
       const removedGrants = cascade.removed.grants as ISystemGrant[];
       await auditRemovedGrants();
-      /** Each reassigned account is recorded (chunked) before the outcome entry. */
-      const audited = memberIds;
-      for (let i = 0; i < audited.length; i += AUDIT_MEMBER_CHUNK) {
-        const chunk = audited.slice(i, i + AUDIT_MEMBER_CHUNK);
-        await emitRevocationAudit(req, {
-          action: 'role.member_removed',
-          severity: memberChangeSeverity(name),
-          target: roleTarget(name),
-          metadata: {
-            userIds: chunk.join(','),
-            count: chunk.length,
-            newRole: SystemRoles.USER,
-            cause: 'role_deleted',
-          },
-        });
-      }
+      const audited = deleted.reassignedUserIds;
+      await auditReassignedMembers(audited);
       await recordOutcome('success', undefined, {
         grantsRemoved: removedGrants.length,
-        membersReassigned: memberIds.length,
+        membersReassigned: audited.length,
       });
 
       return res.status(200).json({ success: true });
@@ -1107,7 +1177,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
 
       const user = await findUser({ _id: userId });
-      if (!user) {
+      if (!user || !isPartitionUser(user)) {
         return res.status(404).json({ error: 'User not found' });
       }
 
@@ -1194,7 +1264,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
 
       const user = await findUser({ _id: userId });
-      if (!user) {
+      if (!user || !isPartitionUser(user)) {
         return res.status(404).json({ error: 'User not found' });
       }
 
@@ -1272,8 +1342,8 @@ export interface RolePermissionsUpdateDeps {
 }
 
 export interface RolePermissionsUpdateConfig {
-  /** Zod object schema for one permission type; parsed as a partial update. */
-  schema: { partial: () => { parse: (value: unknown) => Record<string, boolean | undefined> } };
+  /** Zod object schema for one permission type; parsed as a partial update without its defaults. */
+  schema: z.ZodObject<Record<string, z.ZodType<boolean, boolean | undefined>>>;
   permissionType: string;
   errorMessage: string;
 }
@@ -1296,14 +1366,11 @@ export function createRolePermissionsUpdateHandler(
 
   return async function updateRolePermissions(req, res) {
     const { roleName } = req.params as { roleName: string };
-    let parsedUpdates: Record<string, boolean | undefined>;
-    try {
-      parsedUpdates = config.schema.partial().parse(req.body);
-    } catch (error) {
-      return res
-        .status(400)
-        .send({ message: config.errorMessage, error: (error as { errors?: unknown }).errors });
+    const parsed = partialWithoutDefaults(config.schema).safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).send({ message: config.errorMessage, error: parsed.error.issues });
     }
+    const parsedUpdates: Record<string, boolean | undefined> = parsed.data;
 
     try {
       const role = await getRoleByName(roleName);

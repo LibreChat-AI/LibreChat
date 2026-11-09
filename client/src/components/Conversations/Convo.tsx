@@ -274,7 +274,14 @@ function Conversation({
       return;
     }
 
-    if (currentConvoId === conversationId || isPopoverActive) {
+    if (isPopoverActive) {
+      return;
+    }
+
+    if (isActiveConvo) {
+      if (isSmallScreen) {
+        toggleNav();
+      }
       return;
     }
 

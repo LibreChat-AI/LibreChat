@@ -53,14 +53,22 @@ let counter = 0;
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
-  await mongoose.connect(mongoServer.getUri());
+  const uri = new URL(mongoServer.getUri());
+  uri.searchParams.set('readPreference', 'secondaryPreferred');
+  await mongoose.connect(uri.href);
   Delivery = createAgentTriggerDeliveryModel(mongoose);
   LaneSequence = createAgentTriggerLaneSequenceModel(mongoose);
   UserPurge = createAgentTriggerUserPurgeModel(mongoose);
   User = createUserModel(mongoose);
   createConversationModel(mongoose);
   createMessageModel(mongoose);
-  await Promise.all([Delivery.init(), LaneSequence.init(), UserPurge.init(), User.init()]);
+  // Secondary-read connections disable Mongoose's automatic index creation.
+  await Promise.all([
+    Delivery.createIndexes(),
+    LaneSequence.createIndexes(),
+    UserPurge.createIndexes(),
+    User.createIndexes(),
+  ]);
   methods = createAgentTriggerDeliveryMethods(mongoose, {
     releaseBatchProjections: createMessageMethods(mongoose).releaseBackgroundToolResultClaims,
   });
@@ -5498,6 +5506,7 @@ describe('agent trigger delivery methods', () => {
   });
 
   it('serializes account deletion against action admission on each delivery row', async () => {
+    expect(mongoose.connection.getClient().options.readPreference?.mode).toBe('secondaryPreferred');
     const user = new mongoose.Types.ObjectId();
     const fenceStartedAt = new Date(START);
     await User.create({
@@ -5529,8 +5538,13 @@ describe('agent trigger delivery methods', () => {
       admissionId: 'admission-before-purge',
     };
 
+    const fenceReads = jest.spyOn(User.collection, 'findOne');
     await expect(methods.admitAgentEventActorAction(admission)).resolves.toBe(true);
     await methods.prepareAgentTriggerUserPurge(user, fenceStartedAt);
+    expect(fenceReads).toHaveBeenLastCalledWith(
+      { _id: user, agentTriggerDeletionStartedAt: fenceStartedAt },
+      expect.objectContaining({ readPreference: { mode: 'primary' } }),
+    );
     await expect(
       methods.countActiveAgentTriggerDeliveriesByUser(user, new Date(START.getTime() + 60_001)),
     ).resolves.toBe(1);
@@ -5545,7 +5559,12 @@ describe('agent trigger delivery methods', () => {
       Delivery.countDocuments({ user, actorActionAdmissionClosedAt: fenceStartedAt }),
     ).resolves.toBe(2);
 
+    fenceReads.mockClear();
     await expect(methods.cancelAgentTriggerUserPurge(user, fenceStartedAt)).resolves.toBe(true);
+    expect(fenceReads).toHaveBeenCalledWith(
+      { _id: user, agentTriggerDeletionStartedAt: fenceStartedAt },
+      expect.objectContaining({ readPreference: { mode: 'primary' } }),
+    );
     await expect(
       Delivery.countDocuments({ user, actorActionAdmissionClosedAt: { $exists: true } }),
     ).resolves.toBe(0);
@@ -5631,7 +5650,15 @@ describe('agent trigger delivery methods', () => {
     await methods.enqueueAgentTriggerDelivery(enqueueInput({ user }));
     await methods.prepareAgentTriggerUserPurge(user, fenceStartedAt, 'tenant-1');
 
+    const fenceReads = jest.spyOn(User.collection, 'find');
     await expect(methods.recoverAgentTriggerUserPurges()).resolves.toBe(0);
+    expect(fenceReads).toHaveBeenCalledWith(
+      { _id: { $in: [user] } },
+      expect.objectContaining({
+        projection: { agentTriggerDeletionStartedAt: 1 },
+        readPreference: { mode: 'primary' },
+      }),
+    );
     expect(await Delivery.countDocuments({ user })).toBe(1);
     expect(await UserPurge.countDocuments({ _id: user })).toBe(1);
 

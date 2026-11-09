@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { ToolPreparation } from '@librechat/chat/components';
 import AskUserQuestionProgress from '../AskUserQuestionProgress';
-import { ToolPreparation } from '../preparation';
 
 const translations: Record<string, string> = {
   com_ui_asking: 'Asking',

@@ -1,4 +1,4 @@
-import { createConcurrencyLimiter, withTimeout } from './promise';
+import { createConcurrencyLimiter, mapWithConcurrency, withTimeout } from './promise';
 
 const tick = (ms = 0): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -310,5 +310,48 @@ describe('createConcurrencyLimiter', () => {
     block.resolve();
     await Promise.all([pHead, pQueued]);
     expect(queuedTaskCalled).toBe(true);
+  });
+});
+
+describe('mapWithConcurrency', () => {
+  it('keeps input order and never exceeds the concurrency cap', async () => {
+    let active = 0;
+    let peak = 0;
+    const result = await mapWithConcurrency([30, 5, 20, 1, 10], 2, async (delay, index) => {
+      active++;
+      peak = Math.max(peak, active);
+      await tick(delay);
+      active--;
+      return `${index}:${delay}`;
+    });
+    expect(result).toEqual(['0:30', '1:5', '2:20', '3:1', '4:10']);
+    expect(peak).toBe(2);
+  });
+
+  it('rejects with the first failure', async () => {
+    await expect(
+      mapWithConcurrency([1, 2, 3], 2, async (value) => {
+        if (value === 2) {
+          throw new Error('boom');
+        }
+        return value;
+      }),
+    ).rejects.toThrow('boom');
+  });
+
+  it('does not start queued work after a failure', async () => {
+    const started: number[] = [];
+    await expect(
+      mapWithConcurrency([1, 2, 3, 4, 5], 2, async (value) => {
+        started.push(value);
+        await tick(5);
+        if (value === 1) {
+          throw new Error('boom');
+        }
+        return value;
+      }),
+    ).rejects.toThrow('boom');
+    await tick(40);
+    expect(started).toEqual([1, 2]);
   });
 });

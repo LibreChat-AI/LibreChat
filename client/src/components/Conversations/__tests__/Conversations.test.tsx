@@ -128,11 +128,20 @@ jest.mock('../Convo', () => ({
   }: {
     conversation: TConversation;
     showProjectBadge?: boolean;
-  }) => (
-    <div data-testid="convo" data-project-badge={String(showProjectBadge === true)}>
-      {conversation.title}
-    </div>
-  ),
+  }) => {
+    /* Stands in for the row's local state (an open delete dialog, a rename field):
+     * captured on mount, so it shows which chat the mounted row was created for. */
+    const [openedFor] = jest.requireActual('react').useState(conversation.title);
+    return (
+      <div
+        data-testid="convo"
+        data-opened-for={openedFor}
+        data-project-badge={String(showProjectBadge === true)}
+      >
+        {conversation.title}
+      </div>
+    );
+  },
 }));
 
 const pinnedConvo = {
@@ -212,6 +221,61 @@ describe('Conversations: live running order', () => {
     expect(screen.queryByRole('heading', { name: 'com_a11y_chats_running_section' })).toBeNull();
     expect(rowOrder()).toEqual(['Newer idle chat', 'Older running chat']);
     expect(conversations).toEqual([newer, running]);
+  });
+});
+
+describe('Conversations: row state follows its chat', () => {
+  const containerRef = createRef<List>();
+  const chats = ['A', 'B', 'C'].map(
+    (name) =>
+      ({
+        conversationId: `chat-${name}`,
+        title: `Chat ${name}`,
+        createdAt: '2026-09-26T00:00:00.000Z',
+        updatedAt: '2026-09-26T00:00:00.000Z',
+      }) as TConversation,
+  );
+
+  it('keeps each mounted row on the chat it was created for when rows shift', () => {
+    const renderList = (conversations: TConversation[]) => (
+      <QueryClientProvider client={queryClient}>
+        <DndProvider backend={HTML5Backend}>
+          <RecoilRoot>
+            <Conversations
+              conversations={conversations}
+              moveToTop={jest.fn()}
+              toggleNav={jest.fn()}
+              containerRef={containerRef}
+              loadMoreConversations={jest.fn()}
+              isLoading={false}
+              isSearchLoading={false}
+              isChatsExpanded={true}
+              setIsChatsExpanded={jest.fn()}
+              scrollViewport={null}
+              scrollContent={null}
+            />
+          </RecoilRoot>
+        </DndProvider>
+      </QueryClientProvider>
+    );
+    const rows = () =>
+      screen
+        .getAllByTestId('convo')
+        .map((row) => [row.textContent, row.getAttribute('data-opened-for')]);
+
+    const view = render(renderList(chats));
+    expect(rows()).toEqual([
+      ['Chat A', 'Chat A'],
+      ['Chat B', 'Chat B'],
+      ['Chat C', 'Chat C'],
+    ]);
+
+    /* Archiving or deleting the first chat moves every row below it up one slot. */
+    view.rerender(renderList(chats.slice(1)));
+    expect(rows()).toEqual([
+      ['Chat B', 'Chat B'],
+      ['Chat C', 'Chat C'],
+    ]);
   });
 });
 

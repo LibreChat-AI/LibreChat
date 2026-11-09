@@ -22,9 +22,22 @@ import {
 import { MCPAuthenticationRejectedError, MCPAuthenticationRefreshError } from '~/mcp/errors';
 import { createTerminalRunErrorObserver } from './failures/terminal';
 import { OboTokenResolutionError } from '~/mcp/oauth/obo';
+import { assertToolOptionsWithinLimits } from './options';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 
 describe('isFatalAgentInitializationError', () => {
+  it('never downgrades a persisted option-limit violation to optional-tool fallback', () => {
+    let error;
+    try {
+      assertToolOptionsWithinLimits({ ['q' + '_mcp_z'.repeat(4000)]: {} });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(RangeError);
+    expect(isFatalAgentInitializationError(error)).toBe(true);
+    expect(isFatalAgentInitializationError(error, { allowExpectedMCPFallback: true })).toBe(true);
+  });
+
   it.each([
     new OpenIDReauthRequiredError('Please sign in again'),
     new MCPAuthenticationRejectedError('private-mcp', false),

@@ -735,6 +735,47 @@ describe('initializeClient — processAgent ACL gate', () => {
     expect(capturedToolExecuteOptions.backgroundCompletionResultMaxChars).toBe(4096);
   });
 
+  it('never swallows an option-limit failure from runtime classification', async () => {
+    loadAgentTools.mockImplementationOnce(({ agent }) =>
+      jest.requireActual('@librechat/api').buildToolClassification({
+        userId: testUser._id.toString(),
+        agentId: agent.id,
+        agentToolOptions: {
+          db_query_mcp_db: { approval_mode: 'ask' },
+          ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' },
+        },
+        loadedTools: [
+          {
+            name: 'query_mcp_db',
+            mcp: true,
+            mcpRawServerName: 'db',
+            mcpServerToolName: 'db_query',
+          },
+        ],
+      }),
+    );
+    mockInitializeAgent.mockImplementationOnce(async ({ req, res, loadTools, agent }) => {
+      await loadTools({
+        req,
+        res,
+        tools: ['query_mcp_db'],
+        model: agent.model,
+        agentId: agent.id,
+        provider: agent.provider,
+      });
+      return makePrimaryConfig([]);
+    });
+    await expect(
+      initializeClient({
+        req: makeReq(),
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      }),
+    ).rejects.toMatchObject({ code: 'AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED' });
+    expect(agentClientArgs).toBeUndefined();
+  });
+
   it('propagates an expected-MCP-tools failure from the runtime tool loader', async () => {
     const toolError = Object.assign(new Error('Expected MCP tools are unavailable'), {
       code: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE',
@@ -1597,6 +1638,35 @@ describe('initializeClient — subagent loading', () => {
         signal: new AbortController().signal,
       }),
     ).rejects.toBe(toolError);
+  });
+
+  it('does not omit a lazy child when persisted option validation fails', async () => {
+    const child = await createAgent({
+      id: SUBAGENT_ID,
+      name: 'Oversized child',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: testUser._id,
+      tools: [],
+      tool_options: { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' } },
+    });
+    await grantView(child);
+    mockInitializeAgent.mockResolvedValue(
+      makePrimaryConfig({
+        subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+      }),
+    );
+    const req = makeSubagentReq();
+    req.config.endpoints.agents.capabilities.push('tools');
+    await expect(
+      initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      }),
+    ).rejects.toMatchObject({ code: 'AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED' });
+    expect(agentClientArgs).toBeUndefined();
   });
 
   it('defers pure-subagent resource recovery until the descriptor is selected', async () => {

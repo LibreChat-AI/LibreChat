@@ -11,6 +11,7 @@ on:
       - 'scripts/typecheck.mts'
       - 'package.json'
       - 'package-lock.json'
+      - '.bun-version'
       - '.github/workflows/frontend-review.yml'
       - '!**.md'
   # Post-merge safety net and full-run baseline for gated selection (same rationale as
@@ -27,6 +28,7 @@ on:
       - 'scripts/typecheck.mts'
       - 'package.json'
       - 'package-lock.json'
+      - '.bun-version'
       - '.github/workflows/frontend-review.yml'
   # Promotion requires full CI at the exact dev SHA, including path-filtered commits.
   workflow_dispatch:
@@ -58,7 +60,42 @@ jobs:
         with:
           node-version: '24.22.1'
           cache: npm
-      - run: npm ci
+      # The full workspace tree, under the E2E workflows' exact key and path
+      # list. This job also runs on dev pushes, so it seeds the dev-scoped
+      # entry that every pull request against dev can restore.
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        id: install-dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Save node_modules cache
+        if: steps.install-dependencies.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
       - run: google-chrome --version
       - run: npm run test:client-build
         env:
@@ -286,10 +323,10 @@ jobs:
           name: build-chat-package
           path: packages/chat/dist
 
-      - name: Use Bun 1.4.3
+      - name: Use pinned Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.3'
+          bun-version-file: .bun-version
 
       - name: Type check client
         run: npm run typecheck
@@ -337,10 +374,10 @@ jobs:
           name: build-client-package
           path: packages/client/dist
 
-      - name: Use Bun 1.4.3
+      - name: Use pinned Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.3'
+          bun-version-file: .bun-version
 
       - name: Type check
         run: npm run typecheck

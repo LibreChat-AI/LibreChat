@@ -14,6 +14,7 @@ const {
   createSubagentActivityStreamHandler,
   createSubagentTaskContentHandler,
   createSubagentControlHandler,
+  createSubagentControlReceiptHandler,
   isValidSubagentControlRequest,
   exemptAgentTriggerFromIpLimiter,
   createParentSubagentIndexHandler,
@@ -169,6 +170,11 @@ const subagentTaskContentHandler = createSubagentTaskContentHandler(
   () => subagentThreadTaskStore.contentPageBytes,
   () => subagentThreadTaskStore.contentRecoveryGraceMs,
 );
+const subagentControlReceiptHandler = createSubagentControlReceiptHandler({
+  getConvoOwnership: db.getConvoOwnership,
+  getSubagentThreadForParent: db.getSubagentThreadForParent,
+  getSubagentTaskControlReceipt: db.getSubagentTaskControlReceipt,
+});
 const subagentControlHandler = createSubagentControlHandler({
   getConvoOwnership: db.getConvoOwnership,
   getSubagentThreadForParent: db.getSubagentThreadForParent,
@@ -277,6 +283,10 @@ router.get(
 router.get(
   '/:parentConversationId/subagents/:threadId/tasks/:taskId/activity',
   subagentActivityStreamHandler,
+);
+router.get(
+  '/:parentConversationId/subagents/:threadId/tasks/:taskId/controls/:invocationId',
+  subagentControlReceiptHandler,
 );
 router.post(
   '/:parentConversationId/subagents/:threadId/control',

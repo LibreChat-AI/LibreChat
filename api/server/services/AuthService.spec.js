@@ -13,6 +13,7 @@ jest.mock(
 jest.mock(
   'librechat-data-provider',
   () => ({
+    ...jest.requireActual('librechat-data-provider'),
     ErrorTypes: {},
     SystemRoles: { USER: 'USER', ADMIN: 'ADMIN' },
     errorsToString: jest.fn(),
@@ -29,6 +30,8 @@ jest.mock(
       /** Real bcrypt on the test thread; the worker pool has its own spec in packages/api. */
       hashSecret: jest.fn((plain) => require('bcryptjs').hash(plain, 4)),
       compareSecret: jest.fn((plain, hash) => require('bcryptjs').compare(plain, hash)),
+      getOpenIDBearerAudiences: jest.requireActual('@librechat/api').getOpenIDBearerAudiences,
+      getOpenIDAppAccessToken: jest.requireActual('@librechat/api').getOpenIDAppAccessToken,
       checkEmailConfig: jest.fn(),
       isEmailDomainAllowed: jest.fn(),
       getSafeErrorMetadata: jest.fn((error) => ({ type: error?.name ?? 'UnknownError' })),
@@ -71,7 +74,13 @@ jest.mock(
       resolvePreAuthAppConfig: jest.fn((getAppConfig) =>
         getAppConfig({ skipRuntimeAugmentation: true, failClosed: true }),
       ),
-      commitPasswordReset: jest.fn(),
+      resetPasswordWithToken: jest.fn(),
+      /** The notice policy is covered by passwordReset.spec.ts; this double keeps the wiring. */
+      sendPasswordResetNotice: jest.fn(async (user, deps) => {
+        if (deps.isEmailConfigured()) {
+          await deps.sendEmail({ email: user.email, template: 'passwordReset.handlebars' });
+        }
+      }),
       createOpenIDSessionIdentity: jest.fn(
         ({ user, userId, openidSubject, tenantId, openidIssuer }) => {
           const normalize = (value) => {
@@ -183,7 +192,7 @@ let resendVerificationEmail;
 let setAuthTokens;
 let setCloudFrontAuthCookies;
 let verifyEmail;
-let commitPasswordReset;
+let resetPasswordWithToken;
 
 jest.isolateModules(() => {
   ({
@@ -191,7 +200,7 @@ jest.isolateModules(() => {
     isEmailDomainAllowed,
     resolveAppConfigForUser,
     resolvePreAuthAppConfig,
-    commitPasswordReset,
+    resetPasswordWithToken,
     setRefreshTokenCookie,
     setOpenIDMarkerCookies,
     setLocalSessionCookies,
@@ -335,6 +344,56 @@ describe('setOpenIDAuthTokens', () => {
       const result = setOpenIDAuthTokens(tokenset, req, res, 'user-123');
       expect(result).toBe('id-token-jwt-signed-by-idp');
       expect(result).not.toBe('opaque-graph-api-token');
+    });
+
+    describe('with configured bearer audiences', () => {
+      const originalClientId = process.env.OPENID_CLIENT_ID;
+      const originalAudience = process.env.OPENID_AUDIENCE;
+      const signAccessToken = (aud) =>
+        jwt.sign({ aud, exp: Math.floor(Date.now() / 1000) + 600 }, 'idp-secret');
+
+      beforeEach(() => {
+        process.env.OPENID_CLIENT_ID = 'app-client-id';
+        process.env.OPENID_AUDIENCE = 'api://app-resource';
+      });
+
+      afterEach(() => {
+        for (const [key, value] of [
+          ['OPENID_CLIENT_ID', originalClientId],
+          ['OPENID_AUDIENCE', originalAudience],
+        ]) {
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+      });
+
+      it('does not return a JWT access token minted for another resource', () => {
+        const tokenset = {
+          access_token: signAccessToken('00000003-0000-0000-c000-000000000000'),
+          refresh_token: 'the-refresh-token',
+        };
+
+        const result = setOpenIDAuthTokens(tokenset, mockRequest(), mockResponse(), 'user-123');
+        expect(result).toBeUndefined();
+      });
+
+      it('returns a JWT access token minted for a configured audience', () => {
+        const accessToken = signAccessToken('api://app-resource');
+        const tokenset = { access_token: accessToken, refresh_token: 'the-refresh-token' };
+
+        const result = setOpenIDAuthTokens(tokenset, mockRequest(), mockResponse(), 'user-123');
+        expect(result).toBe(accessToken);
+      });
+
+      it('keeps returning an opaque access token', () => {
+        const tokenset = { access_token: 'opaque-access-token', refresh_token: 'refresh' };
+
+        const result = setOpenIDAuthTokens(tokenset, mockRequest(), mockResponse(), 'user-123');
+        expect(result).toBe('opaque-access-token');
+      });
     });
   });
 
@@ -1104,9 +1163,14 @@ describe('resetPassword', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     checkEmailConfig.mockReturnValue(false);
-    commitPasswordReset.mockImplementation(async (deps, { userId }) => {
+    resetPasswordWithToken.mockImplementation(async (deps, { userId }) => {
       const resetToken = await deps.findResetToken(userId);
-      return resetToken ? { ok: true, user: resolvedUser, resetToken } : { ok: false };
+      if (!resetToken) {
+        return { ok: false };
+      }
+      await deps.consumeResetToken(resetToken);
+      await deps.sendResetNotice(resolvedUser);
+      return { ok: true, tokenConsumed: true };
     });
   });
 
@@ -1115,7 +1179,7 @@ describe('resetPassword', () => {
 
     const result = await resetPassword('user-reset', 'reset-token', 'new-password');
 
-    expect(result).toBeInstanceOf(Error);
+    expect(result).toEqual({ ok: false });
     expect(findToken).toHaveBeenNthCalledWith(
       1,
       { userId: 'user-reset', type: 'password_reset' },
@@ -1138,8 +1202,10 @@ describe('resetPassword', () => {
 
     await resetPassword('user-reset', 'reset-token', 'new-password');
 
-    expect(commitPasswordReset).toHaveBeenCalledWith(
+    expect(resetPasswordWithToken).toHaveBeenCalledWith(
       expect.objectContaining({
+        consumeResetToken: expect.any(Function),
+        sendResetNotice: expect.any(Function),
         findResetToken: expect.any(Function),
         getUserById: expect.any(Function),
         updateUser: expect.any(Function),
@@ -1161,7 +1227,7 @@ describe('resetPassword', () => {
 
     const result = await resetPassword('user-reset', 'reset-token', 'new-password');
 
-    expect(result).toEqual({ message: 'Password reset was successful' });
+    expect(result).toEqual({ ok: true, tokenConsumed: true });
     expect(deleteTokens).toHaveBeenCalledWith({ token: 'reset-hash', type: 'password_reset' });
   });
 
@@ -1174,7 +1240,7 @@ describe('resetPassword', () => {
 
     const result = await resetPassword('user-reset', 'legacy-reset-token', 'new-password');
 
-    expect(result).toEqual({ message: 'Password reset was successful' });
+    expect(result).toEqual({ ok: true, tokenConsumed: true });
     expect(deleteTokens).toHaveBeenCalledWith({
       token: 'legacy-hash',
       email: null,
@@ -1188,7 +1254,7 @@ describe('resetPassword', () => {
 
     const result = await resetPassword('user-reset', 'reset-token', 'new-password');
 
-    expect(result).toBeInstanceOf(Error);
+    expect(result).toEqual({ ok: false });
     expect(sendEmail).not.toHaveBeenCalled();
     expect(deleteTokens).not.toHaveBeenCalled();
   });

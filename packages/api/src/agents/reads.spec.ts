@@ -185,6 +185,34 @@ describe('Agent list access', () => {
 });
 
 describe('Agent Management read handlers', () => {
+  it('keeps legacy oversized approval options readable in GET and list responses', async () => {
+    const legacy = {
+      ...agent,
+      tool_options: { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' as const } },
+    };
+    const deps = makeDeps({
+      getAgentWithVersionCount: jest.fn().mockResolvedValue(legacy),
+      getAgentManagementListByAccess: jest
+        .fn()
+        .mockResolvedValue({ data: [legacy], has_more: false, after: null }),
+    });
+    const handlers = createAgentManagementReadHandlers(deps);
+    const getResponse = makeResponse();
+    await handlers.get(makeRequest({ params: { id: agent.id } }), getResponse);
+    expect(getResponse.status).toHaveBeenCalledWith(200);
+    expect(getResponse.json).toHaveBeenCalledWith(
+      expect.objectContaining({ tool_options: legacy.tool_options }),
+    );
+    const listResponse = makeResponse();
+    await handlers.list(makeRequest(), listResponse);
+    expect(listResponse.status).toHaveBeenCalledWith(200);
+    expect(listResponse.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [expect.objectContaining({ tool_options: legacy.tool_options })],
+      }),
+    );
+  });
+
   it('lists only ACL-discovered records in the authenticated tenant', async () => {
     const deps = makeDeps();
     const response = makeResponse();

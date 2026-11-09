@@ -52,7 +52,7 @@ async function mobileNewChat(page: Page, switchToHistory: boolean) {
   await page.getByRole('menuitemcheckbox', { name: OTHER_PANEL }).click();
   await expect(switcher).toContainText(OTHER_PANEL);
 
-  await drawer.getByRole('link', { name: 'New chat' }).click();
+  await drawer.getByRole('link', { name: 'New chat', exact: true }).click();
   await expect(drawer).toHaveAttribute('inert', '');
   await expect(page).toHaveURL(/\/c\/new$/);
 

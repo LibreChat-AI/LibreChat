@@ -15,6 +15,7 @@ import type * as t from './types';
 import { codeSetupAttemptSchema, codeSetupApprovalRequestSchema } from './codeSetup';
 import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
 import * as permissions from './accessPermissions';
+import { setClientLimits } from './clientLimits';
 import * as endpoints from './api-endpoints';
 import { uploadEventStream } from './upload';
 import * as mcp from './types/mcpServers';
@@ -94,6 +95,28 @@ export function getLangfuseSessionLink(
   conversationId: string,
 ): Promise<t.TLangfuseSessionLinkResponse> {
   return request.get(endpoints.adminLangfuseSessionLink(conversationId));
+}
+
+export function updateLangfusePromptSync(
+  payload: t.TUpdateLangfusePromptSyncRequest,
+): Promise<t.TLangfuseConnectionStatus> {
+  return request.put(endpoints.adminLangfusePromptSync(), payload);
+}
+
+export function getLangfusePrompts(
+  params: t.TLangfusePromptListParams = {},
+): Promise<t.TLangfusePromptListResponse> {
+  return request.get(endpoints.adminLangfusePrompts(params));
+}
+
+export function getLangfusePrompt(
+  params: t.TLangfusePromptGetParams,
+): Promise<t.TLangfusePromptGetResponse> {
+  return request.get(endpoints.adminLangfusePrompt(params.name, params.version));
+}
+
+export function syncLangfusePrompts(): Promise<t.TLangfusePromptSyncResult> {
+  return request.post(endpoints.adminLangfuseSyncPrompts(), {});
 }
 
 export function revokeUserKey(name: string): Promise<unknown> {
@@ -423,7 +446,12 @@ export const getStartupConfig = (
     mcpCustomUserVars?: Record<string, { title: string; description: string }>;
   }
 > => {
-  return request.get(endpoints.config(options?.context));
+  return request
+    .get<config.TStartupConfig>(endpoints.config(options?.context))
+    .then((startupConfig) => {
+      setClientLimits(startupConfig?.clientLimits);
+      return startupConfig;
+    });
 };
 
 export const getAIEndpoints = (): Promise<t.TEndpointsConfig> => {
@@ -1244,6 +1272,17 @@ export function getSubagentTaskContent(
   );
 }
 
+export function getSubagentControlReceipt(
+  parentConversationId: string,
+  threadId: string,
+  taskId: string,
+  invocationId: string,
+): Promise<t.SubagentControlResponse> {
+  return request.get(
+    endpoints.subagentControlReceipt(parentConversationId, threadId, taskId, invocationId),
+  );
+}
+
 export function controlSubagentTask(
   parentConversationId: string,
   threadId: string,
@@ -1309,6 +1348,17 @@ export function getPromptGroups(
 
 export function getPromptGroup(id: string): Promise<t.TPromptGroup> {
   return request.get(endpoints.getPromptGroup(id));
+}
+
+export function resolvePromptGroup(
+  id: string,
+  version?: number,
+): Promise<t.TResolvedPromptResponse> {
+  return request.get(endpoints.resolvePromptGroup(id, version));
+}
+
+export function getPromptGroupRevisions(id: string): Promise<t.TPromptRevisionChoicesResponse> {
+  return request.get(endpoints.getPromptGroupRevisions(id));
 }
 
 export function createPrompt(payload: t.TCreatePrompt): Promise<t.TCreatePromptResponse> {
@@ -1736,7 +1786,7 @@ export function verifyTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify
   return request.post(endpoints.verifyTwoFactor(), payload);
 }
 
-export function confirmTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify2FAResponse> {
+export function confirmTwoFactor(payload: t.TVerify2FARequest): Promise<t.TConfirm2FAResponse> {
   return request.post(endpoints.confirmTwoFactor(), payload);
 }
 

@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { inspect } = require('util');
 const express = require('express');
 const request = require('supertest');
 const mongoose = require('mongoose');
@@ -470,6 +471,8 @@ describe('MCP Routes', () => {
     });
 
     it('should initiate OAuth flow when stored authorization URL is missing', async () => {
+      const nonce = 'sentinel-authorization-nonce';
+      const authorizationUrl = `https://oauth.example.com/auth?state=${nonce}&code_challenge=sentinel-pkce-challenge`;
       const mockFlowManager = {
         getFlowState: jest.fn().mockResolvedValue({
           status: 'PENDING',
@@ -486,9 +489,9 @@ describe('MCP Routes', () => {
       require('~/config').getFlowStateManager.mockReturnValue(mockFlowManager);
 
       MCPOAuthHandler.initiateOAuthFlow.mockResolvedValue({
-        authorizationUrl: 'https://oauth.example.com/auth',
+        authorizationUrl,
         flowId: 'test-user-id:test-server',
-        flowMetadata: { state: 'random-state-value' },
+        flowMetadata: { state: nonce },
       });
       MCPOAuthHandler.storeStateMapping.mockResolvedValue();
       mockFlowManager.initFlow = jest.fn().mockResolvedValue();
@@ -499,7 +502,7 @@ describe('MCP Routes', () => {
       });
 
       expect(response.status).toBe(302);
-      expect(response.headers.location).toBe('https://oauth.example.com/auth');
+      expect(response.headers.location).toBe(authorizationUrl);
       expect(MCPOAuthHandler.initiateOAuthFlow).toHaveBeenCalledWith(
         'test-server',
         serverUrl,
@@ -519,16 +522,20 @@ describe('MCP Routes', () => {
         'test-user-id:test-server',
         'mcp_oauth',
         expect.objectContaining({
-          state: 'random-state-value',
-          authorizationUrl: 'https://oauth.example.com/auth',
+          state: nonce,
+          authorizationUrl,
           serverGeneration: `config:${JSON.stringify({ url: serverUrl })}`,
         }),
       );
       expect(MCPOAuthHandler.storeStateMapping).toHaveBeenCalledWith(
-        'random-state-value',
+        nonce,
         'test-user-id:test-server',
         mockFlowManager,
       );
+      const { logger } = require('@librechat/data-schemas');
+      const diagnostics = inspect(logger.debug.mock.calls, { depth: null });
+      expect(diagnostics).not.toContain(nonce);
+      expect(diagnostics).not.toContain('sentinel-pkce-challenge');
     });
 
     describe('when the server is no longer one the user can use', () => {
@@ -690,8 +697,13 @@ describe('MCP Routes', () => {
     });
 
     it('should return 500 when OAuth initiation throws unexpected error', async () => {
+      const secret = 'sentinel-initiation-credential';
+      const error = Object.assign(new Error(secret), {
+        config: { headers: { Authorization: secret }, data: secret },
+        response: { status: 401, data: { client_secret: secret } },
+      });
       const mockFlowManager = {
-        getFlowState: jest.fn().mockRejectedValue(new Error('Database error')),
+        getFlowState: jest.fn().mockRejectedValue(error),
       };
 
       getLogStores.mockReturnValue({});
@@ -704,6 +716,12 @@ describe('MCP Routes', () => {
 
       expect(response.status).toBe(500);
       expect(response.body).toEqual({ error: 'Failed to initiate OAuth' });
+      const { logger } = require('@librechat/data-schemas');
+      expect(logger.error).toHaveBeenCalledWith('[MCP OAuth] Failed to initiate OAuth', {
+        type: 'Error',
+        status: 401,
+      });
+      expect(inspect(logger.error.mock.calls, { depth: null })).not.toContain(secret);
     });
 
     it('should return 400 when flow state metadata is null', async () => {
@@ -801,6 +819,28 @@ describe('MCP Routes', () => {
       expect(response.status).toBe(302);
       expect(response.headers.location).toBe(`${basePath}/oauth/error?error=access_denied`);
     });
+
+    it.each([undefined, 'sentinel-provider-error'])(
+      'keeps callback query values out of diagnostics, provider error: %s',
+      async (error) => {
+        const nonce = 'sentinel-callback-nonce';
+        MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(null);
+        const response = await request(app).get('/api/mcp/test-server/oauth/callback').query({
+          code: 'sentinel-authorization-code',
+          state: nonce,
+          error,
+        });
+        const { logger } = require('@librechat/data-schemas');
+        const diagnostics = inspect(
+          [logger.debug, logger.info, logger.warn, logger.error].map((log) => log.mock.calls),
+          { depth: null },
+        );
+        expect(response.status).toBe(302);
+        expect(diagnostics).not.toContain(nonce);
+        expect(diagnostics).not.toContain('sentinel-authorization-code');
+        expect(diagnostics).not.toContain('sentinel-provider-error');
+      },
+    );
 
     describe('OAuth error callback failFlow', () => {
       it('should fail the flow when OAuth error is received with valid CSRF cookie', async () => {
@@ -2064,7 +2104,12 @@ describe('MCP Routes', () => {
     });
 
     it('should redirect to error page when callback processing fails', async () => {
-      MCPOAuthHandler.getFlowState.mockRejectedValue(new Error('Callback error'));
+      const secret = 'sentinel-callback-credential';
+      const error = Object.assign(new Error(secret), {
+        config: { data: secret, headers: { Authorization: secret } },
+        response: { status: 401, data: { refresh_token: secret } },
+      });
+      MCPOAuthHandler.getFlowState.mockRejectedValue(error);
       const flowId = 'test-user-id:test-server';
       const csrfToken = generateTestCsrfToken(flowId);
 
@@ -2079,6 +2124,12 @@ describe('MCP Routes', () => {
 
       expect(response.status).toBe(302);
       expect(response.headers.location).toBe(`${basePath}/oauth/error?error=callback_failed`);
+      const { logger } = require('@librechat/data-schemas');
+      expect(logger.error).toHaveBeenCalledWith('[MCP OAuth] OAuth callback error', {
+        type: 'Error',
+        status: 401,
+      });
+      expect(inspect(logger.error.mock.calls, { depth: null })).not.toContain(secret);
     });
 
     it('should handle system-level OAuth completion', async () => {
@@ -2532,6 +2583,44 @@ describe('MCP Routes', () => {
       expect(MCPOAuthHandler.completeOAuthFlow).not.toHaveBeenCalled();
       expect(MCPTokenStorage.storeTokens).not.toHaveBeenCalled();
     });
+  });
+
+  describe.each(['tokens', 'status'])('GET /oauth/%s/:flowId authorization', (endpoint) => {
+    it.each([
+      ['USER', undefined, 'system:test-server'],
+      ['ADMIN', undefined, 'system:test-server'],
+      ['USER', 'tenant-a', 'tenant:tenant-a:system:test-server'],
+      ['ADMIN', 'tenant-a', 'tenant:tenant-a:system:test-server'],
+    ])(
+      'denies %s access in tenant %s to %s before reading flow state',
+      async (role, tenantId, flowId) => {
+        const { getTenantId } = require('@librechat/data-schemas');
+        const { getFlowStateManager } = require('~/config');
+        const { getLogStores } = require('~/cache');
+        const mockFlowManager = {
+          getFlowState: jest.fn().mockResolvedValue({
+            status: 'COMPLETED',
+            result: {
+              access_token: 'system-access-token',
+              refresh_token: 'system-refresh-token',
+            },
+          }),
+        };
+        currentUser = { id: 'test-user-id', role };
+        getTenantId.mockReturnValue(tenantId);
+        getFlowStateManager.mockReturnValue(mockFlowManager);
+
+        const response = await request(app).get(
+          `/api/mcp/oauth/${endpoint}/${encodeURIComponent(flowId)}`,
+        );
+
+        expect(response.status).toBe(403);
+        expect(response.body).toEqual({ error: 'Access denied' });
+        expect(getLogStores).not.toHaveBeenCalled();
+        expect(getFlowStateManager).not.toHaveBeenCalled();
+        expect(mockFlowManager.getFlowState).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('GET /oauth/tokens/:flowId', () => {

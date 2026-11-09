@@ -32,6 +32,7 @@ const {
   withRequestCodeInputs,
   resolveAgentCodeExecution,
   resolveMCPClientCapabilityProfile,
+  setMissingCodeFilesContext,
 } = require('@librechat/api');
 const {
   AuthType,
@@ -230,7 +231,14 @@ const loadTools = async ({
     uploadImageBuffer: options.uploadImageBuffer,
   };
 
+  const timeoutOptions = { timeouts: options.req?.config?.timeouts };
+
   const toolOptions = {
+    google: timeoutOptions,
+    wolfram: timeoutOptions,
+    open_weather: timeoutOptions,
+    traversaal_search: timeoutOptions,
+    tavily_search_results_json: timeoutOptions,
     flux: imageGenOptions,
     'stable-diffusion': imageGenOptions,
     gemini_image_gen: imageGenOptions,
@@ -327,7 +335,7 @@ const loadTools = async ({
               conversationId: options.req?.body?.conversationId,
             }),
           ).context;
-        const { files, toolContext } = await primeCodeFiles({
+        const { files, toolContext, missingFilesContext } = await primeCodeFiles({
           ...options,
           signal,
           agentId: agent?.id,
@@ -340,6 +348,7 @@ const loadTools = async ({
         if (toolContext) {
           dynamicToolContextMap[tool] = toolContext;
         }
+        setMissingCodeFilesContext(dynamicToolContextMap, missingFilesContext);
         if (files?.length) {
           primedCodeFiles = files;
         }

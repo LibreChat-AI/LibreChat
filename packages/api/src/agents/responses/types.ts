@@ -190,7 +190,8 @@ export interface FunctionCallItemParam {
 export interface FunctionCallOutputItemParam {
   type: 'function_call_output';
   call_id: string;
-  output: string;
+  /** The tool result: plain text, or content parts as the Open Responses spec allows. */
+  output: string | InputContent[];
   status?: ItemStatus;
 }
 

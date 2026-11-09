@@ -1583,6 +1583,15 @@ describe('interfaceSchema', () => {
     expect(interfaceSchema.parse({})).not.toHaveProperty('landingHeading');
     expect(interfaceSchema.safeParse({ landingHeading: 'name' }).success).toBe(false);
     expect(interfaceSchema.safeParse({ landingFooter: 'false' }).success).toBe(false);
+    expect(interfaceSchema.parse({ landingFooter: 'composer' }).landingFooter).toBe('composer');
+  });
+
+  it('accepts the message author setting', () => {
+    expect(interfaceSchema.parse({ messageAuthor: 'whenDifferent' }).messageAuthor).toBe(
+      'whenDifferent',
+    );
+    expect(interfaceSchema.parse({})).not.toHaveProperty('messageAuthor');
+    expect(interfaceSchema.safeParse({ messageAuthor: 'never' }).success).toBe(false);
   });
 
   it('silently strips removed legacy fields', () => {

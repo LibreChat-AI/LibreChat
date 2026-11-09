@@ -224,7 +224,8 @@ const azureGroupMapReader: RuntimeReader = {
 /**
  * Merges a role profile that stores an Azure group in `groups`, as the admin config API stores it,
  * through the same override pipeline `getAppConfig` runs, and returns the key the Azure client
- * options are built with: the merge resolves the profile's groups into the `groupMap` it reads.
+ * options are built with: the merge resolves the profile's groups into the `groupMap` it reads,
+ * where the deployment sets `CONFIG_REDERIVE_ENDPOINTS`.
  */
 const azureGroupsReader: RuntimeReader = {
   module: 'packages/api/src/app/service.ts',
@@ -252,6 +253,7 @@ const azureGroupsReader: RuntimeReader = {
     } as ConfigOverrideLayer;
     const resolved = resolveConfigOverrides({} as AppConfig, [layer], {
       envPolicy: createEnvReferencePolicy({}),
+      rederiveEndpoints: true,
     });
     const azure = resolved.endpoints?.azureOpenAI;
     if (!azure?.groupMap || !azure.modelGroupMap) {

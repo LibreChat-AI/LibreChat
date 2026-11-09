@@ -33,19 +33,81 @@ export interface OAuthAclSubject {
 export interface MCPServerOAuthDeletionSnapshot {
   tokenUserIds: string[];
   aclEntries: OAuthAclSubject[];
+  /** Users the view ACL names directly or through a group, whether or not they hold a token. */
+  viewerUserIds?: string[];
 }
 
 interface PrepareDeletionParams {
   getTokenUserIds: () => Promise<Array<{ toString(): string } | string>>;
   getAclEntries: () => Promise<OAuthAclSubject[]>;
+  getViewerUserIds?: (entries: OAuthAclSubject[]) => Promise<string[]>;
 }
 
 export async function prepareMCPServerOAuthDeletion({
   getTokenUserIds,
   getAclEntries,
+  getViewerUserIds,
 }: PrepareDeletionParams): Promise<MCPServerOAuthDeletionSnapshot> {
-  const [tokenUserIds, aclEntries] = await Promise.all([getTokenUserIds(), getAclEntries()]);
-  return { tokenUserIds: tokenUserIds.map(String), aclEntries };
+  const [tokenUserIds, { aclEntries, viewerUserIds }] = await Promise.all([
+    getTokenUserIds(),
+    getAclEntries().then(async (entries) => ({
+      aclEntries: entries,
+      viewerUserIds: getViewerUserIds ? (await getViewerUserIds(entries)).map(String) : [],
+    })),
+  ]);
+  return { tokenUserIds: tokenUserIds.map(String), aclEntries, viewerUserIds };
+}
+
+export const MCP_OAUTH_REVOCATION_REFUSED = 'MCP_OAUTH_REVOCATION_REFUSED' as const;
+
+/**
+ * The provider did not revoke a grant. Local credentials are already gone when this is thrown,
+ * so it reports an external grant that may stay valid rather than a teardown that failed.
+ */
+export class MCPOAuthRevocationError extends Error {
+  readonly code: typeof MCP_OAUTH_REVOCATION_REFUSED = MCP_OAUTH_REVOCATION_REFUSED;
+  constructor(
+    readonly serverName: string,
+    readonly tokenTypes: string[],
+  ) {
+    super(`OAuth provider did not revoke the ${tokenTypes.join(' and ')} token for ${serverName}`);
+    this.name = 'MCPOAuthRevocationError';
+  }
+}
+
+/** Matched by code, since hosts can load a second copy of this module. */
+export function isMCPOAuthRevocationError(error: unknown): error is MCPOAuthRevocationError {
+  return (
+    error instanceof Error &&
+    (error as Partial<MCPOAuthRevocationError>).code === MCP_OAUTH_REVOCATION_REFUSED
+  );
+}
+
+/** A user whose provider grant may outlive the removed server. */
+export interface MCPOAuthRevocationFailure {
+  userId: string;
+  tokenTypes: string[];
+}
+
+/** How a server-removal teardown treats the provider and the per-user OAuth fence. */
+export interface MCPOAuthTeardownOptions {
+  /**
+   * Clears local state, then rejects with an `MCPOAuthRevocationError` when the provider refused a
+   * revocation, so the caller learns which grants may stay valid.
+   */
+  strictRevocation?: boolean;
+  /**
+   * Receives a successful teardown's fence instead of releasing it, so the caller can keep new
+   * authorizations and refreshes out until the server record is gone.
+   */
+  retainFence?: (fence: MCPOAuthRetainedFence) => void;
+}
+
+/** A teardown fence the caller holds past the teardown itself. */
+export interface MCPOAuthRetainedFence {
+  /** Extends the lease; false when it lapsed and another writer took it in the meantime. */
+  renew: () => Promise<boolean>;
+  release: () => Promise<void>;
 }
 
 interface CleanupDeletedUsersParams {
@@ -64,7 +126,15 @@ interface CleanupDeletedUsersParams {
     pluginKey: string,
     appConfig: CleanupConfig,
     serverConfig?: MCPOptions,
+    teardown?: MCPOAuthTeardownOptions,
   ) => Promise<void>;
+  /**
+   * Set where the server record outlives this cleanup: refused revocations are returned instead of
+   * logged only, and each user's fence is held until the record is deleted. A provider cannot fail
+   * the cleanup, since it could otherwise block the removal indefinitely.
+   */
+  strictRevocation?: boolean;
+  retainFence?: MCPOAuthTeardownOptions['retainFence'];
 }
 
 const OAUTH_CLEANUP_CONCURRENCY = 10;
@@ -79,14 +149,23 @@ export async function cleanupDeletedMCPServerOAuthUsers({
   resolveAllowlists,
   fenceAndDisconnectUser,
   uninstallOAuthMCP,
-}: CleanupDeletedUsersParams): Promise<void> {
+  strictRevocation,
+  retainFence,
+}: CleanupDeletedUsersParams): Promise<MCPOAuthRevocationFailure[]> {
   const tokenUserIdsAfterDelete = (await getTokenUserIds()).map(String);
   const candidateUserIds = [
     ...new Set([ownerUserId, ...snapshot.tokenUserIds, ...tokenUserIdsAfterDelete]),
   ];
-  const affectedUserIds = [ownerUserId];
-  const sharedCandidates = candidateUserIds.filter((userId) => userId !== ownerUserId);
+  /** Named by the view ACL itself, so they had access without a principal lookup. */
+  const viewerUserIds = new Set(
+    (snapshot.viewerUserIds ?? []).filter((userId) => userId !== ownerUserId),
+  );
+  const affectedUserIds = [ownerUserId, ...viewerUserIds];
+  const sharedCandidates = candidateUserIds.filter(
+    (userId) => userId !== ownerUserId && !viewerUserIds.has(userId),
+  );
   const failures: unknown[] = [];
+  const revocationFailures: MCPOAuthRevocationFailure[] = [];
 
   for (let offset = 0; offset < sharedCandidates.length; offset += OAUTH_CLEANUP_CONCURRENCY) {
     const batch = sharedCandidates.slice(offset, offset + OAUTH_CLEANUP_CONCURRENCY);
@@ -132,9 +211,14 @@ export async function cleanupDeletedMCPServerOAuthUsers({
             `${Constants.mcp_prefix}${serverName}`,
             { mcpSettings: { allowedDomains, allowedAddresses } },
             serverConfig,
+            { strictRevocation, retainFence },
           );
         } catch (error) {
-          userFailures.push(error);
+          if (isMCPOAuthRevocationError(error)) {
+            revocationFailures.push({ userId, tokenTypes: error.tokenTypes });
+          } else {
+            userFailures.push(error);
+          }
         }
         if (userFailures.length > 0) {
           throw new Error(`OAuth cleanup failed for user ${userId}`);
@@ -154,6 +238,7 @@ export async function cleanupDeletedMCPServerOAuthUsers({
   if (failures.length > 0) {
     throw new Error(`OAuth cleanup failed for ${serverName} (${failures.length} operation(s))`);
   }
+  return revocationFailures;
 }
 
 export interface MCPOAuthCleanupDependencies {
@@ -183,6 +268,8 @@ interface ClearStateParams {
   skipOAuthFlows?: boolean;
   credentialSetId?: string | null;
   tokenSnapshot?: Map<string, string>;
+  /** Rethrows a failed token delete after flow state is cleared. */
+  strict?: boolean;
 }
 
 const oauthTokenKeys = (serverName: string) => {
@@ -201,7 +288,9 @@ export async function clearStoredMCPOAuthState({
   skipOAuthFlows = false,
   credentialSetId,
   tokenSnapshot,
+  strict = false,
 }: ClearStateParams): Promise<void> {
+  let tokenDeleteError: unknown;
   try {
     await dependencies.tokenStorage.deleteUserTokens({
       userId,
@@ -220,6 +309,7 @@ export async function clearStoredMCPOAuthState({
       },
     });
   } catch (error) {
+    tokenDeleteError = error;
     logger.warn(
       `[clearStoredMCPOAuthState] Failed to delete MCP OAuth tokens for ${serverName}:`,
       error,
@@ -260,6 +350,9 @@ export async function clearStoredMCPOAuthState({
       );
     }
   }
+  if (strict && tokenDeleteError) {
+    throw new Error(`Failed to delete stored MCP OAuth tokens for ${serverName}`);
+  }
 }
 
 interface UninstallParams {
@@ -268,6 +361,7 @@ interface UninstallParams {
   appConfig?: CleanupConfig;
   serverConfigOverride?: MCPOptions;
   dependencies: MCPOAuthCleanupDependencies;
+  teardown?: MCPOAuthTeardownOptions;
 }
 
 export async function cleanupMCPServerOAuth(params: UninstallParams): Promise<void> {
@@ -280,6 +374,14 @@ export async function cleanupMCPServerOAuth(params: UninstallParams): Promise<vo
     (await dependencies.tokenStorage.beginRefreshTeardown?.(userId, serverName)) ?? (() => {});
   let teardownLease: Awaited<ReturnType<typeof dependencies.flowManager.acquireLease>> = null;
   let leaseError: unknown;
+  const releaseFence = async () => {
+    try {
+      await teardownLease?.release();
+    } finally {
+      releaseRefreshTeardown();
+    }
+  };
+  let fenceRetained = false;
   try {
     try {
       teardownLease = await dependencies.flowManager.acquireLease(
@@ -292,15 +394,34 @@ export async function cleanupMCPServerOAuth(params: UninstallParams): Promise<vo
     } catch (error) {
       leaseError = error;
     }
-    await cleanupMCPServerOAuthWithFenceHeld(params);
+    let revocationError: MCPOAuthRevocationError | undefined;
+    try {
+      await cleanupMCPServerOAuthWithFenceHeld(params);
+    } catch (error) {
+      if (!isMCPOAuthRevocationError(error)) {
+        throw error;
+      }
+      revocationError = error;
+    }
     if (leaseError) {
       throw leaseError;
     }
+    const retainFence = params.teardown?.retainFence;
+    if (retainFence) {
+      const lease = teardownLease;
+      retainFence({
+        renew: async () => (lease?.renew ? lease.renew() : lease != null),
+        release: releaseFence,
+      });
+      fenceRetained = true;
+    }
+    /** Local state is cleared and the fence is handed over; only the provider grant remains. */
+    if (revocationError) {
+      throw revocationError;
+    }
   } finally {
-    try {
-      await teardownLease?.release();
-    } finally {
-      releaseRefreshTeardown();
+    if (!fenceRetained) {
+      await releaseFence();
     }
   }
 }
@@ -311,7 +432,9 @@ async function cleanupMCPServerOAuthWithFenceHeld({
   appConfig,
   serverConfigOverride,
   dependencies,
+  teardown,
 }: UninstallParams): Promise<void> {
+  const strict = teardown?.strictRevocation === true;
   const serverName = pluginKey.replace(Constants.mcp_prefix, '');
   /** Snapshot exact encrypted values before cancelling the flow. Later cleanup can then remove
    * this authorization without matching credentials written by a replacement attempt. */
@@ -464,6 +587,7 @@ async function cleanupMCPServerOAuthWithFenceHeld({
       dependencies,
       skipOAuthFlows: true,
       tokenSnapshot,
+      strict,
     });
     return;
   }
@@ -475,6 +599,7 @@ async function cleanupMCPServerOAuthWithFenceHeld({
       dependencies,
       skipOAuthFlows: true,
       tokenSnapshot,
+      strict,
     });
     return;
   }
@@ -500,6 +625,7 @@ async function cleanupMCPServerOAuthWithFenceHeld({
       skipOAuthFlows: true,
       credentialSetId: typeof credentialSetId === 'string' ? credentialSetId : null,
       tokenSnapshot,
+      strict,
     });
     return;
   }
@@ -520,6 +646,7 @@ async function cleanupMCPServerOAuthWithFenceHeld({
   const oauthHeaders = serverConfig.oauth_headers ?? {};
   const allowedDomains = appConfig?.mcpSettings?.allowedDomains;
   const allowedAddresses = appConfig?.mcpSettings?.allowedAddresses;
+  const revocationFailures: string[] = [];
   for (const [tokenType, token] of [
     ['access', tokens?.access_token],
     ['refresh', tokens?.refresh_token],
@@ -538,6 +665,7 @@ async function cleanupMCPServerOAuthWithFenceHeld({
         allowedAddresses,
       );
     } catch (error) {
+      revocationFailures.push(tokenType);
       logger.error(`[maybeUninstallOAuthMCP] Error revoking ${tokenType} token:`, error);
     }
   }
@@ -549,5 +677,9 @@ async function cleanupMCPServerOAuthWithFenceHeld({
     skipOAuthFlows: true,
     credentialSetId,
     tokenSnapshot,
+    strict,
   });
+  if (strict && revocationFailures.length > 0) {
+    throw new MCPOAuthRevocationError(serverName, revocationFailures);
+  }
 }

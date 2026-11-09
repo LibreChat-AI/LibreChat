@@ -1,7 +1,15 @@
 import { RefObject } from 'react';
 import { isEphemeralAgentId } from 'librechat-data-provider';
-import type { PaneOptionSettings } from '@librechat/chat/react';
+import type {
+  TOptions,
+  TAskProps,
+  TAskFunction,
+  PaneOptionSettings,
+  MessageAudioProps,
+  NewConversationParams,
+} from '@librechat/chat/react';
 import type { UseMutationResult } from '@tanstack/react-query';
+import type { MessageIconData } from '@librechat/chat/react';
 import type { ExtendedFile } from '@librechat/chat';
 import type * as t from 'librechat-data-provider';
 import type { LucideIcon } from 'lucide-react';
@@ -62,7 +70,7 @@ export type LocalizeFunction = (
 
 export type ChatFormValues = { text: string };
 
-export const mainTextareaId = 'prompt-textarea';
+export { mainTextareaId } from '@librechat/chat';
 export const globalAudioId = 'global-audio';
 
 export type NavLink = {
@@ -166,6 +174,8 @@ export type AgentPanelContextType = {
   setActivePanel: React.Dispatch<React.SetStateAction<Panel>>;
   setCurrentAgentId: React.Dispatch<React.SetStateAction<string | undefined>>;
   agent_id?: string;
+  /** Runs `start` once the chat it opens is in view: the host closes the mobile drawer first. */
+  revealChat: (start: () => void) => void;
   startupConfig?: t.TStartupConfig | null;
   agentsConfig?: t.TAgentsEndpoint | null;
   endpointsConfig?: t.TEndpointsConfig | null;
@@ -260,119 +270,10 @@ export type TGenButtonProps = {
   onClick: TOnClick;
 };
 
-export type TAskProps = {
-  text: string;
-  overrideConvoId?: string;
-  overrideUserMessageId?: string;
-  parentMessageId?: string | null;
-  conversationId?: string | null;
-  messageId?: string | null;
-  clientTimestamp?: string;
-};
+export type { TMessageChatContext } from '@librechat/chat/react';
+export type { TMessageProps } from '@librechat/chat/react';
 
-export type TOptions = {
-  editedMessageId?: string | null;
-  editedContent?: t.TEditedContent;
-  isRegenerate?: boolean;
-  isContinued?: boolean;
-  isEdited?: boolean;
-  /**
-   * Manual context compaction: a summarize-only turn hung off the branch's
-   * leaf (`messageId`). Shaped like a regenerate on the client — no new user
-   * bubble, the response placeholder parents onto the leaf — and sent with
-   * `compact: true` so the server runs the graph summarize-only.
-   */
-  compact?: boolean;
-  overrideMessages?: t.TMessage[];
-  /**
-   * Authoritative attachment list for this submission: a rerun replays the edited
-   * message's stored files, and an auto-drained queued message replays the ones taken
-   * out of the composer when it was queued. Authoritative even when empty, so a drain
-   * never vacuums up attachments the user staged for their next send.
-   */
-  overrideFiles?: t.TMessage['files'];
-  /**
-   * Assistant message being regenerated. Used to derive the optimistic response
-   * id for non-tail regenerations without accidentally keying the stream to the
-   * conversation tail.
-   */
-  targetResponseMessageId?: string | null;
-  /**
-   * Carry forward a user message's manually-invoked skills when the caller
-   * is resubmitting / regenerating that same message — the compose-time
-   * atom has already been drained on the original submit, so without this
-   * the second turn would run without any manual priming even though the
-   * pills are still visible on the user bubble.
-   */
-  overrideManualSkills?: string[];
-  /**
-   * Carry forward a user message's quoted excerpts when resubmitting /
-   * regenerating that same message — the compose-time atom is drained on the
-   * original submit, so without this the second turn would lose the quoted
-   * context even though the references still show on the user bubble.
-   */
-  overrideQuotes?: string[];
-  /** Request-scoped reasoning selection for this exact submission. */
-  overrideReasoning?: t.TReasoningOverride | null;
-  /** Added conversation for multi-convo feature - sent to server as part of submission payload */
-  addedConvo?: t.TConversation;
-  /** Reuse a durable submission identity (terminal steer recovery). */
-  overrideClientRequestId?: string;
-  /** Exact parked steer source for a recovery attempt. */
-  overrideRecoverySteerId?: string;
-  /** Exact terminal generation observed before an automatic queued start. */
-  overrideExpectedPredecessorCreatedAt?: number;
-  /** Client-only exact queue position restored if admission is rejected. */
-  overrideQueuedMessageOrigin?: unknown;
-};
-
-export type TAskFunction = (props: TAskProps, options?: TOptions) => false | void;
-
-/**
- * Stable context object passed from non-memo'd wrapper components (Message, MessageContent)
- * to memo'd inner components (MessageRender, ContentRender) via props.
- *
- * This avoids subscribing to ChatContext inside memo'd components, which would bypass React.memo
- * and cause unnecessary re-renders when `isSubmitting` changes during streaming.
- *
- * The `isSubmitting` property should use a getter backed by a ref so it returns the current
- * value at call-time (for callback guards) without being a reactive dependency.
- */
-export type TMessageChatContext = {
-  ask: TAskFunction;
-  index: number;
-  regenerate: (message: t.TMessage, options?: { addedConvo?: t.TConversation | null }) => void;
-  conversation: t.TConversation | null;
-  /** Getter backed by a ref, for reads at call time. Rendering reads the row's
-   *  `latestMessageId` prop, which its comparator gates on the row's relation. */
-  readonly latestMessageId: string | undefined;
-  /** Getter backed by a ref, for reads at call time (see `latestMessageId`). */
-  readonly latestMessageDepth: number | undefined;
-  handleContinue: (e: React.MouseEvent<HTMLButtonElement>) => void;
-  /** Resolved once per chat from `interface.feedback`; false until the config loads */
-  feedbackEnabled: boolean;
-  /** Should be a getter backed by a ref — reads current value without triggering re-renders */
-  readonly isSubmitting: boolean;
-};
-
-export type TMessageProps = {
-  conversation?: t.TConversation | null;
-  messageId?: string | null;
-  message?: t.TMessage;
-  messagesTree?: t.TMessage[];
-  currentEditId: string | number | null;
-  isSearchView?: boolean;
-  siblingIdx?: number;
-  siblingCount?: number;
-  setCurrentEditId?: React.Dispatch<React.SetStateAction<string | number | null>> | null;
-  setSiblingIdx?: ((value: number) => void | React.Dispatch<React.SetStateAction<number>>) | null;
-};
-
-export type TMessageIcon = { endpoint?: string | null; isCreatedByUser?: boolean } & Pick<
-  t.TConversation,
-  'modelLabel'
-> &
-  Pick<t.TMessage, 'model' | 'iconURL'>;
+export type TMessageIcon = MessageIconData;
 
 export type TInitialProps = {
   text: string;
@@ -480,22 +381,7 @@ export type VoiceOption = {
   label: string;
 };
 
-export type TMessageAudio = {
-  isLast?: boolean;
-  index: number;
-  messageId: string;
-  content: string;
-  className?: string;
-  renderButton?: (props: {
-    onClick: (e?: React.MouseEvent<HTMLButtonElement>) => void;
-    title: string;
-    icon: React.ReactNode;
-    isActive?: boolean;
-    isVisible?: boolean;
-    isDisabled?: boolean;
-    className?: string;
-  }) => React.ReactNode;
-};
+export type TMessageAudio = MessageAudioProps;
 
 export type OptionWithIcon = Option & { icon?: React.ReactNode };
 export type DropdownValueSetter = (value: string | Option | OptionWithIcon) => void;
@@ -510,7 +396,7 @@ export type PromptOption = MentionOption & {
 
 export type TOptionSettings = PaneOptionSettings;
 
-export type { ExtendedFile };
+export type { ExtendedFile, TOptions, TAskProps, TAskFunction, NewConversationParams };
 
 export type TLoginLayoutContext = {
   startupConfig: t.TStartupConfig | null;
@@ -522,36 +408,9 @@ export type TLoginLayoutContext = {
   setHeaderText: React.Dispatch<React.SetStateAction<string>>;
 };
 
-export type NewConversationParams = {
-  template?: Partial<t.TConversation>;
-  preset?: Partial<t.TPreset>;
-  modelsData?: t.TModelsConfig;
-  buildDefault?: boolean;
-  keepAddedConvos?: boolean;
-  disableParams?: boolean;
-};
-
 export type ConvoGenerator = (params: NewConversationParams) => void | t.TConversation;
 
-export type TBaseResData = {
-  final?: boolean;
-  initial?: boolean;
-  previousMessages?: t.TMessage[];
-  conversation: t.TConversation;
-  conversationId?: string;
-  runMessages?: t.TMessage[];
-};
-
-export type TResData = TBaseResData & {
-  requestMessage: t.TMessage;
-  responseMessage: t.TMessage;
-};
-
-export type TFinalResData = Omit<TBaseResData, 'conversation'> & {
-  conversation: Partial<t.TConversation> & Pick<t.TConversation, 'conversationId'>;
-  requestMessage?: t.TMessage;
-  responseMessage?: t.TMessage;
-};
+export type { TResData, TBaseResData, TFinalResData } from '@librechat/chat';
 
 declare global {
   interface Window {
@@ -566,8 +425,8 @@ declare global {
        *  composer reserves the footer bar's band on its first frame. */
       hasConfiguredFooter?: boolean;
       /** The deployment's `interface.landingFooter`, so the welcome screen does
-       *  not paint a footer the config is about to remove. */
-      landingFooter?: boolean;
+       *  not paint a footer the config is about to remove or move. */
+      landingFooter?: boolean | 'composer';
     };
   }
 }

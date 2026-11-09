@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import copy from 'copy-to-clipboard';
 import { Download } from 'lucide-react';
+import { CopyButton } from '@librechat/chat/components';
 import {
   Button,
   OGDialog,
@@ -8,14 +9,14 @@ import {
   OGDialogTitle,
   OGDialogDescription,
 } from '@librechat/client';
-import type { TFile } from 'librechat-data-provider';
 import {
   getFileExtension,
   getPreviewKind,
   isExtractedTextPreviewLoading,
   shouldUseExtractedTextPreview,
   shouldUseSharedFileDownload,
-} from './preview';
+} from '@librechat/chat';
+import type { TFile } from 'librechat-data-provider';
 import {
   useFilePreview,
   useFilePreviewBlob,
@@ -24,7 +25,6 @@ import {
 } from '~/data-provider';
 import { getDownloadFilename, logger, sortPagesByRelevance, triggerDownload } from '~/utils';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useShareContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 

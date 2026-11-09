@@ -4,7 +4,8 @@
  * A path is a list of keys, so a record key that contains a dot is still one segment. A dotted
  * `fieldPath` is an edge format: `parseFieldPath` splits it, which is lossless only when no key
  * on the path contains a dot. Tombstones are stored as dotted strings, so they can only name
- * paths whose segments contain no dots.
+ * paths whose segments contain no dots, or one entry of an array merged by key by its key
+ * (`endpoints.custom["Name"].headers`, read with `parseConfigPath`), whatever the key holds.
  *
  * Every helper is pure: it never mutates its input and copies only the containers along the
  * path it changes.
@@ -33,7 +34,14 @@ export type ConfigPathErrorReason =
   /** A segment starts with `$` or names a reserved key (`__*`, `constructor`, `prototype`). */
   | 'unsafe_segment'
   /** The path is longer than {@link MAX_CONFIG_PATH_DEPTH} segments. */
-  | 'too_deep';
+  | 'too_deep'
+  /**
+   * An entry key step (`["name"]`) is malformed, follows something other than an array merged by
+   * key, or appears where only a whole path is accepted (a write, or `segments`).
+   */
+  | 'keyed_path'
+  /** A keyed path names the key field of its entry, which identifies the entry itself. */
+  | 'merge_key';
 
 /** The deepest path a client may address; config schemas nest far less than this. */
 export const MAX_CONFIG_PATH_DEPTH = 32;
@@ -116,13 +124,179 @@ export function isDotFreePath(segments: ConfigPathSegments): boolean {
   return segments.every((segment) => !segment.includes('.'));
 }
 
-/** Joins segments into the dotted form tombstones are stored in. */
+/**
+ * Joins segments into the dotted form tombstones are stored in. A segment holding `["` is
+ * refused: stored tombstones read that as an entry key step ({@link parseConfigPath}).
+ */
 export function formatTombstonePath(segments: ConfigPathSegments): string {
   assertSegments(segments);
   if (!isDotFreePath(segments)) {
     throw new ConfigPathError([...segments], 'dotted_segment');
   }
+  if (segments.some((segment) => segment.includes(KEY_STEP_OPEN))) {
+    throw new ConfigPathError([...segments], 'keyed_path');
+  }
   return segments.join('.');
+}
+
+/** An entry of a merged-by-key array, by its key, and a path inside it. */
+export interface ConfigEntryStep {
+  /** The entry's key (a custom endpoint's `name`), as written. */
+  key: string;
+  /** The path inside the entry; empty for the whole entry. */
+  rest: ConfigPathSegments;
+}
+
+/**
+ * Where a removal or tombstone lands: `segments`, or with `entry`, one entry of the array at
+ * `segments` (merged by key) and a path inside it.
+ */
+export interface ConfigLocation {
+  segments: ConfigPathSegments;
+  entry?: ConfigEntryStep;
+}
+
+/** The longest entry key a keyed path can address. */
+export const MAX_CONFIG_ENTRY_KEY_LENGTH = 256;
+
+const KEY_STEP_OPEN = '["';
+
+/**
+ * Whether a dotted path holds an entry key step (`endpoints.custom["Name"]`). Such a path is
+ * read with {@link parseConfigPath}, never split on its dots.
+ */
+export function isKeyedConfigPath(path: string): boolean {
+  return path.includes(KEY_STEP_OPEN);
+}
+
+/** Dotted segments that are each non-empty and safe, and hold no entry key step. */
+function readDottedSegments(text: string): string[] | null {
+  const segments = text.split('.');
+  const valid = segments.every(
+    (segment) =>
+      segment !== '' && !UNSAFE_SEGMENT.test(segment) && !segment.includes(KEY_STEP_OPEN),
+  );
+  return valid ? segments : null;
+}
+
+/** Index of the quote that closes the JSON string starting at `start`, or -1. */
+function findStringEnd(text: string, start: number): number {
+  for (let index = start + 1; index < text.length; index++) {
+    if (text[index] === '\\') {
+      index++;
+    } else if (text[index] === '"') {
+      return index;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Whether a keyed path can name an entry by `key`: 1 to {@link MAX_CONFIG_ENTRY_KEY_LENGTH}
+ * characters, not starting with `$` or `__`, and not `constructor` or `prototype`.
+ */
+export function isConfigEntryKey(key: string): boolean {
+  return key !== '' && key.length <= MAX_CONFIG_ENTRY_KEY_LENGTH && !UNSAFE_SEGMENT.test(key);
+}
+
+/** The entry key a JSON string literal holds, or `null` when it is not one a path may name. */
+function readEntryKey(literal: string): string | null {
+  let key: unknown;
+  try {
+    key = JSON.parse(literal);
+  } catch {
+    return null;
+  }
+  return typeof key === 'string' && isConfigEntryKey(key) ? key : null;
+}
+
+/**
+ * Reads a stored tombstone or a client's `fieldPath`: a dotted path (split on its dots), or a
+ * keyed path `<array>["<key>"](.<path>)?`, which names one entry of an array merged by key by
+ * its key, a JSON string literal (so a name may hold dots, quotes, brackets or any other
+ * character), and optionally a dotted path inside it. A keyed path has one key step, dot-free
+ * segments that are non-empty and safe, a key of 1 to {@link MAX_CONFIG_ENTRY_KEY_LENGTH}
+ * characters that does not start with `$` or `__` and is not `constructor` or `prototype`, and
+ * at most {@link MAX_CONFIG_PATH_DEPTH} steps. `null` when a keyed path breaks any of these.
+ * Whether the array is merged by key is the caller's to check.
+ */
+export function parseConfigPath(path: string): ConfigLocation | null {
+  const open = path.indexOf(KEY_STEP_OPEN);
+  if (open === -1) {
+    return { segments: parseFieldPath(path) };
+  }
+  const segments = readDottedSegments(path.slice(0, open));
+  const close = findStringEnd(path, open + 1);
+  if (!segments || close === -1 || path[close + 1] !== ']') {
+    return null;
+  }
+  const key = readEntryKey(path.slice(open + 1, close + 1));
+  const after = path.slice(close + 2);
+  if (key == null || (after !== '' && !after.startsWith('.'))) {
+    return null;
+  }
+  const rest = after === '' ? [] : readDottedSegments(after.slice(1));
+  if (!rest || segments.length + 1 + rest.length > MAX_CONFIG_PATH_DEPTH) {
+    return null;
+  }
+  return { segments, entry: { key, rest } };
+}
+
+/** Why one step of a keyed location cannot be written in its stored form, or `null`. */
+function getKeyedStepError(segment: string): ConfigPathErrorReason | null {
+  if (segment === '') {
+    return 'empty_path';
+  }
+  if (UNSAFE_SEGMENT.test(segment)) {
+    return 'unsafe_segment';
+  }
+  if (segment.includes('.')) {
+    return 'dotted_segment';
+  }
+  return segment.includes(KEY_STEP_OPEN) ? 'keyed_path' : null;
+}
+
+/**
+ * Why a keyed location cannot be stored as the keyed path it names, or `null` when it can: its
+ * stored form must read back as itself ({@link parseConfigPath}), so the array's segments and
+ * the path inside the entry hold only non-empty, safe, dot-free steps with no key step, the key
+ * is one {@link isConfigEntryKey} accepts, and the whole is at most
+ * {@link MAX_CONFIG_PATH_DEPTH} steps deep.
+ */
+export function getKeyedLocationError(
+  segments: ConfigPathSegments,
+  entry: ConfigEntryStep,
+): ConfigPathErrorReason | null {
+  if (segments.length === 0) {
+    return 'empty_path';
+  }
+  if (segments.length + 1 + entry.rest.length > MAX_CONFIG_PATH_DEPTH) {
+    return 'too_deep';
+  }
+  for (const segment of [...segments, ...entry.rest]) {
+    const reason = getKeyedStepError(segment);
+    if (reason) {
+      return reason;
+    }
+  }
+  return isConfigEntryKey(entry.key) ? null : 'keyed_path';
+}
+
+/** The canonical keyed path of an entry and a path inside it (see {@link parseConfigPath}). */
+export function formatKeyedPath(
+  segments: ConfigPathSegments,
+  key: string,
+  rest: ConfigPathSegments = [],
+): string {
+  const entry = `${segments.join('.')}[${JSON.stringify(key)}]`;
+  return rest.length === 0 ? entry : `${entry}.${rest.join('.')}`;
+}
+
+/** A location in its stored form: a dotted path, or a canonical keyed path. */
+export function formatConfigLocation(location: ConfigLocation): string {
+  return location.entry
+    ? formatKeyedPath(location.segments, location.entry.key, location.entry.rest)
+    : formatTombstonePath(location.segments);
 }
 
 /** Whether `prefix` addresses `segments` itself or one of its ancestors. */
@@ -133,7 +307,11 @@ export function isSegmentPrefix(prefix: ConfigPathSegments, segments: ConfigPath
   );
 }
 
-/** Whether a stored tombstone names `segments` itself or a path below it. */
+/**
+ * Whether a dotted tombstone names `segments` itself or a path below it, split on its dots. A
+ * keyed tombstone is compared by its array with `isConfigTombstoneAtOrBelow` (`collections.ts`),
+ * which knows the arrays merged by key.
+ */
 export function isTombstoneAtOrBelow(tombstone: string, segments: ConfigPathSegments): boolean {
   return isSegmentPrefix(segments, parseFieldPath(tombstone));
 }

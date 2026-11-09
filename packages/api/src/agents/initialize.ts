@@ -142,6 +142,7 @@ import { createRequestAgentExecutionContext } from './runtime';
 import { resolveTurnDeliveryRouting } from './files/delivery';
 import { filterFilesByEndpointRuntimeConfig } from '~/files';
 import { isFatalAgentInitializationError } from './errors';
+import { assertToolOptionsWithinLimits } from './options';
 import { hasActiveFilePolicy } from '../protection/files';
 import { resolveAgentCodeExecution } from '~/code/agent';
 import { hasActiveFileFieldPolicy } from '~/protection';
@@ -929,11 +930,7 @@ export type InitializedAgent = Agent & {
   provisionWarnings?: string[];
   /** State for deferred file provisioning — actual uploads happen at tool invocation time */
   provisionState?: ProvisionState;
-  /**
-   * Facts about a resolved `instructionsPrompt` link (source, groupId,
-   * resolved promptId), surfaced for AI-2158. Never persisted — omitted for
-   * an agent with no link, an unresolved link, or a missing resolver.
-   */
+  /** Facts about a resolved `instructionsPrompt` link, shaped per source. Never persisted. */
   instructionsPromptFacts?: LinkedInstructionsFacts;
 };
 
@@ -1042,14 +1039,7 @@ export interface InitializeAgentParams {
    * from `db.getRoleByName`.
    */
   resolveWebSearchGrant?: () => Promise<boolean>;
-  /**
-   * Resolves an agent's `instructionsPrompt` link (a linked native prompt
-   * group) into instruction text. Called only when `agent.instructionsPrompt`
-   * carries a resolvable `native` link. Absent, a linked agent falls back to
-   * empty instructions with a warning — there is no default DB-backed
-   * resolution path, unlike `resolveWebSearchGrant`, so every caller that
-   * wants linked instructions honored must supply one.
-   */
+  /** With none supplied, a linked agent falls back to empty instructions. */
   resolveLinkedInstructions?: ResolveLinkedInstructions;
   /**
    * Whether resolving `agent.instructionsPrompt` should record a usage
@@ -1242,6 +1232,7 @@ export async function initializeAgent(
   }
   const shouldUseChatProjectContext =
     useChatProjectContext ?? params.req?.chatProjectContextEnabled === true;
+  assertToolOptionsWithinLimits(suppliedAgent.tool_options);
   const inputAgent = restoreAgentInferenceInput(suppliedAgent);
   const agent = shouldUseChatProjectContext ? { ...inputAgent } : inputAgent;
   const { user, appConfig } = runtime;
