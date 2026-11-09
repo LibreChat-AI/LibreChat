@@ -105,6 +105,20 @@ const classifyRefreshFailure = (error: unknown): RefreshFailureClassification =>
     : 'denied';
 };
 
+type ProactiveRefreshFailureClassification = RefreshFailureClassification | 'network';
+
+/** Narrows the proactive path's handling of a rejected refresh beyond `classifyRefreshFailure`'s
+ *  binary split: a network error or timeout carries no `response` at all, so it is told apart
+ *  from an actual denial without re-deriving the unavailable check. */
+const classifyProactiveRefreshFailure = (error: unknown): ProactiveRefreshFailureClassification => {
+  const classification = classifyRefreshFailure(error);
+  if (classification === 'unavailable') {
+    return 'unavailable';
+  }
+  const hasResponse = (error as { response?: unknown } | undefined)?.response != null;
+  return hasResponse ? 'denied' : 'network';
+};
+
 const AUTH_SESSION_UNAVAILABLE_MARKER = '__authSessionUnavailable';
 
 type MarkedUnavailable = { [AUTH_SESSION_UNAVAILABLE_MARKER]?: true };
@@ -475,17 +489,48 @@ const shouldRefreshBeforeRequest = (url?: string) => {
   return timeUntilExpiry > 0 && timeUntilExpiry <= TOKEN_REFRESH_BUFFER_MS;
 };
 
+/** Mirrors the reactive 401 path's handling of a rejected refresh for the proactive path, which
+ *  has no failed request of its own to reject: a denial still ends the session and a 503
+ *  AUTH_SESSION_CHECK_UNAVAILABLE still surfaces the event, but a network error or timeout keeps
+ *  the old token instead, since it says nothing about whether the session is still valid. The
+ *  generation guard stops a flight superseded by a newer login from redirecting after the fact,
+ *  and keeps a request that only joined another one's flight from redirecting a second time. */
+const handleProactiveRefreshFailure = (error: unknown, requestGeneration: number) => {
+  if (getAuthGeneration() !== requestGeneration) {
+    return null;
+  }
+
+  const classification = classifyProactiveRefreshFailure(error);
+  if (classification === 'unavailable') {
+    dispatchAuthUnavailableEvent();
+    return null;
+  }
+  if (classification === 'network') {
+    return null;
+  }
+
+  advanceAuthGeneration();
+  redirectToLoginOnce();
+  return null;
+};
+
 const refreshBeforeRequest = async (url?: string) => {
   const state = getAuthRecoveryState();
   if (state.refreshPromise && !isAuthRecoveryEndpoint(url)) {
-    return state.refreshPromise.catch(() => null);
+    const requestGeneration = getAuthGeneration();
+    return state.refreshPromise.catch((error) =>
+      handleProactiveRefreshFailure(error, requestGeneration),
+    );
   }
 
   if (!shouldRefreshBeforeRequest(url)) {
     return null;
   }
 
-  return startAuthRecovery(false).catch(() => null);
+  const requestGeneration = getAuthGeneration();
+  return startAuthRecovery(false).catch((error) =>
+    handleProactiveRefreshFailure(error, requestGeneration),
+  );
 };
 
 const withAuthorization = (options: RequestInit | undefined, token: string | null): RequestInit => {
