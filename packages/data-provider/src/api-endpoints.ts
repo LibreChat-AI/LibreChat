@@ -658,6 +658,7 @@ export const enableTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup`;
 export const confirmTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/confirm`;
 export const acknowledgeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/acknowledge`;
 export const finalizeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/finalize`;
+export const cancelTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/cancel`;
 export const verifyTwoFactor = () => `${BASE_URL}/api/auth/2fa/verify`;
 export const confirmTwoFactor = () => `${BASE_URL}/api/auth/2fa/confirm`;
 export const disableTwoFactor = () => `${BASE_URL}/api/auth/2fa/disable`;

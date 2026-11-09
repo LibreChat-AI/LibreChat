@@ -332,3 +332,13 @@ export const useFinalizeTwoFactorSetupMutation = (): UseMutationResult<
   unknown
 > =>
   useMutation((payload: t.TFinalize2FASetupRequest) => dataService.finalizeTwoFactorSetup(payload));
+
+export const useCancelTwoFactorSetupMutation = (): UseMutationResult<
+  t.TCancel2FASetupResponse,
+  unknown,
+  t.TCancel2FASetupRequest,
+  unknown
+> =>
+  useMutation([MutationKeys.cancelTwoFactorSetup], (payload: t.TCancel2FASetupRequest) =>
+    dataService.cancelTwoFactorSetup(payload),
+  );

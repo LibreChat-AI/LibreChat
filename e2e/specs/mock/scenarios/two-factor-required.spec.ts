@@ -206,6 +206,103 @@ test.describe('required two-factor enrollment · unauthenticated arrival', () =>
     ).toBeNull();
     await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible();
   });
+
+  test('back to login ends the session so a reload cannot re-enter setup @scenario:required-2fa-back-to-login-signs-out-of-setup', async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(60000);
+    /** The pre-policy refresh session a credential login leaves alive behind its setup hand-off. */
+    let refreshSessionAlive = false;
+    const cancelBodies: unknown[] = [];
+    await page.route('**/api/auth/refresh', (route) =>
+      refreshSessionAlive
+        ? json(route, ENFORCEMENT_PAYLOAD)
+        : route.fulfill({
+            status: 200,
+            contentType: 'text/html; charset=utf-8',
+            body: 'Refresh token not provided',
+          }),
+    );
+    await page.route('**/api/auth/login', (route) => json(route, ENFORCEMENT_PAYLOAD));
+    await page.route('**/api/auth/2fa/setup', (route) =>
+      json(route, {
+        otpauthUrl: 'otpauth://totp/LibreChat:user@example.com?secret=ABC123&issuer=LibreChat',
+        backupCodes: ['backup01', 'backup02'],
+      }),
+    );
+    /** The setup token authorizes the sign-out, and the server ends the session in answering it. */
+    await page.route('**/api/auth/2fa/setup/cancel', async (route) => {
+      cancelBodies.push(route.request().postDataJSON());
+      refreshSessionAlive = false;
+      await json(route, { message: 'Two-factor setup cancelled' });
+    });
+
+    await page.goto('/login');
+    await page.getByRole('textbox', { name: 'Email' }).fill('user@example.com');
+    await page.getByRole('textbox', { name: 'Password' }).fill('password');
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(page).toHaveURL(SETUP_ROUTE_PATTERN);
+    refreshSessionAlive = true;
+
+    /** The way out is there before any setup request, and still there once a secret is staged. */
+    await expect(page.getByRole('button', { name: 'Back to Login' })).toBeVisible();
+    await page.getByRole('button', { name: 'Generate QR Code' }).click();
+    await expect(page.getByRole('img', { name: 'Scan QR Code' })).toBeVisible();
+    await testInfo.attach('required-two-factor-setup-back-to-login', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    await page.getByRole('button', { name: 'Back to Login' }).click();
+
+    await expect(page).toHaveURL(LOGIN_ROUTE_PATTERN);
+    expect(cancelBodies).toEqual([{ tempToken: 'scenario-setup-token' }]);
+    expect(
+      await page.evaluate((key) => window.sessionStorage.getItem(key), SETUP_TOKEN_STORAGE_KEY),
+    ).toBeNull();
+    await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible();
+
+    /** A hard load runs the silent refresh again; with the session gone it has nothing to hand off. */
+    await page.reload();
+    await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible();
+    await expect(page).toHaveURL(LOGIN_ROUTE_PATTERN);
+  });
+
+  test('a failed sign-out keeps the user in setup and can be retried @scenario:required-2fa-back-to-login-failure-stays-in-setup', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    await page.addInitScript(([key, value]) => window.sessionStorage.setItem(key, value), [
+      SETUP_TOKEN_STORAGE_KEY,
+      'scenario-setup-token',
+    ] as const);
+    let attempts = 0;
+    await page.route('**/api/auth/2fa/setup/cancel', async (route) => {
+      attempts += 1;
+      if (attempts === 1) {
+        await json(route, { message: 'Something went wrong' }, 500);
+        return;
+      }
+      await json(route, { message: 'Two-factor setup cancelled' });
+    });
+
+    await page.goto('/login/2fa/setup');
+    await page.getByRole('button', { name: 'Back to Login' }).click();
+
+    /** The session is still alive, so leaving now would only bounce the user back into setup. */
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'We could not return you to sign in' }),
+    ).toBeVisible();
+    await expect(page).toHaveURL(SETUP_ROUTE_PATTERN);
+    expect(
+      await page.evaluate((key) => window.sessionStorage.getItem(key), SETUP_TOKEN_STORAGE_KEY),
+    ).toBe('scenario-setup-token');
+
+    await page.getByRole('button', { name: 'Back to Login' }).click();
+
+    await expect(page).toHaveURL(LOGIN_ROUTE_PATTERN);
+    expect(attempts).toBe(2);
+    await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible();
+  });
 });
 
 test.describe('required two-factor enrollment · authenticated arrival', () => {
