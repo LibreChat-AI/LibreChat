@@ -133,6 +133,7 @@ test.describe('prose wraps between words', () => {
         UNBROKEN,
       ]);
       expect(await textStaysInside(description, LONG_URL, label), `URL at ${width}px`).toBe(true);
+      expect(await textStaysInside(description, LONG_URL, dialog), `URL at ${width}px`).toBe(true);
     }
   });
 
