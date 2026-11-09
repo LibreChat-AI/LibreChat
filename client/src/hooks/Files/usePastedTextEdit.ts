@@ -378,9 +378,29 @@ export default function usePastedTextEdit({
       if (editing == null) {
         return;
       }
-      const { file, conversationId: editConversationId, draftToken: editDraftToken } = editing;
-      if (pendingActionIdsRef.current.has(actionIdOf(file))) return;
+      const {
+        file: editedFile,
+        conversationId: editConversationId,
+        draftToken: editDraftToken,
+      } = editing;
+      if (pendingActionIdsRef.current.has(actionIdOf(editedFile))) return;
       openRequestRef.current++;
+      // Pending corrections share one surviving source, even when an intermediate upload fails.
+      const superseded = new Map<string, ExtendedFile>();
+      let file = editedFile;
+      while (file.progress < 1 && file.replacesFileId && !superseded.has(actionIdOf(file))) {
+        const sourceId = file.replacesFileId;
+        let source: ExtendedFile | undefined;
+        for (const [key, candidate] of filesRef.current) {
+          if (key === sourceId || attachmentIdsOf(candidate).includes(sourceId)) {
+            source = candidate;
+            break;
+          }
+        }
+        if (source == null || source === file || superseded.has(actionIdOf(source))) break;
+        superseded.set(actionIdOf(file), file);
+        file = source;
+      }
       /** Refuse a save from a composer the paste did not come from: the detach and the
        * replacement upload would otherwise land in whatever the user switched to. */
       if (!isOriginatingComposer(editConversationId, editDraftToken)) {
@@ -414,6 +434,14 @@ export default function usePastedTextEdit({
         restoredToolResource ??
         (isAssistantsEndpoint(conversation?.endpoint) ? undefined : EToolResources.context);
 
+      for (const previous of superseded.values()) {
+        markComposerFilesTaken(attachmentIdsOf(previous));
+      }
+      for (const previous of superseded.values()) detach(previous);
+      const sourceIds = new Set(attachmentIdsOf(file));
+      setFailedEdits((queue) =>
+        queue.filter((failed) => !attachmentIdsOf(failed.file).some((id) => sourceIds.has(id))),
+      );
       setEditing(null);
       /** The original stays until the replacement is stored, but it stops accepting actions:
        * a second edit or a Move back against the same original would double-replace it. */
@@ -421,7 +449,10 @@ export default function usePastedTextEdit({
       const actionId = actionIdOf(file);
       pendingActionIdsRef.current.add(actionId);
       setPendingActionIds(new Set(pendingActionIdsRef.current));
+      let settled = false;
       const settleAction = () => {
+        if (settled) return;
+        settled = true;
         pendingActionIdsRef.current.delete(actionId);
         setPendingActionIds(new Set(pendingActionIdsRef.current));
       };
@@ -528,6 +559,7 @@ export default function usePastedTextEdit({
       isOriginatingComposer,
       isAttachedToComposer,
       consumePaste,
+      detach,
       routeFiles,
       showToast,
       localize,

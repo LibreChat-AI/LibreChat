@@ -70,6 +70,7 @@ jest.mock('../useFileHandling', () => ({
 import React from 'react';
 import { renderHook, act } from '@testing-library/react';
 import { LocalStorageKeys } from 'librechat-data-provider';
+import { partitionComposerFiles } from '@librechat/chat';
 import type { UploadLifecycleCallbacks } from '../useFileHandling';
 import type { ExtendedFile } from '~/common';
 import { getFilesDraft, getPendingDraftId, setFilesDraft } from '~/utils';
@@ -230,6 +231,59 @@ describe('usePastedTextEdit with the real composer drafts', () => {
     expect(draft.fileIds).toEqual([]);
     expect(draft.pastedTextIds ?? []).toEqual([]);
     expect(draft.pendingPastes).toEqual({});
+    jest.mocked(clearUploadRecovery).mockReset();
+  });
+
+  it('keeps only the latest pending correction when a superseded upload fails', async () => {
+    const composer = renderComposer(new Map([[ORIGINAL_ID, originalChip()]]));
+    await act(async () => composer.result.current.edit.openEditor(originalChip()));
+    await act(async () => composer.result.current.edit.saveEdit('first correction'));
+    const first = mockRouteFiles.mock.calls[0][2] as UploadLifecycleCallbacks;
+    const correction = originalChip({
+      file_id: first.fileId!,
+      temp_file_id: undefined,
+      progress: 0.2,
+      pastedText: 'first correction',
+      replacesFileId: ORIGINAL_ID,
+    });
+    act(() =>
+      composer.result.current.setFiles((current) =>
+        new Map(current).set(correction.file_id, correction),
+      ),
+    );
+    await act(async () => composer.result.current.edit.openEditor(correction));
+    jest.mocked(clearUploadRecovery).mockImplementation((id) => {
+      if (id !== first.fileId) return;
+      first.onAbort?.(id);
+      composer.result.current.setFiles((current) => {
+        const remaining = new Map(current);
+        remaining.delete(id);
+        return remaining;
+      });
+    });
+    await act(async () => composer.result.current.edit.saveEdit('final correction'));
+    const final = mockRouteFiles.mock.calls[1][2] as UploadLifecycleCallbacks;
+    expect(final.replacesFileId).toBe(ORIGINAL_SERVER_ID);
+    const latest = originalChip({
+      file_id: final.fileId!,
+      temp_file_id: undefined,
+      progress: 0.2,
+      pastedText: 'final correction',
+      replacesFileId: final.replacesFileId,
+    });
+    act(() =>
+      composer.result.current.setFiles((current) => new Map(current).set(latest.file_id, latest)),
+    );
+    await act(async () => first.onError?.(first.fileId!));
+    expect(composer.result.current.edit.editing).toBeNull();
+    const pending = partitionComposerFiles('Review this', composer.result.current.files);
+    expect(pending.files).toEqual([]);
+    expect(pending.text).toBe('Review this\n\n```text\nfinal correction\n```');
+    await act(async () => final.onSuccess?.(final.fileId!));
+    expect(composer.result.current.files.has(ORIGINAL_ID)).toBe(false);
+    expect(composer.result.current.files.has(first.fileId!)).toBe(false);
+    expect(composer.result.current.files.has(final.fileId!)).toBe(true);
+    expect(getFilesDraft(DRAFT_ID).fileIds).not.toContain(ORIGINAL_ID);
     jest.mocked(clearUploadRecovery).mockReset();
   });
 
