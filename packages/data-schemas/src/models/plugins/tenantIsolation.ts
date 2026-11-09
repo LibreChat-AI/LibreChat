@@ -2,6 +2,7 @@ import type { Schema, Query, Aggregate } from 'mongoose';
 import type { TenantDocument, TenantUpdate } from '~/tenant/policy';
 import {
   tenantFilter,
+  tenantPartition,
   scopeReplacement,
   currentTenantScope,
   resolveTenantScope,
@@ -26,6 +27,24 @@ export function _resetStrictCache(): void {
 }
 
 warnOnInvalidStrictSetting();
+
+/** Rows of exactly one tenant partition: the active tenant's, or the tenantless ones. */
+export type TenantPartitionFilter =
+  | { tenantId: string }
+  | { $or: [{ tenantId: { $exists: false } }, { tenantId: { $in: [null, ''] } }] };
+
+/**
+ * Mongoose binding of `tenantPartition`, for reads that merge several rows into one answer. The
+ * tenantless form spells out `$exists: false` so it does not lean on `null` also matching a
+ * missing field. Strict mode still refuses a read with no tenant context, as every query does.
+ */
+export function tenantPartitionFilter(operation: string): TenantPartitionFilter {
+  const tenantId = tenantPartition(resolveTenantScope(operation));
+  if (tenantId != null) {
+    return { tenantId };
+  }
+  return { $or: [{ tenantId: { $exists: false } }, { tenantId: { $in: [null, ''] } }] };
+}
 
 const TENANT_ISOLATION_APPLIED = Symbol.for('librechat:tenantIsolation');
 

@@ -20,6 +20,7 @@ import type {
   ResponseStatus,
   Usage,
 } from './types';
+import { writeGuarded } from '~/utils/events';
 
 /* =============================================================================
  * RESPONSE TRACKER
@@ -102,15 +103,15 @@ export function createResponseTracker(): ResponseTracker {
  * The `event:` field matches the `type` in the data payload.
  */
 export function writeEvent(res: ServerResponse, event: ResponseEvent): void {
-  res.write(`event: ${event.type}\n`);
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
+  writeGuarded(res, `event: ${event.type}\n`);
+  writeGuarded(res, `data: ${JSON.stringify(event)}\n\n`);
 }
 
 /**
  * Write the terminal [DONE] event
  */
 export function writeDone(res: ServerResponse): void {
-  res.write('data: [DONE]\n\n');
+  writeGuarded(res, 'data: [DONE]\n\n');
 }
 
 /* =============================================================================
@@ -323,33 +324,6 @@ export function emitResponseCompleted(config: StreamHandlerConfig, usage?: Usage
   const response = buildResponse(context, tracker, 'completed', usage);
   writeEvent(res, {
     type: 'response.completed',
-    sequence_number: tracker.nextSequence(),
-    response,
-  });
-}
-
-/**
- * Emit response.failed event
- */
-export function emitResponseFailed(
-  config: StreamHandlerConfig,
-  error: { type: string; message: string; code?: string },
-): void {
-  const { res, context, tracker } = config;
-  tracker.status = 'failed';
-  const response = buildResponse(context, tracker, 'failed');
-  response.error = {
-    type: error.type as
-      | 'server_error'
-      | 'invalid_request'
-      | 'not_found'
-      | 'model_error'
-      | 'too_many_requests',
-    message: error.message,
-    code: error.code,
-  };
-  writeEvent(res, {
-    type: 'response.failed',
     sequence_number: tracker.nextSequence(),
     response,
   });
@@ -899,44 +873,4 @@ export function writeAttachmentEvent(
     message_id: options?.messageId,
     conversation_id: options?.conversationId,
   });
-}
-
-/* =============================================================================
- * NON-STREAMING RESPONSE BUILDER
- * ============================================================================= */
-
-/**
- * Build a complete non-streaming response
- */
-export function buildResponsesNonStreamingResponse(
-  context: ResponseContext,
-  tracker: ResponseTracker,
-): Response {
-  return buildResponse(context, tracker, 'completed');
-}
-
-/**
- * Update tracker usage from collected data
- */
-export function updateTrackerUsage(
-  tracker: ResponseTracker,
-  usage: {
-    promptTokens?: number;
-    completionTokens?: number;
-    reasoningTokens?: number;
-    cachedTokens?: number;
-  },
-): void {
-  if (usage.promptTokens != null) {
-    tracker.usage.inputTokens = usage.promptTokens;
-  }
-  if (usage.completionTokens != null) {
-    tracker.usage.outputTokens = usage.completionTokens;
-  }
-  if (usage.reasoningTokens != null) {
-    tracker.usage.reasoningTokens = usage.reasoningTokens;
-  }
-  if (usage.cachedTokens != null) {
-    tracker.usage.cachedTokens = usage.cachedTokens;
-  }
 }

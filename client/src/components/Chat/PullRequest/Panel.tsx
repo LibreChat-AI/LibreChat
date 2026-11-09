@@ -1,5 +1,6 @@
 import * as Ariakit from '@ariakit/react';
 import type { TConversationPullRequest } from 'librechat-data-provider';
+import type { RefObject } from 'react';
 import { useLocalize } from '~/hooks';
 import PullRequestCard from './Card';
 import { cn } from '~/utils';
@@ -7,9 +8,9 @@ import { cn } from '~/utils';
 /** Slides in from the anchor's side, left to right, and fades; reduced motion only fades. */
 export const panelClass = cn(
   'border-border-light bg-surface-secondary text-text-primary z-[200] w-80 max-w-[calc(100vw-2rem)] rounded-xl border shadow-lg focus:outline-none',
-  'origin-left -translate-x-3 opacity-0 transition duration-200 ease-out',
+  'origin-left rtl:origin-right -translate-x-3 rtl:translate-x-3 opacity-0 transition duration-200 ease-out',
   'data-[enter]:translate-x-0 data-[enter]:opacity-100',
-  'data-[leave]:-translate-x-3 data-[leave]:opacity-0',
+  'data-[leave]:-translate-x-3 rtl:data-[leave]:translate-x-3 data-[leave]:opacity-0',
   'motion-reduce:translate-x-0 motion-reduce:transition-opacity',
 );
 
@@ -32,9 +33,12 @@ export default function PullRequestPanel({
   pullRequest,
   refreshFailed,
   onRetry,
+  finalFocus,
   className = panelClass,
 }: {
   className?: string;
+  /** Where focus returns on close, when the anchor the card hangs from is not focusable. */
+  finalFocus?: RefObject<HTMLElement | null>;
   store: Ariakit.HovercardStore;
   pullRequest: TConversationPullRequest;
   refreshFailed: boolean;
@@ -51,6 +55,7 @@ export default function PullRequestPanel({
       portal
       unmountOnHide
       autoFocusOnShow={false}
+      finalFocus={finalFocus}
       aria-label={localize('com_ui_pull_request')}
       className={className}
       onClick={stop}

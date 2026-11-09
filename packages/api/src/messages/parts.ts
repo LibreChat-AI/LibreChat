@@ -1,11 +1,17 @@
 import { ContentTypes } from 'librechat-data-provider';
 import { logger, CLIENT_MESSAGE_SELECT } from '@librechat/data-schemas';
-import type { FullToolCall, ToolCallPartResponse } from 'librechat-data-provider';
+import type {
+  FullToolCall,
+  ToolCallPartResponse,
+  SubagentAttachmentCallsResponse,
+} from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type {
   MessageRequestValidation,
   FailedMessageValidationResult,
 } from '~/middleware/messageValidation';
+import type { AttachmentCallQuery } from './previews';
+import { findSubagentAttachmentCalls } from './previews';
 
 /** Scopes a read to one message the authenticated user owns. */
 export interface ToolCallPartFilter {
@@ -232,3 +238,122 @@ export function createToolCallPartHandler(
     }
   };
 }
+
+/** Most files one owner lookup resolves, and the longest identifier it accepts. */
+const MAX_ATTACHMENT_CALL_QUERIES = 32;
+const MAX_IDENTIFIER_CHARS = 512;
+
+const boundedIdentifier = (value: unknown): string | undefined | null => {
+  const parsed = parseIdentifier(value);
+  return typeof parsed === 'string' && parsed.length > MAX_IDENTIFIER_CHARS ? null : parsed;
+};
+
+/** The `files` query: a JSON array of `{ toolCallId, agentId?, stepId? }`, or `null` if unusable. */
+function parseAttachmentCallQueries(value: unknown): AttachmentCallQuery[] | null {
+  if (typeof value !== 'string' || value.length > MAX_ATTACHMENT_CALL_QUERIES * 1_600) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length === 0 ||
+    parsed.length > MAX_ATTACHMENT_CALL_QUERIES
+  ) {
+    return null;
+  }
+  const files: AttachmentCallQuery[] = [];
+  for (const entry of parsed) {
+    if (entry == null || typeof entry !== 'object') {
+      return null;
+    }
+    const { toolCallId, agentId, stepId } = entry as Record<string, unknown>;
+    const id = boundedIdentifier(toolCallId);
+    const agent = boundedIdentifier(agentId);
+    const step = boundedIdentifier(stepId);
+    if (id == null || agent === null || step === null) {
+      return null;
+    }
+    files.push({
+      toolCallId: id,
+      ...(agent != null ? { agentId: agent } : {}),
+      ...(step != null ? { stepId: step } : {}),
+    });
+  }
+  return files;
+}
+
+export type SubagentAttachmentCallsRequest = Request<
+  { conversationId?: string; messageId?: string },
+  SubagentAttachmentCallsResponse | { error: string },
+  unknown,
+  { files?: unknown }
+> & { user?: { id?: string; tenantId?: string | null } };
+
+export interface SubagentAttachmentCallsHandlerDeps extends ToolCallPartDeps {
+  /** The access check the part endpoint uses, active-job fallback included. */
+  validate: (req: SubagentAttachmentCallsRequest) => MessageRequestValidation;
+  sendValidationResponse: (res: Response, result: FailedMessageValidationResult) => unknown;
+}
+
+/**
+ * `GET /api/messages/:conversationId/:messageId/subagent-calls?files=[...]`, mounted behind
+ * authentication. Names, for each subagent call of the stored message, the child calls of its
+ * transcript the queried files belong to, so a client holding previews can route a file that
+ * reached the message after it loaded without fetching any transcript. Access is validated as
+ * the part endpoint does it, with the user-scoped read started alongside.
+ */
+export function createSubagentAttachmentCallsHandler(
+  deps: SubagentAttachmentCallsHandlerDeps,
+): (req: SubagentAttachmentCallsRequest, res: Response) => Promise<void> {
+  return async (req, res) => {
+    const userId = req.user?.id;
+    const { conversationId, messageId } = req.params;
+    if (!userId || !conversationId || !messageId) {
+      res.status(404).json({ error: 'Message not found' });
+      return;
+    }
+    const files = parseAttachmentCallQueries(req.query.files);
+    if (files == null) {
+      res.status(400).json({ error: 'Invalid files' });
+      return;
+    }
+    try {
+      const validation = deps.validate(req);
+      if (!validation.shouldFetchMessages) {
+        res.status(404).json({ error: 'Message not found' });
+        return;
+      }
+      const read = deps
+        .getMessages({ user: userId, conversationId, messageId }, CLIENT_MESSAGE_SELECT)
+        .then(
+          (value): SettledMessages => ({ ok: true, value }),
+          (error: unknown): SettledMessages => ({ ok: false, error }),
+        );
+      const verdict = await validation.promise;
+      if (!verdict.ok) {
+        deps.sendValidationResponse(res, verdict);
+        return;
+      }
+      const settled = await read;
+      if (!settled.ok) {
+        throw settled.error;
+      }
+      const content = settled.value?.[0]?.content;
+      if (!Array.isArray(content)) {
+        res.status(404).json({ error: 'Message not found' });
+        return;
+      }
+      res.status(200).json({ parts: findSubagentAttachmentCalls(content, files) });
+    } catch (error) {
+      logger.error('[subagentAttachmentCalls] Failed to read subagent attachment calls', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  };
+}
+
+type SettledMessages = { ok: true; value: StoredMessage[] | null } | { ok: false; error: unknown };

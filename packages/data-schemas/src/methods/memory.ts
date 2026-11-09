@@ -57,23 +57,22 @@ export function createMemoryMethods(mongoose: typeof import('mongoose')): {
       }
 
       const MemoryEntry = mongoose.models.MemoryEntry;
-      const existingMemory = await MemoryEntry.findOne({
-        userId,
-        key,
-        ...partitionFilter(agentId),
-      });
-      if (existingMemory) {
+      /** Insert-only upsert: one round trip decides existence, unlike a find-then-create. */
+      const result = await MemoryEntry.updateOne(
+        { userId, key, ...partitionFilter(agentId) },
+        {
+          $setOnInsert: {
+            value,
+            tokenCount,
+            ...(agentId ? { agentId } : {}),
+            updated_at: new Date(),
+          },
+        },
+        { upsert: true },
+      );
+      if (!result.upsertedCount) {
         throw new Error('Memory with this key already exists');
       }
-
-      await MemoryEntry.create({
-        userId,
-        key,
-        value,
-        tokenCount,
-        ...(agentId ? { agentId } : {}),
-        updated_at: new Date(),
-      });
 
       return { ok: true };
     } catch (error) {

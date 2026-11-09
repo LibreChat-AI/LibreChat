@@ -1,9 +1,9 @@
 import { useRef, useMemo, useState, useEffect, useCallback } from 'react';
 import { useToastContext } from '@librechat/client';
+import { isFocusedChatPane } from '@librechat/chat';
 import type { TAskFunction } from '~/common';
 import useGetAudioSettings from './useGetAudioSettings';
 import { useChatFormContext } from '~/Providers';
-import { isFocusedChatPane } from '~/utils/pane';
 import useSpeechToText from './useSpeechToText';
 import { globalAudioId } from '~/common';
 import useLocalize from '../useLocalize';

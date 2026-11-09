@@ -1,5 +1,5 @@
 import type { Dispatcher } from 'undici';
-import type { PullRequestFetch } from './github';
+import type { PullRequestFetch } from './shared';
 import { getEnvProxyDispatcher } from '~/utils/proxy';
 
 /**

@@ -10,11 +10,16 @@ jest.mock('openid-client', () => ({
   refreshTokenGrant: jest.fn(),
 }));
 
-jest.mock('librechat-data-provider', () => ({
-  CacheKeys: { ADMIN_OAUTH_EXCHANGE: 'admin-oauth-exchange' },
-}));
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return {
+    ...actual,
+    CacheKeys: { ...actual.CacheKeys, ADMIN_OAUTH_EXCHANGE: 'admin-oauth-exchange' },
+  };
+});
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   logger: {
     debug: jest.fn(),
     error: jest.fn(),
@@ -37,6 +42,7 @@ jest.mock('@librechat/api', () => {
   }
 
   return {
+    ...jest.requireActual('@librechat/api'),
     isEnabled: jest.fn(),
     getAdminPanelUrl: jest.fn(() => 'http://admin.example.com'),
     exchangeAdminCode: jest.fn(),

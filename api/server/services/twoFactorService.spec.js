@@ -9,7 +9,6 @@ jest.mock('node:crypto', () => {
 });
 
 jest.mock('@librechat/data-schemas', () => ({
-  hashBackupCode: jest.fn(),
   decryptV3: jest.fn(),
   decryptV2: jest.fn(),
 }));

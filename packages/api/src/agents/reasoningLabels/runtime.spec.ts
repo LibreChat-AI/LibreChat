@@ -4,11 +4,14 @@ import type { EventHandler } from '@librechat/agents';
 import type {
   GeneratedReasoningLabel,
   ReasoningLabelAttemptEvent,
+  ReasoningLabelResetEvent,
   ReasoningLabelEvent,
 } from './runtime';
 import type { LooseContentPart } from '~/agents/activityLabels/wiring';
 import { createReasoningLabelWiring, synthesizeReasoningLabelGapEvents } from './runtime';
 
+/** Test deltas end on a separator: the payload filter holds an unfinished
+ *  word until the next non-payload character settles it. */
 function reasoningDelta(id: string, think: string) {
   return { id, delta: { content: { type: ContentTypes.THINK, think } } };
 }
@@ -30,6 +33,7 @@ function createHarness(
     preservePartOnStart?: boolean;
     emitAttemptEvent?: (event: ReasoningLabelAttemptEvent) => Promise<void>;
     emitLabelEvent?: (event: ReasoningLabelEvent) => Promise<void>;
+    emitResetEvent?: (event: ReasoningLabelResetEvent) => Promise<void>;
   } = {},
 ) {
   const { initialParts, preservePartOnStart, emitAttemptEvent, emitLabelEvent, ...wiringConfig } =
@@ -127,15 +131,15 @@ describe('reasoning labels', () => {
     const generate = jest.fn(async () => ({ label: 'Tracing resume ownership' }));
     const harness = createHarness(generate, { minChars: 10, updateChars: 8, updateIntervalMs: 0 });
     await harness.start();
-    await harness.append('123456789');
+    await harness.append('12345678 ');
     expect(generate).not.toHaveBeenCalled();
 
-    await harness.append('0');
+    await harness.append('.');
     await harness.settle();
 
     expect(generate).toHaveBeenCalledTimes(1);
     expect(generate).toHaveBeenCalledWith(
-      expect.objectContaining({ revision: 1, status: 'streaming', visibleReasoning: '1234567890' }),
+      expect.objectContaining({ revision: 1, status: 'streaming', visibleReasoning: '12345678 .' }),
     );
     expect(harness.parts).toHaveLength(1);
     expect(harness.parts[0]).toMatchObject({
@@ -168,16 +172,16 @@ describe('reasoning labels', () => {
     await harness.settle();
     expect(generate).not.toHaveBeenCalled();
 
-    await harness.append('1234', 'reasoning-new');
+    await harness.append('123 ', 'reasoning-new');
     await harness.settle();
     expect(generate).not.toHaveBeenCalled();
 
-    await harness.append('5', 'reasoning-new');
+    await harness.append('.', 'reasoning-new');
     await harness.settle();
 
     expect(generate).toHaveBeenCalledTimes(1);
     expect(generate).toHaveBeenCalledWith(
-      expect.objectContaining({ visibleReasoning: '12345', revision: 2 }),
+      expect.objectContaining({ visibleReasoning: '123 .', revision: 2 }),
     );
   });
 
@@ -195,9 +199,9 @@ describe('reasoning labels', () => {
         updateIntervalMs: 3_000,
       });
       await harness.start();
-      await harness.append('12345');
+      await harness.append('1234 ');
       await harness.settle();
-      await harness.append('6789');
+      await harness.append('678 ');
       expect(generate).toHaveBeenCalledTimes(1);
 
       await jest.advanceTimersByTimeAsync(3_000);
@@ -224,9 +228,9 @@ describe('reasoning labels', () => {
         updateIntervalMs: 3_000,
       });
       await harness.start();
-      await harness.append('12345');
+      await harness.append('1234 ');
       await harness.settle();
-      await harness.append('6789');
+      await harness.append('678 ');
 
       expect(generate).toHaveBeenCalledTimes(1);
       await jest.advanceTimersByTimeAsync(3_000);
@@ -245,7 +249,7 @@ describe('reasoning labels', () => {
       updateIntervalMs: 0,
     });
     await harness.start();
-    await harness.append('12345');
+    await harness.append('1234 ');
     await harness.settle();
 
     expect(collectUsage).toHaveBeenCalledTimes(1);
@@ -264,7 +268,7 @@ describe('reasoning labels', () => {
       },
     });
     await harness.start();
-    await harness.append('12345');
+    await harness.append('1234 ');
     await harness.settle();
 
     expect(collectUsage).toHaveBeenCalledTimes(1);
@@ -302,7 +306,7 @@ describe('reasoning labels', () => {
       },
     );
     await harness.start();
-    await harness.append('12345');
+    await harness.append('1234 ');
     await usageStarted;
     await emitStarted;
     await Promise.resolve();
@@ -354,9 +358,9 @@ describe('reasoning labels', () => {
       },
     });
     await harness.start();
-    await harness.append('12345');
+    await harness.append('1234 ');
     await streamingEmit;
-    await harness.append('x'.repeat(120));
+    await harness.append(' word'.repeat(24));
     await harness.close();
     await terminalEmit;
     await new Promise((resolve) => setImmediate(resolve));
@@ -377,13 +381,13 @@ describe('reasoning labels', () => {
     const generate = jest.fn(async () => ({ label: 'Tracing the streaming path' }));
     const harness = createHarness(generate, { minChars: 5, updateChars: 100, updateIntervalMs: 0 });
     await harness.start();
-    await harness.append('12345');
+    await harness.append('1234 ');
     await harness.settle();
 
-    await harness.append(' later');
+    await harness.append(' later.');
 
     expect(harness.parts[0]).toMatchObject({
-      think: '12345 later',
+      think: '1234  later.',
       reasoning_label: 'Tracing the streaming path',
       reasoning_label_step_id: 'reasoning-1',
       reasoning_label_revision: 1,
@@ -410,15 +414,15 @@ describe('reasoning labels', () => {
       },
     });
     await harness.start();
-    await harness.append('12345');
+    await harness.append('1234 ');
     await emitStarted;
 
-    await harness.append(' later');
+    await harness.append(' later.');
     releaseEmit?.();
     await harness.settle();
 
     expect(harness.parts[0]).toMatchObject({
-      think: '12345 later',
+      think: '1234  later.',
       reasoning_label: 'Tracing the concurrent stream',
       reasoning_label_revision: 1,
     });
@@ -443,7 +447,7 @@ describe('reasoning labels', () => {
       },
     });
     await harness.start('reasoning-1', 0);
-    await harness.append('12345', 'reasoning-1');
+    await harness.append('1234 ', 'reasoning-1');
     await emitStarted;
 
     await harness.start('reasoning-2', 0);
@@ -477,7 +481,7 @@ describe('reasoning labels', () => {
       },
     });
     await harness.start('reasoning-1', 0);
-    await harness.append('12345', 'reasoning-1');
+    await harness.append('1234 ', 'reasoning-1');
     await emitStarted;
 
     await harness.start('reasoning-2', 0);
@@ -504,8 +508,8 @@ describe('reasoning labels', () => {
       .mockResolvedValueOnce({ label: 'Resolved the final direction' });
     const harness = createHarness(generate, { minChars: 5, updateChars: 4, updateIntervalMs: 0 });
     await harness.start();
-    await harness.append('12345');
-    await harness.append('6789');
+    await harness.append('1234 ');
+    await harness.append('678 ');
     await harness.close();
     expect(generate).toHaveBeenCalledTimes(1);
 
@@ -517,7 +521,7 @@ describe('reasoning labels', () => {
       revision: 2,
       status: 'complete',
       previousLabel: 'Investigating the direction',
-      visibleReasoning: '123456789',
+      visibleReasoning: '1234 678',
     });
     expect(harness.events[harness.events.length - 1]).toMatchObject({
       revision: 2,
@@ -530,9 +534,9 @@ describe('reasoning labels', () => {
     const generate = jest.fn(async () => ({ label: 'Inspecting the stream' }));
     const harness = createHarness(generate, { minChars: 5, updateChars: 400, updateIntervalMs: 0 });
     await harness.start();
-    await harness.append('12345');
+    await harness.append('1234 ');
     await harness.settle();
-    await harness.append('small tail');
+    await harness.append('small tail.');
     await harness.close();
     await harness.settle();
 
@@ -554,9 +558,9 @@ describe('reasoning labels', () => {
       updateIntervalMs: 3_000,
     });
     await harness.start();
-    await harness.append('12345');
+    await harness.append('1234 ');
     await harness.settle();
-    await harness.append('x'.repeat(120));
+    await harness.append(' word'.repeat(24));
     await harness.close();
     await harness.settle();
 
@@ -577,7 +581,7 @@ describe('reasoning labels', () => {
       last_agent_id: 'final-agent',
       langgraph_node: 'intermediate-agent',
     });
-    await harness.append('12345');
+    await harness.append('1234 ');
     await harness.close();
     await harness.settle();
 
@@ -594,9 +598,9 @@ describe('reasoning labels', () => {
       maxPerRun: 2,
     });
     await firstSegment.start('reasoning-1', 0);
-    await firstSegment.append('12345');
+    await firstSegment.append('1234 ');
     await firstSegment.settle();
-    await firstSegment.append('6789');
+    await firstSegment.append('678 ');
     await firstSegment.settle();
 
     expect(generate).toHaveBeenCalledTimes(2);
@@ -615,7 +619,7 @@ describe('reasoning labels', () => {
       initialParts: firstSegment.parts,
     });
     await resumed.start('reasoning-2', 1);
-    await resumed.append('abcde', 'reasoning-2');
+    await resumed.append('abcd ', 'reasoning-2');
     await resumed.close('reasoning-2');
     await resumed.settle();
 
@@ -641,7 +645,7 @@ describe('reasoning labels', () => {
     });
 
     await resumed.start('reasoning-after-resume', initialParts.length);
-    await resumed.append('abcde', 'reasoning-after-resume');
+    await resumed.append('abcd ', 'reasoning-after-resume');
     await resumed.settle();
 
     expect(generate).toHaveBeenCalledTimes(1);
@@ -667,7 +671,7 @@ describe('reasoning labels', () => {
       ],
     });
     await harness.start('reasoning-new', 1);
-    await harness.append('abcde', 'reasoning-new');
+    await harness.append('abcd ', 'reasoning-new');
     await harness.settle();
 
     expect(generate).toHaveBeenCalledTimes(1);
@@ -683,9 +687,9 @@ describe('reasoning labels', () => {
       maxPerRun: 2,
     });
     await firstSegment.start('reasoning-1', 0);
-    await firstSegment.append('12345', 'reasoning-1');
+    await firstSegment.append('1234 ', 'reasoning-1');
     await firstSegment.settle();
-    await firstSegment.append('6789', 'reasoning-1');
+    await firstSegment.append('678 ', 'reasoning-1');
     await firstSegment.settle();
 
     await firstSegment.start('reasoning-2', 0);
@@ -705,7 +709,7 @@ describe('reasoning labels', () => {
       initialParts: firstSegment.parts.map((part) => ({ ...part })),
     });
     await resumed.start('reasoning-3', 1);
-    await resumed.append('vwxyz', 'reasoning-3');
+    await resumed.append('vwxy ', 'reasoning-3');
     await resumed.close('reasoning-3');
     await resumed.settle();
 
@@ -732,12 +736,12 @@ describe('reasoning labels', () => {
     await harness.start('reasoning-1', 0);
     expect(generate).not.toHaveBeenCalled();
 
-    await harness.append('89', 'reasoning-1');
+    await harness.append('8 ', 'reasoning-1');
     await harness.settle();
 
     expect(generate).toHaveBeenCalledTimes(1);
     expect(generate).toHaveBeenCalledWith(
-      expect.objectContaining({ visibleReasoning: '123456789', revision: 2 }),
+      expect.objectContaining({ visibleReasoning: '12345678', revision: 2 }),
     );
   });
 
@@ -871,5 +875,269 @@ describe('reasoning labels', () => {
         },
       },
     ]);
+  });
+});
+
+/** Bedrock's Converse stream returns OpenAI (and redacted Anthropic) reasoning
+ *  as `reasoningContent.redactedContent` bytes; the SDK base64-encodes them and
+ *  surfaces the result as THINK text. */
+const encodedReasoning = (bytes = 1_050, seed = 7): string =>
+  Buffer.from(Array.from({ length: bytes }, (_, i) => (i * 37 + seed) % 256)).toString('base64');
+
+describe('reasoning labels for encoded reasoning', () => {
+  const config = { minChars: 10, updateChars: 8, updateIntervalMs: 0 };
+
+  it('never labels a step whose reasoning is an encoded payload', async () => {
+    const generate = jest.fn(async () => ({ label: 'Inspecting an encoded data snapshot' }));
+    const harness = createHarness(generate, config);
+    await harness.start();
+    await harness.append(encodedReasoning());
+    await harness.append(encodedReasoning(300, 11));
+    await harness.close();
+    await harness.settle();
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(harness.attemptEvents).toEqual([]);
+    expect(harness.events).toEqual([]);
+    expect(harness.parts[0]?.reasoning_label).toBeUndefined();
+  });
+
+  it('skips an encoded payload that arrives split across small deltas', async () => {
+    const generate = jest.fn(async () => ({ label: 'Inspecting an encoded data snapshot' }));
+    const harness = createHarness(generate, { updateChars: 400, updateIntervalMs: 0 });
+    const payload = encodedReasoning();
+    await harness.start();
+    for (let offset = 0; offset < payload.length; offset += 100) {
+      await harness.append(payload.slice(offset, offset + 100));
+    }
+    await harness.close();
+    await harness.settle();
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(harness.attemptEvents).toEqual([]);
+  });
+
+  it('never spends label revisions on a payload split across small deltas', async () => {
+    const generate = jest.fn(async () => ({ label: 'Checking the retry policy' }));
+    const harness = createHarness(generate, { minChars: 10, updateChars: 50, updateIntervalMs: 0 });
+    const payload = encodedReasoning();
+    await harness.start();
+    await harness.append('Checking the retry policy against the queue backoff. ');
+    await harness.settle();
+    expect(generate).toHaveBeenCalledTimes(1);
+
+    for (let offset = 0; offset < payload.length; offset += 100) {
+      await harness.append(payload.slice(offset, offset + 100));
+      await harness.settle();
+    }
+    await harness.close();
+    await harness.settle();
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(harness.parts[0]).toMatchObject({
+      reasoning_label: 'Checking the retry policy',
+      reasoning_label_status: 'complete',
+    });
+  });
+
+  it('never labels the undecided start of a payload under low thresholds', async () => {
+    const generate = jest.fn(async () => ({ label: 'Inspecting an encoded data snapshot' }));
+    const harness = createHarness(generate, { minChars: 5, updateChars: 4, updateIntervalMs: 0 });
+    const payload = encodedReasoning();
+    await harness.start();
+    for (let offset = 0; offset < payload.length; offset += 10) {
+      await harness.append(payload.slice(offset, offset + 10));
+      await harness.settle();
+    }
+    await harness.close();
+    await harness.settle();
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(harness.attemptEvents).toEqual([]);
+  });
+
+  it('settles a final unpunctuated word when the step closes', async () => {
+    const generate = jest.fn(async () => ({ label: 'Checking the result' }));
+    const harness = createHarness(generate, { minChars: 5, updateChars: 4, updateIntervalMs: 0 });
+    await harness.start();
+    await harness.append('Checking');
+    await harness.settle();
+    expect(generate).not.toHaveBeenCalled();
+
+    await harness.close();
+    await harness.settle();
+
+    expect(generate).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'complete', visibleReasoning: 'Checking' }),
+    );
+  });
+
+  it('labels mixed reasoning from its readable text only', async () => {
+    const generate = jest.fn(async () => ({ label: 'Comparing retry backoff strategies' }));
+    const harness = createHarness(generate, { ...config, updateChars: 1_000 });
+    const payload = encodedReasoning();
+    await harness.start();
+    await harness.append('Comparing the retry policy against the queue backoff. ');
+    await harness.settle();
+    await harness.append(payload);
+    await harness.append(' Exponential backoff fits the burst pattern, so the queue keeps it. ');
+    await harness.append(
+      'Jitter spreads the retries across the window to avoid a thundering herd.',
+    );
+    await harness.close();
+    await harness.settle();
+
+    expect(generate).toHaveBeenCalledTimes(2);
+    for (const [payloadArg] of generate.mock.calls as unknown as Array<
+      [{ visibleReasoning: string }]
+    >) {
+      expect(payloadArg.visibleReasoning).not.toContain(payload.slice(0, 64));
+    }
+    expect(generate).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'complete',
+        visibleReasoning: expect.stringContaining('backoff.  Exponential backoff fits'),
+      }),
+    );
+    expect(harness.parts[0]?.reasoning_label).toBe('Comparing retry backoff strategies');
+  });
+
+  it('still labels readable reasoning of the same length', async () => {
+    const generate = jest.fn(async () => ({ label: 'Planning the cache migration' }));
+    const harness = createHarness(generate, config);
+    const readable =
+      'Planning the cache migration: move session keys first, then rebuild the index. ';
+    await harness.start();
+    await harness.append(readable.repeat(18));
+    await harness.close();
+    await harness.settle();
+
+    expect(generate).toHaveBeenCalledWith(
+      expect.objectContaining({ visibleReasoning: expect.stringContaining('Planning the cache') }),
+    );
+    expect(harness.parts[0]?.reasoning_label).toBe('Planning the cache migration');
+  });
+
+  it('ignores a persisted encoded payload when a resumed step continues', async () => {
+    const generate = jest.fn(async () => ({ label: 'Checking the resumed tool result' }));
+    const harness = createHarness(generate, {
+      ...config,
+      preservePartOnStart: true,
+      initialParts: [
+        {
+          type: ContentTypes.THINK,
+          think: encodedReasoning(),
+          reasoning_label_step_id: 'reasoning-1',
+          reasoning_label_attempts: 0,
+        },
+      ],
+    });
+    await harness.start();
+    await harness.settle();
+    expect(generate).not.toHaveBeenCalled();
+
+    await harness.append(' Checking the tool result.');
+    await harness.close();
+    await harness.settle();
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate).toHaveBeenCalledWith(
+      expect.objectContaining({ visibleReasoning: 'Checking the tool result.' }),
+    );
+  });
+  it('drops a payload prefix that was still undecided when a resumed step continues', async () => {
+    const generate = jest.fn(async () => ({ label: 'Rolling back the deploy' }));
+    const payload = encodedReasoning();
+    const harness = createHarness(generate, {
+      minChars: 30,
+      updateChars: 8,
+      updateIntervalMs: 0,
+      preservePartOnStart: true,
+      initialParts: [
+        {
+          type: ContentTypes.THINK,
+          think: `Checking. ${payload.slice(0, 100)}`,
+          reasoning_label_step_id: 'reasoning-1',
+          reasoning_label_attempts: 0,
+        },
+      ],
+    });
+    await harness.start();
+    await harness.append(payload.slice(100));
+    await harness.append(' Rolling back the deploy now.');
+    await harness.close();
+    await harness.settle();
+
+    expect(generate).toHaveBeenCalled();
+    for (const [payloadArg] of generate.mock.calls as unknown as Array<
+      [{ visibleReasoning: string }]
+    >) {
+      expect(payloadArg.visibleReasoning).not.toContain(payload.slice(0, 32));
+      expect(payloadArg.visibleReasoning).toContain('Rolling back the deploy now.');
+    }
+  });
+  it('does not revive a payload-derived title when a resumed step continues briefly', async () => {
+    const generate = jest.fn(async () => ({ label: 'unused' }));
+    const emitResetEvent = jest.fn(async () => undefined);
+    const harness = createHarness(generate, {
+      updateIntervalMs: 0,
+      emitResetEvent,
+      preservePartOnStart: true,
+      initialParts: [
+        {
+          type: ContentTypes.THINK,
+          think: encodedReasoning(),
+          reasoning_label: 'Inspecting an encoded data snapshot',
+          reasoning_label_step_id: 'reasoning-1',
+          reasoning_label_revision: 1,
+          reasoning_label_status: 'complete',
+          reasoning_label_attempts: 1,
+        },
+      ],
+    });
+    await harness.start();
+    await harness.append(' Checking the tool result.');
+    await harness.close();
+    await harness.settle();
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(harness.parts[0]?.reasoning_label).toBeUndefined();
+    expect(harness.events).toEqual([]);
+    /** The resumed client still holds the snapshot title for this same step. */
+    expect(emitResetEvent).toHaveBeenCalledWith({
+      index: 0,
+      stepId: 'reasoning-1',
+      previousStepId: 'reasoning-1',
+      attempts: 1,
+    });
+  });
+
+  it('keeps the title of a resumed step whose reasoning is a short readable token', async () => {
+    const generate = jest.fn(async () => ({ label: 'unused' }));
+    const emitResetEvent = jest.fn(async () => undefined);
+    const harness = createHarness(generate, {
+      minChars: 5,
+      updateIntervalMs: 0,
+      emitResetEvent,
+      preservePartOnStart: true,
+      initialParts: [
+        {
+          type: ContentTypes.THINK,
+          think: 'Investigating',
+          reasoning_label: 'Investigating the failure',
+          reasoning_label_step_id: 'reasoning-1',
+          reasoning_label_revision: 1,
+          reasoning_label_status: 'streaming',
+          reasoning_label_attempts: 1,
+          reasoning_label_submitted_chars: 13,
+        },
+      ],
+    });
+    await harness.start();
+    await harness.close();
+    await harness.settle();
+
+    expect(emitResetEvent).not.toHaveBeenCalled();
+    expect(harness.parts[0]?.reasoning_label).toBe('Investigating the failure');
   });
 });

@@ -12,7 +12,7 @@ export const URLIcon = memo(
     altName,
     containerStyle = { width: pxToRem(FALLBACK_ICON_PX), height: pxToRem(FALLBACK_ICON_PX) },
     imageStyle = { width: '100%', height: '100%' },
-    className = 'icon-md mr-1 shrink-0 overflow-hidden rounded-full',
+    className = 'icon-md me-1 shrink-0 overflow-hidden rounded-full',
     provider,
   }: {
     iconURL: string;
@@ -38,8 +38,8 @@ export const URLIcon = memo(
           </div>
           {imageError && iconURL && (
             <div
-              className="bg-status-error-strong absolute flex items-center justify-center rounded-full"
-              style={{ width: pxToRem(14), height: pxToRem(14), top: 0, right: 0 }}
+              className="bg-status-error-strong absolute inset-e-0 top-0 flex items-center justify-center rounded-full"
+              style={{ width: pxToRem(14), height: pxToRem(14) }}
             >
               <AlertCircle className="text-text-on-status size-2.5" aria-hidden="true" />
             </div>

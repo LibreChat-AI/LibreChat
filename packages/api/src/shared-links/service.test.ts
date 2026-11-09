@@ -390,4 +390,21 @@ describe('deleteAllSharedLinksWithCleanup', () => {
     }).lean();
     expect(aclAfter).toHaveLength(0);
   });
+
+  test('awaits ACL cleanup and keeps the links when it fails', async () => {
+    const link = await createTestLink({ conversationId: 'c1' });
+    await grantCreationPermissions(link._id, userId, true);
+    const failure = jest.spyOn(AclEntry, 'deleteMany').mockRejectedValueOnce(new Error('acl down'));
+
+    await expect(deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true })).rejects.toThrow(
+      'acl down',
+    );
+    failure.mockRestore();
+
+    expect(await SharedLink.countDocuments({ _id: link._id })).toBe(1);
+
+    const result = await deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true });
+    expect(result.deletedCount).toBe(1);
+    expect(await AclEntry.countDocuments({ resourceId: link._id })).toBe(0);
+  });
 });

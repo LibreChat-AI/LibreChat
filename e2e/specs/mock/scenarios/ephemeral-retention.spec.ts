@@ -2,7 +2,12 @@ import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { AgentDetail } from '../agents.helpers';
-import { cleanupAgent, openAgentBuilder, uniqueAgentName } from '../agents.helpers';
+import {
+  cleanupAgent,
+  closeMobileDrawer,
+  openAgentBuilder,
+  uniqueAgentName,
+} from '../agents.helpers';
 import { getE2EUser } from '../../../setup/user';
 import { loginAdmin, requestResult } from '../content-filters.helpers';
 import { deleteConversations, deleteMessagesByConversation, withMongo } from '../db';
@@ -22,7 +27,8 @@ import {
  * `retentionMode: "ephemeral"` is administrator state, so every scenario sets it as a
  * stored config override for the signed-in user and clears it afterwards. The default
  * mode is exercised by leaving the override off, which is what proves the feature is
- * opt-in rather than a change to how LibreChat saves chats today.
+ * opt-in rather than a change to how LibreChat saves chats today. The archive scenario for
+ * `retentionMode: "all"` passes its own override.
  */
 
 const userEmail = getE2EUser().email;
@@ -31,6 +37,7 @@ const cleanupConversationIds: string[] = [];
 
 type StoredConversation = {
   conversationId: string;
+  isArchived?: boolean;
   isTemporary?: boolean;
   expiredAt?: Date | null;
   tags?: string[];
@@ -52,13 +59,14 @@ async function setRetentionMode(
   request: APIRequestContext,
   token: string,
   userId: string,
+  retention: Record<string, unknown> = { retentionMode: 'ephemeral', temporaryChatRetention: 1 },
 ): Promise<void> {
   const result = await requestResult(request, {
     path: `/api/admin/config/user/${encodeURIComponent(userId)}`,
     token,
     method: 'PUT',
     data: {
-      overrides: { interface: { retentionMode: 'ephemeral', temporaryChatRetention: 1 } },
+      overrides: { interface: retention },
       priority: 50,
     },
   });
@@ -234,10 +242,7 @@ test.describe('ephemeral retention', () => {
       await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
       await page.getByRole('option', { name: agentName }).click();
       await form.getByRole('button', { name: 'Select Agent' }).click();
-      if ((page.viewportSize()?.width ?? 1280) <= 768) {
-        await page.getByTestId('close-sidebar-button').click();
-        await expect(page.locator('#mobile-drawer')).toHaveAttribute('inert', '');
-      }
+      await closeMobileDrawer(page);
 
       const response = await sendMessage(page, `E2E_TOOL_APPROVAL:retention-${randomUUID()}`);
       expect(response.ok()).toBe(true);
@@ -412,6 +417,106 @@ test.describe('ephemeral retention', () => {
     expectForcedTemporary(await readConversation(conversationId));
     const [message] = await readMessages(conversationId);
     expectForcedTemporary(message);
+  });
+
+  test('archiving a chat converts a chat saved before the mode @scenario:archiving-a-chat-converts-a-pre-existing-chat', async ({
+    request,
+  }) => {
+    const conversationId = await seedPermanentConversation(userId, [
+      {
+        messageId: randomUUID(),
+        parentMessageId: NO_PARENT,
+        isCreatedByUser: true,
+        text: 'Question saved before ephemeral',
+      },
+    ]);
+
+    await setRetentionMode(request, token, userId);
+    const archive = await requestResult(request, {
+      path: '/api/convos/archive',
+      token,
+      method: 'POST',
+      data: { arg: { conversationId, isArchived: true } },
+    });
+    expect(archive.ok, `Expected the archive to succeed: ${archive.text}`).toBe(true);
+
+    const stored = await readConversation(conversationId);
+    expect(stored?.isArchived).toBe(true);
+    expectForcedTemporary(stored);
+  });
+
+  test('archiving a converted chat again keeps its deadline @scenario:archiving-a-converted-chat-again-keeps-its-deadline', async ({
+    request,
+  }) => {
+    const conversationId = await seedPermanentConversation(userId, [
+      {
+        messageId: randomUUID(),
+        parentMessageId: NO_PARENT,
+        isCreatedByUser: true,
+        text: 'Question saved before ephemeral',
+      },
+    ]);
+    await setRetentionMode(request, token, userId);
+    const setArchived = (isArchived: boolean) =>
+      requestResult(request, {
+        path: '/api/convos/archive',
+        token,
+        method: 'POST',
+        data: { arg: { conversationId, isArchived } },
+      });
+
+    const first = await setArchived(true);
+    expect(first.ok, `Expected the archive to succeed: ${first.text}`).toBe(true);
+    const converted = await readConversation(conversationId);
+    expectForcedTemporary(converted);
+
+    /** From the second request on, the access check trusts its cached marker and reads nothing,
+     *  so the save has to find the deadline itself rather than open a new window. */
+    for (const isArchived of [false, true]) {
+      const again = await setArchived(isArchived);
+      expect(again.ok, `Expected the request to succeed: ${again.text}`).toBe(true);
+      const stored = await readConversation(conversationId);
+      expect(stored?.isArchived).toBe(isArchived);
+      expect(stored?.expiredAt, 'a repeated request must not extend the deadline').toEqual(
+        converted?.expiredAt,
+      );
+    }
+  });
+
+  test('archiving a chat gives a chat saved before all-data retention its deadline @scenario:archiving-a-chat-gives-a-pre-existing-chat-its-deadline', async ({
+    request,
+  }) => {
+    const generalChatRetention = 2160;
+    const conversationId = await seedPermanentConversation(userId, [
+      {
+        messageId: randomUUID(),
+        parentMessageId: NO_PARENT,
+        isCreatedByUser: true,
+        text: 'Question saved before all-data retention',
+      },
+    ]);
+
+    await setRetentionMode(request, token, userId, {
+      retentionMode: 'all',
+      temporaryChatRetention: 1,
+      generalChatRetention,
+    });
+    const archive = await requestResult(request, {
+      path: '/api/convos/archive',
+      token,
+      method: 'POST',
+      data: { arg: { conversationId, isArchived: true } },
+    });
+    expect(archive.ok, `Expected the archive to succeed: ${archive.text}`).toBe(true);
+
+    const stored = await readConversation(conversationId);
+    expect(stored?.isArchived).toBe(true);
+    expect(stored?.isTemporary, 'all-data retention keeps the chat permanent').toBe(false);
+    const deadline = stored?.expiredAt;
+    expect(deadline, 'the chat is given the general-chat deadline').toBeInstanceOf(Date);
+    const hoursLeft = ((deadline?.getTime() ?? 0) - Date.now()) / 3600000;
+    expect(hoursLeft).toBeGreaterThan(generalChatRetention - 1);
+    expect(hoursLeft).toBeLessThanOrEqual(generalChatRetention);
   });
 
   test('branching a response converts the chat holding it @scenario:branching-a-response-converts-its-pre-existing-chat', async ({

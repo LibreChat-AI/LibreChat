@@ -114,7 +114,7 @@ const CASES: Array<{
     mode: 'light',
     definition: clickHouseTheme,
     sm: { size: '14px', leading: '21px' },
-    xl2: { size: '24px', leading: '36px' },
+    xl2: { size: '32px', leading: '48px' },
     displayLeads: '"Basier Square"',
   },
   {
@@ -123,7 +123,7 @@ const CASES: Array<{
     mode: 'dark',
     definition: clickHouseTheme,
     sm: { size: '14px', leading: '21px' },
-    xl2: { size: '24px', leading: '36px' },
+    xl2: { size: '32px', leading: '48px' },
     displayLeads: '"Basier Square"',
   },
   {

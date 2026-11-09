@@ -10,35 +10,36 @@ import type {
 } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { Response } from 'express';
-import type { GetAppConfigOptions } from '~/app/service';
-import type { PullRequestLookup } from './types';
+import type { AppConfigUserLike, GetAppConfigOptions } from '~/app/service';
+import type { PullRequestErrorCode, PullRequestLookup } from './types';
+import type { PullRequestSettings } from './settings';
 import type { ServerRequest } from '~/types';
+import {
+  resolvePullRequestHost,
+  resolvePullRequestOAuth,
+  resolvePullRequestToken,
+  isPullRequestFeatureActive,
+  resolvePullRequestProvider,
+} from './settings';
+import { ALL_REPOSITORIES, isAllowedRepository } from './repository';
 import { getAppConfigOptionsFromUser } from '~/app/service';
-import { isAllowedRepository } from './repository';
 import { getSafeErrorMetadata } from '~/utils';
 
 const MAX_CONVERSATION_ID_LENGTH = 256;
-const TOKEN_REFERENCE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
-export type ConversationLaneGit = { branch: string | null; head: string | null; repo?: string };
-
-/** Resolves `${NAME}` against the environment; the config never holds the token itself. */
-export function resolveTokenReference(
-  reference: string | undefined,
-  env: Readonly<Record<string, string | undefined>>,
-): string | null {
-  const name = reference == null ? undefined : TOKEN_REFERENCE.exec(reference)?.[1];
-  if (name == null) return null;
-  return env[name]?.trim() || null;
-}
+export type ConversationLaneGit = {
+  branch: string | null;
+  head: string | null;
+  repo?: string;
+  pullRequest?: number;
+};
 
 const validConversationId = (value: string | undefined): value is string =>
   value != null && value.trim() !== '' && value.length <= MAX_CONVERSATION_ID_LENGTH;
 
 const NONE: TConversationPullRequestResponse = { pullRequest: null };
 
-type PullRequestSettings = NonNullable<TAgentsEndpoint['pullRequests']>;
-type EligibleLane = { branch: string; head: string | null; repo: string };
+type EligibleLane = { branch: string; head: string | null; repo: string; pullRequest?: number };
 
 /** Lookups in flight at once for one batch, unless configured. */
 const DEFAULT_BATCH_CONCURRENCY = 4;
@@ -163,27 +164,159 @@ async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | typeof
   }
 }
 
-/** A lane the server's token may be used for: it names a branch and an allowed repository. */
+/** The list a lane's repository is checked against, and a fork's checks are authorized by. */
+const repositoryScope = (settings: PullRequestSettings): readonly string[] =>
+  settings.allowAllRepositories === true ? ALL_REPOSITORIES : (settings.allowedRepositories ?? []);
+
+/**
+ * The token a lookup runs with and the repositories it may be used for. A user's own token sees
+ * only what that user can see, so it is not held to the list the server's token is.
+ */
+/** `personal` marks the user's own token, the one a refusal invalidates. */
+type Credential = { token: string; repositories: readonly string[]; personal?: true };
+
+/** Clients know the codes a lookup has always had; a refused token is an upstream failure to them. */
+const wireCode = (code: PullRequestErrorCode | string): string =>
+  code === 'CREDENTIAL_REJECTED' ? 'UPSTREAM_ERROR' : code;
+
+/** A refused personal token is invalidated, so the account reads as disconnected rather than
+ *  failing every lookup; the server's token is the operator's to fix. */
+async function invalidateRejected(
+  userToken: PullRequestUserToken | undefined,
+  userId: string,
+  settings: PullRequestSettings,
+  credential: Credential,
+): Promise<void> {
+  if (credential.personal !== true || userToken?.reject == null) return;
+  try {
+    await userToken.reject(userId, settings, credential.token);
+  } catch (error) {
+    logger.warn('[PullRequests] Refused user token not invalidated', getSafeErrorMetadata(error));
+  }
+}
+
+function credentialOf(
+  settings: PullRequestSettings,
+  env: Readonly<Record<string, string | undefined>>,
+  userToken: UserTokenRead,
+): Credential | null {
+  if (userToken === USER_TOKEN_FAILED) return null;
+  if (userToken != null) {
+    return { token: userToken, repositories: ALL_REPOSITORIES, personal: true };
+  }
+  const token = resolvePullRequestToken(
+    settings.token,
+    env,
+    resolvePullRequestProvider(settings.provider) ?? undefined,
+  );
+  return token == null ? null : { token, repositories: repositoryScope(settings) };
+}
+
+/** Reads the user's own token, or null when the user has not connected an account. `reject`
+ *  invalidates that token after the provider refused it on a lookup. */
+export type PullRequestUserToken = ((
+  userId: string,
+  settings: PullRequestSettings,
+) => Promise<string | null>) & {
+  reject?: (userId: string, settings: PullRequestSettings, token: string) => Promise<void>;
+};
+
+/** A connected account whose token could not be read or refreshed (the provider or the key store
+ *  is down). That is an outage, answered as one: neither "no pull request" nor the server's token,
+ *  which may see less than the user's own. */
+const USER_TOKEN_FAILED = Symbol('user token failed');
+type UserTokenRead = string | null | typeof USER_TOKEN_FAILED;
+
+/** Only with the feature on: reading the token can refresh, extend or delete the stored grant. */
+async function readUserToken(
+  userToken: PullRequestUserToken | undefined,
+  userId: string,
+  settings: PullRequestSettings | undefined,
+  env: Readonly<Record<string, string | undefined>>,
+): Promise<UserTokenRead> {
+  if (userToken == null || settings == null || !isPullRequestFeatureActive(settings, env)) {
+    return null;
+  }
+  try {
+    return await userToken(userId, settings);
+  } catch (error) {
+    logger.warn('[PullRequests] User token unavailable', getSafeErrorMetadata(error));
+    return USER_TOKEN_FAILED;
+  }
+}
+
+/** A lane the credential may be used for: it names a branch and an allowed repository. */
 function eligibleLane(
   laneGit: ConversationLaneGit | null | undefined,
-  settings: PullRequestSettings,
+  repositories: readonly string[],
 ): EligibleLane | null {
   if (laneGit?.branch == null || laneGit.repo == null) return null;
-  if (!isAllowedRepository(laneGit.repo, settings.allowedRepositories)) return null;
-  return { branch: laneGit.branch, head: laneGit.head, repo: laneGit.repo };
+  if (!isAllowedRepository(laneGit.repo, repositories)) return null;
+  return {
+    branch: laneGit.branch,
+    head: laneGit.head,
+    repo: laneGit.repo,
+    ...(laneGit.pullRequest != null ? { pullRequest: laneGit.pullRequest } : {}),
+  };
+}
+
+/** Whether any credential could find a pull request for the lane, so reading the user's token
+ *  (which can refresh and rotate it) is worth it. A lane with a branch and no commit yet (`head`
+ *  null) has nothing to match against: every source answers no pull request for it. */
+const isLookupable = (laneGit: ConversationLaneGit | null | undefined): boolean =>
+  laneGit?.head !== null && eligibleLane(laneGit, ALL_REPOSITORIES) != null;
+
+const agentsPullRequests = (config: AppConfig): PullRequestSettings | undefined =>
+  (config.endpoints?.[EModelEndpoint.agents] as TAgentsEndpoint | undefined)?.pullRequests;
+
+/**
+ * The user's settings, with `provider`, `host` and `oauth` taken from the operator's YAML alone.
+ * Role, group and user overrides live in the database and may be edited by delegated
+ * administrators; letting one choose any of them would let it send a token to a server of its
+ * choosing.
+ */
+export async function readPullRequestSettings(
+  getAppConfig: (options: GetAppConfigOptions) => Promise<AppConfig>,
+  user: AppConfigUserLike | null | undefined,
+): Promise<PullRequestSettings | undefined> {
+  const options = { ...getAppConfigOptionsFromUser(user), skipRuntimeAugmentation: true };
+  const [resolved, base] = await Promise.all([
+    getAppConfig({ ...options, failClosed: true }),
+    getAppConfig({ ...options, baseOnly: true }),
+  ]);
+  const settings = agentsPullRequests(resolved);
+  if (settings == null) return undefined;
+  const { host: _host, provider: _provider, oauth: _oauth, ...rest } = settings;
+  const operator = agentsPullRequests(base);
+  return {
+    ...rest,
+    ...(operator?.provider != null ? { provider: operator.provider } : {}),
+    ...(operator?.host != null ? { host: operator.host } : {}),
+    ...(operator?.oauth != null ? { oauth: operator.oauth } : {}),
+  };
 }
 
 /** Everything one lookup needs from the settings, so the single and batch routes cannot differ. */
-function lookupInput(settings: PullRequestSettings, token: string, lane: EligibleLane) {
+function lookupInput(settings: PullRequestSettings, credential: Credential, lane: EligibleLane) {
   return {
     repo: lane.repo,
     branch: lane.branch,
     head: lane.head,
-    token,
+    ...(lane.pullRequest != null ? { pullRequest: lane.pullRequest } : {}),
+    provider: resolvePullRequestProvider(settings.provider) ?? undefined,
+    host:
+      resolvePullRequestHost(
+        settings.host,
+        resolvePullRequestProvider(settings.provider) ?? undefined,
+      ) ?? undefined,
+    token: credential.token,
     ttlMs: (settings.cacheTtlSeconds ?? 30) * 1000,
     cacheMaxEntries: settings.cacheMaxEntries ?? 500,
     cacheMaxCredentials: settings.cacheMaxCredentials ?? 256,
-    allowedRepositories: settings.allowedRepositories ?? [],
+    sharedCache: settings.sharedCache === true,
+    sharedCacheTimeoutMs: settings.sharedCacheTimeoutMs ?? 250,
+    sharedCacheSlots: settings.sharedCacheSlots ?? 65_536,
+    allowedRepositories: credential.repositories,
     limits: {
       requestTimeoutMs: (settings.requestTimeoutSeconds ?? 10) * 1000,
       lookupTimeoutMs: (settings.lookupTimeoutSeconds ?? 30) * 1000,
@@ -234,6 +367,8 @@ export function createConversationPullRequestHandler(deps: {
   getAppConfig: (options: GetAppConfigOptions) => Promise<AppConfig>;
   lookup: PullRequestLookup;
   env: Readonly<Record<string, string | undefined>>;
+  /** The user's own token, when users can connect their accounts. */
+  userToken?: PullRequestUserToken;
 }) {
   return async (req: ServerRequest, res: Response): Promise<void> => {
     const userId = req.user?.id;
@@ -248,42 +383,56 @@ export function createConversationPullRequestHandler(deps: {
        * used when the resolved config turns the feature on, which keeps a disabled deployment's
        * answer the same as before.
        */
-      const [appConfig, laneGit] = await Promise.all([
-        deps.getAppConfig({
-          ...getAppConfigOptionsFromUser(req.user),
-          skipRuntimeAugmentation: true,
-          failClosed: true,
-        }),
+      const [settings, laneGit] = await Promise.all([
+        readPullRequestSettings(deps.getAppConfig, req.user),
         deps.getConvoLaneGit(userId, conversationId),
       ]);
-      const settings = (appConfig.endpoints?.[EModelEndpoint.agents] as TAgentsEndpoint | undefined)
-        ?.pullRequests;
-      if (settings?.enabled !== true) {
+      if (!settings || !isPullRequestFeatureActive(settings, deps.env)) {
         res.status(200).json(NONE);
         return;
       }
+      /** Reading the user's token can refresh and rotate it, so only a lane that some credential
+       *  could look up is worth it; any other conversation has no pull request regardless. */
+      const userToken = !isLookupable(laneGit)
+        ? null
+        : await readUserToken(deps.userToken, userId, settings, deps.env);
 
-      /** The repository comes from the worker, so it is never used with the token unless the
-       *  administrator named it. A repository that is not allowed looks like one without a pull
-       *  request. */
-      const lane = eligibleLane(laneGit, settings);
-      if (lane == null) {
+      const credential = credentialOf(settings, deps.env, userToken);
+      if (userToken === USER_TOKEN_FAILED) {
+        res
+          .status(503)
+          .json({ error: 'Pull request lookup is unavailable', code: 'UPSTREAM_ERROR' });
+        return;
+      }
+      /** Users can connect their own account and this one has not: nothing to look up with. */
+      if (credential == null && resolvePullRequestOAuth(settings, deps.env) != null) {
         res.status(200).json(NONE);
         return;
       }
-
-      const token = resolveTokenReference(settings.token, deps.env);
-      if (token == null) {
+      if (credential == null) {
         logger.warn('[PullRequests] Enabled without a usable token reference');
         res.status(503).json({ error: 'Pull requests are not configured', code: 'NOT_CONFIGURED' });
         return;
       }
 
-      const result = await deps.lookup(lookupInput(settings, token, lane));
+      /** The repository comes from the worker, so it is never used with the server's token unless
+       *  the administrator named it. A repository that is not allowed looks like one without a
+       *  pull request. */
+      const lane = eligibleLane(laneGit, credential.repositories);
+      if (lane == null) {
+        res.status(200).json(NONE);
+        return;
+      }
+
+      const result = await deps.lookup(lookupInput(settings, credential, lane));
       if (!result.ok) {
+        if (result.error.code === 'CREDENTIAL_REJECTED') {
+          /** In the background: the answer does not wait on it, and it fails only to a log. */
+          void invalidateRejected(deps.userToken, userId, settings, credential);
+        }
         res.status(503).json({
           error: 'Pull request lookup is unavailable',
-          code: result.error.code,
+          code: wireCode(result.error.code),
         });
         return;
       }
@@ -311,6 +460,8 @@ export function createConversationPullRequestsHandler(deps: {
   getAppConfig: (options: GetAppConfigOptions) => Promise<AppConfig>;
   lookup: PullRequestLookup;
   env: Readonly<Record<string, string | undefined>>;
+  /** The user's own token, when users can connect their accounts. */
+  userToken?: PullRequestUserToken;
 }) {
   const limiter = createLookupLimiter();
   const sharedLookups = createSharedLookups(limiter, deps.lookup);
@@ -321,6 +472,8 @@ export function createConversationPullRequestsHandler(deps: {
       res.status(400).json({ error: 'Invalid conversation list' });
       return;
     }
+    /** Set once the request is answered, however it ended. */
+    let answered = false;
     try {
       /**
        * The clock starts when the request arrives. The configured deadline lives in the config,
@@ -329,14 +482,23 @@ export function createConversationPullRequestsHandler(deps: {
        * overlapped.
        */
       const startedAt = Date.now();
-      const configRead = deps.getAppConfig({
-        ...getAppConfigOptionsFromUser(req.user),
-        skipRuntimeAugmentation: true,
-        failClosed: true,
-      });
+      const configRead = readPullRequestSettings(deps.getAppConfig, req.user);
       const laneRead = deps.getConvosLaneGit(userId, ids);
-      /** A lane read nobody waits for (feature off, config timed out) must not fail unhandled. */
+      /** Once the settings and the lanes are in, and only if some lane could be looked up: reading
+       *  the user's token can refresh and rotate it. */
+      const userTokenRead = Promise.all([configRead, laneRead]).then(([loaded, lanes]) => {
+        /** Never started for a request already answered or out of time: nobody would wait for
+         *  it, and it could still refresh, extend or refuse the stored grant. */
+        const deadline =
+          startedAt + (loaded?.batchTimeoutSeconds ?? DEFAULT_BATCH_TIMEOUT_SECONDS) * 1000;
+        if (answered || Date.now() >= deadline) return null;
+        return lanes.some(({ laneGit }) => isLookupable(laneGit))
+          ? readUserToken(deps.userToken, userId, loaded, deps.env)
+          : null;
+      });
+      /** A read nobody waits for (feature off, config timed out) must not fail unhandled. */
       laneRead.catch(() => undefined);
+      userTokenRead.catch(() => undefined);
       const unavailable = () =>
         res
           .status(503)
@@ -346,28 +508,46 @@ export function createConversationPullRequestsHandler(deps: {
         unavailable();
         return;
       }
-      const appConfig = loaded;
-      const settings = (appConfig.endpoints?.[EModelEndpoint.agents] as TAgentsEndpoint | undefined)
-        ?.pullRequests;
+      const settings = loaded;
       const deadline =
         startedAt + (settings?.batchTimeoutSeconds ?? DEFAULT_BATCH_TIMEOUT_SECONDS) * 1000;
       const none = (): TConversationPullRequestsResponse => ({
         results: ids.map((conversationId) => ({ conversationId, pullRequest: null })),
       });
-      if (settings?.enabled !== true) {
+      if (!settings || !isPullRequestFeatureActive(settings, deps.env)) {
         res.status(200).json(none());
         return;
       }
 
-      const lanes = await withDeadline(laneRead, deadline - Date.now());
-      if (lanes === TIMED_OUT) {
+      const reads = await withDeadline(
+        Promise.all([laneRead, userTokenRead]),
+        deadline - Date.now(),
+      );
+      if (reads === TIMED_OUT) {
         unavailable();
         return;
       }
+      const [lanes, userToken] = reads;
+      const credential = credentialOf(settings, deps.env, userToken);
+      const userTokenFailed = userToken === USER_TOKEN_FAILED;
+      /** Users can connect their own account and this one has not: nothing to look up with. */
+      if (
+        credential == null &&
+        !userTokenFailed &&
+        resolvePullRequestOAuth(settings, deps.env) != null
+      ) {
+        res.status(200).json(none());
+        return;
+      }
 
+      /** The repositories the missing credential would have been used for: every one, for a
+       *  user's own token that failed to load. */
+      const repositories =
+        credential?.repositories ??
+        (userTokenFailed ? ALL_REPOSITORIES : repositoryScope(settings));
       const eligible = new Map<string, EligibleLane>();
       for (const { conversationId, laneGit } of lanes) {
-        const lane = eligibleLane(laneGit, settings);
+        const lane = eligibleLane(laneGit, repositories);
         if (lane != null) eligible.set(conversationId, lane);
       }
       if (eligible.size === 0) {
@@ -379,14 +559,15 @@ export function createConversationPullRequestsHandler(deps: {
        * A missing token is a fact about the conversations that needed one, not about the request:
        * those entries say so, and every other conversation keeps its correct "no pull request".
        */
-      const token = resolveTokenReference(settings.token, deps.env);
-      if (token == null) {
-        logger.warn('[PullRequests] Enabled without a usable token reference');
+      if (credential == null) {
+        if (!userTokenFailed)
+          logger.warn('[PullRequests] Enabled without a usable token reference');
+        const code = userTokenFailed ? 'UPSTREAM_ERROR' : 'NOT_CONFIGURED';
         res.status(200).json({
           results: ids.map(
             (conversationId): TConversationPullRequestsEntry =>
               eligible.has(conversationId)
-                ? { conversationId, error: { code: 'NOT_CONFIGURED' } }
+                ? { conversationId, error: { code } }
                 : { conversationId, pullRequest: null },
           ),
         });
@@ -401,13 +582,14 @@ export function createConversationPullRequestsHandler(deps: {
        * limit and fills the cache for the next request.
        */
       const limit = settings.maxConcurrentLookups ?? DEFAULT_BATCH_CONCURRENCY;
-      const scope = limiterScope(token);
+      const scope = limiterScope(credential.token);
       /**
        * Conversations that share a repository, branch and head share one answer, and the lookup
        * already coalesces them, so each distinct lookup takes one slot and one deadline, not one
        * per conversation. Otherwise duplicates would hold every slot while a single request ran.
        */
-      const keyOf = (lane: EligibleLane) => `${lane.repo}\0${lane.branch}\0${lane.head ?? ''}`;
+      const keyOf = (lane: EligibleLane) =>
+        `${lane.repo}\0${lane.branch}\0${lane.head ?? ''}\0${lane.pullRequest ?? ''}`;
       const distinct = new Map<string, EligibleLane>();
       for (const lane of eligible.values()) distinct.set(keyOf(lane), lane);
       type Outcome =
@@ -421,15 +603,23 @@ export function createConversationPullRequestsHandler(deps: {
           outcomes.set(key, { ok: false, code: 'UPSTREAM_ERROR' });
           return;
         }
-        const input = lookupInput(settings, token, lane);
+        const input = lookupInput(settings, credential, lane);
         /** The same lane under the same policy is one lookup for every request that wants it. */
         const shareKey = `${scope}\0${JSON.stringify([
+          input.provider,
+          input.host,
           input.repo,
           input.branch,
           input.head,
+          input.pullRequest,
           input.ttlMs,
           input.limits,
           input.allowedRepositories,
+          /** Where the lookup caches and shares its answer, so each caller's own policy holds. */
+          input.cacheMaxEntries,
+          input.cacheMaxCredentials,
+          input.sharedCache,
+          input.sharedCacheTimeoutMs,
         ])}`;
         const joined = sharedLookups.join(shareKey, scope, limit, input);
         const result = await withDeadline(joined.promise, remaining);
@@ -443,18 +633,24 @@ export function createConversationPullRequestsHandler(deps: {
           result.ok ? { ok: true, value: result.value } : { ok: false, code: result.error.code },
         );
       });
+      if ([...outcomes.values()].some((o) => !o.ok && o.code === 'CREDENTIAL_REJECTED')) {
+        /** In the background: the answer does not wait on it, and it fails only to a log. */
+        void invalidateRejected(deps.userToken, userId, settings, credential);
+      }
       const looked = ids.map((conversationId): TConversationPullRequestsEntry => {
         const lane = eligible.get(conversationId);
         const outcome = lane == null ? undefined : outcomes.get(keyOf(lane));
         if (outcome == null) return { conversationId, pullRequest: null };
         return outcome.ok
           ? { conversationId, pullRequest: outcome.value }
-          : { conversationId, error: { code: outcome.code } };
+          : { conversationId, error: { code: wireCode(outcome.code) } };
       });
       res.status(200).json({ results: looked });
     } catch (error) {
       logger.error('[PullRequests] Batch handler failed', getSafeErrorMetadata(error));
       res.status(500).json({ error: 'Failed to load the pull requests' });
+    } finally {
+      answered = true;
     }
   };
 }

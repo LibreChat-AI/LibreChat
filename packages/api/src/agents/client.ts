@@ -10,6 +10,7 @@ import {
   getTokenCountForMessage,
   estimateOpenAIImageTokens,
   estimateAnthropicImageTokens,
+  estimateTimedMediaBlockTokens,
   markTokenCounterCacheCompatible,
 } from '@librechat/agents';
 import type { MessageContentComplex, TokenCounter } from '@librechat/agents';
@@ -80,6 +81,7 @@ type ContentBlock = {
   source?: { type?: string; data?: string; media_type?: string; content?: unknown[] };
   source_type?: string;
   mime_type?: string;
+  mimeType?: string;
   data?: string;
   text?: string;
   tool_call?: { id?: string; name?: string; args?: string; output?: string };
@@ -301,32 +303,42 @@ function estimateDocumentBlockTokens(
 }
 
 /**
- * Estimates token cost for image and document blocks in a message's
- * content array. Covers: image_url, image, image_file, document, file.
+ * Google/Vertex native media blocks (`{ type: 'media', mimeType, data | fileUri }`), as built by
+ * the file encoders and YouTube links. Mirrors the agents SDK's media accounting so these blocks
+ * are not skipped by the precomputed context budget.
  */
-export function estimateMediaTokensForMessage(
-  content: unknown,
+function estimateMediaBlockTokens(
+  block: ContentBlock,
   isClaude: boolean,
-  getTokenCount?: (text: string) => number,
+  countTokens: (text: string) => number,
 ): number {
-  if (!Array.isArray(content)) {
-    return 0;
+  const mime = (block.mimeType ?? block.mime_type ?? '').split(';')[0].trim().toLowerCase();
+  const data = typeof block.data === 'string' && block.data.length > 0 ? block.data : undefined;
+
+  if (mime.startsWith('audio/') || mime.startsWith('video/')) {
+    const timed = estimateTimedMediaBlockTokens({ ...block, mimeType: mime });
+    return Math.ceil(timed * IMAGE_TOKEN_SAFETY_MARGIN);
   }
-  let tokens = 0;
-  for (const block of content as ContentBlock[]) {
-    if (block == null || typeof block !== 'object' || typeof block.type !== 'string') {
-      continue;
-    }
-    const type = block.type;
-    if (type === 'image_url' || type === 'image' || type === 'image_file') {
-      tokens += estimateImageBlockTokens(block, isClaude);
-      continue;
-    }
-    if (type === 'document' || type === 'file') {
-      tokens += estimateDocumentBlockTokens(block, isClaude, getTokenCount);
-    }
+  if (data == null) {
+    return mime.startsWith('image/') ? 1024 : URL_DOCUMENT_FALLBACK_TOKENS;
   }
-  return tokens;
+  if (mime.startsWith('image/')) {
+    return estimateImageDataTokens(data, isClaude);
+  }
+  if (mime === 'application/pdf') {
+    const comma = data.startsWith('data:') ? data.indexOf(',') : -1;
+    return estimateDocumentBlockTokens(
+      {
+        type: 'file',
+        source_type: 'base64',
+        mime_type: mime,
+        data: comma >= 0 ? data.slice(comma + 1) : data,
+      },
+      isClaude,
+      countTokens,
+    );
+  }
+  return Math.max(URL_DOCUMENT_FALLBACK_TOKENS, data.length);
 }
 
 /**
@@ -375,6 +387,11 @@ export function countFormattedMessageTokens(
 
         if (type === 'document' || type === 'file') {
           numTokens += estimateDocumentBlockTokens(block, isClaude, countTokens);
+          continue;
+        }
+
+        if (type === 'media') {
+          numTokens += estimateMediaBlockTokens(block, isClaude, countTokens);
           continue;
         }
 
@@ -508,14 +525,6 @@ export function collectToolCallIds(
     }
   }
   return ids;
-}
-
-export function createTokenCounter(
-  encoding: Parameters<typeof Tokenizer.getTokenCount>[1],
-): TokenCounter {
-  return createMessageTokenCounter(encoding, (text: string) =>
-    Tokenizer.getTokenCount(text, encoding),
-  );
 }
 
 function createMessageTokenCounter(

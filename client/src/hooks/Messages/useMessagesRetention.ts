@@ -25,13 +25,14 @@ const carriesAssistantThread = (queryClient: QueryClient, conversationId: string
  * Releases left conversations' message histories from the query cache (see `retainMessages`),
  * keeping the routed conversation, any conversation with a running job, and Assistants
  * conversations. The grace period and how many conversations keep it come from
- * `interface.historyCacheTtlMs` and `interface.historyCacheRecent`.
+ * `interface.historyCacheTtlMs`, `interface.historyCacheRecent` and `interface.historyCacheMaxBytes`.
  */
 export default function useMessagesRetention(): void {
   const queryClient = useQueryClient();
   const { data: startupConfig } = useGetStartupConfig();
   const ttlMs = startupConfig?.interface?.historyCacheTtlMs;
   const recent = startupConfig?.interface?.historyCacheRecent;
+  const maxBytes = startupConfig?.interface?.historyCacheMaxBytes;
   const routeConversationId = useMatch('/c/:conversationId')?.params.conversationId;
   const routeConversationIdRef = useRef(routeConversationId);
   routeConversationIdRef.current = routeConversationId;
@@ -41,11 +42,12 @@ export default function useMessagesRetention(): void {
       retainMessages(queryClient, {
         ttlMs,
         recent,
+        maxBytes,
         isPinned: (conversationId) =>
           conversationId === routeConversationIdRef.current ||
           hasActiveJob(queryClient, conversationId),
         isExempt: (conversationId) => carriesAssistantThread(queryClient, conversationId),
       }),
-    [queryClient, ttlMs, recent],
+    [queryClient, ttlMs, recent, maxBytes],
   );
 }

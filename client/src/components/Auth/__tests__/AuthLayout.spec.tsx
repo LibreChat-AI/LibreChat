@@ -135,6 +135,23 @@ describe('AuthLayout legal placement', () => {
     expect(document.querySelector('[role="contentinfo"] a')).toBeNull();
   });
 
+  /** A link that would run script is no policy at all: the sign-in page renders
+   *  it nowhere, so a stored `javascript:` url cannot run in a visitor's session. */
+  test('a script policy url leaves no link on the sign-in screen', () => {
+    setup({
+      pathname: 'login',
+      interfaceConfig: {
+        privacyPolicy: { externalUrl: 'javascript:alert(document.domain)' },
+        termsOfService: { externalUrl: TERMS_URL },
+      },
+    });
+
+    expect(consent()).toBeInTheDocument();
+    expect(document.querySelectorAll(`a[href="${TERMS_URL}"]`)).toHaveLength(1);
+    expect(document.querySelector('a[href^="javascript" i]')).toBeNull();
+    expect(screen.queryByRole('link', { name: /privacy policy/i })).toBeNull();
+  });
+
   /** Registration renders its form, and with it the consent, only once the
    *  config has loaded without error. The footer bar carries the policies
    *  until then, so the screen is never left with neither. */

@@ -53,11 +53,18 @@ jest.mock('@librechat/api', () => {
   return {
     prepareToolCallPreviews: jest.fn(() => (messages) => Promise.resolve(messages)),
     createToolCallPartHandler: jest.fn(() => (_req, res) => res.status(404).end()),
+    createSubagentAttachmentCallsHandler: jest.fn(() => (_req, res) => res.status(404).end()),
     rejectToolCallPreviewWrites: (_req, _res, next) => next(),
     withMessageToolCallPreviews: (_req, message) => message,
     /** The real helper, without loading the rest of the package this suite mocks around. */
     withoutTraceRefs: jest.requireActual('../../../../packages/api/src/langfuse/trace.ts')
       .withoutTraceRefs,
+    /** Mirrors the real parse (default 25, ceiling 1000) without loading the config service. */
+    awaitPageSize: jest.fn((pageSize) => pageSize),
+    resolveMessagesPageSize: jest.fn(async (_user, raw) => {
+      const parsed = parseInt(String(raw), 10);
+      return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 1000) : 25;
+    }),
     createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
     stripPrivateMessageFields: jest.requireActual(
       '../../../../packages/api/src/protection/private/view',
@@ -612,7 +619,7 @@ describe('message route conversation ownership filters', () => {
       name: 'capped',
       query: `search=needle&pageSize=${MEILI_SEARCH_LIMIT + 1}`,
       searchLimit: MEILI_SEARCH_LIMIT,
-      conversationLimit: MEILI_SEARCH_LIMIT + 1,
+      conversationLimit: MEILI_SEARCH_LIMIT,
     },
     {
       name: 'invalid',

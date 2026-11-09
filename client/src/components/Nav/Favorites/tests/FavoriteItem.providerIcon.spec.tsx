@@ -40,8 +40,13 @@ describe('FavoriteItem type="model" provider art', () => {
     expect(screen.getByAltText('MetaLlama Icon')).toHaveAttribute('src', '/assets/meta-llama.png');
   });
 
-  it('falls back to the custom art when the endpoint resolves to no provider', () => {
+  it("shows the model's maker when the endpoint resolves to no provider", () => {
     render(<FavoriteItem type="model" item={claudeModel} />);
+    expect(screen.getByRole('img', { name: 'Anthropic', hidden: true })).toBeInTheDocument();
+  });
+
+  it('falls back to the custom art when neither the endpoint nor the model has a brand', () => {
+    render(<FavoriteItem type="model" item={{ model: 'starcoder2:15b', endpoint: 'Local' }} />);
     expect(screen.getByRole('img', { name: 'Custom', hidden: true })).toBeInTheDocument();
   });
 });

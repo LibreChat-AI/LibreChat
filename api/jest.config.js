@@ -1,6 +1,7 @@
-const { maxWorkers } = require('../config/jest.workers.cjs');
+const { maxWorkers, workerIdleMemoryLimit } = require('../config/jest.workers.cjs');
 
 const esModules = [
+  '@librechat/agents',
   'openid-client',
   'oauth4webapi',
   'jose',
@@ -25,6 +26,7 @@ module.exports = {
   roots: ['<rootDir>'],
   coverageDirectory: 'coverage',
   maxWorkers,
+  workerIdleMemoryLimit,
   testTimeout: 30000, // 30 seconds timeout for all tests
   setupFiles: ['./test/jestSetup.js', './test/__mocks__/logger.js'],
   moduleNameMapper: {
@@ -34,7 +36,7 @@ module.exports = {
     '^openid-client$': '<rootDir>/test/__mocks__/openid-client.js',
   },
   transform: {
-    '\\.[jt]sx?$': [
+    '\\.[cm]?[jt]sx?$': [
       'babel-jest',
       {
         presets: [

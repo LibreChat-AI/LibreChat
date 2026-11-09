@@ -15,6 +15,11 @@ const mockRevoke = jest.fn();
 const mockTriggerDownload = jest.fn();
 const mockUseFilePreview = jest.fn();
 
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  CopyButton: () => null,
+}));
+
 jest.mock('recoil', () => ({ useRecoilValue: () => ({ id: 'owner' }) }));
 jest.mock('~/store', () => ({ user: {} }));
 jest.mock('~/Providers', () => ({
@@ -60,7 +65,6 @@ jest.mock('@librechat/client', () => ({
     <button onClick={onClick}>{children}</button>
   ),
 }));
-jest.mock('~/components/Messages/Content/CopyButton', () => () => null);
 
 const props = {
   open: true,

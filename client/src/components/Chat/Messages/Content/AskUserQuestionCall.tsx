@@ -1,18 +1,21 @@
 import { useCallback } from 'react';
+import { useToolExpansion } from '@librechat/chat/react';
 import { MessageCircleQuestion, TriangleAlert } from 'lucide-react';
-import type { Agents, PartMetadata } from 'librechat-data-provider';
+import {
+  EmptyText,
+  TOOL_ROW_CLASSES,
+  Container,
+  useExpandCollapse,
+} from '@librechat/chat/components';
 import {
   getSubmittedAskAnswer,
   parseAskUserQuestionArgs,
   parseAskUserQuestionsArgs,
-} from '~/utils/approval';
+} from '@librechat/chat';
+import type { Agents, PartMetadata } from 'librechat-data-provider';
 import AskUserQuestionProgress from './AskUserQuestionProgress';
-import { useLocalize, useExpandCollapse } from '~/hooks';
-import { useToolExpansion } from './disclosure';
 import ProgressText from './ProgressText';
-import EmptyText from './Parts/EmptyText';
-import { TOOL_ROW_CLASSES } from './rows';
-import Container from './Container';
+import { useLocalize } from '~/hooks';
 
 /**
  * Static rendering of a COMPLETED (or abandoned) `ask_user_question` tool call —
@@ -247,7 +250,7 @@ function QuestionBody({
         </p>
       )}
       {typeof answer === 'string' && (
-        <div className="border-border-medium mt-2.5 border-l-2 pl-3">
+        <div className="border-border-medium mt-2.5 border-s-2 ps-3">
           <p className="text-text-secondary text-xs font-medium">
             {localize('com_ui_you_answered')}
           </p>

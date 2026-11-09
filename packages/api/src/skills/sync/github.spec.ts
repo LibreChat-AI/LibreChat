@@ -1,7 +1,13 @@
 import crypto from 'crypto';
 import mongoose, { Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { logger, getTenantId, createModels, createMethods } from '@librechat/data-schemas';
+import {
+  logger,
+  getTenantId,
+  createModels,
+  createMethods,
+  createSkillDeletionPersistenceAdapter,
+} from '@librechat/data-schemas';
 import type {
   ISkill,
   ISkillFile,
@@ -13,11 +19,14 @@ import type {
   UpdateSkillResult,
   UpsertSkillFileInput,
   DeleteSkillResult,
+  AppConfig,
 } from '@librechat/data-schemas';
 import type { RepoTreeEntry, GitRepoAdapter } from './adapters/types';
 import type { GitHubSkillSyncDeps } from './github';
+import { createSkillDeletionService } from '../deletionService';
 import { DEFAULT_SKILL_IMPORT_LIMITS } from '../limits';
 import { createGitHubSkillSyncRunner } from './github';
+import { runSkillDeletion } from '../deletion';
 
 function response(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   const normalizedHeaders = new Map(
@@ -192,7 +201,7 @@ function makeSkill(input: CreateSkillInput): ISkill & { _id: Types.ObjectId } {
     description: input.description,
     body: input.body ?? '',
     frontmatter: input.frontmatter ?? {},
-    author: input.author,
+    author: new Types.ObjectId(input.author),
     authorName: input.authorName,
     version: 1,
     source: input.source ?? 'inline',
@@ -329,6 +338,21 @@ function createDeps(
     }),
     deleteSkillFile: jest.fn(async () => ({ deleted: true })),
     deleteSkill: jest.fn(async () => completeSkillDeletion(true)),
+    reserveBlob: jest.fn(async ({ userId, fileName, tenantId }) => ({
+      filepath: '/uploads/file-id__run.sh',
+      source: 'local',
+      writeLocation: { userId, fileName, basePath: 'uploads' as const, tenantId },
+    })),
+    reserveSkillUploadIntent: jest.fn(async (input) => ({
+      ...input,
+      skillId: new Types.ObjectId(input.skillId),
+      author: new Types.ObjectId(input.author),
+      state: 'uploading' as const,
+    })),
+    transitionSkillUploadIntent: jest.fn(async () => true),
+    queueCommittedSkillUploadCleanup: jest.fn(async () => undefined),
+    finishSkillUploadCleanupHold: jest.fn(async () => true),
+    markSkillUploadIntentCleaned: jest.fn(async () => undefined),
     saveBuffer: jest.fn(async () => ({ filepath: '/uploads/file-id__run.sh', source: 'local' })),
     deleteFile: jest.fn(async () => undefined),
     grantPermission: jest.fn(async () => undefined),
@@ -1815,7 +1839,7 @@ describe('createGitHubSkillSyncRunner', () => {
     );
   });
 
-  it('fails the source when recreating a stale mirror cannot preserve its dependent state', async () => {
+  it('fails the source without recreating a stale mirror whose blobs were deleted', async () => {
     const staleId = new Types.ObjectId();
     const existingId = new Types.ObjectId();
     const author = makeSourceAuthorId();
@@ -1869,18 +1893,9 @@ describe('createGitHubSkillSyncRunner', () => {
     expect(result.status).toBe('failed');
     expect(deleteSkill).toHaveBeenCalledWith(staleId.toString());
     expect(deleteSkill).toHaveBeenCalledTimes(1);
-    expect(createSkill).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'renamed',
-        sourceMetadata: expect.objectContaining({
-          upstreamId: 'librechat-skills:skills/removed',
-        }),
-      }),
-    );
-    expect(deps.grantPermission).toHaveBeenCalledWith(
-      expect.objectContaining({ resourceId: restoredSkill?._id }),
-    );
-    expect(persistedSkills.has(restoredSkill?._id.toString() ?? '')).toBe(true);
+    expect(createSkill).not.toHaveBeenCalled();
+    expect(restoredSkill).toBeUndefined();
+    expect(persistedSkills.has(staleId.toString())).toBe(false);
     expect(deps.upsertStatus).toHaveBeenLastCalledWith(
       expect.objectContaining({
         status: 'failed',
@@ -1894,7 +1909,7 @@ describe('createGitHubSkillSyncRunner', () => {
 
   it.each([
     { failedStep: 'skill_files' as const, expectedBlobDeletes: 0 },
-    { failedStep: 'permissions' as const, expectedBlobDeletes: 1 },
+    { failedStep: 'permissions' as const, expectedBlobDeletes: 0 },
   ])(
     'fails the source and safely handles blobs when stale deletion leaves $failedStep incomplete',
     async ({ failedStep, expectedBlobDeletes }) => {
@@ -2548,12 +2563,12 @@ describe('createGitHubSkillSyncRunner', () => {
     );
   });
 
-  it('fails the source when rollback cannot remove a stored skill file', async () => {
+  it('fails the source when durable rollback cannot finish storage cleanup', async () => {
     const storedFiles: Array<ISkillFile & { _id: Types.ObjectId }> = [];
     const deleteFile = jest.fn(async () => {
       throw new Error('storage cleanup unavailable');
     });
-    const deleteSkill = jest.fn(async () => completeSkillDeletion(true));
+    const deleteSkill = jest.fn(async () => incompleteSkillDeletion(['skill_files']));
     const deps = createDeps({
       listSkillFiles: jest.fn(async () => storedFiles),
       upsertSkillFile: jest.fn(async (input: UpsertSkillFileInput) => {
@@ -2573,7 +2588,7 @@ describe('createGitHubSkillSyncRunner', () => {
     const result = await runner.runOnce();
 
     expect(result.status).toBe('failed');
-    expect(deleteFile).toHaveBeenCalledTimes(1);
+    expect(deleteFile).not.toHaveBeenCalled();
     expect(deleteSkill).toHaveBeenCalledTimes(1);
     expect(deps.upsertStatus).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -2584,7 +2599,7 @@ describe('createGitHubSkillSyncRunner', () => {
     );
   });
 
-  it('fails the source when an unpersisted upload cannot be cleaned up', async () => {
+  it('retains an unpersisted upload intent when immediate cleanup fails', async () => {
     const deleteFile = jest.fn(async () => {
       throw new Error('orphan cleanup unavailable');
     });
@@ -2603,8 +2618,8 @@ describe('createGitHubSkillSyncRunner', () => {
     expect(deps.upsertStatus).toHaveBeenLastCalledWith(
       expect.objectContaining({
         status: 'failed',
-        errorCode: 'SYNC_ROLLBACK_FAILED',
-        errorMessage: 'Rollback failed after: database unavailable',
+        errorCode: 'SYNC_FAILED',
+        errorMessage: 'database unavailable',
       }),
     );
   });
@@ -2971,93 +2986,115 @@ describe('createGitHubSkillSyncRunner', () => {
     expect(deps.updateSkill).not.toHaveBeenCalled();
   });
 
-  it('restores existing skill files when the skill update fails after file sync', async () => {
-    const existing = makeSkill({
-      name: 'research',
-      description: 'Old description',
-      body: 'Old body',
-      author: new Types.ObjectId(),
-      authorName: 'GitHub Sync',
-      source: 'github',
-      sourceMetadata: {
-        provider: 'github',
-        sourceId: 'librechat-skills',
-        upstreamId: 'librechat-skills:skills/research',
-        owner: 'LibreChat',
-        repo: 'skills',
-        ref: 'main',
-        skillPath: 'skills/research',
-      },
-    }) as ISkill & { _id: Types.ObjectId };
-    const oldFile = makeSkillFile(existing);
-    const files = new Map<string, ISkillFile & { _id: Types.ObjectId }>([
-      [oldFile.relativePath, oldFile],
-    ]);
-    const upsertSkillFile = jest.fn(
-      async (
-        row: Parameters<GitHubSkillSyncDeps['upsertSkillFile']>[0],
-      ): Promise<ISkillFile & { _id: Types.ObjectId }> => {
-        const current = files.get(row.relativePath);
-        const next = {
-          _id: current?._id ?? new Types.ObjectId(),
-          skillId: row.skillId as Types.ObjectId,
-          relativePath: row.relativePath,
-          file_id: row.file_id,
-          filename: row.filename,
-          filepath: row.filepath,
-          storageKey: row.storageKey,
-          storageRegion: row.storageRegion,
-          source: row.source,
-          sourceMetadata: row.sourceMetadata,
-          mimeType: row.mimeType,
-          bytes: row.bytes,
-          category: 'script' as const,
-          isExecutable: row.isExecutable ?? false,
-          author: new Types.ObjectId(row.author),
-          tenantId: row.tenantId,
-        };
-        files.set(row.relativePath, next);
-        return next;
-      },
-    );
-    const deps = createDeps({
-      findSkillBySourceIdentity: jest.fn(async () => existing),
-      getSkillById: jest.fn(async () => ({ ...existing, version: existing.version + 1 })),
-      getSkillFileByPath: jest.fn(
-        async (_skillId, relativePath) => files.get(relativePath) ?? null,
-      ),
-      listSkillFiles: jest.fn(async () => Array.from(files.values())),
-      upsertSkillFile,
-      deleteSkillFile: jest.fn(async (_skillId, relativePath) => ({
-        deleted: files.delete(relativePath),
-      })),
-      saveBuffer: jest.fn(async () => ({
-        filepath: '/uploads/new-file-id__run.sh',
-        source: 'local',
-      })),
-      deleteFile: jest.fn(async () => undefined),
-      updateSkill: jest.fn(async () => ({ status: 'conflict' as const, current: existing })),
-    });
-    const runner = createGitHubSkillSyncRunner(deps);
-    const result = await runner.runOnce();
+  it.each([false, true])(
+    'retains a recoverable file when sync rollback cleanup queue fails: queueFailed=%s',
+    async (queueFailed) => {
+      const existing = makeSkill({
+        name: 'research',
+        description: 'Old description',
+        body: 'Old body',
+        author: new Types.ObjectId(),
+        authorName: 'GitHub Sync',
+        source: 'github',
+        sourceMetadata: {
+          provider: 'github',
+          sourceId: 'librechat-skills',
+          upstreamId: 'librechat-skills:skills/research',
+          owner: 'LibreChat',
+          repo: 'skills',
+          ref: 'main',
+          skillPath: 'skills/research',
+        },
+      }) as ISkill & { _id: Types.ObjectId };
+      const oldFile = makeSkillFile(existing);
+      const files = new Map<string, ISkillFile & { _id: Types.ObjectId }>([
+        [oldFile.relativePath, oldFile],
+      ]);
+      const upsertSkillFile = jest.fn(
+        async (
+          row: Parameters<GitHubSkillSyncDeps['upsertSkillFile']>[0],
+        ): Promise<ISkillFile & { _id: Types.ObjectId }> => {
+          const current = files.get(row.relativePath);
+          const next = {
+            _id: current?._id ?? new Types.ObjectId(),
+            skillId: row.skillId as Types.ObjectId,
+            relativePath: row.relativePath,
+            file_id: row.file_id,
+            filename: row.filename,
+            filepath: row.filepath,
+            storageKey: row.storageKey,
+            storageRegion: row.storageRegion,
+            source: row.source,
+            sourceMetadata: row.sourceMetadata,
+            mimeType: row.mimeType,
+            bytes: row.bytes,
+            category: 'script' as const,
+            isExecutable: row.isExecutable ?? false,
+            author: new Types.ObjectId(row.author),
+            tenantId: row.tenantId,
+          };
+          files.set(row.relativePath, next);
+          return next;
+        },
+      );
+      const deps = createDeps({
+        findSkillBySourceIdentity: jest.fn(async () => existing),
+        getSkillById: jest.fn(async () => ({ ...existing, version: existing.version + 1 })),
+        getSkillFileByPath: jest.fn(
+          async (_skillId, relativePath) => files.get(relativePath) ?? null,
+        ),
+        listSkillFiles: jest.fn(async () => Array.from(files.values())),
+        upsertSkillFile,
+        deleteSkillFile: jest.fn(async (_skillId, relativePath) => ({
+          deleted: files.delete(relativePath),
+        })),
+        reserveBlob: jest.fn(async ({ userId, fileName, tenantId }) => ({
+          filepath: '/uploads/new-file-id__run.sh',
+          source: 'local',
+          writeLocation: { userId, fileName, basePath: 'uploads' as const, tenantId },
+        })),
+        saveBuffer: jest.fn(async () => ({
+          filepath: '/uploads/new-file-id__run.sh',
+          source: 'local',
+        })),
+        deleteFile: jest.fn(async () => undefined),
+        queueCommittedSkillUploadCleanup: jest.fn(async () => {
+          if (queueFailed) throw new Error('cleanup queue unavailable');
+        }),
+        updateSkill: jest.fn(async () => ({ status: 'conflict' as const, current: existing })),
+      });
+      const runner = createGitHubSkillSyncRunner(deps);
+      const result = await runner.runOnce();
 
-    expect(result.status).toBe('failed');
-    expect(deps.upsertStatus).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        status: 'failed',
-        errorCode: 'SKILL_CONFLICT',
-      }),
-    );
-    expect(files.get('scripts/run.sh')).toEqual(
-      expect.objectContaining({ filepath: oldFile.filepath }),
-    );
-    expect(deps.deleteFile).toHaveBeenCalledWith(
-      expect.objectContaining({ filepath: '/uploads/new-file-id__run.sh' }),
-    );
-    expect(deps.deleteFile).not.toHaveBeenCalledWith(
-      expect.objectContaining({ filepath: oldFile.filepath }),
-    );
-  });
+      expect(result.status).toBe('failed');
+      expect(deps.upsertStatus).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          status: 'failed',
+          errorCode: queueFailed ? 'SYNC_ROLLBACK_FAILED' : 'SKILL_CONFLICT',
+        }),
+      );
+      expect(files.get('scripts/run.sh')).toEqual(
+        expect.objectContaining({
+          filepath: queueFailed ? '/uploads/new-file-id__run.sh' : oldFile.filepath,
+        }),
+      );
+      if (queueFailed) {
+        expect(deps.deleteFile).not.toHaveBeenCalled();
+        expect(deps.upsertStatus).toHaveBeenLastCalledWith(
+          expect.objectContaining({ status: 'failed', errorCode: 'SYNC_ROLLBACK_FAILED' }),
+        );
+      } else {
+        expect(deps.deleteFile).toHaveBeenCalledWith(
+          expect.objectContaining({ filepath: '/uploads/new-file-id__run.sh' }),
+        );
+      }
+      expect(deps.deleteFile).not.toHaveBeenCalledWith(
+        expect.objectContaining({ filepath: oldFile.filepath }),
+      );
+      expect(deps.queueCommittedSkillUploadCleanup).toHaveBeenCalledWith(expect.any(String));
+      expect(deps.markSkillUploadIntentCleaned).toHaveBeenCalledTimes(queueFailed ? 0 : 1);
+    },
+  );
 
   it('fails the source when existing-skill rollback cannot remove replacement storage', async () => {
     const existing = makeSkill({
@@ -3093,6 +3130,11 @@ describe('createGitHubSkillSyncRunner', () => {
         skillId: row.skillId as Types.ObjectId,
         author: new Types.ObjectId(row.author),
       })),
+      reserveBlob: jest.fn(async ({ userId, fileName, tenantId }) => ({
+        filepath: '/uploads/new-file-id__run.sh',
+        source: 'local',
+        writeLocation: { userId, fileName, basePath: 'uploads' as const, tenantId },
+      })),
       saveBuffer: jest.fn(async () => ({
         filepath: '/uploads/new-file-id__run.sh',
         source: 'local',
@@ -3107,6 +3149,8 @@ describe('createGitHubSkillSyncRunner', () => {
     expect(deleteFile).toHaveBeenCalledWith(
       expect.objectContaining({ filepath: '/uploads/new-file-id__run.sh' }),
     );
+    expect(deps.queueCommittedSkillUploadCleanup).toHaveBeenCalledWith(expect.any(String));
+    expect(deps.markSkillUploadIntentCleaned).not.toHaveBeenCalled();
     expect(deps.upsertStatus).toHaveBeenLastCalledWith(
       expect.objectContaining({
         status: 'failed',
@@ -3810,6 +3854,28 @@ describe('steady-state sync of an unchanged source', () => {
     repo: ReturnType<typeof createRepo>,
     sourceOverrides: Partial<{ ref: string }> = {},
   ) {
+    const deleteSkillWithStorage = async (id: string): Promise<DeleteSkillResult> => {
+      const progress = await runSkillDeletion(id, {
+        ...createSkillDeletionPersistenceAdapter(db),
+        deleteSkillFileAfterBlob: db.deleteSkillFileAfterBlob,
+        finalizeSkillDeletion: db.finalizeSkillDeletion,
+        completeSkillDeletion: async (skillId) => {
+          const owner = 'sync-test-worker';
+          if (!(await db.claimSkillDeletion(skillId, owner, 60_000))) return false;
+          return db.completeSkillDeletion(skillId, owner);
+        },
+        reopenSkillDeletion: db.reopenSkillDeletion,
+        markSkillUploadIntentCleaned: db.markSkillUploadIntentCleaned,
+        deleteBlob: async () => undefined,
+        deleteReservedBlob: async () => undefined,
+      });
+      return {
+        deleted: progress.found && progress.cleanupComplete,
+        skillAbsent: progress.found && progress.cleanupComplete,
+        cleanupComplete: progress.found && progress.cleanupComplete,
+        failedCleanupSteps: progress.failedSteps,
+      };
+    };
     return createDeps({
       getConfig: () => ({
         github: {
@@ -3838,9 +3904,9 @@ describe('steady-state sync of an unchanged source', () => {
       getSkillFileByPath: jest.fn(db.getSkillFileByPath),
       upsertSkillFile: jest.fn(db.upsertSkillFile),
       deleteSkillFile: jest.fn(db.deleteSkillFile),
-      deleteSkill: jest.fn(db.deleteSkill),
-      saveBuffer: jest.fn(async ({ fileName }: { fileName: string }) => ({
-        filepath: `/uploads/${fileName}`,
+      deleteSkill: jest.fn(deleteSkillWithStorage),
+      saveBuffer: jest.fn(async ({ reservation }) => ({
+        filepath: reservation.filepath,
         source: 'local',
       })),
     });
@@ -3969,6 +4035,123 @@ describe('steady-state sync of an unchanged source', () => {
     const file = await db.getSkillFileByPath(mirror._id, 'scripts/run.sh');
     expect(file?.sourceMetadata?.blobSha).toBe('skills/research/scripts/run.sh@2');
   });
+
+  it.each([true, false])(
+    'does not sweep a superseded blob before the sync %s outcome',
+    async (rollBack) => {
+      const repo = createRepo({
+        'skills/research/SKILL.md': { content: researchMarkdown },
+        'skills/research/scripts/run.sh': { content: 'echo old' },
+      });
+      const objects = new Map<string, Buffer>();
+      const withRealStorage = (deps: ReturnType<typeof createDbDeps>) => {
+        deps.reserveBlob = jest.fn(async ({ userId, fileName, tenantId }) => ({
+          filepath: `/uploads/${userId}/${fileName}`,
+          source: 'local',
+          writeLocation: { userId, fileName, basePath: 'uploads' as const, tenantId },
+        }));
+        deps.saveBuffer = jest.fn(async ({ reservation, buffer }) => {
+          objects.set(reservation.filepath, Buffer.from(buffer));
+          return { filepath: reservation.filepath, source: reservation.source };
+        });
+        deps.deleteFile = jest.fn(async (file) => {
+          objects.delete(file.filepath);
+        });
+        deps.reserveSkillUploadIntent = jest.fn(db.reserveSkillUploadIntent);
+        deps.transitionSkillUploadIntent = jest.fn(db.transitionSkillUploadIntent);
+        deps.queueCommittedSkillUploadCleanup = jest.fn(db.queueCommittedSkillUploadCleanup);
+        deps.finishSkillUploadCleanupHold = jest.fn(db.finishSkillUploadCleanupHold);
+        deps.markSkillUploadIntentCleaned = jest.fn(db.markSkillUploadIntentCleaned);
+        return deps;
+      };
+
+      const seeded = await createGitHubSkillSyncRunner(
+        withRealStorage(createDbDeps(repo)),
+      ).runOnce();
+      expect(seeded.status).toBe('completed');
+      const mirror = await getMirror();
+      const oldFile = await db.getSkillFileByPath(mirror._id, 'scripts/run.sh');
+      expect(oldFile).not.toBeNull();
+      expect(objects.get(oldFile!.filepath)?.toString()).toBe('echo old');
+
+      repo.setFiles({
+        'skills/research/SKILL.md': { content: researchMarkdown },
+        'skills/research/scripts/run.sh': { content: 'echo new', revision: 2 },
+      });
+      let reachedReplacement!: () => void;
+      const replaced = new Promise<void>((resolve) => {
+        reachedReplacement = resolve;
+      });
+      let resumeSync!: () => void;
+      const resume = new Promise<void>((resolve) => {
+        resumeSync = resolve;
+      });
+      const deps = withRealStorage(createDbDeps(repo));
+      let paused = false;
+      deps.upsertSkillFile = jest.fn(async (row) => {
+        const result = await db.upsertSkillFile(row);
+        if (!paused) {
+          paused = true;
+          reachedReplacement();
+          await resume;
+        }
+        return result;
+      });
+      if (rollBack) {
+        deps.updateSkill = jest.fn(async () => ({ status: 'conflict' as const, current: mirror }));
+      }
+      const sync = createGitHubSkillSyncRunner(deps).runOnce();
+      await replaced;
+
+      let finishSweep!: () => void;
+      const swept = new Promise<void>((resolve) => {
+        finishSweep = resolve;
+      });
+      const deletion = createSkillDeletionService({
+        persistence: { ...db, ...createSkillDeletionPersistenceAdapter(db) },
+        loadConfig: async () =>
+          ({ skillDeletion: { finalizationEnabled: false } }) as unknown as AppConfig,
+        getStrategyFunctions: () => ({
+          deleteFile: async (_req, file) => {
+            objects.delete(file.filepath);
+          },
+        }),
+        runAsSystem: async (callback) => {
+          try {
+            return await callback();
+          } finally {
+            finishSweep();
+          }
+        },
+        logger: { error: jest.fn(), warn: jest.fn() },
+      });
+      const sweep = deletion.startSkillDeletionSweep({ sweepIntervalMs: 600_000 });
+      let oldBlobAfterSweep: string | undefined;
+      try {
+        await swept;
+        oldBlobAfterSweep = objects.get(oldFile!.filepath)?.toString();
+      } finally {
+        sweep.stop();
+        resumeSync();
+      }
+
+      const result = await sync;
+      expect(oldBlobAfterSweep).toBe('echo old');
+      if (rollBack) {
+        expect(result.status).toBe('failed');
+        expect((await db.getSkillFileByPath(mirror._id, 'scripts/run.sh'))?.file_id).toBe(
+          oldFile!.file_id,
+        );
+        expect(objects.get(oldFile!.filepath)?.toString()).toBe('echo old');
+      } else {
+        expect(result.status).toBe('completed');
+        expect((await db.getSkillFileByPath(mirror._id, 'scripts/run.sh'))?.file_id).not.toBe(
+          oldFile!.file_id,
+        );
+        expect(objects.has(oldFile!.filepath)).toBe(false);
+      }
+    },
+  );
 
   it('updates the skill and deletes the file when a bundled file is removed upstream', async () => {
     const repo = createRepo(baseRepo());

@@ -11,8 +11,11 @@ const {
   openCheckpointDeletion,
   waitForGenerationPersistence,
   createArchiveAllHandler,
+  createArchiveHandler,
   createSubagentActivityStreamHandler,
+  createSubagentTaskContentHandler,
   createSubagentControlHandler,
+  createSubagentControlReceiptHandler,
   isValidSubagentControlRequest,
   exemptAgentTriggerFromIpLimiter,
   createParentSubagentIndexHandler,
@@ -20,9 +23,13 @@ const {
   createBackgroundTaskCancelHandler,
   createBackgroundTaskPolicyMiddleware,
   createConversationPullRequestHandler,
-  createGitHubPullRequestSource,
+  createPullRequestSource,
   createProxyAwareFetch,
   createPullRequestLookup,
+  createPullRequestLookupStore,
+  keyvRedisClient,
+  cacheConfig,
+  createPullRequestUserTokenFromEnv,
   createConversationPullRequestsHandler,
   backgroundTaskRegistry,
   createSubagentThreadViewHandler,
@@ -73,6 +80,10 @@ const assistantClients = {
 
 const router = express.Router();
 const archiveAllHandler = createArchiveAllHandler({ archiveAllConvos: db.archiveAllConvos });
+const archiveHandler = createArchiveHandler({
+  saveConvo: db.saveConvo,
+  getConvoRetention: db.getConvoRetention,
+});
 const subagentThreadViewHandler = createSubagentThreadViewHandler({
   getConvoOwnership: db.getConvoOwnership,
   getSubagentThreadForParent: db.getSubagentThreadForParent,
@@ -153,6 +164,22 @@ const subagentActivityStreamHandler = createSubagentActivityStreamHandler(
     subscribe: subagentThreadTaskStore.subscribeActivity.bind(subagentThreadTaskStore),
   },
 );
+const subagentTaskContentHandler = createSubagentTaskContentHandler(
+  {
+    getConvoOwnership: db.getConvoOwnership,
+    getSubagentThreadForParent: db.getSubagentThreadForParent,
+    getMessages: db.getMessages,
+    getSubagentContentHead: db.getSubagentContentHead,
+    streamSubagentContentBatches: db.streamSubagentContentBatches,
+  },
+  () => subagentThreadTaskStore.contentPageBytes,
+  () => subagentThreadTaskStore.contentRecoveryGraceMs,
+);
+const subagentControlReceiptHandler = createSubagentControlReceiptHandler({
+  getConvoOwnership: db.getConvoOwnership,
+  getSubagentThreadForParent: db.getSubagentThreadForParent,
+  getSubagentTaskControlReceipt: db.getSubagentTaskControlReceipt,
+});
 const subagentControlHandler = createSubagentControlHandler({
   getConvoOwnership: db.getConvoOwnership,
   getSubagentThreadForParent: db.getSubagentThreadForParent,
@@ -174,19 +201,27 @@ const backgroundTaskCancelHandler = createBackgroundTaskCancelHandler({
 });
 /** One lookup, so the header's single route and the sidebar's batch route share its cache. */
 const pullRequestLookup = createPullRequestLookup({
-  source: createGitHubPullRequestSource({ fetchFn: createProxyAwareFetch() }),
+  source: createPullRequestSource({ fetchFn: createProxyAwareFetch() }),
+  store: createPullRequestLookupStore({ client: keyvRedisClient, config: cacheConfig }),
+});
+const pullRequestUserToken = createPullRequestUserTokenFromEnv({
+  store: db,
+  fetchFn: createProxyAwareFetch(),
+  env: process.env,
 });
 const conversationPullRequestHandler = createConversationPullRequestHandler({
   getConvoLaneGit: db.getConvoLaneGit,
   getAppConfig,
   lookup: pullRequestLookup,
   env: process.env,
+  userToken: pullRequestUserToken,
 });
 const conversationPullRequestsHandler = createConversationPullRequestsHandler({
   getConvosLaneGit: db.getConvosLaneGit,
   getAppConfig,
   lookup: pullRequestLookup,
   env: process.env,
+  userToken: pullRequestUserToken,
 });
 router.use(requireJwtAuth);
 
@@ -247,8 +282,16 @@ router.get('/', async (req, res) => {
 });
 
 router.get(
+  '/:parentConversationId/subagents/:threadId/tasks/:taskId/content',
+  subagentTaskContentHandler,
+);
+router.get(
   '/:parentConversationId/subagents/:threadId/tasks/:taskId/activity',
   subagentActivityStreamHandler,
+);
+router.get(
+  '/:parentConversationId/subagents/:threadId/tasks/:taskId/controls/:invocationId',
+  subagentControlReceiptHandler,
 );
 router.post(
   '/:parentConversationId/subagents/:threadId/control',
@@ -632,54 +675,14 @@ router.delete('/all', configMiddleware, async (req, res) => {
 
 /**
  * Archives or unarchives a conversation.
+ * The config loads before the access check because that check reads the retention mode
+ * from it, and `saveConvo` applies the same mode to the chat it archives.
  * @route POST /archive
  * @param {string} req.body.arg.conversationId - The conversation ID to archive/unarchive.
  * @param {boolean} req.body.arg.isArchived - Whether to archive (true) or unarchive (false).
  * @returns {object} 200 - The updated conversation object.
  */
-router.post('/archive', validateConvoAccess, async (req, res) => {
-  const { conversationId, isArchived } = req.body?.arg ?? {};
-
-  if (!conversationId) {
-    return res.status(400).json({ error: 'conversationId is required' });
-  }
-
-  if (typeof isArchived !== 'boolean') {
-    return res.status(400).json({ error: 'isArchived must be a boolean' });
-  }
-
-  try {
-    const dbResponse = await db.saveConvo(
-      {
-        userId: req?.user?.id,
-        isTemporary: req?.resolvedConversation?.isTemporary,
-        expiredAt: req?.resolvedConversation?.expiredAt,
-        interfaceConfig: req?.config?.interfaceConfig,
-      },
-      { conversationId, isArchived },
-      {
-        context: `POST /api/convos/archive ${conversationId}`,
-        /** Filing a chat away is not activity: `updatedAt` stays the chat's own last
-         * activity so unarchiving restores it to its real place in the date groups.
-         * When it was archived is recorded separately, on `archivedAt`. */
-        preserveUpdatedAt: true,
-        /** Without timestamps, an upsert would insert a conversation that has none. */
-        noUpsert: true,
-        /** Metadata-only: skip rebuilding `messages` so a concurrent append is not erased. */
-        appendMessageIds: [],
-      },
-    );
-
-    if (!dbResponse) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    res.status(200).json(dbResponse);
-  } catch (error) {
-    logger.error('Error archiving conversation', error);
-    res.status(500).send('Error archiving conversation');
-  }
-});
+router.post('/archive', configMiddleware, validateConvoAccess, archiveHandler);
 
 /**
  * Archives every conversation currently visible to the user.
@@ -808,7 +811,8 @@ router.post(
 router.post('/fork', forkIpLimiter, forkUserLimiter, configMiddleware, async (req, res) => {
   try {
     /** @type {TForkConvoRequest} */
-    const { conversationId, messageId, option, splitAtTarget, latestMessageId } = req.body;
+    const { conversationId, messageId, option, splitAtTarget, latestMessageId, excludeFiles } =
+      req.body;
     const result = await forkConversation({
       requestUserId: req.user.id,
       originalConvoId: conversationId,
@@ -817,6 +821,7 @@ router.post('/fork', forkIpLimiter, forkUserLimiter, configMiddleware, async (re
       records: true,
       splitAtTarget,
       option,
+      excludeFiles: excludeFiles === true,
       interfaceConfig: req.config?.interfaceConfig,
       filters: req.config?.filters,
       ...(req.config?.messageFilter?.pii == null

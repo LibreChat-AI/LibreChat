@@ -42,7 +42,7 @@ function PullRequestChip({ conversationId }: { conversationId: string }) {
             aria-expanded={open}
             data-testid="header-pull-request-button"
             onFocus={() => hovercard.show()}
-            className="border-border-light bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary inline-flex h-9 max-w-[14rem] min-w-0 flex-shrink items-center gap-1.5 rounded-xl border px-2 text-sm transition-all ease-in-out"
+            className="border-border-light bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary inline-flex h-9 max-w-[14rem] min-w-0 flex-shrink items-center gap-1.75 rounded-xl border px-2 text-sm transition-all ease-in-out"
           >
             <span className="relative flex shrink-0 items-center">
               <PullRequestIcon icon={view.icon} tone={view.iconTone} className="size-4 shrink-0" />

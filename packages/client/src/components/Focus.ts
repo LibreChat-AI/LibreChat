@@ -1,5 +1,13 @@
 import { cva } from 'class-variance-authority';
 
+/**
+ * The global keyboard outline, as utilities: the `focus-outline` color at the `focusRingWidth` and
+ * `focusRingOffset` roles. A primitive that must name the outline itself, rather than inherit the
+ * unlayered `.dark :focus-visible` rule, composes this, and it paints what that rule paints.
+ */
+export const focusOutlineRole: string =
+  'focus-visible:outline-theme-focus focus-visible:outline-offset-theme-focus focus-visible:outline-focus-outline';
+
 export type FocusOutline = 'native' | 'hidden';
 
 /**

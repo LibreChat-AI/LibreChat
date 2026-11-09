@@ -69,7 +69,7 @@ const SaveAsPresetDialog = ({ open, onOpenChange, preset }: TEditPresetProps) =>
             className="flex w-full flex-col items-center gap-2"
           >
             <div className="grid w-full items-center gap-2">
-              <Label htmlFor={inputId} className="text-left text-sm font-medium">
+              <Label htmlFor={inputId} className="text-start text-sm font-medium">
                 {localize('com_endpoint_preset_name')}
               </Label>
               <Input
@@ -77,7 +77,7 @@ const SaveAsPresetDialog = ({ open, onOpenChange, preset }: TEditPresetProps) =>
                 value={title || ''}
                 onChange={(e) => setTitle(e.target.value || '')}
                 placeholder={localize('com_endpoint_preset_custom_name_placeholder')}
-                className="flex h-10 max-h-10 w-full resize-none rounded-theme-control border-border-medium px-3 py-2"
+                className="rounded-theme-control flex h-10 max-h-10 w-full resize-none"
               />
             </div>
           </form>

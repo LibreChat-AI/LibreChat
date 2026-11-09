@@ -2,10 +2,11 @@ import React from 'react';
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
-import InputWithDropdown from './InputWithDropDown';
+import { Table, TableBody, TableCell, TableRow } from './Table';
+import { Tabs, TabsList, TabsTrigger } from './Tabs';
 import { InputCombobox } from './InputCombobox';
 import { SecretInput } from './SecretInput';
-import MultiSearch from './MultiSearch';
+import Dropdown from './Dropdown';
 
 jest.mock('./MorphIcon', () => {
   const { createMorphIconMock } = jest.requireActual('../test/mockMorphIcon');
@@ -48,35 +49,6 @@ describe('shared control keyboard focus', () => {
     });
   });
 
-  it('rings the model search field in the focus role', async () => {
-    const user = userEvent.setup();
-    render(<MultiSearch value="" onChange={jest.fn()} />);
-
-    await user.tab();
-    const search = screen.getByRole('textbox', { name: 'Search Model' });
-    expect(search).toHaveFocus();
-    expect(search).toHaveClass('focus:ring-1', 'focus:ring-focus-control');
-  });
-
-  it('rings the dropdown toggle and its options in the focus role', async () => {
-    const user = userEvent.setup();
-    render(<InputWithDropdown aria-label="Stop word" options={['alpha', 'beta']} />);
-
-    await user.tab();
-    await user.tab();
-    const toggle = screen.getByRole('button', { name: 'Open dropdown' });
-    expect(toggle).toHaveFocus();
-    expect(toggle).toHaveClass('focus-visible:ring-1', 'focus-visible:ring-focus-control');
-
-    await user.keyboard('{Enter}');
-    expect(screen.getByRole('listbox')).toHaveClass('focus:ring-focus-control');
-
-    await user.tab();
-    const [first] = screen.getAllByRole('option');
-    expect(first).toHaveFocus();
-    expect(first).toHaveClass('focus:ring-1', 'focus:ring-focus-control');
-  });
-
   it('rings the combobox only while it holds keyboard focus', async () => {
     const user = userEvent.setup();
     render(
@@ -103,5 +75,46 @@ describe('shared control keyboard focus', () => {
 
     await user.tab();
     expect(ringHost).not.toHaveClass('ring-focus-control');
+  });
+
+  it('names the global outline on the tab triggers, table rows and dropdown trigger', () => {
+    const roleClasses = [
+      'focus-visible:outline-theme-focus',
+      'focus-visible:outline-offset-theme-focus',
+      'focus-visible:outline-focus-outline',
+    ];
+    render(
+      <>
+        <Tabs defaultValue="a">
+          <TabsList>
+            <TabsTrigger value="a">One</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <Table>
+          <TableBody>
+            <TableRow data-testid="row">
+              <TableCell>cell</TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+        <Dropdown
+          value="a"
+          onChange={jest.fn()}
+          options={['a', 'b']}
+          ariaLabel="Choice"
+          testId="choice"
+        />
+      </>,
+    );
+
+    [
+      screen.getByRole('tab', { name: 'One' }),
+      screen.getByTestId('row'),
+      screen.getByTestId('choice'),
+    ].forEach((node) => {
+      expect(node).toHaveClass(...roleClasses);
+      expect(node).not.toHaveClass('outline-hidden');
+      expect(node).not.toHaveClass('outline-none');
+    });
   });
 });

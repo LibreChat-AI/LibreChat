@@ -1,6 +1,6 @@
-const { logger } = require('@librechat/data-schemas');
 const { Tool } = require('@librechat/agents/langchain/tools');
 const { getEnvironmentVariable } = require('@librechat/agents/langchain/utils/env');
+const { ToolInputError, runToolRequest, toolRequestBudget } = require('@librechat/api');
 
 const traversaalSearchJsonSchema = {
   type: 'object',
@@ -23,6 +23,7 @@ class TraversaalSearch extends Tool {
   }
   constructor(fields) {
     super(fields);
+    this.timeouts = fields.timeouts;
     this.name = 'traversaal_search';
     this.description = `An AI search engine optimized for comprehensive, accurate, and trusted results.
     Useful for when you need to answer questions about current events. Input should be a search query.`;
@@ -51,46 +52,43 @@ class TraversaalSearch extends Tool {
     const body = {
       query: [query],
     };
-    try {
-      const response = await fetch('https://api-ares.traversaal.ai/live/predict', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': this.apiKey,
-        },
-        body: JSON.stringify({ ...body }),
-      });
-      const json = await response.json();
-      if (!response.ok) {
-        throw new Error(
-          `Request failed with status code ${response.status}: ${json.error ?? json.message}`,
-        );
-      }
-      if (!json.data) {
-        throw new Error('Could not parse Traversaal API results. Please try again.');
-      }
+    return runToolRequest({
+      service: 'Traversaal',
+      request: () =>
+        fetch('https://api-ares.traversaal.ai/live/predict', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': this.apiKey,
+          },
+          body: JSON.stringify({ ...body }),
+          signal: toolRequestBudget(this.timeouts).signal,
+        }),
+      read: async (response) => {
+        const json = await response.json();
+        if (!json.data) {
+          throw new ToolInputError('Could not parse Traversaal API results. Please try again.');
+        }
 
-      const baseText = json.data?.response_text ?? '';
-      const sources = json.data?.web_url;
-      const noResponse = 'No response found in Traversaal API results';
+        const baseText = json.data?.response_text ?? '';
+        const sources = json.data?.web_url;
+        const noResponse = 'No response found in Traversaal API results';
 
-      if (!baseText && !sources) {
-        return noResponse;
-      }
+        if (!baseText && !sources) {
+          return noResponse;
+        }
 
-      const sourcesText = sources?.length ? '\n\nSources:\n - ' + sources.join('\n - ') : '';
+        const sourcesText = sources?.length ? '\n\nSources:\n - ' + sources.join('\n - ') : '';
 
-      const result = baseText + sourcesText;
+        const result = baseText + sourcesText;
 
-      if (!result) {
-        return noResponse;
-      }
+        if (!result) {
+          return noResponse;
+        }
 
-      return result;
-    } catch (error) {
-      logger.error('Traversaal API request failed', error);
-      return `Traversaal API request failed: ${error.message}`;
-    }
+        return result;
+      },
+    });
   }
 }
 

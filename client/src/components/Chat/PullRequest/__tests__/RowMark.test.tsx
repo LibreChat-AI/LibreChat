@@ -2,7 +2,7 @@ import React from 'react';
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import type { TConversationPullRequest } from 'librechat-data-provider';
 import PullRequestRowMark from '../RowMark';
 
@@ -65,17 +65,23 @@ const movePointerOver = (element: HTMLElement) => {
   });
 };
 
-const renderMark = (props: Partial<React.ComponentProps<typeof PullRequestRowMark>> = {}) => {
+const renderMark = (
+  props: Partial<React.ComponentProps<typeof PullRequestRowMark>> = {},
+  withRow = false,
+) => {
+  const rowRef = React.createRef<HTMLDivElement>();
   const rowClick = jest.fn();
   const rowKey = jest.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
-      <div data-testid="row" onClick={rowClick} onKeyDown={rowKey}>
+      <div data-testid="row" ref={rowRef} onClick={rowClick} onKeyDown={rowKey}>
+        <span data-testid="row-title">{String(1)}</span>
         <PullRequestRowMark
           conversationId="convo-1"
           labelId="pr-label"
           selected={false}
+          rowRef={withRow ? rowRef : undefined}
           {...props}
         />
       </div>
@@ -116,18 +122,15 @@ describe('PullRequestRowMark', () => {
           results: [{ conversationId: 'convo-1', error: { code: 'RATE_LIMITED' } }],
         }),
     ],
-  ])('says the lookup failed, with a retry, when %s', async (_label, respond) => {
+  ])('stays quiet before a pull request is known when %s', async (_label, respond) => {
     mockGetMany.mockImplementationOnce(respond);
-    renderMark();
-    const failed = await screen.findByTestId('convo-pull-request-failed');
-    expect(failed).toHaveAccessibleName('com_ui_pr_load_failed');
-    expect(screen.queryByTestId('convo-pull-request')).toBeNull();
-    mockGetMany.mockResolvedValue(answer('convo-1', pr));
-    fireEvent.focus(failed);
-    const retry = await screen.findByRole('button', { name: 'com_ui_retry' });
-    fireEvent.click(retry);
-    expect(await screen.findByTestId('convo-pull-request')).toBeInTheDocument();
-    expect(mockGetMany).toHaveBeenCalledTimes(2);
+    const { client } = renderMark();
+    await waitFor(() =>
+      expect(client.getQueryState(['conversationPullRequest', 'convo-1'])?.status).toBe('error'),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId('convo-pull-request-failed')).not.toBeInTheDocument(),
+    );
   });
 
   it.each([
@@ -146,7 +149,7 @@ describe('PullRequestRowMark', () => {
     expect(container.querySelector('[data-testid="convo-pull-request-failed"]')).toBeNull();
   });
 
-  it('shows the failure when a refresh fails after an empty answer was cached', async () => {
+  it('stays quiet when a refresh fails after an empty answer was cached', async () => {
     jest.useFakeTimers();
     try {
       mockGetMany
@@ -158,7 +161,7 @@ describe('PullRequestRowMark', () => {
       await jest.advanceTimersByTimeAsync(61_000);
       window.dispatchEvent(new Event('focus'));
       await jest.advanceTimersByTimeAsync(100);
-      expect(screen.getByTestId('convo-pull-request-failed')).toBeInTheDocument();
+      expect(screen.queryByTestId('convo-pull-request-failed')).not.toBeInTheDocument();
     } finally {
       jest.useRealTimers();
     }
@@ -166,12 +169,26 @@ describe('PullRequestRowMark', () => {
 
   it('keeps its spacing on the rendered mark, so an absent mark takes no room', async () => {
     mockGetMany.mockResolvedValue(answer('convo-1', pr));
-    const first = renderMark();
-    expect(await screen.findByTestId('convo-pull-request')).toHaveClass('mr-1');
-    first.unmount();
-    mockGetMany.mockRejectedValueOnce(new Error('503'));
     renderMark();
-    expect(await screen.findByTestId('convo-pull-request-failed')).toHaveClass('mr-1');
+    expect(await screen.findByTestId('convo-pull-request')).toHaveClass('me-1');
+  });
+
+  it('keeps a known pull request and offers a retry when its refresh fails', async () => {
+    mockGetMany.mockResolvedValueOnce(answer('convo-1', pr));
+    const { client } = renderMark();
+    fireEvent.click(await screen.findByTestId('convo-pull-request'));
+    await screen.findByTestId('pull-request-card');
+    mockGetMany.mockRejectedValueOnce(new Error('503'));
+    await act(async () => {
+      await client.refetchQueries();
+    });
+    expect(await screen.findByText('com_ui_pr_refresh_failed')).toBeInTheDocument();
+    expect(screen.getByTestId('pull-request-card')).toHaveTextContent(pr.title);
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+    await waitFor(() =>
+      expect(screen.queryByText('com_ui_pr_refresh_failed')).not.toBeInTheDocument(),
+    );
   });
 
   it('falls back to the single route when the replica that answered has no batch route', async () => {
@@ -253,7 +270,7 @@ describe('PullRequestRowMark', () => {
     mockGetMany.mockResolvedValue(answer('convo-1', pr));
     renderMark({ selected: false });
     const dot = await screen.findByTestId('pull-request-ci-dot');
-    expect(dot).toHaveClass('bg-status-success', 'ring-surface-primary-alt');
+    expect(dot).toHaveClass('bg-status-success', 'ring-surface-sidebar');
     expect(screen.getByTestId('convo-pull-request').querySelector('svg')).toHaveClass(
       'text-status-success',
     );
@@ -309,12 +326,14 @@ describe('PullRequestRowMark', () => {
     expect(onDescribed).not.toHaveBeenCalledWith(true);
   });
 
-  it('reports a description for a failed lookup too, since it renders the failure text', async () => {
+  it('does not describe a pull request that has never been discovered', async () => {
     const onDescribed = jest.fn();
     mockGetMany.mockRejectedValueOnce(new Error('503'));
-    renderMark({ onDescribed });
-    await screen.findByTestId('convo-pull-request-failed');
-    expect(onDescribed).toHaveBeenLastCalledWith(true);
+    const { client } = renderMark({ onDescribed });
+    await waitFor(() =>
+      expect(client.getQueryState(['conversationPullRequest', 'convo-1'])?.status).toBe('error'),
+    );
+    expect(onDescribed).not.toHaveBeenCalledWith(true);
   });
 
   it('writes what the colors say into text the row can announce', async () => {
@@ -371,6 +390,171 @@ describe('PullRequestRowMark', () => {
     fireEvent.mouseLeave(mark);
     fireEvent.mouseMove(document.body, { screenX: 900, screenY: 900, movementX: 7, movementY: 7 });
     await waitFor(() => expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument());
+  });
+
+  it('opens the card when the pointer rests anywhere on the row, not only on the icon', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    movePointerOver(screen.getByTestId('row-title'));
+    movePointerOver(screen.getByTestId('row-title'));
+    expect(await screen.findByTestId('pull-request-card')).toHaveTextContent(pr.title);
+  });
+
+  it('does not open the card from the row when the row is not handed to the mark', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark();
+    await screen.findByTestId('convo-pull-request');
+    movePointerOver(screen.getByTestId('row-title'));
+    movePointerOver(screen.getByTestId('row-title'));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+  });
+
+  it('closes the card when the pointer leaves the row', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const title = screen.getByTestId('row-title');
+    movePointerOver(title);
+    movePointerOver(title);
+    await screen.findByTestId('pull-request-card');
+    fireEvent.mouseLeave(screen.getByTestId('row'));
+    fireEvent.mouseMove(document.body, { screenX: 900, screenY: 900, movementX: 7, movementY: 7 });
+    await waitFor(() => expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument());
+  });
+
+  it('opens the card from a single sampled move into the row', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    movePointerOver(screen.getByTestId('row-title'));
+    expect(await screen.findByTestId('pull-request-card')).toHaveTextContent(pr.title);
+  });
+
+  it('does not open the card when the row scrolls under a still pointer', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const title = screen.getByTestId('row-title');
+    /* The pointer rests at one spot; the list then scrolls the row under it. */
+    fireEvent.mouseMove(document.body, { screenX: 50, screenY: 50, movementX: 0, movementY: 0 });
+    fireEvent.mouseMove(title, { screenX: 50, screenY: 50, movementX: 0, movementY: 0 });
+    fireEvent.mouseMove(title, { screenX: 50, screenY: 50, movementX: 0, movementY: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+  });
+
+  it('does not open the card after the row is clicked before the hover delay ends', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const title = screen.getByTestId('row-title');
+    movePointerOver(title);
+    movePointerOver(title);
+    fireEvent.mouseDown(title);
+    fireEvent.mouseUp(title);
+    fireEvent.click(title);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+  });
+
+  it('does not open the card while the row is dragged with a button held', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const title = screen.getByTestId('row-title');
+    fireEvent.mouseDown(title, { buttons: 1 });
+    fireEvent.mouseMove(title, {
+      screenX: 300,
+      screenY: 300,
+      movementX: 3,
+      movementY: 3,
+      buttons: 1,
+    });
+    fireEvent.mouseMove(title, {
+      screenX: 303,
+      screenY: 303,
+      movementX: 3,
+      movementY: 3,
+      buttons: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+  });
+
+  it('does not open the card when the list scrolls before the hover delay ends', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const title = screen.getByTestId('row-title');
+    movePointerOver(title);
+    fireEvent.scroll(document.body);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+  });
+
+  it('closes a card the row opened once the list scrolls the row away', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    movePointerOver(screen.getByTestId('row-title'));
+    await screen.findByTestId('pull-request-card');
+    fireEvent.scroll(document.body);
+    await waitFor(() => expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument());
+  });
+
+  it('keeps the card open when a scroller that does not hold the row scrolls', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const messages = document.createElement('div');
+    document.body.appendChild(messages);
+    try {
+      movePointerOver(screen.getByTestId('row-title'));
+      await screen.findByTestId('pull-request-card');
+      fireEvent.scroll(messages);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(screen.getByTestId('pull-request-card')).toBeInTheDocument();
+    } finally {
+      messages.remove();
+    }
+  });
+
+  it('keeps the card open when its own content scrolls', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    movePointerOver(screen.getByTestId('row-title'));
+    const card = await screen.findByTestId('pull-request-card');
+    fireEvent.scroll(card);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.getByTestId('pull-request-card')).toBeInTheDocument();
+  });
+
+  it('returns focus to the icon when a card opened from the row is dismissed', async () => {
+    /* jsdom has no layout, and Ariakit only restores focus to an element it can see. */
+    const rects = jest
+      .spyOn(Element.prototype, 'getClientRects')
+      .mockReturnValue([new DOMRect(0, 0, 16, 16)] as unknown as DOMRectList);
+    try {
+      mockGetMany.mockResolvedValue(answer('convo-1', pr));
+      renderMark({}, true);
+      const mark = await screen.findByTestId('convo-pull-request');
+      const title = screen.getByTestId('row-title');
+      movePointerOver(title);
+      movePointerOver(title);
+      await screen.findByTestId('pull-request-card');
+      const link = screen.getByTestId('pull-request-github-link');
+      link.focus();
+      fireEvent.keyDown(link, { key: 'Escape' });
+      await waitFor(() =>
+        expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument(),
+      );
+      await waitFor(() => expect(mark).toHaveFocus());
+    } finally {
+      rects.mockRestore();
+    }
   });
 
   it('does not open the row when the card is clicked', async () => {

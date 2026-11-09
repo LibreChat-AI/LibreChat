@@ -1,9 +1,6 @@
 import { atom, PrimitiveAtom } from 'jotai';
 import { NotificationSeverity } from '~/common';
 
-export const chatDirectionAtom: PrimitiveAtom<string> & {
-  init: string;
-} = atom<string>('ltr');
 export const fontSizeAtom: PrimitiveAtom<string> & {
   init: string;
 } = atom<string>('text-base');

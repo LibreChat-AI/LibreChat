@@ -6,9 +6,12 @@ on:
       - 'e2e/client-build.test.mjs'
       - 'client/**'
       - 'packages/client/**'
+      - 'packages/chat/**'
       - 'packages/data-provider/**'
+      - 'scripts/typecheck.mts'
       - 'package.json'
       - 'package-lock.json'
+      - '.bun-version'
       - '.github/workflows/frontend-review.yml'
       - '!**.md'
   # Post-merge safety net and full-run baseline for gated selection (same rationale as
@@ -20,9 +23,12 @@ on:
       - 'e2e/client-build.test.mjs'
       - 'client/**'
       - 'packages/client/**'
+      - 'packages/chat/**'
       - 'packages/data-provider/**'
+      - 'scripts/typecheck.mts'
       - 'package.json'
       - 'package-lock.json'
+      - '.bun-version'
       - '.github/workflows/frontend-review.yml'
   # Promotion requires full CI at the exact dev SHA, including path-filtered commits.
   workflow_dispatch:
@@ -52,9 +58,44 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
           cache: npm
-      - run: npm ci
+      # The full workspace tree, under the E2E workflows' exact key and path
+      # list. This job also runs on dev pushes, so it seeds the dev-scoped
+      # entry that every pull request against dev can restore.
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        id: install-dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Save node_modules cache
+        if: steps.install-dependencies.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
       - run: google-chrome --version
       - run: npm run test:client-build
         env:
@@ -166,10 +207,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.16.0
+      - name: Use Node.js 24.22.1
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -179,8 +220,9 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -208,6 +250,11 @@ jobs:
         if: steps.cache-client-package.outputs.cache-hit != 'true'
         run: npm run build:client-package
 
+      # About a second, so it is not cached. The client imports the package's built entries, so
+      # the type check, unit tests and Vite build below download this output.
+      - name: Build chat package
+        run: npm run build:chat
+
       - name: Upload data-provider build
         uses: actions/upload-artifact@v6
         with:
@@ -222,6 +269,13 @@ jobs:
           path: packages/client/dist
           retention-days: 2
 
+      - name: Upload chat-package build
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-chat-package
+          path: packages/chat/dist
+          retention-days: 2
+
   typecheck:
     name: TypeScript type checks (client)
     needs: build
@@ -230,10 +284,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.16.0
+      - name: Use Node.js 24.22.1
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -243,8 +297,9 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -262,9 +317,75 @@ jobs:
           name: build-client-package
           path: packages/client/dist
 
+      - name: Download chat-package build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-chat-package
+          path: packages/chat/dist
+
+      - name: Use pinned Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
       - name: Type check client
         run: npm run typecheck
         working-directory: client
+
+  test-packages-chat:
+    name: 'Tests: @librechat/chat'
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js 24.22.1
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Download data-provider build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-data-provider
+          path: packages/data-provider/dist
+
+      - name: Download client-package build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-client-package
+          path: packages/client/dist
+
+      - name: Use pinned Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Type check
+        run: npm run typecheck
+        working-directory: packages/chat
+
+      - name: Run unit tests
+        run: npm run test:ci
+        working-directory: packages/chat
 
   test-packages-client:
     name: 'Tests: @librechat/client'
@@ -277,10 +398,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.16.0
+      - name: Use Node.js 24.22.1
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -290,8 +411,9 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -359,10 +481,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.16.0
+      - name: Use Node.js 24.22.1
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -372,8 +494,9 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -390,6 +513,12 @@ jobs:
         with:
           name: build-client-package
           path: packages/client/dist
+
+      - name: Download chat-package build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-chat-package
+          path: packages/chat/dist
 
       - name: Run unit tests (shard ${{ matrix.shard }}/2)
         env:
@@ -435,10 +564,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.16.0
+      - name: Use Node.js 24.22.1
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -448,8 +577,9 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -466,6 +596,12 @@ jobs:
         with:
           name: build-client-package
           path: packages/client/dist
+
+      - name: Download chat-package build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-chat-package
+          path: packages/chat/dist
 
       - name: Build client
         run: cd client && npm run build:ci

@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
+import { ChatSurfaceProvider } from '@librechat/chat/react';
 import { useRecoilCallback, useRecoilValue, useResetRecoilState, useSetRecoilState } from 'recoil';
+import type { ChatSurface } from '@librechat/chat/react';
 import type { ReactNode } from 'react';
-import type { ChatSurface } from '~/components/Chat/Subagents/surface';
-import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
 import useComposerBindings from '~/hooks/Input/useComposerBindings';
 import store from '~/store';
 

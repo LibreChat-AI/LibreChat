@@ -1,15 +1,21 @@
 const express = require('express');
 const { updateUserKey, deleteUserKey, getUserKeyExpiry } = require('~/models');
-const { requireJwtAuth } = require('~/server/middleware');
+const { configMiddleware, requireJwtAuth } = require('~/server/middleware');
 
 const router = express.Router();
 
-router.put('/', requireJwtAuth, async (req, res) => {
+router.put('/', requireJwtAuth, configMiddleware, async (req, res) => {
   if (req.body == null || typeof req.body !== 'object') {
     return res.status(400).send({ error: 'Invalid request body.' });
   }
   const { name, value, expiresAt } = req.body;
-  await updateUserKey({ userId: req.user.id, name, value, expiresAt });
+  await updateUserKey({
+    userId: req.user.id,
+    name,
+    value,
+    expiresAt,
+    writeFormat: req.config?.credentials?.writeFormat,
+  });
   res.status(201).send();
 });
 

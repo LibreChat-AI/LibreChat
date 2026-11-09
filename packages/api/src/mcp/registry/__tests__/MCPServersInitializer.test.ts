@@ -534,6 +534,31 @@ describe('MCPServersInitializer', () => {
     });
   });
 
+  describe('librechat.yaml snapshot', () => {
+    it('records which servers a principal can hide before inspecting them', async () => {
+      await MCPServersInitializer.initialize(testConfigs);
+
+      expect([...registry.getHiddenServerNames({})].sort()).toEqual([
+        'oauth_server',
+        'remote_no_oauth_server',
+      ]);
+    });
+
+    it('records the snapshot on a follower that reuses the shared YAML cache', async () => {
+      await MCPServersInitializer.initialize(testConfigs);
+      (MCPServersRegistry as unknown as { instance: undefined }).instance = undefined;
+      const follower = MCPServersRegistry.createInstance(mockMongoose);
+      jest.clearAllMocks();
+
+      await MCPServersInitializer.initialize(testConfigs);
+
+      expect(mockInspect).not.toHaveBeenCalled();
+      expect(follower.getHiddenServerNames({ oauth_server: testConfigs.oauth_server })).toEqual(
+        new Set(['remote_no_oauth_server']),
+      );
+    });
+  });
+
   describe('OBO initialization without browser token reuse', () => {
     const oboConfigs: t.MCPServers = {
       obo_server: {

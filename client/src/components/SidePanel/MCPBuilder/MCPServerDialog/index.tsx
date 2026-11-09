@@ -169,7 +169,6 @@ export default function MCPServerDialog({
                     showToast({ message: localize('com_ui_copied_to_clipboard') });
                   }}
                   disabled={isCopying || !redirectUri}
-                  className="p-0"
                   aria-label={localize('com_ui_copy_link')}
                 >
                   <MorphIcon icon={isCopying ? CopyCheck : Copy} className="size-4" />

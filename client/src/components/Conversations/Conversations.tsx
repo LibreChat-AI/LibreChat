@@ -541,8 +541,12 @@ const Conversations: FC<ConversationsProps> = ({
 
       if (item.type === 'convo') {
         const isGenerating = activeJobIds.has(item.convo.conversationId ?? '');
+        /** Keyed by chat, not by the row index react-virtualized passes: an index key
+         *  keeps a row's local state (an open delete dialog, a rename field) in its slot
+         *  while a different chat moves into it. */
+        const convoKey = item.convo.conversationId ? `convo-${item.convo.conversationId}` : key;
         return (
-          <MeasuredRow key={key} {...rowProps}>
+          <MeasuredRow key={convoKey} {...rowProps} rowKey={convoKey}>
             <Convo
               conversation={item.convo}
               retainView={moveToTop}

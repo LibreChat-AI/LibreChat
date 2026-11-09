@@ -3,7 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   CacheKeys,
   AUTH_USER_DOC_BY_ID_PREFIX,
-  AUTH_USER_DOC_CACHE_TTL_MS,
+  AUTH_USER_DOC_MAX_AGE_MS,
 } from 'librechat-data-provider';
 import type * as t from '~/types';
 import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
@@ -648,6 +648,7 @@ describe('User Methods - Database Tests', () => {
       });
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${user._id?.toString()}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a', 'auth-cache-key-b']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -716,7 +717,7 @@ describe('User Methods - Database Tests', () => {
         await methodsWithCache.awaitAuthUserDocEviction(userId);
 
         expect(delay).toHaveBeenCalledTimes(1);
-        expect(delay.mock.calls[0][0]).toBeGreaterThan(AUTH_USER_DOC_CACHE_TTL_MS);
+        expect(delay.mock.calls[0][0]).toBeGreaterThan(AUTH_USER_DOC_MAX_AGE_MS);
         expect(cache.delete).not.toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`);
         if (!failing.indexRead) {
           expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
@@ -787,6 +788,7 @@ describe('User Methods - Database Tests', () => {
       });
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${user._id?.toString()}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -902,6 +904,7 @@ describe('User Methods - Database Tests', () => {
       const userId = user._id?.toString() ?? '';
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -924,6 +927,7 @@ describe('User Methods - Database Tests', () => {
         samlId: 'original-saml-id',
       });
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn(),
         delete: jest.fn(),
       };
@@ -1212,6 +1216,7 @@ describe('User Methods - Database Tests', () => {
       enableAuthUserDocCache();
       const { id, pendingBackupCodes } = await createEnrollingUser('cached-2fa@example.com');
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['cached-auth-document']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -1233,6 +1238,7 @@ describe('User Methods - Database Tests', () => {
       enableAuthUserDocCache();
       const { id } = await createEnrollingUser('cached-2fa-miss@example.com');
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['cached-auth-document']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -1286,6 +1292,80 @@ describe('User Methods - Database Tests', () => {
       const found = await methods.getUserById(fakeId.toString());
 
       expect(found).toBeNull();
+    });
+  });
+
+  describe('resetTermsAcceptance', () => {
+    it('withdraws every acceptance, clears the source, and evicts cached auth documents', async () => {
+      enableAuthUserDocCache();
+      const accepted = await User.create({
+        name: 'Accepted',
+        email: 'accepted-reset@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: new Date(),
+        termsAcceptedSource: 'migration',
+      });
+      const cache = {
+        get: jest.fn().mockResolvedValue(['cached-accepted']),
+        set: jest.fn().mockResolvedValue(true),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const delay = jest.fn().mockResolvedValue(undefined);
+      const cached = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+      const { modifiedCount } = await cached.resetTermsAcceptance();
+
+      const stored = await User.findById(accepted._id).lean();
+      expect(modifiedCount).toBeGreaterThanOrEqual(1);
+      expect(stored?.termsAccepted).toBe(false);
+      expect(stored?.termsAcceptedAt).toBeNull();
+      expect(stored?.termsAcceptedSource).toBeUndefined();
+      expect(cache.delete).toHaveBeenCalledWith('cached-accepted');
+      expect(delay).not.toHaveBeenCalled();
+    });
+
+    it('waits for cached auth documents to expire when an eviction fails', async () => {
+      enableAuthUserDocCache();
+      await User.create({
+        name: 'Unevictable',
+        email: 'unevictable-reset@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: new Date(),
+      });
+      const cache = {
+        get: jest.fn().mockResolvedValue(['cached-accepted']),
+        set: jest.fn().mockResolvedValue(true),
+        delete: jest.fn().mockRejectedValue(new Error('redis unavailable')),
+      };
+      const delay = jest.fn().mockResolvedValue(undefined);
+      const cached = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+      await cached.resetTermsAcceptance();
+
+      expect(delay).toHaveBeenCalledWith(AUTH_USER_DOC_MAX_AGE_MS + 100);
+    });
+
+    it('does not wait when the auth user cache is off', async () => {
+      await User.create({
+        name: 'Cache Off',
+        email: 'cache-off-reset@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: new Date(),
+      });
+      const cache = {
+        get: jest.fn().mockResolvedValue(null),
+        set: jest.fn().mockResolvedValue(true),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const delay = jest.fn().mockResolvedValue(undefined);
+      const off = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+      await off.resetTermsAcceptance();
+
+      expect(delay).not.toHaveBeenCalled();
     });
   });
 
@@ -1367,6 +1447,33 @@ describe('User Methods - Database Tests', () => {
       );
     });
 
+    test('keeps the backfill marker only while the backfilled timestamp stands', async () => {
+      const backfilledAt = new Date('2023-01-01T00:00:00.000Z');
+      const user = await User.create({
+        name: 'Backfilled User',
+        email: 'backfilled-terms@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: backfilledAt,
+        termsAcceptedSource: 'migration',
+      });
+      const userId = user._id?.toString() ?? '';
+
+      const repeat = await methods.acceptTerms(userId);
+      expect((repeat?.termsAcceptedAt as Date).getTime()).toBe(backfilledAt.getTime());
+      expect(repeat?.termsAcceptedSource).toBe('migration');
+
+      await User.updateOne(
+        { _id: userId },
+        { $set: { termsAccepted: false, termsAcceptedAt: null } },
+      );
+      const reaccepted = await methods.acceptTerms(userId);
+
+      expect(reaccepted?.termsAcceptedAt).toBeInstanceOf(Date);
+      expect((reaccepted?.termsAcceptedAt as Date).getTime()).not.toBe(backfilledAt.getTime());
+      expect(reaccepted?.termsAcceptedSource).toBeUndefined();
+    });
+
     test('stamps termsAcceptedAt for a legacy document missing the field entirely', async () => {
       const legacyId = new mongoose.Types.ObjectId();
       await User.collection.insertOne({
@@ -1413,6 +1520,7 @@ describe('User Methods - Database Tests', () => {
       });
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${user._id?.toString()}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -1656,6 +1764,7 @@ describe('User Methods - Database Tests', () => {
       );
 
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -1763,6 +1872,35 @@ describe('User Methods - Database Tests', () => {
       expect(results.length).toBeGreaterThan(0);
     });
 
+    test('should rank an accent-folded exact match above a prefix match', async () => {
+      await User.create([
+        { name: 'Zoe Adams', email: 'zadams@test.com', username: 'zadams', provider: 'local' },
+        { name: 'Zoë', email: 'zoe-umlaut@test.com', username: 'zumlaut', provider: 'local' },
+      ]);
+
+      const results = await methods.searchUsers({ searchPattern: 'zoe', limit: 1 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).name).toBe('Zoë');
+    });
+
+    test('should rank a reordered full-name match above a longer prefix match', async () => {
+      await User.create([
+        {
+          name: 'Smith Johnson',
+          email: 'sjohnson@test.com',
+          username: 'sjohnson',
+          provider: 'local',
+        },
+        { name: 'John Smith', email: 'jsmith@test.com', username: 'jsmith', provider: 'local' },
+      ]);
+
+      const results = await methods.searchUsers({ searchPattern: 'smith john', limit: 1 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).name).toBe('John Smith');
+    });
+
     test('should respect limit', async () => {
       const results = await methods.searchUsers({ searchPattern: 'example', limit: 2 });
 
@@ -1790,9 +1928,11 @@ describe('User Methods - Database Tests', () => {
       });
 
       const results = await methods.searchUsers({ searchPattern: '.*' });
+      expect(results).toEqual([]);
 
-      expect(results).toHaveLength(1);
-      expect((results[0] as unknown as t.IUser).name).toBe('Literal .* User');
+      const literal = await methods.searchUsers({ searchPattern: 'literal' });
+      expect(literal).toHaveLength(1);
+      expect((literal[0] as unknown as t.IUser).name).toBe('Literal .* User');
     });
 
     test('should handle invalid regex syntax as literal search text', async () => {
@@ -1826,6 +1966,48 @@ describe('User Methods - Database Tests', () => {
 
       /** 'alice' username should score highest due to exact match */
       expect((results[0] as unknown as t.IUser).username).toBe('alice');
+    });
+  });
+
+  describe('updateUserPlugins', () => {
+    test('keeps concurrent installs made from the same stale snapshot', async () => {
+      const user = await User.create({
+        name: 'Test User',
+        email: 'test@example.com',
+        provider: 'local',
+        plugins: ['existing'],
+      });
+      const userId = user._id?.toString() ?? '';
+      const staleSnapshot = ['existing'];
+
+      await Promise.all([
+        methods.updateUserPlugins(userId, staleSnapshot, 'alpha', 'install'),
+        methods.updateUserPlugins(userId, staleSnapshot, 'beta', 'install'),
+        methods.updateUserPlugins(userId, staleSnapshot, 'alpha', 'install'),
+      ]);
+
+      const stored = await User.findById(userId).lean();
+      expect([...(stored?.plugins ?? [])].sort()).toEqual(['alpha', 'beta', 'existing']);
+    });
+
+    test('uninstall removes only the target plugin, ignoring the stale snapshot', async () => {
+      const user = await User.create({
+        name: 'Test User',
+        email: 'test@example.com',
+        provider: 'local',
+        plugins: ['alpha', 'beta', 'gamma'],
+      });
+      const userId = user._id?.toString() ?? '';
+
+      const updated = await methods.updateUserPlugins(userId, ['alpha'], 'alpha', 'uninstall');
+
+      expect(updated?.plugins).toEqual(['beta', 'gamma']);
+    });
+
+    test('returns null for an unknown user', async () => {
+      const fakeId = new mongoose.Types.ObjectId().toString();
+      const result = await methods.updateUserPlugins(fakeId, [], 'alpha', 'install');
+      expect(result).toBeNull();
     });
   });
 
@@ -1944,6 +2126,7 @@ describe('User Methods - Database Tests', () => {
       const userId = user._id?.toString() ?? '';
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };

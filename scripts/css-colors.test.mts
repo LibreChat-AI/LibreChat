@@ -17,14 +17,13 @@ test('reports hex, numeric colour functions and named colours in values', () => 
   assert.deepEqual(literals(css), ['#0066cc', 'rgba(0', 'hsl(1', 'white', '#FFF']);
 });
 
-test('accepts theme variables, channel triplets, comments, urls and selectors', () => {
+test('accepts theme variables, comments, urls and selectors', () => {
   const css = [
     '/* was #0066cc and rgba(0, 0, 0, 0.1) */',
     '#fade, #root { color: rgb(var(--text-primary)); }',
     'a {',
     '  background: rgb(var(--black) / 0.1);',
     '  box-shadow: 0 1px 2px rgb(var(--slate-ink) / 0.3);',
-    '  --text-muted: 105 110 121;',
     '  --on-white: var(--white);',
     '  border-color: theme(colors.gray.200);',
     "  background-image: url('sprite.svg#fff');",
@@ -154,4 +153,137 @@ test('reads fixed channels in relative colours but not pure relative forms', () 
 test('reads numeric fallbacks inside a colour function var()', () => {
   assert.equal(literals('a { color: rgb(var(--brand, 255 0 0)); }').length, 1);
   assert.deepEqual(literals('a { color: rgb(var(--c) / var(--a, 1)); }'), []);
+});
+
+test('reads fixed channels in color(from) and every colour channel of a relative function', () => {
+  assert.equal(literals('a { color: color(from var(--base) srgb r g 0); }').length, 1);
+  assert.equal(literals('a { color: rgb(from var(--base) r 128 b); }').length, 1);
+  assert.equal(literals('a { color: hsl(from var(--base) h none l); }').length, 1);
+  assert.equal(literals('a { color: rgb(from var(--base) r g calc(255)); }').length, 1);
+  assert.deepEqual(literals('a { color: color(from var(--base) srgb r g b / 0.5); }'), []);
+  assert.deepEqual(literals('a { color: rgb(from var(--base) calc(r + 10) g b / 0.5); }'), []);
+});
+
+test('reads a channel triplet in a custom property', () => {
+  assert.deepEqual(literals('a { --x: 255 0 0; }'), ['255 0 0']);
+  assert.deepEqual(literals('a { --x: 0.5 0.2 1 / 0.4; }'), ['0.5 0.2 1 / 0.4']);
+  assert.deepEqual(literals('a { --x: var(--a); --y: 1 2; --z: 0.5; }'), []);
+  assert.deepEqual(literals('a { margin: 1 2 3; }'), []);
+});
+
+test('reads math function channels in a custom property triplet', () => {
+  assert.deepEqual(literals('a { --brand: calc(255) 0 0; }'), ['calc(255) 0 0']);
+  assert.deepEqual(literals('a { --brand: 255 MIN(100, 50 * 2) clamp(0, (1 + 2) * 3, 9); }'), [
+    '255 MIN(100, 50 * 2) clamp(0, (1 + 2) * 3, 9)',
+  ]);
+  assert.deepEqual(literals('a { --brand: calc(100% - 10%), 0%, 0% / calc(0.5); }'), [
+    'calc(100% - 10%), 0%, 0% / calc(0.5)',
+  ]);
+  assert.deepEqual(literals('a { --brand: var(--configured, calc(255) 0 0); }'), [
+    'var(--configured, calc(255) 0 0)',
+  ]);
+  assert.deepEqual(literals('a { --brand: calc(min(100, max(0, 255))) 0 0; }'), [
+    'calc(min(100, max(0, 255))) 0 0',
+  ]);
+  assert.deepEqual(literals('a { color: rgb(from var(--base, calc(255) 0 0) r g b); }'), [
+    'rgb(from var(--base, calc(255) 0 0)',
+  ]);
+  assert.deepEqual(literals('a { --brand: calc(1e2) calc(pi * 10) 2.5E1; }'), [
+    'calc(1e2) calc(pi * 10) 2.5E1',
+  ]);
+  assert.deepEqual(literals('a { --brand: calc(min(var(--r), max(0, 255))) 0 0; }'), []);
+  assert.deepEqual(literals('a { --brand: round(down, 255) round(to-zero, 2.5, 1) 0; }'), [
+    'round(down, 255) round(to-zero, 2.5, 1) 0',
+  ]);
+  assert.deepEqual(literals('a { color: rgb(from var(--base) calc(255) 0 0); }'), [
+    'rgb(from var(--base) calc(255)',
+  ]);
+  assert.deepEqual(literals('a { --size: calc(1em + 1in) 0 0; }'), []);
+  assert.deepEqual(literals('a { --brand: calc(var(--r)) 0 0; }'), []);
+  assert.deepEqual(literals('a { --brand: calc(var(--r) * 2) 0 0; }'), []);
+  assert.deepEqual(
+    literals('a { --offset: calc(1px + 2px) 0 0; --size: max(1rem, 2vw) 0 0; }'),
+    [],
+  );
+});
+
+test('reads angle channels in a custom property triplet', () => {
+  assert.deepEqual(literals('a { --brand: sin(90deg) 0 0; }'), ['sin(90deg) 0 0']);
+  assert.deepEqual(literals('a { --h: 90deg 50% 50%; }'), ['90deg 50% 50%']);
+  assert.deepEqual(literals('a { --h: 0.25turn 50% 50%; }'), ['0.25turn 50% 50%']);
+  assert.deepEqual(literals('a { --h: calc(45deg * 2) 50% 50%; }'), ['calc(45deg * 2) 50% 50%']);
+  assert.deepEqual(literals('a { --h: 120 50% cos(1rad); }'), ['120 50% cos(1rad)']);
+  assert.deepEqual(literals('a { --h: sin(calc(90deg)) 0 0; }'), ['sin(calc(90deg)) 0 0']);
+  assert.deepEqual(literals('a { --size: calc(1px + 2px) 0 0; }'), []);
+  assert.deepEqual(literals('a { --size: calc(1deg + 2px) 0 0; }'), []);
+  assert.deepEqual(literals('a { --h: sin(var(--angle)) 0 0; }'), []);
+  assert.deepEqual(literals('a { --h: 0 90deg 0; }'), []);
+});
+
+test('reads rounding and other math functions over angles in a hue triplet', () => {
+  assert.deepEqual(literals('a { --h: round(to-zero, 90deg, 1deg) 50% 50%; }'), [
+    'round(to-zero, 90deg, 1deg) 50% 50%',
+  ]);
+  assert.deepEqual(literals('a { --h: round(up, 90.5deg) 50% 50%; }'), [
+    'round(up, 90.5deg) 50% 50%',
+  ]);
+  assert.deepEqual(literals('a { --h: mod(400deg, 360deg) 50% 50%; }'), [
+    'mod(400deg, 360deg) 50% 50%',
+  ]);
+  assert.deepEqual(literals('a { --h: atan2(1, 1) 50% 50%; }'), ['atan2(1, 1) 50% 50%']);
+  assert.deepEqual(literals('a { --h: calc(pi * 1rad) 50% 50%; }'), ['calc(pi * 1rad) 50% 50%']);
+  assert.deepEqual(literals('a { --h: round(future-strategy, 90deg) 50% 50%; }'), [
+    'round(future-strategy, 90deg) 50% 50%',
+  ]);
+  assert.deepEqual(literals('a { --h: round(to-zero, 90px, 1px) 50% 50%; }'), []);
+  assert.deepEqual(literals('a { --h: round(to-zero, var(--angle), 1deg) 50% 50%; }'), []);
+  assert.deepEqual(literals('a { --h: env(hue, 90deg) 50% 50%; }'), []);
+  assert.deepEqual(literals('a { --h: atan2(1px, 1px) 50% 50%; }'), ['atan2(1px, 1px) 50% 50%']);
+  assert.deepEqual(literals('a { --brand: 255 sign(90deg) 0; }'), ['255 sign(90deg) 0']);
+  assert.deepEqual(literals('a { --brand: 255 sign(-4px) 0; }'), ['255 sign(-4px) 0']);
+  assert.deepEqual(literals('a { --h: calc(90deg + 1px) 50% 50%; }'), []);
+  assert.deepEqual(literals('a { --orientation: 0 calc(90deg) 0; }'), []);
+  assert.deepEqual(literals('a { --orientation: 0 round(to-zero, 90deg, 1deg) 0; }'), []);
+  assert.deepEqual(literals('a { --orientation: 0 0 atan(1); }'), []);
+  assert.deepEqual(literals('a { --h: calc(90deg) 50% 50%; }'), ['calc(90deg) 50% 50%']);
+  assert.deepEqual(literals('a { --h: atan2(calc(1px + 1px), 1px) 50% 50%; }'), [
+    'atan2(calc(1px + 1px), 1px) 50% 50%',
+  ]);
+  assert.deepEqual(literals('a { --brand: 255 sign(calc(-4px)) 0; }'), ['255 sign(calc(-4px)) 0']);
+  assert.deepEqual(literals('a { --size: max(calc(1px + 1px), 2px) 0 0; }'), []);
+});
+
+test('a token source exempts its custom properties only', () => {
+  const css = ':root { --x: 255 0 0; --y: #fff; }\na { color: #fff; width: calc(1 * 2); }';
+  assert.deepEqual(findCssColorLiterals(css, [], true), [{ line: 2, literal: '#fff' }]);
+});
+
+test('reads literal origins and fallbacks of a relative colour', () => {
+  assert.deepEqual(literals('a { color: rgb(from #ff0000 r g b); }'), ['#ff0000']);
+  assert.deepEqual(literals('a { color: color(from #fff srgb r g b); }'), ['#fff']);
+  assert.deepEqual(literals('a { color: rgb(from var(--base, #fff) r g b); }'), ['#fff']);
+  assert.deepEqual(literals('a { color: rgb(from var(--base) r g b); }'), []);
+  assert.deepEqual(literals('a { color: rgb(from var(--base) r g var(--channel, 255)); }'), [
+    'rgb(from var(--base) r g var(--channel, 255)',
+  ]);
+  assert.deepEqual(literals('a { color: rgb(from var(--base) r g var(--channel)); }'), []);
+  assert.deepEqual(literals('a { color: rgb(from var(--base, 255 0 0) r g b); }'), [
+    'rgb(from var(--base, 255 0 0)',
+  ]);
+  assert.deepEqual(literals('a { color: rgb(from var(--base) r g var(--channel, none)); }'), [
+    'rgb(from var(--base) r g var(--channel, none)',
+  ]);
+  assert.deepEqual(literals('a { --brand: 255 0 0 / var(--alpha); }'), ['255 0 0 / var(--alpha)']);
+});
+
+test('reads percentage channels and triplets inside a var() fallback', () => {
+  assert.deepEqual(literals('a { --brand: 100% 0% 0%; }'), ['100% 0% 0%']);
+  assert.deepEqual(literals('a { --brand: var(--configured, 255 0 0); }'), [
+    'var(--configured, 255 0 0)',
+  ]);
+  assert.deepEqual(literals('a { --brand: 255, 0, 0; }'), ['255, 0, 0']);
+  assert.deepEqual(literals('a { --brand: VAR(--configured, 255 0 0); }'), [
+    'VAR(--configured, 255 0 0)',
+  ]);
+  assert.deepEqual(literals('a { --offset: 0 1px 2px; --size: 1.5rem 2rem 3rem; }'), []);
 });

@@ -59,9 +59,13 @@ const markConvoSeenHandler = jest.fn();
 const markConvoUnreadHandler = jest.fn();
 const renameConversationHandler = jest.fn((_req, res) => res.status(204).end());
 const renameHandlerInputs = [];
+const archiveConversationHandler = jest.fn((_req, res) => res.status(200).json({}));
+const archiveHandlerInputs = [];
 
 module.exports = {
   archiveAllHandler,
+  archiveConversationHandler,
+  archiveHandlerInputs,
   ownerPrefix,
   generationJobManager,
   subagentActivityHandlerInputs,
@@ -84,6 +88,10 @@ module.exports = {
     createRenameConversationHandler: jest.fn((deps) => {
       renameHandlerInputs.push(deps);
       return renameConversationHandler;
+    }),
+    createArchiveHandler: jest.fn((deps) => {
+      archiveHandlerInputs.push(deps);
+      return archiveConversationHandler;
     }),
     /** Mirrors the real helper so query-flag parsing (`isArchived`, `pinned`) is exercised. */
     isEnabled: jest.fn((value) => {
@@ -142,14 +150,18 @@ module.exports = {
       return archiveAllHandler;
     }),
     createSubagentThreadViewHandler: jest.fn(() => (_req, res) => res.status(200).json({})),
+    createSubagentTaskContentHandler: jest.fn(() => (_req, res) => res.status(200).json({})),
     createSubagentControlHandler: jest.fn(() => (_req, res) => res.status(200).json({})),
+    createSubagentControlReceiptHandler: () => jest.fn(),
     createBackgroundTaskIndexHandler: jest.fn(
       () => (_req, res) => res.status(200).json({ tasks: [] }),
     ),
     createBackgroundTaskPolicyMiddleware: jest.fn(() => (_req, _res, next) => next()),
-    createGitHubPullRequestSource: jest.fn(() => ({ find: jest.fn() })),
+    createPullRequestSource: jest.fn(() => ({ find: jest.fn() })),
     createProxyAwareFetch: jest.fn(() => jest.fn()),
     createPullRequestLookup: jest.fn(() => jest.fn()),
+    createPullRequestLookupStore: jest.fn(() => undefined),
+    createPullRequestUserTokenFromEnv: jest.fn(() => undefined),
     createConversationPullRequestsHandler: jest.fn(() => jest.fn()),
     createConversationPullRequestHandler: jest.fn(
       () => (_req, res) => res.status(200).json({ pullRequest: null }),
@@ -272,6 +284,7 @@ module.exports = {
     deleteMessages: jest.fn().mockResolvedValue({ deletedCount: 0 }),
     archiveAllConvos: jest.fn(),
     saveConvo: jest.fn(),
+    getConvoRetention: jest.fn(),
     setConvoPinned: jest.fn(),
     markConvoSeen: jest.fn(),
     markConvoUnread: jest.fn(),
@@ -291,11 +304,11 @@ module.exports = {
       forkIpLimiter: (req, res, next) => next(),
       forkUserLimiter: (req, res, next) => next(),
     })),
-    configMiddleware: (req, res, next) => next(),
+    configMiddleware: jest.fn((req, res, next) => next()),
     moderateText,
     messageIpLimiter,
     messageUserLimiter,
-    validateConvoAccess: (req, res, next) => next(),
+    validateConvoAccess: jest.fn((req, res, next) => next()),
   }),
 
   forkUtils: () => ({

@@ -150,3 +150,12 @@ describe('specDisplayFieldReset', () => {
     expect(Object.keys(specDisplayFieldReset)).toHaveLength(4);
   });
 });
+
+it('does not carry a spec model into a different endpoint awaiting its own discovery', () => {
+  const merged = mergeQuerySettingsWithSpec(
+    { endpoint: EModelEndpoint.openAI, model: 'old-model', agent_id: 'agent_old' },
+    { endpoint: EModelEndpoint.anthropic },
+  );
+  expect(merged.model).toBeUndefined();
+  expect(merged.agent_id).toBeUndefined();
+});

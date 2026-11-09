@@ -73,7 +73,7 @@ export default function GroupSidePanel({
                 data-testid="close-prompts-panel-button"
                 aria-label={localize('com_nav_close_sidebar')}
                 aria-expanded={true}
-                className="hover:bg-surface-hover rounded-full border-none bg-transparent p-2 md:rounded-xl"
+                className="rounded-full border-none p-2 md:rounded-xl"
                 onClick={onClose}
               >
                 <Sidebar />
@@ -89,7 +89,7 @@ export default function GroupSidePanel({
           ref={containerRef}
           isLoading={!!groupsQuery.isLoading}
           skeleton={<PromptGroupSkeleton />}
-          className="text-text-primary flex scrollbar-gutter-stable flex-col gap-2 overflow-x-hidden pr-1 pb-3 pl-3"
+          className="text-text-primary flex scrollbar-gutter-stable flex-col gap-2 overflow-x-hidden ps-3 pe-1 pb-3"
         >
           <List groups={promptGroups} isChatRoute={isChatRoute} />
           {/* Appending the next page, so the loaded rows stay put */}

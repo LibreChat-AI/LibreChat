@@ -54,6 +54,7 @@ export interface AgentTriggerServiceOptions {
   completionResultBatchSize?: number;
   completionReceiptBatching?: boolean;
   address?: BoundAddress | string | null;
+  deadLetterRetentionDays?: number;
   idlePolling?: {
     queuedTurnMaxIntervalMs?: number;
     maintenanceMaxIntervalMs?: number;
@@ -679,6 +680,9 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
           },
           {
             ...deps.deliveryOptions,
+            ...(options.deadLetterRetentionDays != null && {
+              deadLetterRetentionMs: options.deadLetterRetentionDays * 24 * 60 * 60_000,
+            }),
             ...(options.idlePolling?.deliveryMaxIntervalMs != null && {
               maxIdleTickMs: options.idlePolling.deliveryMaxIntervalMs,
             }),

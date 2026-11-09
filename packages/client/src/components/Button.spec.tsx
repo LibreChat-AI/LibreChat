@@ -40,6 +40,22 @@ describe('Button', () => {
     expect(ghost).not.toContain('text-text-secondary');
   });
 
+  it('marks the current nav destination with aria-pressed and the theme navigation roles', () => {
+    const nav = cn(buttonVariants({ variant: 'nav', size: 'icon' }));
+    expect(nav).toContain('text-text-secondary');
+    expect(nav).toContain('hover:bg-surface-nav-hover');
+    expect(nav).toContain('aria-pressed:bg-surface-nav-selected');
+    expect(nav).toContain('aria-pressed:text-text-primary');
+    expect(nav).toContain('size-theme-button');
+  });
+
+  it('presses the message action to the pressed fill like ghost and keeps the carousel arrows on the fixed surface', () => {
+    expect(cn(buttonVariants({ variant: 'message-action' }))).toContain(
+      'hover:active:bg-surface-pressed',
+    );
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).not.toContain('bg-surface-pressed');
+  });
+
   it('offers the message, link, carousel and toolbar roles as variants', () => {
     expect(cn(buttonVariants({ variant: 'message-action' }))).toContain('text-text-secondary-alt');
     expect(cn(buttonVariants({ variant: 'message-action' }))).toContain('p-1.5');
@@ -409,7 +425,12 @@ describe('Button', () => {
   });
 
   it('offers the sign-in sizes, shape and link variants as roles rather than caller classes', () => {
-    expect(cn(buttonVariants({ shape: 'soft' }))).toContain('rounded-2xl');
+    expect(cn(buttonVariants({ shape: 'soft' }))).toContain('rounded-theme-auth-control');
+    expect(cn(buttonVariants({ shape: 'soft' }))).not.toContain('rounded-lg');
+    expect(cn(buttonVariants({ size: 'auth' }))).toContain('h-theme-auth-button');
+    expect(cn(buttonVariants({ size: 'auth-action' }))).toContain('h-theme-auth-action');
+    expect(cn(buttonVariants({ shape: 'auth-action' }))).toContain('rounded-theme-auth-action');
+    expect(cn(buttonVariants({ shape: 'auth-action' }))).not.toContain('rounded-lg');
     expect(cn(buttonVariants({ size: 'snug' }))).toContain('p-1');
     expect(cn(buttonVariants({ size: 'wide' }))).toContain('px-8');
     expect(cn(buttonVariants({ size: 'bare' }))).toContain('p-0');

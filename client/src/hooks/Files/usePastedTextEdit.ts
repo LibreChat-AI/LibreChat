@@ -7,6 +7,7 @@ import {
   FileSources,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
+import type { PastedTextEdit } from '@librechat/chat/components';
 import type { TFile } from 'librechat-data-provider';
 import type { ExtendedFile, FileSetter } from '~/common';
 import {
@@ -33,15 +34,8 @@ import { useAuthContext } from '~/hooks/AuthContext';
 import useFileDeletion from './useFileDeletion';
 import { useLocalize } from '~/hooks';
 
-/** The attachment being edited, with its text already resolved so the dialog stays controlled. */
-export type PastedTextEdit = {
-  file: ExtendedFile;
-  text: string;
-  /** The composer the dialog was opened in; an edit must never apply to a different one. */
-  conversationId: string | null;
-  /** Distinguishes two successive unsaved chats, which share the `new` conversation id. */
-  draftToken: symbol;
-};
+const attachmentIdsOf = (file: ExtendedFile): string[] =>
+  [file.file_id, file.temp_file_id].filter((id): id is string => id != null && id !== '');
 
 /**
  * Backs the paste editor: resolves an attached `pasted-text.txt` back to the text it holds, and
@@ -216,12 +210,10 @@ export default function usePastedTextEdit({
    * restored file is normally shared. Foreign claims are checked before either path can schedule
    * deletion, because another tab or composer pane may still reference the upload. Both draft keys
    * are read, since a response finishing mid-edit migrates the record between them. */
-  const detach = useCallback(
+  const removeChip = useCallback(
     (file: ExtendedFile) => {
       const restored = file.attached === true;
-      const attachmentIds = [file.file_id, file.temp_file_id].filter(
-        (id): id is string => id != null && id !== '',
-      );
+      const attachmentIds = attachmentIdsOf(file);
       const draftIds = [
         getComposerDraftId(index, conversationIdRef.current, isSubmitting),
         getComposerDraftId(index, conversationIdRef.current, !isSubmitting),
@@ -281,6 +273,52 @@ export default function usePastedTextEdit({
       }
     },
     [deleteFile, setFiles, mutateAsync, index, isSubmitting],
+  );
+
+  /** Drops a detached chip from this composer's persisted files draft. Autosave rewrites that
+   * draft in an effect that runs after the restore effect of the same commit, and the replacement
+   * upload's file-cache write is what schedules that restore: a draft still naming the original
+   * brings it back as a restored chip with no copy of its text. A record another open tab owns is
+   * not this composer's to write to, and a draft that never named the chip is not rewritten, since
+   * a rewrite stamps this tab as its owner once the previous owner is gone. Both keys are checked
+   * for the reason the removal reads both. */
+  const forgetInDrafts = useCallback(
+    (file: ExtendedFile) => {
+      if (!saveDrafts) {
+        return;
+      }
+      const attachmentIds = attachmentIdsOf(file);
+      for (const draftId of [
+        getComposerDraftId(index, conversationIdRef.current, isSubmitting),
+        getComposerDraftId(index, conversationIdRef.current, !isSubmitting),
+      ]) {
+        const draft = getFilesDraftCached(draftId);
+        if (!isFilesDraftOwnedByThisTab(draft)) {
+          continue;
+        }
+        for (const fileId of attachmentIds) {
+          if (
+            draft.fileIds.includes(fileId) ||
+            draft.pastedTextIds?.includes(fileId) === true ||
+            draft.pendingPastes[fileId] != null
+          ) {
+            removePendingTextAttachmentDraft({ id: draftId, fileId, removeFile: true });
+          }
+        }
+      }
+    },
+    [index, isSubmitting, saveDrafts],
+  );
+
+  /** Removes the chip from the composer, then from the draft that would restore it. The draft is
+   * cleaned last because the removal reads the paste claim it carries to decide whether the stored
+   * upload is this composer's to delete. */
+  const detach = useCallback(
+    (file: ExtendedFile) => {
+      removeChip(file);
+      forgetInDrafts(file);
+    },
+    [removeChip, forgetInDrafts],
   );
 
   /** The composer an edit belongs to: same conversation, same unsaved-chat identity. */

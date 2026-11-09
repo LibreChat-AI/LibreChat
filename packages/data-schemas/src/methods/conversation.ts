@@ -11,6 +11,7 @@ import type {
   Model,
   SortOrder,
   Types,
+  UpdateQuery,
 } from 'mongoose';
 import type { SearchParams } from 'meilisearch';
 import type {
@@ -51,6 +52,7 @@ import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
+import { prepareSubagentContentDeletion } from './subagentContent';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';
@@ -289,10 +291,6 @@ export interface ConversationMethods {
     conversationId: string,
     fieldsToSelect?: string | null,
   ): Promise<IConversation | null>;
-  deleteNullOrEmptyConversations(): Promise<{
-    conversations: { deletedCount?: number };
-    messages: { deletedCount?: number };
-  }>;
   saveConvo(
     ctx: {
       userId: string;
@@ -355,6 +353,8 @@ export interface ConversationMethods {
     conversationId: string;
     laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
     repo?: string;
+    /** A pull request the command's output linked to; replaces the one recorded for the lane. */
+    pullRequest?: number;
     /** Reserved with `reserveConvoLaneGitSeq` when the command settled. */
     seq: number;
     /** The workspace the command ran in; the write applies only while the chat is still on it. */
@@ -2312,38 +2312,6 @@ export function createConversationMethods(
   }
 
   /**
-   * Deletes conversations and messages with null or empty IDs.
-   */
-  async function deleteNullOrEmptyConversations() {
-    try {
-      const Conversation = mongoose.models.Conversation as Model<IConversation>;
-      const { deleteMessages } = getMessageMethods();
-      const filter = {
-        $or: [
-          { conversationId: null },
-          { conversationId: '' },
-          { conversationId: { $exists: false } },
-        ],
-      };
-
-      const result = await Conversation.deleteMany(filter);
-      const messageDeleteResult = await deleteMessages(filter);
-
-      logger.info(
-        `[deleteNullOrEmptyConversations] Deleted ${result.deletedCount} conversations and ${messageDeleteResult.deletedCount} messages`,
-      );
-
-      return {
-        conversations: result,
-        messages: messageDeleteResult,
-      };
-    } catch (error) {
-      logger.error('[deleteNullOrEmptyConversations] Error deleting conversations', error);
-      throw new Error('Error deleting conversations with null or empty conversationId');
-    }
-  }
-
-  /**
    * Searches for a conversation by conversationId and returns associated file ids.
    */
   async function getConvoFiles(conversationId: string): Promise<string[]> {
@@ -3161,6 +3129,7 @@ export function createConversationMethods(
     conversationId,
     laneGit,
     repo,
+    pullRequest,
     seq,
     workspace,
   }: {
@@ -3168,16 +3137,11 @@ export function createConversationMethods(
     conversationId: string;
     laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
     repo?: string;
+    pullRequest?: number;
     seq: number;
     workspace?: { environmentId: string; workspaceId: string; required?: boolean; epoch?: number };
   }): Promise<boolean> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
-    const next = {
-      branch: laneGit.branch,
-      head: laneGit.head,
-      ...(repo ? { repo } : {}),
-      seq,
-    };
     const epochFence =
       workspace?.epoch == null
         ? []
@@ -3216,28 +3180,62 @@ export function createConversationMethods(
               ],
             },
           ];
-    const result = await withoutMeiliIndexing(
-      Conversation.updateOne(
-        {
-          user,
-          conversationId,
-          ...activeExpirationFilter<IConversation>(),
-          $and: [
-            {
-              $or: [
-                { 'laneGit.seq': { $exists: false } },
-                { 'laneGit.seq': null },
-                { 'laneGit.seq': { $lt: seq } },
-              ],
-            },
-            ...workspaceFence,
-          ],
+    const fences: FilterQuery<IConversation>[] = [
+      {
+        $or: [
+          { 'laneGit.seq': { $exists: false } },
+          { 'laneGit.seq': null },
+          { 'laneGit.seq': { $lt: seq } },
+        ],
+      },
+      ...workspaceFence,
+    ];
+    const write = async (
+      lane: FilterQuery<IConversation> | null,
+      update: UpdateQuery<IConversation>,
+    ): Promise<boolean> => {
+      const result = await withoutMeiliIndexing(
+        Conversation.updateOne(
+          {
+            user,
+            conversationId,
+            ...activeExpirationFilter<IConversation>(),
+            $and: lane == null ? fences : [...fences, lane],
+          },
+          update,
+          { timestamps: false },
+        ),
+      );
+      return result.modifiedCount === 1;
+    };
+    const replaced = {
+      branch: laneGit.branch,
+      head: laneGit.head,
+      ...(repo ? { repo } : {}),
+      ...(pullRequest != null ? { pullRequest } : {}),
+      seq,
+    };
+    if (pullRequest != null) return write(null, { $set: { laneGit: replaced } });
+    /**
+     * A report without a link keeps the one already recorded while the lane is still on that
+     * branch and repository, and drops it otherwise. Plain updates rather than an aggregation
+     * pipeline, which Amazon DocumentDB rejects: the first matches only the same lane and sets its
+     * fields one by one, the second only another lane and replaces the whole state. A concurrent
+     * write can move the stored lane between the two, so they are retried once.
+     */
+    const sameLane = { 'laneGit.branch': laneGit.branch, 'laneGit.repo': repo || null };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const kept = await write(sameLane, {
+        $set: {
+          'laneGit.branch': laneGit.branch,
+          'laneGit.head': laneGit.head,
+          'laneGit.seq': seq,
         },
-        { $set: { laneGit: next } },
-        { timestamps: false },
-      ),
-    );
-    return result.modifiedCount === 1;
+      });
+      if (kept) return true;
+      if (await write({ $nor: [sameLane] }, { $set: { laneGit: replaced } })) return true;
+    }
+    return false;
   }
 
   /** The last reported lane state, or null when the conversation has none or is not the owner's. */
@@ -3254,8 +3252,13 @@ export function createConversationMethods(
       .select('laneGit')
       .lean<Pick<IConversation, 'laneGit'> | null>();
     if (stored?.laneGit == null) return null;
-    const { branch, head, repo } = stored.laneGit;
-    return { branch, head, ...(repo ? { repo } : {}) };
+    const { branch, head, repo, pullRequest } = stored.laneGit;
+    return {
+      branch,
+      head,
+      ...(repo ? { repo } : {}),
+      ...(pullRequest != null ? { pullRequest } : {}),
+    };
   }
 
   /**
@@ -3279,8 +3282,18 @@ export function createConversationMethods(
       .lean<Array<Pick<IConversation, 'conversationId' | 'laneGit'>>>();
     return stored.flatMap(({ conversationId, laneGit }) => {
       if (laneGit == null || conversationId == null) return [];
-      const { branch, head, repo } = laneGit;
-      return [{ conversationId, laneGit: { branch, head, ...(repo ? { repo } : {}) } }];
+      const { branch, head, repo, pullRequest } = laneGit;
+      return [
+        {
+          conversationId,
+          laneGit: {
+            branch,
+            head,
+            ...(repo ? { repo } : {}),
+            ...(pullRequest != null ? { pullRequest } : {}),
+          },
+        },
+      ];
     });
   }
 
@@ -3862,7 +3875,7 @@ export function createConversationMethods(
            the sidebar lists archived and unarchived chats in the same session, and the
            active list also carries the unarchived pins beside them. */
         .select(
-          'conversationId endpoint title titleSetByUser titleRevision createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual isMarkedUnread lastSeenAt',
+          'conversationId endpoint title titleSetByUser titleRevision createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual isMarkedUnread lastSeenAt codeEnvironmentMode codeWorkspaces',
         )
         .sort(sortObj)
         .limit(pageSize + 1)
@@ -3898,6 +3911,12 @@ export function createConversationMethods(
           id: String(lastReturned._id),
         };
         nextCursor = Buffer.from(JSON.stringify(composite)).toString('base64');
+      }
+
+      /* Stamped by the replica that selected the decision, so a row from one that predates it
+         is told apart from an ordinary chat, which carries no decision either. */
+      for (const convo of convos) {
+        convo.codeDecisionListed = true;
       }
 
       if (sharedIds != null) {
@@ -4122,6 +4141,12 @@ export function createConversationMethods(
         );
         await options?.beforeDelete?.(waveIds);
         await deps?.prepareAgentTriggerConversationResultErasure?.(user, waveIds);
+        await retryCascadeOperation(() =>
+          prepareSubagentContentDeletion(mongoose, {
+            user,
+            conversationId: { $in: waveIds },
+          }),
+        );
         const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
@@ -4520,7 +4545,6 @@ export function createConversationMethods(
   return {
     getConvoFiles,
     searchConversation,
-    deleteNullOrEmptyConversations,
     stampForcedRetention,
     saveConvo,
     setConvoPinned,

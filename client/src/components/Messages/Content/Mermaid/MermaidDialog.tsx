@@ -97,10 +97,10 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
               />
               <Button
                 ref={showCodeButtonRef}
-                variant="ghost"
+                variant="quiet"
                 size="sm"
                 aria-label={showCode ? localize('com_ui_hide_code') : localize('com_ui_show_code')}
-                className="text-text-secondary focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:min-w-[6rem] sm:px-1 sm:py-0"
+                className="size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:min-w-[6rem] sm:px-1 sm:py-0"
                 onClick={handleToggleCode}
               >
                 <MorphIcon icon={showCode ? ChevronUp : ChevronDown} className="h-4 w-4" />
@@ -110,19 +110,16 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
               </Button>
               <Button
                 ref={copyButtonRef}
-                variant="ghost"
+                variant="quiet"
                 size="sm"
                 aria-label={localize('com_ui_copy_code')}
-                className="text-text-secondary focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:px-1 sm:py-0"
+                className="size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:px-1 sm:py-0"
                 onClick={handleCopy}
               >
                 <MorphIcon icon={isCopied ? Check : Copy} size="1.125rem" />
                 <span className="hidden sm:inline">{localize('com_ui_copy_code')}</span>
               </Button>
-              <OGDialogClose
-                focusOutline="hidden"
-                className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy rounded-sm p-1 focus-visible:ring-2"
-              >
+              <OGDialogClose className="text-text-secondary hover:bg-surface-hover hover:text-text-primary rounded-sm p-1">
                 <X className="h-4 w-4" />
                 <span className="sr-only">{localize('com_ui_close')}</span>
               </OGDialogClose>
@@ -170,7 +167,7 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
               onZoomIn={handleZoomIn}
               onZoomOut={handleZoomOut}
               onReset={handleResetZoom}
-              className="absolute right-4 bottom-4 z-10"
+              className="absolute inset-e-4 bottom-4 z-10"
             />
           </div>
         </OGDialogContent>

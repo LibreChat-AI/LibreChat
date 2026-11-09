@@ -48,6 +48,7 @@ jest.mock('@librechat/data-schemas', () => ({
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { deleteRagFile } from '~/files';
 import { logger } from '@librechat/data-schemas';
+import { createStoredUploadDelete } from '~/files/orphan';
 
 describe('S3 CRUD', () => {
   let originalEnv: NodeJS.ProcessEnv;
@@ -767,6 +768,32 @@ describe('S3 CRUD', () => {
       expect(putInput.Body).toEqual(Buffer.from('decoded'));
     });
 
+    it('rejects instead of crashing when the response body fails mid-stream', async () => {
+      (global.fetch as unknown as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        headers: {
+          get: (name: string) => (name.toLowerCase() === 'content-type' ? 'image/png' : null),
+        },
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(Buffer.from('partial'));
+            controller.error(new Error('socket reset'));
+          },
+        }),
+        arrayBuffer: jest.fn(),
+      });
+
+      const { saveURLToS3WithMetadata } = await import('../crud');
+      await expect(
+        saveURLToS3WithMetadata({
+          userId: 'user123',
+          URL: 'https://example.com/image.jpg',
+          fileName: 'downloaded.jpg',
+        }),
+      ).rejects.toThrow('socket reset');
+      expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+    });
+
     it('throws error on non-ok response', async () => {
       (global.fetch as unknown as jest.Mock).mockResolvedValueOnce({
         ok: false,
@@ -860,6 +887,106 @@ describe('S3 CRUD', () => {
       expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'user123', file: mockFile });
       expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(1);
       expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+    });
+
+    it('does not mark deletion when HeadObject times out', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      const failure = Object.assign(new Error('head response lost'), { code: 'ETIMEDOUT' });
+      s3Mock.on(HeadObjectCommand).rejects(failure);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete).not.toHaveBeenCalled();
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+      expect(deleteRagFile).not.toHaveBeenCalled();
+    });
+
+    it('marks a lost DeleteObject response without confirming deletion', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      s3Mock.on(HeadObjectCommand).resolves({});
+      const failure = Object.assign(new Error('delete response lost'), { code: 'ETIMEDOUT' });
+      s3Mock.on(DeleteObjectCommand).rejects(failure);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete.mock.calls).toEqual([[]]);
+      expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'user123', file: mockFile });
+    });
+
+    it('keeps DeleteObject undispatched when RAG cleanup is denied', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      s3Mock.on(HeadObjectCommand).resolves({});
+      const failure = Object.assign(new Error('RAG denied'), { status: 403 });
+      jest.mocked(deleteRagFile).mockImplementationOnce(async () => {
+        expect(onDelete).not.toHaveBeenCalled();
+        throw failure;
+      });
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete).not.toHaveBeenCalled();
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+    });
+
+    it('reports a definitive DeleteObject denial', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      s3Mock.on(HeadObjectCommand).resolves({});
+      const failure = Object.assign(new Error('delete denied'), {
+        $metadata: { httpStatusCode: 403 },
+      });
+      s3Mock.on(DeleteObjectCommand).rejects(failure);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete.mock.calls).toEqual([[], ['rejected']]);
+    });
+
+    it.each([FileSources.s3, FileSources.cloudfront])(
+      'deletes an unrecorded %s upload independently of vector rollback',
+      async (source) => {
+        const mockFile = {
+          filepath: 'images/user123/file.jpg',
+          user: 'user123',
+          file_id: 'failed-upload',
+          source,
+          embedded: true,
+          metadata: { embeddedEntities: ['agent-a'] },
+        } as TFile;
+        s3Mock.on(HeadObjectCommand).resolves({});
+        jest
+          .mocked(deleteRagFile)
+          .mockImplementationOnce(async ({ file }) => file.embedded !== true);
+        const { deleteFileFromS3 } = await import('../crud');
+        const failure = new Error('Vector deletion was not confirmed');
+        const vectors = jest.fn().mockRejectedValue(failure);
+        const remove = createStoredUploadDelete({
+          source,
+          getDeleteFile: (destination) =>
+            destination === FileSources.vectordb
+              ? vectors
+              : async (_req, file) => deleteFileFromS3(mockReq, { ...mockFile, ...file, source }),
+        });
+        await expect(remove(mockReq as never, { ...mockFile, source })).rejects.toBe(failure);
+        expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+        expect(deleteRagFile).toHaveBeenCalledWith({
+          userId: 'user123',
+          file: { ...mockFile, embedded: false },
+        });
+        expect(vectors).toHaveBeenCalledWith(mockReq, mockFile);
+        expect(mockFile.embedded).toBe(true);
+        expect(mockFile.metadata?.embeddedEntities).toEqual(['agent-a']);
+      },
+    );
+
+    it('keeps the S3 object when vector cleanup returns false', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      s3Mock.on(HeadObjectCommand).resolves({});
+      jest.mocked(deleteRagFile).mockResolvedValueOnce(false);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile)).rejects.toThrow(
+        'Vector deletion was not confirmed',
+      );
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
     });
 
     it('uses the file owner for RAG cleanup when a different authorized user deletes', async () => {

@@ -1,9 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { useAtomValue } from 'jotai';
+import { activeSubagentPanel } from '@librechat/chat/react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
-import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
 import { ChatSurfaceHarness } from 'test/harness';
 import Wakeup from '../Wakeup';
 
@@ -12,8 +12,6 @@ import Wakeup from '../Wakeup';
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, vars?: Record<string, string>) =>
     vars == null ? key : `${key}:${Object.values(vars).join(',')}`,
-  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
 }));
 
 jest.mock('~/hooks/MCP', () => ({
@@ -48,6 +46,7 @@ jest.mock('lucide-react', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  cn: jest.requireActual('@librechat/client').cn,
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>
   ),
@@ -68,7 +67,8 @@ const child: ParentSubagentSummary = {
   title: 'Subagent: self',
 } as ParentSubagentSummary;
 
-jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useParentSubagents: () => ({
     byThreadId: new Map([['thread-1', child]]),
     byMessageId: new Map(),
@@ -95,6 +95,19 @@ const subagentDisplay = {
 };
 
 describe('Wakeup', () => {
+  it('uses a transparent disclosure for the System header', () => {
+    render(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Wakeup display={subagentDisplay} />
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+    expect(
+      screen.getByRole('button', { name: 'com_ui_wakeup_subagent_completed' }),
+    ).toHaveAttribute('variant', 'disclosure');
+  });
+
   it.each([
     ['subagent', subagentDisplay, 'com_ui_wakeup_subagent_completed'],
     [

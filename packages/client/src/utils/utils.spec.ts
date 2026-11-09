@@ -12,6 +12,9 @@ describe('cn', () => {
     ['min-h-theme-target', 'min-h-0'],
     ['min-w-theme-list', 'min-w-48'],
     ['max-h-theme-list', 'max-h-60'],
+    ['h-theme-field', 'h-theme-auth-field'],
+    ['h-theme-button', 'h-theme-auth-button'],
+    ['rounded-lg', 'rounded-theme-auth-control'],
   ])('lets a caller size replace %s', (role, caller) => {
     expect(cn(role, caller)).toBe(caller);
   });
@@ -24,4 +27,11 @@ describe('cn', () => {
     expect(cn('text-2xs', 'text-sm')).toBe('text-sm');
     expect(cn('text-sm', 'text-1xs')).toBe('text-1xs');
   });
+
+  it.each(['px-0', 'px-3', 'px-theme-control-x'])(
+    'lets %s replace the Button padding role',
+    (caller) => {
+      expect(cn('px-theme-button-x', caller)).toBe(caller);
+    },
+  );
 });

@@ -7,11 +7,13 @@ export * from './utils';
 export { createModels } from './models';
 export {
   createMethods,
+  createSkillDeletionPersistenceAdapter,
   AGENT_OWNER_CONTACT_RESOLVED_FIELD,
   AgentSortCursorError,
   CLIENT_MESSAGE_SELECT,
   SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT,
   RoleConflictError,
+  RoleDeletionError,
   DEFAULT_REFRESH_TOKEN_EXPIRY,
   DEFAULT_SESSION_EXPIRY,
   tokenValues,
@@ -26,6 +28,7 @@ export {
   validateSkillBody,
   validateRelativePath,
   inferSkillFileCategory,
+  filterExistingSkillIds,
   validateSkillFrontmatter,
   getCanonicalSkillFrontmatterKey,
   normalizeSkillFrontmatterKeys,
@@ -115,4 +118,11 @@ export {
   migrateTenantIndexes,
   dropSupersededPromptGroupIndexes,
   backfillMCPServerNormalizedNames,
+  backfillSearchTokens,
+  warnOnMissingSearchTokens,
 } from './migrations';
+export type { SearchTokenBackfillResult } from './migrations';
+
+export { createBrowserSetupStore, createBrowserSetupBackend } from './methods/browserSetup';
+export type * from './types/browserSetup';
+export type * from './types/codeEnvironmentSetup';

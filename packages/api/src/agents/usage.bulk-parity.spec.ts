@@ -254,6 +254,33 @@ describe('recordCollectedUsage — bulk path parity', () => {
     });
   });
 
+  describe('cache token handling - Anthropic 1-hour writes', () => {
+    it('prices the 1-hour share of the writes at the 1-hour rate in bulk docs', async () => {
+      mockPricing.getMultiplier = jest.fn().mockReturnValue(2);
+      mockPricing.getCacheMultiplier = jest.fn(
+        ({ cacheType }) => ({ write: 2.5, write1h: 4, read: 0.2 })[cacheType],
+      );
+      const collectedUsage: UsageMetadata[] = [
+        {
+          input_tokens: 3600,
+          output_tokens: 50,
+          model: 'claude-sonnet-5-5',
+          provider: 'anthropic',
+          input_token_details: { cache_creation: 3000, cache_creation_1h: 2000, cache_read: 500 },
+        },
+      ];
+
+      await recordCollectedUsage(deps, { ...baseParams, collectedUsage });
+
+      const docs = mockInsertMany.mock.calls[0][0];
+      const promptDoc = docs.find((d: { tokenType: string }) => d.tokenType === 'prompt');
+      expect(promptDoc.writeTokens).toBe(-3000);
+      expect(promptDoc.write1hTokens).toBe(-2000);
+      expect(promptDoc.tokenValue).toBeCloseTo(-(100 * 2 + 1000 * 2.5 + 2000 * 4 + 500 * 0.2));
+      expect(promptDoc.rateDetail).toEqual({ input: 2, write: 2.5, read: 0.2, write1h: 4 });
+    });
+  });
+
   describe('mixed cache and non-cache entries', () => {
     it('should handle mixed entries — same output_tokens as legacy', async () => {
       const collectedUsage: UsageMetadata[] = [

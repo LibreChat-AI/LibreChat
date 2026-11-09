@@ -5,7 +5,10 @@ import { render, screen } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 
 const mockStartup: {
-  current: { pullRequestsEnabled?: boolean; pullRequestsBatchVersion?: number };
+  current: {
+    pullRequestsEnabled?: boolean;
+    pullRequestsBatchVersion?: number;
+  };
 } = {
   current: { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 },
 };
@@ -38,7 +41,6 @@ jest.mock('recoil', () => ({ useRecoilValue: () => [] }));
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {
-    allConversationsSelector: 'allConversationsSelector',
     conversationIdByIndex: () => 'conversationIdByIndex',
   },
 }));
@@ -86,16 +88,27 @@ import Conversation from '../Convo';
 const conversation = {
   conversationId: 'convo-1',
   title: 'Tool Approval UI',
+  codeDecisionListed: true,
+  codeEnvironmentMode: 'attached',
+  codeWorkspaces: [{ environmentId: 'env', workspaceId: 'ws' }],
+} as TConversation;
+const ordinary = {
+  conversationId: 'convo-1',
+  title: 'Tool Approval UI',
+  codeDecisionListed: true,
 } as TConversation;
 
-const renderRow = (props: { isGenerating?: boolean } = {}) =>
+const renderRow = (
+  props: { isGenerating?: boolean; convo?: TConversation; showProjectBadge?: boolean } = {},
+) =>
   render(
     <DndProvider backend={HTML5Backend}>
       <Conversation
-        conversation={conversation}
+        conversation={props.convo ?? conversation}
         retainView={jest.fn()}
         toggleNav={jest.fn()}
         isGenerating={props.isGenerating}
+        showProjectBadge={props.showProjectBadge}
       />
     </DndProvider>,
   );
@@ -106,7 +119,10 @@ describe('Conversation row pull request', () => {
   beforeEach(() => {
     mockMarkProps.length = 0;
     mockMarkState.described = true;
-    mockStartup.current = { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 };
+    mockStartup.current = {
+      pullRequestsEnabled: true,
+      pullRequestsBatchVersion: 1,
+    };
   });
 
   it("keeps the title the conversation's own and puts the pull request beside it, outside the row button", () => {
@@ -118,14 +134,31 @@ describe('Conversation row pull request', () => {
     expect(mark.parentElement?.parentElement).toBe(screen.getByTestId('convo-item'));
   });
 
-  it('sits after the row menu, which grows on hover, so it does not slide out from under the pointer', () => {
+  it('places the pull request before the conversation title', () => {
     renderRow();
-    const row = screen.getByTestId('convo-item');
     const mark = screen.getByTestId('convo-pull-request');
-    const menuSlot = screen.getByTestId('convo-options').parentElement as HTMLElement;
-    expect(row).toContainElement(menuSlot);
-    expect(menuSlot.compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(row.lastElementChild).toBe(mark.parentElement);
+    expect(
+      mark.compareDocumentPosition(rowButton()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('places the project badge at the start of the row', () => {
+    renderRow({
+      convo: { ...conversation, chatProjectId: 'project-1' },
+      showProjectBadge: true,
+    });
+    const badge = screen.getByTestId('convo-project-badge');
+    expect(screen.getByTestId('convo-item').firstElementChild?.firstElementChild).toBe(badge);
+  });
+
+  it('places the pull request immediately after the project badge', () => {
+    renderRow({
+      convo: { ...conversation, chatProjectId: 'project-1' },
+      showProjectBadge: true,
+    });
+    expect(screen.getByTestId('convo-project-badge').nextElementSibling).toBe(
+      screen.getByTestId('convo-pull-request'),
+    );
   });
 
   it("names the pull request in the row's description so a screen reader hears what the colors say", () => {
@@ -140,11 +173,18 @@ describe('Conversation row pull request', () => {
     expect(mockMarkProps[0]).toMatchObject({ conversationId: 'convo-1', selected: true });
   });
 
-  it('reserves no space around the mark, since an absent mark must leave the row unchanged', () => {
+  it('hands the mark its own row, so hovering anywhere on the row can open the card', () => {
     renderRow();
-    const wrapper = screen.getByTestId('convo-pull-request').parentElement as HTMLElement;
-    expect(wrapper.className).not.toMatch(/\bm[rlxy]?-\d/);
-    expect(wrapper.className).not.toMatch(/\bp[rlxy]?-\d/);
+    const rowRef = mockMarkProps[0].rowRef as { current: HTMLElement | null };
+    expect(rowRef.current).toBe(screen.getByTestId('convo-item'));
+  });
+
+  it('reserves no space around the mark, since an absent mark must leave the row unchanged', () => {
+    mockMarkState.described = false;
+    renderRow();
+    const wrapper = screen.getByTestId('convo-item').firstElementChild as HTMLElement;
+    expect(wrapper).toBeEmptyDOMElement();
+    expect(wrapper.className).not.toMatch(/\b[mp][rlxyse]?-\d/);
   });
 
   it('does not point the row at a description that is not in the page', () => {
@@ -166,6 +206,24 @@ describe('Conversation row pull request', () => {
     expect(screen.queryByTestId('convo-pull-request')).not.toBeInTheDocument();
     expect(mockMarkProps).toHaveLength(0);
     expect(rowButton().getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it.each([
+    ['has no code decision', ordinary],
+    [
+      'runs without an attached workspace',
+      { ...ordinary, codeEnvironmentMode: 'without_attached' },
+    ],
+  ])('never asks for a chat that %s, so ordinary chats cost no lookup', (_label, convo) => {
+    renderRow({ convo: convo as TConversation });
+    expect(screen.queryByTestId('convo-pull-request')).not.toBeInTheDocument();
+    expect(mockMarkProps).toHaveLength(0);
+    expect(rowButton().getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('keeps asking for a row its replica did not stamp, since it cannot be told from an ordinary chat', () => {
+    renderRow({ convo: { ...ordinary, codeDecisionListed: undefined } as TConversation });
+    expect(screen.getByTestId('convo-pull-request')).toBeInTheDocument();
   });
 
   it('leaves the mark out while the chat runs, so the ring is the only status', () => {

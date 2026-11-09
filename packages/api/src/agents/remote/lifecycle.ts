@@ -1,6 +1,6 @@
 import type { GenerationJobManagerClass } from '~/stream';
 import type { GenerationJob } from '~/types/stream';
-import { GenerationJobManager } from '~/stream';
+import { GenerationJobManager, GenerationAdmissionDeniedError } from '~/stream';
 
 const ACCOUNT_DELETION_ERROR = 'Account deletion is in progress';
 const REMOTE_EXECUTION_ERROR = 'Remote agent execution failed';
@@ -49,7 +49,11 @@ export class AgentExecutionEnrollment {
   private providerStarted = false;
   private settlement?: Promise<void>;
 
-  constructor(manager: GenerationJobManagerClass, job: GenerationJob) {
+  constructor(
+    manager: GenerationJobManagerClass,
+    job: GenerationJob,
+    private readonly failureMessage: string = REMOTE_EXECUTION_ERROR,
+  ) {
     const providerExecutionId = job.metadata.providerExecutionId;
     if (!providerExecutionId) {
       throw new Error('Agent execution enrollment is missing its provider identity');
@@ -123,7 +127,7 @@ export class AgentExecutionEnrollment {
     try {
       await this.manager.completeJob(
         this.runId,
-        error == null ? undefined : REMOTE_EXECUTION_ERROR,
+        error == null ? undefined : this.failureMessage,
         this.createdAt,
       );
     } catch (settleError) {
@@ -139,7 +143,7 @@ export class AgentExecutionEnrollment {
       try {
         const completed = await this.manager.completeJob(
           this.runId,
-          error == null ? undefined : REMOTE_EXECUTION_ERROR,
+          error == null ? undefined : this.failureMessage,
           this.createdAt,
         );
         if (!completed) {
@@ -190,37 +194,32 @@ export class AgentExecutionEnrollment {
   }
 }
 
-async function retireRejectedEnrollment(
-  manager: GenerationJobManagerClass,
-  job: GenerationJob,
-): Promise<void> {
-  await manager.completeJob(job.streamId, ACCOUNT_DELETION_ERROR, job.createdAt);
-}
-
 export async function enrollAgentExecution(
   params: AgentExecutionEnrollmentParams,
   deps: AgentExecutionEnrollmentDeps = { manager: GenerationJobManager },
 ): Promise<AgentExecutionEnrollment> {
   const { runId, userId, conversationId, agentId, protocol, isPrincipalActive } = params;
-  const job = await deps.manager.createJob(runId, userId, conversationId, {
-    initialMetadata: {
-      agent_id: agentId,
-      endpoint: protocol,
-      model: agentId,
-      responseMessageId: runId,
-    },
-  });
-
-  let active = false;
+  let job: GenerationJob;
   try {
-    active = await isPrincipalActive(userId);
+    /** The principal predicate replaces the default guard, so admission is one post-commit read
+     * and a refused run takes the manager's retire-and-purge path. */
+    job = await deps.manager.createJob(runId, userId, conversationId, {
+      admissionCheck: isPrincipalActive,
+      initialMetadata: {
+        agent_id: agentId,
+        endpoint: protocol,
+        model: agentId,
+        responseMessageId: runId,
+      },
+    });
   } catch (error) {
-    await retireRejectedEnrollment(deps.manager, job).catch(() => undefined);
+    if (error instanceof GenerationAdmissionDeniedError) {
+      throw new AgentExecutionAdmissionError(
+        ACCOUNT_DELETION_ERROR,
+        'ACCOUNT_DELETION_IN_PROGRESS',
+      );
+    }
     throw error;
-  }
-  if (!active) {
-    await retireRejectedEnrollment(deps.manager, job);
-    throw new AgentExecutionAdmissionError(ACCOUNT_DELETION_ERROR, 'ACCOUNT_DELETION_IN_PROGRESS');
   }
 
   return new AgentExecutionEnrollment(deps.manager, job);

@@ -523,6 +523,17 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
     expect(runArgs.appConfig).not.toHaveProperty('interfaceConfig');
   });
 
+  it('forwards only the retention mode so forced-temporary runs stay untraced', async () => {
+    deps.appConfig = {
+      interfaceConfig: { modelSelect: true, retentionMode: 'ephemeral' },
+    } as never;
+
+    await createAgentChatCompletion(createMockReq({ id: 'user-123' }), createMockRes(), deps);
+
+    const runArgs = createRun.mock.calls[0][0] as CreateRunArgs;
+    expect(runArgs.appConfig).toEqual({ interfaceConfig: { retentionMode: 'ephemeral' } });
+  });
+
   it('forwards the stateful environment allowlist from appConfig to agent initialization', async () => {
     deps.appConfig = {
       endpoints: {

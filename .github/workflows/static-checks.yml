@@ -18,6 +18,7 @@ on:
       - 'eslint-suppressions.json'
       - '**/eslint-suppressions.json'
       - '.github/workflows/static-checks.yml'
+      - '.husky/pre-push'
       - '!**.md'
 
 permissions:
@@ -44,8 +45,12 @@ jobs:
         with:
           # Full history is load-bearing: changed-file steps diff against the
           # PR base and the ESLint regression gate reads the base ref's
-          # config via git show — a shallow checkout breaks both.
+          # config via git show, so a shallow checkout breaks both. Blobless
+          # keeps every commit and tree (merge-base, three-dot diffs) and
+          # fetches only the base-side file contents a step actually reads,
+          # instead of every blob on every branch.
           fetch-depth: 0
+          filter: blob:none
 
       # scripts/static-checks.mts mirrors these filters to run the same checks
       # locally on a commit's diff — keep the two in sync.
@@ -65,6 +70,7 @@ jobs:
               - '!**.md'
             eslint_config:
               - 'eslint.config.mjs'
+              - 'scripts/eslint/**'
               - '.github/workflows/static-checks.yml'
             # The recorded design-rule backlog is data the lint reads, not code it
             # lints, so a diff that only edits it matches no source file. Its own
@@ -76,6 +82,7 @@ jobs:
               - '**/eslint-suppressions.json'
               - 'client/src/**'
               - 'packages/client/src/**'
+              - 'packages/chat/src/**'
               # The bundle the rules resolve primitives through is named by the
               # library's manifest, produced by its build config and shaped by
               # its compiler options.
@@ -83,6 +90,9 @@ jobs:
               - 'packages/client/tsdown.config.mjs'
               - 'packages/client/tsconfig.json'
               - 'eslint.config.mjs'
+              # The local design rules: a change to what one reports changes
+              # every count it owns.
+              - 'scripts/eslint/**'
               # The plugin is a dependency: a bump changes what the rules
               # classify and a removal takes them with it, and neither touches a
               # source file.
@@ -92,13 +102,18 @@ jobs:
               # count is measured against, so a change to it has to run against
               # the record — the ESLint step above only ever sees sources.
               - 'scripts/static-checks.mts'
+              - 'scripts/diagnostics*.mts'
               - '.github/workflows/static-checks.yml'
               - '!**.md'
             # Stylesheets are outside the design lint, which reads JSX.
             css_colors:
               - 'client/src/**/*.css'
               - 'packages/client/src/**/*.css'
+              - 'packages/chat/src/**/*.css'
               - 'packages/client/src/theme/allowlist.md'
+              # The scanner parses with postcss: an upgrade changes what it reads.
+              - 'package.json'
+              - 'package-lock.json'
               - 'scripts/css-colors.mts'
               - 'scripts/css-colors.test.mts'
               - 'scripts/static-checks.mts'
@@ -115,19 +130,23 @@ jobs:
               - 'api/**'
               - 'client/src/**'
               - 'packages/client/**'
+              - 'packages/chat/src/**'
               - 'packages/data-provider/src/**'
               - 'packages/data-schemas/src/**'
               - '.github/workflows/static-checks.yml'
               - '!**.md'
             runner:
               - 'scripts/i18n*.mts'
+              - 'scripts/pre-push*.mts'
               - 'scripts/static-checks.mts'
+              - '.husky/pre-push'
               - '.github/workflows/static-checks.yml'
             unused_packages:
               - 'api/**'
               - 'client/**'
               - 'packages/api/**'
               - 'packages/client/**'
+              - 'packages/chat/**'
               # Every workspace manifest the JSON validation step covers, plus
               # the ones whose dependencies feed the unused-package calculation
               # through api/package.json's @librechat/data-schemas entry.
@@ -135,19 +154,61 @@ jobs:
               - 'packages/data-schemas/package.json'
               - 'package.json'
               - 'package-lock.json'
+              - 'scripts/imports*.mts'
               - '.github/workflows/static-checks.yml'
               - '!**.md'
 
-      - name: Set up Node.js 24.16.0
+      - name: Set up Node.js 24.22.1
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
           cache: npm
+
+      # Same key and path list as the E2E workflows, so one installed tree per
+      # lockfile serves both. Exact key only: a tree installed from another
+      # lockfile is never restored. Saved separately, and only after a
+      # successful install, because that step is continue-on-error and a
+      # partial tree must never become the cache every later job restores.
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         id: install_dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         continue-on-error: true
         run: npm ci
+
+      - name: Save node_modules cache
+        if: steps.install_dependencies.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/chat/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
+
+      - name: Test scoped dependency overrides
+        if: steps.cache-node-modules.outputs.cache-hit == 'true' || steps.install_dependencies.outcome == 'success'
+        run: npm run test:dependencies
 
       # The @shadcn/lint design rules read each primitive's `cva` variants through
       # the @librechat/client entry point, which resolves to packages/client/dist.
@@ -296,6 +357,8 @@ jobs:
           # script-only PR activates no group — so neither would exercise the
           # execution path this step exists to protect.
           node scripts/static-checks.mts package.json --only json
+          # The pre-push hook, driven through real pushes to local bare remotes.
+          node --test scripts/pre-push.test.mts
 
       - name: Validate ESLint config on config changes
         id: eslint_config
@@ -304,6 +367,7 @@ jobs:
         run: |
           node_modules/.bin/eslint --config eslint.config.mjs \
             api/server/index.js client/src/main.jsx packages/api/src/index.ts
+          node --test scripts/eslint/design.test.mjs scripts/eslint/chat.test.mjs
 
       - name: Validate the design-rule suppressions baseline
         id: suppressions
@@ -421,7 +485,7 @@ jobs:
         if: always() && steps.paths.outputs.unused_packages == 'true'
         continue-on-error: true
         run: |
-          for FILE in package.json client/package.json api/package.json packages/api/package.json packages/client/package.json packages/data-provider/package.json packages/data-schemas/package.json; do
+          for FILE in package.json client/package.json api/package.json packages/api/package.json packages/client/package.json packages/chat/package.json packages/data-provider/package.json packages/data-schemas/package.json; do
             if [[ -f "$FILE" ]]; then
               jq empty "$FILE" || (echo "::error title=Invalid JSON::$FILE is invalid" && exit 1)
             fi
@@ -455,60 +519,16 @@ jobs:
         if: always() && steps.paths.outputs.unused_packages == 'true'
         id: extract-used-code
         continue-on-error: true
+        # Source files only, as git lists them: installed node_modules and build
+        # output are excluded, and one listing covers every nested directory.
         run: |
-          extract_deps_from_code() {
-            local folder=$1
-            local output_file=$2
-
-            # Initialize empty output file
-            > "$output_file"
-
-            if [[ -d "$folder" ]]; then
-              # Extract require() statements (use explicit includes for portability)
-              grep -rEho "require\\(['\"]([a-zA-Z0-9@/._-]+)['\"]\\)" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/require\\(['\"]([a-zA-Z0-9@/._-]+)['\"]\\)/\1/" >> "$output_file" || true
-
-              # Extract ES6 imports - import x from 'module'
-              grep -rEho "import .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/import .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # import 'module' (side-effect imports)
-              grep -rEho "import ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/import ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # export { x } from 'module' or export * from 'module'
-              grep -rEho "export .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/export .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # import type { x } from 'module' (TypeScript)
-              grep -rEho "import type .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.ts' --include='*.tsx' 2>/dev/null | \
-                sed -E "s/import type .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # Remove subpath imports but keep the base package
-              # For scoped packages: '@scope/pkg/subpath' -> '@scope/pkg'
-              # For regular packages: 'pkg/subpath' -> 'pkg'
-              # Scoped packages (must keep @scope/package, strip anything after)
-              sed -i -E 's|^(@[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)/.*|\1|' "$output_file" 2>/dev/null || true
-              # Non-scoped packages (keep package name, strip subpath)
-              sed -i -E 's|^([a-zA-Z0-9_-]+)/.*|\1|' "$output_file" 2>/dev/null || true
-
-              sort -u "$output_file" -o "$output_file"
-            fi
-          }
-
-          extract_deps_from_code "." root_used_code.txt
-          extract_deps_from_code "client" client_used_code.txt
-          extract_deps_from_code "api" api_used_code.txt
-
-          # Extract dependencies used by workspace packages
-          # These packages are used in the workspace but dependencies are provided by parent package.json
-          extract_deps_from_code "packages/client" packages_client_used_code.txt
-          extract_deps_from_code "packages/api" packages_api_used_code.txt
+          node --test scripts/imports.test.mts
+          node scripts/imports.mts \
+            .=root_used_code.txt \
+            client=client_used_code.txt \
+            api=api_used_code.txt \
+            packages/client=packages_client_used_code.txt \
+            packages/api=packages_api_used_code.txt
 
       - name: Get @librechat/client dependencies
         if: always() && steps.paths.outputs.unused_packages == 'true'
@@ -653,12 +673,28 @@ jobs:
             cd ..
           fi
 
+      - name: Run depcheck for packages/chat/package.json
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        id: check-chat
+        continue-on-error: true
+        run: |
+          if [[ -f "packages/chat/package.json" ]]; then
+            cd packages/chat
+            UNUSED=$(depcheck --json | jq -r '.dependencies | join("\n")' || echo "")
+            # Exclude dependencies the package's own scripts invoke
+            UNUSED=$(comm -23 <(echo "$UNUSED" | sort) <(jq -r '.scripts // {} | .[]' package.json | tr ' ' '\n' | sort -u) || echo "")
+            echo "CHAT_UNUSED<<EOF" >> $GITHUB_ENV
+            echo "$UNUSED" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+            cd ../..
+          fi
+
       - name: Fail workflow if unused dependencies found
         id: unused_packages
         if: >
           always() &&
           steps.paths.outputs.unused_packages == 'true' &&
-          (env.ROOT_UNUSED != '' || env.CLIENT_UNUSED != '' || env.API_UNUSED != '')
+          (env.ROOT_UNUSED != '' || env.CLIENT_UNUSED != '' || env.API_UNUSED != '' || env.CHAT_UNUSED != '')
         continue-on-error: true
         run: exit 1
 
@@ -695,6 +731,7 @@ jobs:
           CHECK_ROOT_OUTCOME: ${{ steps.check-root.outcome }}
           CHECK_CLIENT_OUTCOME: ${{ steps.check-client.outcome }}
           CHECK_API_OUTCOME: ${{ steps.check-api.outcome }}
+          CHECK_CHAT_OUTCOME: ${{ steps.check-chat.outcome }}
           UNUSED_PACKAGES_OUTCOME: ${{ steps.unused_packages.outcome }}
         run: |
           failures=()
@@ -735,12 +772,14 @@ jobs:
           record_failure "Root depcheck" "$CHECK_ROOT_OUTCOME"
           record_failure "Client depcheck" "$CHECK_CLIENT_OUTCOME"
           record_failure "API depcheck" "$CHECK_API_OUTCOME"
+          record_failure "Chat depcheck" "$CHECK_CHAT_OUTCOME"
           record_failure "Unused NPM packages" "$UNUSED_PACKAGES_OUTCOME"
 
           if [[ "$UNUSED_PACKAGES_OUTCOME" == "failure" ]]; then
             [[ -n "$ROOT_UNUSED" ]] && printf 'Root unused dependencies:\n%s\n' "$ROOT_UNUSED"
             [[ -n "$CLIENT_UNUSED" ]] && printf 'Client unused dependencies:\n%s\n' "$CLIENT_UNUSED"
             [[ -n "$API_UNUSED" ]] && printf 'API unused dependencies:\n%s\n' "$API_UNUSED"
+            [[ -n "$CHAT_UNUSED" ]] && printf 'Chat unused dependencies:\n%s\n' "$CHAT_UNUSED"
           fi
 
           if [[ ${#failures[@]} -eq 0 ]]; then
@@ -766,9 +805,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          # fetch-depth: 0 is load-bearing — the gate reads the base ref's
+          # fetch-depth: 0 is load-bearing: the gate reads the base ref's
           # config via `git show`, which a shallow checkout cannot resolve.
+          # Blobless still has every commit and tree; `git show` fetches the
+          # one base blob it needs on demand.
           fetch-depth: 0
+          filter: blob:none
 
       - name: Detect config changes
         id: paths
@@ -778,13 +820,14 @@ jobs:
           filters: |
             eslint_config:
               - 'eslint.config.mjs'
+              - 'scripts/eslint/**'
               - '.github/workflows/static-checks.yml'
 
-      - name: Set up Node.js 24.16.0
+      - name: Set up Node.js 24.22.1
         if: steps.paths.outputs.eslint_config == 'true'
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
           cache: npm
 
       - name: Install dependencies

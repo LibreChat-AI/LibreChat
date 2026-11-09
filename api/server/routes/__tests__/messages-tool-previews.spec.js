@@ -129,11 +129,12 @@ describe('tool-call previews on the message routes', () => {
 
     const messagesRouter = require('../messages');
     app = express();
-    app.use(express.json({ limit: '10mb' }));
+    app.use(express.json({ limit: '3mb' }));
     app.use((req, _res, next) => {
       req.user = { id: req.headers['x-user'] ?? OWNER };
       next();
     });
+    app.get('/health', (_req, res) => res.sendStatus(200));
     app.use('/api/messages', messagesRouter);
   });
 
@@ -202,6 +203,83 @@ describe('tool-call previews on the message routes', () => {
     expect(message.content[0]).toEqual({ type: 'text', text: 'Building now', agentId: 'agent_a' });
   });
 
+  it('previews a persisted large client-authored transcript with repeated attachment scopes', async () => {
+    const messageId = 'repeated-attachments';
+    const payload = {
+      messageId,
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      text: '',
+      content: [
+        {
+          type: 'tool_call',
+          tool_call: {
+            id: 'parent',
+            name: 'subagent',
+            output: 'done',
+            subagent_content: Array.from({ length: 10_000 }, () => ({
+              type: 'tool_call',
+              tool_call: { id: 'x' },
+            })),
+          },
+        },
+      ],
+      attachments: Array.from({ length: 30_000 }, () => ({ toolCallId: 'x' })),
+    };
+    expect(Buffer.byteLength(JSON.stringify(payload))).toBeLessThan(3 * 1024 * 1024);
+    const saved = await request(app).post(`/api/messages/${conversationId}`).send(payload);
+    expect(saved.status).toBe(201);
+
+    const started = performance.now();
+    const [response, health] = await Promise.all([
+      request(app).get(`/api/messages/${conversationId}?toolPreviews=1`),
+      new Promise((resolve) => setTimeout(resolve, 25)).then(() => request(app).get('/health')),
+    ]);
+    expect(health.status).toBe(200);
+    expect(response.status).toBe(200);
+    const preview = response.body.find((message) => message.messageId === messageId);
+    expect(preview.content[0].tool_call).toMatchObject({
+      subagentContentOmitted: true,
+      subagentAttachmentCalls: [{ id: 'x' }],
+    });
+    expect(preview.content[0].tool_call).not.toHaveProperty('subagent_content');
+    expect(performance.now() - started).toBeLessThan(3_000);
+    const [stored] = await mockDb.methods.getMessages({ messageId, user: OWNER });
+    expect(stored.content[0].tool_call.subagent_content).toHaveLength(10_000);
+  });
+
+  it('previews a stored long decimal without changing its numeric text or stored output', async () => {
+    const output = `{"n":1.${'0'.repeat(80_000)}1}`;
+    const messageId = 'long-decimal';
+    const content = [
+      {
+        type: 'tool_call',
+        tool_call: { id: 'call_decimal', type: 'tool_call', name: 'bash_tool', output },
+      },
+    ];
+    const saved = await request(app)
+      .post(`/api/messages/${conversationId}`)
+      .send({ messageId, endpoint: 'agents', content });
+    expect(saved.status).toBe(201);
+    expect(saved.body.content).toEqual(content);
+
+    const response = await request(app).get(`/api/messages/${conversationId}?toolPreviews=1`);
+    expect(response.status).toBe(200);
+    const preview = response.body.find((message) => message.messageId === messageId);
+    const call = preview.content[0].tool_call;
+    expect(call).toMatchObject({ outputTruncated: true, outputLength: output.length });
+    expect(call.output).toHaveLength(512);
+    const [head, tail] = call.output.split('\n…\n');
+    expect(head).toBe(output.slice(0, head.length));
+    expect(tail).toBe(output.slice(-tail.length));
+
+    const full = await request(app).get(`/api/messages/${conversationId}`);
+    expect(full.status).toBe(200);
+    expect(full.body.find((message) => message.messageId === messageId).content).toEqual(content);
+    const [stored] = await mockDb.methods.getMessages({ messageId, user: OWNER });
+    expect(stored.content).toEqual(content);
+  });
+
   it('sends the full payload to an older client that does not ask', async () => {
     const response = await request(app).get(`/api/messages/${conversationId}`);
     const message = response.body.find((entry) => entry.messageId === responseId);
@@ -217,6 +295,41 @@ describe('tool-call previews on the message routes', () => {
     expect(response.status).toBe(200);
     const message = response.body.messages.find((entry) => entry.messageId === responseId);
     expect(message.content[1].tool_call.outputTruncated).toBe(true);
+  });
+
+  const subagentCallsUrl = (convo, message, files) =>
+    `/api/messages/${convo}/${message}/subagent-calls?files=${encodeURIComponent(JSON.stringify(files))}`;
+
+  it('names the subagent child calls queried files belong to, to the owner only', async () => {
+    const url = subagentCallsUrl(conversationId, responseId, [
+      { toolCallId: 'child_1' },
+      { toolCallId: 'not-in-any-transcript' },
+    ]);
+    const owner = await request(app).get(url);
+    expect(owner.status).toBe(200);
+    expect(owner.body).toEqual({
+      parts: [{ toolCallId: 'call_sub', agentId: 'agent_a', calls: [{ id: 'child_1' }] }],
+    });
+    expect(JSON.stringify(owner.body)).not.toContain('child is reading');
+
+    expect((await request(app).get(url).set('x-user', OTHER)).status).toBe(404);
+  });
+
+  it('refuses a malformed or oversized files query', async () => {
+    const base = `/api/messages/${conversationId}/${responseId}/subagent-calls`;
+    expect((await request(app).get(base)).status).toBe(400);
+    expect((await request(app).get(`${base}?files=not-json`)).status).toBe(400);
+    expect((await request(app).get(subagentCallsUrl(conversationId, responseId, []))).status).toBe(
+      400,
+    );
+    const many = Array.from({ length: 33 }, (_, i) => ({ toolCallId: `c${i}` }));
+    expect(
+      (await request(app).get(subagentCallsUrl(conversationId, responseId, many))).status,
+    ).toBe(400);
+    expect(
+      (await request(app).get(subagentCallsUrl(conversationId, responseId, [{ toolCallId: 7 }])))
+        .status,
+    ).toBe(400);
   });
 
   it('serves the full part to its owner and nobody else', async () => {
@@ -267,6 +380,12 @@ describe('tool-call previews on the message routes', () => {
       const part = await request(app).get(partUrl());
       expect(part.status).toBe(200);
       expect(part.body.tool_call.output).toBe(fullOutput);
+
+      const owners = await request(app).get(
+        subagentCallsUrl(liveConversationId, 'live-response', [{ toolCallId: 'child_1' }]),
+      );
+      expect(owners.status).toBe(200);
+      expect(owners.body.parts[0].calls).toEqual([{ id: 'child_1' }]);
     });
 
     it("refuses another user's job and a job from another tenant", async () => {

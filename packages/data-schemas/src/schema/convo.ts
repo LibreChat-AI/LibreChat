@@ -54,6 +54,8 @@ const convoSchema: Schema<IConversation> = new Schema(
         branch: { type: String, default: null },
         head: { type: String, default: null },
         repo: { type: String, default: undefined },
+        /** Pull request number a command's output linked to on this branch and repository. */
+        pullRequest: { type: Number, default: undefined },
         /** Sequence number reserved when the command settled; fences out an older report. */
         seq: { type: Number, default: undefined },
       },

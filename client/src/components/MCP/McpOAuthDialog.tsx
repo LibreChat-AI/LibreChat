@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { QrCode, ExternalLink } from 'lucide-react';
+import { CopyButton } from '@librechat/chat/components';
 import {
   Input,
   Button,
@@ -9,7 +10,6 @@ import {
   OGDialogContent,
   OGDialogDescription,
 } from '@librechat/client';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
 import { cn, openInNewTab } from '~/utils';
 
@@ -77,7 +77,7 @@ export default function McpOAuthDialog({
            * open smoothly without a hardcoded height, matching MCPToolItem. */}
           <div
             className={cn(
-              'grid transition-[grid-template-rows] [transition-duration:var(--resize-dur)] [transition-timing-function:var(--resize-ease)] motion-reduce:transition-none',
+              'grid transition-all duration-(--resize-dur) ease-(--resize-ease) motion-reduce:transition-none',
               showQR ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
             )}
           >

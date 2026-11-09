@@ -79,6 +79,24 @@ describe('Radio keyboard navigation', () => {
     expect(document.activeElement).toBe(weekdays);
   });
 
+  it('swaps ArrowLeft and ArrowRight inside an RTL container', () => {
+    const onChange = jest.fn();
+    render(
+      <div dir="rtl" style={{ direction: 'rtl' }}>
+        <Radio options={FIVE} value="daily" onChange={onChange} />
+      </div>,
+    );
+
+    const daily = screen.getByRole('radio', { name: 'Daily' });
+    daily.focus();
+    fireEvent.keyDown(daily, { key: 'ArrowLeft' });
+    expect(onChange).toHaveBeenLastCalledWith('weekdays');
+
+    screen.getByRole('radio', { name: 'Weekdays' }).focus();
+    fireEvent.keyDown(screen.getByRole('radio', { name: 'Weekdays' }), { key: 'ArrowRight' });
+    expect(onChange).toHaveBeenLastCalledWith('daily');
+  });
+
   it('moves backward with ArrowLeft and ArrowUp, wrapping in both directions', () => {
     const onChange = jest.fn();
     render(<Radio options={FIVE} value="daily" onChange={onChange} />);

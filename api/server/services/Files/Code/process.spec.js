@@ -1,3 +1,4 @@
+const { Readable } = require('stream');
 // Configurable file size limit for tests - use a getter so it can be changed per test
 const fileSizeLimitConfig = { value: 20 * 1024 * 1024 }; // Default 20MB
 
@@ -64,12 +65,16 @@ const mockParseSandboxImageChunk = jest.fn((response) => response);
 const passthroughWithTimeout = async (promise) => promise;
 jest.mock('@librechat/api', () => {
   return {
+    withFileProvisioning: jest.requireActual('@librechat/api').withFileProvisioning,
+    confirmFileProvision: jest.requireActual('@librechat/api').confirmFileProvision,
     processCodeOutput: jest.requireActual('@librechat/api').processCodeOutput,
     createSandboxTextReader: jest.requireActual('@librechat/api').createSandboxTextReader,
     prepareCodeOutputBufferForInspection:
       jest.requireActual('@librechat/api').prepareCodeOutputBufferForInspection,
     getCodeFileContextLine: jest.requireActual('@librechat/api').getCodeFileContextLine,
     appendCodeFileContextLine: jest.requireActual('@librechat/api').appendCodeFileContextLine,
+    createCodeReuploadFailures: jest.requireActual('@librechat/api').createCodeReuploadFailures,
+    openCodeFileSource: jest.requireActual('@librechat/api').openCodeFileSource,
     resolveDownloadPath: (file) => file.storageKey || file.filepath,
     logAxiosError: jest.fn(),
     /* Behaviourally identical to the real predicate in
@@ -212,10 +217,25 @@ jest.mock('@librechat/agents', () => ({
 const mockClaimCodeFile = jest.fn();
 const mockCommitCodeFile = jest.fn();
 const mockUpdateFile = jest.fn();
+const mockAcquireFileProvision = jest.fn(async () => true);
+const mockReleaseFileProvision = jest.fn(async () => true);
+const mockCommitFileProvision = jest.fn();
+let mockProvisionRecovery;
+jest.mock('~/server/services/Files/operations', () => ({
+  getFileStorage: () => ({
+    recovery: mockProvisionRecovery,
+    acquireFileProvision: (...args) => mockAcquireFileProvision(...args),
+    releaseFileProvision: (...args) => mockReleaseFileProvision(...args),
+    commitFileProvision: (...args) => mockCommitFileProvision(...args),
+  }),
+}));
 jest.mock('~/models', () => ({
   createFile: jest.fn().mockResolvedValue({}),
   getFiles: jest.fn(),
   updateFile: mockUpdateFile,
+  acquireFileProvision: (...args) => mockAcquireFileProvision(...args),
+  releaseFileProvision: (...args) => mockReleaseFileProvision(...args),
+  commitFileProvision: (...args) => mockCommitFileProvision(...args),
   claimCodeFile: (...args) => mockClaimCodeFile(...args),
   commitCodeFile: mockCommitCodeFile,
 }));
@@ -298,6 +318,21 @@ describe('Code Process', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockProvisionRecovery = jest.requireActual('@librechat/api').createFileProvisionRecovery();
+    mockAcquireFileProvision.mockReset().mockResolvedValue(true);
+    mockReleaseFileProvision.mockReset().mockResolvedValue(true);
+    mockCommitFileProvision
+      .mockReset()
+      .mockImplementation(async ({ claim, code, output, releaseOnly }) => {
+        if (releaseOnly) return true;
+        if (output) return mockCommitCodeFile(output.file, output.sourceDispatchedAt);
+        const result = await mockUpdateFile({
+          file_id: claim.file_id,
+          'metadata.codeEnvRef': code.legacyRef ?? code.ref,
+          [`metadata.codeEnvRefs.${code.routeKey}`]: code.ref,
+        });
+        return result !== null && result !== false;
+      });
     fileSizeLimitConfig.value = 20 * 1024 * 1024;
     // Default mock: atomic claim returns a new file record (no existing file)
     mockClaimCodeFile.mockResolvedValue({
@@ -351,6 +386,60 @@ describe('Code Process', () => {
       expect(mockAxios).not.toHaveBeenCalled();
       expect(mockClaimCodeFile).toHaveBeenCalledTimes(1);
       expect(mockCommitCodeFile).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not overwrite a reused output when its storage claim is denied', async () => {
+      mockClaimCodeFile.mockResolvedValue({ file_id: 'existing-output', user: 'user-123' });
+      mockAcquireFileProvision.mockResolvedValueOnce(false);
+      const saveBuffer = jest.fn();
+      getStrategyFunctions.mockReturnValue({ saveBuffer });
+      await processCodeOutput({ ...baseParams, preparedBuffer: Buffer.from('new output') });
+      expect(saveBuffer).not.toHaveBeenCalled();
+      expect(mockCommitCodeFile).not.toHaveBeenCalled();
+      expect(mockReleaseFileProvision).not.toHaveBeenCalled();
+    });
+
+    it('holds regenerated output storage through primary write and full record commit', async () => {
+      mockClaimCodeFile.mockResolvedValue({
+        file_id: 'existing-output',
+        user: 'user-123',
+        messageId: 'original-message',
+      });
+      let finishWrite;
+      const writing = new Promise((resolve) => {
+        finishWrite = resolve;
+      });
+      const saveBuffer = jest.fn(async () => {
+        expect(mockAcquireFileProvision).toHaveBeenCalledTimes(1);
+        await writing;
+        return '/uploads/existing-output.txt';
+      });
+      getStrategyFunctions.mockReturnValue({ saveBuffer });
+      const pending = processCodeOutput({
+        ...baseParams,
+        preparedBuffer: Buffer.from('new output'),
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(saveBuffer).toHaveBeenCalledTimes(1);
+      expect(mockReleaseFileProvision).not.toHaveBeenCalled();
+      finishWrite();
+      const result = await pending;
+      expect(result.file.file_id).toBe('existing-output');
+      expect(result.file.messageId).toBe(baseParams.messageId);
+      expect(mockCommitCodeFile).toHaveBeenCalledWith(
+        expect.objectContaining({ messageId: 'original-message' }),
+        undefined,
+      );
+      expect(mockCommitFileProvision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          output: expect.objectContaining({
+            file: expect.objectContaining({ file_id: 'existing-output' }),
+          }),
+        }),
+      );
+      expect(mockReleaseFileProvision).toHaveBeenCalledWith(
+        mockAcquireFileProvision.mock.calls[0][0],
+      );
     });
 
     it('enforces a caller-provided aggregate inspection budget while downloading', async () => {
@@ -668,7 +757,7 @@ describe('Code Process', () => {
         file_id: 'mock-uuid-1234',
         user: 'user-123',
       });
-      mockCommitCodeFile.mockResolvedValueOnce(false);
+      mockCommitCodeFile.mockResolvedValue(false);
       mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
 
       const result = await processCodeOutput({
@@ -3083,6 +3172,248 @@ describe('Code Process', () => {
       return { handleFileUpload, getDownloadStream };
     }
 
+    function claimedFile() {
+      return {
+        file_id: 'claimed-file',
+        user: 'user-123',
+        tenantId: 'tenant-1',
+        filename: 'report.csv',
+        filepath: '/uploads/report.csv',
+        source: 'local',
+        metadata: {
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user-123',
+            storage_session_id: 'OLD_SESSION',
+            file_id: 'OLD_ID',
+          },
+        },
+      };
+    }
+
+    function primeClaimedFile(file) {
+      return primeFiles({
+        req: { user: { id: 'user-123', role: 'USER' } },
+        tool_resources: { execute_code: { file_ids: [file.file_id] } },
+        agentId: 'agent-id',
+      });
+    }
+
+    it('does not open a stream or upload when the durable claim is denied', async () => {
+      const dbFile = claimedFile();
+      const { handleFileUpload, getDownloadStream } = setupReuploadMocks({
+        storage_session_id: 'NEW_SESSION',
+        file_id: 'NEW_ID',
+      });
+      getFiles.mockResolvedValue([dbFile]);
+      mockAcquireFileProvision.mockResolvedValueOnce(false);
+
+      await expect(primeClaimedFile(dbFile)).rejects.toThrow();
+
+      expect(mockAcquireFileProvision).toHaveBeenCalledTimes(1);
+      expect(getDownloadStream).not.toHaveBeenCalled();
+      expect(handleFileUpload).not.toHaveBeenCalled();
+      expect(updateFile).not.toHaveBeenCalled();
+      expect(mockReleaseFileProvision).not.toHaveBeenCalled();
+    });
+
+    it('holds the durable claim through stream upload and pointer persistence', async () => {
+      const dbFile = claimedFile();
+      const { handleFileUpload } = setupReuploadMocks({});
+      getFiles.mockResolvedValue([dbFile]);
+      let finishUpload;
+      let finishWrite;
+      const uploadGate = new Promise((resolve) => {
+        finishUpload = resolve;
+      });
+      const writeGate = new Promise((resolve) => {
+        finishWrite = resolve;
+      });
+      handleFileUpload.mockImplementation(async () => {
+        expect(mockAcquireFileProvision).toHaveBeenCalledTimes(1);
+        await uploadGate;
+        return { storage_session_id: 'NEW_SESSION', file_id: 'NEW_ID' };
+      });
+      updateFile.mockImplementation(async () => {
+        await writeGate;
+        return {};
+      });
+      const pending = primeClaimedFile(dbFile);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(handleFileUpload).toHaveBeenCalledTimes(1);
+      expect(updateFile).not.toHaveBeenCalled();
+      expect(mockReleaseFileProvision).not.toHaveBeenCalled();
+      finishUpload();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(updateFile).toHaveBeenCalledTimes(1);
+      expect(mockReleaseFileProvision).not.toHaveBeenCalled();
+      finishWrite();
+      const result = await pending;
+      expect(result.files).toEqual([expect.objectContaining({ id: 'NEW_ID' })]);
+      expect(mockReleaseFileProvision).toHaveBeenCalledTimes(1);
+      expect(mockAcquireFileProvision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          file_id: dbFile.file_id,
+          userId: dbFile.user,
+          tenantId: dbFile.tenantId,
+          token: expect.any(String),
+        }),
+      );
+      expect(mockReleaseFileProvision.mock.calls[0]).toEqual(
+        mockAcquireFileProvision.mock.calls[0],
+      );
+      expect(mockCommitFileProvision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          claim: mockAcquireFileProvision.mock.calls[0][0],
+          code: expect.objectContaining({
+            routeKey: 'default',
+            ref: expect.objectContaining({ file_id: 'NEW_ID' }),
+          }),
+        }),
+      );
+    });
+
+    it('does not seed a remote pointer when its conditional commit is rejected', async () => {
+      const dbFile = claimedFile();
+      setupReuploadMocks({ storage_session_id: 'NEW_SESSION', file_id: 'NEW_ID' });
+      getFiles.mockResolvedValue([dbFile]);
+      mockCommitFileProvision.mockResolvedValue(false);
+      await expect(primeClaimedFile(dbFile)).rejects.toThrow();
+      expect(mockCommitFileProvision).toHaveBeenCalledTimes(2);
+      expect(mockReleaseFileProvision).not.toHaveBeenCalled();
+    });
+
+    it('reuses the original claim and uploaded ref in the next primer invocation', async () => {
+      const dbFile = claimedFile();
+      const { handleFileUpload } = setupReuploadMocks({
+        storage_session_id: 'NEW_SESSION',
+        file_id: 'NEW_ID',
+      });
+      getFiles.mockResolvedValue([dbFile]);
+      mockCommitFileProvision.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+      await expect(primeClaimedFile(dbFile)).rejects.toThrow();
+      const originalClaim = mockAcquireFileProvision.mock.calls[0][0];
+      const result = await primeClaimedFile(dbFile);
+      expect(result.files).toEqual([expect.objectContaining({ id: 'NEW_ID' })]);
+      expect(handleFileUpload).toHaveBeenCalledTimes(1);
+      expect(mockAcquireFileProvision).toHaveBeenCalledTimes(1);
+      expect(mockCommitFileProvision).toHaveBeenLastCalledWith(
+        expect.objectContaining({ claim: originalClaim }),
+      );
+      expect(mockReleaseFileProvision).toHaveBeenCalledWith(originalClaim);
+    });
+
+    it.each(['primer', 'callback'])(
+      'recovers a %s upload through the other producer while provisioning an independent file',
+      async (first) => {
+        const { createProvisionFilesCallback } = jest.requireActual('@librechat/api');
+        const { getFileStorage } = require('~/server/services/Files/operations');
+        const dbFile = claimedFile();
+        const independent = {
+          ...claimedFile(),
+          file_id: 'independent-file',
+          filename: 'independent.csv',
+        };
+        const { handleFileUpload } = setupReuploadMocks({
+          storage_session_id: 'NEW_SESSION',
+          file_id: 'NEW_ID',
+          filename: 'stored.csv',
+        });
+        handleFileUpload.mockImplementation(async ({ filename }) => ({
+          storage_session_id: 'NEW_SESSION',
+          file_id: filename === dbFile.filename ? 'NEW_ID' : 'INDEPENDENT_ID',
+          filename: filename === dbFile.filename ? 'stored.csv' : filename,
+        }));
+        const req = { user: { id: 'user-123', role: 'USER' } };
+        const provisionToCodeEnv = jest.fn(async ({ file, sandboxFilename }) => {
+          const ref = {
+            kind: 'user',
+            id: req.user.id,
+            storage_session_id: 'NEW_SESSION',
+            file_id: file === dbFile ? 'NEW_ID' : 'INDEPENDENT_ID',
+            sandboxFilename: file === dbFile ? 'stored.csv' : sandboxFilename,
+          };
+          return {
+            referenceSet: { codeEnvRefs: { default: ref } },
+            refUpdate: { file_id: file.file_id, routeKey: 'default', ref },
+            sandboxFilename: ref.sandboxFilename,
+          };
+        });
+        const callback = (files) => {
+          const provisionState = {
+            codeEnvFiles: files,
+            vectorDBFiles: [],
+            aliveFileIds: new Set(),
+            agentScopedFileIds: new Set(),
+          };
+          return createProvisionFilesCallback({
+            req,
+            fileStorage: getFileStorage(),
+            agentToolContexts: new Map([['agent-id', { provisionState }]]),
+            provisionToCodeEnv,
+            provisionToVectorDB: jest.fn(),
+            updateFile: jest.fn(),
+            updateCodeEnvRef: jest.fn(),
+            addEmbeddedEntity: jest.fn(),
+          })(['execute_code'], 'agent-id');
+        };
+        const primer = (files) => {
+          getFiles.mockResolvedValue(files);
+          return primeFiles({
+            req,
+            tool_resources: { execute_code: { file_ids: files.map((file) => file.file_id) } },
+            agentId: 'agent-id',
+          });
+        };
+        mockCommitFileProvision.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+        await expect(first === 'primer' ? primer([dbFile]) : callback([dbFile])).rejects.toThrow();
+        const claim = mockAcquireFileProvision.mock.calls[0][0];
+        const result =
+          first === 'primer'
+            ? await callback([dbFile, independent])
+            : (await primer([dbFile, independent])).files;
+        expect(result).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: 'NEW_ID', name: 'stored.csv' }),
+            expect.objectContaining({ id: 'INDEPENDENT_ID', name: 'independent.csv' }),
+          ]),
+        );
+        expect(result).toHaveLength(2);
+        expect(handleFileUpload).toHaveBeenCalledTimes(1);
+        expect(provisionToCodeEnv).toHaveBeenCalledTimes(1);
+        expect(mockAcquireFileProvision).toHaveBeenCalledTimes(2);
+        expect(mockReleaseFileProvision).toHaveBeenCalledWith(claim);
+        expect(dbFile.metadata.codeEnvRefs.default).toMatchObject({
+          file_id: 'NEW_ID',
+          sandboxFilename: 'stored.csv',
+        });
+      },
+    );
+
+    it.each(['upload', 'persist'])(
+      'handles the durable claim after a %s failure',
+      async (failure) => {
+        const dbFile = claimedFile();
+        const { handleFileUpload } = setupReuploadMocks({
+          storage_session_id: 'NEW_SESSION',
+          file_id: 'NEW_ID',
+        });
+        getFiles.mockResolvedValue([dbFile]);
+        if (failure === 'upload')
+          handleFileUpload.mockRejectedValueOnce(new Error('upload unavailable'));
+        else updateFile.mockRejectedValue(new Error('database unavailable'));
+        await expect(primeClaimedFile(dbFile)).rejects.toThrow();
+        if (failure === 'upload') {
+          expect(mockReleaseFileProvision).toHaveBeenCalledTimes(1);
+          expect(mockReleaseFileProvision.mock.calls[0]).toEqual(
+            mockAcquireFileProvision.mock.calls[0],
+          );
+        } else {
+          expect(mockReleaseFileProvision).not.toHaveBeenCalled();
+        }
+      },
+    );
+
     it('recovers a throttled stale-file reupload with a fresh stream', async () => {
       const controller = new AbortController();
       const dbFile = {
@@ -3621,14 +3952,101 @@ describe('Code Process', () => {
       ]);
     });
 
+    const makeMissingObjectFile = (fileId, filename) => ({
+      file_id: fileId,
+      filename,
+      filepath: `https://storage.us-east.example.test/${fileId}`,
+      source: 'local',
+      context: 'execute_code',
+      metadata: {
+        codeEnvRef: {
+          kind: 'user',
+          id: 'user-123',
+          storage_session_id: 'US_EAST_SESSION',
+          file_id: `MISSING_${fileId}`,
+        },
+      },
+    });
+    const primeMissing = (fileIds) =>
+      primeFiles({
+        req: {
+          id: 'request-123',
+          body: { messageId: 'run-123' },
+          user: { id: 'user-123', role: 'USER' },
+        },
+        tool_resources: { execute_code: { file_ids: fileIds, files: [] } },
+        agentId: 'agent-id',
+      });
+
     it.each([
-      ['Axios/CloudFront 404', { response: { status: 404 } }, 'missing_backing_object'],
-      [
-        'AWS SDK NoSuchKey',
-        { name: 'NoSuchKey', $metadata: { httpStatusCode: 404 } },
-        'missing_backing_object',
-      ],
-      ['Azure BlobNotFound', { code: 'BlobNotFound', statusCode: 404 }, 'missing_backing_object'],
+      ['Axios/CloudFront 404', { response: { status: 404 } }],
+      ['AWS SDK NoSuchKey', { name: 'NoSuchKey', $metadata: { httpStatusCode: 404 } }],
+      ['Azure BlobNotFound', { code: 'BlobNotFound', statusCode: 404 }],
+    ])('names a file deleted from storage instead of failing for %s', async (_shape, error) => {
+      const dbFile = makeMissingObjectFile('librechat-file-id', 'cross-region-report.png');
+      const getDownloadStream = jest.fn().mockRejectedValue(error);
+      getFiles.mockResolvedValue([dbFile]);
+      getStrategyFunctions.mockImplementation((source) =>
+        source === 'execute_code' ? { handleFileUpload: jest.fn() } : { getDownloadStream },
+      );
+      mockAxios.mockResolvedValue({ data: null });
+
+      const result = await primeMissing(['librechat-file-id']);
+
+      expect(result.files).toEqual([]);
+      expect(result.missingFilesContext).toContain('"cross-region-report.png"');
+      expect(result.missingFilesContext).toContain('deleted from storage');
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining('resource-recovery-required'),
+      );
+      const failureLogs = logger.error.mock.calls.map(([message]) => message).join('\n');
+      expect(failureLogs).toContain('category=missing_backing_object');
+      expect(failureLogs).not.toContain(dbFile.filename);
+    });
+
+    it('still requires recovery when the Code API upload returns 404', async () => {
+      const dbFile = makeMissingObjectFile('librechat-file-id', 'cross-region-report.png');
+      const getDownloadStream = jest.fn().mockResolvedValue(Readable.from(['source bytes']));
+      const handleFileUpload = jest.fn().mockRejectedValue({ response: { status: 404 } });
+      getFiles.mockResolvedValue([dbFile]);
+      getStrategyFunctions.mockImplementation((source) =>
+        source === 'execute_code' ? { handleFileUpload } : { getDownloadStream },
+      );
+      mockAxios.mockResolvedValue({ data: null });
+
+      await expect(primeMissing(['librechat-file-id'])).rejects.toMatchObject({
+        code: ErrorTypes.RESOURCE_RECOVERY_REQUIRED,
+        details: { required: 1, primed: 0, failed: 1 },
+      });
+      expect(handleFileUpload).toHaveBeenCalled();
+    });
+
+    it('still requires recovery when a file failed for another reason', async () => {
+      const gone = makeMissingObjectFile('gone-id', 'gone.csv');
+      const denied = makeMissingObjectFile('denied-id', 'denied.csv');
+      const getDownloadStream = jest.fn((_req, path) =>
+        Promise.reject(
+          path.includes('gone-id')
+            ? { code: 'BlobNotFound', statusCode: 404 }
+            : { code: 'AccessDenied', status: 403 },
+        ),
+      );
+      getFiles.mockResolvedValue([gone, denied]);
+      getStrategyFunctions.mockImplementation((source) =>
+        source === 'execute_code' ? { handleFileUpload: jest.fn() } : { getDownloadStream },
+      );
+      mockAxios.mockResolvedValue({ data: null });
+
+      await expect(primeMissing(['gone-id', 'denied-id'])).rejects.toMatchObject({
+        code: ErrorTypes.RESOURCE_RECOVERY_REQUIRED,
+        details: { required: 2, primed: 0, failed: 2 },
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('category=resource_access_denied'),
+      );
+    });
+
+    it.each([
       ['storage access denied', { code: 'AccessDenied', status: 403 }, 'resource_access_denied'],
       ['Code API throttling', { code: 'CODE_API_RATE_LIMITED', status: 429 }, 'rate_limited'],
     ])(
@@ -3795,6 +4213,30 @@ describe('Code Process', () => {
       expect(result.toolContext).not.toContain('/mnt/data');
       expect(result.toolContext).not.toContain('tool environment:');
       expect(result.files).toHaveLength(1);
+      expect(result.contextFiles).toEqual([
+        {
+          file: expect.objectContaining({ file_id: 'fid-ready' }),
+          destination: 'data-ready.xlsx',
+          agentScoped: true,
+          source: {
+            storage_session_id: result.files[0].storage_session_id,
+            file_id: result.files[0].id,
+          },
+        },
+      ]);
+    });
+
+    it('returns no structured entries on a sandbox route', async () => {
+      setupSessionInfoOk();
+      getFiles.mockResolvedValue([makeFile({ status: 'ready' })]);
+
+      const result = await primeFiles({
+        req: { user: { id: 'user-123', role: 'USER' } },
+        tool_resources: { execute_code: { file_ids: ['fid-ready'], files: [] } },
+        agentId: 'agent-id',
+      });
+
+      expect(result.contextFiles).toBeUndefined();
     });
 
     it('annotates a pending file with "(preview not yet generated)"', async () => {

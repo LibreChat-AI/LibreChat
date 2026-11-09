@@ -70,13 +70,13 @@ const SettingsButton = ({
       <span
         aria-hidden="true"
         className={cn(
-          'grid overflow-hidden transition-[grid-template-columns,opacity] duration-150 ease-out',
+          'grid overflow-hidden transition-all duration-150 ease-out',
           'grid-cols-[0fr] opacity-0',
           'group-hover/button:grid-cols-[1fr] group-hover/button:opacity-100',
           'group-focus-visible/button:grid-cols-[1fr] group-focus-visible/button:opacity-100',
         )}
       >
-        <span className="min-w-0 truncate pr-0.5">{text}</span>
+        <span className="min-w-0 truncate pe-0.5">{text}</span>
       </span>
     </button>
   );
@@ -108,7 +108,7 @@ function EndpointMenuContent({
     return modelSpecs.filter((spec: TModelSpec) => spec.group === endpoint.value);
   }, [modelSpecs, endpoint.value]);
 
-  if (isAssistantsEndpoint(endpoint.value) && endpoint.models === undefined) {
+  if (endpoint.isLoading && !endpoint.models?.length) {
     return (
       <div
         className="flex items-center justify-center p-2"
@@ -163,6 +163,18 @@ function EndpointMenuContent({
           setSize={listboxSetSize}
         />
       ))}
+      {endpoint.isUnavailable && (
+        <MenuItem onClick={endpoint.onRetry}>{localize('com_ui_retry')}</MenuItem>
+      )}
+      {endpoint.isLoading && endpoint.models != null && (
+        <div
+          role="status"
+          aria-label={localize('com_ui_loading')}
+          className="flex justify-center p-2"
+        >
+          <Spinner aria-hidden="true" />
+        </div>
+      )}
       <EndpointModels
         endpoint={endpoint}
         renderedModels={renderedModels}
@@ -279,7 +291,7 @@ export function EndpointItem({ endpoint, endpointIndex }: EndpointItemProps) {
           {endpoint.icon}
         </div>
       )}
-      <span className="truncate text-left">{endpoint.label}</span>
+      <span className="truncate text-start">{endpoint.label}</span>
     </div>
   );
 

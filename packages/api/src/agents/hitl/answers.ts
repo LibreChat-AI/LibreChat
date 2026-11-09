@@ -464,22 +464,6 @@ async function buildContext({
 }
 
 /**
- * The retained-answers block for one turn, or `undefined` when there is nothing
- * to carry or the block could not be built: a failure here costs the turn its
- * carried answers, never the turn, and is logged once per occurrence.
- */
-export async function buildRetainedAnswersContext(
-  input: RetainedAnswersContextInput,
-): Promise<string | undefined> {
-  try {
-    return await buildContext(input);
-  } catch (error) {
-    logger.warn('[retainedAnswers] Block unavailable for this turn', getSafeErrorMetadata(error));
-    return undefined;
-  }
-}
-
-/**
  * Exact counting is limited to retained context. The general prompt counter's
  * 4 KiB byte-estimate shortcut would discard answers that fit the token budget.
  * Initialize lazily so disabled retention and histories without answers cost no

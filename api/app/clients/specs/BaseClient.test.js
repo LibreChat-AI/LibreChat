@@ -41,14 +41,12 @@ jest.mock('~/models', () => ({
   getMessages: jest.fn().mockResolvedValue([]),
   saveMessage: jest.fn(),
   updateMessage: jest.fn(),
-  deleteMessagesSince: jest.fn(),
   deleteMessages: jest.fn(),
   getConvoTitle: jest.fn(),
   getConvo: jest.fn(),
   saveConvo: jest.fn(),
   stampConvoLastResponse: jest.fn(),
   deleteConvos: jest.fn(),
-  getPreset: jest.fn(),
   getPresets: jest.fn(),
   savePreset: jest.fn(),
   deletePresets: jest.fn(),
@@ -3288,7 +3286,12 @@ describe('BaseClient', () => {
         {},
       );
       expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [ownerFile]);
-      expect(TestClient.processAttachments).toHaveBeenCalledWith(message, [ownerFile]);
+      expect(TestClient.processAttachments).toHaveBeenCalledWith(
+        message,
+        [ownerFile],
+        undefined,
+        expect.any(Function),
+      );
       expect(message.fileContext).toBe('authorized owner text');
       expect(message.files).toEqual([
         expect.objectContaining({
@@ -4530,7 +4533,7 @@ describe('BaseClient', () => {
 
       expect(result).toEqual([file]);
       expect(message.documents).toEqual([{ type: 'file' }]);
-      expect(TestClient.addDocuments).toHaveBeenCalledWith(message, [file]);
+      expect(TestClient.addDocuments).toHaveBeenCalledWith(message, [file], undefined);
     });
   });
 });

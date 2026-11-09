@@ -43,6 +43,12 @@ librechat:
   # Example: https://admin.example.com/admin
   adminPanelUrl: ""
 
+  # Inject MONGO_URI / REDIS_PASSWORD built from the bundled subchart Secrets. Set a
+  # key to false when that database's settings come from global.librechat.existingSecretName.
+  injectBundledCredentials:
+    mongodb: true
+    redis: true
+
   configEnv:
     # Set unique, persistent values in global.librechat.existingSecretName before production use.
     # If omitted, LibreChat generates temporary values in .env.temp when the container filesystem is persistent.
@@ -194,6 +200,8 @@ ingress:
       paths:
         - path: /
           pathType: ImplementationSpecific
+  # Set tls for any non-local install; without it the ingress serves plain HTTP
+  # and NOTES.txt prints a warning.
   tls: []
   #  - secretName: chart-example-tls
   #    hosts:
@@ -373,8 +381,11 @@ mongodb:
   # See https://github.com/bitnami/charts/issues/35164
   image:
     repository: bitnamilegacy/mongodb
+  # Credentials are generated into the subchart Secret and injected into
+  # MONGO_URI via secretKeyRef. Set librechat.configEnv.MONGO_URI to use your
+  # own database, or auth.enabled=false to restore the unauthenticated setup.
   auth:
-    enabled: false
+    enabled: true
   databases:
    - LibreChat
 #  persistence: 
@@ -397,5 +408,6 @@ meilisearch:
 redis:
   enabled: false
   architecture: standalone
+  # The generated password is injected as REDIS_PASSWORD via secretKeyRef.
   auth:
-    enabled: false
+    enabled: true

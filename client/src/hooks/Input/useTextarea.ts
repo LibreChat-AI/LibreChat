@@ -3,6 +3,7 @@ import { v4 } from 'uuid';
 import debounce from 'lodash/debounce';
 import { useToastContext } from '@librechat/client';
 import { useRecoilValue, useRecoilState } from 'recoil';
+import { resolveComposerKeyDown } from '@librechat/chat';
 import { Constants, EToolResources, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TEndpointOption } from 'librechat-data-provider';
 import type { KeyboardEvent } from 'react';
@@ -35,7 +36,6 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useGetSender from '~/hooks/Conversations/useGetSender';
 import useUploadOptions from '~/hooks/Files/useUploadOptions';
 import { useInteractionHealthCheck } from '~/data-provider';
-import { resolveComposerKeyDown } from '~/utils/shortcuts';
 import { useChatContext } from '~/Providers/ChatContext';
 import { globalAudioId } from '~/common';
 import { useLocalize } from '~/hooks';
@@ -202,10 +202,12 @@ export default function useTextarea({
         return placeholder;
       }
 
-      const sender =
-        isAssistant || isAgent
-          ? getEntityName({ name: entityName, isAgent, localize })
-          : getSender(conversation as TEndpointOption);
+      let sender: string | undefined;
+      if (isAssistant || isAgent) {
+        sender = getEntityName({ name: entityName, isAgent, localize });
+      } else if (conversation) {
+        sender = getSender(conversation as TEndpointOption);
+      }
 
       return `${localize('com_endpoint_message_new', {
         0: sender ? sender : localize('com_endpoint_ai'),

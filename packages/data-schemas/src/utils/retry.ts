@@ -198,25 +198,3 @@ export async function createIndexesWithRetry(
     options,
   );
 }
-
-/**
- * Initializes all collections and indexes for a set of models on a connection,
- * with per-model deadlock retry. Models are processed sequentially to minimize
- * contention on the DocumentDB catalog.
- */
-export async function initializeOrgCollections(
-  models: Record<string, IndexedModel & { createCollection: () => Promise<unknown> }>,
-  options: IndexBuildOptions = {},
-): Promise<{ totalMs: number; perModel: Array<{ name: string; ms: number }> }> {
-  const perModel: Array<{ name: string; ms: number }> = [];
-  const t0 = Date.now();
-
-  for (const model of Object.values(models)) {
-    const modelStart = Date.now();
-    await model.createCollection();
-    await createIndexesWithRetry(model, options);
-    perModel.push({ name: model.modelName, ms: Date.now() - modelStart });
-  }
-
-  return { totalMs: Date.now() - t0, perModel };
-}

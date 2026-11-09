@@ -1,3 +1,8 @@
+import type { StepEvents, SteerEvents, TSteerAppliedEvent } from './runs';
+import type { TMessageContentParts } from './content';
+import type { ChatStepFrame } from './transport';
+import type { Agents } from './agents';
+
 export type SubagentThreadStatus =
   | 'dispatched'
   | 'running'
@@ -47,6 +52,14 @@ export type ParentSubagentIndex = {
  * or durable records that produced it.
  */
 export type SubagentActivityItem =
+  | {
+      type: 'steer';
+      steer: string;
+      steerId?: string;
+      clientSteerId?: string;
+      createdAt?: number;
+      textTruncated?: boolean;
+    }
   | {
       type: 'writing';
       text: string;
@@ -143,6 +156,8 @@ export type SubagentExternalEventDetails = {
  */
 export type SubagentThreadTurn = {
   taskId: string;
+  /** Absent on older servers; false when this task has no captured content. */
+  contentRecoveryAvailable?: boolean;
   trigger: {
     kind: SubagentThreadTriggerKind;
     summary: string;
@@ -241,3 +256,74 @@ export type SubagentDigest = {
   /** Why an `expand` returned less than the node it named. */
   note?: string;
 };
+
+/** Public graph events only. Never a private model transcript or tool execution request. */
+export type SubagentContentFrame =
+  | { event: SteerEvents.ON_STEER_APPLIED; data: TSteerAppliedEvent }
+  | Extract<
+      ChatStepFrame,
+      {
+        event:
+          | StepEvents.ON_RUN_STEP
+          | StepEvents.ON_MESSAGE_DELTA
+          | StepEvents.ON_REASONING_DELTA
+          | StepEvents.ON_RUN_STEP_DELTA
+          | StepEvents.ON_RUN_STEP_COMPLETED
+          | StepEvents.ON_RUN_STEP_CLOSED;
+      }
+    >
+  | { event: StepEvents.ON_TOOL_PREPARATION; data: Agents.ToolPreparationMarker }
+  | { event: StepEvents.ON_TOOL_CALLS_DISPATCHED; data: Agents.ToolCallsDispatchedEvent };
+
+export type SubagentContentEvent = { sequence: number; frame: SubagentContentFrame };
+
+export type SubagentContentWatermark = {
+  taskId: string;
+  throughSequence: number;
+  /** Monotonic committed journal batch, scoped to this immutable task execution. */
+  revision: number;
+};
+
+export type SubagentContentAvailableFrame = {
+  event: 'subagent_content_available';
+  data: SubagentContentWatermark;
+};
+
+type SubagentTaskContentIdentity = SubagentContentWatermark & {
+  /** Opaque cursor for the next suffix page at the same sampled target. */
+  nextCursor?: string;
+  targetThroughSequence: number;
+  /** Fixed server deadline for refreshing a terminal prefix after a late commit. */
+  retryUntil?: number;
+  parentConversationId: string;
+  threadId: string;
+  /** Stable normal assistant message identity, including before terminal persistence. */
+  messageId: string;
+  parentMessageId: string;
+  sender: string;
+  status: SubagentThreadStatus;
+  /** Running tasks expose committed prefixes (partial). Complete requires a
+   * terminal row whose expected watermark matches the committed target. */
+  recovery: 'complete' | 'partial';
+};
+
+export type SubagentTaskContentSnapshot = SubagentTaskContentIdentity & {
+  mode: 'snapshot';
+  content: TMessageContentParts[];
+  runSteps: Agents.RunStep[];
+};
+
+export type SubagentTaskContentSuffix = SubagentTaskContentIdentity & {
+  mode: 'suffix';
+  afterSequence: number;
+  events: SubagentContentEvent[];
+};
+
+/** Subscribe to activity first, wait for ready or terminal, then GET content. Treat
+ * subagent_content_available as invalidation, never a content delta. Read the
+ * committed suffix with afterSequence; drain nextCursor before fetching a newer
+ * target. Deduplicate by sequence, not revision alone (pages may share a batch).
+ * Never fold bounded activity deltas onto these content snapshots.
+ * Poll while running as a fallback for an unavailable notification transport.
+ * A suffix's throughSequence also covers non-rendering activity events. */
+export type SubagentTaskContentResponse = SubagentTaskContentSnapshot | SubagentTaskContentSuffix;

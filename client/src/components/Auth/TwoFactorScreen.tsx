@@ -13,6 +13,7 @@ import {
   InputOTPSeparator,
 } from '@librechat/client';
 import { useVerifyTwoFactorTempMutation } from '~/data-provider';
+import { useAuthContext } from '~/hooks/AuthContext';
 import BackupCodeInput from './BackupCodeInput';
 import { useLocalize } from '~/hooks';
 
@@ -38,13 +39,14 @@ const TwoFactorScreen: React.FC = React.memo(() => {
     formState: { errors },
   } = useForm<TwoFactorFormInputs>();
   const localize = useLocalize();
+  const { completeAuthentication } = useAuthContext();
   const { showToast } = useToastContext();
   const [useBackup, setUseBackup] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const { mutate: verifyTempMutate } = useVerifyTwoFactorTempMutation({
     onSuccess: (result) => {
-      if (result.token != null && result.token !== '') {
-        window.location.href = '/';
+      if (result.token != null && result.token !== '' && result.user != null) {
+        completeAuthentication(result.token, result.user);
       }
     },
     onMutate: () => {
@@ -143,6 +145,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
             data-testid="login-button"
             disabled={isLoading}
             shape="soft"
+            size="auth-action"
             className="w-full disabled:opacity-80"
           >
             {isLoading ? localize('com_auth_email_verifying_ellipsis') : localize('com_ui_verify')}

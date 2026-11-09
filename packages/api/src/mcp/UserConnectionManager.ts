@@ -199,14 +199,33 @@ export abstract class UserConnectionManager {
     return undefined;
   }
 
+  /**
+   * A principal-scoped registry lookup for the acting user. The role and `idOnTheSource` the
+   * request already loaded go along, so deciding which servers the user's config hides needs no
+   * user read.
+   */
+  protected getPrincipalServerConfig(
+    serverName: string,
+    user?: t.MCPLookupUser,
+    configServers?: Record<string, t.ParsedServerConfig>,
+  ): Promise<t.ParsedServerConfig | undefined> {
+    return MCPServersRegistry.getInstance().getServerConfig(
+      serverName,
+      user?.id,
+      configServers,
+      user?.role,
+      { idOnTheSource: user?.idOnTheSource },
+    );
+  }
+
   protected async resolveConnectionTarget({
     serverName,
     user,
   }: {
     serverName: string;
-    user?: { id?: string };
+    user?: t.MCPLookupUser;
   }): Promise<t.MCPConnectionTarget | undefined> {
-    const config = await MCPServersRegistry.getInstance().getServerConfig(serverName, user?.id);
+    const config = await this.getPrincipalServerConfig(serverName, user);
     if (!config) {
       return undefined;
     }

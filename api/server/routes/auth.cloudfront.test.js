@@ -4,6 +4,7 @@ const request = require('supertest');
 const mockForceRefreshCloudFrontAuthCookies = jest.fn();
 
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
   limiterCache: jest.fn(),
   createTwoFactorManagementLimiter: jest.fn(() => (req, res, next) => next()),
   createSetBalanceConfig: jest.fn(() => (req, res, next) => next()),
@@ -35,6 +36,7 @@ jest.mock('~/server/controllers/auth/TwoFactorAuthController', () => ({
   confirm2FASetupWithTempToken: jest.fn((req, res) => res.status(200).end()),
   acknowledge2FASetup: jest.fn((req, res) => res.status(200).end()),
   finalize2FASetup: jest.fn((req, res) => res.status(200).end()),
+  cancel2FASetup: jest.fn((req, res) => res.status(200).end()),
 }));
 
 jest.mock('~/server/controllers/auth/PasskeyController', () => ({

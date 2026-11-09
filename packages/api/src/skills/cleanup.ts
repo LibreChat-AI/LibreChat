@@ -1,21 +1,33 @@
 import type { DeleteSkillCleanupStep, DeleteSkillResult } from '@librechat/data-schemas';
 
-const CLEANUP_STEPS: DeleteSkillCleanupStep[] = ['agent_allowlists', 'skill_files', 'permissions'];
+const CLEANUP_STEPS: DeleteSkillCleanupStep[] = [
+  'agent_allowlists',
+  'skill_files',
+  'upload_intents',
+  'permissions',
+];
 
 /**
- * Cleanup is monotonic across idempotent deletion attempts. Once any attempt
- * confirms a step succeeded, a later transient failure cannot make that work
- * incomplete again. Only steps that failed in every confirming attempt remain
- * unsettled.
+ * Most cleanup steps are monotonic across idempotent attempts: one confirmed
+ * success settles a transient failure. Upload intents are different because a
+ * late writer can create one after an earlier pass, so the latest confirming
+ * result decides whether that step is settled.
  */
 export function mergeDeleteSkillResults(
   current: DeleteSkillResult,
   next: DeleteSkillResult,
 ): DeleteSkillResult {
   const confirmingAttempts = [current, next].filter((result) => result.skillAbsent);
-  const failedCleanupSteps = CLEANUP_STEPS.filter((step) =>
-    confirmingAttempts.every((result) => result.failedCleanupSteps.includes(step)),
-  );
+  const failedCleanupSteps = CLEANUP_STEPS.filter((step) => {
+    if (step === 'upload_intents') {
+      // A late writer can introduce a new intent after an earlier clean pass.
+      // Only a newer confirming pass may settle this non-monotonic step.
+      return next.skillAbsent
+        ? next.failedCleanupSteps.includes(step)
+        : current.failedCleanupSteps.includes(step);
+    }
+    return confirmingAttempts.every((result) => result.failedCleanupSteps.includes(step));
+  });
   const skillAbsent = confirmingAttempts.length > 0;
 
   return {

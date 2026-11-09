@@ -93,11 +93,11 @@ const AgentCard = memo(
           layoutId={agentMorphId('surface', agent.id)}
           /* Promoted only while this card's surface is in flight; a grid of
              permanently layered cards is a cost, not a saving. */
-          style={{
-            borderRadius: surfaceRadius,
-            willChange: morphing ? 'transform' : undefined,
-          }}
-          className="rounded-theme-surface border-border-light bg-surface-card group-hover:border-border-medium group-hover:bg-surface-card-hover pointer-events-none absolute inset-0 z-0 border transition-colors duration-150"
+          style={{ borderRadius: surfaceRadius }}
+          className={cn(
+            morphing && 'will-change-transform',
+            'rounded-theme-surface border-border-light bg-surface-card group-hover:border-border-medium group-hover:bg-surface-card-hover pointer-events-none absolute inset-0 z-0 border transition-colors duration-150',
+          )}
           {...shared}
         />
 
@@ -170,8 +170,10 @@ const AgentCard = memo(
             layout="position"
             layoutId={agentMorphId('description', agent.id)}
             id={descriptionId}
-            style={{ willChange: morphing ? 'transform' : undefined }}
-            className="text-text-secondary mt-2 mb-5 line-clamp-3 text-sm leading-6 break-words"
+            className={cn(
+              morphing && 'will-change-transform',
+              'text-text-secondary mt-2 mb-5 line-clamp-3 text-sm leading-6 break-words',
+            )}
             {...shared}
           >
             {description}

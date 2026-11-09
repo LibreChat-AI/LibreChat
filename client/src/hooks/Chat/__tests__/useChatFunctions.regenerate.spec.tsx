@@ -1,58 +1,95 @@
 import { renderHook, act } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
+import { pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import {
+  revealedQueuedTurnFamily,
+  submissionStartFamily,
+  showStopButtonByIndex,
+} from '@librechat/chat/react';
+import {
+  Tools,
   Constants,
+  QueryKeys,
   ContentTypes,
   EModelEndpoint,
-  QueryKeys,
   createPayload,
+  CODE_ENVIRONMENT_DECISION_VERSION,
 } from 'librechat-data-provider';
 import type {
   Agent,
-  CodeEnvironmentMode,
-  CodeWorkspaceSelection,
+  TConfig,
   TConversation,
   TMessage,
   TSubmission,
   TReasoningOverride,
   TEphemeralAgent,
 } from 'librechat-data-provider';
+import type { CodeApprovalModeInputs, CodeWorkspaceInputs } from '@librechat/chat';
 import type { ReactNode } from 'react';
 import type { ExtendedFile } from '~/common';
-import { pendingReasoningOverrideFamily } from '~/components/Chat/Input/Composer/state';
-import { activeUsageResponseIdFamily, pendingUsageFamily } from '~/store/usage';
-import { revealedQueuedTurnFamily } from '~/store/steer';
+import {
+  activeUsageResponseIdFamily,
+  pendingUsageFamily,
+} from '~/components/Chat/Input/TokenUsage/store';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import useChatFunctions from '../useChatFunctions';
 import { isPasteSubmitted } from '~/utils';
 
 const mockNavigate = jest.fn();
-const mockSetShowStopButton = jest.fn();
 const mockSetIsSubmitting = jest.fn();
 const mockGetEphemeralAgent = jest.fn((): TEphemeralAgent | null => null);
 const mockSetFilesToDelete = jest.fn();
 const mockGetSender = jest.fn(() => 'Assistant');
 const mockGetExpiry = jest.fn(() => 'expiry-key');
+const mockAgent = {
+  id: 'agent-1',
+  provider: EModelEndpoint.openAI,
+  model: 'gpt-5.1',
+} as Agent;
 const mockAgentQueryData: { current?: Agent } = {};
 const mockEndpointsQueryData: { current?: Record<string, unknown> } = {};
+const mockCapabilitiesData: { current?: Record<string, unknown> } = {};
+const mockCapabilitiesState: {
+  current?: { status: string; fetchStatus?: string; dataUpdatedAt?: number };
+} = {};
+/** A query that holds data always has a timestamp: loaded data is fresh unless a test says otherwise. */
+const mockGetQueryState = jest.fn((queryKey: readonly unknown[]) => {
+  if (queryKey[0] === QueryKeys.reasoningCapabilities) {
+    return { dataUpdatedAt: Date.now(), ...mockCapabilitiesState.current };
+  }
+  if (
+    queryKey[0] === QueryKeys.agent &&
+    mockAgentQueryData.current &&
+    queryKey[1] === mockAgentQueryData.current.id
+  ) {
+    return { status: 'success', data: mockAgentQueryData.current };
+  }
+  return undefined;
+});
 const mockGetQueryData = jest.fn((queryKey: readonly unknown[]) => {
+  if (queryKey[0] === QueryKeys.reasoningCapabilities) {
+    return mockCapabilitiesData.current;
+  }
   if (queryKey[0] === QueryKeys.agent) {
     return mockAgentQueryData.current;
   }
   if (queryKey[0] === QueryKeys.endpoints) {
-    return mockEndpointsQueryData.current ?? {};
+    return (
+      mockEndpointsQueryData.current ?? {
+        [EModelEndpoint.agents]: { order: 0 },
+        [EModelEndpoint.openAI]: { order: 1 },
+      }
+    );
   }
   return {};
 });
 const mockLoggerWarn = jest.fn();
 const mockGetLatestConversation = jest.fn(() => null as TConversation | null);
 const mockSetConversation = jest.fn();
-const mockResolveCodeWorkspaceSubmission = jest.fn<
-  | { codeEnvironmentMode?: CodeEnvironmentMode; codeWorkspaces?: CodeWorkspaceSelection[] }
-  | undefined,
-  [CodeWorkspaceSelection[]?, CodeEnvironmentMode?]
->(() => ({}));
+const mockReadWorkspaceInputs = jest.fn<CodeWorkspaceInputs, []>();
+const mockReadApprovalInputs = jest.fn<Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'>, []>();
 const mockCodeWorkspace = {
-  resolveSubmission: mockResolveCodeWorkspaceSubmission,
+  readInputs: mockReadWorkspaceInputs,
   rememberSelection: jest.fn(),
 };
 
@@ -63,14 +100,14 @@ jest.mock('react-router-dom', () => ({
 jest.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({
     getQueryData: mockGetQueryData,
-    getQueryState: jest.fn(() => undefined),
+    getQueryState: (queryKey: readonly unknown[]) => mockGetQueryState(queryKey),
   }),
 }));
 
 jest.mock('recoil', () => ({
   useRecoilValue: () => false,
   useSetRecoilState: (atom: unknown) =>
-    String(atom).includes('isSubmitting') ? mockSetIsSubmitting : mockSetShowStopButton,
+    String(atom).includes('isSubmitting') ? mockSetIsSubmitting : jest.fn(),
   useRecoilCallback: (factory: any) =>
     factory({
       snapshot: {
@@ -86,8 +123,7 @@ jest.mock('recoil', () => ({
 
 jest.mock('~/hooks/Files/useSetFilesToDelete', () => () => mockSetFilesToDelete);
 jest.mock('~/hooks/Agents/useCodeApprovalMode', () => () => ({
-  modes: ['ask', 'acceptEdits'],
-  selected: 'ask',
+  readInputs: mockReadApprovalInputs,
 }));
 jest.mock('~/hooks/Agents/useCodeWorkspace', () => () => mockCodeWorkspace);
 jest.mock('~/hooks/Conversations/useGetConversation', () => () => mockGetLatestConversation);
@@ -107,15 +143,9 @@ jest.mock('~/Providers/AgentsMapContext', () => ({
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {
-    isSubmittingFamily: () => 'isSubmitting',
-    submissionStartFamily: () => 'submissionStart',
-    showStopButtonByIndex: () => 'showStopButton',
-    pendingManualSkillsByConvoId: () => 'pendingManualSkills',
-    pendingQuotesByConvoId: () => 'pendingQuotes',
     messagesSiblingIdxFamily: () => 'messagesSiblingIdx',
     conversationByKeySelector: () => 'conversation',
   },
-  useGetEphemeralAgent: () => mockGetEphemeralAgent,
 }));
 jest.mock('~/utils', () => ({
   ...jest.requireActual('~/utils'),
@@ -157,6 +187,92 @@ const conversation = (conversationId: string) =>
     agent_id: 'agent-1',
   }) as TConversation;
 
+const codeAgent: Agent = {
+  id: 'agent_primary',
+  name: null,
+  description: null,
+  created_at: 0,
+  avatar: null,
+  provider: EModelEndpoint.openAI,
+  model: null,
+  model_parameters: {
+    temperature: null,
+    maxContextTokens: null,
+    max_context_tokens: null,
+    max_output_tokens: null,
+    top_p: null,
+    frequency_penalty: null,
+    presence_penalty: null,
+  },
+  stateful_code_sessions: true,
+  tools: [Tools.execute_code],
+  code_environment_id: 'personal-vm',
+};
+
+const statefulCodeSessions: TConfig['statefulCodeSessions'] = {
+  allowedEnvironments: ['user'],
+  approvalsEnabled: true,
+  approvalModes: ['ask', 'acceptEdits'],
+  environments: [
+    {
+      id: 'personal-vm',
+      name: 'Personal VM',
+      type: 'attached',
+      configSchema: {
+        permissions: {
+          fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+          commandExecution: { allowed: ['ask'], default: 'ask' },
+        },
+      },
+    },
+  ],
+};
+
+/** The inputs of a chat that runs no code: the workspace resolves to an empty decision. */
+const workspaceInputs = (overrides: Partial<CodeWorkspaceInputs> = {}): CodeWorkspaceInputs => ({
+  conversation: conversation('new'),
+  primaryAgent: codeAgent,
+  agentsMap: {},
+  statefulCodeSessions,
+  startupConfig: { codeEnvironmentDecisionVersion: CODE_ENVIRONMENT_DECISION_VERSION },
+  canRunCode: false,
+  capabilities: ['execute_code', 'stateful_code_sessions'],
+  configurationLoaded: true,
+  recoveryPending: false,
+  replacingDecision: false,
+  statuses: {
+    'personal-vm': {
+      data: { environmentId: 'personal-vm', status: 'ready', workspaces: [{ id: 'project-a' }] },
+      isLoading: false,
+      isError: false,
+    },
+  },
+  getPreferredWorkspace: () => undefined,
+  ...overrides,
+});
+
+/** The inputs of a new agents chat whose one ready workspace is required. */
+const attachedInputs = (overrides: Partial<CodeWorkspaceInputs> = {}): CodeWorkspaceInputs =>
+  workspaceInputs({
+    conversation: conversation('new'),
+    canRunCode: true,
+    ...overrides,
+  });
+
+const approvalInputs = (): Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'> => ({
+  conversation: conversation('conversation-1'),
+  statefulCodeSessions,
+  reachable: { agents: [codeAgent], complete: true },
+});
+
+const settingsWrapper = ({ children }: { children: ReactNode }) => (
+  <ChatSettingsContext.Provider
+    value={{ ...defaultChatSettings, getEphemeralAgent: mockGetEphemeralAgent }}
+  >
+    {children}
+  </ChatSettingsContext.Provider>
+);
+
 function renderAsk(
   messages: TMessage[] | undefined,
   conversationId = 'conversation-1',
@@ -186,7 +302,11 @@ function renderAsk(
   const reasoningStore = createStore();
   reasoningStore.set(pendingReasoningOverrideFamily(conversationId), options.reasoningOverride);
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+    <ChatSettingsContext.Provider
+      value={{ ...defaultChatSettings, getEphemeralAgent: mockGetEphemeralAgent }}
+    >
+      <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+    </ChatSettingsContext.Provider>
   );
   const hook = renderHook(
     () =>
@@ -207,14 +327,23 @@ function renderAsk(
   return { ...hook, getMessages, setMessages, setFiles, setSubmission, reasoningStore };
 }
 
+beforeEach(() => {
+  mockAgentQueryData.current = mockAgent;
+  mockEndpointsQueryData.current = undefined;
+  mockCapabilitiesData.current = undefined;
+  mockCapabilitiesState.current = undefined;
+});
+
 describe('useChatFunctions ask', () => {
   beforeEach(() => {
     mockEndpointsQueryData.current = undefined;
+    mockCapabilitiesData.current = undefined;
+    mockCapabilitiesState.current = undefined;
     localStorage.clear();
     jest.clearAllMocks();
-    mockAgentQueryData.current = undefined;
     mockGetLatestConversation.mockReturnValue(null);
-    mockResolveCodeWorkspaceSubmission.mockReturnValue({});
+    mockReadWorkspaceInputs.mockReturnValue(workspaceInputs());
+    mockReadApprovalInputs.mockReturnValue(approvalInputs());
   });
 
   it.each([EModelEndpoint.agents, EModelEndpoint.openAI])(
@@ -303,7 +432,14 @@ describe('useChatFunctions ask', () => {
   });
 
   it('sends the gated ask for a turn without a workspace while keeping the chat pick', () => {
-    mockResolveCodeWorkspaceSubmission.mockReturnValue({ codeEnvironmentMode: 'without_attached' });
+    mockReadWorkspaceInputs.mockReturnValue(
+      attachedInputs({
+        conversation: {
+          ...conversation('conversation-1'),
+          codeEnvironmentMode: 'without_attached',
+        },
+      }),
+    );
     mockGetLatestConversation.mockReturnValue({
       ...conversation('conversation-1'),
       codeApprovalMode: 'acceptEdits',
@@ -342,7 +478,7 @@ describe('useChatFunctions ask', () => {
 
   it('submits the latest validated workspace selection', () => {
     const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
-    mockResolveCodeWorkspaceSubmission.mockReturnValue({ codeWorkspaces: [selection] });
+    mockReadWorkspaceInputs.mockReturnValue(attachedInputs());
     mockGetLatestConversation.mockReturnValue({
       ...conversation('conversation-1'),
       codeEnvironmentMode: 'attached',
@@ -355,7 +491,7 @@ describe('useChatFunctions ask', () => {
     });
 
     const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
-    expect(mockResolveCodeWorkspaceSubmission).toHaveBeenCalledWith([selection], 'attached');
+    expect(submission.codeEnvironmentMode).toBe('attached');
     expect(submission.codeWorkspaces).toEqual([selection]);
   });
 
@@ -364,10 +500,7 @@ describe('useChatFunctions ask', () => {
    * workspace" with Send disabled until the page reloads. */
   it('records the decision the run establishes on the conversation it belongs to', () => {
     const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
-    mockResolveCodeWorkspaceSubmission.mockReturnValue({
-      codeEnvironmentMode: 'attached',
-      codeWorkspaces: [selection],
-    });
+    mockReadWorkspaceInputs.mockReturnValue(attachedInputs());
     const { result } = renderAsk([]);
 
     act(() => {
@@ -389,10 +522,7 @@ describe('useChatFunctions ask', () => {
 
   it('leaves a conversation that already holds the decision untouched', () => {
     const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
-    mockResolveCodeWorkspaceSubmission.mockReturnValue({
-      codeEnvironmentMode: 'attached',
-      codeWorkspaces: [selection],
-    });
+    mockReadWorkspaceInputs.mockReturnValue(attachedInputs());
     const sealed = {
       ...conversation('conversation-1'),
       codeEnvironmentMode: 'attached' as const,
@@ -424,7 +554,7 @@ describe('useChatFunctions ask', () => {
       expect(
         result.current.ask({ text: 'rerun', parentMessageId: 'earlier' }, { isRegenerate: true }),
       ).toBe(false);
-      expect(mockResolveCodeWorkspaceSubmission).not.toHaveBeenCalled();
+      expect(mockReadWorkspaceInputs).not.toHaveBeenCalled();
       expect(getMessages).not.toHaveBeenCalled();
       expect(setSubmission).not.toHaveBeenCalled();
       expect(mockSetFilesToDelete).not.toHaveBeenCalled();
@@ -434,7 +564,7 @@ describe('useChatFunctions ask', () => {
   });
 
   it('refuses to send when workspace submission resolution is not ready', () => {
-    mockResolveCodeWorkspaceSubmission.mockReturnValue(undefined);
+    mockReadWorkspaceInputs.mockReturnValue(attachedInputs({ recoveryPending: true }));
     const { result, setSubmission } = renderAsk([]);
 
     expect(result.current.ask({ text: 'Edit the file', conversationId: 'conversation-1' })).toBe(
@@ -456,12 +586,17 @@ describe('useChatFunctions ask', () => {
     expect(setMessages).not.toHaveBeenCalled();
     expect(setSubmission).not.toHaveBeenCalled();
     expect(mockLoggerWarn).toHaveBeenCalledWith(
-      '[useChatFunctions] Refusing to send before existing conversation history loads',
+      '[useTurns] Refusing to send before existing conversation history loads',
     );
   });
 
   it('synchronously reports a refusal while another submit is in flight', () => {
-    const { result, setMessages, setSubmission } = renderAsk([], 'conversation-1', {
+    const {
+      result,
+      setMessages,
+      setSubmission,
+      reasoningStore: store,
+    } = renderAsk([], 'conversation-1', {
       isSubmitting: true,
     });
 
@@ -473,7 +608,20 @@ describe('useChatFunctions ask', () => {
     expect(askResult!).toBe(false);
     expect(setMessages).not.toHaveBeenCalled();
     expect(setSubmission).not.toHaveBeenCalled();
-    expect(mockSetShowStopButton).not.toHaveBeenCalled();
+    expect(store.get(showStopButtonByIndex(0))).toBe(false);
+    expect(store.get(submissionStartFamily(0))).toBeNull();
+  });
+
+  it('shows the stop button and stamps the elapsed baseline for an accepted submit', () => {
+    const { result, reasoningStore: store } = renderAsk([]);
+    const before = Date.now();
+
+    act(() => {
+      result.current.ask({ text: 'first turn', conversationId: 'conversation-1' });
+    });
+
+    expect(store.get(showStopButtonByIndex(0))).toBe(true);
+    expect(store.get(submissionStartFamily(0))).toBeGreaterThanOrEqual(before);
   });
 
   it('refuses a second submit fired in the same task, before isSubmitting commits', () => {
@@ -511,7 +659,12 @@ describe('useChatFunctions ask', () => {
   });
 
   it('reports a refusal when no endpoint is available', () => {
-    const { result, setMessages, setSubmission } = renderAsk([], 'conversation-1', {
+    const {
+      result,
+      setMessages,
+      setSubmission,
+      reasoningStore: store,
+    } = renderAsk([], 'conversation-1', {
       endpoint: null,
     });
 
@@ -523,7 +676,8 @@ describe('useChatFunctions ask', () => {
     expect(askResult!).toBe(false);
     expect(setMessages).not.toHaveBeenCalled();
     expect(setSubmission).not.toHaveBeenCalled();
-    expect(mockSetShowStopButton).not.toHaveBeenCalled();
+    expect(store.get(showStopButtonByIndex(0))).toBe(false);
+    expect(store.get(submissionStartFamily(0))).toBeNull();
   });
 
   it.each([
@@ -677,6 +831,216 @@ describe('useChatFunctions ask', () => {
     expect(submission.userMessage.reasoningOverride).toEqual(override);
   });
 
+  describe('replaying a reasoning override on an OpenRouter endpoint', () => {
+    const model = 'openai/gpt-6.1-sol';
+    const override = { key: 'reasoning_effort', value: 'max' } as TReasoningOverride;
+    const openRouter = (paramDefinitions?: unknown[]) => ({
+      OpenRouter: {
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          reasoningFormat: 'reasoning_effort',
+          ...(paramDefinitions && { paramDefinitions }),
+        },
+      },
+    });
+    const replay = (value: TReasoningOverride = override) => {
+      const { result, setSubmission } = renderAsk([], 'openrouter-conversation', {
+        endpoint: 'OpenRouter' as TConversation['endpoint'],
+        model,
+      });
+      act(() => {
+        result.current.ask({ text: 'Think' }, { overrideReasoning: value });
+      });
+      return (setSubmission.mock.calls.at(-1)?.[0] as TSubmission).userMessage.reasoningOverride;
+    };
+
+    beforeEach(() => {
+      mockEndpointsQueryData.current = openRouter();
+    });
+
+    it('omits the override while the capabilities have not loaded', () => {
+      mockCapabilitiesState.current = { status: 'loading' };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override when no capabilities request has run', () => {
+      expect(replay()).toBeUndefined();
+    });
+
+    it('keeps an override the loaded capabilities support', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+
+      expect(replay()).toEqual(override);
+    });
+
+    it('omits an override the loaded capabilities do not support', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['low'] } } },
+        expiresInMs: 60000,
+      };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override when the capabilities request failed, as its efforts are unknown', () => {
+      mockCapabilitiesState.current = { status: 'error' };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override when a refresh failed although the previous data is still cached', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+      mockCapabilitiesState.current = { status: 'error' };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override while an expired entry is refreshed, although its data is cached', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+      mockCapabilitiesState.current = { status: 'success', fetchStatus: 'fetching' } as never;
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override when the cached entry is past its lifetime and idle', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+      mockCapabilitiesState.current = {
+        status: 'success',
+        fetchStatus: 'idle',
+        dataUpdatedAt: Date.now() - 61_000,
+      };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('keeps the override while the cached entry is still within its lifetime', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+      mockCapabilitiesState.current = {
+        status: 'success',
+        fetchStatus: 'idle',
+        dataUpdatedAt: Date.now() - 30_000,
+      };
+
+      expect(replay()).toEqual(override);
+    });
+
+    describe('a staged effort submitted while the capabilities are unknown', () => {
+      const submitStaged = () => {
+        const { result, setSubmission, reasoningStore } = renderAsk([], 'openrouter-conversation', {
+          endpoint: 'OpenRouter' as TConversation['endpoint'],
+          model,
+          reasoningOverride: override,
+        });
+        act(() => {
+          result.current.ask({ text: 'Think' });
+        });
+        const sent = (setSubmission.mock.calls.at(-1)?.[0] as TSubmission).userMessage
+          .reasoningOverride;
+        return {
+          sent,
+          left: reasoningStore.get(pendingReasoningOverrideFamily('openrouter-conversation')),
+        };
+      };
+
+      it('leaves it staged for the next message instead of losing it', () => {
+        mockCapabilitiesState.current = { status: 'error' };
+
+        const { sent, left } = submitStaged();
+
+        expect(sent).toBeUndefined();
+        expect(left).toEqual(override);
+      });
+
+      it('leaves it staged while the capabilities are loading', () => {
+        mockCapabilitiesState.current = { status: 'loading' };
+
+        expect(submitStaged().left).toEqual(override);
+      });
+
+      it('consumes it once it is sent', () => {
+        mockCapabilitiesData.current = {
+          capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+          expiresInMs: 60000,
+        };
+
+        const { sent, left } = submitStaged();
+
+        expect(sent).toEqual(override);
+        expect(left).toBeUndefined();
+      });
+
+      it('consumes it when the loaded catalog refuses it', () => {
+        mockCapabilitiesData.current = {
+          capabilities: { OpenRouter: { [model]: { efforts: ['low'] } } },
+          expiresInMs: 60000,
+        };
+
+        const { sent, left } = submitStaged();
+
+        expect(sent).toBeUndefined();
+        expect(left).toBeUndefined();
+      });
+    });
+
+    describe('an Auto override, which sends no effort', () => {
+      const auto = { key: 'reasoning_effort', value: '' } as TReasoningOverride;
+
+      it('is kept while the capabilities have not loaded', () => {
+        mockCapabilitiesState.current = { status: 'loading' };
+
+        expect(replay(auto)).toEqual(auto);
+      });
+
+      it('is kept when the capabilities request failed', () => {
+        mockCapabilitiesState.current = { status: 'error' };
+
+        expect(replay(auto)).toEqual(auto);
+      });
+
+      it('is kept for a model the loaded catalog lists without effort selection', () => {
+        mockCapabilitiesData.current = {
+          capabilities: { OpenRouter: { [model]: { efforts: [] } } },
+          expiresInMs: 60000,
+        };
+
+        expect(replay(auto)).toEqual(auto);
+      });
+    });
+
+    it('keeps an override for a model the loaded catalog does not list', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { 'meta/other': { efforts: ['low'] } } },
+        expiresInMs: 60000,
+      };
+
+      expect(replay()).toEqual(override);
+    });
+
+    it('keeps an administrator-defined effort override without waiting for the catalog', () => {
+      mockEndpointsQueryData.current = openRouter([{ key: 'reasoning_effort' }]);
+      mockCapabilitiesState.current = { status: 'loading' };
+
+      expect(replay()).toEqual(override);
+    });
+  });
+
   it('uses hydrated per-agent query data when the agent catalog is unavailable', () => {
     const agentId = 'agent-uncatalogued';
     const override = { key: 'reasoning_effort', value: 'high' } as TReasoningOverride;
@@ -706,7 +1070,6 @@ describe('useChatFunctions ask', () => {
 describe('useChatFunctions regenerate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockAgentQueryData.current = undefined;
   });
 
   it('keys a non-tail regenerate to the selected assistant response', () => {
@@ -832,7 +1195,6 @@ describe('useChatFunctions regenerate', () => {
 describe('useChatFunctions ask attachments', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockAgentQueryData.current = undefined;
   });
   afterEach(() => {
     mockGetEphemeralAgent.mockReturnValue(null);
@@ -896,18 +1258,20 @@ describe('useChatFunctions ask attachments', () => {
         },
       ],
     ]) as unknown as Parameters<typeof useChatFunctions>[0]['files'];
-    const { result } = renderHook(() =>
-      useChatFunctions({
-        isSubmitting: false,
-        latestMessage: null,
-        conversation: conversation(Constants.NEW_CONVO as string),
-        getMessages: () => [],
-        setMessages,
-        setSubmission,
-        setConversation: mockSetConversation,
-        files,
-        setFiles,
-      }),
+    const { result } = renderHook(
+      () =>
+        useChatFunctions({
+          isSubmitting: false,
+          latestMessage: null,
+          conversation: conversation(Constants.NEW_CONVO as string),
+          getMessages: () => [],
+          setMessages,
+          setSubmission,
+          setConversation: mockSetConversation,
+          files,
+          setFiles,
+        }),
+      { wrapper: settingsWrapper },
     );
     const selectedConversationTools: TEphemeralAgent = {
       skills: true,
@@ -1064,7 +1428,6 @@ describe('useChatFunctions ask attachments', () => {
 describe('useChatFunctions ask compaction', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockGetQueryData.mockReturnValue({});
   });
 
   it('submits a summarize-only turn hung off the leaf without a new user bubble', () => {
@@ -1083,7 +1446,8 @@ describe('useChatFunctions ask compaction', () => {
     expect(submission.compact).toBe(true);
     expect(submission.isRegenerate).toBe(true);
     expect(submission.initialResponse?.parentMessageId).toBe('a1');
-    expect(submission.initialResponse?.messageId).toBe('a1_');
+    expect(submission.initialResponse?.messageId).toMatch(/_$/);
+    expect(submission.initialResponse?.messageId).not.toBe('a1_');
     /** The leaf stands in for the user message so an error lands under it. */
     expect(submission.userMessage.messageId).toBe('a1');
     expect(submission.userMessage.overrideParentMessageId).toBeNull();
@@ -1095,7 +1459,11 @@ describe('useChatFunctions ask compaction', () => {
     ]);
 
     const rendered = setMessages.mock.calls[0][0] as TMessage[];
-    expect(rendered.map((message) => message.messageId)).toEqual(['u1', 'a1', 'a1_']);
+    expect(rendered.map((message) => message.messageId)).toEqual([
+      'u1',
+      'a1',
+      submission.initialResponse?.messageId,
+    ]);
   });
 
   it('does not re-attach the leaf files a user-message leaf carries', () => {

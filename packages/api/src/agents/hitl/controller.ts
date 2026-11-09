@@ -13,6 +13,7 @@ import type { HasCapabilityFn } from '~/middleware/capabilities';
 import type { MCPServerTools } from '~/tools/definitions';
 import type { ParsedServerConfig } from '~/mcp/types';
 import { collectMCPToolAliases, aliasMCPToolOptions } from '~/tools/classification';
+import { retainToolOptionsLimits } from '../options';
 
 const resetSchema = z
   .object({ agentId: z.string().min(1).max(256), toolName: z.string().min(1).max(256).optional() })
@@ -113,6 +114,7 @@ export function createResetToolApprovalController({
               : (aliases.find(({ aliasName }) => aliasName === requested)?.name ?? toolName);
             // Match the editor's unsaved migration. Explicit current options win.
             options = { ...options };
+            retainToolOptionsLimits(options, agent.tool_options);
             for (const [name, value] of Object.entries(agent.tool_options ?? {})) {
               const [part, parsed] = splitMCPToolKey(name, boundaries);
               if (parsed !== serverName && serverAliases.get(parsed ?? '') !== serverName) continue;
