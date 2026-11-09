@@ -50,7 +50,7 @@ export default function useDuringRunActions({
   armDrainAfterAbort: () => void;
   stopGenerating: () => void;
 }): DuringRunActions {
-  const { takeComposerFiles, takeComposerContext, takeComposerQuotes, readComposerQuotes } =
+  const { takeComposerFiles, takeComposerContext, takeComposerQuotes, restoreComposerQuotes } =
     composer;
   /** Composer-originated steer: consumes the composer's attachments and quote
    *  chips so they ride the steer as one unit (the server re-fetches + encodes
@@ -69,11 +69,10 @@ export default function useDuringRunActions({
           takeComposerDraft();
           return true;
         }
-        const consumed = submitSteer(mergedText, files, readComposerQuotes(), { preempt });
-        if (consumed) {
-          takeComposerQuotes();
-          takeComposerDraft();
-        }
+        const quotes = takeComposerQuotes();
+        const consumed = submitSteer(mergedText, files, quotes, { preempt });
+        if (consumed) takeComposerDraft();
+        else restoreComposerQuotes(quotes);
         return consumed;
       });
     },
@@ -86,7 +85,7 @@ export default function useDuringRunActions({
       takeComposerFiles,
       takeComposerContext,
       takeComposerQuotes,
-      readComposerQuotes,
+      restoreComposerQuotes,
       takeComposerDraft,
       submitSteer,
     ],
@@ -164,11 +163,10 @@ export default function useDuringRunActions({
         return false;
       }
       return takeComposerFiles(text.trim(), (mergedText, files) => {
-        const consumed = submitSteer(mergedText, files, readComposerQuotes(), { preempt: true });
-        if (consumed) {
-          takeComposerQuotes();
-          takeComposerDraft();
-        }
+        const quotes = takeComposerQuotes();
+        const consumed = submitSteer(mergedText, files, quotes, { preempt: true });
+        if (consumed) takeComposerDraft();
+        else restoreComposerQuotes(quotes);
         return consumed;
       });
     },
@@ -181,7 +179,7 @@ export default function useDuringRunActions({
       pendingReasoningOverride,
       takeComposerFiles,
       takeComposerQuotes,
-      readComposerQuotes,
+      restoreComposerQuotes,
       takeComposerDraft,
       submitSteer,
     ],

@@ -18,7 +18,7 @@ export interface ComposerTake {
   ) => boolean;
   takeComposerContext: () => QueuedMessageContext;
   takeComposerQuotes: () => QueuedMessageContext;
-  readComposerQuotes: () => QueuedMessageContext;
+  restoreComposerQuotes: (context: QueuedMessageContext) => void;
 }
 
 /** Drains what the composer has staged so it travels with one during-run
@@ -103,10 +103,14 @@ export default function useComposerTake<File extends ComposerFile>({
     };
   }, [conversationId, reasoningStateKey, reasoningStore]);
 
-  const readComposerQuotes = useCallback((): QueuedMessageContext => {
-    const quotes = reasoningStore.get(pendingQuotesByConvoId(conversationId));
-    return quotes.length > 0 ? { quotes } : {};
-  }, [conversationId, reasoningStore]);
+  const restoreComposerQuotes = useCallback(
+    (context: QueuedMessageContext) => {
+      if (!context.quotes?.length) return;
+      const atom = pendingQuotesByConvoId(conversationId);
+      reasoningStore.set(atom, [...context.quotes, ...reasoningStore.get(atom)]);
+    },
+    [conversationId, reasoningStore],
+  );
 
   /** Quotes-only drain for composer-origin steers: the excerpts ride the steer
    *  POST into the live run, while manual skill picks stay staged: a skill
@@ -122,7 +126,7 @@ export default function useComposerTake<File extends ComposerFile>({
   }, [conversationId, reasoningStore]);
 
   return useMemo(
-    () => ({ takeComposerFiles, takeComposerContext, takeComposerQuotes, readComposerQuotes }),
-    [takeComposerFiles, takeComposerContext, takeComposerQuotes, readComposerQuotes],
+    () => ({ takeComposerFiles, takeComposerContext, takeComposerQuotes, restoreComposerQuotes }),
+    [takeComposerFiles, takeComposerContext, takeComposerQuotes, restoreComposerQuotes],
   );
 }

@@ -259,6 +259,17 @@ describe('usePastedTextEdit', () => {
       setFiles: expect.anything(),
     });
   });
+  it('detaches the completed original when editing began during its upload', async () => {
+    const pending = pastedFile({ file_id: 'upload-id', progress: 0.2, pastedText: 'original' });
+    const editor = renderEditor(new Map([['upload-id', pending]]));
+    await act(async () => editor.result.current.openEditor(pending));
+    const complete = { ...pending, file_id: 'server-id', temp_file_id: 'upload-id', progress: 1 };
+    editor.rerender({ files: new Map([['upload-id', complete]]) });
+    await act(async () => editor.result.current.saveEdit('corrected'));
+    await act(async () => capturedLifecycle?.onSuccess?.('replacement-id'));
+    expect(mockDeleteFile).toHaveBeenCalledWith({ file: complete, setFiles: expect.anything() });
+  });
+
   it('removes a live paste claimed by another tab without scheduling deletion or retry', async () => {
     const live = pastedFile({ file_id: 'claimed-live-file' });
     mockState.draftsById['other-tab-draft'] = {

@@ -35,6 +35,8 @@ import {
   getCachedPreview,
   removePreviewEntry,
   retainFileDeletion,
+  loadPendingDiscardIds,
+  storePendingDiscardIds,
   validateFileDuplicates,
 } from '~/utils';
 import {
@@ -113,6 +115,7 @@ type UploadRecovery = UploadLifecycleCallbacks & {
   dispose?: () => void;
   body?: FormData;
   controller?: AbortController;
+  composerIndex?: number;
   onFileSearchSuccess?: () => void;
 };
 const uploadErrorCallbacks = new Map<string, UploadRecovery>();
@@ -143,7 +146,11 @@ export const clearUploadRecovery = (fileId: string, retainFileSearch = false) =>
     uploadErrorCallbacks.delete(fileId);
     if (recovery) {
       recovery.status = 'canceled';
-      if (recovery.body && recovery.pastedText != null) canceledUploadBodies.add(recovery.body);
+      if (recovery.body && recovery.pastedText != null) {
+        canceledUploadBodies.add(recovery.body);
+        const index = recovery.composerIndex ?? 0;
+        storePendingDiscardIds(index, [...new Set([...loadPendingDiscardIds(index), fileId])]);
+      }
       recovery.controller?.abort();
       recovery.dispose?.();
     }
@@ -789,7 +796,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       const recovery: UploadRecovery =
         usesAssignedId && assignedRecovery
           ? assignedRecovery
-          : { ...uploadLifecycle, status: 'staged' };
+          : { ...uploadLifecycle, status: 'staged', composerIndex: index };
       uploadErrorCallbacks.set(file_id, recovery);
       let currentPreview: string | undefined;
       let ownedFile = originalFile;
@@ -1078,7 +1085,9 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
     const fileList = Array.from(_files);
     const assignedFileId = lifecycle?.fileId;
     const assignedRecovery: UploadRecovery | undefined =
-      assignedFileId && lifecycle ? { ...lifecycle, status: 'staged' } : undefined;
+      assignedFileId && lifecycle
+        ? { ...lifecycle, status: 'staged', composerIndex: index }
+        : undefined;
     if (assignedFileId && assignedRecovery) {
       if (uploadErrorCallbacks.has(assignedFileId)) {
         clearUploadRecovery(assignedFileId);

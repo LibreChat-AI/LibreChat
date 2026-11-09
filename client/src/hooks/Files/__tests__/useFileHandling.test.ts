@@ -229,6 +229,8 @@ jest.mock('~/utils', () => {
     getCachedPreview: jest.fn(() => undefined),
     removePreviewEntry: jest.fn(),
     retainFileDeletion: jest.fn(),
+    loadPendingDiscardIds: jest.fn(() => []),
+    storePendingDiscardIds: jest.fn(),
   };
 });
 
@@ -380,6 +382,27 @@ describe('useFileHandling', () => {
     expect(secondSignal?.aborted).toBe(false);
   });
 
+  it('keeps reconciliation identity after a real transport abort with no success response', async () => {
+    const { default: useFileHandling, cancelUploads } = await import('../useFileHandling');
+    const { result } = renderHook(() => useFileHandling());
+    const onError = jest.fn();
+    await act(async () =>
+      result.current.handleFiles(
+        [new File(['paste'], 'pasted-text.txt', { type: 'text/plain' })],
+        EToolResources.context,
+        { fileId: 'aborted-paste', pastedText: 'paste', onError },
+      ),
+    );
+    const body = mockMutate.mock.calls[0][0] as FormData;
+    act(() => cancelUploads(['aborted-paste']));
+    act(() => mockUploadOptions.onError?.({ code: 'ERR_CANCELED' }, body));
+    expect(onError).not.toHaveBeenCalled();
+    expect(jest.requireMock('~/utils').storePendingDiscardIds).toHaveBeenCalledTimes(1);
+    expect(jest.requireMock('~/utils').storePendingDiscardIds).toHaveBeenCalledWith(0, [
+      'aborted-paste',
+    ]);
+  });
+
   it('retains a late successful response for cleanup after its paste was sent inline', async () => {
     const { default: useFileHandling, cancelUploads } = await import('../useFileHandling');
     const { result } = renderHook(() => useFileHandling());
@@ -392,6 +415,9 @@ describe('useFileHandling', () => {
     });
     const body = mockMutate.mock.calls[0][0] as FormData;
     act(() => cancelUploads(['late-paste']));
+    expect(jest.requireMock('~/utils').storePendingDiscardIds).toHaveBeenCalledWith(0, [
+      'late-paste',
+    ]);
     act(() =>
       mockUploadOptions.onSuccess?.(
         {

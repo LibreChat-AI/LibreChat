@@ -211,7 +211,19 @@ export default function usePastedTextEdit({
    * deletion, because another tab or composer pane may still reference the upload. Both draft keys
    * are read, since a response finishing mid-edit migrates the record between them. */
   const detach = useCallback(
-    (file: ExtendedFile) => {
+    (snapshot: ExtendedFile) => {
+      const identities = new Set([snapshot.file_id, snapshot.temp_file_id].filter(Boolean));
+      let file = snapshot;
+      for (const [key, current] of filesRef.current) {
+        if (
+          identities.has(key) ||
+          identities.has(current.file_id) ||
+          identities.has(current.temp_file_id)
+        ) {
+          file = { ...snapshot, ...current };
+          break;
+        }
+      }
       const restored = file.attached === true;
       const attachmentIds = [file.file_id, file.temp_file_id].filter(
         (id): id is string => id != null && id !== '',

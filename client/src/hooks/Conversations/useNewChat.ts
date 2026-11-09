@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { filesFamily } from '@librechat/chat/react';
-import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
+import { QueryKeys, fileConfig as defaultFileConfig } from 'librechat-data-provider';
 import type { FileSources, TFile } from 'librechat-data-provider';
 import type { MouseEvent } from 'react';
 import type { ExtendedFile } from '~/common';
@@ -139,6 +139,30 @@ export default function useNewChat({
     loadPendingDiscardIds(index),
   );
   const [retainedGeneration, setRetainedGeneration] = useState(0);
+  const reconciliationAttempts = useRef(new Map<string, number>());
+  const fileListRef = useRef(fileList);
+  fileListRef.current = fileList;
+
+  useEffect(() => {
+    if (!hasFileConfig) return;
+    const pending = new Set(pendingDiscardIds);
+    for (const id of reconciliationAttempts.current.keys()) {
+      if (!pending.has(id)) reconciliationAttempts.current.delete(id);
+    }
+    let refresh = false;
+    const limit = retryLimit ?? defaultFileConfig.deletionRetryLimit;
+    for (const id of pendingDiscardIds) {
+      if (findFilesRecord(fileListRef.current, id)) continue;
+      const attempts = reconciliationAttempts.current.get(id) ?? 0;
+      if (attempts >= limit) continue;
+      reconciliationAttempts.current.set(id, attempts + 1);
+      refresh = true;
+    }
+    if (!refresh) return;
+    // An aborted response can outlive its client. Resolve its UUID through the owner-scoped list.
+    void queryClient.refetchQueries({ queryKey: [QueryKeys.files] }, { cancelRefetch: false });
+    scheduleRetainedFileDeletionRetry(true);
+  }, [pendingDiscardIds, retainedGeneration, hasFileConfig, retryLimit, queryClient]);
 
   const setPendingDiscardIds = useCallback(
     (updater: string[] | ((current: string[]) => string[])) => {
