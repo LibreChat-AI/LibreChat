@@ -627,6 +627,13 @@ export const useAutoSave = ({
       return;
     }
 
+    /** After a reload the live file map is empty until the server's file list arrives, and the
+     * restore that rebuilds it needs that list. Saving from the empty map first would rewrite the
+     * stored draft and erase every attachment it holds before it could be restored. */
+    if (fileList == null) {
+      return;
+    }
+
     const existingDraft = getFilesDraft(draftStorageId);
     if (!isFilesDraftOwnedByThisTab(existingDraft)) {
       return;
@@ -685,6 +692,7 @@ export const useAutoSave = ({
     currentConversationId,
     fileIds,
     files,
+    fileList,
     _conversationId,
   ]);
 
