@@ -52,14 +52,18 @@ export async function consumeCacheEntry<T>(
 }
 
 /** Restores a value consumed by {@link consumeCacheEntry} for one more attempt. Uses the
- *  consumed entry's remaining time, or the cache's default ttl when its expiry is unknown. */
+ *  consumed entry's remaining time, or the cache's default ttl when its expiry is unknown.
+ *  Skips the restore once that remaining time has already passed: Keyv treats a ttl of 0 as
+ *  no expiry, so restoring an expired entry would otherwise make it live indefinitely. */
 export async function restoreCacheEntry<T>(
   cache: Keyv,
   key: string,
   consumed: ConsumedCacheEntry<T>,
   now: number = Date.now(),
 ): Promise<void> {
-  const ttl =
-    typeof consumed.expires === 'number' ? Math.max(consumed.expires - now, 0) : cache.ttl;
+  if (typeof consumed.expires === 'number' && consumed.expires <= now) {
+    return;
+  }
+  const ttl = typeof consumed.expires === 'number' ? consumed.expires - now : cache.ttl;
   await cache.set(key, consumed.value, ttl);
 }

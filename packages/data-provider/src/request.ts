@@ -489,37 +489,65 @@ const shouldRefreshBeforeRequest = (url?: string) => {
   return timeUntilExpiry > 0 && timeUntilExpiry <= TOKEN_REFRESH_BUFFER_MS;
 };
 
-/** Mirrors the reactive 401 path's handling of a rejected refresh for the proactive path, which
- *  has no failed request of its own to reject: a denial still ends the session and a 503
- *  AUTH_SESSION_CHECK_UNAVAILABLE still surfaces the event, but a network error or timeout keeps
- *  the old token instead, since it says nothing about whether the session is still valid. The
- *  generation guard stops a flight superseded by a newer login from redirecting after the fact,
- *  and keeps a request that only joined another one's flight from redirecting a second time. */
-const handleProactiveRefreshFailure = (error: unknown, requestGeneration: number) => {
-  if (getAuthGeneration() !== requestGeneration) {
-    return null;
+/** Thrown when a proactive renewal is definitively denied, so the request interceptor and
+ *  `_authenticatedFetch` reject the pending request instead of sending it with the bearer the
+ *  denial just invalidated. It carries no `response`, so the axios response interceptor's
+ *  reactive 401 handler — which only acts once `error.response` exists — rejects it unchanged
+ *  without starting a second refresh or redirect. */
+class AuthSessionEndedError extends Error {
+  readonly code = 'AUTH_SESSION_ENDED';
+  constructor() {
+    super('Auth session ended');
+    this.name = 'AuthSessionEndedError';
   }
+}
 
+/** Mirrors the reactive 401 path's handling of a rejected refresh for the proactive path, which
+ *  has no failed request of its own to reject: a 503 AUTH_SESSION_CHECK_UNAVAILABLE still
+ *  surfaces the event, and a network error or timeout keeps the old token, since neither says
+ *  the session has ended. Every other denial throws `AuthSessionEndedError` so the pending
+ *  request is never sent with the invalidated bearer — whether or not the generation still
+ *  matches, since a request that only joined the denied flight must be denied too — unless a
+ *  newer login already replaced that bearer, in which case the request continues with the new
+ *  token instead. advanceAuthGeneration()/redirectToLoginOnce() stay guarded by the generation
+ *  check so only the flight that first discovers the denial redirects. */
+const handleProactiveRefreshFailure = (
+  error: unknown,
+  requestGeneration: number,
+  tokenAtStart: string | null,
+): string | null => {
+  const generationMatches = getAuthGeneration() === requestGeneration;
   const classification = classifyProactiveRefreshFailure(error);
+
   if (classification === 'unavailable') {
-    dispatchAuthUnavailableEvent();
+    if (generationMatches) {
+      dispatchAuthUnavailableEvent();
+    }
     return null;
   }
   if (classification === 'network') {
     return null;
   }
 
-  advanceAuthGeneration();
-  redirectToLoginOnce();
-  return null;
+  const currentToken = getBearerToken();
+  if (currentToken && currentToken !== tokenAtStart) {
+    return currentToken;
+  }
+
+  if (generationMatches) {
+    advanceAuthGeneration();
+    redirectToLoginOnce();
+  }
+  throw new AuthSessionEndedError();
 };
 
 const refreshBeforeRequest = async (url?: string) => {
   const state = getAuthRecoveryState();
+  const tokenAtStart = getBearerToken();
   if (state.refreshPromise && !isAuthRecoveryEndpoint(url)) {
     const requestGeneration = getAuthGeneration();
     return state.refreshPromise.catch((error) =>
-      handleProactiveRefreshFailure(error, requestGeneration),
+      handleProactiveRefreshFailure(error, requestGeneration, tokenAtStart),
     );
   }
 
@@ -529,7 +557,7 @@ const refreshBeforeRequest = async (url?: string) => {
 
   const requestGeneration = getAuthGeneration();
   return startAuthRecovery(false).catch((error) =>
-    handleProactiveRefreshFailure(error, requestGeneration),
+    handleProactiveRefreshFailure(error, requestGeneration, tokenAtStart),
   );
 };
 
