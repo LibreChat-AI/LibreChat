@@ -1680,6 +1680,21 @@ describe('Balance Reservations', () => {
         expect(resets[0].rawAmount).toBe(1500);
       });
 
+      test('stores the granted allowance and keeps it until the next reset', async () => {
+        const user = new mongoose.Types.ObjectId();
+        await Balance.create({ user, ...resettable, tokenCredits: 500 });
+
+        const granted = await findBalanceByUser(user.toString());
+        expect(granted?.allotment).toBe(1000);
+        expect(granted?.allottedAt).toEqual(granted?.lastRefill);
+        await reserve(user.toString(), 100);
+        const changed = await upsertBalanceFields(user.toString(), { refillAmount: 3000 });
+
+        expect(changed?.tokenCredits).toBe(1000);
+        expect(changed?.allotment).toBe(1000);
+        expect((await readState(user))?.allotment).toBe(1000);
+      });
+
       test('uses current settings if reset mode changes during its fenced write', async () => {
         const user = new mongoose.Types.ObjectId();
         await Balance.create({ user, ...resettable, tokenCredits: 500 });
