@@ -205,7 +205,7 @@ describe('FileContainer text preview', () => {
     expect(preview).toHaveAttribute('title', text);
     expect(preview.textContent).toBe(text);
     expect(screen.getByRole('button', { name: 'pasted-text.txt' })).toHaveAccessibleDescription(
-      'The actual clipboard content with a second line',
+      text,
     );
     expect(screen.getByText('pasted-text.txt')).toBeInTheDocument();
     expect(screen.queryByTestId('file-preview')).not.toBeInTheDocument();

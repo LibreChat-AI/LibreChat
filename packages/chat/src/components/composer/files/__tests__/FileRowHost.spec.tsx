@@ -159,7 +159,7 @@ describe('FileRow pasted-text preview', () => {
     expect(container.querySelector('button button')).toBeNull();
     const editor = screen.getByRole('button', { name: 'Edit pasted text, pasted-text.txt' });
     expect(editor).toHaveAccessibleDescription(
-      'The original clipboard content including the next line',
+      'The original clipboard content\nincluding the next line',
     );
     await userEvent.click(editor);
     expect(onEditPastedText).toHaveBeenCalledWith(file);
