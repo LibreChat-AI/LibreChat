@@ -432,3 +432,22 @@ describe('Claude Fable 5.2 context window', () => {
     },
   );
 });
+
+describe('Claude version boundaries', () => {
+  const rates = { 'claude-fable-5': 10, 'claude-fable-5-1': 10, 'claude-fable-5-2': 8 };
+
+  it.each([
+    'claude-fable-5-20260609',
+    'anthropic/claude-fable-5-20260609',
+    'anthropic.claude-fable-5-20260609',
+  ])('does not mistake the date in %s for a minor version', (model) => {
+    expect(findMatchingPattern(model, rates)).toBe('claude-fable-5');
+  });
+
+  it.each(['claude-fable-5-2', 'claude-fable-5-2-20261109'])(
+    'still resolves a complete minor version in %s',
+    (model) => {
+      expect(findMatchingPattern(model, rates)).toBe('claude-fable-5-2');
+    },
+  );
+});
