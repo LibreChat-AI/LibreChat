@@ -47,6 +47,7 @@ type ErasureMethods = Pick<
   | 'deleteSchedulesByUser'
   | 'deleteUserChatProjects'
   | 'deleteUserToolFavorites'
+  | 'cancelUserToolFavoriteDeletion'
   | 'deleteRefreshTokenBridges'
   | 'deleteAllAgentQueuedTurnsForUser'
 >;
@@ -99,8 +100,22 @@ export interface UserErasureParams {
   userId: string;
   tenantId?: string;
   checkpointer?: TCheckpointerConfig;
+  /** UUID owned by this deletion attempt, distinct from the Mongo ownership timestamp. */
+  deletionAttemptId?: string;
   /** Operator option to keep the transaction ledger; account self-deletion always erases it. */
   keepTransactions?: boolean;
+}
+
+/** Release favorites only after Mongo proves the account and this attempt still own the fence. */
+export async function cancelUserDataDeletion(
+  params: { userId: string; startedAt: Date; deletionAttemptId?: string },
+  deps: Pick<AllMethods, 'cancelAgentTriggerUserDeletion' | 'cancelUserToolFavoriteDeletion'>,
+): Promise<void> {
+  const { userId, startedAt, deletionAttemptId } = params;
+  if ((await deps.cancelAgentTriggerUserDeletion(userId, startedAt)) !== true) return;
+  if (deletionAttemptId !== undefined) {
+    await deps.cancelUserToolFavoriteDeletion?.(userId, deletionAttemptId);
+  }
 }
 
 export type MCPServerCleanupDeps = Pick<
@@ -307,7 +322,9 @@ export async function eraseUserData(
     deps.deleteAllUserPluginAuths(userId),
     deps.deleteToolCalls(userId),
     deps.deleteConversationTags({ user: userId }),
-    deps.deleteUserToolFavorites(userId),
+    params.deletionAttemptId === undefined
+      ? deps.deleteUserToolFavorites(userId)
+      : deps.deleteUserToolFavorites(userId, params.deletionAttemptId),
     deps.deleteAllUserMemories(userId),
   ]);
   await deps.deleteSharedLinks(userId);

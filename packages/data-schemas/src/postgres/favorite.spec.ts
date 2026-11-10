@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import type { FavoriteHarness } from '~/contracts/favorite';
 import type { FavoriteSnapshotRow } from './import';
 import type { PostgresDatabase } from './pool';
@@ -156,6 +157,54 @@ postgres('real PostgreSQL favorites', () => {
       await methods.addToolFavorite(params);
       await methods.deleteUserToolFavorites(users[0]);
       await expect(methods.addToolFavorite(params)).rejects.toThrow('erasure');
+    });
+    it('cancels only its UUID and scope, never another attempt or a permanent marker', async () => {
+      const methods = createPostgresFavoriteMethods(db);
+      const first = randomUUID();
+      const second = randomUUID();
+      const params = { userId: users[0], itemType: 'tool', itemId: 'retry' } as const;
+      await harness.inTenant('tenant-a', async () => {
+        await methods.deleteUserToolFavorites(users[0], first);
+        await methods.deleteUserToolFavorites(users[0], second);
+      });
+      await harness.inTenant('tenant-b', () =>
+        methods.cancelUserToolFavoriteDeletion!(users[0], first),
+      );
+      await harness.inTenant('tenant-a', async () => {
+        await expect(methods.addToolFavorite(params)).rejects.toThrow('erasure');
+        await methods.cancelUserToolFavoriteDeletion!(users[0], first);
+        await methods.cancelUserToolFavoriteDeletion!(users[0], first);
+        await expect(methods.addToolFavorite(params)).rejects.toThrow('erasure');
+        await methods.cancelUserToolFavoriteDeletion!(users[0], second);
+        await expect(methods.addToolFavorite(params)).resolves.toEqual({ ok: true, added: true });
+        await methods.deleteUserToolFavorites(users[0]);
+        await methods.cancelUserToolFavoriteDeletion!(users[0], first);
+        await expect(methods.addToolFavorite(params)).rejects.toThrow('erasure');
+      });
+      await expect(methods.cancelUserToolFavoriteDeletion!(users[0], '')).rejects.toThrow(
+        'attempt',
+      );
+      await expect(methods.deleteUserToolFavorites(users[0], '')).rejects.toThrow('attempt');
+    });
+    it('keeps global markers fenced against tenant cancellation and across fresh adapters', async () => {
+      const methods = createPostgresFavoriteMethods(db);
+      const attempt = randomUUID();
+      const params = { userId: users[0], itemType: 'tool', itemId: 'global' } as const;
+      await tenantStorage.run({ tenantId: SYSTEM_TENANT_ID }, () =>
+        methods.deleteUserToolFavorites(users[0], attempt),
+      );
+      await harness.inTenant('tenant-a', () =>
+        methods.cancelUserToolFavoriteDeletion!(users[0], attempt),
+      );
+      await harness.inTenant('tenant-b', () =>
+        expect(createPostgresFavoriteMethods(db).addToolFavorite(params)).rejects.toThrow(
+          'erasure',
+        ),
+      );
+      await tenantStorage.run({ tenantId: SYSTEM_TENANT_ID }, () =>
+        methods.cancelUserToolFavoriteDeletion!(users[0], attempt),
+      );
+      await expect(methods.addToolFavorite(params)).resolves.toEqual({ ok: true, added: true });
     });
     it('bounds concurrent cap admission and enforces uniqueness across tenants', async () => {
       await harness.seed(

@@ -17,6 +17,7 @@ const {
   stopUserGenerations,
   deleteAllSharedLinksWithCleanup,
   eraseUserData,
+  cancelUserDataDeletion,
   deleteUserMCPServers,
   revokeUserCodeEnvironmentWorkers,
   finalizeMCPAuthorizationMutation,
@@ -425,6 +426,7 @@ const deleteUserController = async (req, res) => {
     await eraseUserData(
       {
         userId: user.id,
+        deletionAttemptId: scheduleSuspensionToken,
         tenantId,
         checkpointer: appConfig?.endpoints?.agents?.checkpointer,
       },
@@ -506,7 +508,14 @@ const deleteUserController = async (req, res) => {
         );
       }
       try {
-        await db.cancelAgentTriggerUserDeletion(user.id, triggerDeletionFence);
+        await cancelUserDataDeletion(
+          {
+            userId: user.id,
+            startedAt: triggerDeletionFence,
+            deletionAttemptId: scheduleSuspensionToken,
+          },
+          db,
+        );
       } catch (fenceError) {
         logger.error('[deleteUserController] Failed to release trigger deletion fence', fenceError);
       }

@@ -9,6 +9,7 @@ import { createAdminUsersHandlers } from './users';
 import { eraseUserData } from '~/user/erasure';
 
 jest.mock('~/user/erasure', () => ({
+  ...jest.requireActual('~/user/erasure'),
   eraseUserData: jest.fn().mockResolvedValue(undefined),
 }));
 
@@ -559,7 +560,12 @@ describe('createAdminUsersHandlers', () => {
         }),
       );
       expect(eraseUserData).toHaveBeenCalledWith(
-        { userId: validUserId, tenantId: 'tenant-1', checkpointer },
+        {
+          userId: validUserId,
+          tenantId: 'tenant-1',
+          checkpointer,
+          deletionAttemptId: expect.any(String),
+        },
         erasureDeps,
       );
       expect(jest.mocked(eraseUserData).mock.invocationCallOrder[0]).toBeLessThan(
@@ -581,6 +587,31 @@ describe('createAdminUsersHandlers', () => {
       expect(deps.cancelAgentTriggerUserDeletion).toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserPurge).toHaveBeenCalled();
     });
+
+    it.each([true, false])(
+      'releases the resolved favorite UUID only after a successful Mongo CAS: %s',
+      async (owned) => {
+        const cancelUserToolFavoriteDeletion = jest.fn().mockResolvedValue(undefined);
+        jest.mocked(eraseUserData).mockRejectedValueOnce(new Error('later cascade failure'));
+        const deps = createDeps({
+          cancelAgentTriggerUserDeletion: jest.fn().mockResolvedValue(owned),
+          resolveErasure: jest.fn().mockResolvedValue({ deps: { cancelUserToolFavoriteDeletion } }),
+        });
+        const { req, res } = createReqRes({ params: { id: validUserId } });
+        await createAdminUsersHandlers(deps).deleteUser(req, res);
+        const token = jest.mocked(deps.quiesceUserSchedules).mock.calls[0][1];
+        expect(eraseUserData).toHaveBeenCalledWith(
+          expect.objectContaining({ deletionAttemptId: token }),
+          expect.anything(),
+        );
+        if (owned) {
+          expect(cancelUserToolFavoriteDeletion).toHaveBeenCalledWith(validUserId, token);
+          expect(
+            jest.mocked(deps.cancelAgentTriggerUserDeletion).mock.invocationCallOrder[0],
+          ).toBeLessThan(cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0]);
+        } else expect(cancelUserToolFavoriteDeletion).not.toHaveBeenCalled();
+      },
+    );
 
     it('suspends schedules before erasing and restores them when the deletion fails', async () => {
       jest.mocked(eraseUserData).mockRejectedValueOnce(new Error('storage down'));

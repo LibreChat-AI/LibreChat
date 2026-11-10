@@ -12,6 +12,12 @@ function userKey(value: ToolFavoriteParams['userId']): string {
   return user;
 }
 
+function validateAttemptId(attemptId: string): void {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(attemptId)) {
+    throw new Error('Invalid favorite deletion attempt ID');
+  }
+}
+
 export function createPostgresFavoriteMethods(db: PostgresDatabase): ToolFavoriteMethods {
   function scope(): string | null {
     return tenantFilter(resolveTenantScope('Query'))?.tenantId ?? null;
@@ -44,7 +50,7 @@ export function createPostgresFavoriteMethods(db: PostgresDatabase): ToolFavorit
       return db.transaction(async (sql) => {
         await lock(sql, user);
         const erased = await sql.query(
-          'SELECT 1 FROM tool_favorite_erasure WHERE user_id = $1 AND (scope = $2 OR scope = $3)',
+          'SELECT 1 FROM tool_favorite_erasure WHERE user_id = $1 AND (scope = $2 OR scope = $3) LIMIT 1',
           [user, '*', tenant == null ? '*' : `tenant:${tenant}`],
         );
         if (erased.rowCount) {
@@ -82,14 +88,27 @@ export function createPostgresFavoriteMethods(db: PostgresDatabase): ToolFavorit
       );
       return { ok: true, removed: (result.rowCount ?? 0) > 0 };
     },
-    async deleteUserToolFavorites(userId) {
+    async cancelUserToolFavoriteDeletion(userId, deletionAttemptId) {
+      validateAttemptId(deletionAttemptId);
+      const user = userKey(userId);
+      const tenant = scope();
+      await db.transaction(async (sql) => {
+        await lock(sql, user);
+        await sql.query(
+          'DELETE FROM tool_favorite_erasure WHERE user_id=$1 AND scope=$2 AND attempt_id=$3',
+          [user, tenant == null ? '*' : `tenant:${tenant}`, deletionAttemptId],
+        );
+      });
+    },
+    async deleteUserToolFavorites(userId, deletionAttemptId) {
+      if (deletionAttemptId !== undefined) validateAttemptId(deletionAttemptId);
       const user = userKey(userId);
       const tenant = scope();
       return db.transaction(async (sql) => {
         await lock(sql, user);
         await sql.query(
-          'INSERT INTO tool_favorite_erasure (user_id,scope) VALUES ($1,$2) ON CONFLICT DO NOTHING',
-          [user, tenant == null ? '*' : `tenant:${tenant}`],
+          'INSERT INTO tool_favorite_erasure (user_id,scope,attempt_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING',
+          [user, tenant == null ? '*' : `tenant:${tenant}`, deletionAttemptId ?? ''],
         );
         const result = await sql.query(
           'DELETE FROM tool_favorites WHERE user_id=$1 AND ($2::text IS NULL OR tenant_id=$2)',

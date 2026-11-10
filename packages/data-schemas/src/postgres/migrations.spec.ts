@@ -81,6 +81,11 @@ postgres('PostgreSQL catalog readiness', () => {
           }
         });
       await runAsRole((database) => assertPostgresReady(database));
+      await db.query(`REVOKE DELETE ON tool_favorite_erasure FROM ${role}`);
+      await runAsRole(async (database) => {
+        await expect(assertPostgresReady(database)).rejects.toThrow('permissions');
+      });
+      await db.query(`GRANT DELETE ON tool_favorite_erasure TO ${role}`);
       await db.query(`REVOKE INSERT ON tool_favorites FROM ${role}`);
       await runAsRole(async (database) => {
         await expect(assertPostgresReady(database)).rejects.toThrow('permissions');

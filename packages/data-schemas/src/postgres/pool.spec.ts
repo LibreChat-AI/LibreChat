@@ -24,7 +24,7 @@ postgres('PostgreSQL borrowed connections', () => {
     async (kind) => {
       const source = `
       import pg from 'pg';
-      import { createPostgresDatabase } from ${JSON.stringify(path.resolve('src/postgres/pool.ts'))};
+      import { createPostgresDatabase } from ${JSON.stringify(path.resolve(__dirname, 'pool.ts'))};
       const db = createPostgresDatabase({ ...${JSON.stringify({ ...options(), connectionString: undefined })}, connectionString: process.env.PG_TEST_URL });
       const killer = new pg.Client({ connectionString: process.env.PG_TEST_URL });
       await killer.connect();

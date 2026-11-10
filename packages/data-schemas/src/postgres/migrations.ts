@@ -18,7 +18,8 @@ const migration = {
   CREATE TABLE tool_favorite_erasure (
     user_id text NOT NULL,
     scope text NOT NULL,
-    PRIMARY KEY (user_id, scope)
+    attempt_id text NOT NULL DEFAULT '',
+    PRIMARY KEY (user_id, scope, attempt_id)
   );
   CREATE TABLE tool_favorite_readiness (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
@@ -100,6 +101,7 @@ async function assertSchema(sql: SqlExecutor): Promise<void> {
       AND has_table_privilege(current_user, 'tool_favorites', 'DELETE')
       AND has_table_privilege(current_user, 'tool_favorite_erasure', 'SELECT')
       AND has_table_privilege(current_user, 'tool_favorite_erasure', 'INSERT')
+      AND has_table_privilege(current_user, 'tool_favorite_erasure', 'DELETE')
       AND has_table_privilege(current_user, 'tool_favorite_readiness', 'SELECT')
       AND has_table_privilege(current_user, 'tool_favorite_readiness', 'UPDATE') AS allowed`,
   );

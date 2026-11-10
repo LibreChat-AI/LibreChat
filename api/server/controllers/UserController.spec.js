@@ -55,6 +55,7 @@ jest.mock('~/models', () => {
     deleteAclEntries: jest.fn().mockResolvedValue(undefined),
     deleteUserChatProjects: jest.fn().mockResolvedValue(0),
     deleteUserToolFavorites: jest.fn().mockResolvedValue(0),
+    cancelUserToolFavoriteDeletion: jest.fn().mockResolvedValue(undefined),
     deleteRefreshTokenBridges: jest.fn().mockResolvedValue(undefined),
     deleteAllAgentQueuedTurnsForUser: jest.fn().mockResolvedValue(0),
     findUserErasableMCPServers: jest.fn().mockResolvedValue([]),
@@ -941,6 +942,39 @@ describe('deleteUserController', () => {
     // re-suspending under a new token — race the restore and strand the disabled snapshot.
     expect(mockRestoreUserSchedules.mock.invocationCallOrder[0]).toBeLessThan(
       cancelAgentTriggerUserDeletion.mock.invocationCallOrder[0],
+    );
+  });
+
+  it.each([false, 'error'])(
+    'does not release the favorite marker without a proven Mongo cancellation: %s',
+    async (result) => {
+      const db = require('~/models');
+      db.deleteUserAgents.mockRejectedValueOnce(new Error('later cascade failure'));
+      if (result === 'error')
+        db.cancelAgentTriggerUserDeletion.mockRejectedValueOnce(new Error('Mongo unavailable'));
+      else db.cancelAgentTriggerUserDeletion.mockResolvedValueOnce(false);
+      const userId = new mongoose.Types.ObjectId().toString();
+      await deleteUserController({ user: { id: userId, tenantId: 'tenant-1' } }, mockRes);
+      expect(mockRes.status).toHaveBeenCalledWith(500);
+      expect(db.deleteUserToolFavorites).toHaveBeenCalledWith(
+        userId,
+        mockQuiesceUserSchedules.mock.calls[0][1],
+      );
+      expect(db.cancelUserToolFavoriteDeletion).not.toHaveBeenCalled();
+    },
+  );
+
+  it('releases the cascade UUID only after Mongo cancellation proves the account survived', async () => {
+    const db = require('~/models');
+    db.deleteUserAgents.mockRejectedValueOnce(new Error('later cascade failure'));
+    const userId = new mongoose.Types.ObjectId().toString();
+    await deleteUserController({ user: { id: userId, tenantId: 'tenant-1' } }, mockRes);
+    const token = mockQuiesceUserSchedules.mock.calls[0][1];
+    expect(mockRes.status).toHaveBeenCalledWith(500);
+    expect(db.deleteUserToolFavorites).toHaveBeenCalledWith(userId, token);
+    expect(db.cancelUserToolFavoriteDeletion).toHaveBeenCalledWith(userId, token);
+    expect(db.cancelAgentTriggerUserDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+      db.cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0],
     );
   });
 

@@ -33,7 +33,12 @@ export function createFavoriteRuntime(
       getToolFavorites: async (userId) => methods().getToolFavorites(userId),
       addToolFavorite: async (params) => methods().addToolFavorite(params),
       removeToolFavorite: async (params) => methods().removeToolFavorite(params),
-      deleteUserToolFavorites: async (userId) => methods().deleteUserToolFavorites(userId),
+      deleteUserToolFavorites: async (userId, deletionAttemptId) =>
+        deletionAttemptId === undefined
+          ? methods().deleteUserToolFavorites(userId)
+          : methods().deleteUserToolFavorites(userId, deletionAttemptId),
+      cancelUserToolFavoriteDeletion: async (userId, deletionAttemptId) =>
+        methods().cancelUserToolFavoriteDeletion?.(userId, deletionAttemptId),
     },
     initialize(config) {
       if (closed) {

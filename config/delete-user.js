@@ -9,6 +9,7 @@ const { User } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const {
   eraseUserData,
+  cancelUserDataDeletion,
   GenerationJobManager,
   createStreamServices,
   initializeFileStorage,
@@ -215,6 +216,7 @@ async function gracefulExit(code = 0) {
       eraseUserData(
         {
           userId: uid,
+          deletionAttemptId: scheduleSuspensionToken,
           tenantId: user.tenantId,
           checkpointer: userAppConfig?.endpoints?.agents?.checkpointer,
           keepTransactions: !deleteTx,
@@ -327,9 +329,12 @@ async function gracefulExit(code = 0) {
       await runAsSystem(() => methods.cancelAgentTriggerUserPurge(uid, deletionFence)).catch(
         (error) => console.error('Failed to disarm trigger purge recovery:', error),
       );
-      await runAsSystem(() => methods.cancelAgentTriggerUserDeletion(uid, deletionFence)).catch(
-        (error) => console.error('Failed to release account-deletion fence:', error),
-      );
+      await runAsSystem(() =>
+        cancelUserDataDeletion(
+          { userId: uid, startedAt: deletionFence, deletionAttemptId: scheduleSuspensionToken },
+          methods,
+        ),
+      ).catch((error) => console.error('Failed to release account-deletion fence:', error));
     }
     if (hasSharedGenerationStore) {
       await GenerationJobManager.destroy().catch((error) =>

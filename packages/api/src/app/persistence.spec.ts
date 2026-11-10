@@ -26,6 +26,15 @@ describe('favorites process lifecycle', () => {
     await expect(captured('user')).rejects.toThrow('not initialized');
     await expect(runtime.initialize(undefined)).rejects.toThrow('closed');
   });
+  it('keeps the optional Mongo cancellation hook a no-op without changing captured references', async () => {
+    const runtime = createFavoriteRuntime(mongo, {});
+    const cancel = runtime.methods.cancelUserToolFavoriteDeletion!;
+    await expect(cancel('user', 'attempt')).rejects.toThrow('not initialized');
+    await runtime.initialize(undefined);
+    await expect(cancel('user', 'attempt')).resolves.toBeUndefined();
+    await runtime.close();
+    await expect(cancel('user', 'attempt')).rejects.toThrow('not initialized');
+  });
   it('fails closed on invalid explicit storage config and missing DSN', async () => {
     await expect(
       createFavoriteRuntime(mongo, {}).initialize({ favorites: 'invalid' }),

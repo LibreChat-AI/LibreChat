@@ -47,6 +47,7 @@ const mockMongoFavorites = {
   addToolFavorite: jest.fn(),
   removeToolFavorite: jest.fn(),
   deleteUserToolFavorites: jest.fn(),
+  cancelUserToolFavoriteDeletion: jest.fn(),
 };
 
 jest.mock('../connect', () => jest.fn(async () => undefined));
@@ -147,6 +148,7 @@ describe('Delete user CLI', () => {
     mockGetAppConfig.mockReset().mockResolvedValue({});
     mockLoadCustomConfig.mockReset().mockResolvedValue({});
     mockMongoFavorites.deleteUserToolFavorites.mockReset();
+    mockMongoFavorites.cancelUserToolFavoriteDeletion.mockReset().mockResolvedValue(undefined);
     mockRevokeUserCodeEnvironmentWorkers.mockReset().mockResolvedValue(0);
     mockEraseUserData.mockReset().mockResolvedValue(undefined);
     mockProcessDeleteRequest.mockReset().mockResolvedValue({ deletedFileIds: [] });
@@ -266,6 +268,31 @@ describe('Delete user CLI', () => {
     );
   });
 
+  it.each([false, 'error'])(
+    'keeps favorites fenced when Mongo cancellation is not proven: %s',
+    async (result) => {
+      mockEraseUserData.mockRejectedValueOnce(new Error('shared link failure'));
+      if (result === 'error')
+        mockMethods.cancelAgentTriggerUserDeletion.mockRejectedValueOnce(
+          new Error('Mongo unavailable'),
+        );
+      else mockMethods.cancelAgentTriggerUserDeletion.mockResolvedValueOnce(false);
+      expect(await runCli()).toBe(1);
+      expect(mockMongoFavorites.cancelUserToolFavoriteDeletion).not.toHaveBeenCalled();
+    },
+  );
+
+  it('releases only the cascade UUID after Mongo cancellation succeeds', async () => {
+    mockEraseUserData.mockRejectedValueOnce(new Error('shared link failure'));
+    expect(await runCli()).toBe(1);
+    const token = mockMethods.suspendUserSchedulesForDeletion.mock.calls[0][1];
+    expect(mockEraseUserData.mock.calls[0][0].deletionAttemptId).toBe(token);
+    expect(mockMongoFavorites.cancelUserToolFavoriteDeletion).toHaveBeenCalledWith(USER_ID, token);
+    expect(mockMethods.cancelAgentTriggerUserDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMongoFavorites.cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0],
+    );
+  });
+
   it('never restores schedules after a committed deletion', async () => {
     expect(await runCli()).toBe(0);
 
@@ -316,6 +343,7 @@ describe('Delete user CLI', () => {
       tenantId: 'tenant-1',
       checkpointer: { ttl: 60 },
       keepTransactions: true,
+      deletionAttemptId: mockMethods.suspendUserSchedulesForDeletion.mock.calls[0][1],
     });
     expect(deps).toEqual(
       expect.objectContaining({

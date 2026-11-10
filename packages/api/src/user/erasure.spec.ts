@@ -1,23 +1,29 @@
 import { Keyv } from 'keyv';
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { ResourceType, PrincipalType } from 'librechat-data-provider';
 import {
+  createPostgresDatabase,
+  migratePostgres,
+  importFavorites,
   createModels,
   createMethods,
   tenantStorage,
   createSkillDeletionPersistenceAdapter,
   logger,
 } from '@librechat/data-schemas';
+import type { PostgresDatabase } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { CheckpointDeletion } from '~/agents/checkpoints/deletion';
 import type { UserErasureDeps, MCPOAuthErasureHooks } from './erasure';
 import type { MCPOAuthTokens } from '~/mcp/oauth/types';
+import { deleteUserMCPServers, eraseUserData, cancelUserDataDeletion } from './erasure';
 import { MCPOAuthHandler, MCPTokenStorage, getMCPOAuthLeaseId } from '~/mcp/oauth';
 import { deleteAllSharedLinksWithCleanup } from '~/shared-links/service';
 import { createSkillDeletionService } from '../skills/deletionService';
-import { deleteUserMCPServers, eraseUserData } from './erasure';
 import { cleanupMCPServerOAuth } from '~/mcp/oauth/cleanup';
+import { createFavoriteRuntime } from '~/app/persistence';
 import { FlowStateManager } from '~/flow/manager';
 
 /** Stored OAuth credentials are encrypted with a key read when the module loads. */
@@ -901,5 +907,151 @@ describe('removing a shared MCP server with its owner', () => {
       expect(MCPTokenStorage.isRefreshTeardownActive(id.toString(), serverName)).toBe(false);
     }
     expect(await count('MCPServer', { _id: mcpServerId })).toBe(1);
+  });
+});
+
+const realPostgres = process.env.PG_TEST_URL ? describe : describe.skip;
+realPostgres('attempt-scoped PostgreSQL account erasure', () => {
+  const schema = `erasure_${randomUUID().replace(/-/g, '')}`;
+  const config = { favorites: 'postgres', postgres: { connectionStringEnv: 'PG_TEST_URL' } };
+  const options = {
+    connectionString: process.env.PG_TEST_URL ?? '',
+    max: 2,
+    maxWaiting: 10,
+    acquireTimeoutMs: 1000,
+    queryTimeoutMs: 5000,
+    idleTimeoutMs: 1000,
+  };
+  let admin: PostgresDatabase;
+  let db: PostgresDatabase;
+  beforeAll(async () => {
+    admin = createPostgresDatabase(options);
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const url = new URL(options.connectionString);
+    url.searchParams.set('options', `-c search_path=${schema}`);
+    options.connectionString = url.toString();
+    db = createPostgresDatabase(options);
+    await migratePostgres(db);
+    await importFavorites(db, async function* () {}, {
+      offline: true,
+      verifiedEmpty: true,
+      batchSize: 10,
+    });
+  });
+  afterAll(async () => {
+    await db.close();
+    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+    await admin.close();
+  });
+  async function setup() {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const startedAt = new Date();
+    const deletionAttemptId = randomUUID();
+    await model('User').insertOne({
+      _id: new mongoose.Types.ObjectId(userId),
+      agentTriggerDeletionStartedAt: startedAt,
+    });
+    const runtime = createFavoriteRuntime(methods, { PG_TEST_URL: options.connectionString });
+    await runtime.initialize(config);
+    const { deps } = createDeps();
+    const erasure = { ...deps, ...runtime.methods };
+    const cancel = { ...methods, ...runtime.methods };
+    const params = { userId, startedAt, deletionAttemptId };
+    const favorite = { userId, itemType: 'tool', itemId: 'saved' } as const;
+    await runtime.methods.addToolFavorite(favorite);
+    return { runtime, erasure, cancel, params, favorite };
+  }
+  it('unfences a retained account after a later cascade failure, including after restart', async () => {
+    const { runtime, erasure, cancel, params, favorite } = await setup();
+    erasure.deleteSharedLinks = jest.fn().mockRejectedValue(new Error('shared links unavailable'));
+    try {
+      await expect(eraseUserData(params, erasure)).rejects.toThrow('shared links unavailable');
+      expect(await count('User', { _id: new mongoose.Types.ObjectId(params.userId) })).toBe(1);
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+      await cancelUserDataDeletion(params, cancel);
+      await runtime.close();
+      const restarted = createFavoriteRuntime(methods, { PG_TEST_URL: options.connectionString });
+      try {
+        await restarted.initialize(config);
+        await expect(restarted.methods.addToolFavorite(favorite)).resolves.toEqual({
+          ok: true,
+          added: true,
+        });
+        expect(await restarted.methods.getToolFavorites(params.userId)).toEqual([
+          { itemType: 'tool', itemId: 'saved' },
+        ]);
+      } finally {
+        await restarted.close();
+      }
+    } finally {
+      await runtime.close();
+    }
+  });
+  it.each(['deleted', 'other-attempt', 'mongo-error'] as const)(
+    'keeps the marker when cancellation cannot prove ownership: %s',
+    async (reason) => {
+      const { runtime, erasure, cancel, params, favorite } = await setup();
+      try {
+        await eraseUserData(params, erasure);
+        if (reason === 'deleted') await methods.deleteUserById(params.userId);
+        if (reason === 'other-attempt')
+          await model('User').updateOne(
+            { _id: new mongoose.Types.ObjectId(params.userId) },
+            { $set: { agentTriggerDeletionStartedAt: new Date(params.startedAt.getTime() + 1) } },
+          );
+        if (reason === 'mongo-error')
+          cancel.cancelAgentTriggerUserDeletion = jest
+            .fn()
+            .mockRejectedValue(new Error('Mongo unavailable'));
+        if (reason === 'mongo-error')
+          await expect(cancelUserDataDeletion(params, cancel)).rejects.toThrow('Mongo unavailable');
+        else await cancelUserDataDeletion(params, cancel);
+        await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+        await runtime.close();
+        const restarted = createFavoriteRuntime(methods, { PG_TEST_URL: options.connectionString });
+        try {
+          await restarted.initialize(config);
+          await expect(restarted.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+        } finally {
+          await restarted.close();
+        }
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
+  it('propagates PostgreSQL cancellation failure and leaves its marker intact', async () => {
+    const { runtime, erasure, cancel, params, favorite } = await setup();
+    try {
+      await eraseUserData(params, erasure);
+      await db.query(
+        `CREATE FUNCTION reject_cancel() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cancel unavailable'; END $$`,
+      );
+      await db.query(
+        'CREATE TRIGGER reject_cancel BEFORE DELETE ON tool_favorite_erasure FOR EACH ROW EXECUTE FUNCTION reject_cancel()',
+      );
+      try {
+        await expect(cancelUserDataDeletion(params, cancel)).rejects.toThrow('cancel unavailable');
+      } finally {
+        await db.query('DROP TRIGGER reject_cancel ON tool_favorite_erasure');
+        await db.query('DROP FUNCTION reject_cancel()');
+      }
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+      // Lost ownership proof must not be inferred from an earlier successful CAS.
+      await cancelUserDataDeletion(params, cancel);
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+    } finally {
+      await runtime.close();
+    }
+  });
+  it('never cancels a permanent marker when no UUID was supplied', async () => {
+    const { runtime, cancel, params, favorite } = await setup();
+    try {
+      await runtime.methods.deleteUserToolFavorites(params.userId);
+      await cancelUserDataDeletion({ userId: params.userId, startedAt: params.startedAt }, cancel);
+      await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
+    } finally {
+      await runtime.close();
+    }
   });
 });
