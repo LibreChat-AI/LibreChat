@@ -122,10 +122,15 @@ async function openGroup(page: Page, name: RegExp): Promise<Locator> {
     await header.click();
   }
   await expect(header).toHaveAttribute('aria-expanded', 'true');
-  return messagesView(page)
+  const panel = messagesView(page)
     .getByTestId('tool-call-group-panel')
     .filter({ has: page.getByRole('button', { name: /^Ran / }) })
     .last();
+  /** Hovering while the panel is clipped can scroll its rows beneath the stationary pointer. */
+  await panel.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
+  return panel;
 }
 
 const railOf = (panel: Locator) => panel.locator('> div > [data-testid="fold-rail"]');
