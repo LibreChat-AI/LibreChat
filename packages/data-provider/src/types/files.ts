@@ -28,6 +28,7 @@ export enum FileContext {
   agents = 'agents',
   assistants = 'assistants',
   execute_code = 'execute_code',
+  execute_code_snapshot = 'execute_code_snapshot',
   image_generation = 'image_generation',
   assistants_output = 'assistants_output',
   message_attachment = 'message_attachment',
@@ -230,6 +231,8 @@ export type TFile = {
      */
     codeEnvRef?: CodeEnvRef;
     codeEnvRefs?: CodeEnvRefMap;
+    /** Non-owning provenance. Never reused or deleted as a stored copy. */
+    codeEnvSource?: CodeEnvRef;
     /** Dispatch-order stamp for the current source artifact generation. */
     sourceDispatchedAt?: number;
     /** Vector namespaces this file has been embedded into. */
