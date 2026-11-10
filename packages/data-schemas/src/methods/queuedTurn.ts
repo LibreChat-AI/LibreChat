@@ -1912,13 +1912,21 @@ export function createAgentQueuedTurnMethods(
    * True while a claim is admitting a queued turn under an unexpired lease, or
    * while the lane head is a due `queued` row that `claimNextAgentQueuedTurn`
    * could acquire. Rows that need recovery or a user decision (a reservation,
-   * an expired claim, an indeterminate admission, a dead head awaiting
-   * dismissal) answer false, so callers never wait on them.
+   * an expired claim, an indeterminate admission, a dead row ahead of the
+   * head) block that head and answer false, so callers never wait on them.
    *
-   * The active lane is read in one query over the capacity index. Its key
-   * (`activeSlot`) is held unchanged from reservation until a terminal state,
-   * so a row moving between `queued` and `claimed` in either direction is
-   * read exactly once, in one state or the other, never missed between reads.
+   * The reads are ordered so that no blocker is older than the turn it blocks.
+   * The active lane is read first, in one query over the capacity index. Its
+   * key (`activeSlot`) is held unchanged from reservation until a terminal
+   * state, so a row moving between `queued` and `claimed` in either direction
+   * is read exactly once, in one state or the other. Blockers are read only
+   * after that, and only for a due head. A blocker that has already cleared (a
+   * dismissed dead row, a finished reservation, a renewed claim) is therefore
+   * never what answers false, and a lane with no due head costs one read.
+   *
+   * The answer holds for the instant of the last read. A turn that becomes
+   * admissible afterwards arrives after the caller and is ordered by the
+   * generation predecessor fence, as any later send is.
    */
   async function hasPendingAgentQueuedTurn(
     input: AgentQueuedTurnPrecedenceInput,
@@ -1943,46 +1951,42 @@ export function createAgentQueuedTurnMethods(
         .find({ ...scope, activeSlot: { $exists: true } })
         .select('status priority sequence availableAt claimUntil')
         .lean<LaneRow[]>();
-    const [active, deadHead, quarantined] = await Promise.all([
-      /** The hint only pins the stable key. When it is refused (the index is
-       * not built yet, or an engine rejects the hint), a planner-chosen read
-       * is still correct apart from that narrow transition window, and a
-       * genuine outage fails this second read too. */
-      readActiveLane()
-        .hint(ACTIVE_CAPACITY_INDEX)
-        .catch(() => readActiveLane()),
-      Turn()
-        .findOne({ ...scope, status: 'dead' })
-        .sort({ priority: -1, sequence: 1 })
-        .select('priority sequence')
-        .lean<Pick<IAgentQueuedTurn, 'priority' | 'sequence'>>(),
-      Turn().exists({
-        ...scope,
-        status: 'dead',
-        'terminalReceipt.failure.code': 'ADMISSION_INDETERMINATE',
-      }),
-    ]);
+    /** The hint only pins the stable key. When it is refused (the index is
+     * not built yet, or an engine rejects the hint), a planner-chosen read
+     * is still correct apart from that narrow transition window, and a
+     * genuine outage fails this second read too. */
+    const active = await readActiveLane()
+      .hint(ACTIVE_CAPACITY_INDEX)
+      .catch(() => readActiveLane());
     const now = input.now.getTime();
     let head: LaneRow | undefined;
-    let fenced = quarantined != null;
     for (const row of active) {
-      if (row.status === 'claimed') {
-        if (row.claimUntil != null && row.claimUntil.getTime() > now) {
-          return true;
-        }
-        fenced = true;
-      } else if (row.status === 'reserving') {
-        fenced = true;
-      } else if (row.status === 'queued' && (head == null || precedes(row, head))) {
+      if (row.status === 'claimed' && row.claimUntil != null && row.claimUntil.getTime() > now) {
+        return true;
+      }
+      if (row.status === 'queued' && (head == null || precedes(row, head))) {
         head = row;
       }
     }
-    return (
-      !fenced &&
-      head != null &&
-      head.availableAt.getTime() <= now &&
-      (deadHead == null || !precedes(deadHead, head))
-    );
+    if (head == null || head.availableAt.getTime() > now) {
+      return false;
+    }
+    const earlier = { sequence: { $lt: head.sequence ?? Number.MAX_SAFE_INTEGER } };
+    const blocker = await Turn().exists({
+      ...scope,
+      $or: [
+        { status: 'reserving' },
+        { status: 'claimed', claimUntil: { $not: { $gt: input.now } } },
+        { status: 'dead', 'terminalReceipt.failure.code': 'ADMISSION_INDETERMINATE' },
+        {
+          status: 'dead',
+          ...(head.priority === true
+            ? { priority: true, ...earlier }
+            : { $or: [{ priority: true }, earlier] }),
+        },
+      ],
+    });
+    return blocker == null;
   }
 
   async function releaseAgentQueuedTurn(

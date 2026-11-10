@@ -3261,17 +3261,61 @@ describe('queued turn precedence', () => {
     await expect(pending()).resolves.toBe(false);
   });
 
-  /** Runs `transition` after the active-lane read is issued and before it executes. */
-  function interleaveActiveLaneRead(transition: () => Promise<unknown>) {
+  /** Runs `transition` around the active-lane read: once it is issued and
+   * `before` it executes, or `after` it has returned and before the blocker read. */
+  function interleaveActiveLaneRead(
+    transition: () => Promise<unknown>,
+    when: 'before' | 'after' = 'before',
+  ) {
     const find = Turn.find.bind(Turn);
     jest.spyOn(Turn, 'find').mockImplementationOnce((...args: Parameters<typeof find>) => {
       const query = find(...args);
       const exec = query.exec.bind(query);
       query.exec = async () => {
+        if (when === 'before') {
+          await transition();
+          return exec();
+        }
+        const rows = await exec();
         await transition();
-        return exec();
+        return rows;
       };
       return query;
+    });
+  }
+
+  async function deadHeadWithSuccessor() {
+    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ clientRequestId: 'second' }));
+    await methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId));
+    await methods.releaseAgentQueuedTurn({
+      ...scope(),
+      queuedTurnId: first.turn.queuedTurnId,
+      claimId: 'claim-1',
+      claimBy: 'worker-1',
+      disposition: 'dead',
+      settledAt: START,
+      failure: { code: 'PREDECESSOR_ABORTED', message: 'review this turn' },
+    });
+    return first.turn;
+  }
+
+  async function reservationBesideHead() {
+    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    return Turn.create({
+      ...scope(),
+      agentId: 'agent-1',
+      parentMessageId: 'parent-1',
+      clientRequestId: 'interrupted-reservation',
+      fingerprint: 'x'.repeat(43),
+      laneId: first.turn.laneId,
+      activeSlot: ((first.turn.activeSlot ?? 0) + 1) % 100,
+      status: 'reserving',
+      priority: false,
+      text: 'repair me',
+      attempts: 0,
+      availableAt: START,
+      deliveryState: 'pending',
     });
   }
 
@@ -3337,23 +3381,76 @@ describe('queued turn precedence', () => {
   });
 
   it('does not wait on an unfinished reservation', async () => {
-    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
-    await Turn.create({
-      ...scope(),
-      agentId: 'agent-1',
-      parentMessageId: 'parent-1',
-      clientRequestId: 'interrupted-reservation',
-      fingerprint: 'x'.repeat(43),
-      laneId: first.turn.laneId,
-      activeSlot: ((first.turn.activeSlot ?? 0) + 1) % 100,
-      status: 'reserving',
-      priority: false,
-      text: 'repair me',
-      attempts: 0,
-      availableAt: START,
-      deliveryState: 'pending',
-    });
+    await reservationBesideHead();
 
     await expect(pending()).resolves.toBe(false);
+  });
+
+  it.each(['before', 'after'] as const)(
+    'sees a successor whose dead head is dismissed %s the lane read returns',
+    async (when) => {
+      const dead = await deadHeadWithSuccessor();
+      await expect(pending()).resolves.toBe(false);
+      interleaveActiveLaneRead(
+        () =>
+          methods.cancelAgentQueuedTurn({
+            ...scope(),
+            queuedTurnId: dead.queuedTurnId,
+            settledAt: START,
+          }),
+        when,
+      );
+
+      await expect(pending()).resolves.toBe(true);
+    },
+  );
+
+  it('sees a head whose reservation fence settles after the lane read returns', async () => {
+    const reservation = await reservationBesideHead();
+    interleaveActiveLaneRead(
+      () =>
+        Turn.updateOne(
+          { _id: reservation._id, status: 'reserving' },
+          { $set: { status: 'queued', sequence: 2 } },
+        ),
+      'after',
+    );
+
+    await expect(pending()).resolves.toBe(true);
+  });
+
+  it('sees a head whose expired claim is renewed after the lane read returns', async () => {
+    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ clientRequestId: 'second' }));
+    await methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId));
+    const expired = new Date(LATER.getTime() + 1);
+    await expect(pending(expired)).resolves.toBe(false);
+    interleaveActiveLaneRead(
+      () =>
+        Turn.updateOne(
+          { _id: first.turn.queuedTurnId, status: 'claimed' },
+          { $set: { claimUntil: new Date(expired.getTime() + 60_000) } },
+        ),
+      'after',
+    );
+
+    await expect(pending(expired)).resolves.toBe(true);
+  });
+
+  it('reads blockers only for a due head', async () => {
+    const find = jest.spyOn(Turn, 'find');
+    const exists = jest.spyOn(Turn, 'exists');
+
+    await expect(pending()).resolves.toBe(false);
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ availableAt: LATER }));
+    find.mockClear();
+    exists.mockClear();
+    await expect(pending()).resolves.toBe(false);
+    expect(find).toHaveBeenCalledTimes(1);
+    expect(exists).not.toHaveBeenCalled();
+
+    await expect(pending(LATER)).resolves.toBe(true);
+    expect(find).toHaveBeenCalledTimes(2);
+    expect(exists).toHaveBeenCalledTimes(1);
   });
 });
