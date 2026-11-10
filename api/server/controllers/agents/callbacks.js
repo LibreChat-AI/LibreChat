@@ -196,6 +196,7 @@ class ModelEndHandler {
                 ? {
                     cache_creation,
                     cache_creation_1h: taggedUsage.input_token_details?.cache_creation_1h,
+                    cache_creation_12h: taggedUsage.input_token_details?.cache_creation_12h,
                     cache_read,
                   }
                 : undefined,

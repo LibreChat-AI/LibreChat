@@ -1078,6 +1078,50 @@ async function compactSummary(
   return { requests };
 }
 
+describe('Cyber summary model isolation', () => {
+  it.each(['gpt-6-sol', 'gpt-4.1-mini', 'gpt-6-cyber'])(
+    'scopes Cyber access to the matching summary model, %s',
+    async (model) => {
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'test-cyber-key',
+        {
+          requestIdentity: { userId: 'test-user', tenantId: 'test-tenant' },
+          modelOptions: { model: 'gpt-6-cyber' },
+          headers: { 'X-Test-Transport': 'preserved' },
+        },
+        EModelEndpoint.openAI,
+      );
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint: EModelEndpoint.openAI,
+            model: 'gpt-6-cyber',
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: { model, parameters: { streaming: false } },
+      });
+
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body.model).toBe(model);
+      expect(requests[0].url.origin).toBe('https://api.openai.com');
+      expect(requests[0].headers.get('X-Test-Transport')).toBe('preserved');
+      if (model === 'gpt-6-cyber') {
+        expect(requests[0].body).toHaveProperty('access_programs.cyber', 'daybreak_red');
+      } else {
+        expect(requests[0].body).not.toHaveProperty('access_programs');
+      }
+      expect((agents[0].clientOptions as Record<string, unknown>).modelKwargs).toMatchObject({
+        access_programs: { cyber: 'daybreak_red' },
+      });
+    },
+  );
+});
+
 describe('manual compaction recency', () => {
   it('skips a fully retained conversation without calling the summarizer', async () => {
     const agents = await callAndCapture({

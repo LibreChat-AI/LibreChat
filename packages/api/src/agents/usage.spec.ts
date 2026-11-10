@@ -1954,7 +1954,8 @@ describe('computeUsageCostUSD', () => {
       },
       {
         ...pricing,
-        getCacheMultiplier: ({ cacheType }) => ({ write: 3.75, write1h: 6, read: 0.3 })[cacheType],
+        getCacheMultiplier: ({ cacheType }) =>
+          ({ write: 3.75, write1h: 6, write12h: null, read: 0.3 })[cacheType],
       },
     );
     expect(cost).toBeCloseTo((1000 * 3 + 500 * 3.75 + 1500 * 6 + 10000 * 0.3 + 500 * 15) / 1e6);

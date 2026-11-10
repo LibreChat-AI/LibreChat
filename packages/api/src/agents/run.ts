@@ -678,25 +678,27 @@ function agentModelKwargs(
   return isPlainObject(modelParameters.modelKwargs) ? modelParameters.modelKwargs : undefined;
 }
 
-/**
- * `getOpenAILLMConfig` carries an Azure Astra deployment alias in
- * `modelKwargs.model`, which langchain spreads after `model`. The SDK's
- * same-provider summarizer copies the agent's client options and overrides only
- * `model`, so a summarizer on another model would still reach the agent's
- * deployment. Hand it the agent's kwargs without the alias.
- */
+/** The SDK inherits same-provider kwargs. Model switches must drop deployment aliases and Cyber access. */
 function summarizationModelKwargs(
   agentKwargs: Record<string, unknown> | undefined,
   agentModel: string | undefined,
   summarizationModel: string | undefined,
 ): Record<string, unknown> | undefined {
-  if (agentKwargs == null || !('model' in agentKwargs)) {
+  if (
+    agentKwargs == null ||
+    !isNonEmptyString(summarizationModel) ||
+    summarizationModel === agentModel
+  ) {
     return undefined;
   }
-  if (!isNonEmptyString(summarizationModel) || summarizationModel === agentModel) {
+  const cyberAccess = agentModel === 'gpt-6-cyber' && 'access_programs' in agentKwargs;
+  if (!('model' in agentKwargs) && !cyberAccess) {
     return undefined;
   }
   const { model: _alias, ...kwargs } = agentKwargs;
+  if (cyberAccess) {
+    delete kwargs.access_programs;
+  }
   return kwargs;
 }
 
