@@ -1,0 +1,129 @@
+name: Change Quality
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Base ref to compare with
+        default: origin/dev
+        type: string
+      scope:
+        description: Test workspace (all or a workspace name)
+        default: data-schemas
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  QUALITY_BASE: ${{ github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}
+  QUALITY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  verify:
+    name: Verify quality tooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.QUALITY_HEAD }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - run: npm ci
+      - name: Check reporter types
+        run: >-
+          npx --no-install tsc --noEmit --target ES2023 --module NodeNext
+          --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck
+          --strict --types node scripts/quality/*.mts
+      - name: Test change selection and metrics
+        run: node --test scripts/crap.test.mts scripts/quality/*.test.mts
+
+  select:
+    name: Select changed source
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      workspaces: ${{ steps.select.outputs.workspaces }}
+      hasChanges: ${{ steps.select.outputs.hasChanges }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.QUALITY_HEAD }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+      - name: Select workspaces
+        id: select
+        env:
+          QUALITY_SCOPE: ${{ inputs.scope || 'data-schemas' }}
+        run: node scripts/quality/changes.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" --scope "$QUALITY_SCOPE"
+
+  reports:
+    name: ${{ matrix.check == 'risk' && 'Change risk' || 'Mutation testing' }} (${{ matrix.workspace }})
+    needs: [select, verify]
+    if: needs.select.outputs.hasChanges == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: ${{ fromJSON(needs.select.outputs.workspaces) }}
+        check: [risk, mutation]
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      REDIS_URI: redis://127.0.0.1:6379
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.QUALITY_HEAD }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - run: npm ci
+      - name: Build shared packages
+        run: |
+          if [ "$QUALITY_SCOPE" = data-schemas ]; then
+            npm run build:data-provider
+          else
+            npm run build:packages
+          fi
+        env:
+          QUALITY_SCOPE: ${{ inputs.scope || 'data-schemas' }}
+      - name: Generate advisory report
+        env:
+          QUALITY_WORKSPACE: ${{ matrix.workspace }}
+          QUALITY_CHECK: ${{ matrix.check }}
+        run: >-
+          node scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD"
+          --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK"
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: change-${{ matrix.check }}-${{ matrix.workspace }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: coverage/changes/${{ matrix.workspace }}/${{ matrix.check }}/
+          if-no-files-found: warn
+          retention-days: 14
