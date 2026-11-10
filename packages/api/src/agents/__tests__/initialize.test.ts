@@ -98,6 +98,8 @@ const mockOptionalChainWithEmptyCheck = jest.fn();
 const mockGetThreadData = jest.fn();
 
 jest.mock('~/utils', () => ({
+  createCodeApiRateLimitBudget: (...args: unknown[]) =>
+    jest.requireActual('~/utils').createCodeApiRateLimitBudget(...args),
   extractLibreChatParams: (...args: unknown[]) => mockExtractLibreChatParams(...args),
   getModelMaxTokens: (...args: unknown[]) => mockGetModelMaxTokens(...args),
   optionalChainWithEmptyCheck: (...args: unknown[]) => mockOptionalChainWithEmptyCheck(...args),
@@ -139,6 +141,8 @@ jest.mock('../../middleware/modelBoundContent', () => {
 });
 
 import { initializeAgent } from '../initialize';
+import { createProvisionFilesCallback } from '~/files/provision/callback';
+import { createFileProvisionRecovery } from '~/files/operations';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
 import { canAgentGraphPause } from '../hitl/admission';
@@ -7200,5 +7204,201 @@ describe('initializeAgent — deferral without a loader registry', () => {
     expect(result.toolRegistry?.get('bash_tool')).toBe(bash);
     expect(result.toolRegistry?.has('tool_search')).toBe(true);
     expect(result.hasDeferredTools).toBe(true);
+  });
+});
+
+describe('snapshot destination admission invariants', () => {
+  const MB = 1024 * 1024;
+  const filterMock = jest.requireMock('~/files') as {
+    filterFilesByEndpointRuntimeConfig: jest.Mock;
+  };
+  const realFilters = jest.requireActual<typeof import('~/files/filter')>('~/files/filter');
+  const realResources = jest.requireActual<typeof import('../resources')>('../resources');
+  beforeEach(() => {
+    jest.clearAllMocks();
+    filterMock.filterFilesByEndpointRuntimeConfig
+      .mockReset()
+      .mockImplementation(realFilters.filterFilesByEndpointRuntimeConfig);
+    jest.mocked(primeResources).mockReset().mockImplementation(realResources.primeResources);
+  });
+  afterEach(() => {
+    filterMock.filterFilesByEndpointRuntimeConfig.mockReset().mockReturnValue([]);
+    jest.mocked(primeResources).mockReset().mockResolvedValue({
+      attachments: [],
+      requestAttachments: [],
+      agentContextAttachments: undefined,
+      tool_resources: undefined,
+      warnings: [],
+    });
+  });
+  function snapshot(id: string, time: number, overrides: Partial<TFile> = {}): TFile {
+    return {
+      file_id: id,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      filename: 'report.txt',
+      filepath: `/uploads/${id}`,
+      source: FileSources.local,
+      type: 'text/plain',
+      bytes: 12 * MB,
+      object: 'file',
+      embedded: false,
+      usage: 0,
+      context: FileContext.execute_code_snapshot,
+      createdAt: new Date(time),
+      metadata: {
+        codeDestination: true,
+        sourceDispatchedAt: time,
+        codeEnvSource: {
+          kind: 'user',
+          id: 'user-1',
+          file_id: 'live-report',
+          storage_session_id: 'sandbox',
+        },
+      },
+      ...overrides,
+    };
+  }
+  async function run(
+    files: TFile[],
+    deferred: TFile[] = [],
+    config: { fileSizeLimit?: number; supportedMimeTypes?: string[]; disabled?: boolean } = {},
+    filters?: FiltersConfig,
+  ) {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = [Tools.execute_code];
+    agent.endpoint = EModelEndpoint.openAI;
+    req.user!.tenantId = 'tenant-1';
+    req.config!.filters = filters;
+    req.config!.fileConfig = {
+      endpoints: { openAI: { totalSizeLimit: 20, fileSizeLimit: 20, ...config } },
+    };
+    mockExtractLibreChatParams.mockReturnValue({
+      resendFiles: true,
+      modelOptions: { model: agent.model },
+    });
+    const getFiles = jest.fn().mockResolvedValue([...files, ...deferred]);
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'snapshot-conversation',
+        codeEnvAvailable: true,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+      },
+      {
+        ...db,
+        getFiles,
+        getConvoFiles: jest
+          .fn()
+          .mockResolvedValue([...files, ...deferred].map((file) => file.file_id)),
+        getCodeGeneratedFiles: jest.fn().mockResolvedValue(files),
+        getDeferredProvisionFiles: jest.fn().mockResolvedValue(deferred),
+      },
+    );
+    const staged = new Map<string, string>();
+    const callback = createProvisionFilesCallback({
+      req,
+      agentToolContexts: new Map([['agent-1', result]]),
+      fileStorage: {
+        recovery: createFileProvisionRecovery(),
+        acquireFileProvision: jest.fn().mockResolvedValue(true),
+        releaseFileProvision: jest.fn().mockResolvedValue(true),
+        commitFileProvision: jest.fn().mockResolvedValue(true),
+      },
+      provisionToCodeEnv: async ({ file, sandboxFilename }) => {
+        const name = sandboxFilename ?? file.filename;
+        staged.set(name, file.file_id);
+        return {
+          referenceSet: {},
+          sandboxFilename: name,
+          refUpdate: {
+            file_id: file.file_id,
+            routeKey: 'default',
+            ref: {
+              kind: 'user',
+              id: 'user-1',
+              file_id: file.file_id,
+              storage_session_id: 'sandbox',
+              sandboxFilename: name,
+            },
+          },
+        };
+      },
+      provisionToVectorDB: async () => ({ embedded: false, fileUpdate: null }),
+      updateFile: async () => undefined,
+      updateCodeEnvRef: async () => undefined,
+      addEmbeddedEntity: async () => undefined,
+    });
+    await callback([Tools.execute_code], 'agent-1');
+    expect(getFiles).toHaveBeenCalledTimes(1);
+    expect(getFiles).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'user-1', tenantId: 'tenant-1' }),
+      {},
+      {},
+    );
+    return { result, staged };
+  }
+  it.each([false, true])(
+    'selects two 12 MiB versions before the 20 MiB budget (deferred newest %s)',
+    async (deferred) => {
+      const old = snapshot('v1', 100);
+      const newest = snapshot('v2', 200);
+      const { staged } = await run(deferred ? [old] : [old, newest], deferred ? [newest] : []);
+      expect(staged.get('report.txt')).toBe('v2');
+      expect([...staged.values()]).not.toContain('v1');
+    },
+  );
+  it.each(['oversized', 'mime', 'disabled'] as const)(
+    'never revives an older version when the newest is %s',
+    async (policy) => {
+      const overrides: Partial<TFile> = {};
+      const config: Parameters<typeof run>[2] = {};
+      if (policy === 'oversized') overrides.bytes = 25 * MB;
+      if (policy === 'mime') {
+        overrides.type = 'application/pdf';
+        config.supportedMimeTypes = ['text/plain'];
+      }
+      if (policy === 'disabled') config.disabled = true;
+      const { staged } = await run(
+        [snapshot('v1', 100), snapshot('v2', 200, overrides)],
+        [],
+        config,
+      );
+      expect(staged.size).toBe(0);
+    },
+  );
+  it('inspects the selected generation instead of reviving safe older bytes', async () => {
+    await expect(
+      run(
+        [
+          snapshot('v1', 100, { text: 'Safe old content' }),
+          snapshot('v2', 200, { text: 'BLOCKED' }),
+        ],
+        [],
+        {},
+        {
+          files: {
+            pii: {
+              fields: ['extracted_text'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'snapshot-policy', label: 'Snapshot policy', regex: 'BLOCKED' },
+              ],
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow();
+  });
+  it('keeps unrelated files subject to their original shared budget and order', async () => {
+    const { staged } = await run([
+      snapshot('first', 100, { filename: 'first.txt' }),
+      snapshot('other', 200, { filename: 'other.txt', bytes: 9 * MB }),
+    ]);
+    expect([...staged.entries()]).toEqual([['first.txt', 'first']]);
   });
 });

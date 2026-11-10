@@ -131,6 +131,7 @@ import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
+import { selectCodeFileGenerations } from '~/files/code/destinations';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
@@ -1921,6 +1922,18 @@ export async function initializeAgent(
     currentFiles = authorizedRunFiles.map((file) => structuredClone(file));
   } else if (requestFiles.length > 0 || toolFileIds.length > 0) {
     currentFiles = requestUsageFiles.concat(toolUsageFiles);
+  }
+  if (wantsCodeFiles) {
+    // Choose identities before policy: a rejected newest write must not revive old bytes.
+    const selected = new Set(
+      selectCodeFileGenerations(
+        [...(currentFiles ?? []), ...deferredProvisionFiles],
+        undefined,
+        codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
+      ).files.flatMap((file) => (file ? [file.file_id] : [])),
+    );
+    currentFiles = currentFiles?.filter((file) => selected.has(file.file_id));
+    deferredProvisionFiles = deferredProvisionFiles.filter((file) => selected.has(file.file_id));
   }
   if (currentFiles?.length) {
     /* Before any check reads the route: endpoint filtering, model-bound limits and content

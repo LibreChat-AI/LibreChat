@@ -183,10 +183,7 @@ describe('Generated file snapshots', () => {
 
   async function initializeCode(ids: string[], privateIds: string[] = [], deferred = true) {
     const files = (
-      await methods.getCodeGeneratedFiles('conversation-a', ids, {
-        userId: user,
-        tenantId: req.user.tenantId,
-      })
+      (await methods.getFiles({ file_id: { $in: ids }, user, tenantId: req.user.tenantId })) ?? []
     ).map(primingFile);
     const getFiles = jest.fn<ReturnType<TGetFiles>, Parameters<TGetFiles>>(async (filter) =>
       ((await methods.getFiles({ ...filter, user, tenantId: req.user.tenantId })) ?? []).map(
@@ -198,7 +195,11 @@ describe('Generated file snapshots', () => {
       if (!(stream instanceof Readable) || typeof filename !== 'string')
         throw new Error('Invalid upload');
       if (typeof onUploadStart === 'function') onUploadStart();
-      await writeLocalFile(liveDirectory, filename, await readStream(stream));
+      await writeLocalFile(
+        path.join(liveDirectory, path.dirname(filename)),
+        path.basename(filename),
+        await readStream(stream),
+      );
       return {
         storage_session_id: 'same-live-session',
         file_id: filename === 'report.txt' ? 'same-live-object' : filename,
@@ -244,8 +245,8 @@ describe('Generated file snapshots', () => {
     for (const selected of eager.selected) {
       if (!selected.isActive)
         await writeLocalFile(
-          liveDirectory,
-          selected.sandboxName,
+          path.join(liveDirectory, path.dirname(selected.sandboxName)),
+          path.basename(selected.sandboxName),
           (await reload(selected.file.file_id)).bytes,
         );
     }
@@ -314,6 +315,49 @@ describe('Generated file snapshots', () => {
     );
     expect(next.advertised.has(foreign.file_id)).toBe(false);
   });
+
+  it.each(['report.txt', 'nested/report-alias.txt'])(
+    'restores a rewritten upload at its original destination %s on old branches',
+    async (name) => {
+      const uploaded = await emit(Buffer.from('Uploaded original'), 'upload', 'upload.txt', 50);
+      await methods.updateFile({
+        file_id: uploaded.file_id,
+        context: FileContext.message_attachment,
+        metadata: {
+          codeDestination: true,
+          codeEnvRef: {
+            kind: 'user',
+            id: user,
+            storage_session_id: 'same-live-session',
+            file_id: 'same-live-object',
+            sandboxFilename: name,
+          },
+        },
+      });
+      await mongoose.models.File.updateOne(
+        { file_id: uploaded.file_id },
+        {
+          $unset: { 'metadata.codeEnvSource': '', 'metadata.sourceDispatchedAt': '' },
+          $set: { createdAt: new Date(50) },
+        },
+        { timestamps: false },
+      );
+      const live = path.join(directory, 'sandbox', name);
+      await writeLocalFile(path.dirname(live), path.basename(live), Buffer.from('Version 1'));
+      const first = await emit(await readFile(live), 'message-1', name, 100);
+      await initializeCode([uploaded.file_id, first.file_id]);
+      await writeLocalFile(path.dirname(live), path.basename(live), Buffer.from('Version 2'));
+      const second = await emit(await readFile(live), 'message-2', name, 200);
+      await initializeCode([uploaded.file_id, first.file_id, second.file_id]);
+      expect((await readFile(path.join(directory, 'sandbox', name))).toString()).toBe('Version 2');
+      const restored = await initializeCode([uploaded.file_id, first.file_id]);
+      expect((await readFile(path.join(directory, 'sandbox', name))).toString()).toBe('Version 1');
+      expect(
+        restored.context.tool_resources?.execute_code?.files?.map((file) => file.file_id),
+      ).toEqual([first.file_id]);
+      expect((await reload(second.file_id)).bytes.toString()).toBe('Version 2');
+    },
+  );
 
   it('retains V1 and V2 bytes and message references after same-path rewrites and reload', async () => {
     const first = await emit(Buffer.from('Version 1'), 'message-1');

@@ -17,6 +17,7 @@ import {
   createCodeDestinationSet,
   reserveCodeDestination,
   selectCodeFileGenerations,
+  getCodeFileDestination,
 } from './destinations';
 import {
   codeServerHttpAgent,
@@ -118,7 +119,7 @@ export async function selectCodeFiles({
   signal?: AbortSignal;
 }): Promise<{ selected: PrimedCodeFile[]; skippedNoRef: number; skippedSuperseded: number }> {
   let skippedNoRef = 0;
-  const generations = selectCodeFileGenerations(files, privateFileIds);
+  const generations = selectCodeFileGenerations(files, privateFileIds, routeKey);
   let skippedSuperseded = generations.skippedSuperseded;
   const candidates = [];
   const registry = createCodeApiUploadRegistry();
@@ -154,7 +155,10 @@ export async function selectCodeFiles({
       signal?.throwIfAborted();
       const recovering = !ref || !checkCodeFileActive(info?.lastModified);
       const storedName = sourceRef.sandboxFilename ?? info?.originalFilename;
-      const sandboxName = storedName ?? resolveSandboxFilename(file.filename, file.type);
+      const sandboxName =
+        file.context === FileContext.execute_code_snapshot
+          ? getCodeFileDestination(file, routeKey)
+          : (storedName ?? resolveSandboxFilename(file.filename, file.type));
       const destination = recovering
         ? getCodeEnvUploadFilename(resolveSandboxFilename(sandboxName, file.type))
         : sandboxName;

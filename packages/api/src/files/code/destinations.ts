@@ -1,10 +1,16 @@
-import { FileContext } from 'librechat-data-provider';
+import {
+  FileContext,
+  getCodeEnvRefForProfile,
+  resolveSandboxFilename,
+} from 'librechat-data-provider';
+import type { CodeEnvReferenceSet } from 'librechat-data-provider';
 import {
   appendLeafSuffix,
   flattenArtifactPath,
   deterministicHexSuffix,
   FILENAME_SEGMENT_MAX_BYTES,
 } from '~/utils/files';
+import { getCodeEnvUploadFilename } from './form';
 
 /**
  * Sandbox input files mount at a destination derived from their `name`, and
@@ -229,37 +235,62 @@ export function sortCodeFilesByDestinationPriority<T extends CodeDestinationCand
   });
 }
 
+type CodePathCandidate = CodeDestinationCandidate & {
+  filename?: string;
+  tenantId?: string;
+  user?: { toString(): string };
+  type?: string;
+  metadata?: (CodeEnvReferenceSet & { sourceDispatchedAt?: number }) | null;
+};
+
+/** Snapshot filenames describe captured writes; mutable recovery aliases do not. */
+export function getCodeFileDestination(file: CodePathCandidate, routeKey = 'default'): string {
+  if (
+    file.context !== FileContext.execute_code_snapshot &&
+    file.context !== FileContext.execute_code
+  ) {
+    const stored = getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename;
+    if (stored != null) return stored;
+  }
+  return getCodeEnvUploadFilename(resolveSandboxFilename(file.filename ?? '', file.type ?? ''));
+}
+
 /** Select generated versions before live refs and queued uploads are partitioned. */
-export function selectCodeFileGenerations<
-  T extends CodeDestinationCandidate & {
-    filename?: string;
-    tenantId?: string;
-    user?: { toString(): string };
-  },
->(
+export function selectCodeFileGenerations<T extends CodePathCandidate>(
   files: Array<T | null | undefined>,
   privateFileIds?: ReadonlySet<string>,
+  routeKey = 'default',
 ): { files: Array<T | null | undefined>; skippedSuperseded: number } {
-  const destinations = new Set<string>();
+  const destinations = new Map<string, T>();
+  const generatedPaths = new Set<string>();
   let skippedSuperseded = 0;
-  const selected = sortCodeFilesByDestinationPriority(files, privateFileIds).filter((file) => {
-    if (
-      file?.context !== FileContext.execute_code &&
-      file?.context !== FileContext.execute_code_snapshot
-    )
-      return true;
-    const key = JSON.stringify([
+  const ordered = sortCodeFilesByDestinationPriority(files, privateFileIds);
+  const keyFor = (file: T): string => {
+    const destination = getCodeFileDestination(file, routeKey);
+    return JSON.stringify([
       privateFileIds?.has(file.file_id ?? '') ?? false,
       file.tenantId ?? null,
       file.user?.toString() ?? null,
-      file.filename,
+      destination,
     ]);
-    if (destinations.has(key)) {
-      skippedSuperseded++;
-      return false;
-    }
-    destinations.add(key);
-    return true;
+  };
+  for (const file of ordered) {
+    if (!file) continue;
+    const key = keyFor(file);
+    if (!destinations.has(key)) destinations.set(key, file);
+    if (
+      file.context === FileContext.execute_code_snapshot ||
+      file.context === FileContext.execute_code
+    )
+      generatedPaths.add(key);
+  }
+  const selected = ordered.filter((file) => {
+    if (!file) return true;
+    const key = keyFor(file);
+    // Distinct uploads remain independent unless a generated write owns this path.
+    if (!generatedPaths.has(key) || destinations.get(key) === file) return true;
+    skippedSuperseded++;
+    return false;
   });
   return { files: selected, skippedSuperseded };
 }

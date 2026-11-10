@@ -972,35 +972,6 @@ export const primeResources = async ({
           agentId,
         });
       }
-
-      if (screenPersistentFiles) {
-        const admitted = screenPersistentFiles(persistedResourceFiles);
-        /* The tool primers read tool_resources ids directly and re-check only access, so
-         * a record dropped here still reaches the Code API or RAG unless its id goes with
-         * it. Screening the hydrated list alone screens nothing. */
-        if (admitted.length !== persistedResourceFiles.length) {
-          const admittedIds = new Set(
-            admitted.map((file) => file.file_id).filter((id): id is string => id != null),
-          );
-          const rejectedIds = persistedResourceFiles
-            .map((file) => file.file_id)
-            .filter((id): id is string => id != null && !admittedIds.has(id));
-          const runtimeResources = [
-            tool_resources[EToolResources.execute_code],
-            tool_resources[EToolResources.file_search],
-          ];
-          for (const resource of runtimeResources) {
-            if (resource?.file_ids == null) {
-              continue;
-            }
-            resource.file_ids = resource.file_ids.filter((id: string) => !rejectedIds.includes(id));
-          }
-          for (const id of rejectedIds) {
-            toolResourceFileIds.delete(id);
-          }
-        }
-        persistedResourceFiles = admitted;
-      }
     }
 
     const files = _attachments ? await _attachments : [];
@@ -1012,9 +983,11 @@ export const primeResources = async ({
       ),
     );
     const codeFileIds = new Set(
-      selectCodeFileGenerations(codeCandidates, persistedResourceFileIds).files.flatMap((file) =>
-        file ? [file.file_id] : [],
-      ),
+      selectCodeFileGenerations(
+        codeCandidates,
+        persistedResourceFileIds,
+        codeRouteKey,
+      ).files.flatMap((file) => (file ? [file.file_id] : [])),
     );
     const supersededCodeFileIds = new Set(
       codeCandidates.filter((file) => !codeFileIds.has(file.file_id)).map((file) => file.file_id),
@@ -1022,6 +995,36 @@ export const primeResources = async ({
     const codeResource = tool_resources[EToolResources.execute_code];
     if (codeResource?.file_ids) {
       codeResource.file_ids = codeResource.file_ids.filter((id) => !supersededCodeFileIds.has(id));
+    }
+
+    persistedResourceFiles = persistedResourceFiles.filter((file) => codeFileIds.has(file.file_id));
+    if (screenPersistentFiles && persistedResourceFileIds.size > 0) {
+      const admitted = screenPersistentFiles(persistedResourceFiles);
+      /* The tool primers read tool_resources ids directly and re-check only access, so
+       * a record dropped here still reaches the Code API or RAG unless its id goes with
+       * it. Screening the hydrated list alone screens nothing. */
+      if (admitted.length !== persistedResourceFiles.length) {
+        const admittedIds = new Set(
+          admitted.map((file) => file.file_id).filter((id): id is string => id != null),
+        );
+        const rejectedIds = persistedResourceFiles
+          .map((file) => file.file_id)
+          .filter((id): id is string => id != null && !admittedIds.has(id));
+        const runtimeResources = [
+          tool_resources[EToolResources.execute_code],
+          tool_resources[EToolResources.file_search],
+        ];
+        for (const resource of runtimeResources) {
+          if (resource?.file_ids == null) {
+            continue;
+          }
+          resource.file_ids = resource.file_ids.filter((id: string) => !rejectedIds.includes(id));
+        }
+        for (const id of rejectedIds) {
+          toolResourceFileIds.delete(id);
+        }
+      }
+      persistedResourceFiles = admitted;
     }
 
     for (const file of persistedResourceFiles) {

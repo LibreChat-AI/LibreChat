@@ -1,5 +1,8 @@
+import { FileContext } from 'librechat-data-provider';
 import {
   claimCodeDestination,
+  selectCodeFileGenerations,
+  getCodeFileDestination,
   reserveCodeDestination,
   createCodeDestinationSet,
   sortCodeFilesByDestinationPriority,
@@ -303,5 +306,64 @@ describe('sortCodeFilesByDestinationPriority', () => {
     const input = [older, newer];
     sortCodeFilesByDestinationPriority(input);
     expect(input).toEqual([older, newer]);
+  });
+});
+
+describe('scoped generated destination selection', () => {
+  const snapshot = (file_id: string, time: number, overrides = {}) => ({
+    file_id,
+    user: 'owner',
+    tenantId: 'tenant-a',
+    filename: 'nested/report.txt',
+    type: 'text/plain',
+    context: FileContext.execute_code_snapshot,
+    metadata: { sourceDispatchedAt: time },
+    ...overrides,
+  });
+  it('arbitrates a rewritten upload alias at its real destination', () => {
+    const upload = {
+      ...snapshot('upload', 50),
+      context: FileContext.message_attachment,
+      filename: 'display.txt',
+      createdAt: new Date(50),
+      metadata: {
+        codeEnvRef: {
+          kind: 'user' as const,
+          id: 'owner',
+          storage_session_id: 'session',
+          file_id: 'object',
+          sandboxFilename: 'nested/report.txt',
+        },
+      },
+    };
+    expect(
+      selectCodeFileGenerations([upload, snapshot('v2', 200)]).files.map((file) => file?.file_id),
+    ).toEqual(['v2']);
+  });
+  it('never lets tenant or private generations supersede the shared owner generation', () => {
+    const result = selectCodeFileGenerations(
+      [
+        snapshot('v1', 100),
+        snapshot('v2', 200),
+        snapshot('tenant-b', 300, { tenantId: 'tenant-b' }),
+        snapshot('private', 400),
+      ],
+      new Set(['private']),
+    );
+    expect(result.files.map((file) => file?.file_id)).toEqual(['tenant-b', 'v2', 'private']);
+  });
+  it('does not treat a mutable receipt alias as a snapshot identity', () => {
+    const file = snapshot('v1', 100, {
+      metadata: {
+        codeEnvRef: {
+          kind: 'user',
+          id: 'owner',
+          storage_session_id: 'session',
+          file_id: 'object',
+          sandboxFilename: 'wrong-alias.txt',
+        },
+      },
+    });
+    expect(getCodeFileDestination(file)).toBe('nested/report.txt');
   });
 });
