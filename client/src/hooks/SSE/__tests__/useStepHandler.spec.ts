@@ -1,8 +1,8 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { useStepHandler } from '@librechat/chat/react';
 import { renderHook, act } from '@testing-library/react';
 import { resolveAskUserQuestionPart } from '@librechat/chat';
+import { useStepHandler, phaseReceipts } from '@librechat/chat/react';
 import { useStore, useAtomValue, createStore, Provider as JotaiProvider } from 'jotai';
 import {
   Constants,
@@ -1823,6 +1823,66 @@ describe('useStepHandler', () => {
   });
 
   describe('on_run_step_delta event', () => {
+    it('records browser phase receipt before rendering, preserves duplicates, and clears on reset', () => {
+      const store = createStore();
+      const wrapper = ({ children }: { children: React.ReactNode }) =>
+        React.createElement(JotaiProvider, { store }, children);
+      const { result } = renderHook(() => useStepHandler(createHookParams()), { wrapper });
+      const submission = createSubmission();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(20_000);
+      const receipt = () => store.get(phaseReceipts).get('step-tool-1')?.get(1_000);
+      const event = {
+        event: StepEvents.ON_TOOL_CALLS_DISPATCHED as const,
+        data: {
+          dispatched_at: 1_000,
+          toolCalls: [{ id: 'tool-call-1', name: 'test_tool', stepId: 'step-tool-1' }],
+        },
+      };
+      act(() => result.current.stepHandler(event, submission));
+      expect(receipt()).toBe(20_000);
+      clock.mockReturnValue(28_000);
+      act(() => result.current.stepHandler(event, submission));
+      expect(receipt()).toBe(20_000);
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+          submission,
+        );
+        for (const stamp of [100, 200, 300]) {
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_DELTA,
+              data: {
+                id: 'step-tool-1',
+                observed_at: stamp,
+                delta: {
+                  type: StepTypes.TOOL_CALLS,
+                  tool_calls: [{ id: 'tool-call-1', index: 0, args: '{' }],
+                },
+              },
+            },
+            submission,
+          );
+        }
+        result.current.stepHandler(
+          {
+            ...event,
+            data: {
+              ...event.data,
+              toolCalls: [{ ...event.data.toolCalls[0], stepId: 'other-step' }],
+            },
+          },
+          submission,
+        );
+      });
+      expect(store.get(phaseReceipts).get('step-tool-1')?.size).toBe(2);
+      expect(store.get(phaseReceipts).get('step-tool-1')?.get(100)).toBe(28_000);
+      expect(store.get(phaseReceipts).get('other-step')?.get(1_000)).toBe(28_000);
+      act(() => result.current.clearStepMaps());
+      expect(receipt()).toBeUndefined();
+      expect(store.get(phaseReceipts).size).toBe(0);
+    });
+
     it('separates streamed preparation, dispatch, and this call’s result', () => {
       mockGetMessages.mockReturnValue([createResponseMessage()]);
       const { result } = renderHook(() => useStepHandler(createHookParams()));

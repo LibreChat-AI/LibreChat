@@ -11,7 +11,8 @@
  *    172.16/12, 192.0.0/24 (RFC 5736), 192.168/16, 198.18/15 (benchmarking),
  *    224/3 (multicast/reserved).
  *  - IPv6: ::1, ::, fc00::/7 (unique-local), fe80::/10 (link-local).
- *  - 4-in-6 mappings: ::ffff:A.B.C.D and the hex form ::ffff:HHHH:HHHH.
+ *  - 4-in-6 mappings: IPv4-mapped (::ffff:0:0/96), compatible (::/96), and
+ *    translated (::ffff:0:0:0/96), in dotted or hex form.
  *  - Embedded private IPv4 in 6to4 (2002::/16), NAT64 (64:ff9b::/96), and
  *    Teredo (2001::/32) addresses.
  */
@@ -108,21 +109,36 @@ function hasPrivateEmbeddedIPv4(ipv6: string): boolean {
 
 /**
  * Checks if an IP address belongs to a private, reserved, or link-local range.
- * Handles IPv4, IPv6, and IPv4-mapped IPv6 addresses (::ffff:A.B.C.D).
+ * Handles IPv4, IPv6, and IPv4-embedded IPv6 addresses.
  */
 export function isPrivateIP(ip: string): boolean {
-  const normalized = ip
+  let normalized = ip
     .toLowerCase()
     .trim()
     .replace(/^\[|\]$/g, '');
 
-  const mappedMatch = normalized.match(/^::ffff:(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  const mappedMatch = normalized.match(
+    /^::ffff:(?:0:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/,
+  );
   if (mappedMatch) {
     const [, a, b, c] = mappedMatch.map(Number);
     return isPrivateIPv4(a, b, c);
   }
 
-  const hexMappedMatch = normalized.match(/^(?:::ffff:|::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  // DNS can return expanded or dotted-tail IPv6 instead of URL-normalized hosts.
+  if (normalized.includes(':')) {
+    try {
+      // A zone ID selects an interface; classify the address independently of it.
+      const zoneIndex = normalized.indexOf('%');
+      const address = zoneIndex === -1 ? normalized : normalized.slice(0, zoneIndex);
+      normalized = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+    } catch {
+      return false;
+    }
+  }
+
+  // IPv4-compatible, mapped, and RFC 2765 translated forms share the low 32 bits.
+  const hexMappedMatch = normalized.match(/^(?:::ffff:(?:0:)?|::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
   if (hexMappedMatch) {
     const hi = parseInt(hexMappedMatch[1], 16);
     const lo = parseInt(hexMappedMatch[2], 16);

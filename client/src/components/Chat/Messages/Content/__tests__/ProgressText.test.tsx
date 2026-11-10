@@ -1,4 +1,6 @@
 import React from 'react';
+import { createStore, Provider } from 'jotai';
+import { phaseReceipts } from '@librechat/chat/react';
 import { FailedRevealContext } from '@librechat/chat/components';
 import { fireEvent, render, screen } from '@testing-library/react';
 import ProgressText from '../ProgressText';
@@ -37,12 +39,43 @@ const defaults = {
   phase: 'completed' as const,
   inProgressText: 'Running foo',
   finishedText: 'Completed foo',
+  phaseStepId: 'timer-step',
 };
 
 const renderProgressText = (props: Partial<React.ComponentProps<typeof ProgressText>> = {}) =>
   render(<ProgressText {...defaults} {...props} />);
 
 describe('ProgressText duration', () => {
+  it('includes time before the first expansion', () => {
+    const store = createStore();
+    store.set(phaseReceipts, new Map([['late-step', new Map([[1_000, 20_000]])]]));
+    jest.spyOn(Date, 'now').mockReturnValue(28_000);
+    render(
+      <Provider store={store}>
+        <ProgressText {...defaults} phase="running" phaseStepId="late-step" phaseStartAt={1_000} />
+      </Provider>,
+    );
+    expect(screen.getByTestId('stream-elapsed')).toHaveTextContent('8s');
+  });
+
+  it('keeps elapsed time when a running card is unmounted and reopened', () => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(20_000);
+    const store = createStore();
+    store.set(phaseReceipts, new Map([['timer-step', new Map([[9_000, 20_000]])]]));
+    const card = () =>
+      render(
+        <Provider store={store}>
+          <ProgressText {...defaults} phase="running" phaseStartAt={9_000} />
+        </Provider>,
+      );
+    const { unmount } = card();
+    expect(screen.getByTestId('stream-elapsed')).toHaveTextContent('0s');
+    unmount();
+    clock.mockReturnValue(28_000);
+    card();
+    expect(screen.getByTestId('stream-elapsed')).toHaveTextContent('8s');
+  });
+
   it('renders the compact duration on a settled card', () => {
     renderProgressText({ durationMs: 3500 });
     expect(screen.getByText('3.5s')).toBeInTheDocument();

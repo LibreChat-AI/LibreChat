@@ -340,6 +340,14 @@ function hasPrivateEmbeddedIPv4Literal(value: string): boolean {
 
 function isPrivateIPv6Literal(value: string): boolean {
   if (!value.includes(':')) return false;
+  // Keep canonicalization aligned with the runtime IP classifier.
+  try {
+    const zoneIndex = value.indexOf('%');
+    const address = zoneIndex === -1 ? value : value.slice(0, zoneIndex);
+    value = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  } catch {
+    return false;
+  }
   if (value === '::1' || value === '::') return true;
   if (value.startsWith('fc') || value.startsWith('fd')) return true; // fc00::/7
   // fe80::/10 — first hextet 0xfe80–0xfebf
@@ -348,9 +356,15 @@ function isPrivateIPv6Literal(value: string): boolean {
     const hextet = parseInt(firstHextet, 16);
     if ((hextet & 0xffc0) === 0xfe80) return true;
   }
-  // 4-in-6: ::ffff:A.B.C.D
-  const mappedMatch = value.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (mappedMatch) return isPrivateIPv4Literal(mappedMatch[1]);
+  // IPv4-compatible, mapped, and RFC 2765 translated forms.
+  const mappedMatch = value.match(/^(?:::ffff:(?:0:)?|::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedMatch) {
+    const hi = parseInt(mappedMatch[1], 16);
+    const lo = parseInt(mappedMatch[2], 16);
+    return isPrivateIPv4Literal(
+      [(hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff, lo & 0xff].join('.'),
+    );
+  }
   return hasPrivateEmbeddedIPv4Literal(value);
 }
 
@@ -2739,6 +2753,8 @@ export type TMCPAppRateLimits = z.infer<typeof mcpAppRateLimitSchema>;
 const outboundTimeoutMs = z.number().int().positive().max(2_147_483_647).optional();
 
 export const outboundTimeoutsSchema = z.object({
+  /** Entire directory verification phase for a permission update, including token exchange and pages. */
+  directoryMs: outboundTimeoutMs,
   /** RAG API queries for file search and message context. */
   ragMs: outboundTimeoutMs,
   /** Each OCR provider call (upload, signed URL, OCR, delete). */
@@ -2770,6 +2786,8 @@ const lookupConcurrency = z.number().int().min(1).max(32).optional();
 /** Upper bounds on independent lookups a request runs at once. Omitted keys use the server
  *  defaults (`DEFAULT_LOOKUP_CONCURRENCY` in `@librechat/api`); `1` restores serial lookups. */
 export const lookupConcurrencySchema = z.object({
+  /** Principal verification and provisioning during permission updates. */
+  permissionPrincipalLookups: lookupConcurrency,
   /** Connected agents initialized together per level while discovering a handoff graph. */
   connectedAgentLoads: lookupConcurrency,
   /** MCP tool catalog reads when assembling an ephemeral or added agent. */

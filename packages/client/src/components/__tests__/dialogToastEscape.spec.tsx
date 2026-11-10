@@ -1,8 +1,8 @@
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
 import * as RadixToast from '@radix-ui/react-toast';
-import { render, screen } from '@testing-library/react';
-import { OGDialog, OGDialogContent } from '../OriginalDialog';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { OGDialog, OGDialogContent, OGDialogTitle, DialogLayer } from '../OriginalDialog';
 
 /**
  * Radix hands Escape to the highest dismissable layer only, and a toast
@@ -160,31 +160,36 @@ describe('dialog Escape', () => {
   /** A dialog that carries its z-index in a class — `ImagePreview` is
    *  `z-[250]` — still outranks this one, so Escape there must not close the
    *  dialog underneath it. */
-  it('does not close a dialog ranked under a class-styled dialog above it', async () => {
-    const onOpenChange = jest.fn();
-    render(
-      <RadixToast.Provider>
-        <style>{'.on-top { z-index: 250; }'}</style>
-        <OGDialog open onOpenChange={onOpenChange}>
-          <OGDialogContent>
-            <button type="button">under</button>
-          </OGDialogContent>
-        </OGDialog>
-        <div role="dialog" data-state="open" className="on-top">
-          <button type="button">preview</button>
-        </div>
-        <RadixToast.Root open duration={Infinity} className="toast-root">
-          <RadixToast.Description>Saved</RadixToast.Description>
-        </RadixToast.Root>
-        <RadixToast.Viewport />
-      </RadixToast.Provider>,
-    );
+  it.each([false, true])(
+    'does not close a dialog under an unregistered preview (toast: %s)',
+    async (toast) => {
+      const onOpenChange = jest.fn();
+      render(
+        <RadixToast.Provider>
+          <style>{'.on-top { z-index: 250; }'}</style>
+          <OGDialog open onOpenChange={onOpenChange}>
+            <OGDialogContent>
+              <button type="button">under</button>
+            </OGDialogContent>
+          </OGDialog>
+          <div role="dialog" data-state="open" className="on-top">
+            <button type="button">preview</button>
+          </div>
+          {toast && (
+            <RadixToast.Root open duration={Infinity} className="toast-root">
+              <RadixToast.Description>Saved</RadixToast.Description>
+            </RadixToast.Root>
+          )}
+          <RadixToast.Viewport />
+        </RadixToast.Provider>,
+      );
 
-    screen.getByText('preview').focus();
-    await userEvent.keyboard('{Escape}');
+      screen.getByText('preview').focus();
+      await userEvent.keyboard('{Escape}');
 
-    expect(onOpenChange).not.toHaveBeenCalled();
-  });
+      expect(onOpenChange).not.toHaveBeenCalled();
+    },
+  );
 
   it('closes the dialog while a toast is on screen', async () => {
     const onOpenChange = jest.fn();
@@ -206,3 +211,52 @@ describe('dialog Escape', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });
+
+it('consumes a fallback Escape before another listener can dismiss the dialog underneath', () => {
+  const onOpenChange = jest.fn();
+  render(<Harness onOpenChange={onOpenChange} toast />);
+  const inside = screen.getByText('inside the dialog');
+  inside.focus();
+  const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  fireEvent(inside, escape);
+  expect(onOpenChange).toHaveBeenCalledTimes(1);
+  expect(onOpenChange).toHaveBeenCalledWith(false);
+  expect(escape.defaultPrevented).toBe(true);
+});
+
+it.each([false, true])(
+  'routes Escape to the visible top dialog (consumer prevents close: %s)',
+  async (preventClose) => {
+    const outerClose = jest.fn();
+    const innerClose = jest.fn();
+    const lowerEscape = jest.fn();
+    const upperEscape = jest.fn((event: KeyboardEvent) => {
+      if (preventClose) event.preventDefault();
+    });
+    render(
+      <>
+        <DialogLayer>
+          <OGDialog open onOpenChange={innerClose}>
+            <OGDialogContent onEscapeKeyDown={upperEscape}>
+              <OGDialogTitle>Document preview</OGDialogTitle>
+              <button type="button">nested preview</button>
+            </OGDialogContent>
+          </OGDialog>
+        </DialogLayer>
+        <OGDialog open onOpenChange={outerClose}>
+          <OGDialogContent onEscapeKeyDown={lowerEscape}>
+            <OGDialogTitle>Your files</OGDialogTitle>
+            <button type="button">files</button>
+          </OGDialogContent>
+        </OGDialog>
+      </>,
+    );
+    screen.getByText('nested preview').focus();
+    await userEvent.keyboard('{Escape}');
+    expect(upperEscape).toHaveBeenCalledTimes(1);
+    expect(lowerEscape).not.toHaveBeenCalled();
+    if (preventClose) expect(innerClose).not.toHaveBeenCalled();
+    else expect(innerClose).toHaveBeenCalledWith(false);
+    expect(outerClose).not.toHaveBeenCalled();
+  },
+);
