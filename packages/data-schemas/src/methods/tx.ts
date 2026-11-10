@@ -114,6 +114,17 @@ const bedrockValues: Record<string, { prompt: number; completion: number }> = {
   'nvidia.nemotron-nano-12b-v2': { prompt: 0.2, completion: 0.6 },
   'nvidia.nemotron-nano-3-30b': { prompt: 0.06, completion: 0.24 },
   'nvidia.nemotron-super-3-120b': { prompt: 0.15, completion: 0.65 },
+  'ai21.jamba-1-5-large': { prompt: 2.0, completion: 8.0 },
+  'ai21.jamba-1-5-mini': { prompt: 0.2, completion: 0.4 },
+  'mistral.magistral-small-2509': { prompt: 0.5, completion: 1.5 },
+  'mistral.ministral-3-3b-instruct': { prompt: 0.1, completion: 0.1 },
+  'mistral.ministral-3-8b-instruct': { prompt: 0.15, completion: 0.15 },
+  'mistral.ministral-3-14b-instruct': { prompt: 0.2, completion: 0.2 },
+  /* Global inference profile rate; regional profiles bill 10% more. */
+  'openai.gpt-6.1-terra': { prompt: 1.0, completion: 5.0 },
+  'writer.palmyra-vision-7b': { prompt: 0.15, completion: 0.6 },
+  'writer.palmyra-x4': { prompt: 2.5, completion: 10.0 },
+  'writer.palmyra-x5': { prompt: 0.6, completion: 6.0 },
 };
 
 /**

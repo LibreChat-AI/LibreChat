@@ -3272,6 +3272,27 @@ describe('Bedrock NVIDIA Nemotron pricing', () => {
   });
 });
 
+describe('Bedrock vendor-prefixed pricing', () => {
+  it.each([
+    ['ai21.jamba-1-5-large', 'ai21.jamba-1-5-large-v1:0', 2.0, 8.0],
+    ['ai21.jamba-1-5-mini', 'ai21.jamba-1-5-mini-v1:0', 0.2, 0.4],
+    ['mistral.magistral-small-2509', 'mistral.magistral-small-2509', 0.5, 1.5],
+    ['mistral.ministral-3-3b-instruct', 'mistral.ministral-3-3b-instruct', 0.1, 0.1],
+    ['mistral.ministral-3-8b-instruct', 'mistral.ministral-3-8b-instruct', 0.15, 0.15],
+    ['mistral.ministral-3-14b-instruct', 'mistral.ministral-3-14b-instruct', 0.2, 0.2],
+    ['openai.gpt-6.1-terra', 'openai.gpt-6.1-terra', 1.0, 5.0],
+    ['writer.palmyra-vision-7b', 'writer.palmyra-vision-7b', 0.15, 0.6],
+    ['writer.palmyra-x4', 'writer.palmyra-x4-v1:0', 2.5, 10.0],
+    ['writer.palmyra-x5', 'writer.palmyra-x5-v1:0', 0.6, 6.0],
+  ])('bills %s at its Bedrock rate, not the default', (key, model, prompt, completion) => {
+    for (const id of [model, `us.${model}`]) {
+      expect(getValueKey(id)).toBe(key);
+      expect(getMultiplier({ model: id, tokenType: 'prompt' })).toBe(prompt);
+      expect(getMultiplier({ model: id, tokenType: 'completion' })).toBe(completion);
+    }
+  });
+});
+
 describe('Grok long-context premium tier', () => {
   it('doubles the rate once a prompt passes the 200K threshold', () => {
     for (const model of ['grok-4.5', 'grok-4.6']) {
