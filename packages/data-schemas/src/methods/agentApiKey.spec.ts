@@ -193,15 +193,16 @@ it('serializes bound-key creation with final account erasure', async () => {
       deleted = true;
       return value;
     });
+  const drained = Promise.allSettled([creating, deleting]);
   try {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(deleted).toBe(false);
   } finally {
     release();
     paused.mockRestore();
+    await drained;
   }
-  const created = await creating;
-  await deleting;
+  const [created] = await Promise.all([creating, deleting]);
   expect(await methods.validateAgentApiKey(created.key)).toBeNull();
   expect(await methods.validateBoundAgentApiKey(created.key)).toBeNull();
   expect(await mongoose.models.AgentApiKey.exists({ userId: user._id })).toBeNull();
