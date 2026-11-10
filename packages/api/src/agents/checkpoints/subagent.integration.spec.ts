@@ -286,8 +286,8 @@ it.each(['before', 'after'] as const)(
       [INTERRUPT, '__no_writes__'].sort(),
     );
     for (const name of ['agent_checkpoints', 'agent_checkpoint_writes']) {
-      const rows: { upserted_at: Date; checkpoint_ns: string }[] = await mongoose.connection
-        .db!.collection(name)
+      const rows = await mongoose.connection
+        .db!.collection<{ thread_id: string; upserted_at: Date; checkpoint_ns: string }>(name)
         .find({ thread_id: 'subagent:ordering' })
         .toArray();
       expect(rows.length).toBeGreaterThan(0);
