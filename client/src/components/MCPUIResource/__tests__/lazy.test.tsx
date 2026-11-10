@@ -101,7 +101,7 @@ describe('on-demand MCP UI chunks', () => {
       </Boundary>,
     );
 
-    expect(screen.getByRole('status')).toHaveTextContent('Loading interactive view...');
+    expect(screen.getByText('Loading interactive view...')).toBeInTheDocument();
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(mockEvaluated).toHaveBeenCalledWith('@mcp-ui/client');
     expect(recover).toHaveBeenCalledTimes(1);

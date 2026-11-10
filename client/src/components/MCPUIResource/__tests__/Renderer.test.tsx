@@ -30,24 +30,40 @@ describe('UIResourceRenderer', () => {
     jest.clearAllMocks();
   });
 
-  it('shows the loading status until the SDK module resolves, then renders it', async () => {
+  it('loads several resources inside a paragraph without invalid markup or announcements', async () => {
     /** The lazy component keeps its module once resolved, so only the first render in this file can see it pending. */
-    renderEnabled(
-      <UIResourceRenderer
-        resource={{
-          resourceId: 'pending-resource',
-          uri: 'ui://pending',
-          mimeType: 'text/html',
-          text: '<p>Pending</p>',
-        }}
-      />,
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const resources = ['first', 'second', 'third'].map(
+      (id): UIResource => ({
+        resourceId: id,
+        uri: `ui://${id}`,
+        mimeType: 'text/html',
+        text: `<p>${id}</p>`,
+      }),
     );
 
-    expect(screen.getByRole('status')).toHaveTextContent('Loading interactive view...');
-    expect(mockLegacyRenderer).not.toHaveBeenCalled();
+    /** Markdown places an inline resource in a span inside the paragraph that holds its marker. */
+    renderEnabled(
+      <p>
+        <span>
+          {resources.map((resource) => (
+            <UIResourceRenderer key={resource.resourceId} resource={resource} />
+          ))}
+        </span>
+      </p>,
+    );
 
-    expect(await screen.findByTestId('legacy-ui-resource')).toBeInTheDocument();
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Loading interactive view...')).toHaveLength(3);
+    expect(mockLegacyRenderer).not.toHaveBeenCalled();
+    /** A paragraph cannot hold a block element, and React says so when a fallback is one. */
+    expect(
+      consoleError.mock.calls.filter(([message]) => String(message).includes('validateDOMNesting')),
+    ).toEqual([]);
+    /** The viewer opened none of these, so a single load must not announce itself once per resource. */
+    expect(screen.queryAllByRole('status')).toHaveLength(0);
+
+    expect(await screen.findAllByTestId('legacy-ui-resource')).toHaveLength(3);
+    expect(screen.queryByText('Loading interactive view...')).not.toBeInTheDocument();
   });
 
   it.each([

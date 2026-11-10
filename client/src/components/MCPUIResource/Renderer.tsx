@@ -57,9 +57,9 @@ export default function UIResourceRenderer({
   return (
     <Suspense
       fallback={
-        <div className="relative min-h-16">
-          <MCPAppLoading />
-        </div>
+        <span className="relative block min-h-16">
+          <MCPAppLoading live={false} />
+        </span>
       }
     >
       <LegacyUIResourceRenderer

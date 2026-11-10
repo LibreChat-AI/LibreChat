@@ -9,21 +9,29 @@ const OVERLAY_CLASS =
 
 /**
  * The loading overlay of an interactive view. It is also the Suspense fallback while a view's code
- * downloads, so a view reads the same before and after its module arrives.
+ * downloads, so a view reads the same before and after its module arrives. It is a span so it stays
+ * valid wherever a view can render, including inside a markdown paragraph. A view the viewer opened
+ * announces its loading; one that arrives with the transcript passes `live={false}`, because every
+ * such view would otherwise announce the same load.
  */
 export function MCPAppLoading({
   centered = false,
   spinner = false,
+  live = true,
 }: {
   centered?: boolean;
   spinner?: boolean;
+  live?: boolean;
 }) {
   const localize = useLocalize();
   return (
-    <div className={centered ? `${OVERLAY_CLASS} justify-center` : OVERLAY_CLASS} role="status">
+    <span
+      className={centered ? `${OVERLAY_CLASS} justify-center` : OVERLAY_CLASS}
+      role={live ? 'status' : undefined}
+    >
       {spinner && <Spinner className="size-4" aria-hidden="true" />}
       {localize('com_ui_loading_interactive_view')}
-    </div>
+    </span>
   );
 }
 
