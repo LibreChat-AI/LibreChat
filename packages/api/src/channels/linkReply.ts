@@ -5,7 +5,7 @@ import type { ChannelLinkView } from 'librechat-data-provider';
 export async function updateSlackLinkReply(
   url: string,
   view: ChannelLinkView,
-  transport: typeof fetch = fetch,
+  transport: (url: string, init: RequestInit) => Promise<Response> = fetch,
 ): Promise<void> {
   if (!isSlackReplyURL(url)) throw new TypeError('Invalid Slack reply URL');
   const result = await transport(url, {
