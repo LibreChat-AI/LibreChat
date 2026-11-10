@@ -761,13 +761,20 @@ describe('createToolEndCallback', () => {
     ]);
   });
 
-  it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
-    '%s persists original images while leaving model content bounded',
-    async (factoryName) => {
+  it.each(
+    ['createToolEndCallback', 'createResponsesToolEndCallback'].flatMap((factoryName) => [
+      [factoryName, true],
+      [factoryName, false],
+    ]),
+  )(
+    '%s persists original images with model images enabled: %s',
+    async (factoryName, modelImagesEnabled) => {
       const { saveBase64Image } = require('~/server/services/Files/process');
       saveBase64Image.mockResolvedValue({ file_id: 'original-image' });
       const callback = require('../callbacks')[factoryName]({ req, res, artifactPromises });
-      const content = [{ type: 'image_url', image_url: { url: 'data:image/png;base64,model' } }];
+      const content = modelImagesEnabled
+        ? [{ type: 'image_url', image_url: { url: 'data:image/png;base64,model' } }]
+        : [];
       const artifact = {
         content,
         imageAttachments: [
