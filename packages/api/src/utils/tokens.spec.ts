@@ -422,3 +422,13 @@ describe.each(['gpt-6-sol', 'gpt-6-luna'])('%s token limits', (model) => {
     }
   });
 });
+
+describe('Claude Fable 5.2 context window', () => {
+  it.each(['claude-fable-5-2', 'anthropic/claude-fable-5-2'])(
+    'resolves the 1M context window for %s',
+    (model) => {
+      expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
+      expect(getModelMaxTokens(model, EModelEndpoint.custom)).toBe(1000000);
+    },
+  );
+});
