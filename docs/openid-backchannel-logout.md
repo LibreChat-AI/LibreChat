@@ -41,6 +41,12 @@ number of times with its own backoff; it does not retry indefinitely.
    carries it forward unchanged instead of clearing it. A session created or rotated by the admin
    panel while the mode is `off` has no association; after switching back to `record`, that
    session still authenticates, and after switching back to `enforce`, it must sign in once.
+   This carry-forward has a limit: a ProviderSession record expires by a TTL (`expiresAt`).
+   Only the `authorize`, `establish`, and `revoke` operations extend that TTL, and none of them
+   run while the mode is `off`. So an association or a revocation survives `off` only until its
+   record expires, which is about the refresh-token lifetime (`REFRESH_TOKEN_EXPIRY`). If `off`
+   stays active longer than that, the record is gone: `record` can no longer deny that session,
+   and `enforce` makes it sign in once.
 4. A logout notification the provider never delivers (network failure, provider outage, a logout
    path that does not call the configured URL) cannot be enforced; this design does not poll the
    provider to compensate, so coverage is limited to notifications that are actually delivered.
