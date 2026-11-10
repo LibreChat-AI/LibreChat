@@ -48,10 +48,9 @@ function patched(consumer, dependency, major) {
 
 test('Glob consumers resolve patched majors without changing unrelated matchers', () => {
   for (const [, consumer] of globConsumers) patched(consumer, 'glob', 14);
-  for (const name of ['test-exclude', '@typescript-eslint/typescript-estree']) {
+  for (const name of ['test-exclude', '@typescript-eslint/typescript-estree', 'nodemon']) {
     patched(from(name), 'minimatch', 11);
   }
-  assert.match(from('nodemon')('minimatch/package.json').version, /^10\./);
   for (const name of ['eslint-plugin-import', 'eslint-plugin-react', 'eslint-plugin-jsx-a11y']) {
     const minimatch = from(name)('minimatch');
     assert.equal(typeof minimatch, 'function', name);
