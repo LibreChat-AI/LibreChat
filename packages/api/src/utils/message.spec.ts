@@ -1,4 +1,5 @@
-import { Constants } from 'librechat-data-provider';
+import { Constants, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
+import type { TFile, TMessage } from 'librechat-data-provider';
 import {
   sanitizeMessageForTransmit,
   sanitizeFileForTransmit,
@@ -46,15 +47,110 @@ describe('sanitizeFileForTransmit', () => {
     expect(result).not.toHaveProperty('__v');
   });
 
+  it.each([undefined, null, 'text'] as const)(
+    'derives a plain-text preview with textFormat %p',
+    (textFormat) => {
+      const file = {
+        file_id: 'test-123',
+        type: 'text/plain',
+        text: 'Authorized attachment text',
+        textFormat,
+        textPreview: 'Stale preview',
+      };
+
+      const result = sanitizeFileForTransmit(file);
+
+      expect(result.textPreview).toBe(file.text);
+      expect(result).not.toHaveProperty('text');
+    },
+  );
+
+  it.each([0, 239, 240, 241, 5000])('bounds a %i-character text preview', (length) => {
+    const text = 'x'.repeat(length);
+
+    const result = sanitizeFileForTransmit({ type: 'text/plain', text });
+
+    expect(MAX_FILE_TEXT_PREVIEW_LENGTH).toBe(240);
+    expect(result.textPreview).toBe(text.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH));
+    expect(result.textPreview?.length).toBeLessThanOrEqual(MAX_FILE_TEXT_PREVIEW_LENGTH);
+    expect(result).not.toHaveProperty('text');
+  });
+
+  it.each([undefined, 'text/plain', 'text/html', 'application/pdf', 'image/png'])(
+    'omits previews for HTML-formatted files with MIME type %p',
+    (type) => {
+      const result = sanitizeFileForTransmit({
+        type,
+        textFormat: 'html',
+        text: '<p>Full HTML document</p>',
+        textPreview: '<p>Stored HTML</p>',
+      });
+
+      expect(result).not.toHaveProperty('textPreview');
+      expect(result).not.toHaveProperty('text');
+    },
+  );
+
+  it.each([undefined, 'text/html', 'application/pdf', 'image/png'])(
+    'omits extracted and retained previews for MIME type %p',
+    (type) => {
+      const result = sanitizeFileForTransmit({
+        type,
+        textFormat: 'text',
+        text: 'Extracted text',
+        textPreview: 'Stored preview',
+      });
+      const persisted = sanitizeFileForTransmit({ type, textPreview: 'Stored preview' });
+
+      expect(result).not.toHaveProperty('textPreview');
+      expect(result).not.toHaveProperty('text');
+      expect(persisted).not.toHaveProperty('textPreview');
+    },
+  );
+
+  it.each([0, 100, 240, 5000])(
+    'preserves and bounds a %i-character persisted preview without full text',
+    (length) => {
+      const textPreview = 'p'.repeat(length);
+
+      const result = sanitizeFileForTransmit({ type: 'text/plain', textPreview });
+
+      expect(result.textPreview).toBe(textPreview.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH));
+      expect(result).not.toHaveProperty('text');
+    },
+  );
+
+  it.each([null, 42, true, [], {}])('drops a malformed persisted preview %p', (textPreview) => {
+    const file = { type: 'text/plain', textPreview } as unknown as Partial<TFile>;
+
+    expect(sanitizeFileForTransmit(file)).not.toHaveProperty('textPreview');
+  });
+
+  it('does not substitute an old preview for empty full text', () => {
+    const result = sanitizeFileForTransmit({
+      type: 'text/plain',
+      text: '',
+      textPreview: 'Stale preview',
+    });
+
+    expect(result.textPreview).toBe('');
+    expect(result).not.toHaveProperty('text');
+  });
+
   it('should not modify original file object', () => {
-    const file = {
+    const file = Object.freeze({
       file_id: 'test-123',
+      type: 'text/plain',
       text: 'original text',
-    };
+      textPreview: 'old preview',
+    });
 
-    sanitizeFileForTransmit(file);
+    const result = sanitizeFileForTransmit(file);
 
+    expect(result).not.toBe(file);
+    expect(result.textPreview).toBe('original text');
     expect(file.text).toBe('original text');
+    expect(file.textPreview).toBe('old preview');
   });
 });
 
@@ -89,6 +185,57 @@ describe('sanitizeMessageForTransmit', () => {
     expect(result.files?.[0].filename).toBe('a.txt');
     expect(result.files?.[0]).not.toHaveProperty('text');
     expect(result.files?.[1]).not.toHaveProperty('text');
+  });
+
+  it('retains a bounded preview after persistence and repeated sanitization', () => {
+    const text = 'authorized pasted text '.repeat(100);
+    const message = {
+      messageId: 'msg-123',
+      fileContext: text,
+      image_urls: ['data:image/png;base64,prompt-input'],
+      files: buildMessageFiles(
+        [{ file_id: 'file-1' }],
+        [{ file_id: 'file-1', filename: 'paste.txt', type: 'text/plain', text }],
+      ),
+    };
+    const persisted: typeof message = JSON.parse(JSON.stringify(message));
+
+    const first: Partial<TMessage> = sanitizeMessageForTransmit(persisted);
+    const second: Partial<TMessage> = sanitizeMessageForTransmit(first);
+
+    expect(second).toEqual(first);
+    expect(second.files?.[0].textPreview).toBe(text.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH));
+    expect(second.files?.[0]).not.toHaveProperty('text');
+    expect(second).not.toHaveProperty('fileContext');
+    expect(second).not.toHaveProperty('image_urls');
+    expect(first.files).not.toBe(persisted.files);
+    expect(second.files).not.toBe(first.files);
+    expect(second.files?.[0]).not.toBe(first.files?.[0]);
+    expect(persisted.fileContext).toBe(text);
+  });
+
+  it('sanitizes legacy full text and oversized previews without mutating the message', () => {
+    const text = 'full text '.repeat(100);
+    const textPreview = 'stored preview '.repeat(100);
+    const message = {
+      messageId: 'msg-123',
+      files: [
+        { file_id: 'file-1', type: 'text/plain', text },
+        { file_id: 'file-2', type: 'text/plain', textPreview },
+      ],
+    };
+
+    const first = sanitizeMessageForTransmit(message);
+    const second = sanitizeMessageForTransmit(first);
+
+    expect(second.files?.map((file) => file.textPreview)).toEqual([
+      text.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH),
+      textPreview.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH),
+    ]);
+    expect(second.files?.[0]).not.toHaveProperty('text');
+    expect(second.files?.[1]).not.toHaveProperty('text');
+    expect(message.files[0].text).toBe(text);
+    expect(message.files[1].textPreview).toBe(textPreview);
   });
 
   it('should handle null/undefined message', () => {
@@ -184,6 +331,20 @@ describe('isUnpersistedPreliminaryParent', () => {
   });
 });
 
+it('sanitizes plain database identity objects without stringifying them for preview derivation', () => {
+  const file = {
+    file_id: 'mongo-paste',
+    type: 'text/plain',
+    text: 'stored paste',
+    _id: { toString: () => 'document-id' },
+    user: { toString: () => 'owner-id' },
+  };
+  const result = sanitizeFileForTransmit(file);
+  expect(result.textPreview).toBe('stored paste');
+  expect(result).not.toHaveProperty('_id');
+  expect(result).not.toHaveProperty('text');
+});
+
 describe('buildMessageFiles', () => {
   const baseAttachment = {
     file_id: 'file-1',
@@ -205,6 +366,59 @@ describe('buildMessageFiles', () => {
     expect(result?.[0].file_id).toBe('file-1');
     expect(result?.[0]).not.toHaveProperty('text');
     expect(result?.[0]).not.toHaveProperty('_id');
+  });
+
+  it('uses only authorized attachment text, never request file metadata', () => {
+    const text = 'Authorized pasted text '.repeat(100);
+    const authorized = { ...baseAttachment, type: 'text/plain', text };
+    const unmatched = {
+      ...authorized,
+      file_id: 'unrequested-file',
+      text: 'Secret from an unrequested attachment',
+    };
+    const requestFiles = [
+      {
+        file_id: 'file-1',
+        type: 'text/plain',
+        text: 'Forged request text',
+        textPreview: 'Forged request preview',
+        filename: 'forged.txt',
+      },
+      {
+        file_id: 'unauthorized-file',
+        type: 'text/plain',
+        text: 'Unauthorized request text',
+        textPreview: 'Unauthorized request preview',
+      },
+    ];
+
+    const result: Partial<TFile>[] = buildMessageFiles(requestFiles, [authorized, unmatched]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].file_id).toBe('file-1');
+    expect(result[0].filename).toBe(authorized.filename);
+    expect(result[0].textPreview).toBe(text.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH));
+    expect(result[0]).not.toHaveProperty('text');
+    expect(result[0]).not.toHaveProperty('_id');
+    expect(authorized.text).toBe(text);
+  });
+
+  it('does not read request previews or fall back to request text', () => {
+    const requestFile = {
+      file_id: 'file-1',
+      get text() {
+        throw new Error('Request text must not be read');
+      },
+      get textPreview() {
+        throw new Error('Request preview must not be read');
+      },
+    };
+    const { text: _text, ...attachment } = baseAttachment;
+
+    const result = buildMessageFiles([requestFile], [{ ...attachment, type: 'text/plain' }]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).not.toHaveProperty('textPreview');
   });
 
   it('returns undefined when no attachments match request IDs', () => {

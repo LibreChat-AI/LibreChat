@@ -30,9 +30,9 @@ const MIN_PIXEL_RATIO = 0.5;
 
 const OVERSIZED_TITLE = 'Oversized export fixture';
 const OVERSIZED_PARAGRAPH = 'Oversized export fixture paragraph';
-/** Keep the same 4,000 paragraphs without a deeply nested message tree. */
+/** Keep 4,000 unclipped paragraphs in a shallow thread. */
 const OVERSIZED_MESSAGES = 8;
-const OVERSIZED_PARAGRAPHS_PER_MESSAGE = 500;
+const OVERSIZED_PARAGRAPHS_PER_MESSAGE = 1000;
 
 const userEmail = getE2EUser().email;
 const cleanupConversationIds: string[] = [];
@@ -96,7 +96,8 @@ function buildOversizedMessages(): SeedMessage[] {
     messages.push({
       messageId,
       parentMessageId,
-      text,
+      /** Long user messages collapse by default; keep the oversized content in replies. */
+      text: i % 2 === 0 ? 'Export fixture prompt' : text,
       isCreatedByUser: i % 2 === 0,
       sender: i % 2 === 0 ? 'User' : 'Assistant',
     });
@@ -181,6 +182,10 @@ test.describe('conversation export', () => {
       timeout: 60000,
     });
 
+    const target = page.getByTestId('screenshot-target');
+    await expect(target.getByTestId('message-body')).toHaveCount(OVERSIZED_MESSAGES, {
+      timeout: 60_000,
+    });
     /** Both area and edge limits can make the fixture too large to capture. */
     await expect
       .poll(

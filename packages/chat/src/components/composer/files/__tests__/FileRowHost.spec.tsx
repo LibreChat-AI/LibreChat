@@ -124,3 +124,88 @@ describe('FileRow host behavior', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe('FileRow pasted-text preview', () => {
+  const pastedFile = (overrides: Partial<ExtendedFile> = {}): ExtendedFile => ({
+    file_id: 'paste-1',
+    type: 'text/plain',
+    filename: 'pasted-text.txt',
+    progress: 0.3,
+    size: 100,
+    pastedText: 'The original clipboard content\nincluding the next line',
+    text: 'A transformed server copy',
+    ...overrides,
+  });
+
+  it('shows the original snippet and keeps edit, move, and remove independently actionable', async () => {
+    const file = pastedFile();
+    const setFiles = jest.fn();
+    const abortUpload = jest.fn();
+    const onEditPastedText = jest.fn();
+    const onMovePastedTextInline = jest.fn();
+    const { container } = render(
+      <FileRow
+        files={new Map([[file.file_id, file]])}
+        setFiles={setFiles}
+        abortUpload={abortUpload}
+        isPastedTextFile={() => true}
+        onEditPastedText={onEditPastedText}
+        onMovePastedTextInline={onMovePastedTextInline}
+      />,
+    );
+
+    expect(screen.getByTitle(/The original clipboard content/).textContent).toBe(file.pastedText);
+    expect(screen.queryByText(file.text ?? '')).not.toBeInTheDocument();
+    expect(container.querySelector('button button')).toBeNull();
+    const editor = screen.getByRole('button', { name: 'Edit pasted text, pasted-text.txt' });
+    expect(editor).toHaveAccessibleDescription(
+      'The original clipboard content\nincluding the next line',
+    );
+    await userEvent.click(editor);
+    expect(onEditPastedText).toHaveBeenCalledWith(file);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Move back into message' }));
+    expect(onMovePastedTextInline).toHaveBeenCalledWith(file);
+    expect(onEditPastedText).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Remove file' }));
+    expect(abortUpload).toHaveBeenCalledWith(file.file_id);
+    expect(setFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the snippet visible while a paste action is pending', () => {
+    const file = pastedFile();
+    render(
+      <FileRow
+        files={new Map([[file.file_id, file]])}
+        setFiles={jest.fn()}
+        isPastedTextFile={() => true}
+        isPasteActionPending={() => true}
+        onEditPastedText={jest.fn()}
+        onMovePastedTextInline={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByTitle(/The original clipboard content/).textContent).toBe(file.pastedText);
+    expect(screen.queryByRole('button', { name: /Edit pasted text/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Move back into message' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('leaves a deliberately uploaded pasted-text filename on the ordinary file card', () => {
+    const file = pastedFile({ pastedText: undefined, progress: 1 });
+    render(
+      <FileRow
+        files={new Map([[file.file_id, file]])}
+        setFiles={jest.fn()}
+        isPastedTextFile={() => false}
+        onEditPastedText={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByText('pasted-text.txt')).toBeInTheDocument();
+    expect(screen.queryByText(file.text ?? '')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Edit pasted text/ })).not.toBeInTheDocument();
+  });
+});

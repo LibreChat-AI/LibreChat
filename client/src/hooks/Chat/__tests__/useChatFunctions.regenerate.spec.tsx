@@ -1072,6 +1072,47 @@ describe('useChatFunctions regenerate', () => {
     jest.clearAllMocks();
   });
 
+  it.each([undefined, [], [{ file_id: 'original-upload', type: 'text/plain' }]])(
+    'does not consume staged paste when regenerating a turn with files %p',
+    (originalFiles) => {
+      const original = { ...userMessage('replayed-user'), files: originalFiles };
+      const response = assistantMessage('replayed-answer', original.messageId);
+      const staged = new Map([
+        [
+          'pending-paste',
+          {
+            file_id: 'pending-paste',
+            size: 3000,
+            progress: 0,
+            pastedText: 'unsent clipboard text',
+          },
+        ],
+      ]);
+      const setFiles = jest.fn();
+      const setSubmission = jest.fn();
+      const { result } = renderHook(() =>
+        useChatFunctions({
+          isSubmitting: false,
+          latestMessage: response,
+          conversation: conversation('conversation-1'),
+          getMessages: () => [original, response],
+          setMessages: jest.fn(),
+          setSubmission,
+          setConversation: mockSetConversation,
+          files: staged,
+          setFiles,
+        }),
+      );
+      act(() => result.current.regenerate(response));
+      const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+      expect(submission.userMessage.text).toBe(original.text);
+      expect(submission.userMessage.files ?? []).toEqual(originalFiles ?? []);
+      expect(setFiles).not.toHaveBeenCalled();
+      expect(mockSetFilesToDelete).not.toHaveBeenCalled();
+      expect(staged.has('pending-paste')).toBe(true);
+    },
+  );
+
   it('keys a non-tail regenerate to the selected assistant response', () => {
     let messages = [
       userMessage('user-1'),

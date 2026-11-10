@@ -82,6 +82,7 @@ test.describe('composer attachments', () => {
      * of the text: the editor has to read it back from the stored upload. */
     await page.reload();
     await expect(chip).toBeVisible({ timeout: 20000 });
+    await expect(chip).toHaveAccessibleDescription(/pasted line 1: enough prose/);
     await chip.click();
     const dialog = page.getByRole('dialog', { name: 'Edit pasted text' });
     const editor = dialog.getByRole('textbox', { name: 'Edit pasted text' });

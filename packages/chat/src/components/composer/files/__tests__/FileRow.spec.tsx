@@ -43,17 +43,20 @@ jest.mock('../FileContainer', () => ({
     onClick,
     onDelete,
     ariaLabel,
+    textPreview,
     subtitleAction,
   }: {
     onDelete?: () => void;
     file: ExtendedFile;
     onClick?: () => void;
     ariaLabel?: string;
+    textPreview?: string | null;
     subtitleAction?: { label: string; onClick: () => void };
   }) {
     return (
       <div data-testid="mock-file-container">
         <span data-testid="file-name">{file.filename}</span>
+        <span data-testid="text-preview">{textPreview}</span>
         <div data-testid="mock-delete" role="presentation" onClick={onDelete} />
         {onClick != null && (
           <button type="button" aria-label={ariaLabel} onClick={onClick}>
@@ -212,6 +215,76 @@ describe('FileRow', () => {
 
       const progress = screen.getByTestId('image-progress').textContent;
       expect(progress).toBe('1');
+    });
+  });
+
+  describe('Blocking upload state', () => {
+    it.each(['Clipboard content', ''])(
+      'does not block on an inlineable paste: %j',
+      (pastedText) => {
+        const file = createMockFile({ type: 'text/plain', progress: 0, pastedText });
+        renderFileRow(new Map([[file.file_id, file]]));
+
+        expect(mockSetFilesLoading).toHaveBeenLastCalledWith(false);
+      },
+    );
+
+    it('still blocks on an ordinary upload beside an inlineable paste', () => {
+      const paste = createMockFile({
+        file_id: 'paste',
+        type: 'text/plain',
+        progress: 0,
+        pastedText: 'Clipboard content',
+      });
+      const upload = createMockFile({ file_id: 'upload', progress: 0.4 });
+      renderFileRow(
+        new Map([
+          [paste.file_id, paste],
+          [upload.file_id, upload],
+        ]),
+      );
+
+      expect(mockSetFilesLoading).toHaveBeenLastCalledWith(true);
+    });
+
+    it('clears loading when the remaining ordinary upload finishes', () => {
+      const paste = createMockFile({
+        file_id: 'paste',
+        type: 'text/plain',
+        progress: 0,
+        pastedText: 'Clipboard content',
+      });
+      const upload = createMockFile({ file_id: 'upload', progress: 0.4 });
+      const files = new Map([
+        [paste.file_id, paste],
+        [upload.file_id, upload],
+      ]);
+      const { rerender } = renderFileRow(files);
+      expect(mockSetFilesLoading).toHaveBeenLastCalledWith(true);
+
+      rerender(
+        <FilesHostProvider host={host}>
+          <FileRow
+            files={
+              new Map([
+                [paste.file_id, paste],
+                [upload.file_id, { ...upload, progress: 1 }],
+              ])
+            }
+            setFiles={mockSetFiles}
+            setFilesLoading={mockSetFilesLoading}
+          />
+        </FilesHostProvider>,
+      );
+
+      expect(mockSetFilesLoading).toHaveBeenLastCalledWith(false);
+    });
+
+    it('does not treat stored text alone as an inlineable pending paste', () => {
+      const file = createMockFile({ type: 'text/plain', progress: 0, text: 'Stored text' });
+      renderFileRow(new Map([[file.file_id, file]]));
+
+      expect(mockSetFilesLoading).toHaveBeenLastCalledWith(true);
     });
   });
 
@@ -462,9 +535,67 @@ describe('FileRow', () => {
       expect(screen.queryByRole('button')).not.toBeInTheDocument();
     });
 
-    it('waits for the upload to finish before offering the editor', () => {
+    it('waits for upload completion when neither local text nor a local file is available', () => {
       renderWithEditor(pastedFile({ progress: 0.4 }), { onEditPastedText: jest.fn() });
 
+      expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    });
+
+    it('offers editing and moving while original pasted text is still uploading', async () => {
+      const onEditPastedText = jest.fn();
+      const onMovePastedTextInline = jest.fn();
+      const file = pastedFile({ progress: 0.4, pastedText: 'Original clipboard text' });
+      renderWithEditor(file, { onEditPastedText, onMovePastedTextInline });
+
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Edit pasted text, pasted-text.txt' }),
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Move back into message' }));
+
+      expect(onEditPastedText).toHaveBeenCalledWith(file);
+      expect(onMovePastedTextInline).toHaveBeenCalledWith(file);
+    });
+
+    it('offers editing while a local pasted file is uploading', () => {
+      renderWithEditor(
+        pastedFile({ progress: 0, file: new File(['Local clipboard text'], 'pasted-text.txt') }),
+        { onEditPastedText: jest.fn() },
+      );
+
+      expect(
+        screen.getByRole('button', { name: 'Edit pasted text, pasted-text.txt' }),
+      ).toBeInTheDocument();
+    });
+
+    it('can edit an empty local paste before its upload finishes', () => {
+      renderWithEditor(pastedFile({ progress: 0, pastedText: '' }), {
+        onEditPastedText: jest.fn(),
+      });
+
+      expect(
+        screen.getByRole('button', { name: 'Edit pasted text, pasted-text.txt' }),
+      ).toBeInTheDocument();
+    });
+
+    it('previews original pasted text instead of the stored transformed copy', () => {
+      renderWithEditor(pastedFile({ pastedText: 'Original paste', text: 'Stored copy' }));
+
+      expect(screen.getByTestId('text-preview')).toHaveTextContent(/^Original paste$/);
+    });
+
+    it('previews stored text for a restored generated paste', () => {
+      renderWithEditor(pastedFile({ text: 'Restored clipboard text' }));
+
+      expect(screen.getByTestId('text-preview')).toHaveTextContent('Restored clipboard text');
+    });
+
+    it('does not preview a deliberate text upload even when its filename matches a paste', () => {
+      renderWithEditor(pastedFile({ text: 'Uploaded text', pastedText: 'Not a generated paste' }), {
+        isPaste: false,
+        onEditPastedText: jest.fn(),
+      });
+
+      expect(screen.getByTestId('text-preview')).toBeEmptyDOMElement();
       expect(screen.queryByRole('button')).not.toBeInTheDocument();
     });
 

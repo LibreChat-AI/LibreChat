@@ -121,6 +121,40 @@ describe('resolveThreadRows on a 12,000-message chain', () => {
 });
 
 describe('resolveThreadRows with a file map', () => {
+  it('retains message snippets when the owner list omits extracted text', () => {
+    const original = {
+      ...message('u1', ROOT),
+      files: [
+        {
+          file_id: 'paste',
+          type: 'text/plain',
+          textPreview: 'persisted excerpt',
+          llmDeliveryPath: 'text' as const,
+        },
+      ],
+    };
+    const stored = {
+      file_id: 'paste',
+      filename: 'pasted-text.txt',
+      type: 'text/plain',
+      llmDeliveryPath: 'none',
+    } as TFile;
+    const [row] = resolveThreadRows(
+      buildThreadIndex([original], { paste: stored }),
+      'c',
+      () => 0,
+      null,
+    );
+    expect(row.message.files?.[0]).toMatchObject({
+      file_id: 'paste',
+      textPreview: 'persisted excerpt',
+      llmDeliveryPath: 'text',
+      filename: 'pasted-text.txt',
+    });
+    expect(row.source).toBe(original);
+    expect(stored).not.toHaveProperty('textPreview');
+  });
+
   it('hydrates files on the row while reusing the raw cache identity', () => {
     const withFile = { ...message('u1', ROOT), files: [{ file_id: 'f1' }] } as TMessage;
     const fileMap: Record<string, TFile> = {

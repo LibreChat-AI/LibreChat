@@ -4059,7 +4059,7 @@ describe('useSteering', () => {
       it('ignores a late callback for an attachment the steer already took', () => {
         const { observed, getUpdates, getSteering } = setupComposer();
 
-        act(() => getUpdates().addFile(extended('file-consumed', 0.4)));
+        act(() => getUpdates().addFile(extended('file-consumed', 1)));
         expect(observed.files.has('file-consumed')).toBe(true);
 
         act(() => {

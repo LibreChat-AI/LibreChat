@@ -3,6 +3,7 @@ import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
 import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
+import { isInlineablePastedText } from '@librechat/chat';
 import { useDirection } from '@radix-ui/react-direction';
 import {
   PastedTextDialog,
@@ -65,6 +66,7 @@ import {
   PendingToolApprovalButton,
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
+import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
 import useComposerRestore from '~/hooks/Input/useComposerRestore';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
@@ -275,6 +277,7 @@ const ChatForm = memo(function ChatForm({
     onPromptSettled: settleText,
   });
 
+  const discardFiles = useDiscardPastedFiles(index, conversationId);
   const pastedTextEdit = usePastedTextEdit({ index, files, setFiles, textAreaRef });
 
   /** Provenance, not the filename, decides which chips are pastes: a user can deliberately
@@ -297,7 +300,7 @@ const ChatForm = memo(function ChatForm({
    * same original cannot be acted on twice. */
   const { isActionPending } = pastedTextEdit;
   const isPasteActionPending = useCallback(
-    (file: ExtendedFile) => isActionPending(file.file_id),
+    (file: ExtendedFile) => isActionPending(file),
     [isActionPending],
   );
 
@@ -348,6 +351,7 @@ const ChatForm = memo(function ChatForm({
     return () => publishComposerRestore(null);
   }, [publishComposerRestore, restoreReclaimedSteer]);
   const steering = useSteering({
+    discardFiles,
     consumeDraft,
     addedConversation: addedConvo,
     index,
@@ -423,6 +427,11 @@ const ChatForm = memo(function ChatForm({
    *  values and cannot consume files, so an empty draft must stay unsubmittable
    *  there rather than enabling a button whose submit is silently dropped. */
   const submittableFileCount = composerReserved ? 0 : files.size;
+  const hasInlinePaste = useMemo(() => {
+    if (composerReserved || filesLoading) return false;
+    for (const file of files.values()) if (isInlineablePastedText(file)) return true;
+    return false;
+  }, [composerReserved, filesLoading, files]);
 
   const { ref, ...registerProps } = methods.register('text', {
     required: submittableFileCount === 0,
@@ -498,7 +507,7 @@ const ChatForm = memo(function ChatForm({
   const uploadingCount = useMemo(() => {
     let count = 0;
     for (const file of files.values()) {
-      if (file.progress < 1) {
+      if (file.progress < 1 && !isInlineablePastedText(file)) {
         count++;
       }
     }
@@ -525,6 +534,7 @@ const ChatForm = memo(function ChatForm({
         onConsumed={consumeComposer}
         enterToSend={enterToSend}
         fileCount={submittableFileCount}
+        hasInlinePaste={hasInlinePaste}
         sendDisabled={
           filesLoading ||
           isPreparingFromUrl ||
@@ -555,6 +565,7 @@ const ChatForm = memo(function ChatForm({
       consumeComposer,
       enterToSend,
       submittableFileCount,
+      hasInlinePaste,
       filesLoading,
       isPreparingFromUrl,
       disableInputs,

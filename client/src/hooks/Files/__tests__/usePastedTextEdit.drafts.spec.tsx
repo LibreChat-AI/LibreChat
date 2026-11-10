@@ -63,6 +63,7 @@ jest.mock('../useFileUploadRouter', () => ({
 }));
 
 jest.mock('../useFileHandling', () => ({
+  retainPasteUpload: jest.fn(),
   clearUploadRecovery: jest.fn(),
   hasInFlightUpload: jest.fn(() => false),
 }));
@@ -70,12 +71,14 @@ jest.mock('../useFileHandling', () => ({
 import React from 'react';
 import { renderHook, act } from '@testing-library/react';
 import { LocalStorageKeys } from 'librechat-data-provider';
+import { partitionComposerFiles } from '@librechat/chat';
 import type { UploadLifecycleCallbacks } from '../useFileHandling';
 import type { ExtendedFile } from '~/common';
 import { getFilesDraft, getPendingDraftId, setFilesDraft } from '~/utils';
 import { useAutoSave } from '~/hooks/Input/useAutoSave';
 import { markPastedTextFile } from '~/utils/files';
 import usePastedTextEdit from '../usePastedTextEdit';
+import { clearUploadRecovery } from '../useFileHandling';
 
 const DRAFT_ID = 'conversation-a';
 const ORIGINAL_ID = 'original-upload';
@@ -191,7 +194,98 @@ describe('usePastedTextEdit with the real composer drafts', () => {
     /** The restore the cache write schedules runs before autosave rewrites the draft, so a draft
      * still naming the original would re-attach it from the server's file list. */
     expect(attachedFilenames(composer)).toEqual(['pasted-text-2.txt']);
-    expect(composer.result.current.edit.isActionPending(ORIGINAL_SERVER_ID)).toBe(false);
+    expect(composer.result.current.edit.isActionPending(originalChip())).toBe(false);
+  });
+
+  it('moves a pending correction inline without restoring its original from drafts', async () => {
+    const composer = renderComposer(new Map([[ORIGINAL_ID, originalChip()]]));
+    await act(async () => composer.result.current.edit.openEditor(originalChip()));
+    await act(async () => composer.result.current.edit.saveEdit('corrected inline'));
+    const lifecycle = mockRouteFiles.mock.calls[0][2] as UploadLifecycleCallbacks;
+    const replacementId = lifecycle.fileId!;
+    const correction = originalChip({
+      file_id: replacementId,
+      temp_file_id: undefined,
+      progress: 0.2,
+      pastedText: 'corrected inline',
+      replacesFileId: ORIGINAL_ID,
+    });
+    act(() =>
+      composer.result.current.setFiles((current) =>
+        new Map(current).set(replacementId, correction),
+      ),
+    );
+    jest.mocked(clearUploadRecovery).mockImplementation((id) => {
+      if (id !== replacementId) return;
+      lifecycle.onAbort?.(id);
+      composer.result.current.setFiles((current) => {
+        const remaining = new Map(current);
+        remaining.delete(id);
+        return remaining;
+      });
+    });
+    await act(async () => composer.result.current.edit.moveInline(correction));
+    expect(composer.result.current.files.size).toBe(0);
+    expect(composer.result.current.edit.editing).toBeNull();
+    expect(mockSetValue).toHaveBeenCalledWith('text', 'corrected inline', expect.anything());
+    const draft = getFilesDraft(DRAFT_ID);
+    expect(draft.fileIds).toEqual([]);
+    expect(draft.pastedTextIds ?? []).toEqual([]);
+    expect(draft.pendingPastes).toEqual({});
+    jest.mocked(clearUploadRecovery).mockReset();
+  });
+
+  it('keeps only the latest pending correction when a superseded upload fails', async () => {
+    const composer = renderComposer(new Map([[ORIGINAL_ID, originalChip()]]));
+    await act(async () => composer.result.current.edit.openEditor(originalChip()));
+    await act(async () => composer.result.current.edit.saveEdit('first correction'));
+    const first = mockRouteFiles.mock.calls[0][2] as UploadLifecycleCallbacks;
+    const correction = originalChip({
+      file_id: first.fileId!,
+      temp_file_id: undefined,
+      progress: 0.2,
+      pastedText: 'first correction',
+      replacesFileId: ORIGINAL_ID,
+    });
+    act(() =>
+      composer.result.current.setFiles((current) =>
+        new Map(current).set(correction.file_id, correction),
+      ),
+    );
+    await act(async () => composer.result.current.edit.openEditor(correction));
+    jest.mocked(clearUploadRecovery).mockImplementation((id) => {
+      if (id !== first.fileId) return;
+      first.onAbort?.(id);
+      composer.result.current.setFiles((current) => {
+        const remaining = new Map(current);
+        remaining.delete(id);
+        return remaining;
+      });
+    });
+    await act(async () => composer.result.current.edit.saveEdit('final correction'));
+    const final = mockRouteFiles.mock.calls[1][2] as UploadLifecycleCallbacks;
+    expect(final.replacesFileId).toBe(ORIGINAL_SERVER_ID);
+    const latest = originalChip({
+      file_id: final.fileId!,
+      temp_file_id: undefined,
+      progress: 0.2,
+      pastedText: 'final correction',
+      replacesFileId: final.replacesFileId,
+    });
+    act(() =>
+      composer.result.current.setFiles((current) => new Map(current).set(latest.file_id, latest)),
+    );
+    await act(async () => first.onError?.(first.fileId!));
+    expect(composer.result.current.edit.editing).toBeNull();
+    const pending = partitionComposerFiles('Review this', composer.result.current.files);
+    expect(pending.files).toEqual([]);
+    expect(pending.text).toBe('Review this\n\n```text\nfinal correction\n```');
+    await act(async () => final.onSuccess?.(final.fileId!));
+    expect(composer.result.current.files.has(ORIGINAL_ID)).toBe(false);
+    expect(composer.result.current.files.has(first.fileId!)).toBe(false);
+    expect(composer.result.current.files.has(final.fileId!)).toBe(true);
+    expect(getFilesDraft(DRAFT_ID).fileIds).not.toContain(ORIGINAL_ID);
+    jest.mocked(clearUploadRecovery).mockReset();
   });
 
   it('drops the replaced original from the files draft and keeps the replacement', async () => {
