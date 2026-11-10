@@ -33,7 +33,7 @@ export { buildSteerMedia, collectSteerStampTargets, stampSteerPartMedia } from '
 export type { SteerMediaClient, SteerStampTarget, StampedSteerMedia } from './media';
 export { createSteerIndexOffsetHandlers } from './offset';
 export type { SteerOffsetState } from './offset';
-export { toSteerFileRef, getPromotedSteerRequestId, parsePromotedSteerRequestId } from './refs';
+export { toSteerFileRef, getPromotedSteerRequestId } from './refs';
 export type { SteerRequestUser } from './refs';
 export { promoteDrainedSteers, completePromotedSteerHandoff } from './promotion';
 export type { SteerPromotionDeps, SteerPromotionInput, SteerPromotionResult } from './promotion';

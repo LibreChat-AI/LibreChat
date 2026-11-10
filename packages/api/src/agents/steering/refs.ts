@@ -76,16 +76,8 @@ export function buildOwnerFilter(
 const PROMOTED_STEER_REQUEST_PREFIX = 'steer-leftover:';
 
 /** Queued-turn request id of a promoted steer. Deterministic, so a replayed
- *  promotion resolves to the same durable row and admission can find the steer. */
+ *  promotion resolves to the same durable row. The row's `steerSource`, not
+ *  this id, is what names the steer it replaces. */
 export function getPromotedSteerRequestId(steerId: string): string {
   return `${PROMOTED_STEER_REQUEST_PREFIX}${steerId}`;
-}
-
-/** The steer a queued turn was promoted from, or `null` for an ordinary turn. */
-export function parsePromotedSteerRequestId(clientRequestId: string): string | null {
-  if (!clientRequestId.startsWith(PROMOTED_STEER_REQUEST_PREFIX)) {
-    return null;
-  }
-  const steerId = clientRequestId.slice(PROMOTED_STEER_REQUEST_PREFIX.length);
-  return steerId.length > 0 ? steerId : null;
 }

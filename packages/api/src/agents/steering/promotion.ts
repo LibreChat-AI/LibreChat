@@ -10,6 +10,7 @@ import type { AgentQueuedTurnMethods, AgentQueuedTurnRecord } from '@librechat/d
 import type { SteerQueueItem, SteerPromotionOutcome } from '~/stream/interfaces/IJobStore';
 import type { SteeringLifecycle, SteerContentView } from '~/stream/SteeringLifecycle';
 import type { AgentQueuedTurnLifecycle, PromotedSteerHandoff } from '../queuedTurns';
+import { createQueuedTurnDeliveryReservation } from '../queuedTurns';
 import { getPromotedSteerRequestId, toSteerFileRef } from './refs';
 import { toPendingSteer } from '~/stream/SteeringLifecycle';
 import { toQueuedTurnReceipt } from '../queuedTurnHttp';
@@ -21,11 +22,16 @@ interface PromotionConversation {
 }
 
 export interface SteerPromotionDeps {
-  methods: Pick<AgentQueuedTurnMethods, 'enqueueAgentQueuedTurn' | 'listActiveAgentQueuedTurns'> & {
+  methods: Pick<
+    AgentQueuedTurnMethods,
+    | 'enqueueAgentQueuedTurn'
+    | 'getAgentQueuedTurnGenerationLineage'
+    | 'confirmAgentQueuedTurnSourceHandoff'
+  > & {
     getConvo: (userId: string, conversationId: string) => Promise<PromotionConversation | null>;
   };
   lifecycle: Pick<AgentQueuedTurnLifecycle, 'schedule' | 'cancel'>;
-  steering: Pick<SteeringLifecycle, 'promoteLeftover'>;
+  steering: Pick<SteeringLifecycle, 'promoteLeftover' | 'getReceipt'>;
 }
 
 export interface SteerPromotionInput {
@@ -58,6 +64,7 @@ type PromotionTarget = {
   scope: { user: Types.ObjectId; tenantId?: string; conversationId: string };
   agentId: string;
   parentMessageId: string;
+  expectedPredecessorCreatedAt: number;
 };
 
 function appliedSteerIds(content: SteerContentView): Set<string> {
@@ -84,10 +91,12 @@ function toFileRefs(files: SteerQueueItem['files']): TAgentQueuedTurnFileRef[] |
   return refs.length > 0 ? refs : undefined;
 }
 
-/** Resolves where promoted turns attach. A queued turn's lineage is keyed by
- * its root parent and predecessor epoch, so a turn already queued against this
- * same generation keeps its parent and the promoted steers chain behind it
- * instead of opening a second lineage that would race it for the epoch. */
+/** Resolves where promoted turns attach. A queued turn's lineage is its root
+ * parent and root epoch, and a turn is only admitted behind the tail of its own
+ * lineage. The ended generation may already belong to one: it was admitted
+ * from the queue, or turns were queued directly against it. Promoted steers
+ * join that lineage, so they run behind whatever is still queued in it instead
+ * of opening a second lineage that the first one would strand. */
 async function resolveTarget(
   input: SteerPromotionInput,
   deps: SteerPromotionDeps,
@@ -96,7 +105,18 @@ async function resolveTarget(
   if (!Types.ObjectId.isValid(user.id)) {
     return null;
   }
-  const conversation = await deps.methods.getConvo(user.id, conversationId);
+  const scope = {
+    user: new Types.ObjectId(user.id),
+    ...(user.tenantId != null && { tenantId: user.tenantId }),
+    conversationId,
+  };
+  const [conversation, lineage] = await Promise.all([
+    deps.methods.getConvo(user.id, conversationId),
+    deps.methods.getAgentQueuedTurnGenerationLineage({
+      ...scope,
+      generationCreatedAt: input.claim.createdAt,
+    }),
+  ]);
   const agentId = conversation?.agent_id;
   if (
     conversation == null ||
@@ -109,19 +129,11 @@ async function resolveTarget(
   ) {
     return null;
   }
-  const scope = {
-    user: new Types.ObjectId(user.id),
-    ...(user.tenantId != null && { tenantId: user.tenantId }),
-    conversationId,
-  };
-  const active = await deps.methods.listActiveAgentQueuedTurns(scope);
-  const sameEpoch = active.find(
-    (turn) => turn.expectedPredecessorCreatedAt === input.claim.createdAt,
-  );
   return {
     scope,
     agentId,
-    parentMessageId: sameEpoch?.parentMessageId ?? input.responseMessageId,
+    parentMessageId: lineage?.parentMessageId ?? input.responseMessageId,
+    expectedPredecessorCreatedAt: lineage?.expectedPredecessorCreatedAt ?? input.claim.createdAt,
   };
 }
 
@@ -151,12 +163,9 @@ async function retireUnownedTurn(
   }
 }
 
-/** `legacy`: no durable row owns the steer, hand it back as before.
- * `withheld`: a row exists that could not be retired; its admission repeats
- * the hand-off and settles it, so the client must not queue the words too. */
-type PromotionAttempt =
-  | { kind: 'promoted'; promoted: TPromotedSteer }
-  | { kind: 'legacy' | 'withheld' };
+/** `promoted`: a durable row carries the steer from here on, and the client
+ * adopts its receipt. `legacy`: no row does; hand the steer back as before. */
+type PromotionAttempt = { kind: 'promoted'; promoted: TPromotedSteer } | { kind: 'legacy' };
 
 async function promoteOne(
   item: SteerQueueItem & { clientSteerId: string },
@@ -164,8 +173,17 @@ async function promoteOne(
   target: PromotionTarget,
   deps: SteerPromotionDeps,
 ): Promise<PromotionAttempt> {
+  /** An owner that cannot take quotes stores the words without them, while the
+   * sender's chip keeps the excerpts for its own conversion. Promoting would
+   * then retire the only copy of the user's selected context. */
+  if ((item.quotes?.length ?? 0) === 0) {
+    const receipt = await deps.steering.getReceipt(input.claim.streamId, item.clientSteerId);
+    if (receipt?.requestedQuotesFingerprint != null) {
+      return { kind: 'legacy' };
+    }
+  }
   const files = toFileRefs(item.files);
-  const { turn } = await deps.methods.enqueueAgentQueuedTurn({
+  const enqueueInput = {
     ...target.scope,
     agentId: target.agentId,
     parentMessageId: target.parentMessageId,
@@ -173,13 +191,44 @@ async function promoteOne(
     text: item.text,
     ...(files != null && { files }),
     ...(item.quotes != null && item.quotes.length > 0 && { quotes: item.quotes }),
+    ...(item.codeApprovalMode != null && { codeApprovalMode: item.codeApprovalMode }),
     priority: false,
-    expectedPredecessorCreatedAt: input.claim.createdAt,
+    expectedPredecessorCreatedAt: target.expectedPredecessorCreatedAt,
+    steerSource: {
+      steerId: item.steerId,
+      clientSteerId: item.clientSteerId,
+      generationCreatedAt: input.claim.createdAt,
+    },
+  };
+  const { turn } = await deps.methods.enqueueAgentQueuedTurn({
+    ...enqueueInput,
+    /** An approval-bearing row is published under its own reservation, the
+     * same as one a client enqueues, so a replica that cannot read the mode
+     * never starts the turn without it. */
+    ...(item.codeApprovalMode != null && {
+      deliveryReservation: createQueuedTurnDeliveryReservation(enqueueInput),
+    }),
   });
+  const promoted = (): PromotionAttempt => ({
+    kind: 'promoted',
+    promoted: {
+      steerId: item.steerId,
+      clientSteerId: item.clientSteerId,
+      receipt: toQueuedTurnReceipt(turn),
+    },
+  });
+  /** A replay finds the row an earlier promotion wrote. One that already ran
+   * stays the steer's record; one that was cancelled or failed is not a copy
+   * anything can run, so it must not take the parked source with it. */
+  if (turn.status === 'admitted') {
+    return promoted();
+  }
+  if (turn.status !== 'queued' && turn.status !== 'claimed') {
+    return { kind: 'legacy' };
+  }
   /** The row is the durable copy from here on; the parked copy goes second so
-   * a crash in between can at worst leave both, never neither. The row's own
-   * admission repeats this hand-off, which settles that window. */
-  let outcome: SteerPromotionOutcome | null = null;
+   * a crash in between can at worst leave both, never neither. */
+  let outcome: SteerPromotionOutcome | 'unknown' = 'unknown';
   try {
     outcome = await deps.steering.promoteLeftover(
       input.claim.streamId,
@@ -189,13 +238,36 @@ async function promoteOne(
       turn.queuedTurnId,
     );
   } catch (error) {
-    logger.warn('[SteerPromotion] Job store hand-off failed', {
+    logger.warn('[SteerPromotion] Job store hand-off is unconfirmed; left to admission', {
       conversationId: turn.conversationId,
+      queuedTurnId: turn.queuedTurnId,
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  if (outcome !== 'promoted') {
-    return { kind: (await retireUnownedTurn(turn, target, deps)) ? 'legacy' : 'withheld' };
+  if (
+    outcome !== 'promoted' &&
+    outcome !== 'unknown' &&
+    (await retireUnownedTurn(turn, target, deps))
+  ) {
+    return { kind: 'legacy' };
+  }
+  /** From here the row stays, so it is the client's handle on the steer. It
+   * either owns the words (recorded on the row, which outlives the job store's
+   * receipt), or its ownership is unsettled: the hand-off may have committed
+   * and lost its reply, or it was refused and the row could not be retired. An
+   * unsettled row never runs on trust. Its admission repeats the hand-off and
+   * then runs it, cancels it, or holds it for review. Handing the steer back
+   * as well would let the client queue words a row may already own. */
+  if (outcome === 'promoted') {
+    await deps.methods
+      .confirmAgentQueuedTurnSourceHandoff({ ...target.scope, queuedTurnId: turn.queuedTurnId })
+      .catch((error: unknown) => {
+        logger.warn('[SteerPromotion] Promoted turn ownership left to admission', {
+          conversationId: turn.conversationId,
+          queuedTurnId: turn.queuedTurnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }
   try {
     await deps.lifecycle.schedule(turn);
@@ -207,14 +279,7 @@ async function promoteOne(
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  return {
-    kind: 'promoted',
-    promoted: {
-      steerId: item.steerId,
-      clientSteerId: item.clientSteerId,
-      receipt: toQueuedTurnReceipt(turn),
-    },
-  };
+  return promoted();
 }
 
 function isPromotable(
@@ -277,9 +342,7 @@ export async function promoteDrainedSteers(
         continue;
       }
       halted = true;
-      if (attempt.kind === 'legacy') {
-        pendingSteers.push(toPendingSteer(item));
-      }
+      pendingSteers.push(toPendingSteer(item));
     }
   } catch (error) {
     logger.warn('[SteerPromotion] Leaving unapplied steers on the client path', {

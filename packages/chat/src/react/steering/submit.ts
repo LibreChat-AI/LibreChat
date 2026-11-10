@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react';
 import { v4 } from 'uuid';
-import type { TMessage } from 'librechat-data-provider';
+import type { TMessage, CodeApprovalMode } from 'librechat-data-provider';
 import type { MutableRefObject } from 'react';
 import type {
   SteerAttempt,
@@ -44,6 +44,7 @@ export default function useSubmitSteer({
   chips,
   rows,
   enqueue,
+  codeApprovalMode,
 }: {
   conversationId: string;
   hasRealConvoId: boolean;
@@ -59,6 +60,8 @@ export default function useSubmitSteer({
   chips: SteerChips;
   rows: Pick<QueueRows, 'restoreQueued' | 'rewakeDrain' | 'registerQueuedOrigin'>;
   enqueue: QueueEnqueue['enqueue'];
+  /** The composer's selection, snapshotted onto a steer the server may promote. */
+  codeApprovalMode?: CodeApprovalMode;
 }): SubmitSteer {
   const host = useSteerHost();
   const localize = host.useLocalize();
@@ -158,6 +161,7 @@ export default function useSubmitSteer({
           opts?.generationProtocolVersion ?? activeGenerationProtocolVersion,
         queuedOrigin: opts?.queuedOrigin,
         carried: carriedSteerContext(context),
+        ...(codeApprovalMode != null && { codeApprovalMode }),
       };
       const { carried, generationProtocolVersion } = attempt;
       /** If the steer loses its race with run finalization, its normal-send
@@ -230,6 +234,7 @@ export default function useSubmitSteer({
             ...(preempt && { preempt }),
             ...(canPromoteLeftover({ ...carried, queuedOrigin: opts?.queuedOrigin }) && {
               promoteLeftover: true,
+              ...(codeApprovalMode != null && { codeApprovalMode }),
             }),
             generationCreatedAt: targetGenerationCreatedAt,
           },
@@ -443,6 +448,7 @@ export default function useSubmitSteer({
       activeGenerationProtocolVersion,
       visibleConversationRef,
       isSubmittingRef,
+      codeApprovalMode,
     ],
   );
 }

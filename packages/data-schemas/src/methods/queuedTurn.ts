@@ -14,6 +14,7 @@ import type {
   AgentQueuedTurnFailure,
   AgentQueuedTurnFileRef,
   AgentQueuedTurnRecord,
+  AgentQueuedTurnSteerSource,
   IAgentQueuedTurn,
   IAgentQueuedTurnDocument,
   IAgentQueuedTurnSequence,
@@ -123,6 +124,15 @@ export interface EnqueueAgentQueuedTurnInput extends AgentQueuedTurnConversation
   expectedPredecessorCreatedAt?: number;
   priority?: boolean;
   availableAt?: Date;
+  /** Marks the row as promoted from an unapplied steer. Written with the row,
+   * so no promoted row ever exists without naming its source. */
+  steerSource?: Omit<AgentQueuedTurnSteerSource, 'handoffAt'>;
+}
+
+/** A queue lineage's root: every turn queued behind one run shares this pair. */
+export interface AgentQueuedTurnLineage {
+  parentMessageId: string;
+  expectedPredecessorCreatedAt: number;
 }
 
 export interface AgentQueuedTurnClaimFence extends AgentQueuedTurnConversationScope {
@@ -245,6 +255,19 @@ export interface AgentQueuedTurnMethods {
       scheduledAt?: Date;
     },
   ) => Promise<ScheduleAgentQueuedTurnResult>;
+  /**
+   * The queue lineage (root parent and root epoch) a generation belongs to:
+   * that of the queued turn it was admitted from, else that of turns already
+   * queued directly against it. Null when it has no queue lineage yet.
+   */
+  getAgentQueuedTurnGenerationLineage: (
+    input: AgentQueuedTurnConversationScope & { generationCreatedAt: number },
+  ) => Promise<AgentQueuedTurnLineage | null>;
+  /** Records that a not-yet-admitted promoted row now solely owns its steer's
+   * words. Returns whether the row carries that mark afterwards. */
+  confirmAgentQueuedTurnSourceHandoff: (
+    input: AgentQueuedTurnConversationScope & { queuedTurnId: string; at?: Date },
+  ) => Promise<boolean>;
   cancelAgentQueuedTurn: (
     input: AgentQueuedTurnOwnerScope & {
       queuedTurnId: string;
@@ -556,6 +579,20 @@ function requireCodeApprovalMode(mode: CodeApprovalMode): CodeApprovalMode {
   return mode;
 }
 
+function normalizeSteerSource(
+  source: NonNullable<EnqueueAgentQueuedTurnInput['steerSource']>,
+): Omit<AgentQueuedTurnSteerSource, 'handoffAt'> {
+  const generationCreatedAt = normalizePredecessor(source.generationCreatedAt);
+  if (generationCreatedAt == null) {
+    throw new TypeError('Agent queued turn steer source requires its generation');
+  }
+  return {
+    steerId: requireBoundedString(source.steerId, 128),
+    clientSteerId: requireBoundedString(source.clientSteerId, 128),
+    generationCreatedAt,
+  };
+}
+
 function normalizeEnqueue(input: EnqueueAgentQueuedTurnInput) {
   const normalized = {
     agentId: requireBoundedString(input.agentId, 256),
@@ -574,6 +611,7 @@ function normalizeEnqueue(input: EnqueueAgentQueuedTurnInput) {
     reasoningOverride: normalizeReasoningOverride(input.reasoningOverride),
     expectedPredecessorCreatedAt: normalizePredecessor(input.expectedPredecessorCreatedAt),
     priority: input.priority === true,
+    ...(input.steerSource != null && { steerSource: normalizeSteerSource(input.steerSource) }),
   };
   if (normalized.text.length === 0 && normalized.files == null && normalized.quotes == null) {
     throw new TypeError('Agent queued turn must contain text, a file, or a quote');
@@ -655,6 +693,7 @@ function toRecord(turn: IAgentQueuedTurn): AgentQueuedTurnRecord {
     ...(turn.deliveryKey != null && { deliveryKey: turn.deliveryKey }),
     deliveryState: effectiveDeliveryState(turn),
     ...(turn.scheduledAt != null && { scheduledAt: turn.scheduledAt }),
+    ...(turn.steerSource != null && { steerSource: turn.steerSource }),
     ...(turn.claimId != null && { claimId: turn.claimId }),
     ...(turn.claimBy != null && { claimBy: turn.claimBy }),
     ...(turn.claimUntil != null && { claimUntil: turn.claimUntil }),
@@ -718,6 +757,7 @@ function toActiveRecord(turn: IAgentQueuedTurn): AgentQueuedTurnActiveRecord {
     ...(record.deliveryKey != null && { deliveryKey: record.deliveryKey }),
     ...(record.deliveryState != null && { deliveryState: record.deliveryState }),
     ...(record.scheduledAt != null && { scheduledAt: record.scheduledAt }),
+    ...(record.steerSource != null && { steerSource: record.steerSource }),
     createdAt: record.createdAt,
     ...(record.updatedAt != null && { updatedAt: record.updatedAt }),
     ...(record.terminalReceipt != null && { terminalReceipt: record.terminalReceipt }),
@@ -1716,6 +1756,29 @@ export function createAgentQueuedTurnMethods(
     };
   }
 
+  async function confirmAgentQueuedTurnSourceHandoff(
+    input: AgentQueuedTurnConversationScope & { queuedTurnId: string; at?: Date },
+  ): Promise<boolean> {
+    const scope = { ...conversationScope(input), _id: input.queuedTurnId };
+    const confirmed = await Turn().updateOne(
+      {
+        ...scope,
+        status: { $in: ['queued', 'claimed'] },
+        steerSource: { $exists: true },
+        'steerSource.handoffAt': { $exists: false },
+      },
+      { $set: { 'steerSource.handoffAt': input.at ?? new Date() } },
+    );
+    if (confirmed.modifiedCount === 1) {
+      return true;
+    }
+    const current = await Turn()
+      .findOne(scope)
+      .select({ steerSource: 1 })
+      .lean<Pick<IAgentQueuedTurn, 'steerSource'>>();
+    return current?.steerSource?.handoffAt != null;
+  }
+
   async function claimNextAgentQueuedTurn(
     input: AgentQueuedTurnConversationScope & {
       queuedTurnId: string;
@@ -2587,6 +2650,43 @@ export function createAgentQueuedTurnMethods(
     return { outcome: 'conflict', turn: toRecord(current) };
   }
 
+  async function getAgentQueuedTurnGenerationLineage(
+    input: AgentQueuedTurnConversationScope & { generationCreatedAt: number },
+  ): Promise<AgentQueuedTurnLineage | null> {
+    const generationCreatedAt = normalizePredecessor(input.generationCreatedAt);
+    if (generationCreatedAt == null) {
+      throw new TypeError('Agent queued turn lineage generation is invalid');
+    }
+    const scope = conversationScope(input);
+    type LineageRow = Pick<IAgentQueuedTurn, 'parentMessageId' | 'expectedPredecessorCreatedAt'>;
+    const [admitted, queued] = await Promise.all([
+      Turn()
+        .findOne({
+          ...scope,
+          status: 'admitted',
+          'terminalReceipt.outcome': 'admitted',
+          'terminalReceipt.generationCreatedAt': generationCreatedAt,
+          expectedPredecessorCreatedAt: { $exists: true },
+        })
+        .select({ parentMessageId: 1, expectedPredecessorCreatedAt: 1 })
+        .lean<LineageRow>(),
+      Turn()
+        .findOne({
+          ...scope,
+          status: { $in: ['queued', 'claimed'] },
+          expectedPredecessorCreatedAt: generationCreatedAt,
+        })
+        .sort({ sequence: 1 })
+        .select({ parentMessageId: 1, expectedPredecessorCreatedAt: 1 })
+        .lean<LineageRow>(),
+    ]);
+    const root = admitted ?? queued;
+    const rootEpoch = normalizePredecessor(root?.expectedPredecessorCreatedAt);
+    return root == null || rootEpoch == null
+      ? null
+      : { parentMessageId: root.parentMessageId, expectedPredecessorCreatedAt: rootEpoch };
+  }
+
   async function getEffectiveAgentQueuedTurnPredecessor(
     input: AgentQueuedTurnConversationScope & {
       sequence: number;
@@ -2967,6 +3067,8 @@ export function createAgentQueuedTurnMethods(
     deferAgentQueuedTurnAdmissionReconciliation,
     reserveAgentQueuedTurnDelivery,
     markQueuedTurnScheduled,
+    confirmAgentQueuedTurnSourceHandoff,
+    getAgentQueuedTurnGenerationLineage,
     cancelAgentQueuedTurn,
     claimNextAgentQueuedTurn,
     beginAgentQueuedTurnAdmission,

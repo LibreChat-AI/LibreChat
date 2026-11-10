@@ -91,7 +91,14 @@ afterEach(async () => {
 });
 
 /** A running v2 generation with one accepted (202) steer still queued. */
-async function acceptSteer(options: { promoteLeftover?: boolean; clientSteerId?: string } = {}) {
+async function acceptSteer(
+  options: {
+    promoteLeftover?: boolean;
+    clientSteerId?: string;
+    quotes?: string[];
+    codeApprovalMode?: string;
+  } = {},
+) {
   const job = await GenerationJobManager.createJob(conversationId, userId, conversationId, {
     initialMetadata: { generationProtocolVersion: 2, agent_id: agentId, endpoint: 'agents' },
   });
@@ -103,7 +110,9 @@ async function acceptSteer(options: { promoteLeftover?: boolean; clientSteerId?:
       generationCreatedAt: job.createdAt,
       clientSteerId,
       text: 'also cover the error path',
+      ...(options.quotes != null && { quotes: options.quotes }),
       ...(options.promoteLeftover !== false && { promoteLeftover: true }),
+      ...(options.codeApprovalMode != null && { codeApprovalMode: options.codeApprovalMode }),
     },
     { generationProtocolVersion: 2 },
   );
@@ -193,6 +202,7 @@ describe('promoteDrainedSteers', () => {
           parentMessageId: responseMessageId,
           expectedPredecessorCreatedAt: job.createdAt,
           text: 'also cover the error path',
+          steer: { steerId, clientSteerId },
         }),
       },
     ]);
@@ -205,6 +215,17 @@ describe('promoteDrainedSteers', () => {
       parentMessageId: responseMessageId,
       expectedPredecessorCreatedAt: job.createdAt,
       agentId,
+    });
+    const row = await methods.getAgentQueuedTurnByClientRequestId({
+      user: new mongoose.Types.ObjectId(userId),
+      conversationId,
+      clientRequestId: getPromotedSteerRequestId(steerId),
+    });
+    expect(row?.steerSource).toEqual({
+      steerId,
+      clientSteerId,
+      generationCreatedAt: job.createdAt,
+      handoffAt: expect.any(Date),
     });
     expect(envelopes).toHaveLength(1);
 
@@ -318,6 +339,28 @@ describe('promoteDrainedSteers', () => {
     expect(envelopes).toEqual([]);
   });
 
+  it('keeps a steer on the legacy path when its owner stripped the requested quotes', async () => {
+    const { job, steerId } = await acceptSteer({ quotes: ['the retry loop'] });
+    const claim = await endRunUnapplied(job.createdAt);
+    expect(claim.drainedSteers[0]).not.toHaveProperty('quotes');
+
+    const result = await promoteDrainedSteers(
+      { claim, conversationId, user: { id: userId }, responseMessageId, completed: true },
+      deps,
+    );
+
+    expect(result).toEqual({
+      promotedSteers: [],
+      pendingSteers: [expect.objectContaining({ steerId })],
+    });
+    await expect(
+      methods.listActiveAgentQueuedTurns({
+        user: new mongoose.Types.ObjectId(userId),
+        conversationId,
+      }),
+    ).resolves.toEqual([]);
+  });
+
   it('does not promote the leftovers of a run that ended unfinished', async () => {
     const { job, steerId } = await acceptSteer();
     const claim = await endRunUnapplied(job.createdAt);
@@ -396,7 +439,7 @@ describe('promoteDrainedSteers', () => {
     expect(result.promotedSteers[0]?.receipt.revision).toBeGreaterThan(queued.turn.sequence ?? 0);
   });
 
-  it('withholds the steer when a refused row cannot be retired, and its admission cancels it', async () => {
+  it('hands the client a refused row it cannot retire, and its admission cancels the row', async () => {
     const { job, steerId, clientSteerId } = await acceptSteer();
     const claim = await endRunUnapplied(job.createdAt);
     await GenerationJobManager.steering.discardLeftover(
@@ -416,31 +459,206 @@ describe('promoteDrainedSteers', () => {
     );
 
     expect(cancel).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ pendingSteers: [], promotedSteers: [] });
-    const [orphan] = await methods.listAgentQueuedTurnReceipts({
-      user: new mongoose.Types.ObjectId(userId),
-      conversationId,
-      clientRequestIds: [getPromotedSteerRequestId(steerId)],
+    /** The row stays, so the client follows it instead of queuing the words. */
+    expect(result).toEqual({
+      pendingSteers: [],
+      promotedSteers: [
+        { steerId, clientSteerId, receipt: expect.objectContaining({ status: 'queued' }) },
+      ],
     });
-    expect(orphan.status).toBe('queued');
+    expect(envelopes).toHaveLength(1);
 
     await publishFinal(claim);
-    await lifecycle.schedule(
-      (await methods.getAgentQueuedTurnByClientRequestId({
-        user: new mongoose.Types.ObjectId(userId),
-        conversationId,
-        clientRequestId: getPromotedSteerRequestId(steerId),
-      }))!,
-    );
-    await expect(prepare(envelopes[envelopes.length - 1])).resolves.toEqual({
-      status: 'settled',
-    });
+    await expect(prepare(envelopes[0])).resolves.toEqual({ status: 'settled' });
     const [settled] = await methods.listAgentQueuedTurnReceipts({
       user: new mongoose.Types.ObjectId(userId),
       conversationId,
       clientRequestIds: [getPromotedSteerRequestId(steerId)],
     });
     expect(settled.status).toBe('cancelled');
+  });
+
+  it('keeps the row when the hand-off reply is lost, and its admission proves ownership', async () => {
+    const { job, steerId, clientSteerId } = await acceptSteer();
+    const claim = await endRunUnapplied(job.createdAt);
+    const steering = GenerationJobManager.steering;
+    /** The store commits the hand-off, then the reply never arrives. */
+    const promoteLeftover = jest.fn(
+      async (...args: Parameters<typeof steering.promoteLeftover>) => {
+        await expect(steering.promoteLeftover(...args)).resolves.toBe('promoted');
+        throw new Error('reply lost');
+      },
+    );
+
+    const result = await promoteDrainedSteers(
+      { claim, conversationId, user: { id: userId }, responseMessageId, completed: true },
+      { ...deps, steering: { promoteLeftover, getReceipt: steering.getReceipt.bind(steering) } },
+    );
+
+    expect(result).toEqual({
+      pendingSteers: [],
+      promotedSteers: [
+        { steerId, clientSteerId, receipt: expect.objectContaining({ status: 'queued' }) },
+      ],
+    });
+    const lookup = {
+      user: new mongoose.Types.ObjectId(userId),
+      conversationId,
+      clientRequestId: getPromotedSteerRequestId(steerId),
+    };
+    /** Unsettled: the row does not claim ownership it could not confirm. */
+    const unsettled = await methods.getAgentQueuedTurnByClientRequestId(lookup);
+    expect(unsettled).toMatchObject({ status: 'queued' });
+    expect(unsettled?.steerSource).not.toHaveProperty('handoffAt');
+    await expect(steering.claim(conversationId, { userId })).resolves.toEqual([]);
+
+    await publishFinal(claim);
+    await expect(prepare(envelopes[0])).resolves.toMatchObject({
+      status: 'ready',
+      input: 'also cover the error path',
+    });
+    const owned = await methods.getAgentQueuedTurnByClientRequestId(lookup);
+    expect(owned?.steerSource?.handoffAt).toBeInstanceOf(Date);
+  });
+
+  it('does not hand the parked copy to a replayed row that can no longer run', async () => {
+    const { job, steerId } = await acceptSteer();
+    const claim = await endRunUnapplied(job.createdAt);
+    const steering = GenerationJobManager.steering;
+    const input = {
+      claim,
+      conversationId,
+      user: { id: userId },
+      responseMessageId,
+      completed: true,
+    };
+    const refused = await promoteDrainedSteers(input, {
+      ...deps,
+      steering: {
+        promoteLeftover: async () => 'refused' as const,
+        getReceipt: steering.getReceipt.bind(steering),
+      },
+    });
+    expect(refused.pendingSteers).toEqual([expect.objectContaining({ steerId })]);
+
+    const replayed = await promoteDrainedSteers(input, deps);
+
+    expect(replayed).toEqual({
+      promotedSteers: [],
+      pendingSteers: [expect.objectContaining({ steerId })],
+    });
+    await expect(steering.claim(conversationId, { userId })).resolves.toEqual([
+      expect.objectContaining({ steerId }),
+    ]);
+    expect(envelopes).toEqual([]);
+  });
+
+  it('joins the queue lineage of the generation it was accepted in', async () => {
+    const { job, steerId } = await acceptSteer();
+    const scope = { user: new mongoose.Types.ObjectId(userId), conversationId };
+    const rootEpoch = job.createdAt - 60_000;
+    const lineage = {
+      ...scope,
+      agentId,
+      parentMessageId: 'root-parent',
+      priority: false,
+      expectedPredecessorCreatedAt: rootEpoch,
+    };
+    /** This generation is itself a queued turn's run, with a sibling still waiting. */
+    const ran = await methods.enqueueAgentQueuedTurn({
+      ...lineage,
+      clientRequestId: 'ran-as-this-generation',
+      text: 'first',
+    });
+    const waiting = await methods.enqueueAgentQueuedTurn({
+      ...lineage,
+      clientRequestId: 'still-waiting',
+      text: 'second',
+    });
+    await mongoose.models.AgentQueuedTurn.updateOne(
+      { _id: ran.turn.queuedTurnId },
+      {
+        $set: {
+          status: 'admitted',
+          terminalReceipt: {
+            outcome: 'admitted',
+            settledAt: new Date(),
+            generationCreatedAt: job.createdAt,
+          },
+        },
+        $unset: { activeSlot: 1 },
+      },
+    );
+    const claim = await endRunUnapplied(job.createdAt);
+
+    const result = await promoteDrainedSteers(
+      { claim, conversationId, user: { id: userId }, responseMessageId, completed: true },
+      deps,
+    );
+
+    /** Behind the sibling, in its lineage: a lineage of its own would be stranded
+     * once the sibling's run replaced this generation as the conversation's latest. */
+    expect(result.promotedSteers).toEqual([
+      expect.objectContaining({
+        steerId,
+        receipt: expect.objectContaining({
+          parentMessageId: 'root-parent',
+          expectedPredecessorCreatedAt: rootEpoch,
+        }),
+      }),
+    ]);
+    expect(result.promotedSteers[0]?.receipt.revision).toBeGreaterThan(waiting.turn.sequence);
+    const row = await methods.getAgentQueuedTurnByClientRequestId({
+      ...scope,
+      clientRequestId: getPromotedSteerRequestId(steerId),
+    });
+    /** The hand-off stays fenced to the generation that accepted the steer. */
+    expect(row?.steerSource).toMatchObject({
+      generationCreatedAt: job.createdAt,
+      handoffAt: expect.any(Date),
+    });
+  });
+
+  it('starts the promoted turn under the approval mode the steer was sent with', async () => {
+    const { job, steerId } = await acceptSteer({ codeApprovalMode: 'ask' });
+    const claim = await endRunUnapplied(job.createdAt);
+    expect(claim.drainedSteers[0]).toMatchObject({
+      promoteLeftover: true,
+      codeApprovalMode: 'ask',
+    });
+
+    const result = await promoteDrainedSteers(
+      { claim, conversationId, user: { id: userId }, responseMessageId, completed: true },
+      deps,
+    );
+
+    expect(result.promotedSteers).toEqual([
+      expect.objectContaining({
+        steerId,
+        receipt: expect.objectContaining({ codeApprovalMode: 'ask' }),
+      }),
+    ]);
+    await publishFinal(claim);
+    await expect(prepare(envelopes[0])).resolves.toMatchObject({
+      status: 'ready',
+      codeApprovalMode: 'ask',
+    });
+  });
+
+  it('leaves a steer sent under an unreadable approval mode on the legacy path', async () => {
+    const { job, steerId } = await acceptSteer({ codeApprovalMode: 'yolo' });
+    const claim = await endRunUnapplied(job.createdAt);
+    expect(claim.drainedSteers[0]).not.toHaveProperty('promoteLeftover');
+
+    const result = await promoteDrainedSteers(
+      { claim, conversationId, user: { id: userId }, responseMessageId, completed: true },
+      deps,
+    );
+
+    expect(result).toEqual({
+      promotedSteers: [],
+      pendingSteers: [expect.objectContaining({ steerId })],
+    });
   });
 
   it('keeps the promoted mapping on the conservative frame when FINAL cannot be stored', async () => {
@@ -482,6 +700,7 @@ describe('promoteDrainedSteers', () => {
         text: 'also cover the error path',
         priority: false,
         expectedPredecessorCreatedAt: job.createdAt,
+        steerSource: { steerId, clientSteerId, generationCreatedAt: job.createdAt },
       });
       await publishFinal(claim);
       await lifecycle.schedule(turn);
@@ -505,6 +724,33 @@ describe('promoteDrainedSteers', () => {
       await expect(
         GenerationJobManager.steering.getReceipt(conversationId, clientSteerId),
       ).resolves.toMatchObject({ state: 'recovered', promotedTurnId: turn.queuedTurnId });
+      const row = await methods.getAgentQueuedTurnByClientRequestId({
+        user: new mongoose.Types.ObjectId(userId),
+        conversationId,
+        clientRequestId: turn.clientRequestId,
+      });
+      expect(row?.steerSource?.handoffAt).toBeInstanceOf(Date);
+    });
+
+    it('holds the turn for review once ownership can no longer be proven', async () => {
+      const { steerId } = await crashAfterRow();
+      const store = GenerationJobManager.getJobStore() as unknown as {
+        steerReceipts: Map<string, Map<string, unknown>>;
+      };
+      store.steerReceipts.delete(conversationId);
+
+      await expect(prepare(envelopes[0])).resolves.toEqual({ status: 'settled' });
+      const [held] = await methods.listAgentQueuedTurnReceipts({
+        user: new mongoose.Types.ObjectId(userId),
+        conversationId,
+        clientRequestIds: [getPromotedSteerRequestId(steerId)],
+      });
+      expect(held).toMatchObject({
+        status: 'dead',
+        terminalReceipt: expect.objectContaining({
+          failure: expect.objectContaining({ code: 'STEER_HANDOFF_UNCONFIRMED' }),
+        }),
+      });
     });
 
     it('cancels the turn when a recovery already ran the parked copy', async () => {

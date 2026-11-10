@@ -230,6 +230,18 @@ export function reconcileServerQueuedTurns(
   return [...retained, ...projected].sort(compareQueuedMessages);
 }
 
+/** Every id (server and client) of the steers a durable promoted turn carries
+ * or already ran. A local chip or recovery row for any of them must retire
+ * instead of sending again. A cancelled row handed the words back and a dead
+ * one never runs, so neither claims them. */
+export function ownedPromotedSteerIds(receipts: readonly AgentQueuedTurnReceipt[]): string[] {
+  return receipts.flatMap((receipt) =>
+    receipt.steer == null || receipt.status === 'cancelled' || receipt.status === 'dead'
+      ? []
+      : [receipt.steer.steerId, receipt.steer.clientSteerId],
+  );
+}
+
 /**
  * Whether the backend owes this conversation a run it will start itself.
  *

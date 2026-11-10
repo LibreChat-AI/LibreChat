@@ -2,6 +2,7 @@ import type { TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueuedMessage, SettledQueuedTurnReceipt } from '../types';
 import {
   toQueuedTurnFileRefs,
+  ownedPromotedSteerIds,
   reconcileServerQueuedTurns,
   mergeSettledQueuedTurnEvidence,
 } from '../receipts';
@@ -26,6 +27,36 @@ const settled = (
   entries: SettledQueuedTurnReceipt[],
 ): ReadonlyMap<string, SettledQueuedTurnReceipt> =>
   new Map(entries.map((entry) => [entry.clientRequestId, entry]));
+
+describe('ownedPromotedSteerIds', () => {
+  const promoted = (id: string, extra: Partial<TAgentQueuedTurnReceipt> = {}) =>
+    receipt(`steer-leftover:${id}`, {
+      steer: { steerId: id, clientSteerId: `local-${id}` },
+      ...extra,
+    });
+
+  it('maps live or admitted promoted turns back to both ids of their steers', () => {
+    expect(
+      ownedPromotedSteerIds([
+        promoted('steer-1'),
+        promoted('steer-2', { status: 'claimed' }),
+        promoted('steer-3', { status: 'admitted' }),
+        receipt('ordinary-request'),
+        /** Only the server's own record names a steer, never the request id. */
+        receipt('steer-leftover:forged'),
+      ]),
+    ).toEqual(['steer-1', 'local-steer-1', 'steer-2', 'local-steer-2', 'steer-3', 'local-steer-3']);
+  });
+
+  it('leaves the words to the client when the turn handed them back or never ran', () => {
+    expect(
+      ownedPromotedSteerIds([
+        promoted('steer-1', { status: 'cancelled' }),
+        promoted('steer-2', { status: 'dead' }),
+      ]),
+    ).toEqual([]);
+  });
+});
 
 describe('mergeSettledQueuedTurnEvidence', () => {
   it('derives evidence from a terminal receipt when nothing is known yet', () => {

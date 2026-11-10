@@ -9,6 +9,7 @@ import type {
   ChatEvent,
   TConversation,
   TPendingSteer,
+  CodeApprovalMode,
   TAgentQueuedTurnReceipt,
   TEnqueueAgentQueuedTurnRequest,
 } from 'librechat-data-provider';
@@ -168,6 +169,8 @@ export type ChatSteerRequest = {
   /** This pane adopts a durable queued turn (`promotedSteers` on FINAL) in place of
    *  the chip if the run ends without applying the steer. */
   promoteLeftover?: boolean;
+  /** Sent with `promoteLeftover`: the mode a promoted turn must start under. */
+  codeApprovalMode?: CodeApprovalMode;
 };
 
 /** The server queued the steer; `settled` and `leftover` mark a receipt replayed after the run ended. */

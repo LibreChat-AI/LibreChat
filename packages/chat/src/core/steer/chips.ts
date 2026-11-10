@@ -212,3 +212,15 @@ export function withoutRecoveredSteers(
     (item.recoveryClientSteerId != null && settledIds.includes(item.recoveryClientSteerId));
   return prev.some(recovered) ? prev.filter((item) => !recovered(item)) : prev;
 }
+
+/** A durable promoted turn carries these steers, so every local copy of them
+ *  leaves the queue: recovery-bound rows, and plain rows still keyed by one of
+ *  the steer's ids. Server rows stay. Returns `prev` itself when no row matched. */
+export function withoutPromotedSteers(
+  prev: QueuedMessage[],
+  promotedIds: readonly string[],
+): QueuedMessage[] {
+  const unbound = withoutRecoveredSteers(prev, promotedIds);
+  const local = (item: QueuedMessage) => item.server == null && promotedIds.includes(item.id);
+  return unbound.some(local) ? unbound.filter((item) => !local(item)) : unbound;
+}

@@ -8,7 +8,11 @@ import type {
   TPendingSteer,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
-import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
+import type {
+  CodeApprovalMode,
+  ScheduleMCPOutcome,
+  ScheduledMCPIdentity,
+} from 'librechat-data-provider';
 import type { RunStep, StandardGraph } from '@librechat/agents';
 import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
@@ -590,6 +594,10 @@ export interface SteerQueueItem {
    *  chip, so a run that ends without applying this steer may promote it to a
    *  durable queued turn instead of handing it back for a tab-local queue. */
   promoteLeftover?: true;
+  /** The sender's code approval mode, kept for a promoted turn only: a durable
+   *  queued turn must start under the mode the sender's own queue row would
+   *  have carried, not the deployment default. */
+  codeApprovalMode?: CodeApprovalMode;
 }
 
 /** Durable acknowledgement keyed by `clientSteerId`. It outlives the queue

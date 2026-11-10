@@ -9,6 +9,7 @@ import {
   RUN_ENDED_STATUSES,
   acceptedClientSteerIds,
   withoutRecoveredSteers,
+  withoutPromotedSteers,
   updatePendingSteerLabels,
   reconcileServerQueuedTurns,
   selectLocalSteersForQueue,
@@ -223,9 +224,7 @@ export function useSteerState(): SteerState {
       );
       jotaiStore.set(queuedMessagesByConvoId(conversationId), (prev) =>
         reconcileServerQueuedTurns(
-          withoutRecoveredSteers(prev, ids).filter(
-            (item) => item.server != null || !ids.includes(item.id),
-          ),
+          withoutPromotedSteers(prev, ids),
           promoted.map(({ receipt }) => receipt),
           settled,
           false,

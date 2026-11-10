@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { apiBaseUrl, EModelEndpoint } from 'librechat-data-provider';
+import type { Agents, TMessage, TEphemeralAgent, CodeApprovalMode } from 'librechat-data-provider';
 import type { AbortStreamParams, AbortStreamResponse } from '@librechat/chat/react';
-import type { Agents, TMessage, TEphemeralAgent } from 'librechat-data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { postGenerationRequest } from './protocol';
 
@@ -163,6 +163,8 @@ export interface SteerMessageParams {
   /** Lets the server promote this steer to a durable queued turn if the run ends
    *  without applying it; the FINAL event then reports it in `promotedSteers`. */
   promoteLeftover?: boolean;
+  /** Sent with `promoteLeftover`: the code approval mode a promoted turn starts under. */
+  codeApprovalMode?: CodeApprovalMode;
 }
 
 /** Successful steer ACK: the server queued the message for mid-run injection. */

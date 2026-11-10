@@ -79,6 +79,15 @@ export const agentQueuedTurnReceiptSchema = enqueueAgentQueuedTurnSchema.extend(
       message: z.string().max(2048).optional(),
     })
     .optional(),
+  /** Present on a turn promoted from a steer its run accepted but never
+   * applied. It names the steer by both of its ids, so any pane can retire
+   * its own copy of that steer from the receipt list alone. */
+  steer: z
+    .object({
+      steerId: z.string().trim().min(1),
+      clientSteerId: z.string().trim().min(1),
+    })
+    .optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

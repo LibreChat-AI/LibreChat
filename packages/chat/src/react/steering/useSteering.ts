@@ -292,6 +292,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
     chips,
     rows,
     enqueue,
+    codeApprovalMode,
   });
 
   /** Retry a failed chip through the normal steer path. */

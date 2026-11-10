@@ -109,6 +109,12 @@ export function toQueuedTurnReceipt(
       turn.terminalReceipt.rootPredecessor === true && { rootPredecessor: true as const }),
     status: turn.status,
     ...(position != null && { position }),
+    ...(turn.steerSource != null && {
+      steer: {
+        steerId: turn.steerSource.steerId,
+        clientSteerId: turn.steerSource.clientSteerId,
+      },
+    }),
     revision: turn.sequence,
     createdAt: turn.createdAt.toISOString(),
     updatedAt: updatedAt.toISOString(),

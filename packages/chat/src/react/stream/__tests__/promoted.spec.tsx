@@ -10,6 +10,7 @@ import type { PendingSteer, QueuedMessage } from '../../../core';
 import type { SteerHost } from '../../steer/host';
 import { pendingSteersByConvoId, appliedSteerIdsByConvoId } from '../../steer/atoms';
 import { queuedMessagesByConvoId } from '../../steer/queue';
+import useQueuedTurnReceipts from '../../steering/receipts';
 import { SteerHostProvider } from '../../steer/host';
 import { insertQueuedOrigin } from '../../../core';
 import { useSteerState } from '../steer';
@@ -27,6 +28,7 @@ const receipt: TAgentQueuedTurnReceipt = {
   priority: false,
   expectedPredecessorCreatedAt: endedEpoch,
   status: 'queued',
+  steer: { steerId: 'steer-1', clientSteerId: 'client-1' },
   revision: 1,
   createdAt: new Date(10).toISOString(),
   updatedAt: new Date(10).toISOString(),
@@ -55,9 +57,12 @@ const legacyCopy: QueuedMessage = {
 
 const queuedBefore: QueuedMessage = { id: 'queued-local', text: 'then summarize', createdAt: 3 };
 
+let serverReceipts: TAgentQueuedTurnReceipt[] | undefined;
 const host = {
   useFileMap: () => undefined,
   useFetchStreamStatus: () => async () => ({ active: false }),
+  useSettings: () => ({}),
+  useQueuedTurns: () => serverReceipts,
 } as unknown as SteerHost;
 
 function setup() {
@@ -168,5 +173,40 @@ describe('adoptPromotedSteers', () => {
         { ...queuedBefore, expectedPredecessorCreatedAt: winnerEpoch },
       ]),
     );
+  });
+
+  it('retires local copies from the durable receipt list when this pane missed FINAL', () => {
+    const store = createStore();
+    /** A chip whose 202 never arrived knows the steer only by its client id. */
+    const unacknowledged: PendingSteer = { ...chip, steerId: 'client-1', status: 'failed' };
+    store.set(pendingSteersByConvoId(conversationId), [chip, unacknowledged]);
+    store.set(queuedMessagesByConvoId(conversationId), [queuedBefore, legacyCopy]);
+    serverReceipts = [receipt];
+    const wrapper = ({ children }: { children?: ReactNode }) => (
+      <Provider store={store}>
+        <SteerHostProvider host={host}>{children}</SteerHostProvider>
+      </Provider>
+    );
+
+    renderHook(
+      () =>
+        useQueuedTurnReceipts({
+          conversationId,
+          queueKey: conversationId,
+          serverQueueEnabled: true,
+        }),
+      { wrapper },
+    );
+    serverReceipts = undefined;
+
+    expect(store.get(pendingSteersByConvoId(conversationId))).toEqual([]);
+    expect(store.get(appliedSteerIdsByConvoId(conversationId))).toEqual(
+      expect.arrayContaining(['steer-1', 'client-1']),
+    );
+    const queue = store.get(queuedMessagesByConvoId(conversationId));
+    expect(queue.filter((item) => item.text === chip.text)).toEqual([
+      expect.objectContaining({ server: expect.objectContaining({ id: 'queued-turn-1' }) }),
+    ]);
+    expect(queue).toContainEqual(queuedBefore);
   });
 });

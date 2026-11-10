@@ -24,7 +24,6 @@ import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
 import type { AgentTriggerDeliveryFailure } from './triggers/engine';
 import { getAgentTriggerIdempotencyKey, parseAgentTriggerEnvelope } from './triggers/envelope';
 import { createAgentTriggerEnvelope } from './triggers/envelope';
-import { parsePromotedSteerRequestId } from './steering/refs';
 import { AgentTriggerExecutionError } from './triggers/host';
 import { createIdleRecoveryLoop } from './recovery';
 
@@ -482,11 +481,14 @@ function deadClaim(
 }
 
 /**
- * A turn promoted from an unapplied steer runs only if it owns the steer's
- * words. Its terminal hand-off is repeated here: it completes a hand-off that
- * a crash interrupted, and refuses the turn when the parked copy was discarded
- * or recovered elsewhere in the meantime, so the words never run twice.
- * Returns `false` once the refused turn is cancelled.
+ * A turn promoted from an unapplied steer runs only with positive proof that it
+ * owns the steer's words: the ownership mark on its own row, or a hand-off the
+ * job store confirms now (which completes one that a crash or a lost reply
+ * interrupted). A turn whose words were discarded or recovered elsewhere is
+ * cancelled. One whose ownership cannot be proven, because the job store's
+ * evidence expired or this host cannot ask it, is held for review instead of
+ * running, so the words never run twice. Returns `false` once the turn is
+ * settled without running.
  */
 async function ownsPromotedSteer(
   claim: AgentQueuedTurnClaim,
@@ -495,43 +497,54 @@ async function ownsPromotedSteer(
   completeSteerHandoff: CompletePromotedSteerHandoff | undefined,
   now: () => number,
 ): Promise<boolean> {
-  const steerId = parsePromotedSteerRequestId(claim.clientRequestId);
-  if (
-    steerId == null ||
-    completeSteerHandoff == null ||
-    claim.expectedPredecessorCreatedAt == null
-  ) {
+  const source = claim.steerSource;
+  if (source == null || source.handoffAt != null) {
     return true;
   }
-  let outcome: SteerPromotionOutcome;
-  try {
-    outcome = await completeSteerHandoff({
-      conversationId: claim.conversationId,
-      steerId,
-      userId: claim.user.toString(),
-      ...(claim.tenantId != null && { tenantId: claim.tenantId }),
-      generationCreatedAt: claim.expectedPredecessorCreatedAt,
-      queuedTurnId: claim.queuedTurnId,
-    });
-  } catch (error) {
-    await releaseClaim(methods, envelope, claim).catch(() => undefined);
-    throw executionError(
-      `The promoted steer hand-off is temporarily unavailable: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      { code: 'STEER_HANDOFF_UNAVAILABLE', retryable: true, deferWithoutAttempt: true },
-    );
-  }
-  if (outcome !== 'refused') {
-    return true;
-  }
-  await methods.cancelAgentQueuedTurn({
+  const scope = {
     user: claim.user,
     ...(claim.tenantId != null && { tenantId: claim.tenantId }),
     conversationId: claim.conversationId,
     queuedTurnId: claim.queuedTurnId,
-    settledAt: new Date(now()),
-  });
+  };
+  let outcome: SteerPromotionOutcome | 'unavailable' = 'unavailable';
+  if (completeSteerHandoff != null) {
+    try {
+      outcome = await completeSteerHandoff({
+        conversationId: claim.conversationId,
+        steerId: source.steerId,
+        userId: claim.user.toString(),
+        ...(claim.tenantId != null && { tenantId: claim.tenantId }),
+        generationCreatedAt: source.generationCreatedAt,
+        queuedTurnId: claim.queuedTurnId,
+      });
+    } catch (error) {
+      await releaseClaim(methods, envelope, claim).catch(() => undefined);
+      throw executionError(
+        `The promoted steer hand-off is temporarily unavailable: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { code: 'STEER_HANDOFF_UNAVAILABLE', retryable: true, deferWithoutAttempt: true },
+      );
+    }
+  }
+  if (outcome === 'promoted') {
+    /** Best effort: the job store just confirmed ownership, and a later replay
+     * of this admission asks it again while its receipt lasts. */
+    await methods.confirmAgentQueuedTurnSourceHandoff(scope).catch(() => false);
+    return true;
+  }
+  if (outcome === 'refused') {
+    await methods.cancelAgentQueuedTurn({ ...scope, settledAt: new Date(now()) });
+    return false;
+  }
+  await deadClaim(
+    methods,
+    envelope,
+    claim,
+    'STEER_HANDOFF_UNCONFIRMED',
+    'This follow-up could not be confirmed as the only copy of its message. Review it before sending it.',
+  );
   return false;
 }
 
