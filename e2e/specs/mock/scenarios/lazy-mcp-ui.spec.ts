@@ -120,6 +120,7 @@ async function seedAppTurn() {
               text: '<p>app</p>',
               toolName: TOOL_NAME,
               serverName: 'e2e-app',
+              serverBinding: 'e2e-binding',
             },
           ],
         },
@@ -175,6 +176,10 @@ test.describe('the on-demand MCP UI and export chunks', () => {
       await route.continue();
     });
     await enableMCPApps(page);
+    /* The bridge checks the App's server binding before it loads the sandbox. No MCP server
+     * stands behind this App, so the check is held: the opened view stays loading, as it does
+     * while a real server answers, instead of failing at once. */
+    await page.route('**/api/mcp/app/validate', () => new Promise<void>(() => undefined));
     const { conversationId, messageId } = await seedAppTurn();
 
     try {
@@ -206,10 +211,12 @@ test.describe('the on-demand MCP UI and export chunks', () => {
       await expect(open).toBeVisible();
       await expect(frame).toHaveCount(0);
 
-      /* The next open finds the bridge loaded and mounts the frame. */
+      /* The next open finds the bridge loaded and mounts the frame, which keeps the loading status
+       * until its App answers. */
       await open.click();
       await expect(close).toBeFocused();
       await expect(frame).toHaveCount(1);
+      await expect(view.getByRole('status')).toHaveText('Loading interactive view...');
       await expect(page.locator(`iframe[title="MCP App: ${TOOL_NAME}"]`)).toHaveAttribute(
         'data-sandbox-url',
         new RegExp(`^${SANDBOX_ORIGIN}/api/mcp/sandbox`),
