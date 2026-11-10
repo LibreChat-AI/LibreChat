@@ -160,7 +160,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await GenerationJobManager.destroy();
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(() => {
