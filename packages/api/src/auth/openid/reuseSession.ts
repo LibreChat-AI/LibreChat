@@ -31,7 +31,8 @@ export function mergeReuseProviderSession(
 }
 
 /** Same precedence as `mergeReuseProviderSession`, for a caller that just needs the resolved ref
- *  or a denial; mode `'off'` short-circuits to `null` before any conflict check. */
+ *  or a denial; mode `'off'` carries whichever ref is already bound forward, without the conflict
+ *  check, instead of discarding it. */
 export function resolveBoundProviderSession(
   mode: ResolvedBackchannelLogoutConfig['mode'],
   markerRef: ProviderSessionRef | null,
@@ -39,7 +40,7 @@ export function resolveBoundProviderSession(
   sessionDocRef: ProviderSessionRef | null = null,
 ): ProviderSessionRef | null {
   if (mode === 'off') {
-    return null;
+    return markerRef ?? sessionRef ?? sessionDocRef;
   }
   const merged = mergeReuseProviderSession(markerRef, sessionRef, sessionDocRef);
   if (!merged.ok) {
@@ -49,7 +50,7 @@ export function resolveBoundProviderSession(
 }
 
 /** Resolves the provider session bound to a refresh token's reuse-identity marker, honoring the
- *  session's existing association; mode `'off'` short-circuits to `null` before either is read. */
+ *  session's existing association; mode `'off'` carries whichever one is already bound forward. */
 export function resolveBoundProviderSessionForToken(
   mode: ResolvedBackchannelLogoutConfig['mode'],
   parsedCookies: { openid_user_id?: string },

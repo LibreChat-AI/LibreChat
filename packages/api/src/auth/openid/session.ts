@@ -1125,21 +1125,26 @@ export function createOpenIDSessionRefreshService(
       throw new Error('IdP refresh returned no access_token');
     }
 
-    /** The grant only confirms or conflicts with the bound ref here; it never establishes one. */
-    const refreshedProviderSession = deriveProviderSessionFromClaims(
-      tokenset,
-      sessionTokens.idToken,
-    );
-    const providerSessionMerge = mergeProviderSessionRef(
-      boundProviderSession,
-      refreshedProviderSession,
-    );
     const mode = await providerSessionAuthorizer.getMode();
-    if (mode !== 'off' && !providerSessionMerge.ok) {
-      throw createOpenIDSessionEndedError('OpenID provider session conflict');
-    }
-    let mergedProviderSession: ProviderSessionRef | null = null;
-    if (mode !== 'off' && providerSessionMerge.ok) {
+    /**
+     * Mode 'off' carries whatever ref is already bound forward unchanged: no merge against the
+     * grant's fresh claims, no conflict check, no new binding. Only `record`/`enforce` reconcile
+     * the bound ref against this renewal.
+     */
+    let mergedProviderSession: ProviderSessionRef | null = boundProviderSession;
+    if (mode !== 'off') {
+      /** The grant only confirms or conflicts with the bound ref here; it never establishes one. */
+      const refreshedProviderSession = deriveProviderSessionFromClaims(
+        tokenset,
+        sessionTokens.idToken,
+      );
+      const providerSessionMerge = mergeProviderSessionRef(
+        boundProviderSession,
+        refreshedProviderSession,
+      );
+      if (!providerSessionMerge.ok) {
+        throw createOpenIDSessionEndedError('OpenID provider session conflict');
+      }
       mergedProviderSession = providerSessionMerge.ref;
     }
 

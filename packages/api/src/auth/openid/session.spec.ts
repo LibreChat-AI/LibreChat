@@ -572,6 +572,116 @@ describe('OpenID session refresh: provider-session authorization', () => {
   });
 
   /**
+   * While back-channel logout is off, a refresh must never clear or change an existing
+   * provider-session binding: it carries the bound ref forward unchanged, with no merge, no
+   * conflict check, and no new binding for a session that never had one.
+   */
+  describe('provider-session binding while mode is off', () => {
+    const boundRef = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-1' };
+
+    function buildCookieCapableResponse() {
+      return { cookie: jest.fn(), headersSent: false };
+    }
+
+    it('keeps the bound ref in the Express session on a non-rotating (inline) refresh', async () => {
+      const { deps, service, user } = setup();
+      deps.providerSessionAuthorizer.getMode.mockResolvedValue('off');
+      const req = buildRequest(buildSessionTokens({ providerSession: boundRef }));
+
+      const result = await service.refreshOpenIDSession(
+        req,
+        undefined,
+        user,
+        'access_token',
+        undefined,
+        {
+          forceRefresh: true,
+        },
+      );
+
+      expect(result?.access_token).toBe('new-access');
+      expect(result?.providerSession).toEqual(boundRef);
+      expect(req.session.openidTokens?.providerSession).toEqual(boundRef);
+      expect(deps.providerSessionAuthorizer.authorize).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: boundRef, legacy: false }),
+      );
+    });
+
+    it('carries the bound ref into the refresh-token bridge on a rotating refresh with no cookie-capable response', async () => {
+      const { deps, service, user } = setup();
+      deps.providerSessionAuthorizer.getMode.mockResolvedValue('off');
+      deps.openIdClient.refreshTokenGrant.mockResolvedValue({
+        access_token: 'new-access',
+        id_token: 'new-id',
+        refresh_token: 'refresh-token-2',
+      });
+      const req = buildRequest(buildSessionTokens({ providerSession: boundRef }));
+
+      await service.refreshOpenIDSession(req, undefined, user, 'access_token', undefined, {
+        forceRefresh: true,
+      });
+
+      expect(deps.storeRefreshTokenBridge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          oldRefreshToken: 'refresh-token-1',
+          newRefreshToken: 'refresh-token-2',
+          providerSession: boundRef,
+        }),
+      );
+    });
+
+    it('carries the bound ref into the durable Session on a rotating, cookie-capable refresh', async () => {
+      const { deps, service, user } = setup();
+      deps.providerSessionAuthorizer.getMode.mockResolvedValue('off');
+      deps.openIdClient.refreshTokenGrant.mockResolvedValue({
+        access_token: 'new-access',
+        id_token: 'new-id',
+        refresh_token: 'refresh-token-2',
+      });
+      const req = buildRequest(buildSessionTokens({ providerSession: boundRef }));
+      const res = buildCookieCapableResponse();
+
+      await service.refreshOpenIDSession(req, res, user, 'access_token', undefined, {
+        forceRefresh: true,
+      });
+
+      expect(deps.storeOpenIdSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'user-1',
+          refreshToken: 'refresh-token-2',
+          providerSession: boundRef,
+        }),
+        expect.anything(),
+      );
+      expect(req.session.openidTokens?.providerSession).toEqual(boundRef);
+    });
+
+    it('creates no binding for a legacy (never-bound) session', async () => {
+      const { deps, service, user } = setup();
+      deps.providerSessionAuthorizer.getMode.mockResolvedValue('off');
+      const req = buildRequest(buildSessionTokens());
+
+      const result = await service.refreshOpenIDSession(
+        req,
+        undefined,
+        user,
+        'access_token',
+        undefined,
+        {
+          forceRefresh: true,
+        },
+      );
+
+      expect(result?.access_token).toBe('new-access');
+      expect(result?.providerSession).toBeUndefined();
+      expect(req.session.openidTokens?.providerSession).toBeUndefined();
+      expect(deps.providerSessionAuthorizer.authorize).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: null, legacy: true }),
+      );
+    });
+  });
+
+  /**
    * Every recovery bridge `refreshController` can later resolve a rotated token through must carry
    * the same provider-session binding, or a browser that recovers through it resolves a null
    * binding and `enforce` mode rejects an otherwise-valid `/refresh`.

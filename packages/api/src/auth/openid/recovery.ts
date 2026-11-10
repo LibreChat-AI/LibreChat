@@ -573,8 +573,9 @@ export function createOpenIDRefreshRecoveryService(
     if (mode !== 'off' && bridgeMarkerMismatch) {
       throw createOpenIDSessionEndedError('OpenID recovery bridge provider session mismatch');
     }
-    const boundProviderSession =
-      mode === 'off' ? null : (markerProviderSession ?? bridgeProviderSession ?? null);
+    /** Mode 'off' still carries whichever ref the marker or bridge already recorded forward,
+     *  unchecked; it only skips the mismatch denial above, never the ref itself. */
+    const boundProviderSession = markerProviderSession ?? bridgeProviderSession ?? null;
     const userId = bridgeUser._id.toString();
     const key = createRefreshTokenBridgeFlightKey({
       oldRefreshToken: refreshToken,

@@ -637,3 +637,210 @@ describe('back-channel logout: real receiver + real database + real authorizer',
     ).resolves.toEqual({ ok: true });
   });
 });
+
+/**
+ * An operator rolling a misbehaving deployment back to `off` and later forward again must find
+ * the same associations in place: a refresh taken while `off` must carry the bound ref forward
+ * unchanged, not erase it.
+ */
+describe('back-channel logout: rollback to off keeps an existing association', () => {
+  function buildRollbackSession(ref: ProviderSessionRef, refreshToken: string, userId: string) {
+    return {
+      openidTokens: {
+        accessToken: 'old-access',
+        idToken: 'old-id',
+        refreshToken,
+        browserRefreshToken: refreshToken,
+        accessTokenExpiresAt: Math.floor(Date.now() / 1000) - 120,
+        appUserId: userId,
+        openidSubject: userId,
+        openidIssuer: ISSUER,
+        providerSession: ref,
+      },
+      save: (cb: (e?: Error | null) => void) => cb(null),
+      reload: (cb: (e?: Error | null) => void) => cb(null),
+    };
+  }
+
+  it('carries the association through a mode-off refresh, then denies it under record once revoked', async () => {
+    const config = makeConfig({ mode: 'record' });
+    const authorizer = makeAuthorizer(config);
+    const ref = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-rollback-record' };
+    const userId = 'user-rollback-record';
+    const refreshToken = 'rt-rollback-record';
+
+    await authorizer.establish({
+      ref,
+      subject: userId,
+      expiresAt: future(),
+      callbackIssuedAt: new Date(),
+    });
+
+    const deps = buildReuseDeps({
+      openIdClient: {
+        refreshTokenGrant: jest.fn().mockResolvedValue({
+          access_token: 'new-access',
+          id_token: 'new-id',
+          refresh_token: refreshToken,
+        }),
+      },
+      providerSessionAuthorizer: {
+        establish: authorizer.establish,
+        authorize: authorizer.authorize,
+        preCheck: authorizer.preCheck,
+        getMode: authorizer.getMode,
+      },
+    });
+    const service = createOpenIDSessionRefreshService(deps);
+    const user = { _id: userId, provider: 'openid', openidId: userId };
+    const req = { session: buildRollbackSession(ref, refreshToken, userId) };
+
+    // Operator rolls back to 'off'.
+    config.mode = 'off';
+    const offResult = await service.refreshOpenIDSession(
+      req as never,
+      undefined,
+      user as never,
+      'access_token',
+      undefined,
+      { forceRefresh: true },
+    );
+    expect(offResult?.providerSession).toEqual(ref);
+    expect(req.session.openidTokens?.providerSession).toEqual(ref);
+
+    // The session is revoked at the IdP while the mode is still 'off'.
+    const revoked = await revokeViaReceiver(config, { sid: 'sid-rollback-record', sub: userId });
+    expect(revoked.status).toBe(200);
+
+    // Operator re-enables 'record'.
+    config.mode = 'record';
+    await expect(
+      service.refreshOpenIDSession(
+        req as never,
+        undefined,
+        user as never,
+        'access_token',
+        undefined,
+        { forceRefresh: true },
+      ),
+    ).rejects.toMatchObject({ code: OPENID_SESSION_ENDED });
+  });
+
+  it('carries the association through a mode-off refresh, still recognized as associated once enforce resumes', async () => {
+    const config = makeConfig({ mode: 'record' });
+    const authorizer = makeAuthorizer(config);
+    const ref = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-rollback-enforce' };
+    const userId = 'user-rollback-enforce';
+    const refreshToken = 'rt-rollback-enforce';
+
+    await authorizer.establish({
+      ref,
+      subject: userId,
+      expiresAt: future(),
+      callbackIssuedAt: new Date(),
+    });
+
+    const deps = buildReuseDeps({
+      openIdClient: {
+        refreshTokenGrant: jest.fn().mockResolvedValue({
+          access_token: 'new-access',
+          id_token: 'new-id',
+          refresh_token: refreshToken,
+        }),
+      },
+      providerSessionAuthorizer: {
+        establish: authorizer.establish,
+        authorize: authorizer.authorize,
+        preCheck: authorizer.preCheck,
+        getMode: authorizer.getMode,
+      },
+    });
+    const service = createOpenIDSessionRefreshService(deps);
+    const user = { _id: userId, provider: 'openid', openidId: userId };
+    const req = { session: buildRollbackSession(ref, refreshToken, userId) };
+
+    // Operator rolls back to 'off'; the ref is never revoked.
+    config.mode = 'off';
+    await service.refreshOpenIDSession(
+      req as never,
+      undefined,
+      user as never,
+      'access_token',
+      undefined,
+      { forceRefresh: true },
+    );
+    expect(req.session.openidTokens?.providerSession).toEqual(ref);
+
+    // Operator re-enables 'enforce' while the ref is still active: the refresh succeeds because
+    // the ref was carried forward, not because the session looked unassociated.
+    config.mode = 'enforce';
+    const enforceResult = await service.refreshOpenIDSession(
+      req as never,
+      undefined,
+      user as never,
+      'access_token',
+      undefined,
+      { forceRefresh: true },
+    );
+    expect(enforceResult?.access_token).toBe('new-access');
+    expect(req.session.openidTokens?.providerSession).toEqual(ref);
+
+    await expect(
+      authorizer.authorize({ ref, subject: userId, expiresAt: future(), legacy: false }),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it('creates no association for a session with none, while mode is off', async () => {
+    const config = makeConfig({ mode: 'off' });
+    const authorizer = makeAuthorizer(config);
+    const userId = 'user-rollback-legacy';
+    const refreshToken = 'rt-rollback-legacy';
+
+    const deps = buildReuseDeps({
+      openIdClient: {
+        refreshTokenGrant: jest.fn().mockResolvedValue({
+          access_token: 'new-access',
+          id_token: 'new-id',
+          refresh_token: refreshToken,
+        }),
+      },
+      providerSessionAuthorizer: {
+        establish: authorizer.establish,
+        authorize: authorizer.authorize,
+        preCheck: authorizer.preCheck,
+        getMode: authorizer.getMode,
+      },
+    });
+    const service = createOpenIDSessionRefreshService(deps);
+    const user = { _id: userId, provider: 'openid', openidId: userId };
+    const req = {
+      session: {
+        openidTokens: {
+          accessToken: 'old-access',
+          idToken: 'old-id',
+          refreshToken,
+          browserRefreshToken: refreshToken,
+          accessTokenExpiresAt: Math.floor(Date.now() / 1000) - 120,
+          appUserId: userId,
+          openidSubject: userId,
+          openidIssuer: ISSUER,
+          providerSession: undefined as ProviderSessionRef | undefined,
+        },
+        save: (cb: (e?: Error | null) => void) => cb(null),
+        reload: (cb: (e?: Error | null) => void) => cb(null),
+      },
+    };
+
+    const result = await service.refreshOpenIDSession(
+      req as never,
+      undefined,
+      user as never,
+      'access_token',
+      undefined,
+      { forceRefresh: true },
+    );
+    expect(result?.access_token).toBe('new-access');
+    expect(result?.providerSession).toBeUndefined();
+    expect(req.session.openidTokens?.providerSession).toBeUndefined();
+  });
+});
