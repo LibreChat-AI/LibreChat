@@ -86,6 +86,92 @@ describe('file storage fence', () => {
       });
     }
 
+    it('gives only a fresh snapshot reservation the existing upload TTL', async () => {
+      const startedAt = Date.now();
+      await reserve();
+      const reservation = await read();
+      expect(reservation?.expiresAt).toBeInstanceOf(Date);
+      expect(reservation!.expiresAt!.getTime()).toBeGreaterThanOrEqual(startedAt + 3_600_000);
+      expect(reservation!.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 3_600_000);
+      expect(reservation?.filepath).toBeUndefined();
+      expect(reservation?.storageOperations?.provisioning).toBeUndefined();
+      await File.init();
+      expect(await File.collection.indexes()).toContainEqual(
+        expect.objectContaining({ key: { expiresAt: 1 }, expireAfterSeconds: 3600 }),
+      );
+    });
+
+    it('retains the deadline when acquisition fails before the database write', async () => {
+      await reserve();
+      const reservation = await read();
+      expect(reservation?.expiresAt).toBeInstanceOf(Date);
+      jest.spyOn(File, 'updateOne').mockRejectedValueOnce(new Error('Database unavailable'));
+      await expect(peer.acquireFileProvision(claim)).rejects.toThrow('Database unavailable');
+      expect(await read()).toEqual(reservation);
+      expect((await read())?.storageOperations?.provisioning).toBeUndefined();
+    });
+
+    it('retains the deadline when another scope cannot acquire the reservation', async () => {
+      await reserve();
+      const reservation = await read();
+      expect(reservation?.expiresAt).toBeInstanceOf(Date);
+      expect(await peer.acquireFileProvision({ ...claim, tenantId: 'tenant-b' })).toBe(false);
+      expect(await read()).toEqual(reservation);
+    });
+
+    it('clears the deadline atomically even when the acquisition acknowledgement is lost', async () => {
+      await reserve();
+      expect((await read())?.expiresAt).toBeInstanceOf(Date);
+      jest.spyOn(peer, 'acquireFileProvision').mockImplementationOnce(async (data) => {
+        expect(await methods.acquireFileProvision(data)).toBe(true);
+        throw new Error('Acquisition acknowledgement lost');
+      });
+      await expect(peer.acquireFileProvision(claim)).rejects.toThrow(
+        'Acquisition acknowledgement lost',
+      );
+      const acquired = await read();
+      expect(acquired?.expiresAt).toBeUndefined();
+      expect(acquired?.storageOperations?.provisioning).toEqual([claim.token]);
+    });
+
+    it('does not extend an existing reservation deadline', async () => {
+      await reserve();
+      const deadline = new Date(Date.now() + 60_000);
+      await File.collection.updateOne(
+        { file_id: claim.file_id },
+        { $set: { expiresAt: deadline } },
+      );
+      const reservation = await read();
+      await reserve();
+      expect(await read()).toEqual(reservation);
+    });
+
+    it('does not add a deadline to an existing committed snapshot', async () => {
+      await reserve();
+      await methods.acquireFileProvision(claim);
+      await File.collection.updateOne(
+        { file_id: claim.file_id },
+        { $set: { filepath: '/uploads/committed', bytes: 100 } },
+      );
+      await methods.releaseFileProvision(claim);
+      const committed = await read();
+      expect(committed?.expiresAt).toBeUndefined();
+      await reserve();
+      expect(await read()).toEqual(committed);
+    });
+
+    it('leaves legacy claims without a provisional deadline', async () => {
+      const legacy = await createMethods(mongoose).claimCodeFile({
+        filename: 'legacy.txt',
+        conversationId: 'legacy-conversation',
+        file_id: 'legacy-file',
+        user: claim.userId,
+        tenantId: claim.tenantId,
+      });
+      expect(legacy.context).toBe(FileContext.execute_code);
+      expect(legacy.expiresAt).toBeUndefined();
+    });
+
     it('deletes only the unfinished claim and accepts repeated releases', async () => {
       await reserve();
       expect((await read())?.object).toBe('file');

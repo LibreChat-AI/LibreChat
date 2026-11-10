@@ -1201,6 +1201,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       file_id: data.file_id,
       user: data.user,
       ...(data.tenantId ? { tenantId: data.tenantId } : {}),
+      ...(data.snapshot ? { expiresAt: new Date(Date.now() + 3600 * 1000) } : {}),
       ...(data.sourceDispatchedAt != null
         ? { metadata: { sourceDispatchedAt: data.sourceDispatchedAt } }
         : {}),
