@@ -41,6 +41,7 @@ const {
   bindPrivateTextPersistenceAbort,
   persistedReasoningOverrideFields,
   isTemporaryTurn,
+  loadHistoryRows,
 } = require('@librechat/api');
 const {
   Constants,
@@ -1283,10 +1284,15 @@ class BaseClient {
       return [];
     }
 
-    const messages =
-      (await db.getMessages({ conversationId, user: this.user }, '+privateTextTokens')) ?? [];
+    const messages = await loadHistoryRows({
+      getMessages: db.getMessages,
+      user: this.user,
+      conversationId,
+      parentMessageId,
+      request: this.options?.req,
+    });
     /** A client that reads beyond the walk below (which stops at a checkpoint
-     *  summary) receives every row here; the rest keep nothing. */
+     *  summary) receives every row of the branch here, back to its root; the rest keep nothing. */
     this.onHistoryLoaded?.(messages);
 
     if (messages.length === 0) {
