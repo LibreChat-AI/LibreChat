@@ -141,6 +141,7 @@ test('search failures are visible and retryable without closing the manager dial
   await within(dialog).findByText('com_ui_slack_bot_managers_search_error');
   expect(screen.queryByText('private directory diagnostic')).not.toBeInTheDocument();
   await user.click(within(dialog).getByRole('button', { name: 'com_ui_retry' }));
+  expect(within(dialog).getByRole('combobox')).toHaveFocus();
   await user.click(await screen.findByRole('option', { name: /Bob/ }));
   expect(within(dialog).getByRole('button', { name: 'com_ui_save' })).toBeEnabled();
 });

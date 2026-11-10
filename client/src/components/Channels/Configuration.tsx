@@ -1,5 +1,6 @@
 import { useId, useRef, useState } from 'react';
 import { Settings2 } from 'lucide-react';
+import { CopyButton } from '@librechat/chat/components';
 import {
   Button,
   IconButton,
@@ -10,7 +11,6 @@ import {
   TooltipAnchor,
 } from '@librechat/client';
 import type { SlackAppPage, SlackAppRegistration } from 'librechat-data-provider';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useCopyToClipboard, useLocalize } from '~/hooks';
 
 type ConfigurationProps = {

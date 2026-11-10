@@ -14,6 +14,7 @@ type SearchPickerProps<TOption extends { key: string }> = {
   onPick: (pickedOption: TOption) => void;
   placeholder?: string;
   inputClassName?: string;
+  inputRef?: React.RefObject<HTMLInputElement>;
   label?: string;
   labelClassName?: string;
   resetValueOnHide?: boolean;
@@ -33,13 +34,15 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
   isSmallScreen = false,
   placeholder,
   inputClassName,
+  inputRef: providedInputRef,
   resetValueOnHide = false,
   isLoading = false,
   minQueryLengthForNoResults = 2,
 }: SearchPickerProps<TOption>) {
   const localize = useLocalize();
   const [open, setOpen] = React.useState(false);
-  const inputRef = React.useRef<HTMLInputElement>(null);
+  const fallbackInputRef = React.useRef<HTMLInputElement>(null);
+  const inputRef = providedInputRef ?? fallbackInputRef;
   const [localQuery, setLocalQuery] = React.useState(query);
   const popoverStyle = useNestedPopoverStyle();
   const hasContent =

@@ -36,6 +36,7 @@ function ManagerSearch({
 }) {
   const localize = useLocalize();
   const [input, setInput] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
   const query = input.trim();
   const search = useQuery(
     [QueryKeys.slackWorkspaces, principalKey, 'managerSearch', workspaceId, query],
@@ -46,6 +47,7 @@ function ManagerSearch({
   return (
     <div className="space-y-2">
       <SearchPicker
+        inputRef={inputRef}
         label={localize('com_ui_slack_bot_managers_search')}
         placeholder={localize('com_ui_slack_bot_managers_search')}
         options={(search.data ?? [])
@@ -67,7 +69,10 @@ function ManagerSearch({
             type="button"
             variant="outline"
             disabled={search.isFetching}
-            onClick={() => void search.refetch()}
+            onClick={() => {
+              void search.refetch();
+              inputRef.current?.focus();
+            }}
           >
             {localize('com_ui_retry')}
           </Button>
