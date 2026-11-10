@@ -26,6 +26,7 @@ export * from './mcp/registry/policy';
 export { reportStoredMCPTombstones } from './mcp/registry/hidden';
 export * from './mcp/MCPManager';
 export * from './mcp/connection';
+export * from './mcp/elicitation';
 export * from './mcp/toolsChanged';
 export * from './mcp/defer';
 export * from './mcp/oauth';
