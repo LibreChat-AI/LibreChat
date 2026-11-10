@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { CODE_APPROVAL_MODES } from '../code/approval';
+import { MAX_FILE_TEXT_PREVIEW_LENGTH } from './files';
 import { reasoningOverrideSchema } from '../schemas';
 import { Constants } from '../config';
+
+/** Existing transport bounds, shared with send-time paste fallback. */
+export const MAX_AGENT_QUEUED_TURN_TEXT_LENGTH = 16_000;
+export const DEFAULT_STEER_MAX_LENGTH = 16_000;
 
 export const agentQueuedTurnStatuses = [
   'queued',
@@ -18,6 +23,7 @@ export const agentQueuedTurnFileRefSchema = z.object({
   type: z.string().optional(),
   filepath: z.string().optional(),
   filename: z.string().optional(),
+  textPreview: z.string().max(MAX_FILE_TEXT_PREVIEW_LENGTH).optional(),
   height: z.number().optional(),
   width: z.number().optional(),
   bytes: z.number().nonnegative().optional(),

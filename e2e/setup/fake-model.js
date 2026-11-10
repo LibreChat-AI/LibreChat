@@ -9,6 +9,7 @@
  * without a live provider or a standalone HTTP mock server: responses are decided
  * from the conversation and the agents' advertised tools.
  */
+const sharp = require('sharp');
 const { FakeChatModel } = require('@librechat/agents');
 const { ChatGenerationChunk } = require('@langchain/core/outputs');
 const { AIMessageChunk } = require('@langchain/core/messages');
@@ -207,6 +208,7 @@ const APPROVAL_TOOL_CALL_PREFIX = 'call_e2e_approval_';
 const BACKGROUND_DISPATCH_TOOL_CALL_ID = 'call_e2e_background_dispatch';
 const BACKGROUND_COLLECT_TOOL_CALL_ID = 'call_e2e_background_collect';
 const EXECUTE_CODE_MARKER = 'E2E_EXECUTE_CODE:';
+const READ_THEN_BASH_MARKER = 'E2E_READ_THEN_BASH:';
 const EXEC_UPLOADED_MARKER = 'E2E_EXEC_UPLOADED:';
 const EXEC_PERSIST_MARKER = 'E2E_EXEC_PERSIST:';
 const FILE_SEARCH_MARKER = 'E2E_FILE_SEARCH:';
@@ -2353,6 +2355,33 @@ function runFilesResponses(text) {
   };
 }
 
+/** One turn whose first batch reads an attachment with read_file and whose next batch runs
+ *  bash_tool on it: a read_file batch must not take the lazily provisioned file from the
+ *  code call after it. The attachment is `<label>.csv`. */
+function readThenBashResponses(text) {
+  const label = getMarkerValue(text, READ_THEN_BASH_MARKER);
+  if (!label) return null;
+  const path = `/mnt/data/${label}.csv`;
+  const call = (phase, name, args) => ({
+    response: '',
+    toolCalls: [{ id: `call_e2e_read_then_bash_${phase}`, name, args, type: 'tool_call' }],
+  });
+  return {
+    responses: [''],
+    resolveInvocation: (messages) => {
+      if (!findLastToolMessage(messages, 'call_e2e_read_then_bash_read')) {
+        return call('read', 'read_file', { path });
+      }
+      if (!findLastToolMessage(messages, 'call_e2e_read_then_bash_bash')) {
+        return call('bash', 'bash_tool', {
+          command: `cat ${path}\n# ${READ_THEN_BASH_MARKER}${label}`,
+        });
+      }
+      return { response: `E2E read then bash complete: ${label}` };
+    },
+  };
+}
+
 function runFileVersionsResponses(text) {
   const marker = getMarkerValue(text, RUN_FILE_VERSIONS_MARKER);
   if (!marker) return null;
@@ -2630,6 +2659,51 @@ function fluxImageResponses(value, toolNames) {
   const finetuned = action === 'finetuned';
   return {
     responses: ['', `Flux image ready for ${label}.`],
+    resolveInvocation: async (messages) => {
+      if (mode !== 'large' && mode !== 'boundary') {
+        return null;
+      }
+      const result = findLastToolMessage(messages, `call_e2e_flux_${label}`);
+      if (!result) {
+        return null;
+      }
+      // OpenAI projects tool images into a following human message; Anthropic keeps them
+      // in the tool result. Inspect only model-visible content after this tool call.
+      const image = messages
+        .slice(messages.indexOf(result))
+        .flatMap((message) =>
+          Array.isArray(message.content)
+            ? message.content.filter((part) => part.type === 'image_url')
+            : [],
+        );
+      const failed = (reason) => ({
+        response: `Flux image budget failed for ${label}: ${reason}.`,
+      });
+      if (image.length !== 1) {
+        return failed(`image count ${image.length}`);
+      }
+      const match = /^data:image\/png;base64,([A-Za-z0-9+/]+=*)$/.exec(
+        image[0].image_url?.url ?? '',
+      );
+      if (!match || match[1].length > 5 * 1024 * 1024) {
+        return failed(`encoded bytes ${match?.[1]?.length ?? 'invalid URL'}`);
+      }
+      try {
+        const metadata = await sharp(Buffer.from(match[1], 'base64')).metadata();
+        const originalSize = mode === 'large' ? 2048 : 1200;
+        if (
+          !metadata.width ||
+          !metadata.height ||
+          metadata.width >= originalSize ||
+          metadata.height >= originalSize
+        ) {
+          return failed(`dimensions ${metadata.width}x${metadata.height}`);
+        }
+        return { response: `Flux image budget verified for ${label}.` };
+      } catch {
+        return failed('invalid image bytes');
+      }
+    },
     toolCalls: [
       {
         id: `call_e2e_flux_${label}`,
@@ -3677,6 +3751,9 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   if (backgroundCompletion) {
     return backgroundCompletion;
   }
+
+  const readThenBash = readThenBashResponses(text);
+  if (readThenBash) return readThenBash;
 
   const runFileVersions = runFileVersionsResponses(text);
   if (runFileVersions) {

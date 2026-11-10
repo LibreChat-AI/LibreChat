@@ -411,6 +411,16 @@ export type CodeProvisionRecord = {
   fileId: string;
 };
 
+export type CodeExecRecord = { lang: string; code: string; fileNames: string[] };
+
+/** Every `/v1/exec` the fake code server received, with the file names mounted on each. */
+export async function getCodeExecs(page: Page): Promise<CodeExecRecord[]> {
+  const response = await page.request.get(`${CODE_API_BASE}/__debug/uploads`);
+  expect(response.ok(), 'fake code server /__debug/uploads should respond').toBeTruthy();
+  const body = (await response.json()) as { execs: CodeExecRecord[] };
+  return body.execs;
+}
+
 export type RagEmbedRecord = { file_id: string; filename: string; entity_id: string };
 export type RagQueryRecord = { file_id: string; query: string };
 

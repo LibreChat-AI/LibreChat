@@ -52,6 +52,29 @@ describe('Bedrock OpenAI context windows', () => {
   });
 });
 
+describe('Bedrock NVIDIA Nemotron context windows', () => {
+  it.each([
+    ['nvidia.nemotron-super-3-120b', 256000],
+    ['nvidia.nemotron-nano-3-30b', 256000],
+    ['nvidia.nemotron-nano-9b-v2', 128000],
+    ['nvidia.nemotron-nano-12b-v2', 128000],
+  ])('resolves %s to its Bedrock context window', (model, context) => {
+    for (const prefix of ['', 'us.', 'global.']) {
+      expect(getModelMaxTokens(`${prefix}${model}`, EModelEndpoint.bedrock)).toBe(context);
+    }
+  });
+
+  it('keeps unknown NVIDIA models on the fallback and honors endpoint overrides', () => {
+    expect(getModelMaxTokens('nvidia.unknown-model', EModelEndpoint.bedrock)).toBeUndefined();
+    const override: EndpointTokenConfig = {
+      'nvidia.nemotron-super-3-120b': { context: 64000, prompt: 1, completion: 1 },
+    };
+    expect(
+      getModelMaxTokens('nvidia.nemotron-super-3-120b', EModelEndpoint.bedrock, override),
+    ).toBe(64000);
+  });
+});
+
 describe('getModelMaxTokens partial-override fallback', () => {
   const partialOverride: EndpointTokenConfig = {
     'custom-model': { prompt: 1, completion: 2, context: 32000, output: 4096 },

@@ -417,7 +417,9 @@ export function createProvisionFilesCallback({
       );
     }
 
-    if (needsCode) {
+    /* A read_file batch may be a skill reference the host answers without the sandbox, so it
+     * keeps the handoff for the code call that follows instead of claiming it. */
+    if (toolNames.some((name) => name !== Constants.READ_FILE && isCodeFileToolName(name))) {
       ctx.pendingProvisionedCodeFiles = undefined;
     }
     return provisionedCodeFiles;

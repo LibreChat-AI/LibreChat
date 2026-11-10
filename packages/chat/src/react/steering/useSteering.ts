@@ -62,6 +62,8 @@ export interface UseSteeringParams<File extends ComposerFile = ComposerFile> {
   /** Composer attachments: consumed into queued items (steering is text-only). */
   files?: Map<string, File>;
   setFiles?: ComposerFileSetter<File>;
+  /** Discards uploaded sources superseded by an accepted inline replacement. */
+  discardFiles?: (fileIds: string[]) => void;
   /** Uploads still in flight: during-run submits are held like the send button. */
   filesLoading?: boolean;
   /** Submits text (and optional attachments/quotes/skills) as a normal new
@@ -145,6 +147,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
   composerDisabled = false,
   files,
   setFiles,
+  discardFiles,
   filesLoading = false,
   sendNow,
   stopGenerating,
@@ -275,6 +278,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
     reasoningStateKey,
     files,
     setFiles,
+    discardFiles,
   });
 
   const submitSteer = useSubmitSteer({

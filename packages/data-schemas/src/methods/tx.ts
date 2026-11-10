@@ -109,6 +109,11 @@ const bedrockValues: Record<string, { prompt: number; completion: number }> = {
      otherwise reaches `moonshot.kimi` or `moonshot` before `kimi-k3`. */
   'moonshot.kimi-k3': { prompt: 3.0, completion: 15.0 },
   'moonshotai.kimi-k3': { prompt: 3.0, completion: 15.0 },
+  /* AWS lists the v2 models by NVIDIA's names, Nemotron Nano 2 and Nemotron Nano 2 VL. */
+  'nvidia.nemotron-nano-9b-v2': { prompt: 0.06, completion: 0.23 },
+  'nvidia.nemotron-nano-12b-v2': { prompt: 0.2, completion: 0.6 },
+  'nvidia.nemotron-nano-3-30b': { prompt: 0.06, completion: 0.24 },
+  'nvidia.nemotron-super-3-120b': { prompt: 0.15, completion: 0.65 },
 };
 
 /**

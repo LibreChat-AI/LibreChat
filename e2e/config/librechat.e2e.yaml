@@ -155,6 +155,9 @@ mcpServers:
 # - Mock Provider B uses the unified single button with spreadsheet/csv routed
 #   to llmDeliveryPath 'none' (unified-upload.spec.ts).
 fileConfig:
+  # Preserve original generated images while testing the separate model image budget.
+  imageGeneration:
+    percentage: 100
   endpoints:
     'Mock Run Files':
       defaultLLMDeliveryPath:

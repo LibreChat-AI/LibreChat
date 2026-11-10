@@ -26,10 +26,9 @@ import { resolveTheme } from '../../../../packages/data-provider/src/themes/regi
  * before the frame paints.
  */
 
-// Paint samples are the evidence here; DOM trace capture can stall throttled browser calls.
-test.use({
-  trace: { mode: 'retain-on-failure', snapshots: false, screenshots: true, sources: true },
-});
+// Use full Chromium locally, matching CI's Chrome, without trace or video capture
+// competing with protocol calls under CPU throttling. Failure screenshots remain enabled.
+test.use({ channel: process.env.E2E_CHROMIUM_CHANNEL ?? 'chromium', trace: 'off', video: 'off' });
 
 type Mode = 'light' | 'dark';
 

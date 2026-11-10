@@ -337,7 +337,11 @@ export default function useTextarea({
         /** Held until the upload is accepted so a rejected file (a duplicate, an oversized one)
          * reports only its own error instead of pairing it with a success message. */
         const accepted = await routeFiles(clipboardFiles, destination, uploadLifecycle);
-        if (accepted && destination === EToolResources.context) {
+        if (
+          accepted &&
+          destination === EToolResources.context &&
+          uploadLifecycle?.pastedText == null
+        ) {
           showToast({ message: localize('com_ui_file_attached_as_text'), status: 'info' });
         }
         return accepted;
@@ -519,9 +523,15 @@ export default function useTextarea({
         const { pendingPastes } = getFilesDraft(draftId);
         return pendingPastes[fileId] != null || pendingPastes[pendingFileId] != null;
       };
+      let canceled = false;
       const restorePasteAfterUploadFailure = (fileId: string): boolean => {
         const currentTextArea = textAreaRef.current;
-        if (!currentTextArea || answerModeActiveRef.current || !isOriginatingComposer()) {
+        if (
+          canceled ||
+          !currentTextArea ||
+          answerModeActiveRef.current ||
+          !isOriginatingComposer()
+        ) {
           return false;
         }
         const composerUnchanged = currentTextArea.value === composerValue;
@@ -570,6 +580,10 @@ export default function useTextarea({
       };
       const uploadLifecycle: UploadLifecycleCallbacks = {
         fileId: pendingFileId,
+        pastedText,
+        onRecoveryTransferred: () => {
+          canceled = true;
+        },
         shouldCommit: isOriginatingComposer,
         onStart: (fileId) => {
           markPastedTextFile(fileId);
@@ -612,6 +626,7 @@ export default function useTextarea({
           }
         },
         onAbort: (fileId) => {
+          canceled = true;
           clearPendingPasteDraft(fileId, true);
         },
       };
@@ -619,7 +634,7 @@ export default function useTextarea({
         (accepted) => {
           /** The name is either attached now or was never taken, so stop reserving it. */
           reservedPasteFilenames.current.delete(pastedFilename);
-          if (!accepted) {
+          if (!accepted && !canceled) {
             const restored = restorePasteAfterUploadFailure(pendingFileId);
             if (restored || getNewConversationDraftToken(index) !== draftToken) {
               clearPendingPasteDraft(pendingFileId, true);

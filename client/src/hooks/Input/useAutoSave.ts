@@ -82,6 +82,7 @@ export const useAutoSave = ({
   const currentConversationId = currentDraft?.id ?? null;
   const fileIds = useMemo(() => Array.from(files.keys()), [files]);
   const { data: fileList } = useGetFiles<TFile[]>();
+  const restoringFileIds = useRef<{ id: string; ids: Set<string> } | null>(null);
   const filesRef = useRef(files);
   filesRef.current = files;
   const preservedTextRef = useRef<{ id: string; text: string } | null>(null);
@@ -186,6 +187,11 @@ export const useAutoSave = ({
             markPastedTextFile(fileToRecover.file_id);
           }
           delete pendingPastes[fileId];
+          if (!filesRef.current.has(fileIdToRecover)) {
+            if (restoringFileIds.current?.id !== id)
+              restoringFileIds.current = { id, ids: new Set() };
+            restoringFileIds.current.ids.add(fileIdToRecover);
+          }
           setFiles((currentFiles) => {
             if (!ownsDraft()) return currentFiles;
             /** The same entry may still be live in the composer — this path also
@@ -199,6 +205,8 @@ export const useAutoSave = ({
             const restored = {
               ...live,
               ...fileToRecover,
+              textPreview:
+                live?.textPreview ?? fileToRecover.textPreview ?? filesDraft.textPreviews?.[fileId],
               preview: live?.preview ?? fileToRecover.preview,
               progress: 1,
               attached: live ? (live.attached ?? false) : true,
@@ -442,8 +450,15 @@ export const useAutoSave = ({
       return;
     }
 
-    // clear attachment files when switching conversation
-    setFiles((current) => (current.size === 0 ? current : new Map()));
+    const sameComposerPhase =
+      filesRef.current.size > 0 &&
+      currentDraft?.conversationId === (_conversationId ?? Constants.NEW_CONVO) &&
+      ((currentConversationId === conversationDraftId && conversationId === pendingDraftId) ||
+        (currentConversationId === pendingDraftId && conversationId === conversationDraftId));
+    // A rerun changes the storage phase, not the owner of an unrelated live draft.
+    if (!sameComposerPhase) {
+      setFiles((current) => (current.size === 0 ? current : new Map()));
+    }
 
     /** The key the attachments live under once the pending draft has been moved. A move that
      * storage refuses leaves them behind, and recovery has to read them where they still are. */
@@ -553,7 +568,23 @@ export const useAutoSave = ({
       if (preservedTextRef.current?.id !== nextConversationId) {
         preservedTextRef.current = null;
       }
-      if (isFilesDraftOwnedByThisTab(getFilesDraft(filesDraftId))) {
+      if (sameComposerPhase) {
+        const source = getFilesDraft(currentConversationId!);
+        const target = getFilesDraft(filesDraftId);
+        if (isFilesDraftOwnedByThisTab(source) && isFilesDraftOwnedByThisTab(target)) {
+          const liveIds = Array.from(filesRef.current.keys());
+          const pendingPastes = { ...target.pendingPastes };
+          for (const id of liveIds) {
+            if (source.pendingPastes[id]) pendingPastes[id] = source.pendingPastes[id];
+          }
+          setFilesDraft(filesDraftId, {
+            ...target,
+            fileIds: [...new Set([...target.fileIds, ...liveIds])],
+            pendingPastes,
+          });
+        }
+        saveText(textDraftId);
+      } else if (isFilesDraftOwnedByThisTab(getFilesDraft(filesDraftId))) {
         const pendingPastes = restoreFiles(filesDraftId);
         restoreText(textDraftId, pendingPastes);
       }
@@ -573,6 +604,7 @@ export const useAutoSave = ({
     ownershipVersion,
     currentDraft,
     currentConversationId,
+    conversationDraftId,
     conversationId,
     _conversationId,
     pendingDraftId,
@@ -623,8 +655,13 @@ export const useAutoSave = ({
       return;
     }
 
-    if (!saveDrafts || draftStorageId == null || draftStorageId === '') {
+    if (!saveDrafts || draftStorageId == null || draftStorageId === '' || fileList == null) {
       return;
+    }
+    const restoring = restoringFileIds.current;
+    if (restoring?.id === draftStorageId) {
+      if (Array.from(restoring.ids).some((id) => !files.has(id))) return;
+      restoringFileIds.current = null;
     }
 
     const existingDraft = getFilesDraft(draftStorageId);
@@ -673,7 +710,14 @@ export const useAutoSave = ({
         claimed.add(id);
       }
     }
+    const textPreviews = { ...existingDraft.textPreviews };
+    for (const [id, file] of files) {
+      if (!claimed.has(id) && !claimed.has(file.file_id)) continue;
+      const text = file.pastedText ?? file.textPreview ?? file.text;
+      if (text != null) textPreviews[id] = text;
+    }
     setFilesDraft(draftStorageId, {
+      textPreviews,
       fileIds: draftFileIds,
       pastedTextIds,
       pendingPastes: existingDraft.pendingPastes,
@@ -685,6 +729,7 @@ export const useAutoSave = ({
     currentConversationId,
     fileIds,
     files,
+    fileList,
     _conversationId,
   ]);
 

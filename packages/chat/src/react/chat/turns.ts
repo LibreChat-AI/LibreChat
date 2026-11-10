@@ -11,6 +11,8 @@ import {
   resolveTurnCode,
   createRegenerate,
   isSubmittableMessage,
+  isInlineablePastedText,
+  markComposerFilesTaken,
   hasPendingAssistantParent,
 } from '../../core';
 import {
@@ -152,6 +154,14 @@ export function useTurns(
       (!regenerateShaped && !isSubmittableMessage(text, availableFileCount))
     ) {
       return false;
+    }
+
+    if (!regenerateShaped && overrideFiles == null && files != null) {
+      for (const file of files.values()) {
+        if (file.progress < 1 && !isInlineablePastedText(file)) {
+          return false;
+        }
+      }
     }
 
     /** The builder resolves `promptPrefix` on its copy; the pane's conversation stays as is. */
@@ -305,7 +315,17 @@ export function useTurns(
       services.openNewChat(turn.newChatPath);
     }
     if (fileEffects != null && setFiles) {
+      markComposerFilesTaken([
+        ...(fileEffects.canceledUploadIds ?? []),
+        ...(fileEffects.replacedFileIds ?? []),
+      ]);
       services.releaseFiles(fileEffects.submittedFileIds);
+      if (fileEffects.canceledUploadIds?.length) {
+        services.cancelUploads?.(fileEffects.canceledUploadIds);
+      }
+      if (fileEffects.replacedFileIds?.length) {
+        services.discardFiles?.(fileEffects.replacedFileIds);
+      }
       if (fileEffects.clearComposer) {
         setFiles(new Map());
         services.clearFilesToDelete();

@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { ReasoningEffort } from 'librechat-data-provider';
+import { ReasoningEffort, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import type {
   IAgentQueuedTurnDocument,
@@ -191,6 +191,110 @@ describe('agent queued turn methods', () => {
       }),
     ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
     expect(await Turn.countDocuments()).toBe(1);
+  });
+
+  it('preserves previews through durable admission, list, refetch, and mixed-version replay', async () => {
+    const textPreview = ` \n${'x'.repeat(MAX_FILE_TEXT_PREVIEW_LENGTH - 5)}\t \n`;
+    const files = [
+      { file_id: 'paste-1', type: 'text/plain', llmDeliveryPath: 'text' as const, textPreview },
+    ];
+    const input = enqueueInput({ files, expectedPredecessorCreatedAt: 42 });
+    const first = await methods.enqueueAgentQueuedTurn(input);
+    expect(first.turn.files).toEqual(files);
+    expect((await Turn.findById(first.turn.queuedTurnId).lean())?.files).toEqual(files);
+
+    const reloaded = createAgentQueuedTurnMethods(mongoose);
+    await expect(reloaded.listActiveAgentQueuedTurns(input)).resolves.toEqual([
+      expect.objectContaining({ files }),
+    ]);
+    await expect(reloaded.listAgentQueuedTurnReceipts(input)).resolves.toEqual([
+      expect.objectContaining({ files }),
+    ]);
+    await expect(reloaded.getAgentQueuedTurnByClientRequestId(input)).resolves.toMatchObject({
+      files,
+    });
+    for (const file of [
+      { file_id: 'paste-1', type: 'text/plain' },
+      { ...files[0], textPreview: 'different preview', llmDeliveryPath: 'none' as const },
+    ]) {
+      await expect(
+        reloaded.enqueueAgentQueuedTurn({ ...input, files: [file] }),
+      ).resolves.toMatchObject({
+        replayed: true,
+        turn: { queuedTurnId: first.turn.queuedTurnId, files },
+      });
+    }
+
+    const claim = claimInput(first.turn.queuedTurnId);
+    await reloaded.reserveAgentQueuedTurnDelivery({ ...claim, deliveryKey: 'preview-admission' });
+    await reloaded.markQueuedTurnScheduled({
+      ...claim,
+      deliveryKey: 'preview-admission',
+      scheduledAt: START,
+    });
+    await expect(reloaded.claimNextAgentQueuedTurn(claim)).resolves.toMatchObject({
+      outcome: 'acquired',
+      claim: { files },
+    });
+    await expect(
+      reloaded.beginAgentQueuedTurnAdmission({
+        ...claim,
+        admissionId: 'preview-admission',
+        startedAt: START,
+      }),
+    ).resolves.toMatchObject({ outcome: 'started', turn: { files } });
+    await expect(
+      reloaded.markAgentQueuedTurnAdmitted({
+        ...claim,
+        admissionId: 'preview-admission',
+        admissionMode: 'ordinary',
+        generationCreatedAt: 43,
+        effectivePredecessorCreatedAt: 42,
+        lineagePredecessorId: rootLineageId(),
+        settledAt: START,
+      }),
+    ).resolves.toMatchObject({ outcome: 'admitted', turn: { files } });
+
+    const terminalReader = createAgentQueuedTurnMethods(mongoose);
+    await expect(terminalReader.getAgentQueuedTurnByClientRequestId(input)).resolves.toMatchObject({
+      status: 'admitted',
+      files,
+    });
+    await expect(
+      terminalReader.listAgentQueuedTurnReceipts({
+        ...input,
+        clientRequestIds: [input.clientRequestId],
+      }),
+    ).resolves.toEqual([expect.objectContaining({ status: 'admitted', files })]);
+    await expect(
+      terminalReader.enqueueAgentQueuedTurn({
+        ...input,
+        files: [{ ...files[0], textPreview: 'new snippet after reload' }],
+      }),
+    ).resolves.toMatchObject({ replayed: true, turn: { status: 'admitted', files } });
+    expect(await Turn.countDocuments()).toBe(1);
+  });
+
+  it('rejects oversized previews in normalization and the Mongo file-ref schema', async () => {
+    const files = [
+      { file_id: 'paste-1', textPreview: 'x'.repeat(MAX_FILE_TEXT_PREVIEW_LENGTH + 1) },
+    ];
+    await expect(methods.enqueueAgentQueuedTurn(enqueueInput({ files }))).rejects.toBeInstanceOf(
+      TypeError,
+    );
+    expect(await Turn.countDocuments()).toBe(0);
+    expect(await Sequence.countDocuments()).toBe(0);
+
+    const document = new Turn({
+      ...enqueueInput({ files }),
+      fingerprint: 'x'.repeat(43),
+      laneId: 'lane-1',
+    });
+    await expect(document.validate()).rejects.toMatchObject({
+      errors: { 'files.0.textPreview': expect.objectContaining({ kind: 'maxlength' }) },
+    });
+    document.files![0].textPreview = 'x'.repeat(MAX_FILE_TEXT_PREVIEW_LENGTH);
+    await expect(document.validate()).resolves.toBeUndefined();
   });
 
   it('refuses an unfenced approval snapshot before inserting a row', async () => {

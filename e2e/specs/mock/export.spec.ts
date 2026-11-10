@@ -23,15 +23,16 @@ import type { SeedMessage } from './db';
 const NO_PARENT = '00000000-0000-0000-0000-000000000000';
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-/** Mirrors MAX_CAPTURE_AREA in client/src/hooks/ScreenshotContext.tsx. */
+/** Mirrors the sizing limits in client/src/hooks/ScreenshotContext.tsx. */
 const MAX_CAPTURE_AREA = 16_777_216;
-/** The capture aborts once the CSS area needs a pixel ratio below 0.5, i.e. above 4× the max area. */
-const ABORT_CSS_AREA = 4 * MAX_CAPTURE_AREA;
+const MAX_CANVAS_EDGE = 32_767;
+const MIN_PIXEL_RATIO = 0.5;
 
 const OVERSIZED_TITLE = 'Oversized export fixture';
 const OVERSIZED_PARAGRAPH = 'Oversized export fixture paragraph';
-const OVERSIZED_MESSAGES = 80;
-const OVERSIZED_PARAGRAPHS_PER_MESSAGE = 50;
+/** Keep 4,000 unclipped paragraphs in a shallow thread. */
+const OVERSIZED_MESSAGES = 8;
+const OVERSIZED_PARAGRAPHS_PER_MESSAGE = 1000;
 
 const userEmail = getE2EUser().email;
 const cleanupConversationIds: string[] = [];
@@ -51,7 +52,11 @@ async function startMockConversation(page: Page): Promise<string> {
 }
 
 async function openExportModal(page: Page): Promise<Locator> {
-  await page.getByRole('button', { name: 'Chat options' }).click();
+  const desktopMenu = page.getByRole('button', { name: 'Chat options', exact: true });
+  const menu = (await desktopMenu.isVisible())
+    ? desktopMenu
+    : page.getByTestId('header-overflow-menu');
+  await menu.click();
   await page.getByRole('menuitem', { name: 'Export' }).click();
   const dialog = page.getByRole('dialog', { name: 'Export conversation' });
   await expect(dialog).toBeVisible();
@@ -91,7 +96,8 @@ function buildOversizedMessages(): SeedMessage[] {
     messages.push({
       messageId,
       parentMessageId,
-      text,
+      /** Long user messages collapse by default; keep the oversized content in replies. */
+      text: i % 2 === 0 ? 'Export fixture prompt' : text,
       isCreatedByUser: i % 2 === 0,
       sender: i % 2 === 0 ? 'User' : 'Assistant',
     });
@@ -160,7 +166,7 @@ test.describe('conversation export', () => {
     expect(png.byteLength).toBeGreaterThan(1000);
   });
 
-  test('aborts screenshot export of an oversized conversation with an error toast', async ({
+  test('aborts screenshot export of an oversized conversation with an error toast @scenario:oversized-export-reports-error', async ({
     page,
   }) => {
     test.setTimeout(180_000);
@@ -177,15 +183,32 @@ test.describe('conversation export', () => {
     });
 
     const target = page.getByTestId('screenshot-target');
-    /** Long threads mount progressively from the scroll anchor, so the full
-     *  area lands a few frames after first paint — poll until it converges.
-     *  (The capture path itself force-completes the mount; this precondition
-     *  samples the DOM directly and must wait on its own.) */
+    await expect(target.getByTestId('message-body')).toHaveCount(OVERSIZED_MESSAGES, {
+      timeout: 60_000,
+    });
+    /** Both area and edge limits can make the fixture too large to capture. */
     await expect
-      .poll(() => target.evaluate((node) => node.scrollWidth * node.scrollHeight), {
-        timeout: 60_000,
-      })
-      .toBeGreaterThan(ABORT_CSS_AREA * 1.15);
+      .poll(
+        () =>
+          page.evaluate(
+            ({ maxArea, maxEdge }) => {
+              const target = document.querySelector<HTMLElement>(
+                '[data-testid="screenshot-target"]',
+              );
+              if (!target) {
+                return Number.POSITIVE_INFINITY;
+              }
+              const { scrollWidth: width, scrollHeight: height } = target;
+              return Math.min(
+                Math.sqrt(maxArea / (width * height)),
+                maxEdge / Math.max(width, height),
+              );
+            },
+            { maxArea: MAX_CAPTURE_AREA, maxEdge: MAX_CANVAS_EDGE },
+          ),
+        { timeout: 60_000 },
+      )
+      .toBeLessThan(MIN_PIXEL_RATIO);
 
     const dialog = await openExportModal(page);
     await selectExportType(page, dialog, 'screenshot (.png)');

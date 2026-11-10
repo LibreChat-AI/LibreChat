@@ -3,6 +3,7 @@ import { useLocalize, useToastContext } from '@librechat/client';
 import type { Dispatch, ReactNode, FC, SetStateAction } from 'react';
 import type { EToolResources } from 'librechat-data-provider';
 import type { ExtendedFile } from '../../../core/files';
+import { isInlineablePastedText } from '../../../core/files';
 import { useFilesHost } from '../../../react/files';
 import FileContainer from './FileContainer';
 import Image from './Image';
@@ -66,19 +67,7 @@ export default function FileRow({
 
   useEffect(() => {
     if (!setFilesLoading) return;
-    if (files.length === 0) {
-      setFilesLoading(false);
-      return;
-    }
-
-    if (files.some((file) => file.progress < 1)) {
-      setFilesLoading(true);
-      return;
-    }
-
-    if (files.every((file) => file.progress === 1)) {
-      setFilesLoading(false);
-    }
+    setFilesLoading(files.some((file) => file.progress < 1 && !isInlineablePastedText(file)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files]);
 
@@ -116,14 +105,14 @@ export default function FileRow({
               deleteFile({ file, setFiles });
             };
             const isImage = file.type?.startsWith('image') ?? false;
-            /** An upload still in flight has no stored text to open yet, and without a paste
-             * marker the chip is an ordinary attachment however it is named. An action already
-             * in flight against the chip hides both affordances until it settles. */
+            const isPastedText = isPastedTextFile?.(file) === true;
+            const textPreview = isPastedText
+              ? (file.pastedText ?? file.textPreview ?? file.text)
+              : null;
             const isEditablePaste =
               onEditPastedText != null &&
-              isPastedTextFile != null &&
-              file.progress >= 1 &&
-              isPastedTextFile(file) &&
+              isPastedText &&
+              (file.progress >= 1 || isInlineablePastedText(file) || file.file != null) &&
               !isPasteActionPending?.(file);
 
             return (
@@ -134,7 +123,7 @@ export default function FileRow({
               /* `flex`, not the default block: `Image`'s root is inline-block,
                  which sits on a text baseline and adds descender space under
                  the thumbnail, floating it above the cards beside it. */
-              <div key={fileIndex} className="flex shrink-0">
+              <div key={fileIndex} className="flex max-w-full shrink-0">
                 {isImage ? (
                   <Image
                     url={getPreviewUrl(file.file_id) ?? file.preview ?? file.filepath}
@@ -143,13 +132,13 @@ export default function FileRow({
                     source={file.source}
                   />
                 ) : (
-                  /* `ImagePreview`'s `size-14` plus the 1px border its wrapper
-                     adds, so a card and a thumbnail are exactly the same height
-                     in a mixed row. */
+                  /* Ordinary cards match the image height; text previews grow to fit their snippet. */
                   <FileContainer
                     file={file}
+                    textPreview={textPreview}
+                    containerClassName="max-w-full"
                     onDelete={handleDelete}
-                    buttonClassName="h-[58px]"
+                    buttonClassName={isPastedText ? undefined : 'h-[58px]'}
                     onClick={isEditablePaste ? () => onEditPastedText(file) : undefined}
                     ariaLabel={
                       isEditablePaste
