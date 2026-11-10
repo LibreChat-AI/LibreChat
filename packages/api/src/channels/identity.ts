@@ -140,15 +140,21 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
       if (!(await deps.storage.claimChannelIdentityReply(current, reply))) return;
       await deps.reply.update(url, view(current, now()));
       const latest = await deps.storage.readChannelLink(current.tenantId, current.linkId);
-      // A different private prompt may have confirmed while this write was paused.
-      if (
+      // Reconcile the exact attempt after a paused write, including invalidation.
+      // Never display a replacement attempt's account on this older private card.
+      if (reply.expiresAtMs <= now()) return;
+      const projected =
         latest?.ticketHash === current.ticketHash &&
-        latest.state === 'active' &&
-        latest.userId &&
-        reply.expiresAtMs > now() &&
-        (await permitted(latest, latest.userId))
-      )
-        await deps.reply.update(url, view(latest, now()));
+        sameChannelActor(latest.identity, current.identity)
+          ? await currentView(latest)
+          : null;
+      if (projected?.state === 'accepted') return;
+      await deps.reply.update(
+        url,
+        projected?.state === 'active'
+          ? projected
+          : { ...view(current, now()), state: 'unavailable', accountLabel: undefined },
+      );
     } catch {
       // Consent has committed; a cosmetic Slack failure must not turn it into a failed mutation.
       deps.reply.onError();

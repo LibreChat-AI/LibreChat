@@ -70,3 +70,11 @@ it('honors the injected deadline when Slack is slower than the configured budget
     updateSlackLinkReply('https://hooks.slack.com/actions/T1/B1/secret', view, 10, transport),
   ).rejects.toMatchObject({ name: 'TimeoutError' });
 });
+
+it('renders an invalidated attempt without account details or actions', () => {
+  const message = channelLinkMessage({ ...view, state: 'unavailable' });
+  expect(message.blocks).toHaveLength(1);
+  expect(JSON.stringify(message)).not.toContain(view.accountLabel);
+  expect(JSON.stringify(message)).not.toContain('channel_link_confirm');
+  expect(message.text).toContain('no longer available');
+});

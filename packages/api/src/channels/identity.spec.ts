@@ -598,3 +598,56 @@ it(
     expect(claims.filter(Boolean)).toHaveLength(1);
   }),
 );
+
+it.each(['revoked', 'erased', 'replaced', 'expired', 'permission', 'channel'])(
+  'removes account details when a paused card write resumes after %s invalidation',
+  (invalidation) =>
+    scoped(async () => {
+      dependencies.linkLifetimeMs = 1000;
+      const { update, onError } = replies();
+      let release!: () => void;
+      let started!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      update.mockImplementationOnce(async () => {
+        started();
+        await pending;
+      });
+      const issued = value(await service.issue(identity));
+      await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+      const secret = new URL(issued.url).hash.slice(1);
+      const preview = value(await service.preview(principal, secret));
+      const accepting = service.accept(principal, secret, preview.revision);
+      await entered;
+      try {
+        const current = value(await service.inspectActor(identity))!;
+        if (invalidation === 'revoked' || invalidation === 'replaced') {
+          value(await service.revoke(principal, current.linkId, current.revision));
+          if (invalidation === 'replaced') value(await service.issue(identity));
+        } else if (invalidation === 'erased') {
+          await mongoose.models.ChannelIdentity.deleteOne({
+            tenantId: identity.tenantId,
+            linkId: issued.linkId,
+          });
+        } else if (invalidation === 'expired') {
+          // An already-confirmed link can expire while the original card is paused.
+          value(await service.confirm(identity, current.linkId, current.revision));
+          clock += dependencies.linkLifetimeMs + 1;
+        } else if (invalidation === 'permission') allowed = false;
+        else currentRevision = 'replaced-channel';
+      } finally {
+        release();
+      }
+      await accepting;
+      expect(update.mock.calls.map(([, snapshot]) => snapshot.state)).toEqual([
+        'accepted',
+        'unavailable',
+      ]);
+      expect(update.mock.calls[1][1].accountLabel).toBeUndefined();
+      expect(onError).not.toHaveBeenCalled();
+    })(),
+);

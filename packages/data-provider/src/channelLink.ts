@@ -24,36 +24,40 @@ export function isSlackReplyURL(raw: string): boolean {
 
 export function channelLinkMessage(view: ChannelLinkView) {
   const active = view.state === 'active';
+  const unavailable = view.state === 'unavailable';
   const label = view.accountLabel?.trim();
   if (
     !active &&
+    !unavailable &&
     (view.state !== 'accepted' ||
       !label ||
       [...label].length > 200 ||
       /[@\p{Cc}\p{Cf}]/u.test(label))
   )
     throw new TypeError('Invalid account confirmation');
-  const text = active
-    ? '✓ Account connected. Mention the bot again to send your request.'
-    : `Connect as ${label}?`;
+  let text = `Connect as ${label}?`;
+  if (active) text = '✓ Account connected. Mention the bot again to send your request.';
+  if (unavailable)
+    text = 'This account link is no longer available. Mention the bot again to connect.';
   const section = { type: 'section' as const, text: { type: 'plain_text' as const, text } };
   return {
     text: text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
-    blocks: active
-      ? [section]
-      : [
-          section,
-          {
-            type: 'actions' as const,
-            elements: [
-              {
-                type: 'button' as const,
-                text: { type: 'plain_text' as const, text: 'Confirm account' },
-                action_id: 'channel_link_confirm',
-                value: JSON.stringify({ linkId: view.linkId, revision: view.revision }),
-              },
-            ],
-          },
-        ],
+    blocks:
+      active || unavailable
+        ? [section]
+        : [
+            section,
+            {
+              type: 'actions' as const,
+              elements: [
+                {
+                  type: 'button' as const,
+                  text: { type: 'plain_text' as const, text: 'Confirm account' },
+                  action_id: 'channel_link_confirm',
+                  value: JSON.stringify({ linkId: view.linkId, revision: view.revision }),
+                },
+              ],
+            },
+          ],
   };
 }
