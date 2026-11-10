@@ -234,7 +234,7 @@ describe('selectCodeFiles', () => {
     );
   });
 
-  it.each(['default', 'stateful'])(
+  it.each(['default', 'stateful'] as const)(
     'reuploads a displaced private receipt rather than trusting its live bytes on %s',
     async (routeKey) => {
       const shared = { ...file('shared', 'rows.csv'), context: FileContext.execute_code_snapshot };

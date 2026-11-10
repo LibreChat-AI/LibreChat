@@ -370,7 +370,7 @@ describe('Generated file snapshots', () => {
       ]) {
         const restored = await initializeCode(ids, [privateFile.file_id], deferred);
         expect(restored.destinations.get(privateFile.file_id)).toBe(privateName);
-        expect(restored.destinations.get(ids.at(-1)!)).toBe('report.txt');
+        expect(restored.destinations.get(ids[ids.length - 1])).toBe('report.txt');
         expect((await readFile(path.join(directory, 'sandbox/report.txt'))).toString()).toBe(
           ids.length === 1 ? 'Shared V1' : 'Shared V2',
         );
