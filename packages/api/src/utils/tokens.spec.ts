@@ -462,7 +462,7 @@ describe('Claude Mythos 5.2 context window', () => {
   );
 });
 
-describe('Claude version boundaries', () => {
+describe('Claude Mythos version boundaries', () => {
   const rates = { 'claude-mythos-5': 10, 'claude-mythos-5-1': 10, 'claude-mythos-5-2': 8 };
 
   it.each([
