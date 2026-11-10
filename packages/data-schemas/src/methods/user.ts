@@ -52,6 +52,9 @@ export function createUserMethods(
   mongoose: typeof import('mongoose'),
   deps: UserMethodDeps = {},
 ): {
+  findScheduleOwner: (
+    userId: string,
+  ) => Promise<{ _id: string; tenantId?: string; role?: string; termsAccepted?: boolean } | null>;
   findUser: (
     searchCriteria: FilterQuery<IUser>,
     fieldsToSelect?: string | string[] | null,
@@ -1027,7 +1030,24 @@ export function createUserMethods(
     return updated;
   }
 
+  async function findScheduleOwner(
+    userId: string,
+  ): Promise<{ _id: string; tenantId?: string; role?: string; termsAccepted?: boolean } | null> {
+    const user = await mongoose.models.User.findById(userId)
+      .select('_id tenantId role termsAccepted')
+      .lean<IUser>();
+    return user
+      ? {
+          _id: user._id.toString(),
+          tenantId: user.tenantId,
+          role: user.role,
+          termsAccepted: user.termsAccepted,
+        }
+      : null;
+  }
+
   return {
+    findScheduleOwner,
     findUser,
     findUsers,
     findOwnerContactUsers,

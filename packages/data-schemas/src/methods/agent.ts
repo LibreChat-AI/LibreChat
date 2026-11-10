@@ -1077,6 +1077,7 @@ export function createAgentMethods(
   mongoose: typeof import('mongoose'),
   deps: AgentDeps,
 ): {
+  findAgentIdentity: (agentId: string) => Promise<{ _id: string } | null>;
   getAgent: GetAgent;
   getAgentName: (id: string, tenantId?: string) => Promise<string | undefined>;
   getAgentVersions: (searchParameter: FilterQuery<IAgent>) => Promise<IAgent['versions'] | null>;
@@ -2836,7 +2837,14 @@ export function createAgentMethods(
     await evictAuthUserDocsForUsers(deps.getCache, userIds);
   }
 
+  async function findAgentIdentity(agentId: string): Promise<{ _id: string } | null> {
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    const agent = await Agent.findOne({ id: agentId }).select('_id').lean();
+    return agent ? { _id: agent._id.toString() } : null;
+  }
+
   return {
+    findAgentIdentity,
     getAgent,
     getAgentName,
     getAgentVersions,

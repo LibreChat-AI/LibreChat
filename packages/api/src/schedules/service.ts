@@ -167,7 +167,7 @@ export interface SchedulesServiceDeps {
   };
   getAppConfig: (options?: GetAppConfigOptions) => Promise<AppConfig | undefined>;
   findUserById: (userId: string | Types.ObjectId) => Promise<{
-    _id: Types.ObjectId;
+    _id: string | Types.ObjectId;
     tenantId?: string;
     role?: string;
     termsAccepted?: boolean;
