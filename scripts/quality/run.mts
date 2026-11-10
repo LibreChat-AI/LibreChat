@@ -48,7 +48,8 @@ if (!files.length) {
   summary(`## ${workspace.name}: ${values.check}\n\nNo changed source files.\n`);
   process.exit(0);
 }
-const require = createRequire(import.meta.url);
+// Test binaries and configuration belong to the measured head, not the tooling checkout.
+const require = createRequire(resolve('package.json'));
 const jestBin = require.resolve('jest/bin/jest');
 const localFiles = files.map(({ file }) => relative(workspace.path, file));
 const env = { ...process.env, NODE_ENV: 'test', BABEL_ENV: 'test' };
@@ -113,7 +114,10 @@ if (values.check === 'risk') {
   }
   const started = Date.now();
   const stryker = new Stryker({
-    plugins: ['@stryker-mutator/jest-runner', new URL('./progress.mts', import.meta.url).href],
+    plugins: [
+      import.meta.resolve('@stryker-mutator/jest-runner'),
+      new URL('./progress.mts', import.meta.url).href,
+    ],
     testRunner: 'jest',
     jest: {
       projectType: 'custom',
