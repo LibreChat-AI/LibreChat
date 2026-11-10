@@ -125,13 +125,13 @@ import {
 } from '../projects/context';
 import { assertChatProjectInstructions, ChatProjectResourcesChangedError } from '../projects/turn';
 import { extractAgentContent, extractSkillContent } from '../protection/adapters/submissions';
+import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
-import { selectCodeFileGenerations } from '~/files/code/destinations';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
@@ -1931,6 +1931,7 @@ export async function initializeAgent(
     });
   }
   const excludedCodeFileIds = new Set<string>();
+  let codeSnapshotMounts: Map<string, string> | undefined;
   if (wantsCodeFiles) {
     const membership = new Map<EToolResources, ReadonlySet<string>>([
       [EToolResources.execute_code, new Set(agent.tool_resources?.execute_code?.file_ids)],
@@ -1951,6 +1952,11 @@ export async function initializeAgent(
     );
     for (const file of candidates)
       if (!selected.has(file.file_id)) excludedCodeFileIds.add(file.file_id);
+    codeSnapshotMounts = planCodeSnapshotMounts(
+      candidates.filter((file) => selected.has(file.file_id)),
+      privateIds,
+      codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
+    );
     const needed = (file: IMongoFile | TFile): boolean =>
       !excludedCodeFileIds.has(file.file_id) ||
       isModelBoundAttachmentFile(file) ||
@@ -2126,6 +2132,7 @@ export async function initializeAgent(
     hasEntityEmbeddings: db.hasEntityEmbeddings,
     provisionCandidates: deferredProvisionFiles as unknown as TFile[],
     excludedCodeFileIds,
+    codeSnapshotMounts,
     codeRouteKey: codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
     codeBaseUrl: codeExecutionContext.baseUrl,
     codeExecutionProfile: codeExecutionContext.executionProfile,

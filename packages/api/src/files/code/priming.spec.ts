@@ -16,6 +16,7 @@ import {
 const file = (id: string, name: string, ref: Partial<CodeEnvRef> = {}, time = 1): TFile =>
   ({
     file_id: id,
+    user: 'user',
     filename: name,
     type: 'text/csv',
     createdAt: new Date(time),
@@ -146,10 +147,17 @@ describe('selectCodeFiles', () => {
     });
     expect(recovered.selected).toHaveLength(2);
     expect(new Set(recovered.selected.map((f) => f.sandboxName)).size).toBe(2);
-    const restored = recovered.selected.map(({ file: original, sandboxName, sourceRef }) => ({
-      ...original,
-      metadata: { codeEnvRef: { ...sourceRef, sandboxFilename: sandboxName } },
-    }));
+    const restored = recovered.selected.map(({ file: original, sandboxName, sourceRef }) => {
+      if (!sourceRef.file_id || !sourceRef.storage_session_id)
+        throw new Error('Expected owned legacy copy');
+      const ref: CodeEnvRef = {
+        ...sourceRef,
+        file_id: sourceRef.file_id,
+        storage_session_id: sourceRef.storage_session_id,
+        sandboxFilename: sandboxName,
+      };
+      return { ...original, metadata: { codeEnvRef: ref } };
+    });
     const next = await selectCodeFiles({
       files: restored,
       routeKey: 'default',

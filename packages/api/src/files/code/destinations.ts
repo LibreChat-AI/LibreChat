@@ -309,3 +309,50 @@ export function selectCodeFileGenerations<T extends CodePathCandidate>(
   });
   return { files: selected, skippedSuperseded };
 }
+
+/** Explicit writes own literal paths before converted files reuse earlier mount names. */
+export function planCodeSnapshotMounts<T extends CodePathCandidate>(
+  files: Array<T | null | undefined>,
+  privateFileIds?: ReadonlySet<string>,
+  routeKey = 'default',
+  preferred?: ReadonlyMap<string, string>,
+): Map<string, string> {
+  const destinations = createCodeDestinationSet();
+  const ordered = sortCodeFilesByDestinationPriority(files, privateFileIds);
+  const snapshots: T[] = [];
+  const seen = new Set<string>();
+  for (const file of ordered) {
+    if (!file || (file.file_id && seen.has(file.file_id))) continue;
+    if (file.file_id) seen.add(file.file_id);
+    if (file.context === FileContext.execute_code_snapshot) snapshots.push(file);
+    else {
+      const name = getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename;
+      if (name) reserveCodeDestination(destinations, name);
+    }
+  }
+  const priority = (file: T): number => {
+    const scope = privateFileIds?.has(file.file_id ?? '') ? 4 : 0;
+    const converted =
+      getCodeEnvUploadFilename(resolveSandboxFilename(file.filename ?? '', file.type ?? '')) !==
+      file.filename;
+    if (!converted) return scope;
+    const assigned =
+      preferred?.has(file.file_id ?? '') ||
+      getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename;
+    return scope + (assigned ? 1 : 2);
+  };
+  snapshots.sort((a, b) => priority(a) - priority(b));
+  const names = new Map<string, string>();
+  for (const file of snapshots) {
+    if (!file.file_id) continue;
+    names.set(
+      file.file_id,
+      claimCodeDestination(
+        destinations,
+        preferred?.get(file.file_id) ?? getCodeFileDestination(file, routeKey),
+        file.file_id,
+      ),
+    );
+  }
+  return names;
+}

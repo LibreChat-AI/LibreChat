@@ -15,6 +15,7 @@ import {
   sortCodeFilesByDestinationPriority,
   selectCodeFileGenerations,
   getCodeFileDestination,
+  planCodeSnapshotMounts,
 } from './destinations';
 import { appendCodeFileContextLine, getCodeFileContextLine, getCodeFileLocation } from './priming';
 import { getCodeEnvUploadFilename } from './form';
@@ -142,6 +143,13 @@ export function planCodeFileUploads({
     claimCodeDestination(destinations, file.name, file.id);
   }
 
+  const snapshotMounts = planCodeSnapshotMounts(
+    [...queued.values()].map((candidate) => candidate.file).concat(liveFiles),
+    privateIds,
+    route,
+    state.codeEnvDestinations,
+  );
+  for (const name of snapshotMounts.values()) reserveCodeDestination(destinations, name);
   const queuedFiles = files.filter((file) => queuedIds.has(file.file_id));
   const selected = new Map(queuedFiles.map((file) => [file.file_id, file]));
   const advertisedNames = new Map<string, string>();
@@ -170,6 +178,7 @@ export function planCodeFileUploads({
     if (!file) continue;
     const candidate = queued.get(file.file_id);
     const destination =
+      snapshotMounts.get(file.file_id) ??
       advertisedNames.get(file.file_id) ??
       liveNames.get(file.file_id) ??
       claimCodeDestination(

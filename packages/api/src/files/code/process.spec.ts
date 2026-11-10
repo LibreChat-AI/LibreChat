@@ -181,7 +181,12 @@ describe('Generated file snapshots', () => {
     };
   }
 
-  async function initializeCode(ids: string[], privateIds: string[] = [], deferred = true) {
+  async function initializeCode(
+    ids: string[],
+    privateIds: string[] = [],
+    deferred = true,
+    failOnceAt?: string,
+  ) {
     const files = (
       (await methods.getFiles({ file_id: { $in: ids }, user, tenantId: req.user.tenantId })) ?? []
     ).map(primingFile);
@@ -194,6 +199,10 @@ describe('Generated file snapshots', () => {
     const upload = jest.fn(async ({ stream, filename, onUploadStart }: Record<string, unknown>) => {
       if (!(stream instanceof Readable) || typeof filename !== 'string')
         throw new Error('Invalid upload');
+      if (filename === failOnceAt) {
+        failOnceAt = undefined;
+        throw Object.assign(new Error('Upload rejected'), { response: { status: 400 } });
+      }
       if (typeof onUploadStart === 'function') onUploadStart();
       await writeLocalFile(
         path.join(liveDirectory, path.dirname(filename)),
@@ -262,7 +271,13 @@ describe('Generated file snapshots', () => {
       addEmbeddedEntity: async () => undefined,
     });
     const advertised = new Map(context.provisionState?.codeEnvDestinations);
-    const mounted = await callback(['execute_code'], 'agent-a');
+    let mounted: Awaited<ReturnType<typeof callback>>;
+    if (failOnceAt) {
+      await expect(callback(['execute_code'], 'agent-a')).rejects.toThrow();
+      expect(context.provisionState?.codeEnvDestinations).toEqual(advertised);
+      mounted = await callback(['execute_code'], 'agent-a');
+      expect(new Set(mounted.map((file) => file.name))).toEqual(new Set(advertised.values()));
+    } else mounted = await callback(['execute_code'], 'agent-a');
     expect(getFiles).toHaveBeenCalledTimes(privateIds.length ? 1 : 0);
     expect(checkSessionsAlive.mock.calls.length).toBeLessThanOrEqual(1);
     const destinations = new Map(
@@ -394,6 +409,156 @@ describe('Generated file snapshots', () => {
     expect(await readFile(path.join(directory, 'sandbox', pngName))).toEqual(pngBytes);
     expect(await readFile(path.join(directory, 'sandbox', jpegName))).toEqual(jpegBytes);
   });
+
+  it.each([0, 1])(
+    'gives a new literal write ownership of assigned image mount %s without merging captures',
+    async (target) => {
+      const blue = await sharp({ create: { width: 2, height: 2, channels: 3, background: 'blue' } })
+        .png()
+        .toBuffer();
+      const red = await sharp({ create: { width: 2, height: 2, channels: 3, background: 'red' } })
+        .jpeg()
+        .toBuffer();
+      const green = await sharp({
+        create: { width: 2, height: 2, channels: 3, background: 'green' },
+      })
+        .webp()
+        .toBuffer();
+      const a = await emit(blue, 'png', 'nested/chart.png', 100);
+      await initializeCode([a.file_id]);
+      const b = await emit(red, 'jpeg', 'nested/chart.jpeg', 200);
+      const old = await initializeCode([a.file_id, b.file_id]);
+      const original = target === 0 ? a : b;
+      const editedPath = old.destinations.get(original.file_id)!;
+      const live = path.join(directory, 'sandbox', editedPath);
+      await writeLocalFile(path.dirname(live), path.basename(live), green);
+      const edited = await emit(await readFile(live), 'edited', editedPath, 300);
+      const next = await initializeCode(
+        [a.file_id, b.file_id, edited.file_id],
+        [],
+        true,
+        target === 1 ? editedPath : undefined,
+      );
+      expect(next.destinations.size).toBe(3);
+      expect(next.destinations.get(edited.file_id)).toBe(editedPath);
+      expect(next.destinations.get(original.file_id)).not.toBe(editedPath);
+      expect(await readFile(live)).toEqual((await reload(edited.file_id)).bytes);
+      expect(
+        await readFile(path.join(directory, 'sandbox', next.destinations.get(original.file_id)!)),
+      ).toEqual((await reload(original.file_id)).bytes);
+      const again = await initializeCode([a.file_id, b.file_id, edited.file_id]);
+      expect(again.destinations).toEqual(next.destinations);
+      const branch = await initializeCode([a.file_id, b.file_id]);
+      expect(branch.destinations.size).toBe(2);
+      for (const file of [a, b])
+        expect(
+          await readFile(path.join(directory, 'sandbox', branch.destinations.get(file.file_id)!)),
+        ).toEqual((await reload(file.file_id)).bytes);
+      const returned = await initializeCode([a.file_id, b.file_id, edited.file_id]);
+      expect(returned.destinations).toEqual(next.destinations);
+      expect(await readFile(live)).toEqual((await reload(edited.file_id)).bytes);
+    },
+  );
+
+  it.each(['report.txt', 'published/kept-name.txt'])(
+    'mounts the owned published V1 copy instead of mutable provenance at %s',
+    async (name) => {
+      const scope = {
+        userId: user,
+        tenantId: 'tenant-a',
+        conversationId: 'conversation-a',
+        runId: 'run-publish',
+        executionId: 'child',
+        agentId: 'agent-a',
+        sourceFileId: 'mutable-source',
+      };
+      const result = await processCodeOutput(
+        {
+          req,
+          id: scope.sourceFileId,
+          session_id: 'source-session',
+          name: 'report.txt',
+          conversationId: scope.conversationId,
+          messageId: 'published-message',
+          preparedBuffer: Buffer.from('Published V1'),
+          publication: {
+            scope,
+            provenance: {
+              runId: scope.runId,
+              executionId: scope.executionId,
+              agentId: scope.agentId,
+              sourceFileId: scope.sourceFileId,
+              publishedAt: new Date().toISOString(),
+              inputFileIds: [],
+            },
+            publish: methods.publishRunArtifactFile,
+            find: methods.findRunArtifactFile,
+            discard: async () => undefined,
+          },
+        },
+        deps,
+      );
+      if (!result?.file || !('file_id' in result.file)) throw new Error('Expected publication');
+      const published = result.file;
+      const unprovisioned = (await methods.getFiles({ file_id: published.file_id }))![0];
+      const probe = jest.fn(async () => ({ lastModified: new Date().toISOString() }));
+      const owned = {
+        kind: 'user' as const,
+        id: user,
+        storage_session_id: 'owned-session',
+        file_id: 'owned-copy',
+        sandboxFilename: name,
+        executionProfile: 'default' as const,
+      };
+      await withFileProvisioning({
+        file: published,
+        userId: user,
+        storage: deps.fileStorage,
+        destination: 'published-copy',
+        operation: async (_claim, onUploadStart) => {
+          onUploadStart();
+          await writeLocalFile(directory, 'owned-copy', (await reload(published.file_id)).bytes);
+          return {
+            value: owned,
+            commit: { code: { routeKey: 'default', ref: owned, legacyRef: owned } },
+          };
+        },
+      });
+      await writeLocalFile(directory, 'mutable-source', Buffer.from('Mutable V2'));
+      const record = (await methods.getFiles({ file_id: published.file_id }))![0];
+      const getFileInfo = jest.fn(async (ref: { file_id: string }) => ({
+        lastModified: new Date().toISOString(),
+        originalFilename: ref.file_id === 'owned-copy' ? name : 'wrong-live-name.txt',
+      }));
+      const selected = await selectCodeFiles({
+        files: [primingFile(record)],
+        routeKey: 'default',
+        getFileInfo,
+      });
+      expect(selected.selected).toHaveLength(1);
+      const mount = selected.selected[0];
+      expect(mount.isActive).toBe(true);
+      expect(await readFile(path.join(directory, mount.sourceRef.file_id!))).toEqual(
+        Buffer.from('Published V1'),
+      );
+      expect(mount.sourceRef).toMatchObject(owned);
+      expect(mount.sandboxName).toBe(name);
+      expect(getFileInfo).toHaveBeenCalledTimes(1);
+      expect(getFileInfo).toHaveBeenCalledWith(owned);
+      expect(record.context).toBe(FileContext.run_artifact);
+      expect(record.metadata?.codeEnvSource?.file_id).toBe('mutable-source');
+      expect(
+        (
+          await selectCodeFiles({
+            files: [primingFile(unprovisioned)],
+            routeKey: 'default',
+            getFileInfo: probe,
+          })
+        ).selected,
+      ).toEqual([]);
+      expect(probe).not.toHaveBeenCalled();
+    },
+  );
 
   it('retains V1 and V2 bytes and message references after same-path rewrites and reload', async () => {
     const first = await emit(Buffer.from('Version 1'), 'message-1');

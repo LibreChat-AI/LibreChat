@@ -18,6 +18,7 @@ import {
   reserveCodeDestination,
   selectCodeFileGenerations,
   getCodeFileDestination,
+  planCodeSnapshotMounts,
 } from './destinations';
 import {
   codeServerHttpAgent,
@@ -93,10 +94,18 @@ export function checkCodeFileActive(dateString: string | undefined): boolean {
   return dateString != null && (Date.now() - new Date(dateString).getTime()) / 3_600_000 < 23;
 }
 
+interface SnapshotCodeOwner {
+  kind: 'user';
+  id: string;
+  storage_session_id?: undefined;
+  file_id?: undefined;
+  sandboxFilename?: undefined;
+}
+
 interface PrimedCodeFile {
   file: TFile;
   ref: CodeEnvRef | undefined;
-  sourceRef: CodeEnvRef;
+  sourceRef: CodeEnvRef | SnapshotCodeOwner;
   sandboxName: string;
   isActive: boolean;
   getUploadTime: () => Promise<string | undefined>;
@@ -121,18 +130,26 @@ export async function selectCodeFiles({
   let skippedNoRef = 0;
   const generations = selectCodeFileGenerations(files, privateFileIds, routeKey);
   let skippedSuperseded = generations.skippedSuperseded;
+  const snapshotMounts = planCodeSnapshotMounts(generations.files, privateFileIds, routeKey);
   const candidates = [];
   const registry = createCodeApiUploadRegistry();
   for (const file of generations.files) {
     if (!file) {
       continue;
     }
-    // Sandbox refs name mutable paths, including receipts from an earlier prime.
-    const ref =
-      file.context === FileContext.execute_code_snapshot
-        ? undefined
-        : getCodeEnvRefForProfile(file.metadata, routeKey);
-    const sourceRef = file.metadata?.codeEnvSource ?? ref ?? getCodeEnvRefs(file.metadata)[0]?.[1];
+    const snapshot = file.context === FileContext.execute_code_snapshot;
+    const ownedRef = getCodeEnvRefForProfile(file.metadata, routeKey);
+    // Snapshot receipts can name mounts, but never prove their current bytes.
+    const ref = snapshot ? undefined : ownedRef;
+    const sourceRef =
+      ownedRef ??
+      getCodeEnvRefs(file.metadata)[0]?.[1] ??
+      (snapshot
+        ? {
+            kind: 'user' as const,
+            id: file.user.toString(),
+          }
+        : undefined);
     if (!sourceRef) {
       skippedNoRef++;
       continue;
@@ -144,7 +161,7 @@ export async function selectCodeFiles({
         scope: routeKey,
         concurrency,
         signal,
-        task: () => getFileInfo(sourceRef),
+        task: () => (ref ? getFileInfo(ref) : Promise.resolve(null)),
       }));
     candidates.push({ file, ref, sourceRef, getInfo });
   }
@@ -157,7 +174,7 @@ export async function selectCodeFiles({
       const storedName = sourceRef.sandboxFilename ?? info?.originalFilename;
       const sandboxName =
         file.context === FileContext.execute_code_snapshot
-          ? getCodeFileDestination(file, routeKey)
+          ? (snapshotMounts.get(file.file_id) ?? getCodeFileDestination(file, routeKey))
           : (storedName ?? resolveSandboxFilename(file.filename, file.type));
       const destination = recovering
         ? getCodeEnvUploadFilename(resolveSandboxFilename(sandboxName, file.type))

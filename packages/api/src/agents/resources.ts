@@ -19,7 +19,7 @@ import type { IMongoFile, AppConfig, IUser } from '@librechat/data-schemas';
 import type { FilterQuery, QueryOptions, ProjectionType } from 'mongoose';
 import type { CodeExecutionContext } from './execution';
 import type { ServerRequest } from '~/types';
-import { selectCodeFileGenerations } from '~/files/code/destinations';
+import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
 import { allowsFileResource } from '~/files/consumers';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { TOOL_RESOURCE_KEYS } from './orphans';
@@ -343,7 +343,11 @@ const categorizeFileForToolResources = ({
   /** Owner of the unscoped namespace, which is where anything not agent-scoped lands. */
   userId?: string;
 }): void => {
-  if (codeFileIds.has(file.file_id) && (file.metadata?.codeEnvRef || file.metadata?.codeEnvRefs)) {
+  if (
+    file.context !== FileContext.execute_code_snapshot &&
+    codeFileIds.has(file.file_id) &&
+    (file.metadata?.codeEnvRef || file.metadata?.codeEnvRefs)
+  ) {
     addFileToResource({
       file,
       resourceType: EToolResources.execute_code,
@@ -446,6 +450,7 @@ const computeProvisionState = async ({
   req,
   attachments,
   codeFileIds,
+  codeSnapshotMounts,
   resourcePrincipal,
   enabledToolResources,
   tool_resources,
@@ -467,6 +472,7 @@ const computeProvisionState = async ({
   req?: ServerRequest;
   attachments: Array<TFile>;
   codeFileIds: ReadonlySet<string>;
+  codeSnapshotMounts: ReadonlyMap<string, string>;
   agentId?: string;
   codeRouteKey?: string;
   /** Base URL of the deployment this turn runs on, used to probe its own refs. */
@@ -588,7 +594,10 @@ const computeProvisionState = async ({
   const filesWithIdentifiers =
     needsCodeEnv && checkSessionsAlive && canProbeRoute
       ? provisionable.filter(
-          (f) => codeFileIds.has(f.file_id) && codeEnvRefForRoute(f, activeCodeRouteKey),
+          (f) =>
+            f.context !== FileContext.execute_code_snapshot &&
+            codeFileIds.has(f.file_id) &&
+            codeEnvRefForRoute(f, activeCodeRouteKey),
         )
       : [];
 
@@ -680,7 +689,9 @@ const computeProvisionState = async ({
        *  added to execute_code resources, so the check runs before the processed
        *  guard. Clear both the legacy ref and its route entry, else getCodeEnvRefs
        *  keeps resolving the dead session over the re-provisioned one. */
-      if (isStale) {
+      if (file.context === FileContext.execute_code_snapshot) {
+        codeEnvFiles.push(file);
+      } else if (isStale) {
         if (routeRef?.sandboxFilename) {
           codeEnvRecoveryNames.set(file.file_id, {
             name: routeRef.sandboxFilename,
@@ -742,6 +753,7 @@ const computeProvisionState = async ({
   return {
     codeEnvFiles,
     codeEnvRecoveryNames,
+    codeEnvDestinations: new Map(codeSnapshotMounts),
     vectorDBFiles,
     aliveFileIds: aliveFileIds ?? new Set(),
     agentScopedFileIds: new Set(scopedIds),
@@ -763,6 +775,7 @@ export const primeResources = async ({
   loadCodeApiKey,
   provisionCandidates,
   excludedCodeFileIds,
+  codeSnapshotMounts: admittedSnapshotMounts,
   screenPersistentFiles,
   adoptLegacySearchEmbeddings,
   hasEntityEmbeddings,
@@ -792,6 +805,7 @@ export const primeResources = async ({
   provisionCandidates?: Array<TFile>;
   /** Pre-admission code losers may still be needed by search or prompt delivery. */
   excludedCodeFileIds?: ReadonlySet<string>;
+  codeSnapshotMounts?: ReadonlyMap<string, string>;
   /** True when this endpoint still shows the explicit upload-destination chooser. */
   /** Applies the caller's endpoint and content policies. Persistent agent files are read
    *  here rather than by the caller, so the caller has no chance to screen them itself
@@ -976,6 +990,12 @@ export const primeResources = async ({
         codeRouteKey,
       ).files.flatMap((file) => (file ? [file.file_id] : [])),
     );
+    const codeSnapshotMounts = planCodeSnapshotMounts(
+      eligibleCodeFiles.filter((file) => codeFileIds.has(file.file_id)),
+      persistedResourceFileIds,
+      codeRouteKey,
+      admittedSnapshotMounts,
+    );
     const supersededCodeFileIds = new Set(
       codeCandidates.filter((file) => !codeFileIds.has(file.file_id)).map((file) => file.file_id),
     );
@@ -1070,6 +1090,7 @@ export const primeResources = async ({
           ...resourceProvisionCandidates,
         ]),
         codeFileIds,
+        codeSnapshotMounts,
         resourcePrincipal,
         enabledToolResources,
         tool_resources,
@@ -1140,6 +1161,7 @@ export const primeResources = async ({
         ...resourceProvisionCandidates,
       ]),
       codeFileIds,
+      codeSnapshotMounts,
       resourcePrincipal,
       enabledToolResources,
       tool_resources,

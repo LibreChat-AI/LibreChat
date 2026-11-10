@@ -7510,6 +7510,29 @@ describe('snapshot destination admission invariants', () => {
       'upload',
     ]);
   });
+  it('charges independent capture and assigned-path writes separately across repeated initialization', async () => {
+    const original = snapshot('png', 100, {
+      filename: 'nested/chart.png',
+      type: 'image/webp',
+      metadata: {
+        codeDestination: true,
+        sourceDispatchedAt: 100,
+        codeEnvRef: {
+          kind: 'user',
+          id: 'user-1',
+          storage_session_id: 'sandbox',
+          file_id: 'png-copy',
+          sandboxFilename: 'nested/chart.webp',
+        },
+      },
+    });
+    const literal = snapshot('literal', 200, { filename: 'nested/chart.webp', type: 'image/webp' });
+    const first = await run([original, literal]);
+    expect([...first.staged.values()]).toEqual(['png']);
+    expect(first.staged.has('nested/chart.webp')).toBe(false);
+    const again = await run([original, literal]);
+    expect(again.staged).toEqual(first.staged);
+  });
   it('keeps unrelated files subject to their original shared budget and order', async () => {
     const { staged } = await run([
       snapshot('first', 100, { filename: 'first.txt' }),
