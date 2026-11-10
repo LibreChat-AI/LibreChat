@@ -92,7 +92,7 @@ describe('subagent code targets against the principal-scoped machine list', () =
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {

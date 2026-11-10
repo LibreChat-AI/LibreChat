@@ -42,7 +42,7 @@ describe('staged browser setup registry', () => {
   });
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongo.stop();
+    await mongo?.stop();
   });
 
   test('explicitly enforces owner-slot uniqueness when automatic index creation is disabled', async () => {
