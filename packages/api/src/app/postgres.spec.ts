@@ -157,6 +157,56 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
     expect((await db.query('SELECT * FROM tool_favorite_readiness')).rows).toEqual(state.rows);
     expect(expected.count).toBe(2);
   });
+  it.each(['schema-only', 'partial', 'missing-marker'] as const)(
+    'refuses destructive reconciliation from %s PostgreSQL without modifying Mongo',
+    async (state) => {
+      await reconnect();
+      await collection().insertMany([row(1), row(2)]);
+      const original = await collection().find().sort({ _id: 1 }).toArray();
+      const indexes = await collection().indexes();
+      await mongoose.disconnect();
+      if (state !== 'schema-only') {
+        await run(['import', '--offline']);
+        await db.query('DELETE FROM tool_favorites WHERE id=$1', [row(2)._id.toHexString()]);
+        await db.query('UPDATE tool_favorite_readiness SET verified=false,checkpoint=$1', [
+          row(1)._id.toHexString(),
+        ]);
+      }
+      if (state === 'missing-marker') await db.query('DELETE FROM tool_favorite_readiness');
+      const authority = await db.query('SELECT * FROM tool_favorite_readiness');
+      for (const flags of [[], ['--dry-run']]) {
+        await expect(run(['reconcile-mongo', '--offline', ...flags])).rejects.toThrow(
+          'not verified',
+        );
+        await reconnect();
+        expect(await collection().find().sort({ _id: 1 }).toArray()).toEqual(original);
+        expect(await collection().indexes()).toEqual(indexes);
+        expect(
+          await mongoose.connection.db!.listCollections({ name: /_reconcile_/ }).toArray(),
+        ).toEqual([]);
+        await mongoose.disconnect();
+      }
+      expect((await db.query('SELECT * FROM tool_favorite_readiness')).rows).toEqual(
+        authority.rows,
+      );
+      if (state === 'missing-marker')
+        await db.query('INSERT INTO tool_favorite_readiness(singleton) VALUES(true)');
+    },
+  );
+  it('allows verified activated PostgreSQL to reconcile subsequent deletions, including an empty snapshot', async () => {
+    await reconnect();
+    await collection().insertOne(row(1));
+    await mongoose.disconnect();
+    await run(['import', '--offline']);
+    await db.query('UPDATE tool_favorite_readiness SET activated=true');
+    await db.query('DELETE FROM tool_favorites');
+    await run(['reconcile-mongo', '--offline']);
+    await reconnect();
+    expect(await collection().countDocuments()).toBe(0);
+    expect((await db.query('SELECT verified,activated FROM tool_favorite_readiness')).rows).toEqual(
+      [{ verified: true, activated: true }],
+    );
+  });
   it('refuses a same-count corrupted staging snapshot, retains Mongo, and removes staging', async () => {
     await reconnect();
     await collection().insertOne(row(1));
@@ -186,6 +236,50 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
     expect(
       await mongoose.connection.db!.listCollections({ name: /_reconcile_/ }).toArray(),
     ).toEqual([]);
+  });
+  it('rechecks PostgreSQL readiness before Mongo replacement and discards untrusted staging', async () => {
+    await reconnect();
+    await collection().insertOne(row(1));
+    await mongoose.disconnect();
+    await run(['import', '--offline']);
+    const original = mongoose.connection.collection.bind(mongoose.connection);
+    jest.spyOn(mongoose.connection, 'collection').mockImplementation((name, options) => {
+      const target = original(name, options);
+      if (name.includes('_reconcile_')) {
+        const insert = target.insertMany.bind(target);
+        jest.spyOn(target, 'insertMany').mockImplementation(async (docs, options) => {
+          const result = await insert(docs, options);
+          await db.query('UPDATE tool_favorite_readiness SET verified=false');
+          return result;
+        });
+      }
+      return target;
+    });
+    await expect(run(['reconcile-mongo', '--offline'])).rejects.toThrow('not verified');
+    jest.restoreAllMocks();
+    await reconnect();
+    expect(await collection().findOne({ _id: row(1)._id })).toEqual(row(1));
+    expect(
+      await mongoose.connection.db!.listCollections({ name: /_reconcile_/ }).toArray(),
+    ).toEqual([]);
+  });
+  it('does not race a migration or import holding the same schema authority', async () => {
+    await reconnect();
+    await collection().insertOne(row(1));
+    await mongoose.disconnect();
+    await run(['import', '--offline']);
+    await db.session(async (session) => {
+      await session.query('SELECT pg_advisory_lock(17490261,hashtext(current_schema()))');
+      try {
+        await expect(run(['reconcile-mongo', '--offline'])).rejects.toThrow(
+          'Another favorite migration',
+        );
+      } finally {
+        await session.query('SELECT pg_advisory_unlock(17490261,hashtext(current_schema()))');
+      }
+    });
+    await reconnect();
+    expect(await collection().findOne({ _id: row(1)._id })).toEqual(row(1));
   });
   it('reports cleanup failure after a successful command instead of silently succeeding', async () => {
     const original = pg.Pool.prototype.end;

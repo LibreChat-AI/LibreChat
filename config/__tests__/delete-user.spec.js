@@ -34,6 +34,7 @@ const mockDestroy = jest.fn();
 const mockSilentExit = jest.fn();
 const mockAskQuestion = jest.fn();
 const mockGetAppConfig = jest.fn();
+const mockLoadCustomConfig = jest.fn();
 const mockRevokeUserCodeEnvironmentWorkers = jest.fn();
 const mockEraseUserData = jest.fn();
 const mockProcessDeleteRequest = jest.fn();
@@ -41,16 +42,24 @@ const mockInvalidateCachedTools = jest.fn();
 const mockInitializeFileStorage = jest.fn();
 const mockOpenCheckpointDeletion = jest.fn();
 const mockDeleteAllSharedLinksWithCleanup = jest.fn();
+const mockMongoFavorites = {
+  getToolFavorites: jest.fn(),
+  addToolFavorite: jest.fn(),
+  removeToolFavorite: jest.fn(),
+  deleteUserToolFavorites: jest.fn(),
+};
 
 jest.mock('../connect', () => jest.fn(async () => undefined));
 jest.mock('mongoose', () => ({ disconnect: jest.fn(async () => undefined) }));
 jest.mock('@librechat/data-schemas', () => ({
   createModels: () => new Proxy({}, { get: (_target, prop) => mockModelFor(prop) }),
-  createMethods: () => mockMethods,
+  createMethods: (_mongoose, deps) => ({ ...mockMethods, ...deps.toolFavorites }),
+  createToolFavoriteMethods: () => mockMongoFavorites,
   runAsSystem: (operation) => operation(),
   tenantStorage: mockTenantStorage,
 }));
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
   waitForKeyvRedisClient: jest.fn(async () => undefined),
   createStreamServices: jest.fn(() => ({ isRedis: true })),
   GenerationJobManager: {
@@ -67,6 +76,7 @@ jest.mock('@librechat/api', () => ({
   deleteAllSharedLinksWithCleanup: mockDeleteAllSharedLinksWithCleanup,
 }));
 jest.mock('~/cache/getLogStores', () => jest.fn());
+jest.mock('~/server/services/Config/loadCustomConfig', () => mockLoadCustomConfig);
 jest.mock('~/server/services/Config', () => ({
   getAppConfig: (...args) => mockGetAppConfig(...args),
 }));
@@ -135,6 +145,8 @@ describe('Delete user CLI', () => {
     mockAbortJob.mockReset().mockResolvedValue({ success: true });
     mockDestroy.mockReset().mockResolvedValue(undefined);
     mockGetAppConfig.mockReset().mockResolvedValue({});
+    mockLoadCustomConfig.mockReset().mockResolvedValue({});
+    mockMongoFavorites.deleteUserToolFavorites.mockReset();
     mockRevokeUserCodeEnvironmentWorkers.mockReset().mockResolvedValue(0);
     mockEraseUserData.mockReset().mockResolvedValue(undefined);
     mockProcessDeleteRequest.mockReset().mockResolvedValue({ deletedFileIds: [] });
@@ -147,6 +159,31 @@ describe('Delete user CLI', () => {
     process.argv = originalArgv;
     logSpy.mockRestore();
     jest.restoreAllMocks();
+  });
+
+  it('initializes the injected favorites methods and closes captured references on exit', async () => {
+    let deleteFavorites;
+    mockMongoFavorites.deleteUserToolFavorites.mockResolvedValueOnce(3);
+    mockEraseUserData.mockImplementationOnce(async (_params, deps) => {
+      deleteFavorites = deps.deleteUserToolFavorites;
+      expect(await deleteFavorites(USER_ID)).toBe(3);
+    });
+
+    expect(await runCli()).toBe(0);
+
+    expect(mockLoadCustomConfig).toHaveBeenCalledWith(false, { storageSelection: true });
+    expect(mockMongoFavorites.deleteUserToolFavorites).toHaveBeenCalledWith(USER_ID);
+    await expect(deleteFavorites(USER_ID)).rejects.toThrow('not initialized');
+  });
+
+  it('deletes nothing when favorites persistence configuration is invalid', async () => {
+    mockLoadCustomConfig.mockResolvedValueOnce({ persistence: { favorites: 'invalid' } });
+
+    expect(await runCli()).toBe(1);
+
+    expect(mockMethods.beginAgentTriggerUserDeletion).not.toHaveBeenCalled();
+    expect(mockEraseUserData).not.toHaveBeenCalled();
+    expect(mockMethods.deleteUserById).not.toHaveBeenCalled();
   });
 
   it('fences triggers and schedules before inspecting active work', async () => {
@@ -337,6 +374,8 @@ describe('Delete user CLI', () => {
   });
 
   it('supplies shared-user MCP OAuth cleanup to the cascade', async () => {
+    mockMethods.findMCPServerByObjectId = jest.fn(async () => ({ config: { type: 'sse' } }));
+    mockMethods.getUserById = jest.fn(async () => ({ role: 'VIEWER' }));
     expect(await runCli()).toBe(0);
 
     const [, deps] = mockEraseUserData.mock.calls[0];
@@ -347,10 +386,8 @@ describe('Delete user CLI', () => {
       invalidateUserTools: expect.any(Function),
       uninstallOAuthMCP: expect.any(Function),
     });
-    mockMethods.findMCPServerByObjectId = jest.fn(async () => ({ config: { type: 'sse' } }));
     expect(await deps.mcpOAuth.getServerConfig('server-1', 'server-id-1')).toEqual({ type: 'sse' });
     expect(mockMethods.findMCPServerByObjectId).toHaveBeenCalledWith('server-id-1');
-    mockMethods.getUserById = jest.fn(async () => ({ role: 'VIEWER' }));
     mockGetAppConfig.mockImplementation(async (options) =>
       options?.userId === 'viewer-1' ? { mcpSettings: { allowedDomains: ['viewer.example'] } } : {},
     );

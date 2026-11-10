@@ -6,6 +6,8 @@ import {
   importFavorites,
   fingerprintFavorites,
   readPostgresFavorites,
+  assertPostgresDataReady,
+  buildIndexWithRetry,
 } from '@librechat/data-schemas';
 import type {
   FavoriteSnapshotSource,
@@ -93,9 +95,8 @@ export async function runPostgresCommand(deps: {
       );
       return;
     }
-    const pgSource = readPostgresFavorites(db, 250);
-    const postgres = await fingerprintFavorites(pgSource);
     if (command === 'verify') {
+      const postgres = await fingerprintFavorites(readPostgresFavorites(db, 250));
       const mongo = await fingerprintFavorites(source);
       if (postgres.digest !== mongo.digest || postgres.count !== mongo.count) {
         throw new Error('Favorite snapshots differ');
@@ -103,70 +104,88 @@ export async function runPostgresCommand(deps: {
       console.info(`Favorites snapshots match: ${postgres.count} rows`);
       return;
     }
-    // Build and validate a replacement before an atomic rename. Deletes are reconciled too.
-    if (flags.includes('--dry-run')) {
-      console.info(
-        `Offline reconciliation would replace Mongo favorites with ${postgres.count} PostgreSQL rows`,
+    await db.session(async (session) => {
+      const lock = await session.query<{ acquired: boolean }>(
+        'SELECT pg_try_advisory_lock(17490261, hashtext(current_schema())) AS acquired',
       );
-      return;
-    }
-    const name = `${collection.name}_reconcile_${randomBytes(6).toString('hex')}`;
-    const staging = deps.mongoose.connection.collection(name);
-    let renamed = false;
-    try {
-      for (const index of await collection.indexes()) {
-        if (index.name === '_id_') {
-          continue;
+      if (!lock.rows[0].acquired)
+        throw new Error('Another favorite migration or import is running');
+      try {
+        await assertPostgresDataReady(session);
+        const pgSource = readPostgresFavorites(session, 250);
+        const postgres = await fingerprintFavorites(pgSource);
+        // Build and validate a replacement before an atomic rename. Deletes are reconciled too.
+        if (flags.includes('--dry-run')) {
+          console.info(
+            `Offline reconciliation would replace Mongo favorites with ${postgres.count} PostgreSQL rows`,
+          );
+          return;
         }
-        const options = Object.fromEntries(
-          Object.entries(index).filter(([key]) => !['key', 'v', 'ns'].includes(key)),
-        );
-        await staging.createIndex(index.key, options);
-      }
-      let batch: FavoriteSnapshotRow[] = [];
-      const write = async () => {
-        await staging.insertMany(
-          batch.map((row) => ({
-            _id: new deps.mongoose.Types.ObjectId(row.id),
-            user: new deps.mongoose.Types.ObjectId(row.userId),
-            tenantId: row.tenantId,
-            itemType: row.itemType,
-            itemId: row.itemId,
-            createdAt: row.createdAt,
-            updatedAt: row.updatedAt,
-          })),
-        );
-        batch = [];
-      };
-      for await (const row of pgSource()) {
-        batch.push(row);
-        if (batch.length === 250) {
-          await write();
+        const name = `${collection.name}_reconcile_${randomBytes(6).toString('hex')}`;
+        const staging = deps.mongoose.connection.collection(name);
+        let renamed = false;
+        try {
+          for (const index of await collection.indexes()) {
+            if (index.name === '_id_') {
+              continue;
+            }
+            const options = Object.fromEntries(
+              Object.entries(index).filter(([key]) => !['key', 'v', 'ns'].includes(key)),
+            );
+            await buildIndexWithRetry(
+              () => staging.createIndex(index.key, options),
+              'favorites_reconciliation_index',
+            );
+          }
+          let batch: FavoriteSnapshotRow[] = [];
+          const write = async () => {
+            await staging.insertMany(
+              batch.map((row) => ({
+                _id: new deps.mongoose.Types.ObjectId(row.id),
+                user: new deps.mongoose.Types.ObjectId(row.userId),
+                tenantId: row.tenantId,
+                itemType: row.itemType,
+                itemId: row.itemId,
+                createdAt: row.createdAt,
+                updatedAt: row.updatedAt,
+              })),
+            );
+            batch = [];
+          };
+          for await (const row of pgSource()) {
+            batch.push(row);
+            if (batch.length === 250) {
+              await write();
+            }
+          }
+          if (batch.length) {
+            await write();
+          }
+          const staged = await fingerprintFavorites(snapshotSource(staging));
+          const current = await fingerprintFavorites(pgSource);
+          if (
+            current.digest !== postgres.digest ||
+            current.count !== postgres.count ||
+            staged.digest !== postgres.digest ||
+            staged.count !== postgres.count
+          ) {
+            throw new Error('PostgreSQL changed during reconciliation');
+          }
+          await assertPostgresDataReady(session);
+          await staging.rename(collection.name, { dropTarget: true });
+          renamed = true;
+          console.info(
+            `Mongo favorites reconciled: ${postgres.count} rows. Storage selection was not changed.`,
+          );
+        } finally {
+          if (!renamed) {
+            await staging.drop().catch(() => undefined);
+          }
         }
+      } finally {
+        await session.query('SELECT pg_advisory_unlock(17490261, hashtext(current_schema()))');
       }
-      if (batch.length) {
-        await write();
-      }
-      const staged = await fingerprintFavorites(snapshotSource(staging));
-      const current = await fingerprintFavorites(pgSource);
-      if (
-        current.digest !== postgres.digest ||
-        current.count !== postgres.count ||
-        staged.digest !== postgres.digest ||
-        staged.count !== postgres.count
-      ) {
-        throw new Error('PostgreSQL changed during reconciliation');
-      }
-      await staging.rename(collection.name, { dropTarget: true });
-      renamed = true;
-      console.info(
-        `Mongo favorites reconciled: ${postgres.count} rows. Storage selection was not changed.`,
-      );
-    } finally {
-      if (!renamed) {
-        await staging.drop().catch(() => undefined);
-      }
-    }
+    });
   };
   try {
     await execute();

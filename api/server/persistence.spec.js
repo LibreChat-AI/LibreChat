@@ -88,14 +88,13 @@ describe.each(['index', 'experimental'])('%s entrypoint lifecycle wiring', (entr
             if (id === '~/db') {
               return { connectDb: async () => {}, indexSync: async () => {} };
             }
-            if (id.endsWith('/services/Config/loadCustomConfig')) {
-              return async (_print, options) => {
-                expect(options.storageSelection).toBe(true);
-                return { persistence: { favorites: 'postgres' } };
-              };
-            }
             if (id === './services/Config') {
               return {
+                loadCustomConfig: async (print, options) => {
+                  expect(print).toBe(false);
+                  expect(options).toEqual({ storageSelection: true });
+                  return { persistence: { favorites: 'postgres' } };
+                },
                 getAppConfig: async () => {
                   events.push('config');
                   throw bootError;

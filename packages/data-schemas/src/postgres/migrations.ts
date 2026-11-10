@@ -135,17 +135,22 @@ export async function migratePostgres(db: PostgresDatabase): Promise<void> {
   });
 }
 
+/** Readiness check without selecting an authority or changing its activation marker. */
+export async function assertPostgresDataReady(sql: SqlExecutor): Promise<void> {
+  await assertVersion(sql);
+  await assertSchema(sql);
+  const ready = await sql.query<{ verified: boolean; snapshot: string | null }>(
+    'SELECT verified, snapshot FROM tool_favorite_readiness WHERE singleton',
+  );
+  if (ready.rows[0]?.verified !== true || !/^[a-f0-9]{64}$/.test(ready.rows[0].snapshot ?? '')) {
+    throw new Error('PostgreSQL favorites data not verified');
+  }
+}
+
 export async function assertPostgresReady(db: PostgresDatabase): Promise<void> {
   await db.transaction(async (sql) => {
-    await assertVersion(sql);
     await lockFavoriteMigration(sql);
-    await assertSchema(sql);
-    const ready = await sql.query<{ verified: boolean }>(
-      'SELECT verified FROM tool_favorite_readiness WHERE singleton',
-    );
-    if (!ready.rows[0]?.verified) {
-      throw new Error('PostgreSQL favorites data not verified');
-    }
+    await assertPostgresDataReady(sql);
     await sql.query('UPDATE tool_favorite_readiness SET activated = true WHERE singleton');
   });
 }

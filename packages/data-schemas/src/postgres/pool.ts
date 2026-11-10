@@ -1,5 +1,5 @@
 import pg from 'pg';
-import type { PoolClient, QueryResult, QueryResultRow } from 'pg';
+import type { QueryResult, QueryResultRow } from 'pg';
 
 export interface PostgresOptions {
   connectionString: string;
@@ -42,62 +42,143 @@ export function createPostgresDatabase(options: PostgresOptions): PostgresDataba
   pool.on('error', () => undefined);
   let closing = false;
   let closePromise: Promise<void> | undefined;
-  async function connect(): Promise<PoolClient> {
+  function connectionError(): Error {
+    return new Error('PostgreSQL connection unavailable');
+  }
+  function isConnectionError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const code = 'code' in error && typeof error.code === 'string' ? error.code : '';
+    const severity = 'severity' in error ? error.severity : undefined;
+    return (
+      severity === 'FATAL' ||
+      severity === 'PANIC' ||
+      code?.startsWith('08') === true ||
+      ['57P01', '57P02', '57P03', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'ECONNREFUSED'].includes(
+        code ?? '',
+      ) ||
+      [
+        'Connection terminated unexpectedly',
+        'Connection terminated',
+        'Client has encountered a connection error and is not queryable',
+        'Client was closed and is not queryable',
+        'Query read timeout',
+      ].includes(error.message)
+    );
+  }
+  function connect() {
     if (closing || pool.waitingCount >= options.maxWaiting) {
-      throw new Error('PostgreSQL connection admission unavailable');
+      return Promise.reject(new Error('PostgreSQL connection admission unavailable'));
     }
-    try {
-      return await pool.connect();
-    } catch {
-      throw new Error('PostgreSQL connection unavailable');
-    }
+    // The callback installs protection before pg-pool's synchronous handoff returns.
+    return new Promise<{
+      query: SqlExecutor['query'];
+      failure: Promise<never>;
+      assertHealthy(): void;
+      discard(): void;
+      release(): void;
+    }>((resolve, reject) => {
+      pool.connect((error, client) => {
+        if (error || !client) {
+          reject(connectionError());
+          return;
+        }
+        let failed: Error | undefined;
+        let released = false;
+        let discard = false;
+        let rejectFailure: (error: Error) => void;
+        const failure = new Promise<never>((_, reject) => {
+          rejectFailure = reject;
+        });
+        void failure.catch(() => undefined);
+        const onError = () => {
+          if (failed) return;
+          failed = connectionError();
+          rejectFailure(failed);
+        };
+        client.on('error', onError);
+        const assertHealthy = () => {
+          if (failed) throw failed;
+          if (released) throw connectionError();
+        };
+        resolve({
+          failure,
+          assertHealthy,
+          discard() {
+            discard = true;
+          },
+          async query<R extends QueryResultRow>(text: string, values?: unknown[]) {
+            assertHealthy();
+            try {
+              const result = await client.query<R>(text, values);
+              assertHealthy();
+              return result;
+            } catch (error) {
+              if (isConnectionError(error)) onError();
+              throw failed ?? error;
+            }
+          },
+          release() {
+            if (released) return;
+            released = true;
+            try {
+              client.release(discard || Boolean(failed));
+            } finally {
+              // release restores pg-pool's idle listener before ours is removed.
+              client.removeListener('error', onError);
+            }
+          },
+        });
+      });
+    }).catch(() => {
+      throw connectionError();
+    });
   }
   const database: PostgresDatabase = {
-    async query<R extends QueryResultRow>(
-      text: string,
-      values?: unknown[],
-    ): Promise<QueryResult<R>> {
-      const client = await connect();
-      try {
-        return await client.query<R>(text, values);
-      } finally {
-        client.release();
-      }
-    },
+    query: (text, values) => database.session((session) => session.query(text, values)),
     async transaction<T>(operation: (sql: SqlExecutor) => Promise<T>): Promise<T> {
       return database.session((session) => session.transaction(operation));
     },
     async session<T>(operation: (sql: PostgresSession) => Promise<T>): Promise<T> {
-      const client = await connect();
-      let discard = false;
+      const lease = await connect();
       let inTransaction = false;
       const session: PostgresSession = {
-        query: (text, values) => client.query(text, values),
+        query: lease.query,
         async transaction<U>(work: (sql: SqlExecutor) => Promise<U>): Promise<U> {
+          lease.assertHealthy();
           if (inTransaction) throw new Error('Nested PostgreSQL transactions are not supported');
           inTransaction = true;
           try {
-            await client.query('BEGIN');
+            await lease.query('BEGIN');
             const value = await work(session);
-            await client.query('COMMIT');
+            await lease.query('COMMIT');
             return value;
           } catch (error) {
+            // A lost COMMIT acknowledgement has an unknown outcome. Do not claim rollback.
+            lease.assertHealthy();
             try {
-              await client.query('ROLLBACK');
+              await lease.query('ROLLBACK');
             } catch {
-              discard = true;
+              lease.discard();
             }
+            lease.assertHealthy();
             throw error;
           } finally {
             inTransaction = false;
           }
         },
       };
-      try {
-        return await operation(session);
-      } finally {
-        client.release(discard);
-      }
+      const work = Promise.resolve()
+        .then(() => {
+          lease.assertHealthy();
+          return operation(session);
+        })
+        .then((value) => {
+          lease.assertHealthy();
+          return value;
+        })
+        .finally(() => lease.release());
+      // Report disconnects promptly, but retain ownership until the callback settles.
+      return Promise.race([work, lease.failure]);
     },
     close() {
       closing = true;
