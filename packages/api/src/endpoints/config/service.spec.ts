@@ -257,7 +257,12 @@ describe('per-endpoint model loading', () => {
     'My Proxy': ['proxy-model'],
   };
 
-  /** Loaders that answer like the real ones: the full catalog without a name, one entry with it. */
+  /**
+   * Stand-in loaders that return the full catalog without a name and one entry with it. They test
+   * the service's own rules (lookup order, one load per request, no other endpoint loaded); that
+   * the entry equals the full catalog's under the real loaders is checked in
+   * `api/server/services/Config/catalog.spec.js`.
+   */
   function world(extra: TModelsConfig = {}) {
     const configured = { ...served, ...extra };
     const deps = {
@@ -296,24 +301,20 @@ describe('per-endpoint model loading', () => {
     ['a custom endpoint saved under another spelling', 'Ollama', ['llama3.2']],
     ['a provider served under an alias', 'vertexai', ['gemini-default']],
     ['an endpoint with no model list', 'Unknown', undefined],
-  ])('reads %s like the full catalog does', async (_label, provider, models) => {
-    const { loadModels, getEndpointModelsConfig } = world();
+  ])('reads %s', async (_label, provider, models) => {
+    const { getEndpointModelsConfig } = world();
 
-    const full = await loadModels(request());
     const entry = await getEndpointModelsConfig(request(), provider);
 
-    expect(lookup(full, provider)).toEqual(models);
     expect(lookup(entry, provider)).toEqual(models);
     expect(Object.keys(entry).length).toBeLessThanOrEqual(1);
   });
 
-  it('prefers an exact catalog over the alias, as the full catalog does', async () => {
-    const { loadModels, getEndpointModelsConfig } = world({ vertexai: ['custom-vertex'] });
+  it('prefers an exact catalog over the alias', async () => {
+    const { getEndpointModelsConfig } = world({ vertexai: ['custom-vertex'] });
 
-    const full = await loadModels(request());
     const entry = await getEndpointModelsConfig(request(), 'vertexai');
 
-    expect(lookup(full, 'vertexai')).toEqual(['custom-vertex']);
     expect(lookup(entry, 'vertexai')).toEqual(['custom-vertex']);
   });
 
@@ -384,7 +385,7 @@ describe('per-endpoint model loading', () => {
     });
   });
 
-  it('loads built-ins that ENDPOINTS does not enable, as the full catalog does', async () => {
+  it('loads built-ins that ENDPOINTS does not enable', async () => {
     const original = process.env.ENDPOINTS;
     process.env.ENDPOINTS = 'agents';
     try {
