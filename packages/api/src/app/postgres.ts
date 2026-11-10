@@ -33,13 +33,24 @@ export async function runPostgresCommand(deps: {
   const close = () => Promise.allSettled([db?.close(), deps.mongoose.disconnect()]);
   const execute = async () => {
     const [command, ...flags] = deps.args;
+    const commands: Record<string, string[]> = {
+      migrate: [],
+      import: ['--offline', '--dry-run', '--verified-empty'],
+      verify: ['--offline'],
+      'reconcile-mongo': ['--offline', '--dry-run'],
+    };
+    const allowed = Object.hasOwn(commands, command) ? commands[command] : undefined;
     if (
-      !['migrate', 'import', 'verify', 'reconcile-mongo'].includes(command) ||
-      flags.some((flag) => !['--offline', '--dry-run', '--verified-empty'].includes(flag))
+      !allowed ||
+      flags.some((flag) => !allowed.includes(flag)) ||
+      new Set(flags).size !== flags.length
     ) {
       throw new Error(
-        'Usage: postgres migrate|import|verify|reconcile-mongo [--offline] [--dry-run] [--verified-empty]',
+        'Usage: postgres migrate | import --offline [--dry-run] [--verified-empty] | verify --offline | reconcile-mongo --offline [--dry-run]',
       );
+    }
+    if (command !== 'migrate' && !flags.includes('--offline')) {
+      throw new Error('Stop all app, worker, and migration writers and pass --offline');
     }
     const config = persistenceConfigSchema.parse(
       getPersistenceConfig(
@@ -56,9 +67,6 @@ export async function runPostgresCommand(deps: {
       await migratePostgres(db);
       console.info('PostgreSQL schema migrated. Favorites data is not yet verified.');
       return;
-    }
-    if (!flags.includes('--offline')) {
-      throw new Error('Stop all app, worker, and migration writers and pass --offline');
     }
     await deps.connectDb();
     const { ToolFavorite } = deps.createModels(deps.mongoose);

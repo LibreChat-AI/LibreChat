@@ -13,6 +13,58 @@ import {
 } from '@librechat/data-schemas';
 import { runPostgresCommand } from './postgres';
 
+describe('PostgreSQL command arguments', () => {
+  const commands = ['migrate', 'import', 'verify', 'reconcile-mongo'];
+  const flags = ['--offline', '--dry-run', '--verified-empty'];
+  const combinations = commands.flatMap((command) =>
+    Array.from({ length: 8 }, (_, mask) => ({
+      args: [command, ...flags.filter((_flag, bit) => (mask & (1 << bit)) !== 0)],
+    })),
+  );
+  it.each(combinations)('validates $args before configuration or connections', async ({ args }) => {
+    const [command, ...flags] = args;
+    const unsupported =
+      (command === 'migrate' && flags.length > 0) ||
+      (command === 'verify' && flags.some((flag) => flag !== '--offline')) ||
+      (command === 'reconcile-mongo' && flags.includes('--verified-empty'));
+    const missingOffline = command !== 'migrate' && !flags.includes('--offline');
+    const sentinel = new Error('configuration not loaded');
+    const loadCustomConfig = jest.fn().mockRejectedValue(sentinel);
+    const connectDb = jest.fn();
+    const end = jest.spyOn(pg.Pool.prototype, 'end');
+    const operation = runPostgresCommand({
+      mongoose,
+      createModels,
+      connectDb,
+      loadCustomConfig,
+      args,
+      env: {},
+    });
+    if (unsupported) await expect(operation).rejects.toThrow('Usage:');
+    else if (missingOffline) await expect(operation).rejects.toThrow('pass --offline');
+    else await expect(operation).rejects.toBe(sentinel);
+    expect(loadCustomConfig).toHaveBeenCalledTimes(unsupported || missingOffline ? 0 : 1);
+    expect(connectDb).not.toHaveBeenCalled();
+    expect(end).not.toHaveBeenCalled();
+  });
+  it.each([
+    { args: [] },
+    { args: ['unknown'] },
+    { args: ['__proto__'] },
+    { args: ['constructor'] },
+    ...commands.map((command) => ({ args: [command, '--unknown'] })),
+    ...commands.map((command) => ({ args: [command, '--offline', '--offline'] })),
+  ])('rejects unknown commands, flags, and duplicates: $args', async ({ args }) => {
+    const loadCustomConfig = jest.fn();
+    const connectDb = jest.fn();
+    await expect(
+      runPostgresCommand({ mongoose, createModels, connectDb, loadCustomConfig, args, env: {} }),
+    ).rejects.toThrow('Usage:');
+    expect(loadCustomConfig).not.toHaveBeenCalled();
+    expect(connectDb).not.toHaveBeenCalled();
+  });
+});
+
 const realPostgres = process.env.PG_TEST_URL ? describe : describe.skip;
 realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
   const schema = `favorites_cli_${randomBytes(6).toString('hex')}`;
@@ -109,6 +161,37 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
       rmSync(scratch, { recursive: true, force: true });
     }
   });
+  it('rejects a migration dry run before creating any schema objects or opening connections', async () => {
+    const emptySchema = `favorites_dry_run_${randomBytes(6).toString('hex')}`;
+    await admin.query(`CREATE SCHEMA ${emptySchema}`);
+    const target = new URL(baseUrl);
+    target.searchParams.set('options', `-c search_path=${emptySchema}`);
+    const end = jest.spyOn(pg.Pool.prototype, 'end');
+    loadCustomConfig.mockClear();
+    try {
+      const result = await runPostgresCommand({
+        mongoose,
+        createModels,
+        connectDb,
+        loadCustomConfig,
+        args: ['migrate', '--dry-run'],
+        env: { PG_TEST_URL: target.toString() },
+      }).then(
+        () => 'success',
+        (error: Error) => error.message,
+      );
+      const objects = await admin.query('SELECT tablename FROM pg_tables WHERE schemaname=$1', [
+        emptySchema,
+      ]);
+      expect(objects.rows).toEqual([]);
+      expect(result).toContain('Usage:');
+      expect(loadCustomConfig).not.toHaveBeenCalled();
+      expect(connectDb).not.toHaveBeenCalled();
+      expect(end).not.toHaveBeenCalled();
+    } finally {
+      await admin.query(`DROP SCHEMA ${emptySchema} CASCADE`);
+    }
+  });
   it('migrates without connecting Mongo and releases its pool', async () => {
     const end = jest.spyOn(pg.Pool.prototype, 'end');
     await run(['migrate']);
@@ -120,16 +203,28 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
     });
   });
   it.each(['import', 'verify', 'reconcile-mongo'])(
-    'requires offline for %s and cleans up both connections',
+    'requires offline for %s before opening connections',
     async (command) => {
       const end = jest.spyOn(pg.Pool.prototype, 'end');
       const disconnect = jest.spyOn(mongoose, 'disconnect');
       await expect(run([command])).rejects.toThrow('--offline');
       expect(connectDb).not.toHaveBeenCalled();
-      expect(end).toHaveBeenCalledTimes(1);
+      expect(end).not.toHaveBeenCalled();
       expect(disconnect).toHaveBeenCalledTimes(1);
     },
   );
+  it('validates an import dry run without changing data or readiness', async () => {
+    await reconnect();
+    await collection().insertMany([row(1), row(2)]);
+    const original = await collection().find().sort({ _id: 1 }).toArray();
+    await mongoose.disconnect();
+    const state = await db.query('SELECT * FROM tool_favorite_readiness');
+    await run(['import', '--offline', '--dry-run']);
+    expect((await db.query('SELECT * FROM tool_favorites')).rows).toEqual([]);
+    expect((await db.query('SELECT * FROM tool_favorite_readiness')).rows).toEqual(state.rows);
+    await reconnect();
+    expect(await collection().find().sort({ _id: 1 }).toArray()).toEqual(original);
+  });
   it('imports and verifies identity, tenant and dates, then reconciles deletes and preserves indexes without changing authority', async () => {
     await reconnect();
     await collection().insertMany([row(1), row(2)]);
@@ -308,13 +403,16 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
     },
   );
   it('keeps the operational error when pool shutdown also fails, and still disconnects Mongo', async () => {
+    await reconnect();
+    await collection().insertOne({ ...row(1), user: null });
+    await mongoose.disconnect();
     const original = pg.Pool.prototype.end;
     jest.spyOn(pg.Pool.prototype, 'end').mockImplementationOnce(async function (this: pg.Pool) {
       await original.bind(this)();
       throw new Error('cleanup failed');
     });
     const disconnect = jest.spyOn(mongoose, 'disconnect');
-    await expect(run(['import'])).rejects.toThrow('--offline');
+    await expect(run(['import', '--offline'])).rejects.toThrow('Invalid favorite snapshot record');
     expect(disconnect).toHaveBeenCalledTimes(1);
   });
   it('disconnects Mongo even when configuration loading fails before a pool exists', async () => {
