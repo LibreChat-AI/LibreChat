@@ -1,3 +1,4 @@
+import { FileContext } from 'librechat-data-provider';
 import {
   appendLeafSuffix,
   flattenArtifactPath,
@@ -156,6 +157,7 @@ export function reserveCodeDestination(set: CodeDestinationSet, name: string): b
 }
 
 interface CodeDestinationCandidate {
+  context?: string;
   file_id?: string;
   createdAt?: Date | string | number;
   /** Last content write for a reused code-output record. `processCodeOutput`
@@ -174,6 +176,12 @@ function toTime(value: Date | string | number | undefined): number {
 }
 
 function contentTime(file: CodeDestinationCandidate | null | undefined): number {
+  if (
+    file?.context === FileContext.execute_code_snapshot &&
+    file.metadata?.sourceDispatchedAt != null
+  ) {
+    return toTime(file.metadata.sourceDispatchedAt);
+  }
   return Math.max(toTime(file?.metadata?.sourceDispatchedAt), toTime(file?.createdAt));
 }
 

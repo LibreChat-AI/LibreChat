@@ -121,12 +121,31 @@ export async function selectCodeFiles({
   let skippedSuperseded = 0;
   const candidates = [];
   const registry = createCodeApiUploadRegistry();
+  const generatedDestinations = new Set<string>();
   for (const file of sortCodeFilesByDestinationPriority(files, privateFileIds)) {
     if (!file) {
       continue;
     }
-    const ref = getCodeEnvRefForProfile(file.metadata, routeKey);
-    const sourceRef = ref ?? getCodeEnvRefs(file.metadata)[0]?.[1];
+    if (
+      file.context === FileContext.execute_code_snapshot ||
+      file.context === FileContext.execute_code
+    ) {
+      const destination = JSON.stringify([
+        privateFileIds?.has(file.file_id) ?? false,
+        file.filename,
+      ]);
+      if (generatedDestinations.has(destination)) {
+        skippedSuperseded++;
+        continue;
+      }
+      generatedDestinations.add(destination);
+    }
+    // Sandbox refs name mutable paths, including receipts from an earlier prime.
+    const ref =
+      file.context === FileContext.execute_code_snapshot
+        ? undefined
+        : getCodeEnvRefForProfile(file.metadata, routeKey);
+    const sourceRef = file.metadata?.codeEnvSource ?? ref ?? getCodeEnvRefs(file.metadata)[0]?.[1];
     if (!sourceRef) {
       skippedNoRef++;
       continue;
@@ -287,7 +306,11 @@ export function getCodeFileContextLine(
 
 /** Whether the code-file note mentions this file at `destination` at all. */
 export function isDescribedCodeFile(file: CodeContextFile, destination: string): boolean {
-  return file.context !== FileContext.execute_code || destination !== file.filename;
+  return (
+    (file.context !== FileContext.execute_code &&
+      file.context !== FileContext.execute_code_snapshot) ||
+    destination !== file.filename
+  );
 }
 
 /** Provenance and preview state appended to a file shown under `shownName`. */
@@ -297,7 +320,7 @@ export function getCodeFileContextSuffix(
   shownName: string,
 ): string {
   const origin =
-    file.context === FileContext.execute_code
+    file.context === FileContext.execute_code || file.context === FileContext.execute_code_snapshot
       ? ` (written earlier as ${file.filename})`
       : `${agentScoped ? '' : ' (attached by user)'}${
           shownName !== file.filename ? ` (uploaded as ${file.filename})` : ''

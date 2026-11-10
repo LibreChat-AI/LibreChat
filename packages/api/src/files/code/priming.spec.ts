@@ -27,6 +27,27 @@ const file = (id: string, name: string, ref: Partial<CodeEnvRef> = {}, time = 1)
 const fresh = { lastModified: new Date().toISOString() };
 
 describe('selectCodeFiles', () => {
+  it('keeps the newest snapshot at the live path across legacy records and route recovery', async () => {
+    const legacy = {
+      ...file('legacy', 'rows.csv', { sandboxFilename: 'rows.csv' }),
+      context: FileContext.execute_code,
+    };
+    const snapshot = {
+      ...file('snapshot', 'rows.csv', {}, 2),
+      context: FileContext.execute_code_snapshot,
+    };
+    snapshot.metadata = { codeEnvSource: snapshot.metadata?.codeEnvRef, sourceDispatchedAt: 2 };
+    const result = await selectCodeFiles({
+      files: [legacy, snapshot],
+      routeKey: 'stateful',
+      getFileInfo: async () => fresh,
+    });
+    expect(result.selected.map(({ file }) => file.file_id)).toEqual(['snapshot']);
+    expect(result.selected[0].sandboxName).toBe('rows.csv');
+    expect(result.selected[0].ref).toBeUndefined();
+    expect(result.skippedSuperseded).toBe(1);
+  });
+
   it('preserves provisioned aliases across turns and reuses legacy metadata probes', async () => {
     const getFileInfo = jest.fn(async (ref: CodeEnvRef) => ({
       ...fresh,

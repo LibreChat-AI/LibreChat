@@ -221,6 +221,8 @@ export interface IMongoFile extends Omit<Document, 'model'> {
      */
     codeEnvRef?: CodeEnvRef;
     codeEnvRefs?: CodeEnvRefMap;
+    /** Non-owning provenance of an immutable generated snapshot. */
+    codeEnvSource?: CodeEnvRef;
     /** Dispatch-order stamp for the current source artifact generation. */
     sourceDispatchedAt?: number;
     /** Vector namespaces this file has been embedded into. */
