@@ -346,23 +346,33 @@ export default function WorkspaceChannel({
                 {localize('com_ui_channels_workspace_more_routes')}
               </Button>
             )}
-            {mayRoute && !entries.some((entry) => !entry.externalChannelId) && (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy || !routes.isSuccess}
-                ref={addRef}
-                onClick={() => {
-                  mutation.reset();
-                  setSpecific(false);
-                  setExternalChannel('');
-                  setEditing(true);
-                }}
-              >
-                <Plus className="size-4" aria-hidden="true" />
-                {localize('com_ui_channels_workspace_add_assignment')}
-              </Button>
-            )}
+            {mayRoute &&
+              (channel.status !== 'active' ||
+                !entries.some((entry) => !entry.externalChannelId)) && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy || !routes.isSuccess}
+                  ref={addRef}
+                  onClick={() => {
+                    mutation.reset();
+                    const target =
+                      channel.status === 'disabled'
+                        ? (entries.find((entry) => !entry.externalChannelId) ?? entries[0])
+                        : undefined;
+                    setSpecific(Boolean(target?.externalChannelId));
+                    setExternalChannel(target?.externalChannelId ?? '');
+                    setEditing(true);
+                  }}
+                >
+                  <Plus className="size-4" aria-hidden="true" />
+                  {localize(
+                    channel.status === 'disabled' && entries.length > 0
+                      ? 'com_ui_channels_activate'
+                      : 'com_ui_channels_workspace_add_assignment',
+                  )}
+                </Button>
+              )}
           </section>
         )}
         {editing && mayRoute && (

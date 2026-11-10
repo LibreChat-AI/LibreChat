@@ -312,6 +312,32 @@ test('retains workspace-only groups without requesting admin app metadata', asyn
   ).not.toBeInTheDocument();
 });
 
+test('uses authorized workspace app names for manager display and search without admin metadata', async () => {
+  const user = userEvent.setup();
+  page({
+    canManage: false,
+    workspaces: [
+      { ...workspace, appName: 'Support Bot' },
+      { ...workspace, appId: 'A456', workspaceId: 'other', appName: 'Other Bot' },
+    ],
+    renderWorkspace: (value) => <p key={value.workspaceId}>{value.teamName}</p>,
+  });
+  const group = await screen.findByRole('button', { name: /Support Bot.*A123/, expanded: false });
+  const search = screen.getByRole('textbox', { name: 'com_ui_slack_search' });
+  await user.type(search, 'support');
+  expect(group).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.getByText('Engineering')).toBeVisible();
+  expect(screen.queryByRole('button', { name: /A456/ })).not.toBeInTheDocument();
+  expect(dataService.getSlackApps).not.toHaveBeenCalled();
+  expect(
+    screen.queryByRole('button', { name: /^com_ui_slack_apps_edit_named:/ }),
+  ).not.toBeInTheDocument();
+  await user.clear(search);
+  await user.type(search, 'unknown');
+  expect(screen.getByText('com_ui_slack_search_empty')).toBeVisible();
+  expect(screen.queryByRole('button', { name: /A123/ })).not.toBeInTheDocument();
+});
+
 test('displays and searches friendly app names while retaining their IDs', async () => {
   const user = userEvent.setup();
   jest.spyOn(dataService, 'getSlackApps').mockResolvedValue({

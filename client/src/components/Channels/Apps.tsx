@@ -119,10 +119,15 @@ export default function Apps({
     ]),
   ];
   const registrationsById = new Map(registrations.map((app) => [app.appId, app]));
+  const workspaceAppNames = new Map(
+    workspaces.map((workspace) => [workspace.appId, workspace.appName]),
+  );
+  const appName = (appId: string) =>
+    registrationsById.get(appId)?.name || workspaceAppNames.get(appId);
   const query = search.trim().toLocaleLowerCase();
   const matchesApp = (appId: string) =>
     appId.toLocaleLowerCase().includes(query) ||
-    registrationsById.get(appId)?.name?.toLocaleLowerCase().includes(query) === true;
+    appName(appId)?.toLocaleLowerCase().includes(query) === true;
   const matches = (appId: string) =>
     !query ||
     matchesApp(appId) ||
@@ -334,7 +339,8 @@ export default function Apps({
       )}
       {appIds.filter(matches).map((appId) => {
         const app = registrationsById.get(appId);
-        const appLabel = app?.name ? `${app.name} (${appId})` : appId;
+        const name = appName(appId);
+        const appLabel = name ? `${name} (${appId})` : appId;
         const children = workspaces.filter((workspace) => workspace.appId === appId);
         const canInstall =
           canManage &&
@@ -382,7 +388,7 @@ export default function Apps({
                     className="flex min-w-0 flex-1 flex-col items-start"
                   >
                     <span className="max-w-full truncate font-medium">
-                      {app?.name || localize('com_ui_slack_app')}
+                      {name || localize('com_ui_slack_app')}
                     </span>
                     <span className="text-text-secondary max-w-full truncate font-mono text-xs">
                       {appId}

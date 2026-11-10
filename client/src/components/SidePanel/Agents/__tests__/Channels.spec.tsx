@@ -1162,6 +1162,54 @@ describe('organization workspace connections', () => {
     },
   );
 
+  test.each([undefined, 'C123'])(
+    'reactivates a disabled connection using its retained assignment (destination=%s)',
+    async (externalChannelId) => {
+      rows = [{ ...configured, status: 'active' }];
+      const retained = { externalChannelId, revision: 'retained-route' };
+      jest
+        .mocked(dataService.getAgentChannelWorkspaceRoutes)
+        .mockResolvedValue({ routes: [retained] });
+      jest.mocked(dataService.getAgentChannelWorkspaceTarget).mockResolvedValue({
+        canReplace: true,
+        occupied: true,
+        assignedToThisChannel: true,
+        revision: retained.revision,
+      });
+      jest.mocked(dataService.disableAgentChannel).mockImplementation(async () => {
+        rows = [{ ...configured, status: 'disabled', revision: 'disabled-revision' }];
+        return rows[0];
+      });
+      const user = userEvent.setup();
+      renderChannels();
+      await openConnection(user, 'active');
+      await user.click(await screen.findByRole('button', { name: 'com_ui_channels_disable' }));
+      await openConnection(user, 'disabled');
+      await user.click(await screen.findByRole('button', { name: 'com_ui_channels_activate' }));
+      if (externalChannelId) {
+        expect(screen.getByLabelText('com_ui_channels_workspace_channel_id')).toHaveValue(
+          externalChannelId,
+        );
+      }
+      const assign = await screen.findByRole('button', {
+        name: 'com_ui_channels_workspace_assign',
+      });
+      await waitFor(() => expect(assign).toBeEnabled());
+      await user.click(assign);
+      await screen.findByText('com_ui_channels_active');
+      expect(dataService.setAgentChannelWorkspaceRoute).toHaveBeenCalledWith(
+        'agent-1',
+        'channel-1',
+        {
+          channelRevision: 'disabled-revision',
+          externalChannelId,
+          expectedRevision: retained.revision,
+        },
+      );
+      expect(dataService.removeAgentChannelWorkspaceRoute).not.toHaveBeenCalled();
+    },
+  );
+
   test('removes a selected route only after confirmation and keeps the connection active', async () => {
     rows = [{ ...configured, status: 'active' }];
     let routes = [{ externalChannelId: 'C123', revision: 'route-1' }];
