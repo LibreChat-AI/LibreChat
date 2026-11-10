@@ -25,6 +25,7 @@ const mockMethods = {
   deleteUserById: jest.fn(),
   deleteAgentTriggerDeliveriesByUser: jest.fn(),
   cancelAgentTriggerUserPurge: jest.fn(),
+  isAgentTriggerUserDeletionOwner: jest.fn(),
   cancelAgentTriggerUserDeletion: jest.fn(),
   deleteUserPrompts: jest.fn(),
 };
@@ -140,6 +141,7 @@ describe('Delete user CLI', () => {
     mockMethods.deleteUserById.mockReset().mockResolvedValue({ deletedCount: 1 });
     mockMethods.deleteAgentTriggerDeliveriesByUser.mockReset().mockResolvedValue(undefined);
     mockMethods.cancelAgentTriggerUserPurge.mockReset().mockResolvedValue(true);
+    mockMethods.isAgentTriggerUserDeletionOwner.mockReset().mockResolvedValue(true);
     mockMethods.cancelAgentTriggerUserDeletion.mockReset().mockResolvedValue(true);
     mockMethods.deleteUserPrompts.mockReset().mockResolvedValue(undefined);
     mockGetCleanupBlockingJobIdsForUser.mockReset().mockResolvedValue([]);
@@ -269,28 +271,31 @@ describe('Delete user CLI', () => {
   });
 
   it.each([false, 'error'])(
-    'keeps favorites fenced when Mongo cancellation is not proven: %s',
+    'keeps favorites fenced when Mongo ownership is not proven: %s',
     async (result) => {
       mockEraseUserData.mockRejectedValueOnce(new Error('shared link failure'));
       if (result === 'error')
-        mockMethods.cancelAgentTriggerUserDeletion.mockRejectedValueOnce(
+        mockMethods.isAgentTriggerUserDeletionOwner.mockRejectedValueOnce(
           new Error('Mongo unavailable'),
         );
-      else mockMethods.cancelAgentTriggerUserDeletion.mockResolvedValueOnce(false);
+      else mockMethods.isAgentTriggerUserDeletionOwner.mockResolvedValueOnce(false);
       expect(await runCli()).toBe(1);
       expect(mockMongoFavorites.cancelUserToolFavoriteDeletion).not.toHaveBeenCalled();
     },
   );
 
-  it('releases only the cascade UUID after Mongo cancellation succeeds', async () => {
+  it('releases only the cascade UUID before releasing Mongo ownership', async () => {
     mockEraseUserData.mockRejectedValueOnce(new Error('shared link failure'));
     expect(await runCli()).toBe(1);
     const token = mockMethods.suspendUserSchedulesForDeletion.mock.calls[0][1];
     expect(mockEraseUserData.mock.calls[0][0].deletionAttemptId).toBe(token);
     expect(mockMongoFavorites.cancelUserToolFavoriteDeletion).toHaveBeenCalledWith(USER_ID, token);
-    expect(mockMethods.cancelAgentTriggerUserDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockMethods.isAgentTriggerUserDeletionOwner.mock.invocationCallOrder[0]).toBeLessThan(
       mockMongoFavorites.cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0],
     );
+    expect(
+      mockMongoFavorites.cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockMethods.cancelAgentTriggerUserDeletion.mock.invocationCallOrder[0]);
   });
 
   it('never restores schedules after a committed deletion', async () => {
@@ -444,6 +449,19 @@ describe('Delete user CLI', () => {
       expect.objectContaining({ keepTransactions: false }),
     );
   });
+
+  it.each(['unknown', 'absent'])(
+    'keeps both erasure fences after final delete starts: %s',
+    async (outcome) => {
+      if (outcome === 'unknown')
+        mockMethods.deleteUserById.mockRejectedValueOnce(new Error('delete acknowledgement lost'));
+      else mockMethods.deleteUserById.mockResolvedValueOnce({ deletedCount: 0 });
+      expect(await runCli()).toBe(1);
+      expect(mockMethods.isAgentTriggerUserDeletionOwner).not.toHaveBeenCalled();
+      expect(mockMongoFavorites.cancelUserToolFavoriteDeletion).not.toHaveBeenCalled();
+      expect(mockMethods.cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
+    },
+  );
 
   it('keeps the user and releases both fences when the cascade fails', async () => {
     mockEraseUserData.mockRejectedValueOnce(new Error('storage unavailable'));

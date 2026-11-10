@@ -17,7 +17,7 @@ const {
   stopUserGenerations,
   deleteAllSharedLinksWithCleanup,
   eraseUserData,
-  cancelUserDataDeletion,
+  createUserDeletionAttempt,
   deleteUserMCPServers,
   revokeUserCodeEnvironmentWorkers,
   finalizeMCPAuthorizationMutation,
@@ -371,6 +371,7 @@ const deleteUserController = async (req, res) => {
   let triggerDeletionFence;
   let scheduleSuspensionToken;
   let userDeleted = false;
+  const deletionAttempt = createUserDeletionAttempt();
 
   try {
     const existingUser = await db.getUserById(
@@ -441,7 +442,7 @@ const deleteUserController = async (req, res) => {
         onSessionsDeleted: () => clearSessionHintCookie(res),
       },
     );
-    const deleteResult = await db.deleteUserById(user.id);
+    const deleteResult = await deletionAttempt.commit(() => db.deleteUserById(user.id));
     if (deleteResult.deletedCount !== 1) {
       throw new Error('User disappeared before account deletion could commit');
     }
@@ -508,7 +509,7 @@ const deleteUserController = async (req, res) => {
         );
       }
       try {
-        await cancelUserDataDeletion(
+        await deletionAttempt.cancel(
           {
             userId: user.id,
             startedAt: triggerDeletionFence,

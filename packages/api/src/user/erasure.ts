@@ -106,16 +106,48 @@ export interface UserErasureParams {
   keepTransactions?: boolean;
 }
 
-/** Release favorites only after Mongo proves the account and this attempt still own the fence. */
+type UserDeletionCancellationParams = {
+  userId: string;
+  startedAt: Date;
+  deletionAttemptId?: string;
+};
+type UserDeletionCancellationDeps = Pick<
+  AllMethods,
+  | 'isAgentTriggerUserDeletionOwner'
+  | 'cancelAgentTriggerUserDeletion'
+  | 'cancelUserToolFavoriteDeletion'
+>;
+
+export interface UserDeletionAttempt {
+  commit<T>(operation: () => Promise<T>): Promise<T>;
+  cancel(params: UserDeletionCancellationParams, deps: UserDeletionCancellationDeps): Promise<void>;
+}
+
+/** A started user delete may still commit after an error or a lost acknowledgement. */
+export function createUserDeletionAttempt(): UserDeletionAttempt {
+  let commitStarted = false;
+  return {
+    async commit<T>(operation: () => Promise<T>): Promise<T> {
+      commitStarted = true;
+      return operation();
+    },
+    async cancel(params, deps) {
+      if (!commitStarted) await cancelUserDataDeletion(params, deps);
+    },
+  };
+}
+
+/** Keep Mongo ownership retryable until this attempt's favorites fence is released. */
 export async function cancelUserDataDeletion(
-  params: { userId: string; startedAt: Date; deletionAttemptId?: string },
-  deps: Pick<AllMethods, 'cancelAgentTriggerUserDeletion' | 'cancelUserToolFavoriteDeletion'>,
+  params: UserDeletionCancellationParams,
+  deps: UserDeletionCancellationDeps,
 ): Promise<void> {
   const { userId, startedAt, deletionAttemptId } = params;
-  if ((await deps.cancelAgentTriggerUserDeletion(userId, startedAt)) !== true) return;
-  if (deletionAttemptId !== undefined) {
-    await deps.cancelUserToolFavoriteDeletion?.(userId, deletionAttemptId);
+  if (deletionAttemptId !== undefined && deps.cancelUserToolFavoriteDeletion) {
+    if ((await deps.isAgentTriggerUserDeletionOwner(userId, startedAt)) !== true) return;
+    await deps.cancelUserToolFavoriteDeletion(userId, deletionAttemptId);
   }
+  await deps.cancelAgentTriggerUserDeletion(userId, startedAt);
 }
 
 export type MCPServerCleanupDeps = Pick<

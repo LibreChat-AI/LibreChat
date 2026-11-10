@@ -9,7 +9,7 @@ const { User } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const {
   eraseUserData,
-  cancelUserDataDeletion,
+  createUserDeletionAttempt,
   GenerationJobManager,
   createStreamServices,
   initializeFileStorage,
@@ -117,6 +117,7 @@ async function gracefulExit(code = 0) {
   let deletionFence;
   let scheduleSuspensionToken;
   let userDeleted = false;
+  const deletionAttempt = createUserDeletionAttempt();
 
   try {
     deletionFence = new Date();
@@ -286,7 +287,9 @@ async function gracefulExit(code = 0) {
     );
 
     // 6) Finally delete the user document itself
-    const deletedUser = await runAsSystem(() => methods.deleteUserById(uid));
+    const deletedUser = await deletionAttempt.commit(() =>
+      runAsSystem(() => methods.deleteUserById(uid)),
+    );
     if (deletedUser.deletedCount !== 1) {
       throw new Error('User disappeared before account deletion could commit');
     }
@@ -330,7 +333,7 @@ async function gracefulExit(code = 0) {
         (error) => console.error('Failed to disarm trigger purge recovery:', error),
       );
       await runAsSystem(() =>
-        cancelUserDataDeletion(
+        deletionAttempt.cancel(
           { userId: uid, startedAt: deletionFence, deletionAttemptId: scheduleSuspensionToken },
           methods,
         ),

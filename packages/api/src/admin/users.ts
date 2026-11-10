@@ -15,7 +15,7 @@ import type { Response } from 'express';
 import type { UserGenerationControl } from '~/user/generations';
 import type { UserErasureDeps } from '~/user/erasure';
 import type { ServerRequest } from '~/types/http';
-import { eraseUserData, cancelUserDataDeletion } from '~/user/erasure';
+import { eraseUserData, createUserDeletionAttempt } from '~/user/erasure';
 import { stopUserGenerations } from '~/user/generations';
 import { invalidatingConfigStore } from './cascade';
 import { parsePagination } from './pagination';
@@ -76,6 +76,7 @@ export interface AdminUsersDeps {
     userId: string,
     startedAt: Date,
   ) => Promise<'acquired' | 'in_progress' | 'missing'>;
+  isAgentTriggerUserDeletionOwner: (userId: string, startedAt: Date) => Promise<boolean>;
   cancelAgentTriggerUserDeletion: (userId: string, startedAt: Date) => Promise<boolean>;
   drainAgentTriggerDeliveriesForUser: (userId: string) => Promise<void>;
   prepareAgentTriggerUserPurge: (
@@ -132,6 +133,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
     findUsers,
     countUsers,
     beginAgentTriggerUserDeletion,
+    isAgentTriggerUserDeletionOwner,
     cancelAgentTriggerUserDeletion,
     drainAgentTriggerDeliveriesForUser,
     prepareAgentTriggerUserPurge,
@@ -232,6 +234,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
     let triggerDeletionFence: Date | undefined;
     let scheduleSuspensionToken: string | undefined;
     let userDeleted = false;
+    const deletionAttempt = createUserDeletionAttempt();
     let erasureDeps: UserErasureDeps | undefined;
 
     try {
@@ -292,17 +295,18 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
         },
         erasureDeps,
       );
-      const result = await deleteUserById(id);
+      const result = await deletionAttempt.commit(() => deleteUserById(id));
 
       if (result.deletedCount === 0) {
         await cancelAgentTriggerUserPurge(id, triggerDeletionFence);
-        await cancelUserDataDeletion(
+        await deletionAttempt.cancel(
           {
             userId: id,
             startedAt: triggerDeletionFence,
             deletionAttemptId: scheduleSuspensionToken,
           },
           {
+            isAgentTriggerUserDeletionOwner,
             cancelAgentTriggerUserDeletion,
             cancelUserToolFavoriteDeletion: erasureDeps?.cancelUserToolFavoriteDeletion,
           },
@@ -370,13 +374,14 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
           logger.error('[adminUsers] failed to disarm trigger purge recovery:', purgeFenceError);
         }
         try {
-          await cancelUserDataDeletion(
+          await deletionAttempt.cancel(
             {
               userId: targetUserId,
               startedAt: triggerDeletionFence,
               deletionAttemptId: scheduleSuspensionToken,
             },
             {
+              isAgentTriggerUserDeletionOwner,
               cancelAgentTriggerUserDeletion,
               cancelUserToolFavoriteDeletion: erasureDeps?.cancelUserToolFavoriteDeletion,
             },

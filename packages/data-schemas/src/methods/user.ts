@@ -178,6 +178,7 @@ export function createUserMethods(
     userId: string,
     recoveredAt: Date,
   ) => Promise<'acquired' | 'in_progress' | 'missing'>;
+  isAgentTriggerUserDeletionOwner: (userId: string, startedAt: Date) => Promise<boolean>;
   cancelAgentTriggerUserDeletion: (userId: string, startedAt: Date) => Promise<boolean>;
   isAgentTriggerPrincipalActive: (userId: string) => Promise<boolean>;
   fenceSubagentAdmission: (userId: string, token: string, fencedUntil: Date) => Promise<void>;
@@ -693,6 +694,19 @@ export function createUserMethods(
     return (await User.exists({ _id: userId })) == null ? 'missing' : 'in_progress';
   }
 
+  /** Reads current ownership without releasing the durable retry anchor. */
+  async function isAgentTriggerUserDeletionOwner(
+    userId: string,
+    startedAt: Date,
+  ): Promise<boolean> {
+    const User = mongoose.models.User;
+    return (
+      (await User.exists({ _id: userId, agentTriggerDeletionStartedAt: startedAt }).read(
+        'primary',
+      )) != null
+    );
+  }
+
   /** Releases only the account-deletion attempt that owns this exact fence. */
   async function cancelAgentTriggerUserDeletion(userId: string, startedAt: Date): Promise<boolean> {
     const User = mongoose.models.User;
@@ -1046,6 +1060,7 @@ export function createUserMethods(
     generateToken,
     beginAgentTriggerUserDeletion,
     recoverStaleAgentTriggerUserDeletion,
+    isAgentTriggerUserDeletionOwner,
     cancelAgentTriggerUserDeletion,
     isAgentTriggerPrincipalActive,
     fenceSubagentAdmission,

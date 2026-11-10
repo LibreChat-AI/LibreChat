@@ -65,6 +65,7 @@ jest.mock('~/models', () => {
     deleteUserById: jest.fn().mockResolvedValue({ deletedCount: 1 }),
     deleteAllUserPluginAuths: jest.fn().mockResolvedValue(undefined),
     beginAgentTriggerUserDeletion: jest.fn().mockResolvedValue('acquired'),
+    isAgentTriggerUserDeletionOwner: jest.fn().mockResolvedValue(true),
     cancelAgentTriggerUserDeletion: jest.fn().mockResolvedValue(true),
     deleteUserPrompts: jest.fn().mockResolvedValue(undefined),
     deleteUserSkills: jest.fn().mockResolvedValue(undefined),
@@ -946,13 +947,13 @@ describe('deleteUserController', () => {
   });
 
   it.each([false, 'error'])(
-    'does not release the favorite marker without a proven Mongo cancellation: %s',
+    'does not release the favorite marker without a proven Mongo owner: %s',
     async (result) => {
       const db = require('~/models');
       db.deleteUserAgents.mockRejectedValueOnce(new Error('later cascade failure'));
       if (result === 'error')
-        db.cancelAgentTriggerUserDeletion.mockRejectedValueOnce(new Error('Mongo unavailable'));
-      else db.cancelAgentTriggerUserDeletion.mockResolvedValueOnce(false);
+        db.isAgentTriggerUserDeletionOwner.mockRejectedValueOnce(new Error('Mongo unavailable'));
+      else db.isAgentTriggerUserDeletionOwner.mockResolvedValueOnce(false);
       const userId = new mongoose.Types.ObjectId().toString();
       await deleteUserController({ user: { id: userId, tenantId: 'tenant-1' } }, mockRes);
       expect(mockRes.status).toHaveBeenCalledWith(500);
@@ -964,7 +965,7 @@ describe('deleteUserController', () => {
     },
   );
 
-  it('releases the cascade UUID only after Mongo cancellation proves the account survived', async () => {
+  it('releases the cascade UUID before releasing Mongo ownership', async () => {
     const db = require('~/models');
     db.deleteUserAgents.mockRejectedValueOnce(new Error('later cascade failure'));
     const userId = new mongoose.Types.ObjectId().toString();
@@ -973,8 +974,11 @@ describe('deleteUserController', () => {
     expect(mockRes.status).toHaveBeenCalledWith(500);
     expect(db.deleteUserToolFavorites).toHaveBeenCalledWith(userId, token);
     expect(db.cancelUserToolFavoriteDeletion).toHaveBeenCalledWith(userId, token);
-    expect(db.cancelAgentTriggerUserDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(db.isAgentTriggerUserDeletionOwner.mock.invocationCallOrder[0]).toBeLessThan(
       db.cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0],
+    );
+    expect(db.cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+      db.cancelAgentTriggerUserDeletion.mock.invocationCallOrder[0],
     );
   });
 
@@ -1127,6 +1131,17 @@ describe('deleteUserController', () => {
     expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(String(userId), expect.any(Date));
   });
 
+  it('retains both erasure fences after an unknown final delete outcome', async () => {
+    const db = require('~/models');
+    const userId = new mongoose.Types.ObjectId().toString();
+    db.deleteUserById.mockRejectedValueOnce(new Error('delete acknowledgement lost'));
+    await deleteUserController({ user: { id: userId } }, mockRes);
+    expect(mockRes.status).toHaveBeenCalledWith(500);
+    expect(db.isAgentTriggerUserDeletionOwner).not.toHaveBeenCalled();
+    expect(db.cancelUserToolFavoriteDeletion).not.toHaveBeenCalled();
+    expect(db.cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
+  });
+
   it('does not purge trigger payloads when the user deletion did not commit', async () => {
     const userId = new mongoose.Types.ObjectId();
     deleteUserById.mockResolvedValueOnce({ deletedCount: 0 });
@@ -1135,7 +1150,7 @@ describe('deleteUserController', () => {
 
     expect(mockPurgeAgentTriggerDeliveriesForUser).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(String(userId), expect.any(Date));
-    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(String(userId), expect.any(Date));
+    expect(cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
     expect(mockRes.status).toHaveBeenCalledWith(500);
   });
 

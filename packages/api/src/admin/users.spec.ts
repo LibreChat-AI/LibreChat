@@ -61,6 +61,7 @@ function createDeps(overrides: Partial<AdminUsersDeps> = {}): AdminUsersDeps {
     findUsers: jest.fn().mockResolvedValue([]),
     countUsers: jest.fn().mockResolvedValue(0),
     beginAgentTriggerUserDeletion: jest.fn().mockResolvedValue('acquired'),
+    isAgentTriggerUserDeletionOwner: jest.fn().mockResolvedValue(true),
     cancelAgentTriggerUserDeletion: jest.fn().mockResolvedValue(true),
     drainAgentTriggerDeliveriesForUser: jest.fn().mockResolvedValue(undefined),
     prepareAgentTriggerUserPurge: jest.fn().mockResolvedValue(undefined),
@@ -589,12 +590,12 @@ describe('createAdminUsersHandlers', () => {
     });
 
     it.each([true, false])(
-      'releases the resolved favorite UUID only after a successful Mongo CAS: %s',
+      'releases the resolved favorite UUID only after a proven Mongo owner: %s',
       async (owned) => {
         const cancelUserToolFavoriteDeletion = jest.fn().mockResolvedValue(undefined);
         jest.mocked(eraseUserData).mockRejectedValueOnce(new Error('later cascade failure'));
         const deps = createDeps({
-          cancelAgentTriggerUserDeletion: jest.fn().mockResolvedValue(owned),
+          isAgentTriggerUserDeletionOwner: jest.fn().mockResolvedValue(owned),
           resolveErasure: jest.fn().mockResolvedValue({ deps: { cancelUserToolFavoriteDeletion } }),
         });
         const { req, res } = createReqRes({ params: { id: validUserId } });
@@ -607,8 +608,11 @@ describe('createAdminUsersHandlers', () => {
         if (owned) {
           expect(cancelUserToolFavoriteDeletion).toHaveBeenCalledWith(validUserId, token);
           expect(
-            jest.mocked(deps.cancelAgentTriggerUserDeletion).mock.invocationCallOrder[0],
+            jest.mocked(deps.isAgentTriggerUserDeletionOwner).mock.invocationCallOrder[0],
           ).toBeLessThan(cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0]);
+          expect(cancelUserToolFavoriteDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+            jest.mocked(deps.cancelAgentTriggerUserDeletion).mock.invocationCallOrder[0],
+          );
         } else expect(cancelUserToolFavoriteDeletion).not.toHaveBeenCalled();
       },
     );
@@ -725,10 +729,7 @@ describe('createAdminUsersHandlers', () => {
       expect(deps.deleteUserCodeEnvironments).not.toHaveBeenCalled();
       expect(deps.deleteAclEntries).not.toHaveBeenCalled();
       expect(deps.purgeAgentTriggerDeliveriesForUser).not.toHaveBeenCalled();
-      expect(deps.cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
-        validUserId,
-        expect.any(Date),
-      );
+      expect(deps.cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserPurge).toHaveBeenCalledWith(validUserId, expect.any(Date));
     });
 
@@ -766,10 +767,8 @@ describe('createAdminUsersHandlers', () => {
 
       expect(status).toHaveBeenCalledWith(500);
       expect(json).toHaveBeenCalledWith({ error: 'Failed to delete user' });
-      expect(deps.cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
-        validUserId,
-        expect.any(Date),
-      );
+      expect(deps.cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
+      expect(deps.isAgentTriggerUserDeletionOwner).not.toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserPurge).toHaveBeenCalledWith(validUserId, expect.any(Date));
       expect(deps.purgeAgentTriggerDeliveriesForUser).not.toHaveBeenCalled();
     });

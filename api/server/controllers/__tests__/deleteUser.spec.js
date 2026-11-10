@@ -70,6 +70,10 @@ jest.mock('@librechat/api', () => ({
   getNewS3URL: jest.fn(),
   deleteAllSharedLinksWithCleanup: (...args) => mockDeleteAllSharedLinksWithCleanup(...args),
   eraseUserData: jest.requireActual('../../../../packages/api/src/user/erasure.ts').eraseUserData,
+  createUserDeletionAttempt: jest.requireActual('../../../../packages/api/src/user/erasure.ts')
+    .createUserDeletionAttempt,
+  cancelUserDataDeletion: jest.requireActual('../../../../packages/api/src/user/erasure.ts')
+    .cancelUserDataDeletion,
   revokeUserCodeEnvironmentWorkers: (...args) => mockRevokeUserCodeEnvironmentWorkers(...args),
   GenerationJobManager: {
     getAccountCleanupJobIdsForUser: (...args) => mockGetCleanupBlockingJobIdsForUser(...args),
@@ -98,6 +102,7 @@ jest.mock('~/models', () => ({
   deleteUserById: (...args) => mockDeleteUserById(...args),
   deleteAllUserPluginAuths: (...args) => mockDeleteAllUserPluginAuths(...args),
   beginAgentTriggerUserDeletion: (...args) => mockBeginAgentTriggerUserDeletion(...args),
+  isAgentTriggerUserDeletionOwner: jest.fn().mockResolvedValue(true),
   cancelAgentTriggerUserDeletion: (...args) => mockCancelAgentTriggerUserDeletion(...args),
   deleteMessages: (...args) => mockDeleteMessages(...args),
   deletePresets: (...args) => mockDeletePresets(...args),

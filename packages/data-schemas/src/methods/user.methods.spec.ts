@@ -1587,6 +1587,34 @@ describe('User Methods - Database Tests', () => {
       await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(true);
     });
 
+    test('proves the exact live owner from primary without releasing its fence', async () => {
+      const user = await User.create({ email: 'deletion-owner@example.com', provider: 'local' });
+      const userId = user._id.toString();
+      const startedAt = new Date('2026-11-10T12:00:00.000Z');
+      await expect(methods.isAgentTriggerUserDeletionOwner(userId, startedAt)).resolves.toBe(false);
+      await methods.beginAgentTriggerUserDeletion(userId, startedAt);
+      const read = jest.spyOn(mongoose.Query.prototype, 'read');
+      await expect(methods.isAgentTriggerUserDeletionOwner(userId, startedAt)).resolves.toBe(true);
+      expect(read).toHaveBeenCalledWith('primary');
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(false);
+      await expect(
+        methods.isAgentTriggerUserDeletionOwner(userId, new Date(startedAt.getTime() + 1)),
+      ).resolves.toBe(false);
+      await methods.deleteUserById(userId);
+      await expect(methods.isAgentTriggerUserDeletionOwner(userId, startedAt)).resolves.toBe(false);
+    });
+
+    test('propagates ownership-read errors instead of treating them as absent ownership', async () => {
+      const failure = new Error('ownership read unavailable');
+      jest.spyOn(User.collection, 'findOne').mockRejectedValueOnce(failure);
+      await expect(
+        methods.isAgentTriggerUserDeletionOwner(
+          new mongoose.Types.ObjectId().toString(),
+          new Date(),
+        ),
+      ).rejects.toThrow(failure);
+    });
+
     test('reports a missing principal without creating a deletion fence', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
 
