@@ -1285,7 +1285,7 @@ const executeResponse = async (envelope, { req, res }) => {
           on_message_delta: responsesHandlers.on_message_delta,
           on_reasoning_delta: responsesHandlers.on_reasoning_delta,
           on_run_step: clientTools.wrapRunStep(responsesHandlers.on_run_step),
-          on_run_step_delta: responsesHandlers.on_run_step_delta,
+          on_run_step_delta: clientTools.wrapRunStepDelta(responsesHandlers.on_run_step_delta),
           on_chat_model_end: {
             handle: (event, data, metadata, graph) => {
               responsesHandlers.on_chat_model_end.handle(event, data);
@@ -1528,7 +1528,7 @@ const executeResponse = async (envelope, { req, res }) => {
           on_message_delta: aggregatorHandlers.on_message_delta,
           on_reasoning_delta: aggregatorHandlers.on_reasoning_delta,
           on_run_step: clientTools.wrapRunStep(aggregatorHandlers.on_run_step),
-          on_run_step_delta: aggregatorHandlers.on_run_step_delta,
+          on_run_step_delta: clientTools.wrapRunStepDelta(aggregatorHandlers.on_run_step_delta),
           on_chat_model_end: {
             handle: (event, data, metadata, graph) => {
               aggregatorHandlers.on_chat_model_end.handle(event, data);

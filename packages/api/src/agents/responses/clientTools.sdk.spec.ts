@@ -64,7 +64,10 @@ function setup() {
   const registry = new HandlerRegistry();
   graph.handlerRegistry = registry;
   registry.register('on_run_step', handoff.wrapRunStep(stream.handlers.on_run_step));
-  registry.register('on_run_step_delta', stream.handlers.on_run_step_delta);
+  registry.register(
+    'on_run_step_delta',
+    handoff.wrapRunStepDelta(stream.handlers.on_run_step_delta),
+  );
   const metadata = {
     run_id: 'sdk',
     thread_id: 'sdk_thread',
@@ -217,6 +220,243 @@ describe('caller tool handoff through the pinned SDK', () => {
         .filter((event) => event.type === 'response.function_call_arguments.delta')
         .map((event) => event.delta),
     ).toEqual(['{"sql":', '"SELECT 1"}']);
+  });
+
+  it('hands off a parallel client-only batch streamed as separate call chunks', async () => {
+    const { events, graph, metadata, stream } = setup();
+    const sdk = new ChatModelStreamHandler();
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ id: 'call_a', name: 'submit_sql', index: 0, args: '{"sql":' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ id: 'call_b', name: 'submit_sql', index: 1, args: '{"sql":' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [
+            { index: 0, args: '"SELECT 1"}' },
+            { index: 1, args: '"SELECT 2"}' },
+          ],
+        }),
+      },
+      metadata,
+      graph,
+    );
+
+    const calls = [
+      { id: 'call_a', name: 'submit_sql', args: { sql: 'SELECT 1' } },
+      { id: 'call_b', name: 'submit_sql', args: { sql: 'SELECT 2' } },
+    ];
+    expect(
+      toolsCondition(
+        { messages: [{ tool_calls: calls }] } as unknown as Parameters<typeof toolsCondition>[0],
+        'tools',
+        graph.invokedToolIds,
+      ),
+    ).not.toBe('tools');
+
+    stream.handlers.on_chat_model_end.handle('on_chat_model_end', {
+      output: { tool_calls: calls },
+    });
+    stream.finalizeStream();
+
+    expect(completed(events)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'function_call', call_id: 'call_a' }),
+        expect.objectContaining({ type: 'function_call', call_id: 'call_b' }),
+      ]),
+    );
+  });
+
+  it('hands off a parallel client-only batch when id/name arrive in deltas (Anthropic shape)', async () => {
+    const { events, graph, metadata, stream } = setup();
+    const sdk = new ChatModelStreamHandler();
+    // Anthropic-style streaming: each call opens with an args-less id/name chunk,
+    // arguments arrive as index-only deltas. The tool_calls step is dispatched
+    // once, for the first chunk, so later calls only ever appear in deltas.
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ id: 'call_a', name: 'submit_sql', index: 0, args: '' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ index: 0, args: '{"sql":"SELECT 1"}' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ id: 'call_b', name: 'submit_sql', index: 1, args: '' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ index: 1, args: '{"sql":"SELECT 2"}' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+
+    const calls = [
+      { id: 'call_a', name: 'submit_sql', args: { sql: 'SELECT 1' } },
+      { id: 'call_b', name: 'submit_sql', args: { sql: 'SELECT 2' } },
+    ];
+    expect(
+      toolsCondition(
+        { messages: [{ tool_calls: calls }] } as unknown as Parameters<typeof toolsCondition>[0],
+        'tools',
+        graph.invokedToolIds,
+      ),
+    ).not.toBe('tools');
+
+    stream.handlers.on_chat_model_end.handle('on_chat_model_end', {
+      output: { tool_calls: calls },
+    });
+    stream.finalizeStream();
+
+    expect(completed(events)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call',
+          call_id: 'call_a',
+          arguments: '{"sql":"SELECT 1"}',
+        }),
+        expect.objectContaining({
+          type: 'function_call',
+          call_id: 'call_b',
+          arguments: '{"sql":"SELECT 2"}',
+        }),
+      ]),
+    );
+  });
+
+  it('hands off when a delta-only call streams its name in fragments', async () => {
+    const { events, graph, metadata, stream } = setup();
+    const sdk = new ChatModelStreamHandler();
+    // The chunk contract permits substring names: assemble before matching.
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ id: 'call_a', name: 'submit_sql', index: 0, args: '' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ index: 0, args: '{"sql":"SELECT 1"}' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ id: 'call_b', name: 'submit', index: 1, args: '' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ id: 'call_b', name: '_sql', index: 1, args: '' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+    await sdk.handle(
+      'on_chat_model_stream',
+      {
+        chunk: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [{ index: 1, args: '{"sql":"SELECT 2"}' }],
+        }),
+      },
+      metadata,
+      graph,
+    );
+
+    const calls = [
+      { id: 'call_a', name: 'submit_sql', args: { sql: 'SELECT 1' } },
+      { id: 'call_b', name: 'submit_sql', args: { sql: 'SELECT 2' } },
+    ];
+    expect(
+      toolsCondition(
+        { messages: [{ tool_calls: calls }] } as unknown as Parameters<typeof toolsCondition>[0],
+        'tools',
+        graph.invokedToolIds,
+      ),
+    ).not.toBe('tools');
+
+    stream.handlers.on_chat_model_end.handle('on_chat_model_end', {
+      output: { tool_calls: calls },
+    });
+    stream.finalizeStream();
+
+    expect(completed(events)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call',
+          call_id: 'call_b',
+          name: 'submit_sql',
+        }),
+      ]),
+    );
   });
 
   it('never eagerly answers a client-only call when its name is excluded', async () => {

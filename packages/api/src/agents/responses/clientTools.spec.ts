@@ -13,6 +13,7 @@ import {
   buildClientToolDefinitions,
   mergeClientToolDefinitions,
   clientToolDeferralContent,
+  createClientToolRunStepDeltaHandler,
   createClientToolRunStepHandler,
   createClientToolExecuteHandler,
 } from './clientTools';
@@ -403,6 +404,119 @@ describe('createClientToolRunStepHandler', () => {
 
     expect(delegate.handle).toHaveBeenCalledTimes(4);
     expect(graph.invokedToolIds?.size ?? 0).toBe(0);
+  });
+});
+
+describe('createClientToolRunStepDeltaHandler', () => {
+  const metadata = {} as Parameters<RunStepHandler['handle']>[2];
+
+  function delta(toolCalls: Array<{ id?: string; name?: string }>) {
+    return { delta: { type: 'tool_calls', tool_calls: toolCalls } };
+  }
+
+  it('marks delta-only client tool calls as invoked', () => {
+    const delegated: unknown[] = [];
+    const delegate: RunStepHandler = {
+      handle: (_event, data) => {
+        delegated.push(data);
+      },
+    };
+    const handler = createClientToolRunStepDeltaHandler({
+      delegate,
+      clientToolNames: new Set(['submit_sql']),
+    });
+    const graph: StandardGraph = { invokedToolIds: new Set(['call_a']) };
+
+    handler.handle(
+      'on_run_step_delta',
+      delta([{ id: 'call_b', name: 'submit_sql' }]),
+      metadata,
+      graph,
+    );
+
+    expect(delegated).toHaveLength(1);
+    expect([...graph.invokedToolIds!]).toEqual(['call_a', 'call_b']);
+  });
+
+  it('ignores server-tool deltas and index-only argument chunks', () => {
+    const delegate: RunStepHandler = { handle: () => undefined };
+    const handler = createClientToolRunStepDeltaHandler({
+      delegate,
+      clientToolNames: new Set(['submit_sql']),
+    });
+    const graph: StandardGraph = { invokedToolIds: new Set(['call_a']) };
+
+    handler.handle(
+      'on_run_step_delta',
+      delta([{ id: 'call_s', name: 'code_interpreter' }, {}]),
+      metadata,
+      graph,
+    );
+
+    expect([...graph.invokedToolIds!]).toEqual(['call_a']);
+  });
+
+  it('assembles fragmented names before matching', () => {
+    const delegate: RunStepHandler = { handle: () => undefined };
+    const handler = createClientToolRunStepDeltaHandler({
+      delegate,
+      clientToolNames: new Set(['submit_sql']),
+    });
+    const graph: StandardGraph = {};
+
+    handler.handle('on_run_step_delta', delta([{ id: 'call_b', name: 'submit' }]), metadata, graph);
+    expect(graph.invokedToolIds ?? new Set()).toEqual(new Set());
+    handler.handle('on_run_step_delta', delta([{ id: 'call_b', name: '_sql' }]), metadata, graph);
+    expect([...graph.invokedToolIds!]).toEqual(['call_b']);
+  });
+
+  it('creates the invoked set when the graph has none', () => {
+    const delegate: RunStepHandler = { handle: () => undefined };
+    const handler = createClientToolRunStepDeltaHandler({
+      delegate,
+      clientToolNames: new Set(['submit_sql']),
+    });
+    const graph: StandardGraph = {};
+
+    handler.handle(
+      'on_run_step_delta',
+      delta([{ id: 'call_b', name: 'submit_sql' }]),
+      metadata,
+      graph,
+    );
+
+    expect([...graph.invokedToolIds!]).toEqual(['call_b']);
+  });
+
+  it('passes the delegate through when no client tools are configured', () => {
+    const delegate: RunStepHandler = { handle: () => undefined };
+    expect(
+      createClientToolRunStepDeltaHandler({ delegate, clientToolNames: new Set() }),
+    ).toBe(delegate);
+  });
+
+  it('exposes a wrapped delta handler from the handoff', () => {
+    const handoff = createClientToolHandoff({
+      tools: [fnTool('submit_sql')],
+      responseId: 'resp_delta',
+    });
+    const delegated: string[] = [];
+    const wrapped = handoff.wrapRunStepDelta({
+      handle: () => {
+        delegated.push('delegate');
+      },
+    });
+    const graph: StandardGraph = {};
+
+    wrapped.handle(
+      'on_run_step_delta',
+      delta([{ id: 'call_b', name: 'submit_sql' }]),
+      metadata,
+      graph,
+    );
+
+    expect(delegated).toEqual(['delegate']);
+    expect([...graph.invokedToolIds!]).toEqual(['call_b']);
   });
 });
 
