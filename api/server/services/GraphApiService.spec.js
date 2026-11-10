@@ -23,9 +23,17 @@ jest.mock('~/server/services/Config', () => ({}));
 jest.mock('~/server/services/Files/strategies', () => ({
   getStrategyFunctions: jest.fn(),
 }));
+jest.mock('@librechat/api', () => {
+  const actual = jest.requireActual('@librechat/api');
+  return {
+    ...actual,
+    getOpenIdProxyDispatcher: jest.fn(() => undefined),
+  };
+});
 
 const mongoose = require('mongoose');
 const client = require('openid-client');
+const { getOpenIdProxyDispatcher } = require('@librechat/api');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const { Client } = require('@microsoft/microsoft-graph-client');
 const { getOpenIdConfig } = require('~/strategies/openidStrategy');
@@ -74,6 +82,7 @@ describe('GraphApiService', () => {
     };
 
     Client.init.mockReturnValue(mockGraphClient);
+    getOpenIdProxyDispatcher.mockReturnValue(undefined);
 
     // Mock tokens cache
     mockTokensCache = {
@@ -151,10 +160,24 @@ describe('GraphApiService', () => {
       const result = await GraphApiService.createGraphClient(accessToken, sub);
 
       expect(getOpenIdConfig).toHaveBeenCalled();
+      expect(getOpenIdProxyDispatcher).toHaveBeenCalled();
       expect(Client.init).toHaveBeenCalledWith({
         authProvider: expect.any(Function),
       });
       expect(result).toBe(mockGraphClient);
+    });
+
+    it('should pass the OpenID proxy dispatcher to the Graph client', async () => {
+      const dispatcher = { dispatch: jest.fn() };
+      getOpenIdProxyDispatcher.mockReturnValue(dispatcher);
+
+      await GraphApiService.createGraphClient('test-access-token', 'test-user-id');
+
+      expect(getOpenIdProxyDispatcher).toHaveBeenCalled();
+      expect(Client.init).toHaveBeenCalledWith({
+        authProvider: expect.any(Function),
+        fetchOptions: { dispatcher },
+      });
     });
 
     it('should handle token exchange errors gracefully', async () => {
@@ -297,6 +320,7 @@ describe('GraphApiService', () => {
 
       // Re-apply the Client.init mock after clearAllMocks
       Client.init.mockReturnValue(mockGraphClient);
+      getOpenIdProxyDispatcher.mockReturnValue(undefined);
 
       // Re-apply openid-client mock
       if (client.genericGrantRequest) {
