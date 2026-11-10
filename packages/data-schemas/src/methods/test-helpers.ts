@@ -15,13 +15,23 @@ function findLongestKey(
   for (let i = keys.length - 1; i >= 0; i--) {
     const key = keys[i];
     const lowerKey = key.toLowerCase();
-    if (lowerKey.length > bestLength && lowerModelName.includes(lowerKey)) {
-      if (lowerKey.length === lowerModelName.length) {
-        return key;
-      }
-      bestMatch = key;
-      bestLength = lowerKey.length;
+    if (lowerKey.length <= bestLength) {
+      continue;
     }
+    const keyIndex = lowerModelName.indexOf(lowerKey);
+    if (keyIndex === -1) {
+      continue;
+    }
+    if (lowerKey.length === lowerModelName.length) {
+      return key;
+    }
+    // A minor version must not match the beginning of a snapshot date.
+    const nextCharacter = lowerModelName.charCodeAt(keyIndex + lowerKey.length);
+    if (nextCharacter >= 48 && nextCharacter <= 57 && /\d$/.test(lowerKey)) {
+      continue;
+    }
+    bestMatch = key;
+    bestLength = lowerKey.length;
   }
 
   return bestMatch;
