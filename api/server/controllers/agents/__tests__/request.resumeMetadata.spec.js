@@ -4384,6 +4384,55 @@ describe('ResumableAgentController resume metadata', () => {
       expect(mockGenerationJobManager.completeJob).toHaveBeenCalledTimes(3);
     });
 
+    it('announces resolved skills at turn start and preserves them in resume metadata', async () => {
+      const skills = {
+        manualSkills: ['manual-skill'],
+        alwaysAppliedSkills: ['resolved-always-skill'],
+      };
+      const client = {
+        options: {},
+        sendMessage: jest.fn(async (_text, options) => {
+          options.onStart(
+            {
+              messageId: 'server-user',
+              conversationId,
+              text: 'Hello with skills',
+              isCreatedByUser: true,
+              ...skills,
+            },
+            'server-response',
+          );
+          throw new Error('stopped after start');
+        }),
+      };
+
+      await AgentController(
+        createFailedRequest({
+          manualSkills: ['unvalidated-manual'],
+          alwaysAppliedSkills: ['untrusted-always'],
+        }),
+        createResumableResponse(),
+        jest.fn(),
+        jest.fn().mockResolvedValue({ client }),
+        null,
+      );
+      await flushBackgroundGeneration();
+
+      expect(mockGenerationJobManager.emitChunk).toHaveBeenCalledWith(
+        conversationId,
+        expect.objectContaining({ created: true, message: expect.objectContaining(skills) }),
+        expect.any(Object),
+      );
+      expect(mockGenerationJobManager.updateMetadata).toHaveBeenCalledWith(
+        conversationId,
+        expect.objectContaining({
+          responseMessageId: 'server-response',
+          userMessage: expect.objectContaining(skills),
+        }),
+        1000,
+      );
+    });
+
     it('uses the live user identity after generation starts', async () => {
       const serverUserMessage = {
         messageId: 'server-user',

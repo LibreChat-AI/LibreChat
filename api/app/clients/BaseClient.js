@@ -40,6 +40,7 @@ const {
   rejectPrivateTextAdmission,
   bindPrivateTextPersistenceAbort,
   persistedReasoningOverrideFields,
+  skillMessageFields,
   isTemporaryTurn,
   loadHistoryRows,
 } = require('@librechat/api');
@@ -620,6 +621,13 @@ class BaseClient {
 
     Object.assign(
       userMessage,
+      skillMessageFields({
+        manualSkills: this.options.req?.body?.manualSkills,
+        alwaysApplySkillPrimes: this.options.agent?.alwaysApplySkillPrimes,
+        isEdited: opts.isEdited,
+        isCompaction: opts.isCompaction,
+        skipSaveUserMessage: this.skipSaveUserMessage,
+      }),
       persistedReasoningOverrideFields({
         rawReasoningOverride: this.options.req?.body?.reasoningOverride,
         isEdited: opts.isEdited,
@@ -896,39 +904,6 @@ class BaseClient {
           userMessage.files = files;
         }
         delete userMessage.image_urls;
-      }
-      /**
-       * Persist the user's manual skill picks onto the user message so the
-       * frontend `SkillPills` component can render them in history
-       * after reload. UI-only metadata — the runtime skill resolution
-       * pipeline reads the top-level `req.body.manualSkills` separately.
-       * Filter is defense-in-depth on top of Mongoose schema validation:
-       * keeps the DB row free of empty/non-string entries even if a
-       * crafted payload slips past schema checks upstream.
-       */
-      const rawManualSkills = this.options.req?.body?.manualSkills;
-      if (Array.isArray(rawManualSkills) && rawManualSkills.length > 0) {
-        const skills = rawManualSkills.filter((s) => typeof s === 'string' && s.length > 0);
-        if (skills.length > 0) {
-          userMessage.manualSkills = skills;
-        }
-      }
-      /**
-       * Persist the names of skills auto-primed this turn via `always-apply`
-       * frontmatter so `SkillPills` can render pinned-variant badges
-       * on the user bubble that survive reload and history render. Frozen
-       * at turn time (not reconstructed from `Skill.alwaysApply` at render
-       * time) because the flag is mutable — historical turns must keep
-       * their audit trail even if an admin flips `alwaysApply` off later.
-       */
-      const alwaysApplySkillPrimes = this.options.agent?.alwaysApplySkillPrimes;
-      if (Array.isArray(alwaysApplySkillPrimes) && alwaysApplySkillPrimes.length > 0) {
-        const names = alwaysApplySkillPrimes
-          .map((p) => p?.name)
-          .filter((n) => typeof n === 'string' && n.length > 0);
-        if (names.length > 0) {
-          userMessage.alwaysAppliedSkills = names;
-        }
       }
       const startUserMessagePersistence = () => {
         this.savedMessageIds.add(userMessage.messageId);
