@@ -7,7 +7,6 @@ test.use({ serviceWorkers: 'block' });
 test('opens account credits and manages them in Billing @scenario:account-usage-billing', async ({
   page,
 }, testInfo) => {
-  await page.clock.install();
   let tokenCredits = 72000;
   await page.route('**/api/config', async (route) => {
     const response = await route.fetch();
@@ -77,6 +76,14 @@ test('opens account credits and manages them in Billing @scenario:account-usage-
   await trigger.click();
   await expect(usage).toBeVisible();
   await expect(usage).toHaveCSS('animation-name', 'none');
+  await page.keyboard.press('Escape');
+  await expect(usage).toBeHidden();
+  // Keep the accessibility scan on native timers, then install before this page mounts.
+  await page.clock.install();
+  await page.reload();
+  await reachableInSidebar(page, trigger, 'the account usage button');
+  await trigger.click();
+  await expect(usage.getByTestId('balance-value')).toHaveText('72,000 credits');
   await page.keyboard.press('Escape');
   await expect(usage).toBeHidden();
   tokenCredits = 41000;
