@@ -35,6 +35,7 @@ const RETIRED_LANE_RETENTION_MS = 24 * 60 * 60_000;
 const ROOT_LINEAGE_PREDECESSOR_PREFIX = 'root:';
 const CLAIM_LANE_INDEX = 'agent_queued_turn_claim_lane';
 const ADMISSION_STARTED_LANE_INDEX = 'agent_queued_turn_admission_started_lane';
+const ACTIVE_CAPACITY_INDEX = 'agent_queued_turn_active_capacity';
 const NAMESPACE_EXISTS = 48;
 
 interface DuplicateKeyError {
@@ -625,6 +626,25 @@ function effectiveDeliveryState(turn: IAgentQueuedTurn) {
     return 'publishing' as const;
   }
   return 'published' as const;
+}
+
+function isMissingHintIndex(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error as { codeName?: unknown }).codeName === 'BadValue' &&
+    /hint/i.test(error.message)
+  );
+}
+
+/** Claim order: priority rows first, then ascending sequence. */
+function precedes(
+  row: Pick<IAgentQueuedTurn, 'priority' | 'sequence'>,
+  other: Pick<IAgentQueuedTurn, 'priority' | 'sequence'>,
+): boolean {
+  if (row.priority !== other.priority) {
+    return row.priority === true;
+  }
+  return (row.sequence ?? Number.MAX_SAFE_INTEGER) < (other.sequence ?? Number.MAX_SAFE_INTEGER);
 }
 
 function toRecord(turn: IAgentQueuedTurn): AgentQueuedTurnRecord {
@@ -1903,9 +1923,10 @@ export function createAgentQueuedTurnMethods(
    * an expired claim, an indeterminate admission, a dead head awaiting
    * dismissal) answer false, so callers never wait on them.
    *
-   * The live-claim read runs only after the head read settles: a head that
-   * left `queued` before that read is claimed (or later) when the claim is
-   * read, so a `queued -> claimed` transition cannot fall between the two.
+   * The active lane is read in one query over the capacity index. Its key
+   * (`activeSlot`) is held unchanged from reservation until a terminal state,
+   * so a row moving between `queued` and `claimed` in either direction is
+   * read exactly once, in one state or the other, never missed between reads.
    */
   async function hasPendingAgentQueuedTurn(
     input: AgentQueuedTurnPrecedenceInput,
@@ -1921,34 +1942,58 @@ export function createAgentQueuedTurnMethods(
       ...(input.tenantId != null && { tenantId: input.tenantId }),
       conversationId: input.conversationId,
     });
-    const [head, fenced] = await Promise.all([
+    type LaneRow = Pick<
+      IAgentQueuedTurn,
+      'status' | 'priority' | 'sequence' | 'availableAt' | 'claimUntil'
+    >;
+    const readActiveLane = () =>
       Turn()
-        .findOne({ ...scope, status: { $in: ['queued', 'dead'] } })
+        .find({ ...scope, activeSlot: { $exists: true } })
+        .select('status priority sequence availableAt claimUntil')
+        .lean<LaneRow[]>();
+    const [active, deadHead, quarantined] = await Promise.all([
+      /** Before startup has built the capacity index, a planner-chosen read
+       * is still correct apart from that narrow transition window. */
+      readActiveLane()
+        .hint(ACTIVE_CAPACITY_INDEX)
+        .catch((error: unknown) => {
+          if (!isMissingHintIndex(error)) {
+            throw error;
+          }
+          return readActiveLane();
+        }),
+      Turn()
+        .findOne({ ...scope, status: 'dead' })
         .sort({ priority: -1, sequence: 1 })
-        .select('status availableAt')
-        .lean<Pick<IAgentQueuedTurn, 'status' | 'availableAt'>>(),
+        .select('priority sequence')
+        .lean<Pick<IAgentQueuedTurn, 'priority' | 'sequence'>>(),
       Turn().exists({
         ...scope,
-        $or: [
-          { status: 'reserving' },
-          { status: 'claimed', claimUntil: { $not: { $gt: input.now } } },
-          { status: 'dead', 'terminalReceipt.failure.code': 'ADMISSION_INDETERMINATE' },
-        ],
+        status: 'dead',
+        'terminalReceipt.failure.code': 'ADMISSION_INDETERMINATE',
       }),
     ]);
-    if (
-      fenced == null &&
-      head?.status === 'queued' &&
-      head.availableAt.getTime() <= input.now.getTime()
-    ) {
-      return true;
+    const now = input.now.getTime();
+    let head: LaneRow | undefined;
+    let fenced = quarantined != null;
+    for (const row of active) {
+      if (row.status === 'claimed') {
+        if (row.claimUntil != null && row.claimUntil.getTime() > now) {
+          return true;
+        }
+        fenced = true;
+      } else if (row.status === 'reserving') {
+        fenced = true;
+      } else if (row.status === 'queued' && (head == null || precedes(row, head))) {
+        head = row;
+      }
     }
-    const admitting = await Turn().exists({
-      ...scope,
-      status: 'claimed',
-      claimUntil: { $gt: input.now },
-    });
-    return admitting != null;
+    return (
+      !fenced &&
+      head != null &&
+      head.availableAt.getTime() <= now &&
+      (deadHead == null || !precedes(deadHead, head))
+    );
   }
 
   async function releaseAgentQueuedTurn(

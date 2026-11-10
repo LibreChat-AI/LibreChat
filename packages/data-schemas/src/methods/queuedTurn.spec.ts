@@ -3261,24 +3261,79 @@ describe('queued turn precedence', () => {
     await expect(pending()).resolves.toBe(false);
   });
 
-  it('sees a claim that lands after the head read', async () => {
-    const queued = await methods.enqueueAgentQueuedTurn(enqueueInput());
-    const findOne = Turn.findOne.bind(Turn);
-    jest.spyOn(Turn, 'findOne').mockImplementationOnce((...args: Parameters<typeof findOne>) => {
-      const query = findOne(...args);
+  /** Runs `transition` after the active-lane read is issued and before it executes. */
+  function interleaveActiveLaneRead(transition: () => Promise<unknown>) {
+    const find = Turn.find.bind(Turn);
+    jest.spyOn(Turn, 'find').mockImplementationOnce((...args: Parameters<typeof find>) => {
+      const query = find(...args);
       const exec = query.exec.bind(query);
-      /** The head read observes the row only after a worker claimed it. */
       query.exec = async () => {
-        await methods.claimNextAgentQueuedTurn(claimInput(queued.turn.queuedTurnId));
+        await transition();
         return exec();
       };
       return query;
     });
+  }
+
+  it('sees a claim that lands while the lane is being read', async () => {
+    const queued = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    interleaveActiveLaneRead(() =>
+      methods.claimNextAgentQueuedTurn(claimInput(queued.turn.queuedTurnId)),
+    );
 
     await expect(pending()).resolves.toBe(true);
     await expect(Turn.findById(queued.turn.queuedTurnId).lean()).resolves.toMatchObject({
       status: 'claimed',
     });
+  });
+
+  it('sees a released claim that is due again while the lane is being read', async () => {
+    const queued = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await methods.claimNextAgentQueuedTurn(claimInput(queued.turn.queuedTurnId));
+    interleaveActiveLaneRead(() =>
+      methods.releaseAgentQueuedTurn({
+        ...scope(),
+        queuedTurnId: queued.turn.queuedTurnId,
+        claimId: 'claim-1',
+        claimBy: 'worker-1',
+        disposition: 'retry',
+        availableAt: START,
+      }),
+    );
+
+    await expect(pending()).resolves.toBe(true);
+    await expect(Turn.findById(queued.turn.queuedTurnId).lean()).resolves.toMatchObject({
+      status: 'queued',
+    });
+  });
+
+  it('orders a priority dead row ahead of an earlier queued row', async () => {
+    await methods.enqueueAgentQueuedTurn(enqueueInput());
+    const interrupt = await methods.enqueueAgentQueuedTurn(
+      enqueueInput({ clientRequestId: 'interrupt', priority: true }),
+    );
+    await methods.claimNextAgentQueuedTurn(claimInput(interrupt.turn.queuedTurnId));
+    await methods.releaseAgentQueuedTurn({
+      ...scope(),
+      queuedTurnId: interrupt.turn.queuedTurnId,
+      claimId: 'claim-1',
+      claimBy: 'worker-1',
+      disposition: 'dead',
+      settledAt: START,
+      failure: { code: 'PREDECESSOR_FAILED', message: 'review this turn' },
+    });
+
+    await expect(pending()).resolves.toBe(false);
+  });
+
+  it('still answers before startup has built the capacity index', async () => {
+    await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await Turn.collection.dropIndex('agent_queued_turn_active_capacity');
+    try {
+      await expect(pending()).resolves.toBe(true);
+    } finally {
+      await Turn.createIndexes();
+    }
   });
 
   it('does not wait on an unfinished reservation', async () => {
