@@ -3317,3 +3317,34 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
     }
   });
 });
+
+describe('Permission principal concurrency', () => {
+  it('accepts bounded permission lookup concurrency', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', concurrency: { permissionPrincipalLookups: 2 } })
+        .concurrency?.permissionPrincipalLookups,
+    ).toBe(2);
+  });
+  it.each([0, 33, 1.5])(
+    'rejects invalid principal concurrency: %s',
+    (permissionPrincipalLookups) => {
+      expect(
+        configSchema.safeParse({ version: '1.3.5', concurrency: { permissionPrincipalLookups } })
+          .success,
+      ).toBe(false);
+    },
+  );
+});
+
+describe('directory verification deadline configuration', () => {
+  it('preserves an explicitly configured directory budget', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', timeouts: { directoryMs: 50 } }).timeouts?.directoryMs,
+    ).toBe(50);
+  });
+  it.each([0, -1, 1.5, 2147483648])('rejects unsafe directory budget %s', (directoryMs) => {
+    expect(configSchema.safeParse({ version: '1.3.5', timeouts: { directoryMs } }).success).toBe(
+      false,
+    );
+  });
+});
