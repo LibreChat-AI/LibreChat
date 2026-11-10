@@ -628,14 +628,6 @@ function effectiveDeliveryState(turn: IAgentQueuedTurn) {
   return 'published' as const;
 }
 
-function isMissingHintIndex(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error as { codeName?: unknown }).codeName === 'BadValue' &&
-    /hint/i.test(error.message)
-  );
-}
-
 /** Claim order: priority rows first, then ascending sequence. */
 function precedes(
   row: Pick<IAgentQueuedTurn, 'priority' | 'sequence'>,
@@ -1952,16 +1944,13 @@ export function createAgentQueuedTurnMethods(
         .select('status priority sequence availableAt claimUntil')
         .lean<LaneRow[]>();
     const [active, deadHead, quarantined] = await Promise.all([
-      /** Before startup has built the capacity index, a planner-chosen read
-       * is still correct apart from that narrow transition window. */
+      /** The hint only pins the stable key. When it is refused (the index is
+       * not built yet, or an engine rejects the hint), a planner-chosen read
+       * is still correct apart from that narrow transition window, and a
+       * genuine outage fails this second read too. */
       readActiveLane()
         .hint(ACTIVE_CAPACITY_INDEX)
-        .catch((error: unknown) => {
-          if (!isMissingHintIndex(error)) {
-            throw error;
-          }
-          return readActiveLane();
-        }),
+        .catch(() => readActiveLane()),
       Turn()
         .findOne({ ...scope, status: 'dead' })
         .sort({ priority: -1, sequence: 1 })

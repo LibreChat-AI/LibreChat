@@ -116,7 +116,8 @@ expedites that conversation's queued-turn deliveries, and a background or subage
 without consuming an attempt while a queued turn holds an unexpired claim or is the due lane head.
 The wake-up then resumes after the queued turn's generation, on that turn's response. Rows that
 need recovery or a user decision never hold a wake-up: a reservation, an expired claim, an
-indeterminate admission, or a dead head awaiting dismissal. Older replicas skip the check, so
+indeterminate admission, or a dead head awaiting dismissal. A failed precedence read is not
+treated as absence; the wake-up defers on it the same way. Older replicas skip the check, so
 mixed-version fleets keep the earlier first-claim race until every replica is upgraded.
 
 Setting a recovery cap to `30000` restores its original fixed recovery frequency. No stored-data
