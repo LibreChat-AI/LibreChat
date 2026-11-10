@@ -1,7 +1,10 @@
+import { logger } from '@librechat/data-schemas';
+import { OPENID_SESSION_ENDED } from 'librechat-data-provider';
 import type { ProviderSessionRef } from 'librechat-data-provider';
 import type {
   AdminRefreshBinding,
   AdminRefreshBindingLookup,
+  AdminRefreshBindingLookupOutcome,
   AdminRefreshDeps,
   AdminRefreshTokenResolution,
   RefreshTokenset,
@@ -11,6 +14,7 @@ import type { ProviderSessionAuthorizer } from './authorize';
 import type { OpenIdSessionDeps } from '~/images/session';
 import type { TokenResult } from '~/auth/openid/flight';
 import {
+  AdminRefreshError,
   lookupAdminRefreshBinding,
   precheckAdminRefreshBinding,
   resolveAdminRefreshToken,
@@ -86,9 +90,41 @@ export interface AdminOpenIdRefreshPrepareResult {
   identity?: AdminRefreshTokenResolution['identity'];
 }
 
+/** Removes a bridge discovered only to recover a missing Session row, once the precheck run
+ *  against its ref denies it. Leaving the bridge in place would let the next retry rediscover
+ *  the same denied ref and repeat the lookup for no benefit. Best-effort: a cleanup failure does
+ *  not change the denial already decided. */
+async function deleteStaleAdminRefreshBridge(
+  refreshToken: string,
+  identity: { userId: string; tenantId?: string },
+  deps: AdminRefreshProviderSessionDeps,
+): Promise<void> {
+  if (!deps.deleteRefreshTokenBridges) return;
+  try {
+    await deps.deleteRefreshTokenBridges({
+      refreshTokens: [refreshToken],
+      userId: identity.userId,
+      tenantId: identity.tenantId,
+    });
+  } catch (error) {
+    logger.warn(
+      '[prepareAdminOpenIdRefresh] Failed to remove the refresh-token bridge after a provider-session denial',
+      { error },
+    );
+  }
+}
+
 /** Runs the provider-session precheck and refresh-token-bridge recovery that must happen before
  *  the IdP grant is spent. Reads the provider-session binding once and shares it between the
- *  precheck and the bridge resolution. */
+ *  precheck and the bridge resolution.
+ *
+ * The Session row a rotating admin refresh replaces is gone by the time a retry presents the
+ * token it replaced, so a missing binding alone is not evidence the credential is unassociated:
+ * the bridge recovered from that same prior attempt still carries the provider session it was
+ * issued under. The bridge is resolved first and, when found, the precheck runs against its ref
+ * instead of denying the retry as missing before the bridge is ever consulted. A binding read
+ * from the Session row always wins over a bridge; the bridge is consulted only when the Session
+ * row itself has nothing. */
 export async function prepareAdminOpenIdRefresh(
   refreshToken: string,
   deps: BuildAdminRefreshProviderSessionDepsInput,
@@ -96,13 +132,41 @@ export async function prepareAdminOpenIdRefresh(
 ): Promise<AdminOpenIdRefreshPrepareResult> {
   const providerSessionDeps = await buildAdminRefreshProviderSessionDeps(deps);
   const lookup = await lookupAdminRefreshBinding(refreshToken, providerSessionDeps);
-  const binding = await precheckAdminRefreshBinding(lookup, providerSessionDeps);
   const resolution = await resolveAdminRefreshToken(
     refreshToken,
     lookup,
     providerSessionDeps,
     options,
   );
+
+  const recoveredIdentity = resolution.bridged ? resolution.identity : undefined;
+  const precheckLookup: AdminRefreshBindingLookupOutcome =
+    lookup.ok && !lookup.binding && recoveredIdentity
+      ? {
+          ok: true,
+          binding: {
+            userId: recoveredIdentity.userId,
+            tenantId: recoveredIdentity.tenantId,
+            providerSession: resolution.providerSession ?? null,
+          },
+        }
+      : lookup;
+
+  let binding: AdminRefreshBinding;
+  try {
+    binding = await precheckAdminRefreshBinding(precheckLookup, providerSessionDeps);
+  } catch (error) {
+    if (
+      precheckLookup !== lookup &&
+      recoveredIdentity &&
+      error instanceof AdminRefreshError &&
+      error.code === OPENID_SESSION_ENDED
+    ) {
+      await deleteStaleAdminRefreshBridge(refreshToken, recoveredIdentity, providerSessionDeps);
+    }
+    throw error;
+  }
+
   return {
     providerSessionDeps,
     binding,
