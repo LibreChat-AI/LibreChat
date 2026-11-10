@@ -18,6 +18,7 @@ import { promoteDrainedSteers, completePromotedSteerHandoff } from '../promotion
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { getAgentTriggerIdempotencyKey } from '~/agents/triggers/envelope';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { toQueuedTurnReceipt } from '~/agents/queuedTurnHttp';
 import { getPromotedSteerRequestId } from '../refs';
 import { handleSteerRequest } from '../request';
 
@@ -237,6 +238,8 @@ describe('promoteDrainedSteers', () => {
       generationCreatedAt: job.createdAt,
       handoffAt: expect.any(Date),
     });
+    /** The receipt any pane reads names the steer and that this turn owns its words. */
+    expect(toQueuedTurnReceipt(row!).steer).toEqual({ steerId, clientSteerId, owned: true });
     expect(envelopes).toHaveLength(1);
     /** Only a worker that proves a promoted steer's ownership may take this delivery. */
     expect(requiredCapabilities).toEqual([AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3]);

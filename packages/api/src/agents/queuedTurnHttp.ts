@@ -113,6 +113,7 @@ export function toQueuedTurnReceipt(
       steer: {
         steerId: turn.steerSource.steerId,
         clientSteerId: turn.steerSource.clientSteerId,
+        ...(turn.steerSource.handoffAt != null && { owned: true as const }),
       },
     }),
     revision: turn.sequence,

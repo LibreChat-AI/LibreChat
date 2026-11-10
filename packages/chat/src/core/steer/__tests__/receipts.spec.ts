@@ -48,11 +48,27 @@ describe('ownedPromotedSteerIds', () => {
     ).toEqual(['steer-1', 'local-steer-1', 'steer-2', 'local-steer-2', 'steer-3', 'local-steer-3']);
   });
 
-  it('leaves the words to the client when the turn handed them back or never ran', () => {
+  it('keeps answering for the words of a dead turn that held them', () => {
+    expect(
+      ownedPromotedSteerIds([
+        /** Held for review after it became the words' sole owner. */
+        promoted('steer-1', {
+          status: 'dead',
+          steer: { steerId: 'steer-1', clientSteerId: 'local-steer-1', owned: true },
+          failure: { code: 'PREDECESSOR_ABORTED' },
+        }),
+        /** May still settle as admitted once its admission is reconciled. */
+        promoted('steer-2', { status: 'dead', failure: { code: 'ADMISSION_INDETERMINATE' } }),
+      ]),
+    ).toEqual(['steer-1', 'local-steer-1', 'steer-2', 'local-steer-2']);
+  });
+
+  it('leaves the words to the client when the turn handed them back or never owned them', () => {
     expect(
       ownedPromotedSteerIds([
         promoted('steer-1', { status: 'cancelled' }),
-        promoted('steer-2', { status: 'dead' }),
+        promoted('steer-2', { status: 'dead', failure: { code: 'STEER_HANDOFF_UNCONFIRMED' } }),
+        promoted('steer-3', { status: 'dead' }),
       ]),
     ).toEqual([]);
   });

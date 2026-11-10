@@ -81,11 +81,13 @@ export const agentQueuedTurnReceiptSchema = enqueueAgentQueuedTurnSchema.extend(
     .optional(),
   /** Present on a turn promoted from a steer its run accepted but never
    * applied. It names the steer by both of its ids, so any pane can retire
-   * its own copy of that steer from the receipt list alone. */
+   * its own copy of that steer from the receipt list alone. `owned` is set
+   * once the turn was proven the sole holder of the steer's words. */
   steer: z
     .object({
       steerId: z.string().trim().min(1),
       clientSteerId: z.string().trim().min(1),
+      owned: z.literal(true).optional(),
     })
     .optional(),
   createdAt: z.string(),

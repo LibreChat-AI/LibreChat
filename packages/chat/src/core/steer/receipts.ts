@@ -230,15 +230,30 @@ export function reconcileServerQueuedTurns(
   return [...retained, ...projected].sort(compareQueuedMessages);
 }
 
-/** Every id (server and client) of the steers a durable promoted turn carries
- * or already ran. A local chip or recovery row for any of them must retire
- * instead of sending again. A cancelled row handed the words back and a dead
- * one never runs, so neither claims them. */
+/** Whether a promoted turn still answers for its steer's words, so no local
+ * copy of them may send. A live or admitted turn does. A cancelled one handed
+ * the words back. A dead one does only if it held them when it stopped: it was
+ * proven their sole owner, or its admission is indeterminate and may still
+ * settle as admitted. A turn that died before owning the words (its hand-off
+ * was never confirmed) leaves them to whichever surface still has them. */
+function claimsPromotedSteer(receipt: AgentQueuedTurnReceipt): boolean {
+  if (receipt.steer == null || receipt.status === 'cancelled') {
+    return false;
+  }
+  if (receipt.status !== 'dead') {
+    return true;
+  }
+  return receipt.steer.owned === true || receipt.failure?.code === 'ADMISSION_INDETERMINATE';
+}
+
+/** Every id (server and client) of the steers a durable promoted turn answers
+ * for. A local chip or recovery row for any of them must retire instead of
+ * sending again. */
 export function ownedPromotedSteerIds(receipts: readonly AgentQueuedTurnReceipt[]): string[] {
   return receipts.flatMap((receipt) =>
-    receipt.steer == null || receipt.status === 'cancelled' || receipt.status === 'dead'
-      ? []
-      : [receipt.steer.steerId, receipt.steer.clientSteerId],
+    claimsPromotedSteer(receipt) && receipt.steer != null
+      ? [receipt.steer.steerId, receipt.steer.clientSteerId]
+      : [],
   );
 }
 

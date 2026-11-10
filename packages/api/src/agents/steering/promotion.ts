@@ -163,6 +163,21 @@ async function retireUnownedTurn(
   }
 }
 
+/** Whether a settled promoted row held its steer's words when it settled: it
+ * ran, it was proven their sole owner, or its admission is indeterminate and
+ * may still settle as admitted. The client applies the same rule to receipts
+ * (`ownedPromotedSteerIds`). */
+function heldSteerWords(turn: AgentQueuedTurnRecord): boolean {
+  if (turn.status === 'admitted') {
+    return true;
+  }
+  return (
+    turn.status === 'dead' &&
+    (turn.steerSource?.handoffAt != null ||
+      turn.terminalReceipt?.failure?.code === 'ADMISSION_INDETERMINATE')
+  );
+}
+
 /** `promoted`: a durable row carries the steer from here on, and the client
  * adopts its receipt. `legacy`: no row does; hand the steer back as before. */
 type PromotionAttempt = { kind: 'promoted'; promoted: TPromotedSteer } | { kind: 'legacy' };
@@ -215,14 +230,12 @@ async function promoteOne(
       receipt: toQueuedTurnReceipt(turn),
     },
   });
-  /** A replay finds the row an earlier promotion wrote. One that already ran
-   * stays the steer's record; one that was cancelled or failed is not a copy
-   * anything can run, so it must not take the parked source with it. */
-  if (turn.status === 'admitted') {
-    return promoted();
-  }
+  /** A replay finds the row an earlier promotion wrote. One that can no longer
+   * be handed the words must not take the parked source with it. It stays the
+   * steer's record only if it ever held the words; otherwise the steer goes
+   * back to the client. */
   if (turn.status !== 'queued' && turn.status !== 'claimed') {
-    return { kind: 'legacy' };
+    return heldSteerWords(turn) ? promoted() : { kind: 'legacy' };
   }
   /** The row is the durable copy from here on; the parked copy goes second so
    * a crash in between can at worst leave both, never neither. */
