@@ -243,7 +243,7 @@ type CodePathCandidate = CodeDestinationCandidate & {
   metadata?: (CodeEnvReferenceSet & { sourceDispatchedAt?: number }) | null;
 };
 
-/** Snapshot filenames describe captured writes; mutable recovery aliases do not. */
+/** Mount naming only. Captured write paths, not converted names, identify versions. */
 export function getCodeFileDestination(file: CodePathCandidate, routeKey = 'default'): string {
   if (
     file.context !== FileContext.execute_code_snapshot &&
@@ -252,10 +252,19 @@ export function getCodeFileDestination(file: CodePathCandidate, routeKey = 'defa
     const stored = getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename;
     if (stored != null) return stored;
   }
-  return getCodeEnvUploadFilename(resolveSandboxFilename(file.filename ?? '', file.type ?? ''));
+  const normalized = getCodeEnvUploadFilename(
+    resolveSandboxFilename(file.filename ?? '', file.type ?? ''),
+  );
+  // A converted artifact's receipt is a mount-name hint only, never byte equivalence.
+  if (file.context === FileContext.execute_code_snapshot && normalized !== file.filename) {
+    return (
+      getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename ?? normalized
+    );
+  }
+  return normalized;
 }
 
-/** Select generated versions before live refs and queued uploads are partitioned. */
+/** Select captured versions among code-eligible inputs before mount conversion. */
 export function selectCodeFileGenerations<T extends CodePathCandidate>(
   files: Array<T | null | undefined>,
   privateFileIds?: ReadonlySet<string>,
@@ -266,7 +275,13 @@ export function selectCodeFileGenerations<T extends CodePathCandidate>(
   let skippedSuperseded = 0;
   const ordered = sortCodeFilesByDestinationPriority(files, privateFileIds);
   const keyFor = (file: T): string => {
-    const destination = getCodeFileDestination(file, routeKey);
+    const generated =
+      file.context === FileContext.execute_code_snapshot ||
+      file.context === FileContext.execute_code;
+    const destination = generated
+      ? file.filename
+      : (getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename ??
+        getCodeEnvUploadFilename(file.filename ?? ''));
     return JSON.stringify([
       privateFileIds?.has(file.file_id ?? '') ?? false,
       file.tenantId ?? null,

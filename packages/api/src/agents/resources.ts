@@ -7,7 +7,6 @@ import {
   FileSources,
   getCodeEnvRefs,
   canToolResourceConsume,
-  hasToolResourceDestination,
 } from 'librechat-data-provider';
 import type {
   AgentToolResources,
@@ -20,8 +19,8 @@ import type { IMongoFile, AppConfig, IUser } from '@librechat/data-schemas';
 import type { FilterQuery, QueryOptions, ProjectionType } from 'mongoose';
 import type { CodeExecutionContext } from './execution';
 import type { ServerRequest } from '~/types';
-
 import { selectCodeFileGenerations } from '~/files/code/destinations';
+import { allowsFileResource } from '~/files/consumers';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { TOOL_RESOURCE_KEYS } from './orphans';
 
@@ -493,28 +492,8 @@ const computeProvisionState = async ({
     return undefined;
   }
 
-  /* The legacy chooser makes the destination an explicit user decision, so a file it
-   * uploaded carries no reference for the destinations the user declined, and queueing on
-   * a missing reference would read those declines as work to do. The decision belongs to
-   * the file, not to this request: the endpoint deciding this turn need not be the one it
-   * was uploaded under. Records predating the marker were written by the chooser flow,
-   * so their existing resource membership/reference is the only durable destination evidence. */
-  const cameFromChooser = (file: TFile): boolean => {
-    const choice = file.metadata?.destinationChosen;
-    return choice == null ? true : choice;
-  };
-
-  /* Search intent survives vector cleanup without claiming the vectors still exist.
-   * A chooser's other destinations remain declined unless membership or a copy proves them. */
-  const allowsResource = (file: TFile, resourceType: EToolResources): boolean => {
-    if (!cameFromChooser(file)) {
-      return true;
-    }
-    const isPersistedResource =
-      file.file_id != null &&
-      persistedResourceMembership?.get(resourceType)?.has(file.file_id) === true;
-    return isPersistedResource || hasToolResourceDestination(file, resourceType);
-  };
+  const allowsResource = (file: TFile, resource: EToolResources): boolean =>
+    allowsFileResource(file, resource, persistedResourceMembership);
   const provisionable = attachments.filter(
     (file) =>
       file != null &&
@@ -783,6 +762,7 @@ export const primeResources = async ({
   checkSessionsAlive,
   loadCodeApiKey,
   provisionCandidates,
+  excludedCodeFileIds,
   screenPersistentFiles,
   adoptLegacySearchEmbeddings,
   hasEntityEmbeddings,
@@ -810,6 +790,8 @@ export const primeResources = async ({
    *  provisioning only and never returned as attachments: re-delivering an earlier
    *  upload to the model on every later turn is not the intent. */
   provisionCandidates?: Array<TFile>;
+  /** Pre-admission code losers may still be needed by search or prompt delivery. */
+  excludedCodeFileIds?: ReadonlySet<string>;
   /** True when this endpoint still shows the explicit upload-destination chooser. */
   /** Applies the caller's endpoint and content policies. Persistent agent files are read
    *  here rather than by the caller, so the caller has no chance to screen them itself
@@ -982,9 +964,14 @@ export const primeResources = async ({
         provisionCandidates,
       ),
     );
+    const eligibleCodeFiles = codeCandidates.filter(
+      (file) =>
+        !excludedCodeFileIds?.has(file.file_id) &&
+        allowsFileResource(file, EToolResources.execute_code, persistedResourceMembership),
+    );
     const codeFileIds = new Set(
       selectCodeFileGenerations(
-        codeCandidates,
+        eligibleCodeFiles,
         persistedResourceFileIds,
         codeRouteKey,
       ).files.flatMap((file) => (file ? [file.file_id] : [])),
@@ -997,7 +984,14 @@ export const primeResources = async ({
       codeResource.file_ids = codeResource.file_ids.filter((id) => !supersededCodeFileIds.has(id));
     }
 
-    persistedResourceFiles = persistedResourceFiles.filter((file) => codeFileIds.has(file.file_id));
+    persistedResourceFiles = persistedResourceFiles.filter(
+      (file) =>
+        codeFileIds.has(file.file_id) ||
+        (enabledToolResources?.has(EToolResources.file_search) &&
+          allowsFileResource(file, EToolResources.file_search, persistedResourceMembership)) ||
+        contextFileIds.has(file.file_id) ||
+        imageEditFileIdSet.has(file.file_id),
+    );
     if (screenPersistentFiles && persistedResourceFileIds.size > 0) {
       const admitted = screenPersistentFiles(persistedResourceFiles);
       /* The tool primers read tool_resources ids directly and re-check only access, so

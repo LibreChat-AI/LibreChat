@@ -265,7 +265,11 @@ describe('Generated file snapshots', () => {
     const mounted = await callback(['execute_code'], 'agent-a');
     expect(getFiles).toHaveBeenCalledTimes(privateIds.length ? 1 : 0);
     expect(checkSessionsAlive.mock.calls.length).toBeLessThanOrEqual(1);
-    return { context, upload, advertised, mounted };
+    const destinations = new Map(
+      eager.selected.map((selected) => [selected.file.file_id, selected.sandboxName]),
+    );
+    for (const [id, name] of advertised) destinations.set(id, name);
+    return { context, upload, advertised, mounted, destinations };
   }
 
   it.each([true, false])(
@@ -358,6 +362,38 @@ describe('Generated file snapshots', () => {
       expect((await reload(second.file_id)).bytes.toString()).toBe('Version 2');
     },
   );
+
+  it('retains distinct captured image paths across conversion, lazy mounts, eager reload and branch return', async () => {
+    const blue = await sharp({ create: { width: 2, height: 2, channels: 3, background: 'blue' } })
+      .png()
+      .toBuffer();
+    const red = await sharp({ create: { width: 2, height: 2, channels: 3, background: 'red' } })
+      .jpeg()
+      .toBuffer();
+    const first = await emit(blue, 'png', 'nested/chart.png', 100);
+    await initializeCode([first.file_id]);
+    const second = await emit(red, 'jpeg', 'nested/chart.jpeg', 200);
+    const next = await initializeCode([first.file_id, second.file_id]);
+    expect(next.destinations.size).toBe(2);
+    expect(new Set(next.destinations.values()).size).toBe(2);
+    const pngName = next.destinations.get(first.file_id)!;
+    const jpegName = next.destinations.get(second.file_id)!;
+    expect(pngName).toBe('nested/chart.webp');
+    expect(jpegName).toMatch(/^nested\/chart-.+\.webp$/);
+    const pngBytes = (await reload(first.file_id)).bytes;
+    const jpegBytes = (await reload(second.file_id)).bytes;
+    expect(await readFile(path.join(directory, 'sandbox', pngName))).toEqual(pngBytes);
+    expect(await readFile(path.join(directory, 'sandbox', jpegName))).toEqual(jpegBytes);
+    const eager = await initializeCode([first.file_id, second.file_id]);
+    expect(eager.destinations).toEqual(next.destinations);
+    const rewritten = await emit(red, 'png-rewritten', 'nested/chart.png', 300);
+    const newer = await initializeCode([first.file_id, second.file_id, rewritten.file_id]);
+    expect(newer.destinations.has(first.file_id)).toBe(false);
+    expect(newer.destinations.size).toBe(2);
+    await initializeCode([first.file_id, second.file_id]);
+    expect(await readFile(path.join(directory, 'sandbox', pngName))).toEqual(pngBytes);
+    expect(await readFile(path.join(directory, 'sandbox', jpegName))).toEqual(jpegBytes);
+  });
 
   it('retains V1 and V2 bytes and message references after same-path rewrites and reload', async () => {
     const first = await emit(Buffer.from('Version 1'), 'message-1');

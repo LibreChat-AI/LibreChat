@@ -7264,9 +7264,10 @@ describe('snapshot destination admission invariants', () => {
     deferred: TFile[] = [],
     config: { fileSizeLimit?: number; supportedMimeTypes?: string[]; disabled?: boolean } = {},
     filters?: FiltersConfig,
+    tools: string[] = [Tools.execute_code],
   ) {
     const { agent, req, res, loadTools, db } = createMocks();
-    agent.tools = [Tools.execute_code];
+    agent.tools = tools;
     agent.endpoint = EModelEndpoint.openAI;
     req.user!.tenantId = 'tenant-1';
     req.config!.filters = filters;
@@ -7295,7 +7296,16 @@ describe('snapshot destination admission invariants', () => {
         getConvoFiles: jest
           .fn()
           .mockResolvedValue([...files, ...deferred].map((file) => file.file_id)),
-        getCodeGeneratedFiles: jest.fn().mockResolvedValue(files),
+        getCodeGeneratedFiles: jest
+          .fn()
+          .mockResolvedValue(
+            files.filter((file) => file.context === FileContext.execute_code_snapshot),
+          ),
+        getToolFilesByIds: jest
+          .fn()
+          .mockResolvedValue(
+            files.filter((file) => file.context !== FileContext.execute_code_snapshot),
+          ),
         getDeferredProvisionFiles: jest.fn().mockResolvedValue(deferred),
       },
     );
@@ -7328,12 +7338,15 @@ describe('snapshot destination admission invariants', () => {
           },
         };
       },
-      provisionToVectorDB: async () => ({ embedded: false, fileUpdate: null }),
+      provisionToVectorDB: async ({ file }) => ({
+        embedded: true,
+        fileUpdate: { file_id: file.file_id, embedded: true },
+      }),
       updateFile: async () => undefined,
       updateCodeEnvRef: async () => undefined,
       addEmbeddedEntity: async () => undefined,
     });
-    await callback([Tools.execute_code], 'agent-1');
+    await callback(tools, 'agent-1');
     expect(getFiles).toHaveBeenCalledTimes(1);
     expect(getFiles).toHaveBeenCalledWith(
       expect.objectContaining({ user: 'user-1', tenantId: 'tenant-1' }),
@@ -7393,6 +7406,109 @@ describe('snapshot destination admission invariants', () => {
         },
       ),
     ).rejects.toThrow();
+  });
+  it.each([
+    { tools: [Tools.execute_code, Tools.file_search] },
+    { tools: [Tools.execute_code] },
+    { tools: [Tools.file_search] },
+  ])('keeps independent consumer records when tools are $tools', async ({ tools }) => {
+    const upload = snapshot('upload', 100, {
+      context: FileContext.message_attachment,
+      bytes: MB,
+      embedded: true,
+      metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+    });
+    const output = snapshot('output', 200, { bytes: MB });
+    const { result, staged } = await run([upload, output], [], {}, undefined, tools);
+    expect(staged.get('report.txt')).toBe(
+      tools.includes(Tools.execute_code) ? 'output' : undefined,
+    );
+    const search = result.tool_resources?.file_search?.files?.map((file) => file.file_id) ?? [];
+    expect(search).toEqual(tools.includes(Tools.file_search) ? ['upload'] : []);
+  });
+  it.each([
+    { deferred: false, tools: [Tools.execute_code, Tools.file_search] },
+    { deferred: true, tools: [Tools.execute_code, Tools.file_search] },
+    { deferred: false, tools: [Tools.execute_code] },
+    { deferred: false, tools: [Tools.file_search] },
+  ])(
+    'keeps newer search-only intent independent (deferred $deferred, tools $tools)',
+    async ({ deferred, tools }) => {
+      const output = snapshot('output', 100, { bytes: MB });
+      const upload = snapshot('search', 200, {
+        context: FileContext.message_attachment,
+        bytes: MB,
+        embedded: !deferred,
+        metadata: { destinationChosen: true, searchDestination: true },
+      });
+      const { result, staged } = await run(
+        deferred ? [output] : [output, upload],
+        deferred ? [upload] : [],
+        {},
+        undefined,
+        tools,
+      );
+      expect(staged.get('report.txt')).toBe(
+        tools.includes(Tools.execute_code) ? 'output' : undefined,
+      );
+      expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id) ?? []).toEqual(
+        tools.includes(Tools.file_search) ? ['search'] : [],
+      );
+    },
+  );
+  it('retains model-bound input independently of its superseded code copy', async () => {
+    const input = snapshot('model-input', 100, {
+      context: FileContext.message_attachment,
+      bytes: MB,
+      llmDeliveryPath: 'text',
+      text: 'Prompt input',
+      metadata: { destinationChosen: true, codeDestination: true },
+    });
+    const { result, staged } = await run([input, snapshot('output', 200, { bytes: MB })]);
+    expect(staged.get('report.txt')).toBe('output');
+    expect(result.attachments?.map((file) => file?.file_id)).toContain('model-input');
+  });
+  it.each(['oversized', 'mime'] as const)(
+    'keeps search input but never restores its old code bytes when newest is %s',
+    async (policy) => {
+      const upload = snapshot('upload', 100, {
+        context: FileContext.message_attachment,
+        bytes: MB,
+        embedded: true,
+        metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+      });
+      const output = snapshot(
+        'output',
+        200,
+        policy === 'oversized' ? { bytes: 25 * MB } : { bytes: MB, type: 'application/pdf' },
+      );
+      const { result, staged } = await run(
+        [upload, output],
+        [],
+        policy === 'mime' ? { supportedMimeTypes: ['text/plain'] } : {},
+        undefined,
+        [Tools.execute_code, Tools.file_search],
+      );
+      expect(staged.size).toBe(0);
+      expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id)).toEqual([
+        'upload',
+      ]);
+    },
+  );
+  it('charges search-needed superseded inputs without reviving them for code when the union exceeds budget', async () => {
+    const upload = snapshot('upload', 100, {
+      context: FileContext.message_attachment,
+      embedded: true,
+      metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+    });
+    const { result, staged } = await run([upload, snapshot('output', 200)], [], {}, undefined, [
+      Tools.execute_code,
+      Tools.file_search,
+    ]);
+    expect(staged.size).toBe(0);
+    expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id)).toEqual([
+      'upload',
+    ]);
   });
   it('keeps unrelated files subject to their original shared budget and order', async () => {
     const { staged } = await run([

@@ -148,6 +148,7 @@ import { resolveAgentCodeExecution } from '~/code/agent';
 import { hasActiveFileFieldPolicy } from '~/protection';
 import { applyBackgroundToolCalls } from './background';
 import { admitCurrentFileBudget } from './files/budget';
+import { allowsFileResource } from '~/files/consumers';
 import { applyDeferredToolLoading } from './deferral';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
@@ -1923,25 +1924,39 @@ export async function initializeAgent(
   } else if (requestFiles.length > 0 || toolFileIds.length > 0) {
     currentFiles = requestUsageFiles.concat(toolUsageFiles);
   }
-  if (wantsCodeFiles) {
-    // Choose identities before policy: a rejected newest write must not revive old bytes.
-    const selected = new Set(
-      selectCodeFileGenerations(
-        [...(currentFiles ?? []), ...deferredProvisionFiles],
-        undefined,
-        codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
-      ).files.flatMap((file) => (file ? [file.file_id] : [])),
-    );
-    currentFiles = currentFiles?.filter((file) => selected.has(file.file_id));
-    deferredProvisionFiles = deferredProvisionFiles.filter((file) => selected.has(file.file_id));
-  }
   if (currentFiles?.length) {
-    /* Before any check reads the route: endpoint filtering, model-bound limits and content
-     * inspection below all have to judge each file by the route this turn delivers it by. */
     currentFiles = applyTurnDelivery(currentFiles, {
       routing: deliveryRouting,
       consumers: fileConsumers,
     });
+  }
+  const excludedCodeFileIds = new Set<string>();
+  if (wantsCodeFiles) {
+    const membership = new Map<EToolResources, ReadonlySet<string>>([
+      [EToolResources.execute_code, new Set(agent.tool_resources?.execute_code?.file_ids)],
+      [EToolResources.file_search, new Set(agent.tool_resources?.file_search?.file_ids)],
+    ]);
+    const candidates = [...(currentFiles ?? []), ...deferredProvisionFiles].filter((file) =>
+      allowsFileResource(file, EToolResources.execute_code, membership),
+    );
+    const privateIds = new Set(
+      Object.values(agent.tool_resources ?? {}).flatMap((resource) => resource?.file_ids ?? []),
+    );
+    const selected = new Set(
+      selectCodeFileGenerations(
+        candidates,
+        privateIds,
+        codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
+      ).files.flatMap((file) => (file ? [file.file_id] : [])),
+    );
+    for (const file of candidates)
+      if (!selected.has(file.file_id)) excludedCodeFileIds.add(file.file_id);
+    const needed = (file: IMongoFile | TFile): boolean =>
+      !excludedCodeFileIds.has(file.file_id) ||
+      isModelBoundAttachmentFile(file) ||
+      (wantsSearchFiles && allowsFileResource(file, EToolResources.file_search, membership));
+    currentFiles = currentFiles?.filter(needed);
+    deferredProvisionFiles = deferredProvisionFiles.filter(needed);
   }
 
   let endpointFileType: EModelEndpoint | undefined;
@@ -2110,6 +2125,7 @@ export async function initializeAgent(
     adoptLegacySearchEmbeddings: db.adoptLegacySearchEmbeddings,
     hasEntityEmbeddings: db.hasEntityEmbeddings,
     provisionCandidates: deferredProvisionFiles as unknown as TFile[],
+    excludedCodeFileIds,
     codeRouteKey: codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
     codeBaseUrl: codeExecutionContext.baseUrl,
     codeExecutionProfile: codeExecutionContext.executionProfile,
