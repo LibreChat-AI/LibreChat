@@ -696,9 +696,10 @@ const computeProvisionState = async ({
        *  keeps resolving the dead session over the re-provisioned one. */
       const plannedName = codeSnapshotMounts.get(file.file_id);
       const displaced =
-        routeRef?.sandboxFilename != null &&
+        routeRef != null &&
         plannedName != null &&
-        (plannedName !== routeRef.sandboxFilename ||
+        (plannedName !==
+          (routeRef.sandboxFilename ?? getCodeFileDestination(file, activeCodeRouteKey)) ||
           (file.context === FileContext.execute_code &&
             plannedName !== getCodeFileDestination(file, activeCodeRouteKey)));
       if (file.context === FileContext.execute_code_snapshot || displaced) {

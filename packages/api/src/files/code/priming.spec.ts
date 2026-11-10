@@ -49,57 +49,80 @@ describe('selectCodeFiles', () => {
     expect(result.skippedSuperseded).toBe(1);
   });
 
-  it.each([
-    ['default', false],
-    ['default', true],
-    ['stateful', false],
-    ['stateful', true],
-  ] as const)(
-    'keeps literal snapshot paths ahead of converted legacy receipts on %s (stale=%s)',
-    async (routeKey, stale) => {
-      const name = 'nested/chart.webp';
-      const legacy = {
-        ...file('legacy', 'nested/chart.png', {
-          sandboxFilename: name,
-          executionProfile: routeKey,
-        }),
-        type: 'image/webp',
-        context: FileContext.execute_code,
-      };
-      const snapshot = {
-        ...file('snapshot', name, {}, 2),
-        type: 'image/webp',
-        context: FileContext.execute_code_snapshot,
-      };
-      const result = await selectCodeFiles({
-        files: [legacy, snapshot],
-        routeKey,
-        getFileInfo: async () => (stale ? null : fresh),
-      });
-      expect(result.selected).toHaveLength(2);
-      expect(result.skippedSuperseded).toBe(0);
-      expect(result.selected.find((entry) => entry.file.file_id === 'snapshot')).toMatchObject({
-        sandboxName: name,
-        isActive: false,
-      });
-      expect(result.selected.find((entry) => entry.file.file_id === 'legacy')).toMatchObject({
-        sandboxName: expect.stringMatching(/^nested\/chart-.+\.webp$/),
-        isActive: false,
-        sourceRef: { file_id: 'legacy' },
-      });
-      const alias = result.selected.find((entry) => entry.file.file_id === 'legacy')!.sandboxName;
-      legacy.metadata!.codeEnvRef!.sandboxFilename = alias;
-      const repeated = await selectCodeFiles({
-        files: [legacy, snapshot],
-        routeKey,
-        getFileInfo: async () => (stale ? null : fresh),
-      });
-      expect(repeated.selected.find((entry) => entry.file.file_id === 'legacy')).toMatchObject({
-        sandboxName: alias,
-        isActive: false,
-      });
+  describe.each([
+    {
+      label: 'converted image',
+      capture: 'nested/chart.png',
+      name: 'nested/chart.webp',
+      canonical: 'nested/chart.webp',
+      type: 'image/webp',
     },
-  );
+    {
+      label: 'assigned text alias',
+      capture: 'report.txt',
+      name: 'report-assigned.txt',
+      canonical: 'report.txt',
+      type: 'text/plain',
+    },
+  ])('$label', ({ capture, name, canonical, type }) => {
+    it.each([
+      ['default', false],
+      ['default', true],
+      ['stateful', false],
+      ['stateful', true],
+    ] as const)(
+      'keeps literal snapshot paths ahead of legacy receipts on %s (stale=%s)',
+      async (routeKey, stale) => {
+        const legacy = {
+          ...file('legacy', capture, {
+            sandboxFilename: name,
+            executionProfile: routeKey,
+          }),
+          type,
+          context: FileContext.execute_code,
+        };
+        const snapshot = {
+          ...file('snapshot', name, {}, 2),
+          type,
+          context: FileContext.execute_code_snapshot,
+        };
+        const result = await selectCodeFiles({
+          files: [legacy, snapshot],
+          routeKey,
+          getFileInfo: async () => (stale ? null : fresh),
+        });
+        expect(result.selected).toHaveLength(2);
+        expect(result.skippedSuperseded).toBe(0);
+        expect(result.selected.find((entry) => entry.file.file_id === 'snapshot')).toMatchObject({
+          sandboxName: name,
+          isActive: false,
+        });
+        expect(result.selected.find((entry) => entry.file.file_id === 'legacy')).toMatchObject({
+          sandboxName:
+            canonical === name ? expect.stringMatching(/^nested\/chart-.+\.webp$/) : canonical,
+          isActive: false,
+          sourceRef: { file_id: 'legacy' },
+        });
+        const alias = result.selected.find((entry) => entry.file.file_id === 'legacy')!.sandboxName;
+        legacy.metadata!.codeEnvRef!.sandboxFilename = alias;
+        const repeated = await selectCodeFiles({
+          files: [legacy, snapshot],
+          routeKey,
+          getFileInfo: async () => (stale ? null : fresh),
+        });
+        expect(repeated.selected.find((entry) => entry.file.file_id === 'legacy')).toMatchObject({
+          sandboxName: alias,
+          isActive: !stale && alias === canonical,
+        });
+        const oldBranch = await selectCodeFiles({
+          files: [legacy],
+          routeKey,
+          getFileInfo: async () => (stale ? null : fresh),
+        });
+        expect(oldBranch.selected[0].sandboxName).toBe(canonical);
+      },
+    );
+  });
 
   it('preserves provisioned aliases across turns and reuses legacy metadata probes', async () => {
     const getFileInfo = jest.fn(async (ref: CodeEnvRef) => ({
@@ -286,21 +309,26 @@ describe('selectCodeFiles', () => {
     );
   });
 
-  it.each(['default', 'stateful'] as const)(
-    'reuploads a displaced private receipt rather than trusting its live bytes on %s',
-    async (routeKey) => {
+  it.each([
+    ['default', true],
+    ['default', false],
+    ['stateful', true],
+    ['stateful', false],
+  ] as const)(
+    'reuploads a displaced private receipt rather than trusting its live bytes on %s (named %s)',
+    async (routeKey, named) => {
       const shared = { ...file('shared', 'rows.csv'), context: FileContext.execute_code_snapshot };
       const privateFile = file('private', 'rows.csv', {
         kind: 'agent',
         id: 'agent-a',
-        sandboxFilename: 'rows.csv',
+        sandboxFilename: named ? 'rows.csv' : undefined,
         executionProfile: routeKey,
       });
       const result = await selectCodeFiles({
         files: [privateFile, shared],
         privateFileIds: new Set(['private']),
         routeKey,
-        getFileInfo: async () => fresh,
+        getFileInfo: async () => ({ ...fresh, originalFilename: 'rows.csv' }),
       });
       expect(result.selected).toHaveLength(2);
       expect(result.selected.find((entry) => entry.file.file_id === 'shared')?.sandboxName).toBe(

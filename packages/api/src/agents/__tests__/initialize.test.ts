@@ -143,6 +143,7 @@ jest.mock('../../middleware/modelBoundContent', () => {
 import { initializeAgent } from '../initialize';
 import { createProvisionFilesCallback } from '~/files/provision/callback';
 import { createFileProvisionRecovery } from '~/files/operations';
+import { selectCodeFiles } from '~/files/code/priming';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
 import { canAgentGraphPause } from '../hitl/admission';
@@ -664,7 +665,7 @@ describe('initializeAgent: ChatProject context', () => {
         res,
         primaryConfig,
         allowedProviders: new Set([Providers.OPENAI]),
-        modelsConfig: { openai: ['test-model'] },
+        getEndpointModels: async () => ({ openai: ['test-model'] }),
         loadTools,
         useChatProjectContext: true,
       },
@@ -727,7 +728,7 @@ describe('initializeAgent: ChatProject context', () => {
         primaryConfig,
         rootConfigs: [primaryConfig],
         allowedProviders: new Set([Providers.OPENAI]),
-        modelsConfig: { openai: ['test-model'] },
+        getEndpointModels: async () => ({ openai: ['test-model'] }),
         loadTools,
         useChatProjectContext: true,
       },
@@ -7309,6 +7310,11 @@ describe('snapshot destination admission invariants', () => {
         getDeferredProvisionFiles: jest.fn().mockResolvedValue(deferred),
       },
     );
+    const eager = await selectCodeFiles({
+      files: result.tool_resources?.execute_code?.files ?? [],
+      routeKey: 'default',
+      getFileInfo: async () => ({ lastModified: new Date().toISOString() }),
+    });
     const staged = new Map<string, string>();
     const callback = createProvisionFilesCallback({
       req,
@@ -7353,7 +7359,7 @@ describe('snapshot destination admission invariants', () => {
       {},
       {},
     );
-    return { result, staged };
+    return { result, staged, eager };
   }
   it.each([false, true])(
     'selects two 12 MiB versions before the 20 MiB budget (deferred newest %s)',
@@ -7510,9 +7516,15 @@ describe('snapshot destination admission invariants', () => {
       'upload',
     ]);
   });
-  it.each([FileContext.execute_code_snapshot, FileContext.execute_code] as const)(
-    'charges independent capture and assigned-path writes separately across repeated initialization (%s)',
-    async (context) => {
+  it.each([
+    [FileContext.execute_code_snapshot, true, false],
+    [FileContext.execute_code, true, false],
+    [FileContext.execute_code, false, false],
+    [FileContext.execute_code, true, true],
+    [FileContext.execute_code, false, true],
+  ] as const)(
+    'charges independent capture and assigned-path writes separately across repeated initialization (%s, named %s, deferred newest %s)',
+    async (context, named, deferred) => {
       const original = snapshot('png', 100, {
         context,
         filename: 'nested/chart.png',
@@ -7525,7 +7537,7 @@ describe('snapshot destination admission invariants', () => {
             id: 'user-1',
             storage_session_id: 'sandbox',
             file_id: 'png-copy',
-            sandboxFilename: 'nested/chart.webp',
+            sandboxFilename: named ? 'nested/chart.webp' : undefined,
           },
         },
       });
@@ -7533,10 +7545,19 @@ describe('snapshot destination admission invariants', () => {
         filename: 'nested/chart.webp',
         type: 'image/webp',
       });
-      const first = await run([original, literal]);
+      const first = await run(
+        deferred ? [original] : [original, literal],
+        deferred ? [literal] : [],
+      );
       expect([...first.staged.values()]).toEqual(['png']);
       expect(first.staged.has('nested/chart.webp')).toBe(false);
-      const again = await run([original, literal]);
+      expect(first.eager.selected.map((entry) => entry.sandboxName)).not.toContain(
+        'nested/chart.webp',
+      );
+      const again = await run(
+        deferred ? [original] : [original, literal],
+        deferred ? [literal] : [],
+      );
       expect(again.staged).toEqual(first.staged);
     },
   );

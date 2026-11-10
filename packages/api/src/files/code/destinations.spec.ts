@@ -369,38 +369,45 @@ describe('scoped generated destination selection', () => {
   });
 });
 
-describe('converted legacy mount preferences', () => {
-  it('preserves the turn plan after policy rejection without persisting alias lineage', () => {
-    const name = 'nested/chart.webp';
-    const legacy = {
-      file_id: 'legacy',
-      filename: 'nested/chart.png',
-      type: 'image/webp',
-      context: FileContext.execute_code,
-      metadata: {
-        codeEnvRef: {
-          kind: 'user' as const,
-          id: 'owner',
-          storage_session_id: 'session',
-          file_id: 'object',
-          sandboxFilename: name,
+describe('legacy capture mount preferences', () => {
+  it.each([
+    ['nested/chart.png', 'nested/chart.webp', 'image/webp', 'nested/chart.webp'],
+    ['report.txt', 'report-assigned.txt', 'text/plain', 'report.txt'],
+  ])(
+    'preserves the turn plan but not persistent alias lineage for %s',
+    (capture, name, type, canonical) => {
+      const legacy = {
+        file_id: 'legacy',
+        filename: capture,
+        type,
+        context: FileContext.execute_code,
+        metadata: {
+          codeEnvRef: {
+            kind: 'user' as const,
+            id: 'owner',
+            storage_session_id: 'session',
+            file_id: 'object',
+            sandboxFilename: name,
+          },
         },
-      },
-    };
-    const literal = {
-      file_id: 'literal',
-      filename: name,
-      type: 'image/webp',
-      context: FileContext.execute_code_snapshot,
-    };
-    const admitted = planCodeSnapshotMounts([legacy, literal]);
-    const alias = admitted.get(legacy.file_id)!;
-    expect(admitted.get(literal.file_id)).toBe(name);
-    expect(alias).toMatch(/^nested\/chart-.+\.webp$/);
-    expect(
-      planCodeSnapshotMounts([legacy], undefined, 'default', admitted).get(legacy.file_id),
-    ).toBe(alias);
-    legacy.metadata.codeEnvRef.sandboxFilename = alias;
-    expect(planCodeSnapshotMounts([legacy]).get(legacy.file_id)).toBe(name);
-  });
+      };
+      const literal = {
+        file_id: 'literal',
+        filename: name,
+        type,
+        context: FileContext.execute_code_snapshot,
+      };
+      const admitted = planCodeSnapshotMounts([legacy, literal]);
+      const alias = admitted.get(legacy.file_id)!;
+      expect(admitted.get(literal.file_id)).toBe(name);
+      expect(alias).not.toBe(name);
+      expect(
+        planCodeSnapshotMounts([legacy], undefined, 'default', admitted).get(legacy.file_id),
+      ).toBe(alias);
+      legacy.metadata.codeEnvRef.sandboxFilename = alias;
+      expect(planCodeSnapshotMounts([legacy]).get(legacy.file_id)).toBe(canonical);
+      legacy.metadata.codeEnvRef.sandboxFilename = name;
+      expect(planCodeSnapshotMounts([legacy]).get(legacy.file_id)).toBe(canonical);
+    },
+  );
 });

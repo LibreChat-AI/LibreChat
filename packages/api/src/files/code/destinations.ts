@@ -310,7 +310,7 @@ export function selectCodeFileGenerations<T extends CodePathCandidate>(
   return { files: selected, skippedSuperseded };
 }
 
-/** Shared mounts precede private receipts; explicit writes precede converted snapshots. */
+/** Within each scope, literal snapshots precede legacy captures and converted snapshots. */
 export function planCodeSnapshotMounts<T extends CodePathCandidate>(
   files: Array<T | null | undefined>,
   privateFileIds?: ReadonlySet<string>,
@@ -321,7 +321,7 @@ export function planCodeSnapshotMounts<T extends CodePathCandidate>(
   const ordered = sortCodeFilesByDestinationPriority(files, privateFileIds);
   const snapshots: T[] = [];
   const receipts: T[] = [];
-  const convertedLegacy: T[] = [];
+  const legacyCaptures: T[] = [];
   const isConverted = (file: T): boolean =>
     getCodeEnvUploadFilename(resolveSandboxFilename(file.filename ?? '', file.type ?? '')) !==
     file.filename;
@@ -330,8 +330,7 @@ export function planCodeSnapshotMounts<T extends CodePathCandidate>(
     if (!file || (file.file_id && seen.has(file.file_id))) continue;
     if (file.file_id) seen.add(file.file_id);
     if (file.context === FileContext.execute_code_snapshot) snapshots.push(file);
-    else if (file.context === FileContext.execute_code && isConverted(file))
-      convertedLegacy.push(file);
+    else if (file.context === FileContext.execute_code) legacyCaptures.push(file);
     else receipts.push(file);
   }
   const priority = (file: T): number => {
@@ -348,7 +347,10 @@ export function planCodeSnapshotMounts<T extends CodePathCandidate>(
       (privateFileIds?.has(file.file_id ?? '') ?? false) === privateScope;
     for (const file of receipts) {
       if (!inScope(file)) continue;
-      const name = getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename;
+      const ref = getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey);
+      const name =
+        ref?.sandboxFilename ??
+        (privateScope && ref != null ? getCodeFileDestination(file, routeKey) : undefined);
       if (!name) continue;
       if (!privateScope) {
         reserveCodeDestination(destinations, name);
@@ -371,7 +373,7 @@ export function planCodeSnapshotMounts<T extends CodePathCandidate>(
     for (const file of snapshots) {
       if (!isConverted(file)) claimSnapshot(file);
     }
-    for (const file of convertedLegacy) {
+    for (const file of legacyCaptures) {
       if (!file.file_id || !inScope(file)) continue;
       // Retain this turn's admission plan, not an alias persisted on another branch.
       const name = preferred?.get(file.file_id) ?? getCodeFileDestination(file, routeKey);

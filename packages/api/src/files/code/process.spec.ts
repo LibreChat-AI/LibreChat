@@ -336,9 +336,14 @@ describe('Generated file snapshots', () => {
     expect(next.advertised.has(foreign.file_id)).toBe(false);
   });
 
-  it.each([true, false])(
-    'keeps shared snapshots ahead of an already primed private resource (deferred %s)',
-    async (deferred) => {
+  it.each([
+    [true, true],
+    [true, false],
+    [false, true],
+    [false, false],
+  ] as const)(
+    'keeps shared snapshots ahead of an already primed private resource (deferred %s, named %s)',
+    async (deferred, named) => {
       const privateFile = await emit(Buffer.from('Private setup'), 'private', 'report.txt', 50);
       await methods.updateFile({ file_id: privateFile.file_id, context: FileContext.agents });
       await initializeCode([], [privateFile.file_id], deferred);
@@ -347,6 +352,16 @@ describe('Generated file snapshots', () => {
         id: 'agent-a',
         sandboxFilename: 'report.txt',
       });
+      if (!named)
+        await mongoose.models.File.updateOne(
+          { file_id: privateFile.file_id },
+          {
+            $unset: {
+              'metadata.codeEnvRef.sandboxFilename': '',
+              'metadata.codeEnvRefs.default.sandboxFilename': '',
+            },
+          },
+        );
       const first = await emit(Buffer.from('Shared V1'), 'shared-1', 'report.txt', 100);
       const alone = await initializeCode([first.file_id], [], deferred);
       const next = await initializeCode([first.file_id], [privateFile.file_id], deferred);
