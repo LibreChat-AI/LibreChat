@@ -167,6 +167,7 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'gpt-5.6': { prompt: 4, completion: 20 },
     'gpt-5.6-terra': { prompt: 2, completion: 12 },
     'gpt-5.6-luna': { prompt: 0.2, completion: 1.2 },
+    'gpt-6-cyber': { prompt: 20, completion: 100 },
     'gpt-6-astra': { prompt: 10, completion: 50 },
     'gpt-6-sol': { prompt: 2, completion: 10 },
     'gpt-6.1-terra': { prompt: 1, completion: 5 },
@@ -385,7 +386,9 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
  * Mapping of model token sizes to their respective multipliers for cached input, read and write.
  * The rates are 1 USD per 1M tokens.
  */
-export const cacheTokenValues: Record<string, { write: number; read: number }> = {
+type CacheRates = { write: number; read: number; write12h?: number };
+
+export const cacheTokenValues: Record<string, CacheRates> = {
   'claude-3.7-sonnet': { write: 3.75, read: 0.3 },
   'claude-3-7-sonnet': { write: 3.75, read: 0.3 },
   'claude-3.5-sonnet': { write: 3.75, read: 0.3 },
@@ -433,6 +436,7 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   'gpt-5.6': { write: 5, read: 0.4 },
   'gpt-5.6-terra': { write: 2.5, read: 0.2 },
   'gpt-5.6-luna': { write: 0.25, read: 0.02 },
+  'gpt-6-cyber': { write: 25, write12h: 50, read: 2 },
   'gpt-6-astra': { write: 12.5, read: 1 },
   'gpt-6-sol': { write: 2.5, read: 0.2 },
   'gpt-6.1-terra': { write: 1.25, read: 0.05 },
@@ -499,6 +503,7 @@ export const premiumTokenValues: Record<
   'gpt-5.6': { threshold: 272000, prompt: 8, completion: 30 },
   'gpt-5.6-terra': { threshold: 272000, prompt: 4, completion: 18 },
   'gpt-5.6-luna': { threshold: 272000, prompt: 0.4, completion: 1.8 },
+  'gpt-6-cyber': { threshold: 272000, prompt: 40, completion: 150 },
   'gpt-6-astra': { threshold: 272000, prompt: 20, completion: 75 },
   'gpt-6-sol': { threshold: 272000, prompt: 4, completion: 15 },
   'gpt-6.1-terra': { threshold: 272000, prompt: 2, completion: 7.5 },
@@ -520,7 +525,7 @@ export const premiumTokenValues: Record<
  */
 export const premiumCacheTokenValues: Record<
   string,
-  { threshold: number; write: number; read: number }
+  { threshold: number; write?: number; read: number }
 > = {
   'claude-haiku-5-5': { threshold: 100000, write: 0.625, read: 0.05 },
   'claude-haiku-5.5': { threshold: 100000, write: 0.625, read: 0.05 },
@@ -529,6 +534,8 @@ export const premiumCacheTokenValues: Record<
   'gpt-5.6': { threshold: 272000, write: 10, read: 0.8 },
   'gpt-5.6-terra': { threshold: 272000, write: 5, read: 0.4 },
   'gpt-5.6-luna': { threshold: 272000, write: 0.5, read: 0.04 },
+  // OpenAI publishes no long-context cache-write rate for Cyber.
+  'gpt-6-cyber': { threshold: 272000, read: 4 },
   'gpt-6-astra': { threshold: 272000, write: 25, read: 2 },
   'gpt-6-sol': { threshold: 272000, write: 5, read: 0.4 },
   'gpt-6.1-terra': { threshold: 272000, write: 2.5, read: 0.1 },
@@ -538,7 +545,7 @@ export const premiumCacheTokenValues: Record<
 };
 
 /** `write1h` prices Anthropic's 1-hour prompt cache writes; `write` is the 5-minute rate */
-type CacheType = 'write' | 'read' | 'write1h';
+type CacheType = 'write' | 'read' | 'write1h' | 'write12h';
 
 /** Anthropic bills 1-hour cache writes at 2x the input rate on every model and tier */
 export const ONE_HOUR_CACHE_WRITE_FACTOR = 2;
@@ -726,13 +733,13 @@ export function createTxMethods(
     valueKey: string,
     cacheType: 'write' | 'read',
     inputTokenCount?: number | null,
-  ): number | null {
+  ): number | null | undefined {
     if (inputTokenCount == null) {
-      return null;
+      return undefined;
     }
     const premiumEntry = premiumCacheTokenValues[valueKey];
     if (!premiumEntry || inputTokenCount <= premiumEntry.threshold) {
-      return null;
+      return undefined;
     }
     return premiumEntry[cacheType] ?? null;
   }
@@ -759,10 +766,26 @@ export function createTxMethods(
     endpointTokenConfig?: Record<string, Record<string, number>>;
     inputTokenCount?: number | null;
   }): number | null {
+    if (cacheType === 'write12h') {
+      const override = model ? endpointTokenConfig?.[model] : undefined;
+      if (override != null) return override.write12h ?? null;
+      const key = valueKey ?? (model ? getValueKey(model, endpoint) : undefined);
+      if (
+        !key ||
+        (inputTokenCount != null &&
+          inputTokenCount > (premiumCacheTokenValues[key]?.threshold ?? Infinity))
+      )
+        return null;
+      return cacheTokenValues[key]?.write12h ?? null;
+    }
+
     if (cacheType === 'write1h') {
       const override = model ? endpointTokenConfig?.[model]?.write1h : undefined;
       if (override != null) {
         return override;
+      }
+      if ((valueKey ?? (model ? getValueKey(model, endpoint) : undefined)) === 'gpt-6-cyber') {
+        return null;
       }
       const promptRate = getMultiplier({
         model,
@@ -785,11 +808,8 @@ export function createTxMethods(
     }
 
     if (valueKey && cacheType) {
-      return (
-        getPremiumCacheRate(valueKey, cacheType, inputTokenCount) ??
-        cacheTokenValues[valueKey]?.[cacheType] ??
-        null
-      );
+      const premium = getPremiumCacheRate(valueKey, cacheType, inputTokenCount);
+      return premium !== undefined ? premium : (cacheTokenValues[valueKey]?.[cacheType] ?? null);
     }
 
     if (!cacheType || !model) {
@@ -801,11 +821,8 @@ export function createTxMethods(
       return null;
     }
 
-    return (
-      getPremiumCacheRate(valueKey, cacheType, inputTokenCount) ??
-      cacheTokenValues[valueKey]?.[cacheType] ??
-      null
-    );
+    const premium = getPremiumCacheRate(valueKey, cacheType, inputTokenCount);
+    return premium !== undefined ? premium : (cacheTokenValues[valueKey]?.[cacheType] ?? null);
   }
 
   return {

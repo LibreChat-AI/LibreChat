@@ -1764,6 +1764,37 @@ function applyModelFamilyDefaults(
         : setting,
     );
   }
+  if (model === 'gpt-6-cyber' && endpoint === EModelEndpoint.openAI) {
+    return settings
+      .filter(
+        (setting) =>
+          ![
+            'reasoning_effort',
+            'reasoning_summary',
+            'reasoning_mode',
+            'reasoning_context',
+          ].includes(setting.key),
+      )
+      .map((setting) => {
+        if (setting.key === 'max_tokens')
+          return { ...setting, range: { min: 1, max: 128000, step: 1 } };
+        if (setting.key === 'useResponsesApi' && endpoint === EModelEndpoint.openAI) {
+          const route = (value?: boolean) =>
+            resolveEffectiveUseResponsesApi({
+              endpoint,
+              model,
+              routing: responsesApiRouting,
+              value,
+            });
+          return {
+            ...setting,
+            default: route() ?? false,
+            enumMappings: { true: route(true) ?? true, false: route(false) ?? false },
+          };
+        }
+        return setting;
+      });
+  }
   const tier = gpt6Tier(model);
   if (tier === 'sol' || tier === 'terra' || tier === 'luna') {
     return settings.map((setting) => {

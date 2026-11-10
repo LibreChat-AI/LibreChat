@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Providers, isOpenAILike } from '@librechat/agents';
 import {
   EModelEndpoint,
@@ -609,11 +610,13 @@ export function getOpenAILLMConfig({
   defaultParams,
   inferenceParameters,
   useOpenRouter,
+  requestIdentity,
   reasoningFormat = ReasoningParameterFormat.reasoningEffort,
   modelOptions: _modelOptions,
 }: {
   apiKey: string;
   streaming: boolean;
+  requestIdentity?: t.OpenAIConfigOptions['requestIdentity'];
   baseURL?: string | null;
   endpoint?: EModelEndpoint | string | null;
   modelOptions: Partial<t.OpenAIParameters>;
@@ -949,8 +952,14 @@ export function getOpenAILLMConfig({
     isCanonicalAzureBaseURL(baseURL, azure);
   const firstPartyEndpoint = firstPartyOpenAI || firstPartyAzure;
   /** Keep GPT-6 model identity on Azure, with the deployment name used on the wire. */
+  const cyber =
+    llmConfig.model === 'gpt-6-cyber' &&
+    !useOpenRouter &&
+    !azure &&
+    (endpoint === EModelEndpoint.openAI || baseURL != null) &&
+    isCanonicalOpenAIBaseURL(baseURL);
   const firstPartyResponsesModel =
-    firstPartyEndpoint && prefersResponsesApiByModel(llmConfig.model);
+    (firstPartyEndpoint && prefersResponsesApiByModel(llmConfig.model)) || cyber;
   if (
     firstPartyOpenAI &&
     reasoningFormat !== ReasoningParameterFormat.disabled &&
@@ -1111,6 +1120,42 @@ export function getOpenAILLMConfig({
         target.include = target.include.filter((value) => value !== 'message.output_text.logprobs');
       }
     }
+  }
+
+  if (cyber) {
+    if (
+      requestIdentity != null &&
+      dropParams?.some((key) =>
+        ['modelKwargs', 'access_programs', 'safety_identifier'].includes(key),
+      )
+    ) {
+      throw new Error('GPT-6 Cyber requires its access program and safety identifier.');
+    }
+    // No published effort enum: omit restored/user reasoning and leave the provider default.
+    removeReasoningPayload(llmConfig as Record<string, unknown>);
+    removeReasoningPayload(modelKwargs);
+    if (modelKwargs.access_programs === undefined) {
+      modelKwargs.access_programs = { cyber: 'daybreak_red' };
+    }
+    if (requestIdentity != null) {
+      if (!requestIdentity.userId?.trim()) {
+        throw new Error('GPT-6 Cyber requires an authenticated user.');
+      }
+      // Required identity is server-owned, never an administrator's shared literal or a request field.
+      delete (llmConfig as Record<string, unknown>).safety_identifier;
+      delete llmConfig.user;
+      delete modelKwargs.user;
+      modelKwargs.safety_identifier = createHash('sha256')
+        .update(
+          JSON.stringify([
+            'librechat:gpt-6-cyber:v1',
+            requestIdentity.tenantId ?? '',
+            requestIdentity.userId,
+          ]),
+        )
+        .digest('hex');
+    }
+    hasModelKwargs = true;
   }
 
   hasModelKwargs =

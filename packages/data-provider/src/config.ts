@@ -5131,6 +5131,8 @@ const responsesOnlyOpenAIModels = ['gpt-6-astra'];
 const responsesReasoningOpenAIModels = ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6.1-terra', 'gpt-6-luna'];
 /** Catalog models whose native execution defaults to the Responses API. */
 export const responsesPreferredOpenAIModels: readonly string[] = [
+  // Restricted to approved Daybreak projects, never a universal catalog default.
+  'gpt-6-cyber',
   ...responsesOnlyOpenAIModels,
   ...responsesReasoningOpenAIModels,
 ];

@@ -3087,9 +3087,11 @@ describe('Long-Context Premium Cache Pricing', () => {
   it('should scale cache write/read by the same long-context multiplier as input', () => {
     for (const model of premiumCacheModels) {
       const inputRatio = premiumTokenValues[model].prompt / tokenValues[model].prompt;
-      expect(premiumCacheTokenValues[model].write).toBeCloseTo(
-        cacheTokenValues[model].write * inputRatio,
-      );
+      if (premiumCacheTokenValues[model].write != null) {
+        expect(premiumCacheTokenValues[model].write).toBeCloseTo(
+          cacheTokenValues[model].write * inputRatio,
+        );
+      }
       expect(premiumCacheTokenValues[model].read).toBeCloseTo(
         cacheTokenValues[model].read * inputRatio,
       );
@@ -3101,7 +3103,7 @@ describe('Long-Context Premium Cache Pricing', () => {
       const { threshold } = premiumCacheTokenValues[model];
       for (const cacheType of ['write', 'read'] as const) {
         expect(getCacheMultiplier({ model, cacheType, inputTokenCount: threshold + 1 })).toBe(
-          premiumCacheTokenValues[model][cacheType],
+          premiumCacheTokenValues[model][cacheType] ?? null,
         );
         expect(getCacheMultiplier({ model, cacheType, inputTokenCount: threshold })).toBe(
           cacheTokenValues[model][cacheType],

@@ -770,6 +770,7 @@ function resolveBuiltInClientOverrides(
     agentProvider?: string;
   },
   appConfig: AppConfig,
+  user?: IUser,
 ): SummarizationClientOverrides | undefined {
   const { model, parameters } = target;
   /**
@@ -803,6 +804,7 @@ function resolveBuiltInClientOverrides(
   const { llmConfig } = getOpenAIConfig(
     '',
     {
+      requestIdentity: { userId: user?.id, tenantId: user?.tenantId },
       modelOptions: { model, reasoning_effort: summarizationReasoningEffort(parameters) },
       reverseProxyUrl: baseURL,
     },
@@ -959,6 +961,7 @@ function resolveOpenAISummarization(
   const { llmConfig, configOptions } = getOpenAIConfig(
     apiKey,
     {
+      requestIdentity: { userId: headerContext.user?.id, tenantId: headerContext.user?.tenantId },
       modelOptions: {
         model,
         reasoning_effort: summarizationReasoningEffort(parameters),
@@ -1219,7 +1222,12 @@ function resolveSummarizationProvider(
     if (!customEndpointConfig) {
       return {
         provider: overrideProvider,
-        clientOverrides: resolveBuiltInClientOverrides(overrideProvider, target, appConfig),
+        clientOverrides: resolveBuiltInClientOverrides(
+          overrideProvider,
+          target,
+          appConfig,
+          headerContext.user,
+        ),
       };
     }
     const rawApiKey = customEndpointConfig.apiKey ?? '';
@@ -1314,6 +1322,8 @@ function resolveSummarizationProvider(
       apiKey,
       {
         reverseProxyUrl: baseURL,
+        requestIdentity: { userId: headerContext.user?.id, tenantId: headerContext.user?.tenantId },
+        ...(target.model === 'gpt-6-cyber' ? { modelOptions: { model: target.model } } : {}),
         proxy: process.env.PROXY ?? null,
         headers: resolvedHeaders,
         addParams: customEndpointConfig.addParams,

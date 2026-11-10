@@ -13,6 +13,8 @@ export type OpenAIModelOptions = Partial<OpenAIParameters>;
  * Configuration options for the getLLMConfig function
  */
 export interface OpenAIConfigOptions {
+  /** Server-authenticated principal. Omitted only for request-free policy discovery. */
+  requestIdentity?: { userId?: string; tenantId?: string };
   /** Validated extra inference wire fields. */
   inferenceParameters?: Record<string, unknown>;
   modelOptions?: OpenAIModelOptions;
