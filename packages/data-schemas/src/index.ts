@@ -13,6 +13,7 @@ export * from './utils';
 export { createModels } from './models';
 export {
   createMethods,
+  createToolFavoriteMethods,
   createSkillDeletionPersistenceAdapter,
   AGENT_OWNER_CONTACT_RESOLVED_FIELD,
   AgentSortCursorError,
@@ -132,3 +133,8 @@ export type { SearchTokenBackfillResult } from './migrations';
 export { createBrowserSetupStore, createBrowserSetupBackend } from './methods/browserSetup';
 export type * from './types/browserSetup';
 export type * from './types/codeEnvironmentSetup';
+
+export * from './postgres/pool';
+export * from './postgres/migrations';
+export * from './postgres/favorite';
+export * from './postgres/import';

@@ -340,6 +340,7 @@ export type AllMethods = PermissionPrincipalStorage &
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
+  toolFavorites?: ToolFavoriteMethods;
   /** Matches a model name to a canonical key. From @librechat/api. */
   matchModelName?: (model: string, endpoint?: string) => string | undefined;
   /** Finds the first key in values whose key is a substring of model. From @librechat/api. */
@@ -543,7 +544,7 @@ export function createMethods(
     ...createFileMethods(mongoose),
     ...createFileStorageMethods(mongoose),
     ...createMemoryMethods(mongoose),
-    ...createToolFavoriteMethods(mongoose),
+    ...(deps.toolFavorites ?? createToolFavoriteMethods(mongoose)),
     ...createAgentCategoryMethods(mongoose),
     ...createAgentApiKeyMethods(mongoose),
     ...createMCPServerMethods(mongoose, {
@@ -696,3 +697,5 @@ export type {
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };
+
+export { createToolFavoriteMethods } from './favorite';

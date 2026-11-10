@@ -78,6 +78,8 @@ const {
   sweepOrphanedPreviews,
   getRoleByName,
   seedDatabase,
+  initializeFavorites,
+  closeFavorites,
   listAllConfigs,
   recordAuditEntry,
 } = require('~/models');
@@ -243,6 +245,10 @@ const startServer = async () => {
   runAsSystem(sweepOrphanedPreviews).catch((err) => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
+  await initializeFavorites(
+    await require('./services/Config/loadCustomConfig')(false, { storageSelection: true }),
+  );
+  registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
   const appConfig = await getAppConfig({ baseOnly: true });
   await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
   registerBackgroundTaskShutdown({
@@ -594,7 +600,8 @@ const startServer = async () => {
  * liveness probe eventually times out. Mirrors the pattern in
  * `experimental.js`.
  */
-startServer().catch((err) => {
+startServer().catch(async (err) => {
+  await closeFavorites().catch(() => undefined);
   logger.error('Failed to start server:', err);
   process.exit(1);
 });
