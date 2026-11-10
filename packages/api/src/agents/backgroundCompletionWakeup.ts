@@ -30,12 +30,12 @@ import type { AgentTriggerDispatchContext } from './triggers/dispatch';
 import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
 import type { QueuedTurnPrecedenceMethods } from './precedence';
 import { resolveScheduleMCPCompletion } from '~/schedules/authorization/continuation';
-import { queuedTurnPrecedenceError, yieldsToQueuedTurn } from './precedence';
 import { WAITING_RETRY_CAP_MS, waitingRetryAfter } from './triggers/backoff';
 import { BACKGROUND_TOOL_PRODUCER_LEASE_MS } from './backgroundCompletion';
 import { SUBAGENT_COMPLETION_SOURCE } from './subagentCompletionWakeup';
 import { createAgentTriggerEnvelope } from './triggers/envelope';
 import { AgentTriggerExecutionError } from './triggers/host';
+import { getQueuedTurnDeferral } from './precedence';
 import { truncateMiddle } from '~/utils';
 
 const WAKEUP_ADMISSION_DELAY_MS = 250;
@@ -330,9 +330,9 @@ export function createBackgroundToolCompletionWakeupResolver({
       });
     }
     const userId = envelope.principal.userId;
-    const [parent, queuedTurnFirst] = await Promise.all([
+    const [parent, queuedTurnDeferral] = await Promise.all([
       methods.getConvo(userId, envelope.target.conversationId),
-      !ownsParent && yieldsToQueuedTurn(methods, envelope, Date.now()),
+      ownsParent ? null : getQueuedTurnDeferral(methods, envelope, Date.now()),
     ]);
     if (parent == null || parent.tenantId !== envelope.principal.tenantId) {
       throw executionError('The parent conversation is no longer available.', {
@@ -341,8 +341,8 @@ export function createBackgroundToolCompletionWakeupResolver({
         status: 404,
       });
     }
-    if (queuedTurnFirst) {
-      throw queuedTurnPrecedenceError();
+    if (queuedTurnDeferral != null) {
+      throw queuedTurnDeferral;
     }
     const payload = envelope.event.payload;
     const scheduleMCPIdentity = await resolveScheduleMCPCompletion(

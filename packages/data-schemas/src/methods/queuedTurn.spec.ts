@@ -3156,7 +3156,12 @@ describe('agent queued turn methods', () => {
 
 describe('queued turn precedence', () => {
   const scope = () => ({ user, tenantId: 'tenant-1', conversationId: 'conversation-1' });
-  const pending = (now = START) => methods.hasPendingAgentQueuedTurn({ ...scope(), now });
+  const precedence = () => ({
+    userId: user.toString(),
+    tenantId: 'tenant-1',
+    conversationId: 'conversation-1',
+  });
+  const pending = (now = START) => methods.hasPendingAgentQueuedTurn({ ...precedence(), now });
 
   it('answers false for a conversation without queued turns', async () => {
     await expect(pending()).resolves.toBe(false);
@@ -3167,20 +3172,23 @@ describe('queued turn precedence', () => {
 
     await expect(pending()).resolves.toBe(true);
     await expect(
-      methods.hasPendingAgentQueuedTurn({ ...scope(), tenantId: 'tenant-2', now: START }),
+      methods.hasPendingAgentQueuedTurn({ ...precedence(), tenantId: 'tenant-2', now: START }),
     ).resolves.toBe(false);
     await expect(
-      methods.hasPendingAgentQueuedTurn({ ...scope(), tenantId: undefined, now: START }),
+      methods.hasPendingAgentQueuedTurn({ ...precedence(), tenantId: undefined, now: START }),
     ).resolves.toBe(false);
     await expect(
       methods.hasPendingAgentQueuedTurn({
-        ...scope(),
-        user: new mongoose.Types.ObjectId(),
+        ...precedence(),
+        userId: new mongoose.Types.ObjectId().toString(),
         now: START,
       }),
     ).resolves.toBe(false);
     await expect(
-      methods.hasPendingAgentQueuedTurn({ ...scope(), conversationId: 'other', now: START }),
+      methods.hasPendingAgentQueuedTurn({ ...precedence(), userId: 'not-an-id', now: START }),
+    ).resolves.toBe(false);
+    await expect(
+      methods.hasPendingAgentQueuedTurn({ ...precedence(), conversationId: 'other', now: START }),
     ).resolves.toBe(false);
   });
 
@@ -3251,6 +3259,26 @@ describe('queued turn precedence', () => {
       },
     );
     await expect(pending()).resolves.toBe(false);
+  });
+
+  it('sees a claim that lands after the head read', async () => {
+    const queued = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    const findOne = Turn.findOne.bind(Turn);
+    jest.spyOn(Turn, 'findOne').mockImplementationOnce((...args: Parameters<typeof findOne>) => {
+      const query = findOne(...args);
+      const exec = query.exec.bind(query);
+      /** The head read observes the row only after a worker claimed it. */
+      query.exec = async () => {
+        await methods.claimNextAgentQueuedTurn(claimInput(queued.turn.queuedTurnId));
+        return exec();
+      };
+      return query;
+    });
+
+    await expect(pending()).resolves.toBe(true);
+    await expect(Turn.findById(queued.turn.queuedTurnId).lean()).resolves.toMatchObject({
+      status: 'claimed',
+    });
   });
 
   it('does not wait on an unfinished reservation', async () => {

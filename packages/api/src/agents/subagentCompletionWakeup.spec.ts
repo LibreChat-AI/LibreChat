@@ -319,7 +319,7 @@ describe('createSubagentCompletionWakeupResolver', () => {
 
     it('defers without consuming an attempt or claiming the child result', async () => {
       const { methods } = resolverMethods();
-      const hasPendingAgentQueuedTurn = jest.fn(async (_scope: { user: object }) => true);
+      const hasPendingAgentQueuedTurn = jest.fn(async () => true);
       const resolve = createSubagentCompletionWakeupResolver({
         methods: { ...methods, hasPendingAgentQueuedTurn } as never,
         getGenerationJob: async () => null,
@@ -335,12 +335,11 @@ describe('createSubagentCompletionWakeupResolver', () => {
       });
       expect(hasPendingAgentQueuedTurn).toHaveBeenCalledTimes(1);
       expect(hasPendingAgentQueuedTurn).toHaveBeenCalledWith({
-        user: expect.anything(),
+        userId: OWNER_ID,
         tenantId: 'tenant-1',
         conversationId: 'conversation-1',
         now: new Date(NOW),
       });
-      expect(String(hasPendingAgentQueuedTurn.mock.calls[0]?.[0].user)).toBe(OWNER_ID);
       expect(methods.claimSubagentTaskResult).not.toHaveBeenCalled();
     });
 
@@ -377,7 +376,19 @@ describe('createSubagentCompletionWakeupResolver', () => {
       expect(hasPendingAgentQueuedTurn).not.toHaveBeenCalled();
     });
 
-    it('proceeds when queued-turn state cannot be read', async () => {
+    it('proceeds when no queued turn is pending', async () => {
+      const { methods } = resolverMethods();
+      const resolve = createSubagentCompletionWakeupResolver({
+        methods: { ...methods, hasPendingAgentQueuedTurn: async () => false } as never,
+        getGenerationJob: async () => null,
+      });
+
+      await expect(
+        resolve(ownedEnvelope(), { idempotencyKey: 'trigger_claim_1' } as never),
+      ).resolves.toMatchObject({ status: 'ready' });
+    });
+
+    it('defers rather than proceeding when queued-turn state cannot be read', async () => {
       const { methods } = resolverMethods();
       const resolve = createSubagentCompletionWakeupResolver({
         methods: {
@@ -391,7 +402,12 @@ describe('createSubagentCompletionWakeupResolver', () => {
 
       await expect(
         resolve(ownedEnvelope(), { idempotencyKey: 'trigger_claim_1' } as never),
-      ).resolves.toMatchObject({ status: 'ready' });
+      ).rejects.toMatchObject({
+        code: 'QUEUED_TURN_STATE_UNAVAILABLE',
+        retryable: true,
+        deferWithoutAttempt: true,
+      });
+      expect(methods.claimSubagentTaskResult).not.toHaveBeenCalled();
     });
   });
 
