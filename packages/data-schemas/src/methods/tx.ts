@@ -212,6 +212,7 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'claude-fable-5': { prompt: 10, completion: 50 },
     'claude-mythos-5': { prompt: 10, completion: 50 },
     'claude-fable-5-1': { prompt: 10, completion: 50 },
+    'claude-fable-5-2': { prompt: 8, completion: 40 },
     'claude-mythos-5-1': { prompt: 10, completion: 50 },
     'claude-mythos-5-2': { prompt: 8, completion: 40 },
     'claude-sonnet-4': { prompt: 3, completion: 15 },
@@ -412,6 +413,7 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   'claude-mythos-5': { write: 12.5, read: 1 },
   // Fable/Mythos 5.1 cache reads are 0.025x base input, not the usual 0.1x.
   'claude-fable-5-1': { write: 12.5, read: 0.25 },
+  'claude-fable-5-2': { write: 10, read: 0.2 },
   'claude-mythos-5-1': { write: 12.5, read: 0.25 },
   'claude-mythos-5-2': { write: 10, read: 0.2 },
   'gpt-4o': { write: 2.5, read: 1.25 },

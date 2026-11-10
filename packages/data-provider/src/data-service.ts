@@ -1016,6 +1016,14 @@ export const textToSpeech = (data: FormData): Promise<ArrayBuffer> => {
   return request.postTTS(endpoints.textToSpeechManual(), data);
 };
 
+export const streamTextToSpeech = (data: FormData, signal: AbortSignal): Promise<Response> => {
+  return request.authenticatedFetch(endpoints.textToSpeechManual(), {
+    method: 'POST',
+    body: data,
+    signal,
+  });
+};
+
 export const getVoices = (): Promise<f.VoiceResponse> => {
   return request.get(endpoints.textToSpeechVoices());
 };

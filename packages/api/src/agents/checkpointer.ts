@@ -60,6 +60,16 @@ function isEventActorInvocation(config: RunnableConfig): boolean {
   return typeof value === 'string' && value.length > 0;
 }
 
+function retainsEveryCheckpoint(config: RunnableConfig): boolean {
+  // SDK-owned child roots use per-step durability and fork complete checkpoint lineages.
+  // SUBAGENT_THREAD_ID_PREFIX is private to @librechat/agents.
+  const threadId = config.configurable?.thread_id;
+  return (
+    isEventActorInvocation(config) ||
+    (typeof threadId === 'string' && threadId.startsWith('subagent:'))
+  );
+}
+
 /** Prefix every root/subgraph storage namespace with the immutable generation. */
 function toStorageCheckpointConfig(config: RunnableConfig): RunnableConfig {
   const generationNamespace = generationCheckpointNamespace(config);
@@ -239,13 +249,11 @@ function hasResumableWrite(writes: PendingWrite[]): boolean {
  * so this is effectively interrupt-only and the common path writes nothing; the broader
  * real-channel rule just keeps it honest for delta graphs.
  *
- * **Invariant.** Correctness depends on `durability: 'exit'` (which the SDK sets whenever a
- * checkpointer is active): exactly one parentless boundary checkpoint per run, with its
- * `putWrites` ordered before its `put`. Under per-step durability LangGraph instead emits
- * `put`-before-`putWrites` for chained checkpoints — the anchor would arrive too late and a
- * checkpoint could be wrongly discarded. The SDK never runs HITL that way; if that ever changes,
- * this saver must be revisited (a parent-based guard is NOT viable — a resumed turn's clean
- * completion is itself a parented, write-less checkpoint that we correctly discard).
+ * **Invariant.** Lazy retention requires exit durability and `putWrites` before `put`.
+ * SDK-owned `subagent:` threads bypass it: children use per-step durability (`put` before
+ * `putWrites`), fork complete lineages on resume, and recover clean completion heads.
+ * Event-actor invocations also retain every checkpoint. Both use the same size and storage
+ * guards; ordinary chat exits keep the zero-write fast path.
  *
  * **Correctness.** Checkpoints with resumable writes (interrupt + real-channel/delta anchor) and
  * the writes themselves persist exactly as before, so resume is unchanged. The write-less clean
@@ -317,6 +325,8 @@ export class CheckpointTooLargeError extends Error {
  * exercise the guard at small sizes; production always uses the defaults.
  */
 export type LazyMongoSaverOptions = ConstructorParameters<typeof MongoDBSaver>[0] & {
+  /** Trusted root conversation for child payload cleanup, never derived from child IDs. */
+  conversationId?: string;
   /** Soft warn threshold in bytes. Defaults to {@link CHECKPOINT_WARN_BYTES}. */
   warnBytes?: number;
   /** Hard reject limit in bytes. Defaults to {@link CHECKPOINT_HARD_LIMIT_BYTES}. */
@@ -375,7 +385,7 @@ export class LazyMongoSaver extends OwnedMongoSaver {
     taskId: string,
   ): Promise<void> {
     const storageConfig = toStorageCheckpointConfig(config);
-    if (isEventActorInvocation(config)) {
+    if (retainsEveryCheckpoint(config)) {
       return super.putWrites(storageConfig, writes, taskId);
     }
     const checkpointId = config.configurable?.checkpoint_id as string | undefined;
@@ -433,7 +443,7 @@ export class LazyMongoSaver extends OwnedMongoSaver {
     checkpoint: Checkpoint,
     metadata: CheckpointMetadata,
   ): Promise<RunnableConfig> {
-    if (isEventActorInvocation(config)) {
+    if (retainsEveryCheckpoint(config)) {
       await this.assertCheckpointFitsDocument(config, checkpoint, metadata);
       const persisted = await super.put(toStorageCheckpointConfig(config), checkpoint, metadata);
       logger.debug(
@@ -509,7 +519,7 @@ export class LazyMongoSaver extends OwnedMongoSaver {
    * {@link hardLimitBytes} — BEFORE the write, so an oversize pause fails legibly rather than as a
    * raw `BSONObjectTooLarge`. Serializes with the same `serde` the base `put` uses, so the measured
    * bytes match what would be stored. The extra serialization runs only when a checkpoint is
-   * selected for durable retention: HITL pauses and event-actor invocation heads.
+   * selected for durable retention: HITL pauses, subagents, and event-actor invocation heads.
    */
   private async assertCheckpointFitsDocument(
     config: RunnableConfig,
@@ -671,6 +681,7 @@ function settingsKey(resolved: ResolvedCheckpointerConfig): string {
  */
 export async function getAgentCheckpointer(
   cfg: TCheckpointerConfig | undefined,
+  conversationId?: string,
 ): Promise<MongoDBSaver | undefined> {
   const resolved = resolveCheckpointerConfig(cfg);
   if (resolved.type === 'memory') {
@@ -688,7 +699,8 @@ export async function getAgentCheckpointer(
     cachedKey = key;
     saverPromise = buildMongoSaver(resolved);
   }
-  return saverPromise;
+  const saver = await saverPromise;
+  return saver && conversationId ? createMongoSaver(resolved, conversationId) : saver;
 }
 
 export interface AgentEventCheckpointReference {
@@ -918,30 +930,38 @@ export async function setupCheckpointIndexes(
   }
 }
 
+function createMongoSaver(
+  resolved: ResolvedCheckpointerConfig,
+  conversationId?: string,
+): LazyMongoSaver {
+  return new LazyMongoSaver({
+    conversationId,
+    // mongoose vends the live MongoClient; reuse it instead of opening a second
+    // connection. The driver type is structurally identical but resolves to a
+    // different `mongodb` copy than checkpoint-mongodb's, hence the cast.
+    client: mongoose.connection.getClient() as unknown as ConstructorParameters<
+      typeof MongoDBSaver
+    >[0]['client'],
+    // MongoDBSaver calls MongoClient.db(dbName). Passing no name makes that
+    // resolve from the driver's URI default, which is not guaranteed to be the
+    // database Mongoose selected (for example when Mongoose connected with a
+    // dbName override). Every capture/delete path below uses connection.db, so
+    // bind the saver to that exact database as well or a pause can be written to
+    // one database while LibreChat looks for it in another.
+    dbName: mongoose.connection.db?.databaseName,
+    checkpointCollectionName: resolved.checkpointCollectionName,
+    checkpointWritesCollectionName: resolved.checkpointWritesCollectionName,
+    // TTL index on `upserted_at`: an unresolved paused run is reclaimed after the
+    // approval window, so a forgotten approval can never leak checkpoints forever.
+    ttl: resolved.ttlSeconds,
+  });
+}
+
 async function buildMongoSaver(
   resolved: ResolvedCheckpointerConfig,
 ): Promise<MongoDBSaver | undefined> {
   try {
-    const saver = new LazyMongoSaver({
-      // mongoose vends the live MongoClient; reuse it instead of opening a second
-      // connection. The driver type is structurally identical but resolves to a
-      // different `mongodb` copy than checkpoint-mongodb's, hence the cast.
-      client: mongoose.connection.getClient() as unknown as ConstructorParameters<
-        typeof MongoDBSaver
-      >[0]['client'],
-      // MongoDBSaver calls MongoClient.db(dbName). Passing no name makes that
-      // resolve from the driver's URI default, which is not guaranteed to be the
-      // database Mongoose selected (for example when Mongoose connected with a
-      // dbName override). Every capture/delete path below uses connection.db, so
-      // bind the saver to that exact database as well or a pause can be written to
-      // one database while LibreChat looks for it in another.
-      dbName: mongoose.connection.db?.databaseName,
-      checkpointCollectionName: resolved.checkpointCollectionName,
-      checkpointWritesCollectionName: resolved.checkpointWritesCollectionName,
-      // TTL index on `upserted_at`: an unresolved paused run is reclaimed after the
-      // approval window, so a forgotten approval can never leak checkpoints forever.
-      ttl: resolved.ttlSeconds,
-    });
+    const saver = createMongoSaver(resolved);
     const errors = await setupCheckpointIndexes(saver);
     if (errors.length > 0) {
       logger.warn(
@@ -974,6 +994,20 @@ async function buildMongoSaver(
             );
           } catch (error) {
             logger.warn('[checkpointer] Payload ownership index unavailable:', error);
+          }
+        },
+      ),
+    );
+    await Promise.all(
+      [resolved.checkpointCollectionName, resolved.checkpointWritesCollectionName].map(
+        async (name) => {
+          try {
+            await buildIndexWithRetry(
+              () => mongoose.connection.db!.collection(name).createIndex({ lc_parent_thread: 1 }),
+              `${name}.lc_parent_thread`,
+            );
+          } catch (error) {
+            logger.warn('[checkpointer] Child cleanup index unavailable:', error);
           }
         },
       ),
@@ -1209,9 +1243,18 @@ export async function deleteOwnedAgentCheckpoints(
     const filter = {
       ...ownership,
       ...(ids && {
-        thread_id: {
-          $in: ids.slice(offset, offset + batchSize).flatMap((id) => [id, `${owner}${id}`]),
-        },
+        $and: [
+          {
+            $or: [
+              {
+                thread_id: {
+                  $in: ids.slice(offset, offset + batchSize).flatMap((id) => [id, `${owner}${id}`]),
+                },
+              },
+              { lc_parent_thread: { $in: ids.slice(offset, offset + batchSize) } },
+            ],
+          },
+        ],
       }),
     };
     await db.collection(resolved.checkpointCollectionName).deleteMany(filter);

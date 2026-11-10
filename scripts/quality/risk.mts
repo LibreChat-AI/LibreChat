@@ -234,6 +234,7 @@ export function riskReport(coverageFile: string, files: ChangedFile[], base?: st
   const report = createReport(
     coverageFile,
     files.map(({ file }) => file),
+    process.cwd(),
   );
   const selected = new Map(
     files.map(({ file, ranges }) => [

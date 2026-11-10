@@ -1,4 +1,4 @@
-import { FileSources } from 'librechat-data-provider';
+import { FileSources, resolveModelCatalogKey } from 'librechat-data-provider';
 import type { TModelsConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -237,4 +237,198 @@ describe('model discovery service', () => {
     expect(res.send).toHaveBeenCalledWith({ error: 'Failed to load models' });
     expect(deps.loadConfigModels).not.toHaveBeenCalled();
   });
+});
+
+describe('per-endpoint model loading', () => {
+  const hasOwn = (catalog: TModelsConfig, key: string) =>
+    Object.prototype.hasOwnProperty.call(catalog, key);
+  const builtIns: TModelsConfig = {
+    openAI: ['gpt-default'],
+    anthropic: ['claude-default'],
+    google: ['gemini-default'],
+    azureOpenAI: ['azure-default'],
+    assistants: ['assistant-default'],
+    azureAssistants: ['azure-assistant-default'],
+    bedrock: ['bedrock-default'],
+  };
+  const served: TModelsConfig = {
+    anthropic: ['claude-configured'],
+    ollama: ['llama3.2'],
+    'My Proxy': ['proxy-model'],
+  };
+
+  /**
+   * Stand-in loaders that return the full catalog without a name and one entry with it. They test
+   * the service's own rules (lookup order, one load per request, no other endpoint loaded); that
+   * the entry equals the full catalog's under the real loaders is checked in
+   * `api/server/services/Config/catalog.spec.js`.
+   */
+  function world(extra: TModelsConfig = {}) {
+    const configured = { ...served, ...extra };
+    const deps = {
+      getAppConfig: jest.fn().mockResolvedValue({ endpoints: {} } as AppConfig),
+      loadDefaultModels: jest.fn(async (): Promise<TModelsConfig> => ({ ...builtIns })),
+      loadConfigModels: jest.fn(
+        async (_req: ServerRequest, endpoint?: string): Promise<TModelsConfig> => {
+          if (endpoint == null) {
+            return { ...configured };
+          }
+          return hasOwn(configured, endpoint) ? { [endpoint]: configured[endpoint] } : {};
+        },
+      ),
+      defaultEndpointsConfig: { openAI: { userProvide: false } },
+      loadAsyncEndpoints: jest.fn().mockResolvedValue({}),
+      loadDefaultEndpointModels: jest.fn(
+        async (
+          _req: ServerRequest,
+          _config: AppConfig,
+          endpoint: string,
+        ): Promise<TModelsConfig> =>
+          hasOwn(builtIns, endpoint) ? { [endpoint]: builtIns[endpoint] } : {},
+      ),
+    };
+    return { deps, ...createModelsService(deps) };
+  }
+
+  /** The lookup agent validation performs on a catalog. */
+  const lookup = (catalog: TModelsConfig, provider: string) =>
+    catalog[resolveModelCatalogKey(provider, catalog)];
+
+  it.each([
+    ['a built-in without a configured list', 'openAI', ['gpt-default']],
+    ['a built-in with a configured list', 'anthropic', ['claude-configured']],
+    ['a served custom endpoint', 'My Proxy', ['proxy-model']],
+    ['a custom endpoint saved under another spelling', 'Ollama', ['llama3.2']],
+    ['a provider served under an alias', 'vertexai', ['gemini-default']],
+    ['an endpoint with no model list', 'Unknown', undefined],
+  ])('reads %s', async (_label, provider, models) => {
+    const { getEndpointModelsConfig } = world();
+
+    const entry = await getEndpointModelsConfig(request(), provider);
+
+    expect(lookup(entry, provider)).toEqual(models);
+    expect(Object.keys(entry).length).toBeLessThanOrEqual(1);
+  });
+
+  it('prefers an exact catalog over the alias', async () => {
+    const { getEndpointModelsConfig } = world({ vertexai: ['custom-vertex'] });
+
+    const entry = await getEndpointModelsConfig(request(), 'vertexai');
+
+    expect(lookup(entry, 'vertexai')).toEqual(['custom-vertex']);
+  });
+
+  it('loads the requested endpoint and no other', async () => {
+    const { deps, getEndpointModelsConfig } = world();
+    const req = request();
+
+    await getEndpointModelsConfig(req, 'openAI');
+    await getEndpointModelsConfig(req, 'My Proxy');
+
+    expect(deps.loadDefaultModels).not.toHaveBeenCalled();
+    expect(deps.loadConfigModels.mock.calls.map(([, endpoint]) => endpoint)).toEqual([
+      'openAI',
+      'My Proxy',
+    ]);
+    expect(deps.loadDefaultEndpointModels.mock.calls.map(([, , endpoint]) => endpoint)).toEqual([
+      'openAI',
+    ]);
+  });
+
+  it('loads an endpoint once per request, including concurrent and repeated calls', async () => {
+    const { deps, getEndpointModelsConfig } = world();
+    const gate = deferred<TModelsConfig>();
+    deps.loadConfigModels.mockReturnValueOnce(gate.promise);
+    const req = request();
+
+    const first = getEndpointModelsConfig(req, 'My Proxy');
+    const second = getEndpointModelsConfig(req, 'My Proxy');
+    gate.resolve({ 'My Proxy': ['proxy-model'] });
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { 'My Proxy': ['proxy-model'] },
+      { 'My Proxy': ['proxy-model'] },
+    ]);
+    await getEndpointModelsConfig(req, 'My Proxy');
+    expect(deps.loadConfigModels).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares the load between spellings that read the same endpoint', async () => {
+    const { deps, getEndpointModelsConfig } = world();
+    const req = request();
+
+    await getEndpointModelsConfig(req, 'ollama');
+    await getEndpointModelsConfig(req, 'Ollama');
+
+    expect(deps.loadConfigModels.mock.calls.filter(([, name]) => name === 'ollama')).toHaveLength(
+      1,
+    );
+  });
+
+  it('does not cache across requests', async () => {
+    const { deps, getEndpointModelsConfig } = world();
+
+    await getEndpointModelsConfig(request(), 'My Proxy');
+    await getEndpointModelsConfig(request(), 'My Proxy');
+
+    expect(deps.loadConfigModels).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not remember a failed load', async () => {
+    const { deps, getEndpointModelsConfig } = world();
+    deps.loadConfigModels.mockRejectedValueOnce(new Error('provider down'));
+    const req = request();
+
+    await expect(getEndpointModelsConfig(req, 'My Proxy')).rejects.toThrow('provider down');
+    await expect(getEndpointModelsConfig(req, 'My Proxy')).resolves.toEqual({
+      'My Proxy': ['proxy-model'],
+    });
+  });
+
+  it('loads built-ins that ENDPOINTS does not enable', async () => {
+    const original = process.env.ENDPOINTS;
+    process.env.ENDPOINTS = 'agents';
+    try {
+      const { getEndpointModelsConfig } = world();
+
+      await expect(getEndpointModelsConfig(request(), 'bedrock')).resolves.toEqual({
+        bedrock: ['bedrock-default'],
+      });
+    } finally {
+      if (original == null) {
+        delete process.env.ENDPOINTS;
+      } else {
+        process.env.ENDPOINTS = original;
+      }
+    }
+  });
+
+  it('resolves the principal config once for the request', async () => {
+    const { deps, getEndpointModelsConfig } = world();
+    const req = request();
+    delete req.config;
+
+    await getEndpointModelsConfig(req, 'openAI');
+    await getEndpointModelsConfig(req, 'My Proxy');
+
+    expect(deps.getAppConfig).toHaveBeenCalledTimes(1);
+    expect(deps.loadConfigModels).toHaveBeenCalledWith(
+      expect.objectContaining({ config: { endpoints: {} } }),
+      'openAI',
+    );
+  });
+
+  it.each([undefined, null, '', 42, ['openAI'], { name: 'openAI' }])(
+    'loads nothing for the unusable endpoint %p',
+    async (endpoint) => {
+      const { deps, getEndpointModelsConfig } = world();
+
+      await expect(
+        getEndpointModelsConfig(request(), endpoint as string | null | undefined),
+      ).resolves.toEqual({});
+      expect(deps.getAppConfig).not.toHaveBeenCalled();
+      expect(deps.loadConfigModels).not.toHaveBeenCalled();
+      expect(deps.loadDefaultEndpointModels).not.toHaveBeenCalled();
+    },
+  );
 });
