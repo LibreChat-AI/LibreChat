@@ -39,7 +39,9 @@ export async function runPostgresCommand(deps: {
       verify: ['--offline'],
       'reconcile-mongo': ['--offline', '--dry-run'],
     };
-    const allowed = Object.hasOwn(commands, command) ? commands[command] : undefined;
+    const allowed = Object.prototype.hasOwnProperty.call(commands, command)
+      ? commands[command]
+      : undefined;
     if (
       !allowed ||
       flags.some((flag) => !allowed.includes(flag)) ||
