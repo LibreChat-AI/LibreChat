@@ -1,6 +1,11 @@
 import { Types } from 'mongoose';
 import { logger } from '@librechat/data-schemas';
-import { ContentTypes, isAgentsEndpoint, isEphemeralAgentId } from 'librechat-data-provider';
+import {
+  ContentTypes,
+  isAgentsEndpoint,
+  isEphemeralAgentId,
+  getPromotedSteerRequestId,
+} from 'librechat-data-provider';
 import type {
   TPendingSteer,
   TPromotedSteer,
@@ -11,9 +16,10 @@ import type { SteerQueueItem, SteerPromotionOutcome } from '~/stream/interfaces/
 import type { SteeringLifecycle, SteerContentView } from '~/stream/SteeringLifecycle';
 import type { AgentQueuedTurnLifecycle, PromotedSteerHandoff } from '../queuedTurns';
 import { createQueuedTurnDeliveryReservation } from '../queuedTurns';
-import { getPromotedSteerRequestId, toSteerFileRef } from './refs';
 import { toPendingSteer } from '~/stream/SteeringLifecycle';
 import { toQueuedTurnReceipt } from '../queuedTurnHttp';
+import { getSafeErrorMetadata } from '~/utils';
+import { toSteerFileRef } from './refs';
 
 interface PromotionConversation {
   agent_id?: string;
@@ -64,7 +70,8 @@ type PromotionTarget = {
   scope: { user: Types.ObjectId; tenantId?: string; conversationId: string };
   agentId: string;
   parentMessageId: string;
-  expectedPredecessorCreatedAt: number;
+  /** Absent only when the lineage joined was opened by a root admission. */
+  expectedPredecessorCreatedAt?: number;
 };
 
 function appliedSteerIds(content: SteerContentView): Set<string> {
@@ -129,12 +136,17 @@ async function resolveTarget(
   ) {
     return null;
   }
-  return {
-    scope,
-    agentId,
-    parentMessageId: lineage?.parentMessageId ?? input.responseMessageId,
-    expectedPredecessorCreatedAt: lineage?.expectedPredecessorCreatedAt ?? input.claim.createdAt,
-  };
+  if (lineage == null) {
+    return {
+      scope,
+      agentId,
+      parentMessageId: input.responseMessageId,
+      expectedPredecessorCreatedAt: input.claim.createdAt,
+    };
+  }
+  /** The lineage's own pair, exactly: a root lineage has no epoch, and giving
+   * the promoted turn one would put it in a lineage of its own again. */
+  return { scope, agentId, ...lineage };
 }
 
 /** Retires a row whose steer the job store did not hand over. Nothing was
@@ -157,7 +169,7 @@ async function retireUnownedTurn(
     logger.error('[SteerPromotion] Failed to retire an unowned promoted turn', {
       conversationId: turn.conversationId,
       queuedTurnId: turn.queuedTurnId,
-      error: error instanceof Error ? error.message : String(error),
+      ...getSafeErrorMetadata(error),
     });
     return false;
   }
@@ -202,13 +214,15 @@ async function promoteOne(
     ...target.scope,
     agentId: target.agentId,
     parentMessageId: target.parentMessageId,
-    clientRequestId: getPromotedSteerRequestId(item.steerId),
+    clientRequestId: getPromotedSteerRequestId(item.clientSteerId),
     text: item.text,
     ...(files != null && { files }),
     ...(item.quotes != null && item.quotes.length > 0 && { quotes: item.quotes }),
     ...(item.codeApprovalMode != null && { codeApprovalMode: item.codeApprovalMode }),
     priority: false,
-    expectedPredecessorCreatedAt: target.expectedPredecessorCreatedAt,
+    ...(target.expectedPredecessorCreatedAt != null && {
+      expectedPredecessorCreatedAt: target.expectedPredecessorCreatedAt,
+    }),
     steerSource: {
       steerId: item.steerId,
       clientSteerId: item.clientSteerId,
@@ -252,7 +266,7 @@ async function promoteOne(
     logger.warn('[SteerPromotion] Job store hand-off is unconfirmed; left to admission', {
       conversationId: turn.conversationId,
       queuedTurnId: turn.queuedTurnId,
-      error: error instanceof Error ? error.message : String(error),
+      ...getSafeErrorMetadata(error),
     });
   }
   if (
@@ -276,7 +290,7 @@ async function promoteOne(
         logger.warn('[SteerPromotion] Promoted turn ownership left to admission', {
           conversationId: turn.conversationId,
           queuedTurnId: turn.queuedTurnId,
-          error: error instanceof Error ? error.message : String(error),
+          ...getSafeErrorMetadata(error),
         });
       });
   }
@@ -287,7 +301,7 @@ async function promoteOne(
     logger.warn('[SteerPromotion] Promoted turn scheduling deferred to recovery', {
       conversationId: turn.conversationId,
       queuedTurnId: turn.queuedTurnId,
-      error: error instanceof Error ? error.message : String(error),
+      ...getSafeErrorMetadata(error),
     });
   }
   return promoted();
@@ -358,7 +372,7 @@ export async function promoteDrainedSteers(
   } catch (error) {
     logger.warn('[SteerPromotion] Leaving unapplied steers on the client path', {
       conversationId: input.conversationId,
-      error: error instanceof Error ? error.message : String(error),
+      ...getSafeErrorMetadata(error),
     });
     return {
       pendingSteers: [

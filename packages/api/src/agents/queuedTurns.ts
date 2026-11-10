@@ -27,6 +27,7 @@ import { getAgentTriggerIdempotencyKey, parseAgentTriggerEnvelope } from './trig
 import { createAgentTriggerEnvelope } from './triggers/envelope';
 import { AgentTriggerExecutionError } from './triggers/host';
 import { createIdleRecoveryLoop } from './recovery';
+import { getSafeErrorMetadata } from '~/utils';
 
 export const AGENT_QUEUED_TURN_SOURCE = 'agent-queued-turn';
 const AGENT_QUEUED_TURN_EVENT = 'agent.queued-turn';
@@ -521,12 +522,18 @@ async function ownsPromotedSteer(
       });
     } catch (error) {
       await releaseClaim(methods, envelope, claim).catch(() => undefined);
-      throw executionError(
-        `The promoted steer hand-off is temporarily unavailable: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        { code: 'STEER_HANDOFF_UNAVAILABLE', retryable: true, deferWithoutAttempt: true },
-      );
+      /** This failure can be dead-lettered onto the row and shown to the user,
+       * so it carries a fixed message; the store's own error stays in the log. */
+      logger.warn('[agent-queued-turns] Promoted steer hand-off is unavailable', {
+        conversationId: claim.conversationId,
+        queuedTurnId: claim.queuedTurnId,
+        ...getSafeErrorMetadata(error),
+      });
+      throw executionError('The promoted steer hand-off is temporarily unavailable.', {
+        code: 'STEER_HANDOFF_UNAVAILABLE',
+        retryable: true,
+        deferWithoutAttempt: true,
+      });
     }
   }
   if (outcome === 'promoted') {

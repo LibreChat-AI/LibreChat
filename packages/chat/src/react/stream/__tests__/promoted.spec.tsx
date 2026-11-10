@@ -23,7 +23,7 @@ const receipt: TAgentQueuedTurnReceipt = {
   queuedTurnId: 'queued-turn-1',
   conversationId,
   parentMessageId: 'response-ended',
-  clientRequestId: 'steer-leftover:steer-1',
+  clientRequestId: 'steer-leftover:client-1',
   text: 'also cover the error path',
   priority: false,
   expectedPredecessorCreatedAt: endedEpoch,
@@ -58,11 +58,15 @@ const legacyCopy: QueuedMessage = {
 const queuedBefore: QueuedMessage = { id: 'queued-local', text: 'then summarize', createdAt: 3 };
 
 let serverReceipts: TAgentQueuedTurnReceipt[] | undefined;
+let requestedIds: string[][] = [];
 const host = {
   useFileMap: () => undefined,
   useFetchStreamStatus: () => async () => ({ active: false }),
   useSettings: () => ({}),
-  useQueuedTurns: () => serverReceipts,
+  useQueuedTurns: (_conversationId: string, _enabled: boolean, clientRequestIds: string[]) => {
+    requestedIds.push(clientRequestIds);
+    return serverReceipts;
+  },
 } as unknown as SteerHost;
 
 function setup() {
@@ -181,6 +185,7 @@ describe('adoptPromotedSteers', () => {
     const unacknowledged: PendingSteer = { ...chip, steerId: 'client-1', status: 'failed' };
     store.set(pendingSteersByConvoId(conversationId), [chip, unacknowledged]);
     store.set(queuedMessagesByConvoId(conversationId), [queuedBefore, legacyCopy]);
+    requestedIds = [];
     serverReceipts = [receipt];
     const wrapper = ({ children }: { children?: ReactNode }) => (
       <Provider store={store}>
@@ -199,6 +204,10 @@ describe('adoptPromotedSteers', () => {
     );
     serverReceipts = undefined;
 
+    /** The pane asked by the steer it held, which is how a turn that already
+     *  ran (and so is no longer listed as active) is still found. */
+    expect(requestedIds[0]).toEqual(['steer-leftover:client-1']);
+
     expect(store.get(pendingSteersByConvoId(conversationId))).toEqual([]);
     expect(store.get(appliedSteerIdsByConvoId(conversationId))).toEqual(
       expect.arrayContaining(['steer-1', 'client-1']),
@@ -208,5 +217,33 @@ describe('adoptPromotedSteers', () => {
       expect.objectContaining({ server: expect.objectContaining({ id: 'queued-turn-1' }) }),
     ]);
     expect(queue).toContainEqual(queuedBefore);
+  });
+
+  it('retires local copies of a promoted steer whose turn already ran', () => {
+    const store = createStore();
+    store.set(pendingSteersByConvoId(conversationId), [chip]);
+    store.set(queuedMessagesByConvoId(conversationId), [queuedBefore, legacyCopy]);
+    serverReceipts = [
+      { ...receipt, status: 'admitted', effectivePredecessorCreatedAt: endedEpoch },
+    ];
+    const wrapper = ({ children }: { children?: ReactNode }) => (
+      <Provider store={store}>
+        <SteerHostProvider host={host}>{children}</SteerHostProvider>
+      </Provider>
+    );
+
+    renderHook(
+      () =>
+        useQueuedTurnReceipts({
+          conversationId,
+          queueKey: conversationId,
+          serverQueueEnabled: true,
+        }),
+      { wrapper },
+    );
+    serverReceipts = undefined;
+
+    expect(store.get(pendingSteersByConvoId(conversationId))).toEqual([]);
+    expect(store.get(queuedMessagesByConvoId(conversationId))).toEqual([queuedBefore]);
   });
 });

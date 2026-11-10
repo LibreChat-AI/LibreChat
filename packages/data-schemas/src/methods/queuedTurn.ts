@@ -130,10 +130,11 @@ export interface EnqueueAgentQueuedTurnInput extends AgentQueuedTurnConversation
   steerSource?: Omit<AgentQueuedTurnSteerSource, 'handoffAt'>;
 }
 
-/** A queue lineage's root: every turn queued behind one run shares this pair. */
+/** A queue lineage's root: every turn queued behind one run shares this pair.
+ * A lineage opened by a root admission has no epoch, and its turns carry none. */
 export interface AgentQueuedTurnLineage {
   parentMessageId: string;
-  expectedPredecessorCreatedAt: number;
+  expectedPredecessorCreatedAt?: number;
 }
 
 /** Plain identifiers, so callers outside data-schemas need no Mongoose types. */
@@ -267,7 +268,8 @@ export interface AgentQueuedTurnMethods {
   /**
    * The queue lineage (root parent and root epoch) a generation belongs to:
    * that of the queued turn it was admitted from, else that of turns already
-   * queued directly against it. Null when it has no queue lineage yet.
+   * queued directly against it. The epoch is absent for a lineage a root
+   * admission opened. Null when the generation has no queue lineage yet.
    */
   getAgentQueuedTurnGenerationLineage: (
     input: AgentQueuedTurnConversationScope & { generationCreatedAt: number },
@@ -2772,7 +2774,6 @@ export function createAgentQueuedTurnMethods(
           status: 'admitted',
           'terminalReceipt.outcome': 'admitted',
           'terminalReceipt.generationCreatedAt': generationCreatedAt,
-          expectedPredecessorCreatedAt: { $exists: true },
         })
         .select({ parentMessageId: 1, expectedPredecessorCreatedAt: 1 })
         .lean<LineageRow>(),
@@ -2787,10 +2788,14 @@ export function createAgentQueuedTurnMethods(
         .lean<LineageRow>(),
     ]);
     const root = admitted ?? queued;
-    const rootEpoch = normalizePredecessor(root?.expectedPredecessorCreatedAt);
-    return root == null || rootEpoch == null
-      ? null
-      : { parentMessageId: root.parentMessageId, expectedPredecessorCreatedAt: rootEpoch };
+    if (root == null) {
+      return null;
+    }
+    const rootEpoch = normalizePredecessor(root.expectedPredecessorCreatedAt);
+    return {
+      parentMessageId: root.parentMessageId,
+      ...(rootEpoch != null && { expectedPredecessorCreatedAt: rootEpoch }),
+    };
   }
 
   async function getEffectiveAgentQueuedTurnPredecessor(

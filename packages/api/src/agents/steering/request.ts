@@ -4,6 +4,8 @@ import {
   SteerEvents,
   CODE_APPROVAL_MODES,
   DEFAULT_STEER_MAX_LENGTH,
+  getPromotedSteerRequestId,
+  MAX_QUEUED_TURN_REQUEST_ID_LENGTH,
 } from 'librechat-data-provider';
 import type { TFile, CodeApprovalMode } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
@@ -656,6 +658,8 @@ async function handleSteerRequestInternal(
     ...(body.promoteLeftover === true &&
       protocol.value === 2 &&
       typeof clientSteerId === 'string' &&
+      /** The promoted turn is keyed by this id, so it must fit a request id. */
+      getPromotedSteerRequestId(clientSteerId).length <= MAX_QUEUED_TURN_REQUEST_ID_LENGTH &&
       promotionApprovalMode !== null && {
         promoteLeftover: true,
         ...(promotionApprovalMode != null && { codeApprovalMode: promotionApprovalMode }),

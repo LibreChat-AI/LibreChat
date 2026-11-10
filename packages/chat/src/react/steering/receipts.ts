@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import { useAtomValue, useSetAtom, useStore } from 'jotai';
-import { DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS } from 'librechat-data-provider';
+import {
+  getPromotedSteerRequestId,
+  DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS,
+} from 'librechat-data-provider';
 import type { TAgentQueuedTurnReceipt as AgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueuedTurnReceiptSource } from '../../core';
 import {
+  heldSteerClientIds,
   removePendingSteers,
   ownedPromotedSteerIds,
   appendAppliedSteerIds,
@@ -56,16 +60,22 @@ export default function useQueuedTurnReceipts({
    * operator to widen this rather than wait for one. */
   const reconciliationWindowMs =
     queuedTurnReconciliationTimeoutMs ?? DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS;
+  const pendingSteers = useAtomValue(pendingSteersByConvoId(queueKey));
+  /** Besides its server rows, the pane asks about every steer it still holds a
+   *  local copy of. The server may have promoted one to a turn this pane never
+   *  heard of (it missed FINAL), and a turn that already ran is only listed
+   *  when it is asked for by name. */
   const knownClientRequestIds = useMemo(
     () =>
       Array.from(
-        new Set(
-          queuedMessages.flatMap((item) =>
+        new Set([
+          ...queuedMessages.flatMap((item) =>
             item.server != null && item.clientRequestId != null ? [item.clientRequestId] : [],
           ),
-        ),
+          ...heldSteerClientIds(pendingSteers, queuedMessages).map(getPromotedSteerRequestId),
+        ]),
       ).slice(0, 100),
-    [queuedMessages],
+    [queuedMessages, pendingSteers],
   );
   const reconciliationUntil = queuedMessages.reduce<number | undefined>((latest, item) => {
     if (item.server?.status !== 'uncertain' || item.server.uncertainSince == null) {

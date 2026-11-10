@@ -3552,6 +3552,27 @@ describe('turns promoted from an unapplied steer', () => {
       ).resolves.toBeNull();
     });
 
+    it('answers a root admission lineage, which has a parent and no epoch', async () => {
+      const ran = await methods.enqueueAgentQueuedTurn(enqueueInput());
+      await Turn.updateOne(
+        { _id: ran.turn.queuedTurnId },
+        {
+          $set: {
+            status: 'admitted',
+            terminalReceipt: {
+              outcome: 'admitted',
+              settledAt: START,
+              generationCreatedAt: 2_000,
+              rootPredecessor: true,
+            },
+          },
+          $unset: { activeSlot: 1 },
+        },
+      );
+
+      await expect(lineage(2_000)).resolves.toEqual({ parentMessageId: 'parent-1' });
+    });
+
     it('prefers the lineage the generation was admitted from', async () => {
       const ran = await methods.enqueueAgentQueuedTurn(
         enqueueInput({ expectedPredecessorCreatedAt: 1_000 }),

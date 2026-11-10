@@ -72,12 +72,3 @@ export function buildOwnerFilter(
   }
   return filter;
 }
-
-const PROMOTED_STEER_REQUEST_PREFIX = 'steer-leftover:';
-
-/** Queued-turn request id of a promoted steer. Deterministic, so a replayed
- *  promotion resolves to the same durable row. The row's `steerSource`, not
- *  this id, is what names the steer it replaces. */
-export function getPromotedSteerRequestId(steerId: string): string {
-  return `${PROMOTED_STEER_REQUEST_PREFIX}${steerId}`;
-}
