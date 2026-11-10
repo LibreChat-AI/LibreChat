@@ -2606,6 +2606,66 @@ export class InMemoryJobStore implements IJobStoreV2 {
     return true;
   }
 
+  async promoteSteerLeftover(
+    streamId: string,
+    clientSteerId: string,
+    steerId: string,
+    ownerUserId: string,
+    ownerTenantId: string | undefined,
+    generationCreatedAt: number,
+  ): Promise<boolean> {
+    const receipt = this.steerReceipts.get(streamId)?.get(clientSteerId)?.receipt;
+    if (
+      receipt?.state !== 'leftover' ||
+      receipt.generationCreatedAt !== generationCreatedAt ||
+      receipt.item.steerId !== steerId ||
+      receipt.userId !== ownerUserId ||
+      (receipt.tenantId != null && receipt.tenantId !== ownerTenantId)
+    ) {
+      return false;
+    }
+    const activeJob = this.jobs.get(streamId);
+    if (
+      activeJob?.recoveredSteerId === steerId &&
+      (activeJob.status === 'running' || activeJob.status === 'requires_action')
+    ) {
+      return false;
+    }
+    const parked = this.parkedSteers.get(streamId);
+    if (parked == null || parked.expiresAt <= Date.now()) {
+      return false;
+    }
+    try {
+      const parsed = JSON.parse(parked.payload) as {
+        userId?: string;
+        tenantId?: string;
+        steers?: Array<{ steerId?: string }>;
+      };
+      if (
+        parsed.userId !== ownerUserId ||
+        (parsed.tenantId != null && parsed.tenantId !== ownerTenantId) ||
+        !Array.isArray(parsed.steers) ||
+        !parsed.steers.every(isValidParkedSteer)
+      ) {
+        return false;
+      }
+      const kept = parsed.steers.filter((item) => item.steerId !== steerId);
+      if (kept.length === parsed.steers.length) {
+        return false;
+      }
+      if (kept.length === 0) {
+        this.parkedSteers.delete(streamId);
+      } else {
+        parsed.steers = kept;
+        parked.payload = JSON.stringify(parsed);
+      }
+    } catch {
+      return false;
+    }
+    receipt.state = 'recovered';
+    return true;
+  }
+
   private parkLeftovers(
     streamId: string,
     items: SteerQueueItem[],

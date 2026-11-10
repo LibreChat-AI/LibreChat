@@ -160,6 +160,9 @@ export interface SteerMessageParams {
    * `preempt: false`, which relabels the chip instead of erroring.
    */
   preempt?: boolean;
+  /** Lets the server promote this steer to a durable queued turn if the run ends
+   *  without applying it; the FINAL event then reports it in `promotedSteers`. */
+  promoteLeftover?: boolean;
 }
 
 /** Successful steer ACK: the server queued the message for mid-run injection. */

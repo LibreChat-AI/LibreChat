@@ -16,6 +16,7 @@ import type { QueueRows } from './rows';
 import {
   steerAttemptChip,
   routeSteerFailure,
+  canPromoteLeftover,
   carriedSteerContext,
   createSteerDispatch,
   supportsGenerationProtocolV2,
@@ -227,6 +228,9 @@ export default function useSubmitSteer({
             ...(files && { files }),
             ...(carried.quotes && { quotes: carried.quotes }),
             ...(preempt && { preempt }),
+            ...(canPromoteLeftover({ ...carried, queuedOrigin: opts?.queuedOrigin }) && {
+              promoteLeftover: true,
+            }),
             generationCreatedAt: targetGenerationCreatedAt,
           },
           {

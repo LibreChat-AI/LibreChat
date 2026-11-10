@@ -586,6 +586,10 @@ export interface SteerQueueItem {
    * so an older cross-replica arm cannot resurrect after the disarm, while a
    * later explicit arm with a newer revision remains valid. */
   preemptRevision?: number;
+  /** The sending client adopts a server-promoted queued turn in place of its
+   *  chip, so a run that ends without applying this steer may promote it to a
+   *  durable queued turn instead of handing it back for a tab-local queue. */
+  promoteLeftover?: true;
 }
 
 /** Durable acknowledgement keyed by `clientSteerId`. It outlives the queue
@@ -1694,6 +1698,20 @@ export interface IJobStoreV2 extends IJobStore {
     ownerUserId: string,
     ownerTenantId?: string,
     expectedGenerationCreatedAt?: number,
+  ): Promise<boolean>;
+
+  /** Owner-gated terminal hand-off of one leftover to a durable queued turn.
+   * Atomically removes it from the parked payload and marks its receipt
+   * `recovered`, so neither status recovery nor a lost-ACK retry can queue the
+   * same words again. Refuses unless the item is still parked by exactly
+   * `generationCreatedAt` and no recovery generation has leased it. */
+  promoteSteerLeftover(
+    streamId: string,
+    clientSteerId: string,
+    steerId: string,
+    ownerUserId: string,
+    ownerTenantId: string | undefined,
+    generationCreatedAt: number,
   ): Promise<boolean>;
 
   /** Drop any queued steers (terminal cleanup backstop). */

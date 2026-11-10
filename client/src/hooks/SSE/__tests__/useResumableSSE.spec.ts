@@ -258,6 +258,7 @@ const mockSteerState = {
   seedSteerChips: mockSeedSteerChips,
   settleAppliedSteerParts: mockSettleAppliedSteerParts,
   convertSteersToQueued: mockConvertSteersToQueued,
+  adoptPromotedSteers: jest.fn(() => []),
   convertLocalSteersToQueued: mockConvertLocalSteersToQueued,
   updateActiveGenerationCreatedAt: mockUpdateGenerationEpoch,
 };

@@ -5027,6 +5027,106 @@ describe('RedisJobStore Integration Tests', () => {
       }
     });
 
+    test('hands a parked leftover to a promoted queued turn exactly once', async () => {
+      if (!ioredisClient) {
+        return;
+      }
+      const streamId = `receipt-promote-${Date.now()}`;
+      const { store, item, createdAt } = await enqueueReceiptSteer(streamId, 'promote');
+      try {
+        await expect(store.closeAndDrainSteers(streamId, createdAt)).resolves.toEqual([item]);
+        await expect(
+          store.promoteSteerLeftover(
+            streamId,
+            item.clientSteerId!,
+            item.steerId,
+            item.userId,
+            undefined,
+            createdAt + 1,
+          ),
+        ).resolves.toBe(false);
+        await expect(
+          store.promoteSteerLeftover(
+            streamId,
+            item.clientSteerId!,
+            item.steerId,
+            'someone-else',
+            undefined,
+            createdAt,
+          ),
+        ).resolves.toBe(false);
+        await expect(
+          store.promoteSteerLeftover(
+            streamId,
+            item.clientSteerId!,
+            item.steerId,
+            item.userId,
+            undefined,
+            createdAt,
+          ),
+        ).resolves.toBe(true);
+        await expect(store.getSteerReceipt(streamId, item.clientSteerId!)).resolves.toMatchObject({
+          state: 'recovered',
+        });
+        await expect(
+          store.claimParkedSteersDetailed(streamId, item.userId, undefined, 2),
+        ).resolves.toBeUndefined();
+        await expect(
+          store.promoteSteerLeftover(
+            streamId,
+            item.clientSteerId!,
+            item.steerId,
+            item.userId,
+            undefined,
+            createdAt,
+          ),
+        ).resolves.toBe(false);
+        await expect(
+          store.discardSteerLeftover(streamId, item.clientSteerId!, item.steerId, item.userId),
+        ).resolves.toBe(false);
+      } finally {
+        await store.destroy();
+      }
+    });
+
+    test('does not promote a source leased to a live recovery', async () => {
+      if (!ioredisClient) {
+        return;
+      }
+      const streamId = `receipt-promote-leased-${Date.now()}`;
+      const { store, item, createdAt } = await enqueueReceiptSteer(streamId, 'promote-leased');
+      try {
+        await expect(store.closeAndDrainSteers(streamId, createdAt)).resolves.toEqual([item]);
+        await store.createJob(
+          streamId,
+          item.userId,
+          streamId,
+          undefined,
+          {},
+          item.steerId,
+          undefined,
+          undefined,
+          undefined,
+          { text: item.text, fileIds: [], quotes: [] },
+        );
+        await expect(
+          store.promoteSteerLeftover(
+            streamId,
+            item.clientSteerId!,
+            item.steerId,
+            item.userId,
+            undefined,
+            createdAt,
+          ),
+        ).resolves.toBe(false);
+        await expect(store.getSteerReceipt(streamId, item.clientSteerId!)).resolves.toMatchObject({
+          state: 'leftover',
+        });
+      } finally {
+        await store.destroy();
+      }
+    });
+
     test.each(['close', 'terminal'] as const)(
       '%s recovery safely parks words when a receipt is malformed',
       async (path) => {

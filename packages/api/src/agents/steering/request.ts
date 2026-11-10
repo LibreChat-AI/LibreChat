@@ -57,6 +57,9 @@ export interface SteerRequestBody {
    *  rejection reason: on an SDK without the capability the steer still
    *  enqueues and the 202 echoes `preempt: false`. */
   preempt?: unknown;
+  /** The sender adopts a server-promoted queued turn for this steer when the
+   *  run ends without applying it (see `promotedSteers` on FINAL). */
+  promoteLeftover?: unknown;
 }
 
 export interface SteerCancelBody {
@@ -632,6 +635,9 @@ async function handleSteerRequestInternal(
     createdAt: Date.now(),
     ...(queuedFiles && { files: queuedFiles }),
     ...(quotes != null && ownerAcceptsQuotes && { quotes }),
+    ...(body.promoteLeftover === true &&
+      protocol.value === 2 &&
+      typeof clientSteerId === 'string' && { promoteLeftover: true }),
   };
   /**
    * Fenced to the generation the capability decision was made against. The

@@ -230,6 +230,23 @@ export class SteeringLifecycle {
     );
   }
 
+  /** Settle a terminal leftover that now lives on as a durable queued turn. */
+  promoteLeftover(
+    streamId: string,
+    item: Pick<SteerQueueItem, 'steerId'> & { clientSteerId: string },
+    owner: SteerOwner,
+    generationCreatedAt: number,
+  ): Promise<boolean> {
+    return this.store.promoteSteerLeftover(
+      streamId,
+      item.clientSteerId,
+      item.steerId,
+      owner.userId,
+      owner.tenantId,
+      generationCreatedAt,
+    );
+  }
+
   consumeRecovered(
     streamId: string,
     steerId: string,

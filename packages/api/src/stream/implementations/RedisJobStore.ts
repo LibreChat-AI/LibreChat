@@ -1610,6 +1610,42 @@ const DISCARD_STEER_LEFTOVER_LUA =
   'return 1';
 
 /**
+ * Hand one parked leftover to a durable queued turn. Unlike a discard, the
+ * parked copy must still exist (a destructive legacy claim may already own the
+ * words) and the receipt settles as `recovered`, which every replica version
+ * already reads as "claimed by a recovery surface; do not queue again".
+ *
+ *   KEYS: [receipts, parkedSteers, job]
+ *   ARGV: [clientSteerId, steerId, ownerUserId, ownerTenantId | "", generationCreatedAt]
+ */
+const PROMOTE_STEER_LEFTOVER_LUA =
+  'local raw = redis.call("HGET", KEYS[1], ARGV[1]) if not raw then return 0 end ' +
+  'local ok, receipt = pcall(cjson.decode, raw) if not ok or type(receipt) ~= "table" then return 0 end ' +
+  'if tostring(receipt.generationCreatedAt or "") ~= ARGV[5] then return 0 end ' +
+  'local tenantMatches = not receipt.tenantId or receipt.tenantId == ARGV[4] ' +
+  'if receipt.state ~= "leftover" or receipt.userId ~= ARGV[3] or not tenantMatches ' +
+  'or type(receipt.item) ~= "table" or receipt.item.steerId ~= ARGV[2] then return 0 end ' +
+  'local status = redis.call("HGET", KEYS[3], "status") ' +
+  'if (status == "running" or status == "requires_action") ' +
+  'and redis.call("HGET", KEYS[3], "recoveredSteerId") == ARGV[2] then return 0 end ' +
+  'local parkedRaw = redis.call("GET", KEYS[2]) if not parkedRaw then return 0 end ' +
+  'local parsed, parked = pcall(cjson.decode, parkedRaw) ' +
+  'if not parsed or type(parked) ~= "table" or type(parked.steers) ~= "table" then return 0 end ' +
+  'local count = 0 for key, _ in pairs(parked.steers) do ' +
+  'if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then return 0 end count = count + 1 end ' +
+  'if count == 0 or count ~= #parked.steers then return 0 end ' +
+  'if parked.userId ~= ARGV[3] or (parked.tenantId and parked.tenantId ~= ARGV[4]) then return 0 end ' +
+  'local kept = {} for i = 1, #parked.steers do local item = parked.steers[i] ' +
+  'if type(item) ~= "table" or type(item.steerId) ~= "string" or item.steerId == "" then return 0 end ' +
+  'if item.steerId ~= ARGV[2] then kept[#kept + 1] = item end end ' +
+  'if #kept == #parked.steers then return 0 end ' +
+  'if #kept == 0 then redis.call("DEL", KEYS[2]) else parked.steers = kept ' +
+  'local ttl = redis.call("PTTL", KEYS[2]) redis.call("SET", KEYS[2], cjson.encode(parked)) ' +
+  'if ttl > 0 then redis.call("PEXPIRE", KEYS[2], ttl) end end ' +
+  'receipt.state = "recovered" redis.call("HSET", KEYS[1], ARGV[1], cjson.encode(receipt)) ' +
+  'return 1';
+
+/**
  * Park leftovers only while the generation that drained them still owns the
  * stream ID. If a replacement already exists, writing its parked key would
  * leak predecessor state into the new run. A replacement created afterward
@@ -5149,6 +5185,29 @@ export class RedisJobStore implements IJobStoreV2 {
       expectedGenerationCreatedAt != null ? String(expectedGenerationCreatedAt) : '',
     );
     return discarded === 1;
+  }
+
+  async promoteSteerLeftover(
+    streamId: string,
+    clientSteerId: string,
+    steerId: string,
+    ownerUserId: string,
+    ownerTenantId: string | undefined,
+    generationCreatedAt: number,
+  ): Promise<boolean> {
+    const promoted = await this.redis.eval(
+      PROMOTE_STEER_LEFTOVER_LUA,
+      3,
+      KEYS.steerReceipts(streamId),
+      KEYS.parkedSteers(streamId),
+      KEYS.job(streamId),
+      clientSteerId,
+      steerId,
+      ownerUserId,
+      ownerTenantId ?? '',
+      String(generationCreatedAt),
+    );
+    return promoted === 1;
   }
 
   /** A malformed entry is dropped (logged) rather than poisoning the drain. */

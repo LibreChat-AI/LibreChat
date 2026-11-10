@@ -84,6 +84,14 @@ export const agentQueuedTurnReceiptSchema = enqueueAgentQueuedTurnSchema.extend(
 });
 export type TAgentQueuedTurnReceipt = z.infer<typeof agentQueuedTurnReceiptSchema>;
 
+/** An accepted steer the run ended without applying, which the server turned
+ * into a durable queued turn. `steerId`/`clientSteerId` name the chip it replaces. */
+export type TPromotedSteer = {
+  steerId: string;
+  clientSteerId?: string;
+  receipt: TAgentQueuedTurnReceipt;
+};
+
 export const agentQueuedTurnCapabilitySchema = z.discriminatedUnion('supported', [
   z.object({ supported: z.literal(false) }),
   z.object({
