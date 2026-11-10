@@ -131,41 +131,45 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
     );
   });
 
-  it.each(['gpt-image-1', 'gpt-image-1.5', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2.6-flare', ' '])(
-    'should preserve the configured generation model %j',
-    async (model) => {
-      process.env.IMAGE_GEN_OAI_MODEL = model;
+  it.each([
+    'gpt-image-1',
+    'gpt-image-1.5',
+    'gpt-image-2.5-flare',
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2.6-flare',
+    ' ',
+  ])('should preserve the configured generation model %j', async (model) => {
+    process.env.IMAGE_GEN_OAI_MODEL = model;
 
-      const mockGenerate = jest.fn().mockResolvedValue({
-        data: [
-          {
-            b64_json: 'base64-encoded-image-data',
-          },
-        ],
-      });
-
-      OpenAI.mockImplementation(() => ({
-        images: {
-          generate: mockGenerate,
+    const mockGenerate = jest.fn().mockResolvedValue({
+      data: [
+        {
+          b64_json: 'base64-encoded-image-data',
         },
-      }));
+      ],
+    });
 
-      const [imageGenTool] = createOpenAIImageTools({
-        isAgent: true,
-        override: false,
-        req: { user: { id: 'test-user' } },
-      });
+    OpenAI.mockImplementation(() => ({
+      images: {
+        generate: mockGenerate,
+      },
+    }));
 
-      await imageGenTool.func({ prompt: 'test prompt' });
+    const [imageGenTool] = createOpenAIImageTools({
+      isAgent: true,
+      override: false,
+      req: { user: { id: 'test-user' } },
+    });
 
-      expect(mockGenerate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          model,
-        }),
-        expect.any(Object),
-      );
-    },
-  );
+    await imageGenTool.func({ prompt: 'test prompt' });
+
+    expect(mockGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model,
+      }),
+      expect.any(Object),
+    );
+  });
 
   it('should use custom model name from IMAGE_GEN_OAI_MODEL environment variable', async () => {
     process.env.IMAGE_GEN_OAI_MODEL = 'custom-image-model';
