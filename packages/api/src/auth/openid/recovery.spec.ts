@@ -196,3 +196,173 @@ describe('OpenID authentication publication settlement', () => {
     });
   });
 });
+
+/**
+ * While back-channel logout is off, bridge recovery must carry whichever ref the marker or the
+ * bridge itself already recorded forward unchanged, instead of discarding it, and must never
+ * authorize against the database to do so.
+ */
+describe('OpenID refresh bridge recovery: provider session while mode is off', () => {
+  function setup(overrides: Partial<OpenIDRefreshRecoveryDeps> = {}) {
+    const deps = {
+      jwt: { decode: jest.fn() },
+      cookies: { parse: jest.fn(() => ({})) },
+      getJwtRefreshSecret: () => 'refresh-secret',
+      findOpenIDUser: jest.fn(),
+      findUser: jest.fn(),
+      getOpenIdConfig: jest.fn(),
+      getOpenIdEmail: jest.fn(),
+      getOpenIdIssuer: jest.fn(),
+      createAuthIdentityContext: jest.fn(() => ({
+        appUserId: 'user-1',
+        openidSubject: 'sub-1',
+      })),
+      refreshOpenIDSession: jest.fn(),
+      clearOpenIDAuthTokens: jest.fn(),
+      deleteOpenIDSession: jest.fn(),
+      createOpenIDRefreshFlightKey: jest.fn(),
+      storeRefreshTokenBridge: jest.fn().mockResolvedValue('bridge-version'),
+      deleteRefreshTokenBridges: jest.fn(),
+      waitForOpenIDRefreshFlight: jest.fn(),
+      assertOpenIDRefreshSessionGenerationAvailable: jest.fn(),
+      revokeOpenIDRefreshFlights: jest.fn(),
+      bridgeGraceMs: 1000,
+      logger: { debug: jest.fn(), warn: jest.fn() },
+      createRefreshTokenBridgeFlightKey: jest.fn(() => 'bridge-flight-key'),
+      acquireOpenIDRefreshFlight: jest.fn().mockResolvedValue({
+        acquired: true,
+        ownerId: 'owner',
+      }),
+      withOpenIDRefreshFlightLease: jest.fn(({ operation }) =>
+        operation({
+          assertLeaseOwned: jest.fn().mockResolvedValue(true),
+          markLeaseSettled: jest.fn(),
+        }),
+      ),
+      failOpenIDRefreshFlight: jest.fn().mockResolvedValue(null),
+      completeOpenIDRefreshFlight: jest.fn().mockResolvedValue({ status: 'completed' }),
+      getOpenIDAppAuthToken: jest.fn(() => 'app-token'),
+      storeOpenIDSession: jest.fn().mockResolvedValue(undefined),
+      assertOpenIDRefreshFlightAvailable: jest.fn().mockResolvedValue(true),
+      setOpenIDAuthTokens: jest.fn(() => 'app-token'),
+      math: jest.fn((_value: string | undefined, fallback: number) => fallback),
+      defaultRefreshTokenExpiry: 1000 * 60 * 60 * 24 * 90,
+      providerSessionAuthorizer: {
+        establish: jest.fn().mockResolvedValue({ ok: true }),
+        authorize: jest.fn().mockResolvedValue({ ok: true }),
+        preCheck: jest.fn().mockResolvedValue({ ok: true }),
+        getMode: jest.fn().mockResolvedValue('off'),
+      },
+      getProviderSessionClient: jest.fn(() => null),
+      ...overrides,
+    } satisfies OpenIDRefreshRecoveryDeps;
+    const service = createOpenIDRefreshRecoveryService(deps);
+    return { deps, service };
+  }
+
+  function buildReq() {
+    return {
+      session: {
+        save: (callback: (error?: Error | null) => void) => callback(null),
+        reload: (callback: (error?: Error | null) => void) => callback(null),
+      },
+    };
+  }
+
+  const ref = { issuer: 'https://idp.example.com', clientId: 'librechat', sid: 'sid-1' };
+  const bridgeUser = { _id: 'user-1', provider: 'openid', openidId: 'sub-1' };
+
+  it('seeds the Express session with the bridge ref when the marker carries none', async () => {
+    let captured: unknown;
+    const { deps, service } = setup({
+      refreshOpenIDSession: jest.fn(async (req) => {
+        captured = (req as { session: { openidTokens?: { providerSession?: unknown } } }).session
+          .openidTokens?.providerSession;
+        throw new Error('stop-after-seed');
+      }),
+    });
+    const req = buildReq();
+
+    await expect(
+      service.recoverOpenIDRefreshBridge({
+        req: req as never,
+        res: {} as never,
+        refreshToken: 'cookie-refresh',
+        bridgedRefreshToken: 'bridged-refresh',
+        bridgeUser,
+        bridgeProviderSession: ref,
+        markerProviderSession: null,
+      }),
+    ).rejects.toThrow('stop-after-seed');
+
+    expect(captured).toEqual(ref);
+    expect(deps.providerSessionAuthorizer.authorize).not.toHaveBeenCalled();
+    expect(deps.providerSessionAuthorizer.establish).not.toHaveBeenCalled();
+  });
+
+  it('seeds the Express session with the marker ref when it disagrees with the bridge, denying nothing', async () => {
+    const markerRef = {
+      issuer: 'https://idp.example.com',
+      clientId: 'librechat',
+      sid: 'sid-marker',
+    };
+    let captured: unknown;
+    const { deps, service } = setup({
+      refreshOpenIDSession: jest.fn(async (req) => {
+        captured = (req as { session: { openidTokens?: { providerSession?: unknown } } }).session
+          .openidTokens?.providerSession;
+        throw new Error('stop-after-seed');
+      }),
+    });
+    const req = buildReq();
+
+    await expect(
+      service.recoverOpenIDRefreshBridge({
+        req: req as never,
+        res: {} as never,
+        refreshToken: 'cookie-refresh',
+        bridgedRefreshToken: 'bridged-refresh',
+        bridgeUser,
+        bridgeProviderSession: ref,
+        markerProviderSession: markerRef,
+      }),
+    ).rejects.toThrow('stop-after-seed');
+
+    // Mode off never denies on a marker/bridge mismatch; the marker ref simply takes precedence.
+    expect(captured).toEqual(markerRef);
+    expect(deps.providerSessionAuthorizer.authorize).not.toHaveBeenCalled();
+    expect(deps.providerSessionAuthorizer.establish).not.toHaveBeenCalled();
+  });
+
+  it('creates no binding when neither the marker nor the bridge has one', async () => {
+    let captured: unknown;
+    let sawProviderSessionKey = true;
+    const { deps, service } = setup({
+      refreshOpenIDSession: jest.fn(async (req) => {
+        const openidTokens = (req as { session: { openidTokens?: Record<string, unknown> } })
+          .session.openidTokens;
+        sawProviderSessionKey = Boolean(openidTokens && 'providerSession' in openidTokens);
+        captured = openidTokens?.providerSession;
+        throw new Error('stop-after-seed');
+      }),
+    });
+    const req = buildReq();
+
+    await expect(
+      service.recoverOpenIDRefreshBridge({
+        req: req as never,
+        res: {} as never,
+        refreshToken: 'cookie-refresh',
+        bridgedRefreshToken: 'bridged-refresh',
+        bridgeUser,
+        bridgeProviderSession: null,
+        markerProviderSession: null,
+      }),
+    ).rejects.toThrow('stop-after-seed');
+
+    expect(sawProviderSessionKey).toBe(false);
+    expect(captured).toBeUndefined();
+    expect(deps.providerSessionAuthorizer.authorize).not.toHaveBeenCalled();
+    expect(deps.providerSessionAuthorizer.establish).not.toHaveBeenCalled();
+  });
+});

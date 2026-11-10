@@ -42,8 +42,20 @@ describe('mergeReuseProviderSession', () => {
 });
 
 describe('resolveBoundProviderSession', () => {
-  it('returns null in mode off without checking for a conflict', () => {
-    expect(resolveBoundProviderSession('off', refA, refB)).toBeNull();
+  it('carries the marker ref forward in mode off without checking for a conflict', () => {
+    expect(resolveBoundProviderSession('off', refA, refB)).toEqual(refA);
+  });
+
+  it('falls back to the session ref in mode off when there is no marker ref', () => {
+    expect(resolveBoundProviderSession('off', null, refB)).toEqual(refB);
+  });
+
+  it('falls back to the session-doc ref in mode off when neither marker nor session has one', () => {
+    expect(resolveBoundProviderSession('off', null, null, refB)).toEqual(refB);
+  });
+
+  it('creates no binding in mode off when none is already bound', () => {
+    expect(resolveBoundProviderSession('off', null, null)).toBeNull();
   });
 
   it('throws OPENID_SESSION_ENDED on a conflict outside mode off', () => {
@@ -64,7 +76,7 @@ describe('resolveBoundProviderSessionForToken', () => {
     openid_user_id: jwt.sign({ id: 'user-1', providerSession: ref, refreshTokenHash }, SECRET),
   });
 
-  it('returns null in mode off without reading the marker', () => {
+  it('carries the marker ref on the given token forward in mode off', () => {
     const result = resolveBoundProviderSessionForToken(
       'off',
       markerCookie(refA),
@@ -72,6 +84,16 @@ describe('resolveBoundProviderSessionForToken', () => {
       refreshToken,
       refB,
     );
+    expect(result).toEqual(refA);
+  });
+
+  it('falls back to the session ref in mode off when the token carries no marker', () => {
+    const result = resolveBoundProviderSessionForToken('off', {}, SECRET, refreshToken, refB);
+    expect(result).toEqual(refB);
+  });
+
+  it('creates no binding in mode off when neither the marker nor the session has one', () => {
+    const result = resolveBoundProviderSessionForToken('off', {}, SECRET, refreshToken, null);
     expect(result).toBeNull();
   });
 
