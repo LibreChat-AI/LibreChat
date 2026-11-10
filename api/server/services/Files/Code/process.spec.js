@@ -4433,6 +4433,63 @@ describe('Code Process', () => {
       }
     });
 
+    it('reuploads a displaced private receipt before mounting a shared snapshot', async () => {
+      setupActiveSessions();
+      const upload = jest.fn(async ({ filename }) => ({
+        storage_session_id: `fresh-${filename}`,
+        file_id: `fresh-${filename}`,
+        filename,
+      }));
+      getStrategyFunctions.mockImplementation(() => ({
+        getDownloadStream: jest.fn().mockResolvedValue('primary-bytes'),
+        handleFileUpload: upload,
+      }));
+      const privateFile = codeFile({
+        file_id: 'private',
+        filename: 'report.txt',
+        sandboxFilename: 'report.txt',
+        storage_session_id: 'private-session',
+      });
+      privateFile.type = 'text/plain';
+      privateFile.metadata.codeEnvRef.kind = 'agent';
+      privateFile.metadata.codeEnvRef.id = 'agent-id';
+      getFiles.mockResolvedValue([
+        privateFile,
+        {
+          file_id: 'shared',
+          user: 'user-123',
+          filename: 'report.txt',
+          type: 'text/plain',
+          context: FileContext.execute_code_snapshot,
+          source: 'local',
+          filepath: '/uploads/shared',
+        },
+      ]);
+      const result = await prime({
+        execute_code: { file_ids: ['private'], files: [{ file_id: 'shared' }] },
+      });
+      expect(result.files).toHaveLength(2);
+      expect(result.files.find((file) => file.kind === 'user')).toMatchObject({
+        name: 'report.txt',
+        id: 'fresh-report.txt',
+      });
+      const privateMount = result.files.find((file) => file.kind === 'agent');
+      expect(privateMount).toMatchObject({
+        name: expect.stringMatching(/^report-.+\.txt$/),
+        resource_id: 'agent-id',
+      });
+      expect(privateMount.id).toBe(`fresh-${privateMount.name}`);
+      expect(upload).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filename: privateMount.name,
+          stream: 'primary-bytes',
+          kind: 'agent',
+          id: 'agent-id',
+        }),
+      );
+      expect(result.toolContext).toContain(privateMount.name);
+    });
+
     it('recovers a converted stale image even when its storage session has a fresh sibling', async () => {
       const upload = jest
         .fn()

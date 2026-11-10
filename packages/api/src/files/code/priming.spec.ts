@@ -234,6 +234,34 @@ describe('selectCodeFiles', () => {
     );
   });
 
+  it.each(['default', 'stateful'])(
+    'reuploads a displaced private receipt rather than trusting its live bytes on %s',
+    async (routeKey) => {
+      const shared = { ...file('shared', 'rows.csv'), context: FileContext.execute_code_snapshot };
+      const privateFile = file('private', 'rows.csv', {
+        kind: 'agent',
+        id: 'agent-a',
+        sandboxFilename: 'rows.csv',
+        executionProfile: routeKey,
+      });
+      const result = await selectCodeFiles({
+        files: [privateFile, shared],
+        privateFileIds: new Set(['private']),
+        routeKey,
+        getFileInfo: async () => fresh,
+      });
+      expect(result.selected).toHaveLength(2);
+      expect(result.selected.find((entry) => entry.file.file_id === 'shared')?.sandboxName).toBe(
+        'rows.csv',
+      );
+      expect(result.selected.find((entry) => entry.file.file_id === 'private')).toMatchObject({
+        sandboxName: expect.stringMatching(/^rows-.+\.csv$/),
+        isActive: false,
+        sourceRef: { kind: 'agent', id: 'agent-a', file_id: 'private' },
+      });
+    },
+  );
+
   it('keeps the freshness decision paired with the selected image destination', async () => {
     const now = Date.parse('2026-09-10T12:00:00Z');
     const clock = jest.spyOn(Date, 'now').mockReturnValue(now);

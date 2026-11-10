@@ -649,6 +649,7 @@ const computeProvisionState = async ({
   const codeEnvFiles: TFile[] = [];
   const codeEnvRecoveryNames: NonNullable<ProvisionState['codeEnvRecoveryNames']> = new Map();
   const vectorDBFiles: TFile[] = [];
+  const displacedCodeFileIds = new Set<string>();
 
   for (const file of provisionable) {
     if (!file?.file_id) {
@@ -689,8 +690,14 @@ const computeProvisionState = async ({
        *  added to execute_code resources, so the check runs before the processed
        *  guard. Clear both the legacy ref and its route entry, else getCodeEnvRefs
        *  keeps resolving the dead session over the re-provisioned one. */
-      if (file.context === FileContext.execute_code_snapshot) {
+      const plannedName = codeSnapshotMounts.get(file.file_id);
+      const displaced =
+        routeRef?.sandboxFilename != null &&
+        plannedName != null &&
+        plannedName !== routeRef.sandboxFilename;
+      if (file.context === FileContext.execute_code_snapshot || displaced) {
         codeEnvFiles.push(file);
+        if (displaced) displacedCodeFileIds.add(file.file_id);
       } else if (isStale) {
         if (routeRef?.sandboxFilename) {
           codeEnvRecoveryNames.set(file.file_id, {
@@ -745,6 +752,15 @@ const computeProvisionState = async ({
     ) {
       vectorDBFiles.push(file);
     }
+  }
+
+  // A renamed receipt is not byte identity. Only its primary-storage reupload may mount it.
+  const codeResource = tool_resources[EToolResources.execute_code];
+  if (codeResource && displacedCodeFileIds.size > 0) {
+    codeResource.file_ids = codeResource.file_ids?.filter((id) => !displacedCodeFileIds.has(id));
+    codeResource.files = codeResource.files?.filter(
+      (file) => !displacedCodeFileIds.has(file.file_id),
+    );
   }
 
   if (codeEnvFiles.length === 0 && vectorDBFiles.length === 0) {

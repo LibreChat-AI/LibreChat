@@ -170,12 +170,16 @@ export async function selectCodeFiles({
       const { file, ref, sourceRef, getInfo } = candidate;
       const info = ref ? await getInfo() : null;
       signal?.throwIfAborted();
-      const recovering = !ref || !checkCodeFileActive(info?.lastModified);
       const storedName = sourceRef.sandboxFilename ?? info?.originalFilename;
+      const plannedName = snapshotMounts.get(file.file_id);
+      const recovering =
+        !ref ||
+        !checkCodeFileActive(info?.lastModified) ||
+        (plannedName != null && plannedName !== storedName);
       const sandboxName =
         file.context === FileContext.execute_code_snapshot
           ? (snapshotMounts.get(file.file_id) ?? getCodeFileDestination(file, routeKey))
-          : (storedName ?? resolveSandboxFilename(file.filename, file.type));
+          : (plannedName ?? storedName ?? resolveSandboxFilename(file.filename, file.type));
       const destination = recovering
         ? getCodeEnvUploadFilename(resolveSandboxFilename(sandboxName, file.type))
         : sandboxName;

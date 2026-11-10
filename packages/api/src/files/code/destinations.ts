@@ -310,7 +310,7 @@ export function selectCodeFileGenerations<T extends CodePathCandidate>(
   return { files: selected, skippedSuperseded };
 }
 
-/** Explicit writes own literal paths before converted files reuse earlier mount names. */
+/** Shared mounts precede private receipts; explicit writes precede converted snapshots. */
 export function planCodeSnapshotMounts<T extends CodePathCandidate>(
   files: Array<T | null | undefined>,
   privateFileIds?: ReadonlySet<string>,
@@ -320,39 +320,51 @@ export function planCodeSnapshotMounts<T extends CodePathCandidate>(
   const destinations = createCodeDestinationSet();
   const ordered = sortCodeFilesByDestinationPriority(files, privateFileIds);
   const snapshots: T[] = [];
+  const receipts: T[] = [];
   const seen = new Set<string>();
   for (const file of ordered) {
     if (!file || (file.file_id && seen.has(file.file_id))) continue;
     if (file.file_id) seen.add(file.file_id);
     if (file.context === FileContext.execute_code_snapshot) snapshots.push(file);
-    else {
-      const name = getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename;
-      if (name) reserveCodeDestination(destinations, name);
-    }
+    else receipts.push(file);
   }
   const priority = (file: T): number => {
-    const scope = privateFileIds?.has(file.file_id ?? '') ? 4 : 0;
     const converted =
       getCodeEnvUploadFilename(resolveSandboxFilename(file.filename ?? '', file.type ?? '')) !==
       file.filename;
-    if (!converted) return scope;
+    if (!converted) return 0;
     const assigned =
       preferred?.has(file.file_id ?? '') ||
       getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename;
-    return scope + (assigned ? 1 : 2);
+    return assigned ? 1 : 2;
   };
   snapshots.sort((a, b) => priority(a) - priority(b));
   const names = new Map<string, string>();
-  for (const file of snapshots) {
-    if (!file.file_id) continue;
-    names.set(
-      file.file_id,
-      claimCodeDestination(
-        destinations,
-        preferred?.get(file.file_id) ?? getCodeFileDestination(file, routeKey),
+  for (const privateScope of [false, true]) {
+    const inScope = (file: T): boolean =>
+      (privateFileIds?.has(file.file_id ?? '') ?? false) === privateScope;
+    for (const file of receipts) {
+      if (!inScope(file)) continue;
+      const name = getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename;
+      if (!name) continue;
+      if (!privateScope) {
+        reserveCodeDestination(destinations, name);
+        continue;
+      }
+      const destination = claimCodeDestination(destinations, name, file.file_id ?? name);
+      if (file.file_id && destination !== name) names.set(file.file_id, destination);
+    }
+    for (const file of snapshots) {
+      if (!file.file_id || !inScope(file)) continue;
+      names.set(
         file.file_id,
-      ),
-    );
+        claimCodeDestination(
+          destinations,
+          preferred?.get(file.file_id) ?? getCodeFileDestination(file, routeKey),
+          file.file_id,
+        ),
+      );
+    }
   }
   return names;
 }

@@ -108,6 +108,13 @@ export function planCodeFileUploads({
   });
 
   const destinations = createCodeDestinationSet();
+  const snapshotMounts = planCodeSnapshotMounts(
+    [...queued.values()].map((candidate) => candidate.file).concat(liveFiles),
+    privateIds,
+    route,
+    state.codeEnvDestinations,
+  );
+  for (const name of snapshotMounts.values()) reserveCodeDestination(destinations, name);
   const liveNames = new Map<string, string>();
   const reserveLiveFiles = (candidate: ProvisionToolContext): void => {
     const candidateQueuedIds = new Set(
@@ -143,13 +150,6 @@ export function planCodeFileUploads({
     claimCodeDestination(destinations, file.name, file.id);
   }
 
-  const snapshotMounts = planCodeSnapshotMounts(
-    [...queued.values()].map((candidate) => candidate.file).concat(liveFiles),
-    privateIds,
-    route,
-    state.codeEnvDestinations,
-  );
-  for (const name of snapshotMounts.values()) reserveCodeDestination(destinations, name);
   const queuedFiles = files.filter((file) => queuedIds.has(file.file_id));
   const selected = new Map(queuedFiles.map((file) => [file.file_id, file]));
   const advertisedNames = new Map<string, string>();
@@ -157,8 +157,9 @@ export function planCodeFileUploads({
     // An agent's frozen plan survives later discovery in other execution contexts.
     for (const [id, name] of state.codeEnvDestinations ?? []) {
       if (!queued.has(id)) continue;
-      reserveCodeDestination(destinations, name);
-      advertisedNames.set(id, name);
+      const destination = snapshotMounts.get(id) ?? name;
+      reserveCodeDestination(destinations, destination);
+      advertisedNames.set(id, destination);
     }
     // Inherited paths are hints until checked against this agent's live mounts.
     for (const [id, candidate] of queued) {

@@ -335,6 +335,52 @@ describe('Generated file snapshots', () => {
     expect(next.advertised.has(foreign.file_id)).toBe(false);
   });
 
+  it.each([true, false])(
+    'keeps shared snapshots ahead of an already primed private resource (deferred %s)',
+    async (deferred) => {
+      const privateFile = await emit(Buffer.from('Private setup'), 'private', 'report.txt', 50);
+      await methods.updateFile({ file_id: privateFile.file_id, context: FileContext.agents });
+      await initializeCode([], [privateFile.file_id], deferred);
+      expect((await reload(privateFile.file_id)).file.metadata?.codeEnvRef).toMatchObject({
+        kind: 'agent',
+        id: 'agent-a',
+        sandboxFilename: 'report.txt',
+      });
+      const first = await emit(Buffer.from('Shared V1'), 'shared-1', 'report.txt', 100);
+      const alone = await initializeCode([first.file_id], [], deferred);
+      const next = await initializeCode([first.file_id], [privateFile.file_id], deferred);
+      expect(next.destinations.get(first.file_id)).toBe(alone.destinations.get(first.file_id));
+      expect(next.destinations.get(first.file_id)).toBe('report.txt');
+      const privateName = next.destinations.get(privateFile.file_id)!;
+      expect(privateName).toMatch(/^report-.+\.txt$/);
+      expect((await readFile(path.join(directory, 'sandbox/report.txt'))).toString()).toBe(
+        'Shared V1',
+      );
+      expect((await readFile(path.join(directory, 'sandbox', privateName))).toString()).toBe(
+        'Private setup',
+      );
+      expect((await reload(privateFile.file_id)).file.metadata?.codeEnvRef?.sandboxFilename).toBe(
+        privateName,
+      );
+      const second = await emit(Buffer.from('Shared V2'), 'shared-2', 'report.txt', 200);
+      for (const ids of [
+        [first.file_id, second.file_id],
+        [first.file_id],
+        [first.file_id, second.file_id],
+      ]) {
+        const restored = await initializeCode(ids, [privateFile.file_id], deferred);
+        expect(restored.destinations.get(privateFile.file_id)).toBe(privateName);
+        expect(restored.destinations.get(ids.at(-1)!)).toBe('report.txt');
+        expect((await readFile(path.join(directory, 'sandbox/report.txt'))).toString()).toBe(
+          ids.length === 1 ? 'Shared V1' : 'Shared V2',
+        );
+        expect((await readFile(path.join(directory, 'sandbox', privateName))).toString()).toBe(
+          'Private setup',
+        );
+      }
+    },
+  );
+
   it.each(['report.txt', 'nested/report-alias.txt'])(
     'restores a rewritten upload at its original destination %s on old branches',
     async (name) => {
