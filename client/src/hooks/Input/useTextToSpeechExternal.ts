@@ -159,6 +159,7 @@ function useTextToSpeechExternal({
         formData.append('voice', voice ?? '');
         timer = setTimeout(() => controller.abort(), getClientLimit('ttsMs'));
         const response = await dataService.streamTextToSpeech(formData, signal);
+        clearTimeout(timer);
         if (!isCurrent()) {
           return;
         }

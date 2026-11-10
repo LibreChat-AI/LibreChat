@@ -33,23 +33,31 @@ jest.mock('~/utils', () => ({
 }));
 jest.mock('~/data-provider', () => ({
   useVoicesQuery: () => ({ data: [] }),
-  useTextToSpeechMutation: () => ({ mutate: jest.fn(), isLoading: false }),
 }));
 jest.mock('librechat-data-provider', () => ({
   MutationKeys: { textToSpeech: 'textToSpeech' },
   getClientLimit: () => 60000,
   dataService: { streamTextToSpeech: jest.fn() },
 }));
-jest.mock('~/hooks/Audio/MediaSourceAppender', () => ({
-  MediaSourceAppender: jest.fn().mockImplementation(() => ({
-    mediaSourceUrl: 'blob:stream',
-    addData: jest.fn(),
-    close: jest.fn(),
-    dispose: jest.fn(),
-  })),
-}));
+class FakeSourceBuffer extends EventTarget {
+  updating = false;
+  appendBuffer = jest.fn((_data: ArrayBuffer) => {
+    this.updating = true;
+    queueMicrotask(() => {
+      this.updating = false;
+      this.dispatchEvent(new Event('updateend'));
+    });
+  });
+}
 
 function setup(supported = true) {
+  const sourceBuffer = new FakeSourceBuffer();
+  class FakeMediaSource extends EventTarget {
+    static isTypeSupported = () => supported;
+    readyState = 'open';
+    addSourceBuffer = () => sourceBuffer;
+    endOfStream = jest.fn();
+  }
   const play = jest.fn().mockResolvedValue(undefined);
   const audio = {
     play,
@@ -59,11 +67,17 @@ function setup(supported = true) {
     src: 'blob:stream',
   };
   jest.spyOn(window, 'Audio').mockImplementation(() => audio as unknown as HTMLAudioElement);
-  URL.createObjectURL = jest.fn(() => 'blob:complete');
+  URL.createObjectURL = jest.fn((object: Blob | MediaSource) => {
+    if (object instanceof FakeMediaSource) {
+      queueMicrotask(() => object.dispatchEvent(new Event('sourceopen')));
+      return 'blob:stream';
+    }
+    return 'blob:complete';
+  });
   URL.revokeObjectURL = jest.fn();
   Object.defineProperty(window, 'MediaSource', {
     configurable: true,
-    value: { isTypeSupported: () => supported },
+    value: FakeMediaSource,
   });
   let finish: (value: ReadableStreamReadResult<Uint8Array>) => void;
   let signal: AbortSignal;
@@ -106,6 +120,7 @@ function setup(supported = true) {
   return {
     ...hook,
     audio,
+    sourceBuffer,
     setIsSpeaking,
     end: () => finish({ done: true, value: undefined }),
     aborted: () => signal.aborted,
@@ -113,11 +128,12 @@ function setup(supported = true) {
 }
 
 it('starts manual playback before the speech response finishes', async () => {
-  const { result, audio, end } = setup();
+  const { result, audio, sourceBuffer, end } = setup();
   await act(async () => {
     result.current.generateSpeechExternal('Long speech', false);
   });
   expect(audio.play).toHaveBeenCalled();
+  expect(sourceBuffer.appendBuffer).toHaveBeenCalledWith(new Uint8Array([1]).buffer);
   await act(async () => {
     end();
   });
@@ -252,4 +268,24 @@ it('clears loading and speaking state after an unsuccessful response', async () 
   expect(audio.play).not.toHaveBeenCalled();
   expect(setIsSpeaking).toHaveBeenLastCalledWith(false);
   expect(result.current.isLoading).toBe(false);
+});
+
+it('does not abort an active stream after the initial request deadline', async () => {
+  jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
+  try {
+    const { result, aborted, end, unmount } = setup();
+    await act(async () => {
+      result.current.generateSpeechExternal('Long speech', false);
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(61000);
+    });
+    expect(aborted()).toBe(false);
+    await act(async () => {
+      end();
+    });
+    unmount();
+  } finally {
+    jest.useRealTimers();
+  }
 });
