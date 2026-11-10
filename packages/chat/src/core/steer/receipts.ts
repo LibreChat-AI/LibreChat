@@ -1,11 +1,12 @@
-import { MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
+import { MAX_FILE_TEXT_PREVIEW_LENGTH, getPromotedSteerRequestId } from 'librechat-data-provider';
 import type {
   TMessage,
   TAgentQueuedTurnReceipt,
   TAgentQueuedTurnFileRef,
 } from 'librechat-data-provider';
-import type { QueuedMessage, SettledQueuedTurnReceipt } from './types';
+import type { PendingSteer, QueuedMessage, SettledQueuedTurnReceipt } from './types';
 import { hydrateFileDeliveryMetadata } from '../files';
+import { heldSteerClientIds } from './chips';
 
 type AgentQueuedTurnReceipt = TAgentQueuedTurnReceipt;
 
@@ -228,6 +229,31 @@ export function reconcileServerQueuedTurns(
     );
   });
   return [...retained, ...projected].sort(compareQueuedMessages);
+}
+
+/** The receipt list answers for at most this many request ids. */
+const QUEUED_TURN_LOOKUP_LIMIT = 100;
+
+/**
+ * The request ids a pane asks the receipt list about. Besides its server rows,
+ * the pane asks about every steer it still holds a local copy of, because the
+ * server may have promoted one to a turn this pane never heard of (it missed
+ * FINAL). Held steers come first under the limit: an active server row is
+ * listed whether or not it is asked for, while a promoted turn that already
+ * ran is found only by name.
+ */
+export function queuedTurnLookupIds(
+  chips: readonly PendingSteer[],
+  queue: readonly QueuedMessage[],
+): string[] {
+  return Array.from(
+    new Set([
+      ...heldSteerClientIds(chips, queue).map(getPromotedSteerRequestId),
+      ...queue.flatMap((item) =>
+        item.server != null && item.clientRequestId != null ? [item.clientRequestId] : [],
+      ),
+    ]),
+  ).slice(0, QUEUED_TURN_LOOKUP_LIMIT);
 }
 
 /** Whether a promoted turn still answers for its steer's words, so no local

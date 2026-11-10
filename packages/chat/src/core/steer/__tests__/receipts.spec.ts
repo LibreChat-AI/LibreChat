@@ -2,6 +2,7 @@ import type { TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueuedMessage, SettledQueuedTurnReceipt } from '../types';
 import {
   toQueuedTurnFileRefs,
+  queuedTurnLookupIds,
   ownedPromotedSteerIds,
   reconcileServerQueuedTurns,
   mergeSettledQueuedTurnEvidence,
@@ -27,6 +28,38 @@ const settled = (
   entries: SettledQueuedTurnReceipt[],
 ): ReadonlyMap<string, SettledQueuedTurnReceipt> =>
   new Map(entries.map((entry) => [entry.clientRequestId, entry]));
+
+describe('queuedTurnLookupIds', () => {
+  const serverRow = (index: number): QueuedMessage => ({
+    id: `row-${index}`,
+    text: 'x',
+    createdAt: index,
+    clientRequestId: `request-${index}`,
+    server: { status: 'queued', id: `turn-${index}` },
+  });
+  const held: QueuedMessage = {
+    id: 'steer-1',
+    text: 'y',
+    createdAt: 0,
+    clientRequestId: 'legacy-request',
+    recoverySteerId: 'steer-1',
+    recoveryClientSteerId: 'local-1',
+  };
+
+  it('asks about server rows and about every steer the pane still holds', () => {
+    expect(
+      queuedTurnLookupIds([], [serverRow(1), held, { id: 'plain', text: 'z', createdAt: 2 }]),
+    ).toEqual(['steer-leftover:local-1', 'request-1']);
+  });
+
+  it('keeps a held steer inside the lookup limit behind a full server queue', () => {
+    const queue = [...Array.from({ length: 100 }, (_, index) => serverRow(index)), held];
+    const ids = queuedTurnLookupIds([], queue);
+
+    expect(ids).toHaveLength(100);
+    expect(ids[0]).toBe('steer-leftover:local-1');
+  });
+});
 
 describe('ownedPromotedSteerIds', () => {
   const promoted = (id: string, extra: Partial<TAgentQueuedTurnReceipt> = {}) =>
