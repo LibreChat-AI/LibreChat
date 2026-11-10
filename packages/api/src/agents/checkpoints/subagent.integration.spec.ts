@@ -30,6 +30,7 @@ import {
   createCheckpointNamespace,
   checkpointOwnerNamespacePrefix,
 } from '../../stream/checkpoints';
+import { openCheckpointDeletion } from './deletion';
 
 let server: MongoMemoryServer;
 beforeAll(async () => {
@@ -69,8 +70,9 @@ class ChildModel extends FakeChatModel {
   }
 }
 
-function freshSaver(): LazyMongoSaver {
+function freshSaver(conversationId?: string): LazyMongoSaver {
   return new LazyMongoSaver({
+    conversationId,
     client: mongoose.connection.getClient() as unknown as ConstructorParameters<
       typeof LazyMongoSaver
     >[0]['client'],
@@ -82,7 +84,7 @@ function freshSaver(): LazyMongoSaver {
 }
 
 function buildParent(effects: { reads: number; writes: number[] }, runId = 'parent-run') {
-  const saver = freshSaver();
+  const saver = freshSaver('parent-thread');
   const hooks = new HookRegistry();
   hooks.register('PreToolUse', {
     hooks: [async (input) => ({ decision: input.toolName === 'append_marker' ? 'ask' : 'allow' })],
@@ -237,12 +239,13 @@ it.each(['approve', 'reject'] as const)(
       ...replay.executor.getChildCheckpointThreadIds(),
     ]);
     expect(threads.size).toBeGreaterThan(1);
-    for (const thread of threads) {
-      await deleteAgentCheckpoint(thread, { type: 'mongo' }, undefined, {
-        checkpointNamespace: config.configurable[LIBRECHAT_CHECKPOINT_NAMESPACE_KEY],
-        throwOnError: true,
-      });
-    }
+    const deletion = await openCheckpointDeletion('owner', 'tenant', 'parent-thread', {
+      type: 'mongo',
+    });
+    await deletion.remember(['parent-thread']);
+    expect(deletion.conversationIds()).toEqual(['parent-thread']);
+    await deletion.cleanup();
+    await deletion.acknowledge();
     for (const name of ['agent_checkpoints', 'agent_checkpoint_writes']) {
       expect(
         await mongoose.connection.db!.collection(name).countDocuments({ thread_id: /^subagent:/ }),
@@ -409,3 +412,64 @@ it('isolates child owner, tenant, thread, and generation during reads and cleanu
     expect(await mongoose.connection.db!.collection(name).countDocuments()).toBe(3);
   }
 });
+
+it.each([false, true])(
+  'deletes associated child payload using only the parent ID (owned=%s)',
+  async (owned) => {
+    const child = (parent: string) =>
+      `subagent:${Buffer.from(JSON.stringify([parent, 'root', 'agent', 'tool', 'batch'])).toString('base64url')}`;
+    const thread = child('parent');
+    const nested = child(thread);
+    const scopes = [
+      { user: 'owner', tenant: 'tenant', thread, parent: 'parent' },
+      { user: 'owner', tenant: 'tenant', thread: nested, parent: 'parent' },
+      { user: 'owner', tenant: 'tenant', thread, parent: 'other-parent' },
+      { user: 'owner', tenant: 'tenant', thread: child('other-parent'), parent: 'other-parent' },
+      { user: 'foreign', tenant: 'tenant', thread, parent: 'parent' },
+      { user: 'owner', tenant: 'foreign-tenant', thread, parent: 'parent' },
+    ];
+    const configs = scopes.map((scope) => ({
+      configurable: {
+        thread_id: scope.thread,
+        checkpoint_ns: 'child:task',
+        [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: createCheckpointNamespace(scope.user, scope.tenant),
+        ...(owned
+          ? {
+              [LIBRECHAT_CHECKPOINT_OWNER_KEY]: checkpointOwnerNamespacePrefix(
+                scope.user,
+                scope.tenant,
+              ),
+            }
+          : {}),
+      },
+    }));
+    for (const [index, config] of configs.entries()) {
+      const saver = freshSaver(scopes[index].parent);
+      const checkpoint = emptyCheckpoint();
+      await saver.put(config, checkpoint, { source: 'loop', step: 0, parents: {} });
+      await saver.putWrites(
+        { configurable: { ...config.configurable, checkpoint_id: checkpoint.id } },
+        [[INTERRUPT, ['approval']]],
+        'task',
+      );
+    }
+    // An interrupted write can outlive a failed checkpoint insert.
+    await freshSaver('parent').putWrites(
+      { configurable: { ...configs[0].configurable, checkpoint_id: 'orphan' } },
+      [[INTERRUPT, ['orphan']]],
+      'task',
+    );
+    const deletion = await openCheckpointDeletion('owner', 'tenant', 'parent', { type: 'mongo' });
+    await deletion.remember(['parent']);
+    expect(deletion.conversationIds()).toEqual(['parent']);
+    await deletion.cleanup();
+    await deletion.acknowledge();
+    for (const config of configs.slice(0, 2))
+      expect(await freshSaver().getTuple(config)).toBeUndefined();
+    for (const config of configs.slice(2))
+      expect(await freshSaver().getTuple(config)).toBeDefined();
+    for (const name of ['agent_checkpoints', 'agent_checkpoint_writes']) {
+      expect(await mongoose.connection.db!.collection(name).countDocuments()).toBe(4);
+    }
+  },
+);

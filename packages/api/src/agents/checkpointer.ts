@@ -325,6 +325,8 @@ export class CheckpointTooLargeError extends Error {
  * exercise the guard at small sizes; production always uses the defaults.
  */
 export type LazyMongoSaverOptions = ConstructorParameters<typeof MongoDBSaver>[0] & {
+  /** Trusted root conversation for child payload cleanup, never derived from child IDs. */
+  conversationId?: string;
   /** Soft warn threshold in bytes. Defaults to {@link CHECKPOINT_WARN_BYTES}. */
   warnBytes?: number;
   /** Hard reject limit in bytes. Defaults to {@link CHECKPOINT_HARD_LIMIT_BYTES}. */
@@ -679,6 +681,7 @@ function settingsKey(resolved: ResolvedCheckpointerConfig): string {
  */
 export async function getAgentCheckpointer(
   cfg: TCheckpointerConfig | undefined,
+  conversationId?: string,
 ): Promise<MongoDBSaver | undefined> {
   const resolved = resolveCheckpointerConfig(cfg);
   if (resolved.type === 'memory') {
@@ -696,7 +699,8 @@ export async function getAgentCheckpointer(
     cachedKey = key;
     saverPromise = buildMongoSaver(resolved);
   }
-  return saverPromise;
+  const saver = await saverPromise;
+  return saver && conversationId ? createMongoSaver(resolved, conversationId) : saver;
 }
 
 export interface AgentEventCheckpointReference {
@@ -926,30 +930,38 @@ export async function setupCheckpointIndexes(
   }
 }
 
+function createMongoSaver(
+  resolved: ResolvedCheckpointerConfig,
+  conversationId?: string,
+): LazyMongoSaver {
+  return new LazyMongoSaver({
+    conversationId,
+    // mongoose vends the live MongoClient; reuse it instead of opening a second
+    // connection. The driver type is structurally identical but resolves to a
+    // different `mongodb` copy than checkpoint-mongodb's, hence the cast.
+    client: mongoose.connection.getClient() as unknown as ConstructorParameters<
+      typeof MongoDBSaver
+    >[0]['client'],
+    // MongoDBSaver calls MongoClient.db(dbName). Passing no name makes that
+    // resolve from the driver's URI default, which is not guaranteed to be the
+    // database Mongoose selected (for example when Mongoose connected with a
+    // dbName override). Every capture/delete path below uses connection.db, so
+    // bind the saver to that exact database as well or a pause can be written to
+    // one database while LibreChat looks for it in another.
+    dbName: mongoose.connection.db?.databaseName,
+    checkpointCollectionName: resolved.checkpointCollectionName,
+    checkpointWritesCollectionName: resolved.checkpointWritesCollectionName,
+    // TTL index on `upserted_at`: an unresolved paused run is reclaimed after the
+    // approval window, so a forgotten approval can never leak checkpoints forever.
+    ttl: resolved.ttlSeconds,
+  });
+}
+
 async function buildMongoSaver(
   resolved: ResolvedCheckpointerConfig,
 ): Promise<MongoDBSaver | undefined> {
   try {
-    const saver = new LazyMongoSaver({
-      // mongoose vends the live MongoClient; reuse it instead of opening a second
-      // connection. The driver type is structurally identical but resolves to a
-      // different `mongodb` copy than checkpoint-mongodb's, hence the cast.
-      client: mongoose.connection.getClient() as unknown as ConstructorParameters<
-        typeof MongoDBSaver
-      >[0]['client'],
-      // MongoDBSaver calls MongoClient.db(dbName). Passing no name makes that
-      // resolve from the driver's URI default, which is not guaranteed to be the
-      // database Mongoose selected (for example when Mongoose connected with a
-      // dbName override). Every capture/delete path below uses connection.db, so
-      // bind the saver to that exact database as well or a pause can be written to
-      // one database while LibreChat looks for it in another.
-      dbName: mongoose.connection.db?.databaseName,
-      checkpointCollectionName: resolved.checkpointCollectionName,
-      checkpointWritesCollectionName: resolved.checkpointWritesCollectionName,
-      // TTL index on `upserted_at`: an unresolved paused run is reclaimed after the
-      // approval window, so a forgotten approval can never leak checkpoints forever.
-      ttl: resolved.ttlSeconds,
-    });
+    const saver = createMongoSaver(resolved);
     const errors = await setupCheckpointIndexes(saver);
     if (errors.length > 0) {
       logger.warn(
@@ -982,6 +994,20 @@ async function buildMongoSaver(
             );
           } catch (error) {
             logger.warn('[checkpointer] Payload ownership index unavailable:', error);
+          }
+        },
+      ),
+    );
+    await Promise.all(
+      [resolved.checkpointCollectionName, resolved.checkpointWritesCollectionName].map(
+        async (name) => {
+          try {
+            await buildIndexWithRetry(
+              () => mongoose.connection.db!.collection(name).createIndex({ lc_parent_thread: 1 }),
+              `${name}.lc_parent_thread`,
+            );
+          } catch (error) {
+            logger.warn('[checkpointer] Child cleanup index unavailable:', error);
           }
         },
       ),
@@ -1217,9 +1243,18 @@ export async function deleteOwnedAgentCheckpoints(
     const filter = {
       ...ownership,
       ...(ids && {
-        thread_id: {
-          $in: ids.slice(offset, offset + batchSize).flatMap((id) => [id, `${owner}${id}`]),
-        },
+        $and: [
+          {
+            $or: [
+              {
+                thread_id: {
+                  $in: ids.slice(offset, offset + batchSize).flatMap((id) => [id, `${owner}${id}`]),
+                },
+              },
+              { lc_parent_thread: { $in: ids.slice(offset, offset + batchSize) } },
+            ],
+          },
+        ],
       }),
     };
     await db.collection(resolved.checkpointCollectionName).deleteMany(filter);
