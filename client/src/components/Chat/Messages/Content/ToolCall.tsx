@@ -476,6 +476,7 @@ export default function ToolCall({
             toolPreparationDurationMs={toolPreparationDurationMs}
             toolExecutionDurationMs={toolExecutionDurationMs}
             phaseStartAt={toolDispatchedAt ?? toolPreparationStartedAt}
+            phaseStepId={stepId}
             icon={
               <ToolIcon
                 type={toolIconType}
