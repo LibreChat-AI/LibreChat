@@ -13,6 +13,7 @@ import { useGetStartupConfig } from '~/data-provider';
 import ApiKeyDialog from './ApiKeyDialog';
 
 const mockLocalize = jest.fn((key: string) => key);
+const triggerLabel = 'Open search keys';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => mockLocalize,
@@ -58,7 +59,7 @@ function DialogHarness({
   return (
     <>
       <button ref={triggerRef} onClick={() => setIsOpen(true)}>
-        Open search keys
+        {triggerLabel}
       </button>
       <ApiKeyDialog
         {...defaultProps}
@@ -173,7 +174,7 @@ describe('ApiKeyDialog', () => {
     const onSubmit = jest.fn();
     mockUseGetStartupConfig.mockReturnValue({ data: {} });
     render(<DialogHarness onSubmit={onSubmit} />);
-    const trigger = screen.getByRole('button', { name: 'Open search keys' });
+    const trigger = screen.getByRole('button', { name: triggerLabel });
     fireEvent.click(trigger);
     fireEvent.click(screen.getByText('com_ui_web_search_provider_keenable'));
     fireEvent.click(screen.getByText('com_ui_web_search_reranker_cohere'));
@@ -229,7 +230,7 @@ describe('ApiKeyDialog', () => {
     async (triggerMode) => {
       mockUseGetStartupConfig.mockReturnValue({ data: {} });
       render(<DialogHarness triggerMode={triggerMode} />);
-      const trigger = screen.getByRole('button', { name: 'Open search keys' });
+      const trigger = screen.getByRole('button', { name: triggerLabel });
 
       for (let opening = 0; opening < 2; opening++) {
         fireEvent.click(trigger);
