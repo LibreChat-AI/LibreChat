@@ -1,5 +1,6 @@
 import { Types } from 'mongoose';
 import {
+  ResourceType,
   PrincipalType,
   PrincipalModel,
   PermissionBits,
@@ -131,6 +132,8 @@ export const OWNER_ACL_PERMISSION_BIT_SUPERSETS: readonly number[] =
 const OBJECT_ID_HEX = /^[0-9a-fA-F]{24}$/;
 
 export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
+  deleteSharedLinkAclEntries: (resourceIds: string[]) => Promise<DeleteResult>;
+  updateSharedLinkAclExpiration: (resourceId: string, expiredAt: Date | null) => Promise<void>;
   findEntriesByResource: (
     resourceType: string,
     resourceId: string | Types.ObjectId,
@@ -907,7 +910,28 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     return ownedIds.filter((id) => !multiOwnerIds.has(id.toString()));
   }
 
+  async function deleteSharedLinkAclEntries(resourceIds: string[]): Promise<DeleteResult> {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    return AclEntry.deleteMany({
+      resourceType: ResourceType.SHARED_LINK,
+      resourceId: { $in: resourceIds },
+    });
+  }
+
+  async function updateSharedLinkAclExpiration(
+    resourceId: string,
+    expiredAt: Date | null,
+  ): Promise<void> {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    await AclEntry.updateMany(
+      { resourceType: ResourceType.SHARED_LINK, resourceId },
+      expiredAt instanceof Date ? { $set: { expiredAt } } : { $unset: { expiredAt: 1 } },
+    );
+  }
+
   return {
+    deleteSharedLinkAclEntries,
+    updateSharedLinkAclExpiration,
     findEntriesByResource,
     findEntriesByPrincipalsAndResource,
     hasPermission,
