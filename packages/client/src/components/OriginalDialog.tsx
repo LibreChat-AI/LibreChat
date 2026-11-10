@@ -354,8 +354,8 @@ const DialogContent: React.ForwardRefExoticComponent<
 
         const frontmost = frontmostDialog(ownerDocument);
         const closeFrontmost = frontmost && dialogEscapeHandlers.get(frontmost);
-        if (frontmost !== content && closeFrontmost) {
-          closeFrontmost(event);
+        if (frontmost != null && frontmost !== content) {
+          closeFrontmost?.(event);
           event.preventDefault();
           return;
         }

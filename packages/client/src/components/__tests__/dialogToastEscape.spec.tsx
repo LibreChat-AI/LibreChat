@@ -160,31 +160,36 @@ describe('dialog Escape', () => {
   /** A dialog that carries its z-index in a class — `ImagePreview` is
    *  `z-[250]` — still outranks this one, so Escape there must not close the
    *  dialog underneath it. */
-  it('does not close a dialog ranked under a class-styled dialog above it', async () => {
-    const onOpenChange = jest.fn();
-    render(
-      <RadixToast.Provider>
-        <style>{'.on-top { z-index: 250; }'}</style>
-        <OGDialog open onOpenChange={onOpenChange}>
-          <OGDialogContent>
-            <button type="button">under</button>
-          </OGDialogContent>
-        </OGDialog>
-        <div role="dialog" data-state="open" className="on-top">
-          <button type="button">preview</button>
-        </div>
-        <RadixToast.Root open duration={Infinity} className="toast-root">
-          <RadixToast.Description>Saved</RadixToast.Description>
-        </RadixToast.Root>
-        <RadixToast.Viewport />
-      </RadixToast.Provider>,
-    );
+  it.each([false, true])(
+    'does not close a dialog under an unregistered preview (toast: %s)',
+    async (toast) => {
+      const onOpenChange = jest.fn();
+      render(
+        <RadixToast.Provider>
+          <style>{'.on-top { z-index: 250; }'}</style>
+          <OGDialog open onOpenChange={onOpenChange}>
+            <OGDialogContent>
+              <button type="button">under</button>
+            </OGDialogContent>
+          </OGDialog>
+          <div role="dialog" data-state="open" className="on-top">
+            <button type="button">preview</button>
+          </div>
+          {toast && (
+            <RadixToast.Root open duration={Infinity} className="toast-root">
+              <RadixToast.Description>Saved</RadixToast.Description>
+            </RadixToast.Root>
+          )}
+          <RadixToast.Viewport />
+        </RadixToast.Provider>,
+      );
 
-    screen.getByText('preview').focus();
-    await userEvent.keyboard('{Escape}');
+      screen.getByText('preview').focus();
+      await userEvent.keyboard('{Escape}');
 
-    expect(onOpenChange).not.toHaveBeenCalled();
-  });
+      expect(onOpenChange).not.toHaveBeenCalled();
+    },
+  );
 
   it('closes the dialog while a toast is on screen', async () => {
     const onOpenChange = jest.fn();
