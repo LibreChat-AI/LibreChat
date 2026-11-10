@@ -24,7 +24,7 @@ const {
   applyAdminRefresh,
   applyGoogleAdminRefresh,
   prepareAdminOpenIdRefresh,
-  finalizeAdminOpenIdRefresh,
+  runAdminOpenIdRefreshGrant,
   mapAdminAuthError,
   AdminRefreshError,
   buildOpenIDRefreshParams,
@@ -41,8 +41,15 @@ const {
   getRefreshTokenBridge,
   storeRefreshTokenBridge,
   deleteRefreshTokenBridges,
+  createRefreshTokenBridgeFlightKey,
   OPENID_REFRESH_BRIDGE_GRACE_MS,
 } = require('~/server/services/RefreshTokenBridge');
+const {
+  acquireOpenIDRefreshFlight,
+  completeOpenIDRefreshFlight,
+  waitForOpenIDRefreshFlight,
+  withOpenIDRefreshFlightLease,
+} = require('~/server/services/OpenIDRefreshFlight');
 const {
   findBalanceByUser,
   findUsers,
@@ -777,12 +784,9 @@ router.post(
 
       const expectedIssuer = openIdConfig.serverMetadata?.()?.issuer;
 
-      let providerSessionDeps;
-      let binding;
-      let grantRefreshToken = refreshToken;
-      let releaseBridge;
+      let prepared;
       try {
-        const prepared = await prepareAdminOpenIdRefresh(
+        prepared = await prepareAdminOpenIdRefresh(
           refreshToken,
           {
             authorizer: getProviderSessionAuthorizer(),
@@ -803,12 +807,8 @@ router.post(
             upsertSession,
             deleteSession,
           },
-          { expectedIssuer },
+          { expectedIssuer, userId: normalizedUserId, tenantId },
         );
-        providerSessionDeps = prepared.providerSessionDeps;
-        binding = prepared.binding;
-        grantRefreshToken = prepared.grantRefreshToken;
-        releaseBridge = prepared.releaseBridge;
       } catch (err) {
         const mapped = mapAdminAuthError(err);
         if (mapped) {
@@ -817,6 +817,7 @@ router.post(
         throw err;
       }
 
+      const { providerSessionDeps, binding, grantRefreshToken } = prepared;
       const refreshParams = buildOpenIDRefreshParams();
       logger.debug('[admin/oauth/refresh] OpenID refresh params', {
         has_scope: Boolean(process.env.OPENID_SCOPE),
@@ -824,10 +825,17 @@ router.post(
       });
       let tokenset;
       try {
-        tokenset = await openIdClient.refreshTokenGrant(
-          openIdConfig,
-          grantRefreshToken,
-          refreshParams,
+        tokenset = await runAdminOpenIdRefreshGrant(
+          () => openIdClient.refreshTokenGrant(openIdConfig, grantRefreshToken, refreshParams),
+          refreshToken,
+          prepared,
+          {
+            createRefreshTokenBridgeFlightKey,
+            acquireOpenIDRefreshFlight,
+            completeOpenIDRefreshFlight,
+            waitForOpenIDRefreshFlight,
+            withOpenIDRefreshFlightLease,
+          },
         );
         logger.debug('[admin/oauth/refresh] OpenID refresh succeeded', {
           has_access_token: Boolean(tokenset.access_token),
@@ -836,6 +844,10 @@ router.post(
           expires_in: tokenset.expires_in,
         });
       } catch (err) {
+        const mapped = mapAdminAuthError(err);
+        if (mapped) {
+          return res.status(mapped.status).json(mapped.body);
+        }
         logger.warn('[admin/oauth/refresh] IdP refresh grant failed', {
           code: err?.code,
           name: err?.name,
@@ -847,26 +859,23 @@ router.post(
       }
 
       try {
-        const result = await finalizeAdminOpenIdRefresh(
-          () =>
-            applyAdminRefresh(
-              tokenset,
-              {
-                findUsers,
-                getUserById,
-                ...buildAdminRefreshClosures(sessionExpiry),
-                ...providerSessionDeps,
-              },
-              {
-                userId: normalizedUserId,
-                previousRefreshToken: refreshToken,
-                grantRefreshToken,
-                expectedIssuer,
-                tenantId,
-                boundProviderSession: binding.ref,
-              },
-            ),
-          releaseBridge,
+        const result = await applyAdminRefresh(
+          tokenset,
+          {
+            findUsers,
+            getUserById,
+            ...buildAdminRefreshClosures(sessionExpiry),
+            ...providerSessionDeps,
+          },
+          {
+            userId: normalizedUserId,
+            previousRefreshToken: refreshToken,
+            grantRefreshToken,
+            expectedIssuer,
+            tenantId,
+            boundProviderSession: binding.ref,
+            bridgeIdentity: prepared.identity,
+          },
         );
         req.user = { id: result.user._id };
         await middleware.checkBan(req, res, () => {});

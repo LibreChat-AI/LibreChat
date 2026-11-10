@@ -100,7 +100,15 @@ jest.mock('~/server/services/RefreshTokenBridge', () => ({
   getRefreshTokenBridge: jest.fn(),
   storeRefreshTokenBridge: jest.fn(),
   deleteRefreshTokenBridges: jest.fn(),
+  createRefreshTokenBridgeFlightKey: jest.fn(),
   OPENID_REFRESH_BRIDGE_GRACE_MS: 60000,
+}));
+
+jest.mock('~/server/services/OpenIDRefreshFlight', () => ({
+  acquireOpenIDRefreshFlight: jest.fn(),
+  completeOpenIDRefreshFlight: jest.fn(),
+  waitForOpenIDRefreshFlight: jest.fn(),
+  withOpenIDRefreshFlightLease: jest.fn(),
 }));
 
 jest.mock('~/server/services/Config', () => ({
@@ -149,7 +157,14 @@ const {
   getRefreshTokenBridge,
   storeRefreshTokenBridge,
   deleteRefreshTokenBridges,
+  createRefreshTokenBridgeFlightKey,
 } = require('~/server/services/RefreshTokenBridge');
+const {
+  acquireOpenIDRefreshFlight,
+  completeOpenIDRefreshFlight,
+  waitForOpenIDRefreshFlight,
+  withOpenIDRefreshFlightLease,
+} = require('~/server/services/OpenIDRefreshFlight');
 const { findSession } = require('~/models');
 const adminAuthRouter = require('./auth');
 
@@ -194,6 +209,13 @@ describe('admin auth OpenID refresh route', () => {
     getRefreshTokenBridge.mockResolvedValue(null);
     storeRefreshTokenBridge.mockResolvedValue(null);
     deleteRefreshTokenBridges.mockResolvedValue({});
+    createRefreshTokenBridgeFlightKey.mockReturnValue(null);
+    acquireOpenIDRefreshFlight.mockResolvedValue({ acquired: true, ownerId: 'owner-1' });
+    completeOpenIDRefreshFlight.mockResolvedValue(undefined);
+    waitForOpenIDRefreshFlight.mockResolvedValue(null);
+    withOpenIDRefreshFlightLease.mockImplementation(({ operation }) =>
+      operation({ assertLeaseOwned: jest.fn() }),
+    );
     openIdClient.refreshTokenGrant.mockResolvedValue(tokenset);
     applyAdminRefresh.mockResolvedValue({
       token: 'admin-jwt',
@@ -382,11 +404,54 @@ describe('admin auth OpenID refresh route', () => {
         'bridged-refresh-token',
         {},
       );
-      expect(deleteRefreshTokenBridges).toHaveBeenCalledWith({
-        refreshTokens: ['original-refresh-token'],
-        userId: 'admin-user-id',
-        tenantId: undefined,
+      expect(applyAdminRefresh).toHaveBeenLastCalledWith(
+        expect.any(Object),
+        expect.any(Object),
+        expect.objectContaining({
+          bridgeIdentity: expect.objectContaining({ userId: 'admin-user-id' }),
+        }),
+      );
+    });
+
+    it('wraps a bridged grant in the flight lease, keyed by createRefreshTokenBridgeFlightKey', async () => {
+      const { ProviderSessionUnavailableError } = require('@librechat/api');
+      applyAdminRefresh.mockRejectedValueOnce(new ProviderSessionUnavailableError('db down'));
+      await request(app)
+        .post('/api/admin/oauth/refresh')
+        .send({ refresh_token: 'original-refresh-token' });
+
+      getRefreshTokenBridge.mockResolvedValue({ refreshToken: 'bridged-refresh-token' });
+      createRefreshTokenBridgeFlightKey.mockReturnValue('flight-key-1');
+      applyAdminRefresh.mockResolvedValueOnce({
+        token: 'admin-jwt',
+        refreshToken: 'new-admin-refresh',
+        user: { id: 'user-id', email: 'admin@example.com' },
+        expiresAt: 1234567890,
       });
+
+      const retryResponse = await request(app)
+        .post('/api/admin/oauth/refresh')
+        .send({ refresh_token: 'original-refresh-token' });
+
+      expect(retryResponse.status).toBe(200);
+      expect(createRefreshTokenBridgeFlightKey).toHaveBeenCalledWith(
+        expect.objectContaining({
+          oldRefreshToken: 'original-refresh-token',
+          userId: 'admin-user-id',
+        }),
+      );
+      expect(acquireOpenIDRefreshFlight).toHaveBeenCalledWith({ key: 'flight-key-1' });
+      expect(withOpenIDRefreshFlightLease).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'flight-key-1', ownerId: 'owner-1' }),
+      );
+      expect(completeOpenIDRefreshFlight).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'flight-key-1', ownerId: 'owner-1' }),
+      );
+      expect(openIdClient.refreshTokenGrant).toHaveBeenLastCalledWith(
+        openIdConfig,
+        'bridged-refresh-token',
+        {},
+      );
     });
 
     it('passes the bridged token as grantRefreshToken on the retry, so a non-rotating IdP response returns it', async () => {
