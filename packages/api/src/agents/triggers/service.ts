@@ -34,6 +34,7 @@ import { BACKGROUND_TOOL_COMPLETION_SOURCE } from '../backgroundCompletionWakeup
 import { isShutdownInProgress, registerShutdownTask } from '../../app/shutdown';
 import { SUBAGENT_COMPLETION_SOURCE } from '../subagentCompletionWakeup';
 import { generateAgentTriggerToken } from '../../crypto/jwt';
+import { AGENT_QUEUED_TURN_SOURCE } from '../queuedTurns';
 import { prepareAgentTriggerDelivery } from './delivery';
 import { selfOriginFromAddress } from '../../app/origin';
 import { createAgentTriggerExecutionHost } from './host';
@@ -43,6 +44,8 @@ import { WAITING_RETRY_CAP_MS } from './backoff';
 
 /** Internal sources whose deliveries wait on a result or on their parent generation. */
 const COMPLETION_WAKEUP_SOURCES = [BACKGROUND_TOOL_COMPLETION_SOURCE, SUBAGENT_COMPLETION_SOURCE];
+/** A settled generation also releases the user's queued turns, which wake-ups yield to. */
+const SETTLED_CONVERSATION_SOURCES = [...COMPLETION_WAKEUP_SOURCES, AGENT_QUEUED_TURN_SOURCE];
 
 export const AGENT_TRIGGER_TOKEN_TTL = '60s';
 const DEFAULT_USER_DRAIN_TIMEOUT_MS = 35_000;
@@ -584,7 +587,12 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
    * claim pass always runs: a matching delivery may already be due here without
    * having moved. Best effort: a missed expedite only means the delivery
    * re-checks at its backoff instead of immediately. */
-  const expediteCompletions = (input: AgentTriggerCompletionExpedite): void => {
+  const expediteCompletions = (
+    input: AgentTriggerCompletionExpedite,
+    sourceIds: readonly string[] = 'user' in input && input.taskIds != null
+      ? [SUBAGENT_COMPLETION_SOURCE]
+      : COMPLETION_WAKEUP_SOURCES,
+  ): void => {
     const expedite = deps.methods?.expediteAgentTriggerDeliveries;
     if (expedite == null || !deliveryReady || stopping) {
       return;
@@ -598,10 +606,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
               ...(input.taskIds != null && { taskIds: input.taskIds }),
             }
           : { deliveryKeys: input.deliveryKeys }),
-        sourceIds:
-          'user' in input && input.taskIds != null
-            ? [SUBAGENT_COMPLETION_SOURCE]
-            : COMPLETION_WAKEUP_SOURCES,
+        sourceIds,
         now: new Date(),
       }),
     )
@@ -693,9 +698,12 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         deliveryReady = true;
         deliveryEngine.start();
         /** Deliveries waiting on a parent resume that parent's conversation, so a
-         * settled generation wakes only those, not every waiting task of the user. */
+         * settled generation wakes only those, not every waiting task of the user.
+         * Queued turns move with them: wake-ups defer to a pending queued turn,
+         * which must not wait out its own readiness backoff behind them. */
         unsubscribeGenerationSettled ??= deps.subscribeGenerationSettled?.(
-          ({ userId, conversationId }) => expediteCompletions({ user: userId, conversationId }),
+          ({ userId, conversationId }) =>
+            expediteCompletions({ user: userId, conversationId }, SETTLED_CONVERSATION_SOURCES),
         );
         startPurgeRecovery();
         logger.info('[agent-triggers] durable delivery engine started');

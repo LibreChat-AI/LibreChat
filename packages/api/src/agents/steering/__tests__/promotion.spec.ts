@@ -245,6 +245,11 @@ describe('promoteDrainedSteers', () => {
     expect(requiredCapabilities).toEqual([AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3]);
     expect(envelopes[0].event.id).toBe(`${row?.queuedTurnId}:v3`);
 
+    /** The promoted turn is what completion wake-ups yield to at run end. */
+    await expect(
+      methods.hasPendingAgentQueuedTurn({ userId, conversationId, now: new Date() }),
+    ).resolves.toBe(true);
+
     /** FINAL is not yet durable: the ended generation still owns the conversation. */
     await expect(prepare(envelopes[0])).rejects.toMatchObject({ code: 'PARENT_NOT_READY' });
 
@@ -526,6 +531,10 @@ describe('promoteDrainedSteers', () => {
     const unsettled = await methods.getAgentQueuedTurnByClientRequestId(lookup);
     expect(unsettled).toMatchObject({ status: 'queued' });
     expect(unsettled?.steerSource).not.toHaveProperty('handoffAt');
+    /** Wake-ups yield to it while its ownership is still unsettled, too. */
+    await expect(
+      methods.hasPendingAgentQueuedTurn({ userId, conversationId, now: new Date() }),
+    ).resolves.toBe(true);
     await expect(steering.claim(conversationId, { userId })).resolves.toEqual([]);
 
     await publishFinal(claim);

@@ -36,6 +36,7 @@ const RETIRED_LANE_RETENTION_MS = 24 * 60 * 60_000;
 const ROOT_LINEAGE_PREDECESSOR_PREFIX = 'root:';
 const CLAIM_LANE_INDEX = 'agent_queued_turn_claim_lane';
 const ADMISSION_STARTED_LANE_INDEX = 'agent_queued_turn_admission_started_lane';
+const ACTIVE_CAPACITY_INDEX = 'agent_queued_turn_active_capacity';
 const NAMESPACE_EXISTS = 48;
 
 interface DuplicateKeyError {
@@ -133,6 +134,14 @@ export interface EnqueueAgentQueuedTurnInput extends AgentQueuedTurnConversation
 export interface AgentQueuedTurnLineage {
   parentMessageId: string;
   expectedPredecessorCreatedAt: number;
+}
+
+/** Plain identifiers, so callers outside data-schemas need no Mongoose types. */
+export interface AgentQueuedTurnPrecedenceInput {
+  userId: string;
+  tenantId?: string;
+  conversationId: string;
+  now: Date;
 }
 
 export interface AgentQueuedTurnClaimFence extends AgentQueuedTurnConversationScope {
@@ -284,6 +293,8 @@ export interface AgentQueuedTurnMethods {
       leaseUntil: Date;
     },
   ) => Promise<ClaimAgentQueuedTurnResult>;
+  /** Whether a queued user turn owns the conversation's next admission. */
+  hasPendingAgentQueuedTurn: (input: AgentQueuedTurnPrecedenceInput) => Promise<boolean>;
   releaseAgentQueuedTurn: (
     input: AgentQueuedTurnClaimFence &
       (
@@ -653,6 +664,17 @@ function effectiveDeliveryState(turn: IAgentQueuedTurn) {
     return 'publishing' as const;
   }
   return 'published' as const;
+}
+
+/** Claim order: priority rows first, then ascending sequence. */
+function precedes(
+  row: Pick<IAgentQueuedTurn, 'priority' | 'sequence'>,
+  other: Pick<IAgentQueuedTurn, 'priority' | 'sequence'>,
+): boolean {
+  if (row.priority !== other.priority) {
+    return row.priority === true;
+  }
+  return (row.sequence ?? Number.MAX_SAFE_INTEGER) < (other.sequence ?? Number.MAX_SAFE_INTEGER);
 }
 
 function toRecord(turn: IAgentQueuedTurn): AgentQueuedTurnRecord {
@@ -1952,6 +1974,87 @@ export function createAgentQueuedTurnMethods(
       : { outcome: 'replayed', claim: racedClaim };
   }
 
+  /**
+   * True while a claim is admitting a queued turn under an unexpired lease, or
+   * while the lane head is a due `queued` row that `claimNextAgentQueuedTurn`
+   * could acquire. Rows that need recovery or a user decision (a reservation,
+   * an expired claim, an indeterminate admission, a dead row ahead of the
+   * head) block that head and answer false, so callers never wait on them.
+   *
+   * The reads are ordered so that no blocker is older than the turn it blocks.
+   * The active lane is read first, in one query over the capacity index. Its
+   * key (`activeSlot`) is held unchanged from reservation until a terminal
+   * state, so a row moving between `queued` and `claimed` in either direction
+   * is read exactly once, in one state or the other. Blockers are read only
+   * after that, and only for a due head. A blocker that has already cleared (a
+   * dismissed dead row, a finished reservation, a renewed claim) is therefore
+   * never what answers false, and a lane with no due head costs one read.
+   *
+   * The answer holds for the instant of the last read. A turn that becomes
+   * admissible afterwards arrives after the caller and is ordered by the
+   * generation predecessor fence, as any later send is.
+   */
+  async function hasPendingAgentQueuedTurn(
+    input: AgentQueuedTurnPrecedenceInput,
+  ): Promise<boolean> {
+    if (!(input.now instanceof Date) || !Number.isFinite(input.now.getTime())) {
+      throw new TypeError('Agent queued turn precedence requires a valid time');
+    }
+    if (!mongoose.Types.ObjectId.isValid(input.userId)) {
+      return false;
+    }
+    const scope = conversationScope({
+      user: new mongoose.Types.ObjectId(input.userId),
+      ...(input.tenantId != null && { tenantId: input.tenantId }),
+      conversationId: input.conversationId,
+    });
+    type LaneRow = Pick<
+      IAgentQueuedTurn,
+      'status' | 'priority' | 'sequence' | 'availableAt' | 'claimUntil'
+    >;
+    const readActiveLane = () =>
+      Turn()
+        .find({ ...scope, activeSlot: { $exists: true } })
+        .select('status priority sequence availableAt claimUntil')
+        .lean<LaneRow[]>();
+    /** The hint only pins the stable key. When it is refused (the index is
+     * not built yet, or an engine rejects the hint), a planner-chosen read
+     * is still correct apart from that narrow transition window, and a
+     * genuine outage fails this second read too. */
+    const active = await readActiveLane()
+      .hint(ACTIVE_CAPACITY_INDEX)
+      .catch(() => readActiveLane());
+    const now = input.now.getTime();
+    let head: LaneRow | undefined;
+    for (const row of active) {
+      if (row.status === 'claimed' && row.claimUntil != null && row.claimUntil.getTime() > now) {
+        return true;
+      }
+      if (row.status === 'queued' && (head == null || precedes(row, head))) {
+        head = row;
+      }
+    }
+    if (head == null || head.availableAt.getTime() > now) {
+      return false;
+    }
+    const earlier = { sequence: { $lt: head.sequence ?? Number.MAX_SAFE_INTEGER } };
+    const blocker = await Turn().exists({
+      ...scope,
+      $or: [
+        { status: 'reserving' },
+        { status: 'claimed', claimUntil: { $not: { $gt: input.now } } },
+        { status: 'dead', 'terminalReceipt.failure.code': 'ADMISSION_INDETERMINATE' },
+        {
+          status: 'dead',
+          ...(head.priority === true
+            ? { priority: true, ...earlier }
+            : { $or: [{ priority: true }, earlier] }),
+        },
+      ],
+    });
+    return blocker == null;
+  }
+
   async function releaseAgentQueuedTurn(
     input: AgentQueuedTurnClaimFence &
       (
@@ -3074,6 +3177,7 @@ export function createAgentQueuedTurnMethods(
     getAgentQueuedTurnGenerationLineage,
     cancelAgentQueuedTurn,
     claimNextAgentQueuedTurn,
+    hasPendingAgentQueuedTurn,
     beginAgentQueuedTurnAdmission,
     releaseAgentQueuedTurn,
     markAgentQueuedTurnAdmitted,

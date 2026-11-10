@@ -422,3 +422,32 @@ describe.each(['gpt-6-sol', 'gpt-6-luna'])('%s token limits', (model) => {
     }
   });
 });
+
+describe('Claude Fable 5.2 context window', () => {
+  it.each(['claude-fable-5-2', 'anthropic/claude-fable-5-2'])(
+    'resolves the 1M context window for %s',
+    (model) => {
+      expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
+      expect(getModelMaxTokens(model, EModelEndpoint.custom)).toBe(1000000);
+    },
+  );
+});
+
+describe('Claude version boundaries', () => {
+  const rates = { 'claude-fable-5': 10, 'claude-fable-5-1': 10, 'claude-fable-5-2': 8 };
+
+  it.each([
+    'claude-fable-5-20260609',
+    'anthropic/claude-fable-5-20260609',
+    'anthropic.claude-fable-5-20260609',
+  ])('does not mistake the date in %s for a minor version', (model) => {
+    expect(findMatchingPattern(model, rates)).toBe('claude-fable-5');
+  });
+
+  it.each(['claude-fable-5-2', 'claude-fable-5-2-20261109'])(
+    'still resolves a complete minor version in %s',
+    (model) => {
+      expect(findMatchingPattern(model, rates)).toBe('claude-fable-5-2');
+    },
+  );
+});

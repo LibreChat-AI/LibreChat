@@ -74,16 +74,36 @@ export async function* ownedCheckpointReferences(
           checkpoint_ns: string;
           checkpoint_id: string;
           lc_owner?: string;
+          lc_parent_thread?: string;
         }>(name)
         .find(
           {
-            ...(conversationIds == null ? {} : { thread_id: { $in: [...logicalIds.keys()] } }),
+            ...(conversationIds == null
+              ? {}
+              : {
+                  $and: [
+                    {
+                      $or: [
+                        { thread_id: { $in: [...logicalIds.keys()] } },
+                        { lc_parent_thread: { $in: conversationIds.slice(offset, offset + 64) } },
+                      ],
+                    },
+                  ],
+                }),
             $or: [
               ...owners.map((owner) => ({ checkpoint_ns: { $regex: `^${owner}` } })),
               { lc_owner: { $in: owners } },
             ],
           },
-          { projection: { thread_id: 1, checkpoint_ns: 1, checkpoint_id: 1, lc_owner: 1 } },
+          {
+            projection: {
+              thread_id: 1,
+              checkpoint_ns: 1,
+              checkpoint_id: 1,
+              lc_owner: 1,
+              lc_parent_thread: 1,
+            },
+          },
         );
       for await (const row of cursor) {
         if (typeof row.checkpoint_id !== 'string' || typeof row.checkpoint_ns !== 'string')
@@ -95,7 +115,7 @@ export async function* ownedCheckpointReferences(
             ? row.thread_id.slice(row.lc_owner.length)
             : row.thread_id;
         yield {
-          conversationId: logicalIds.get(row.thread_id) ?? logicalThread,
+          conversationId: row.lc_parent_thread ?? logicalIds.get(row.thread_id) ?? logicalThread,
           checkpoint: {
             threadId: row.thread_id,
             checkpointNs: row.checkpoint_ns,

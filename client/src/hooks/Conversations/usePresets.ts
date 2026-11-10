@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import filenamify from 'filenamify';
-import exportFromJSON from 'export-from-json';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useToastContext } from '@librechat/client';
 import { QueryKeys } from 'librechat-data-provider';
@@ -22,6 +21,7 @@ import {
 } from '~/data-provider';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useDefaultConvo from '~/hooks/Conversations/useDefaultConvo';
+import { importWithRecovery } from '~/lib/assets/lazy';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { NotificationSeverity } from '~/common';
 import useNewConvo from '~/hooks/useNewConvo';
@@ -259,11 +259,24 @@ export default function usePresets(index = 0) {
     updatePreset.mutate({ ...preset, defaultPreset: !remove });
   };
 
-  const exportPreset = () => {
+  const exportPreset = async () => {
     if (!preset) {
       return;
     }
     const fileName = normalizeExportFilename(filenamify(preset.title || 'preset'));
+    const exportFromJSON = await importWithRecovery(() => import('export-from-json'))
+      .then((m) => m.default)
+      .catch((error: unknown) => {
+        console.error('Error loading the preset exporter:', error);
+        showToast({
+          message: localize('com_endpoint_preset_export_error'),
+          severity: NotificationSeverity.ERROR,
+        });
+        return null;
+      });
+    if (!exportFromJSON) {
+      return;
+    }
     exportFromJSON({
       data: cleanupPreset({ preset }),
       fileName,
