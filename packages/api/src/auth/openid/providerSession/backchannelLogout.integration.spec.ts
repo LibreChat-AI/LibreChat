@@ -708,12 +708,13 @@ describe('back-channel logout: rollback to off keeps an existing association', (
     expect(offResult?.providerSession).toEqual(ref);
     expect(req.session.openidTokens?.providerSession).toEqual(ref);
 
-    // The session is revoked at the IdP while the mode is still 'off'.
+    // Operator re-enables 'record'. The receiver route only runs outside 'off' (production
+    // answers 404 for a logout notification delivered while the mode is 'off'), so the
+    // revocation below arrives once 'record' is active, not while the mode was still 'off'.
+    config.mode = 'record';
     const revoked = await revokeViaReceiver(config, { sid: 'sid-rollback-record', sub: userId });
     expect(revoked.status).toBe(200);
 
-    // Operator re-enables 'record'.
-    config.mode = 'record';
     await expect(
       service.refreshOpenIDSession(
         req as never,
