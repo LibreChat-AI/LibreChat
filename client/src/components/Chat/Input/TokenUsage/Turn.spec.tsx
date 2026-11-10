@@ -1,12 +1,13 @@
 import axios from 'axios';
 import { RecoilRoot } from 'recoil';
 import userEvent from '@testing-library/user-event';
+import { interfaceSchema } from 'librechat-data-provider';
 import { clearIndex, upsertEntries } from '@librechat/chat';
 import { Provider, createStore, getDefaultStore } from 'jotai';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { removeUsageAtoms, useUsageHandler } from '@librechat/chat/react';
 import { act, cleanup, render, renderHook, screen, waitFor, within } from '@testing-library/react';
-import type { TMessage, TStartupConfig } from 'librechat-data-provider';
+import type { TMessage, TInterfaceConfig } from 'librechat-data-provider';
 import type { MessageUsageProps } from '@librechat/chat/react';
 import { startupConfigKey } from '~/data-provider';
 import store from '~/store';
@@ -15,8 +16,10 @@ import Turn from './Turn';
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 
 let client: QueryClient;
-const setConfig = (interfaceConfig: TStartupConfig['interface']) =>
-  client.setQueryData(startupConfigKey(false), { interface: interfaceConfig });
+const setConfig = (interfaceConfig: Partial<TInterfaceConfig>) =>
+  client.setQueryData(startupConfigKey(false), {
+    interface: interfaceSchema.parse(interfaceConfig),
+  });
 
 const usage = { input: 120, output: 35, cacheRead: 400, cacheWrite: 20, cost: 0.02 };
 const message = {

@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom';
-import { getDefaultStore } from 'jotai';
+import { Provider, createStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { Constants, QueryKeys } from 'librechat-data-provider';
@@ -41,6 +41,7 @@ const mockNavigate = jest.fn();
 const mockNewConversation = jest.fn();
 const mockSetConversation = jest.fn();
 const mockAnnounce = jest.fn();
+let jotaiStore: ReturnType<typeof createStore>;
 
 jest.mock('recoil', () => ({ useRecoilValue: () => mockState.conversation }));
 jest.mock('@tanstack/react-query', () => ({
@@ -134,17 +135,19 @@ const setup = (readOnly = false, isMenuOpen = false) =>
       }),
     {
       wrapper: ({ children }: { children: ReactNode }) => (
-        <ChatSettingsContext.Provider
-          value={{
-            ...defaultChatSettings,
-            config: {
-              ...defaultChatSettings.config,
-              canRenameRunningChat: mockState.canRenameRunningChat,
-            },
-          }}
-        >
-          {children}
-        </ChatSettingsContext.Provider>
+        <Provider store={jotaiStore}>
+          <ChatSettingsContext.Provider
+            value={{
+              ...defaultChatSettings,
+              config: {
+                ...defaultChatSettings.config,
+                canRenameRunningChat: mockState.canRenameRunningChat,
+              },
+            }}
+          >
+            {children}
+          </ChatSettingsContext.Provider>
+        </Provider>
       ),
     },
   );
@@ -175,7 +178,8 @@ describe('useChatOptions', () => {
     mockState.fetchingNext = false;
     mockState.assigning = undefined;
     mockProjectsConfig.current = undefined;
-    getDefaultStore().set(clockFormatAtom, '24h');
+    jotaiStore = createStore();
+    jotaiStore.set(clockFormatAtom, '24h');
   });
 
   it('lists share and export first, then the sidebar actions for the open chat', () => {
@@ -567,7 +571,7 @@ describe('useChatOptions', () => {
   it.each([false, true])(
     'opens real conversation info from the menu, readOnly=%s',
     async (readOnly) => {
-      getDefaultStore().set(clockFormatAtom, readOnly ? '12h' : '24h');
+      jotaiStore.set(clockFormatAtom, readOnly ? '12h' : '24h');
       mockState.conversation.updatedAt = '2026-11-05T15:00:00';
       const client = mockClient.current!;
       client.setQueryData(
@@ -592,7 +596,9 @@ describe('useChatOptions', () => {
       const { rerender: rerenderDialogs } = render(<>{result.current.dialogs}</>, {
         wrapper: ({ children }) => (
           <QueryClientProvider client={client}>
-            <MemoryRouter>{children}</MemoryRouter>
+            <MemoryRouter>
+              <Provider store={jotaiStore}>{children}</Provider>
+            </MemoryRouter>
           </QueryClientProvider>
         ),
       });
