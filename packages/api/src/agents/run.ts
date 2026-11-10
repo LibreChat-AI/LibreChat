@@ -2949,7 +2949,10 @@ export async function createRun({
   const asksUserQuestions =
     hitlCapable && !askToolAdminDisabled && agents.some(agentRequestsAskUserQuestion);
   if (hitl || asksUserQuestions || eventActorCheckpointing) {
-    const checkpointer = await getAgentCheckpointer(agentsEndpointConfig?.checkpointer);
+    const checkpointer = await getAgentCheckpointer(
+      agentsEndpointConfig?.checkpointer,
+      conversationId ?? requestBody?.conversationId,
+    );
     graphConfig.compileOptions = { ...graphConfig.compileOptions, checkpointer };
   }
 

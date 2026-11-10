@@ -97,7 +97,7 @@ describe('processAddedConvo', () => {
     req: makeReq(),
     res: {},
     endpointOption: { addedConvo: { model: 'gpt-4o', agent_id: 'added-agent' } },
-    modelsConfig: { openai: ['gpt-4o'] },
+    getEndpointModels: jest.fn().mockResolvedValue({ openai: ['gpt-4o'] }),
     logViolation: jest.fn(),
     loadTools: jest.fn(),
     requestFiles: [],
@@ -109,6 +109,21 @@ describe('processAddedConvo', () => {
     primaryAgent: { id: 'primary-id' },
     userMCPAuthMap: undefined,
     ...overrides,
+  });
+
+  it('validates the added agent through the endpoint model loader', async () => {
+    const params = baseParams();
+
+    await processAddedConvo(params);
+
+    expect(mockValidateAgentModel).toHaveBeenCalledTimes(1);
+    expect(mockValidateAgentModel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: { id: 'added-agent', provider: 'openai' },
+        getEndpointModels: params.getEndpointModels,
+      }),
+    );
+    expect(mockValidateAgentModel.mock.calls[0][0]).not.toHaveProperty('modelsConfig');
   });
 
   it('forwards codeEnvAvailable=true to the added-convo initializeAgent call', async () => {

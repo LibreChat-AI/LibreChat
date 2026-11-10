@@ -2790,7 +2790,7 @@ export const lookupConcurrencySchema = z.object({
   permissionPrincipalLookups: lookupConcurrency,
   /** Connected agents initialized together per level while discovering a handoff graph. */
   connectedAgentLoads: lookupConcurrency,
-  /** MCP tool catalog reads when assembling an ephemeral or added agent. */
+  /** MCP tool catalog reads when assembling an agent's tools. */
   mcpCatalogLookups: lookupConcurrency,
   /** Model spec skill name resolutions. */
   skillNameLookups: lookupConcurrency,
@@ -4960,6 +4960,7 @@ const sharedOpenAIModels = [
 ];
 
 const sharedAnthropicModels = [
+  'claude-fable-5-2',
   'claude-fable-5-1',
   'claude-fable-5',
   'claude-opus-5-5',

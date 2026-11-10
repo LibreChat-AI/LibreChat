@@ -45,7 +45,7 @@ const loadAddedAgent = (params) =>
  * @param {import('express').Request} params.req
  * @param {import('express').Response} params.res
  * @param {Object} params.endpointOption - The endpoint option containing addedConvo
- * @param {Object} params.modelsConfig - The models configuration
+ * @param {Function} params.getEndpointModels - Loads the model catalog entry for an endpoint
  * @param {Function} params.logViolation - Function to log violations
  * @param {Function} params.loadTools - Function to load agent tools
  * @param {Array} params.requestFiles - Request files
@@ -82,7 +82,7 @@ const processAddedConvo = async ({
   req,
   res,
   endpointOption,
-  modelsConfig,
+  getEndpointModels,
   logViolation,
   loadTools,
   requestFiles,
@@ -132,7 +132,7 @@ const processAddedConvo = async ({
     const addedValidation = await validateAgentModel({
       req,
       res,
-      modelsConfig,
+      getEndpointModels,
       logViolation,
       agent: addedAgent,
     });

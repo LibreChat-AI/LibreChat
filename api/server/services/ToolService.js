@@ -14,6 +14,7 @@ const {
   createAuthIdentityContext,
   selectMCPUpstreamTokenProvider,
   loadToolDefinitions,
+  orderMCPServerNames,
   createMCPToolApprovalMetadata,
   GenerationJobManager,
   isActionDomainAllowed,
@@ -1403,6 +1404,7 @@ async function loadToolDefinitionsWrapper({
     mcpToolAliases,
     mcpResolution,
     oauthActionToolNames,
+    mcpServerLookupOrder,
   } = await loadToolDefinitions(
     {
       userId: req.user.id,
@@ -1420,6 +1422,7 @@ async function loadToolDefinitionsWrapper({
       mcpServerNames,
       rawServerNames: mcpRawServerNames,
       accessibleServerNames: defsAccessibleServerNames,
+      mcpCatalogLookups: appConfig?.concurrency?.mcpCatalogLookups,
     },
     {
       isBuiltInTool,
@@ -1443,7 +1446,7 @@ async function loadToolDefinitionsWrapper({
   }
 
   if (pendingOAuthServers.size > 0 && (res || streamId)) {
-    const serverNames = Array.from(pendingOAuthServers);
+    const serverNames = orderMCPServerNames(pendingOAuthServers, mcpServerLookupOrder);
     logger.info(
       `[Tool Definitions] MCP OAuth required for ${serverNames.length} server(s); emitting events and waiting`,
     );
@@ -1518,6 +1521,7 @@ async function loadToolDefinitionsWrapper({
           mcpServerNames,
           rawServerNames: mcpRawServerNames,
           accessibleServerNames: defsAccessibleServerNames,
+          mcpCatalogLookups: appConfig?.concurrency?.mcpCatalogLookups,
         },
         {
           isBuiltInTool,

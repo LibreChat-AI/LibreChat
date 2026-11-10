@@ -389,7 +389,7 @@ jest.mock('@librechat/api', () => ({
 }));
 
 jest.mock('~/server/controllers/ModelController', () => ({
-  getModelsConfig: jest.fn().mockResolvedValue({}),
+  getEndpointModelsConfig: jest.fn().mockResolvedValue({}),
 }));
 
 jest.mock('~/server/services/MCP', () => ({
@@ -954,6 +954,27 @@ describe('OpenAIChatCompletionController', () => {
       mockCompletionUsage,
       true,
     );
+  });
+
+  it('validates handoff agents through a loader that reads only their own provider models', async () => {
+    const api = require('@librechat/api');
+    const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
+    api.initializeAgent.mockResolvedValueOnce({
+      id: 'agent-123',
+      model: 'gpt-4',
+      model_parameters: {},
+      toolRegistry: {},
+      edges: [{ source: 'agent-123', target: 'agent-handoff' }],
+    });
+
+    await OpenAIChatCompletionController(req, res);
+
+    const [params] = api.discoverConnectedAgents.mock.calls.at(-1);
+    expect(params).not.toHaveProperty('modelsConfig');
+    expect(getEndpointModelsConfig).not.toHaveBeenCalled();
+    await params.getEndpointModels('anthropic');
+    expect(getEndpointModelsConfig).toHaveBeenCalledTimes(1);
+    expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, 'anthropic');
   });
 
   describe('content filtering', () => {
