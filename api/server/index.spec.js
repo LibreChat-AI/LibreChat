@@ -310,8 +310,10 @@ describe('Server Configuration', () => {
   });
 
   afterAll(async () => {
-    await promisify(server.close).call(server);
-    await mongoServer.stop();
+    if (server) {
+      await promisify(server.close).call(server);
+    }
+    await mongoServer?.stop();
     await mongoose.disconnect();
     delete process.env.CUSTOM_FOOTER;
   });
