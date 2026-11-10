@@ -1,4 +1,4 @@
-import { Constants, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
+import { Tools, Constants, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type { TFile, TMessage, TAttachment } from 'librechat-data-provider';
 import {
   sanitizeMessageForTransmit,
@@ -194,7 +194,7 @@ describe('sanitizeMessageForTransmit', () => {
           filename: 'output.txt',
           filepath: '/uploads/output.txt',
           object: 'file',
-          type: 'text/plain',
+          type: Tools.execute_code,
           usage: 1,
           text: 'Generated output',
         } satisfies TAttachment,
