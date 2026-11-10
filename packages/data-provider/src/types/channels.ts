@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type {
   ChannelStorageConfig,
   ChannelGatewayWirePolicy,
@@ -26,16 +27,37 @@ export const SLACK_CHANNEL_LIFECYCLE_EVENTS = ['app_uninstalled', 'tokens_revoke
 export interface SlackAppRegistration {
   appId: string;
   clientId: string;
+  name?: string;
   revision: string;
 }
 
-export interface ConfigureSlackApp {
-  appId: string;
-  clientId: string;
-  clientSecret: string;
-  signingSecret: string;
-  expectedRevision?: string;
-}
+export const slackAppNameSchema = z.string().trim().max(100);
+export const configureSlackAppSchema = z
+  .object({
+    appId: z
+      .string()
+      .regex(/^A[A-Z0-9]+$/)
+      .max(256),
+    clientId: z
+      .string()
+      .regex(/^\d+\.\d+$/)
+      .max(512),
+    name: slackAppNameSchema.optional(),
+    clientSecret: z.string().trim().min(1).max(512).optional(),
+    signingSecret: z.string().trim().min(1).max(512).optional(),
+    expectedRevision: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[\w-]+$/)
+      .optional(),
+  })
+  .strict()
+  .refine((input) =>
+    Boolean(input.expectedRevision || (input.clientSecret && input.signingSecret)),
+  );
+
+export type ConfigureSlackApp = z.infer<typeof configureSlackAppSchema>;
 
 export interface SlackAppPage {
   configured: boolean;
@@ -63,6 +85,8 @@ export interface SlackWorkspace {
   tenantId?: string;
   workspaceId: string;
   appId: string;
+  /** Current organization nickname, only in browser metadata; not a Slack profile name. */
+  appName?: string;
   teamId: string;
   teamName: string;
   /** Only present in authenticated browser metadata. */
@@ -217,4 +241,3 @@ export interface ChannelServiceBundle {
   gateway: ChannelGatewayWirePolicy;
   delivery: Pick<ChannelStorageConfig, 'maxDeliveryParts'>;
 }
-import { z } from 'zod';

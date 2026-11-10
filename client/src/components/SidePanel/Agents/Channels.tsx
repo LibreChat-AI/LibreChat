@@ -1,9 +1,12 @@
-import { useId, useRef, useState, useEffect } from 'react';
+import { useId, useRef, useState, useEffect, useCallback } from 'react';
 import { Info, Plus, Power, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
 import {
+  Alert,
   Button,
+  ControlCombobox,
+  InfoHoverCard,
   Input,
   Label,
   Tag,
@@ -415,10 +418,15 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
   const queryClient = useQueryClient();
   const id = useId();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [contentElement, setContentElement] = useState<HTMLDivElement | null>(null);
+  const setContentRef = useCallback((element: HTMLDivElement | null) => {
+    contentRef.current = element;
+    setContentElement(element);
+  }, []);
   const [dialog, setDialog] = useState<string | null>(null);
   const [newWorkspaceConnection, setNewWorkspaceConnection] = useState<string | null>(null);
   const [credentialMode, setCredentialMode] = useState<AgentChannel['credentialMode']>('per_user');
-  const [source, setSource] = useState<'workspace' | 'manual'>('workspace');
   const [workspaceId, setWorkspaceId] = useState('');
   const workspaces = useSlackWorkspaces(
     JSON.stringify([tenantId ?? '_', userId]),
@@ -430,7 +438,14 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
       .flatMap((page) => page.workspaces)
       .filter((workspace) => workspace.status === 'active' && workspace.canManageBot === true) ??
     [];
-  const useWorkspace = Boolean(workspaceStatus?.configured && source === 'workspace');
+  const workspaceReady = workspaces.isSuccess && !workspaces.isFetching;
+  const useWorkspace = workspaceStatus?.configured === true;
+  const botName = (workspace: (typeof availableWorkspaces)[number]) =>
+    workspace.appName?.trim() ||
+    localize('com_ui_channels_slack_app_fallback', { 0: workspace.appId });
+  const selectedWorkspace = availableWorkspaces.find(
+    (workspace) => workspace.workspaceId === workspaceId,
+  );
   const channels = useQuery(
     [QueryKeys.agentChannels, userId, tenantId, agentId],
     () => dataService.listAgentChannels(agentId!),
@@ -448,7 +463,8 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
   const create = useMutation({
     mutationKey: [MutationKeys.agentChannels, userId, tenantId, agentId],
     mutationFn: () => {
-      if (!agentId || !userId || !channels.isSuccess) throw new Error('Channel owner unavailable');
+      if (!agentId || !userId || !channels.isSuccess || !workspaceReady)
+        throw new Error('Channel owner unavailable');
       if (useWorkspace) {
         if (!availableWorkspaces.some((workspace) => workspace.workspaceId === workspaceId))
           throw new Error('Workspace unavailable');
@@ -509,7 +525,6 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
             triggerRef.current = event.currentTarget;
             create.reset();
             setCredentialMode('per_user');
-            setSource('workspace');
             setWorkspaceId('');
             setDialog('add');
           }}
@@ -569,8 +584,17 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
         }}
       >
         <OGDialogContent
-          className="w-11/12 max-w-lg gap-0 overflow-hidden p-0"
+          ref={setContentRef}
+          tabIndex={-1}
+          className="w-11/12 max-w-lg gap-0 overflow-visible p-0"
+          focusOutline="hidden"
           aria-describedby={undefined}
+          onOpenAutoFocus={(event) => {
+            if (dialog === 'add' || selected?.workspaceId) {
+              event.preventDefault();
+              contentRef.current?.focus();
+            }
+          }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             triggerRef.current?.focus();
@@ -596,8 +620,8 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                     <p role="status">{localize('com_ui_channels_loading')}</p>
                   )}
                   {workspaces.isError && (
-                    <div role="alert" className="space-y-2 text-sm">
-                      <p>{localize('com_ui_slack_workspaces_error')}</p>
+                    <Alert variant="error">
+                      <p>{localize('com_ui_channels_workspace_load_error')}</p>
                       <Button
                         type="button"
                         variant="outline"
@@ -605,64 +629,58 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                       >
                         {localize('com_ui_retry')}
                       </Button>
-                    </div>
+                    </Alert>
                   )}
-                  {workspaceStatus?.configured && (
-                    <div
-                      role="group"
-                      aria-label={localize('com_ui_channels_workspace_source')}
-                      className="flex flex-wrap gap-2"
-                    >
-                      <Button
-                        type="button"
-                        variant="outline-toggle"
-                        aria-pressed={source === 'workspace'}
-                        disabled={create.isLoading}
-                        onClick={() => setSource('workspace')}
-                      >
-                        {localize('com_ui_channels_org_workspace')}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline-toggle"
-                        aria-pressed={source === 'manual'}
-                        disabled={create.isLoading}
-                        onClick={() => setSource('manual')}
-                      >
-                        {localize('com_ui_channels_manual_app')}
-                      </Button>
-                    </div>
-                  )}
-                  {useWorkspace && (
+                  {workspaces.isSuccess && useWorkspace && (
                     <div className="space-y-3">
-                      <p className="text-text-secondary text-sm">
-                        {localize('com_ui_channels_workspace_identity')}
-                      </p>
-                      <h4 className="text-sm font-medium">
-                        {localize('com_ui_channels_workspace_choose')}
-                      </h4>
-                      {availableWorkspaces.length === 0 && (
-                        <p>{localize('com_ui_channels_workspace_connect_first')}</p>
-                      )}
-                      <div
-                        role="group"
-                        aria-label={localize('com_ui_channels_workspace_choose')}
-                        className="flex max-h-52 flex-col gap-2 overflow-y-auto"
-                      >
-                        {availableWorkspaces.map((workspace) => (
-                          <Button
-                            key={workspace.workspaceId}
-                            type="button"
-                            variant="outline-toggle"
-                            className="justify-start text-left break-words whitespace-normal"
-                            aria-pressed={workspaceId === workspace.workspaceId}
-                            disabled={create.isLoading}
-                            onClick={() => setWorkspaceId(workspace.workspaceId)}
-                          >
-                            {workspace.teamName}
-                          </Button>
-                        ))}
+                      <div className="flex items-center gap-1.5">
+                        <Label htmlFor={`${id}-bot`} className="w-auto">
+                          {localize('com_ui_channels_slack_bot')}
+                        </Label>
+                        <InfoHoverCard text={localize('com_ui_channels_workspace_identity')}>
+                          <Info className="text-text-tertiary size-4" aria-hidden="true" />
+                        </InfoHoverCard>
                       </div>
+                      {availableWorkspaces.length === 0 ? (
+                        <Alert variant="info">
+                          {localize('com_ui_channels_workspace_connect_first')}
+                        </Alert>
+                      ) : (
+                        <ControlCombobox
+                          selectId={`${id}-bot`}
+                          selectedValue={workspaceId}
+                          displayValue={selectedWorkspace ? botName(selectedWorkspace) : undefined}
+                          selectPlaceholder={localize('com_ui_channels_slack_bot_choose')}
+                          searchPlaceholder={localize('com_ui_channels_slack_bot_search')}
+                          ariaLabel={localize('com_ui_channels_slack_bot')}
+                          setValue={setWorkspaceId}
+                          items={availableWorkspaces.map((workspace) => ({
+                            value: workspace.workspaceId,
+                            label: `${botName(workspace)} · ${workspace.teamName} (${workspace.appId})`,
+                          }))}
+                          renderOption={(item) => {
+                            const workspace = availableWorkspaces.find(
+                              (entry) => entry.workspaceId === item.value,
+                            );
+                            if (!workspace) return item.label;
+                            return (
+                              <span className="flex min-w-0 flex-col">
+                                <span className="truncate">{botName(workspace)}</span>
+                                <span className="text-text-secondary truncate text-xs">
+                                  {workspace.teamName} · {workspace.appId}
+                                </span>
+                              </span>
+                            );
+                          }}
+                          variant="field"
+                          isCollapsed={false}
+                          showCarat
+                          disabled={create.isLoading || workspaces.isFetching}
+                          optionHeight={52}
+                          popoverMaxHeight={300}
+                          portalElement={contentElement}
+                        />
+                      )}
                       {workspaces.hasNextPage && (
                         <Button
                           type="button"
@@ -675,7 +693,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                       )}
                     </div>
                   )}
-                  {!workspaces.isLoading && !useWorkspace && (
+                  {workspaces.isSuccess && !useWorkspace && (
                     <>
                       <p className="text-text-secondary text-sm">
                         {localize('com_ui_channels_manual_help')}
@@ -734,7 +752,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                       type="button"
                       disabled={
                         create.isLoading ||
-                        workspaces.isLoading ||
+                        !workspaceReady ||
                         !channels.isSuccess ||
                         (useWorkspace &&
                           !availableWorkspaces.some(

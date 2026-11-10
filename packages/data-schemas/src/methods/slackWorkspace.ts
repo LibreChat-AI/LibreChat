@@ -1,4 +1,5 @@
 import { nanoid } from 'nanoid';
+import { slackAppNameSchema } from 'librechat-data-provider';
 import type { SlackWorkspace, SlackAppRegistration } from 'librechat-data-provider';
 import type { SlackBotManager } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
@@ -29,17 +30,17 @@ export type SlackWorkspaceInstallResult =
       code: 'invalid_install' | 'stale_install' | 'workspace_in_use' | 'workspace_changed';
     };
 
+class SlackWorkspaceInUse extends Error {}
+
 export interface SlackWorkspaceStorage {
+  /** Global ownership check: another tenant cannot install the same app elsewhere. */
+  appInUse(appId: string, workspaceId?: string): Promise<boolean>;
   /** Credentials and the OAuth installation fence share the same organization/app revision. */
   app(appId: string): Promise<SlackInstallGeneration | null>;
   apps(cursor?: string, limit?: number): Promise<{ apps: SlackAppRegistration[]; next?: string }>;
   configureApp(
-    input: Required<
-      Pick<
-        SlackInstallGeneration,
-        'appId' | 'clientId' | 'encryptedClientSecret' | 'encryptedSigningSecret'
-      >
-    >,
+    input: Required<Pick<SlackInstallGeneration, 'appId' | 'clientId'>> &
+      Pick<SlackInstallGeneration, 'name' | 'encryptedClientSecret' | 'encryptedSigningSecret'>,
     userId: string,
     expectedRevision?: string,
   ): Promise<SlackAppRegistration | null>;
@@ -140,7 +141,42 @@ export function createSlackWorkspaceStorage(
     );
   }
 
+  async function browserMetadata(
+    records: SlackWorkspaceRecord[],
+  ): Promise<SlackWorkspaceMetadata[]> {
+    if (records.length === 0) return [];
+    const tenantId = tenant();
+    const apps = await generations
+      .find({
+        partition: tenantId || '_',
+        tenantId: tenantId ?? null,
+        appId: { $in: [...new Set(records.map((record) => record.appId))] },
+        name: { $exists: true },
+      })
+      .select({ appId: 1, name: 1, _id: 0 })
+      .read('primary')
+      .lean();
+    const names = new Map(apps.map((app) => [app.appId, app.name]));
+    return records.map((record) => {
+      const appName = names.get(record.appId);
+      return { ...metadata(record), ...(appName ? { appName } : {}) };
+    });
+  }
+
   return {
+    async appInUse(appId, workspaceId) {
+      return runAsSystem(async () =>
+        Boolean(
+          await workspaces
+            .exists({
+              appId,
+              status: 'active',
+              ...(workspaceId ? { workspaceId: { $ne: workspaceId } } : {}),
+            })
+            .read('primary'),
+        ),
+      );
+    },
     botManagers: botAccess.read,
     searchBotManagers: botAccess.search,
     setBotManagers: botAccess.set,
@@ -170,12 +206,23 @@ export function createSlackWorkspaceStorage(
         .limit(limit + 1)
         .read('primary')
         .lean();
-      const apps = records
-        .slice(0, limit)
-        .map(({ appId, clientId, revision }) => ({ appId, clientId: clientId!, revision }));
+      const apps = records.slice(0, limit).map(({ appId, clientId, revision, name }) => ({
+        appId,
+        clientId: clientId!,
+        revision,
+        ...(name ? { name } : {}),
+      }));
       return { apps, ...(records.length > limit ? { next: apps[apps.length - 1].appId } : {}) };
     },
     async configureApp(input, userId, expectedRevision) {
+      const parsedName = slackAppNameSchema.optional().safeParse(input.name);
+      if (!parsedName.success) return null;
+      const name = parsedName.data;
+      if (
+        (input.encryptedClientSecret !== undefined && !input.encryptedClientSecret) ||
+        (input.encryptedSigningSecret !== undefined && !input.encryptedSigningSecret)
+      )
+        return null;
       const tenantId = tenant();
       const admit = await prepareChannelOwnerAdmission(mongoose, { userId, tenantId });
       return transaction(async (session) => {
@@ -186,6 +233,11 @@ export function createSlackWorkspaceStorage(
           (current.clientId ? current.revision !== expectedRevision : expectedRevision != null)
         )
           return null;
+        if (
+          (!current.clientId && (!input.encryptedClientSecret || !input.encryptedSigningSecret)) ||
+          (current.clientId && current.clientId !== input.clientId && !input.encryptedClientSecret)
+        )
+          return null;
         const revision = nanoid();
         const changed = await generations.updateOne(
           {
@@ -194,11 +246,32 @@ export function createSlackWorkspaceStorage(
             tenantId: tenantId ?? null,
             revision: current.revision,
           },
-          { $set: { ...input, revision }, $inc: { writes: 1 } },
+          {
+            $set: {
+              appId: input.appId,
+              clientId: input.clientId,
+              revision,
+              ...(name ? { name } : {}),
+              ...(input.encryptedClientSecret
+                ? { encryptedClientSecret: input.encryptedClientSecret }
+                : {}),
+              ...(input.encryptedSigningSecret
+                ? { encryptedSigningSecret: input.encryptedSigningSecret }
+                : {}),
+            },
+            ...(name === '' ? { $unset: { name: 1 } } : {}),
+            $inc: { writes: 1 },
+          },
           { session },
         );
         if (!changed.matchedCount) return null;
-        return { appId: input.appId, clientId: input.clientId!, revision };
+        const savedName = name === undefined ? current.name : name;
+        return {
+          appId: input.appId,
+          clientId: input.clientId,
+          revision,
+          ...(savedName ? { name: savedName } : {}),
+        };
       });
     },
     async removeApp(appId, expectedRevision) {
@@ -219,7 +292,7 @@ export function createSlackWorkspaceStorage(
           { appId, tenantId: tenantId ?? null, revision: expectedRevision },
           {
             $set: { revision: nanoid() },
-            $unset: { clientId: 1, encryptedClientSecret: 1, encryptedSigningSecret: 1 },
+            $unset: { clientId: 1, name: 1, encryptedClientSecret: 1, encryptedSigningSecret: 1 },
           },
           { session },
         );
@@ -291,71 +364,107 @@ export function createSlackWorkspaceStorage(
       if (typeof callbackId !== 'string' || !callbackId)
         return { ok: false, code: 'invalid_install' };
       const tenantId = tenant();
-      return transaction<SlackWorkspaceInstallResult>(async (session) => {
-        const flow = await flows
-          .findOneAndDelete({ stateHash, callbackId, tenantId: tenantId ?? null }, { session })
-          .lean();
-        if (!flow || flow.appId !== input.appId || flow.expiresAt <= now)
-          return { ok: false, code: 'invalid_install' };
-        if (
-          !(await touchChannelOwnerAdmission(mongoose, { userId: flow.userId, tenantId }, session))
-        )
-          return { ok: false, code: 'invalid_install' };
-        const admitted = await generations.updateOne(
-          {
-            partition: tenantId || '_',
-            appId: input.appId,
-            revision: flow.generation,
-            tenantId: tenantId ?? null,
-          },
-          { $inc: { writes: 1 } },
-          { session },
-        );
-        if (!admitted.matchedCount) return { ok: false, code: 'stale_install' };
-        return runAsSystem(async () => {
-          const current = await workspaces
-            .findOne({ appId: input.appId, teamId: input.teamId })
-            .session(session)
+      try {
+        return await transaction<SlackWorkspaceInstallResult>(async (session) => {
+          const flow = await flows
+            .findOneAndDelete({ stateHash, callbackId, tenantId: tenantId ?? null }, { session })
             .lean();
-          if (current?.status === 'active' && (current.tenantId || undefined) !== tenantId)
-            return { ok: false, code: 'workspace_in_use' };
+          if (!flow || flow.appId !== input.appId || flow.expiresAt <= now)
+            return { ok: false, code: 'invalid_install' };
           if (
-            current &&
-            (current.tenantId || undefined) === tenantId &&
-            current.installOrder >= flow.installOrder
+            !(await touchChannelOwnerAdmission(
+              mongoose,
+              { userId: flow.userId, tenantId },
+              session,
+            ))
           )
-            return { ok: false, code: 'stale_install' };
-          if (
-            flow.workspaceId &&
-            (current?.workspaceId !== flow.workspaceId ||
-              current.revision !== flow.workspaceRevision ||
-              (current.tenantId || undefined) !== tenantId)
-          )
-            return { ok: false, code: 'workspace_changed' };
-          const workspace: SlackWorkspaceRecord = {
-            ...input,
-            tenantId,
-            workspaceId:
-              current?.status === 'active' && (current.tenantId || undefined) === tenantId
-                ? current.workspaceId
-                : nanoid(),
-            revision: nanoid(),
-            status: 'active',
-            installOrder: flow.installOrder,
-          };
-          if (current) {
-            if (current.workspaceId !== workspace.workspaceId)
-              await botAccess.clear(current, session);
-            const updated = await workspaces.replaceOne(
-              { workspaceId: current.workspaceId, revision: current.revision },
-              workspace,
-              { session },
-            );
-            if (!updated.matchedCount) throw new Error('Slack workspace ownership changed');
-          } else await workspaces.create([workspace], { session });
-          return { ok: true, workspace: metadata(workspace) };
+            return { ok: false, code: 'invalid_install' };
+          const admitted = await generations.updateOne(
+            {
+              partition: tenantId || '_',
+              appId: input.appId,
+              revision: flow.generation,
+              tenantId: tenantId ?? null,
+            },
+            { $inc: { writes: 1 } },
+            { session },
+          );
+          if (!admitted.matchedCount) return { ok: false, code: 'stale_install' };
+          return runAsSystem(async () => {
+            const active = await workspaces
+              .findOne({ appId: input.appId, status: 'active' })
+              .session(session)
+              .lean();
+            if (
+              active &&
+              (active.teamId !== input.teamId || (active.tenantId || undefined) !== tenantId)
+            )
+              return {
+                ok: false,
+                code:
+                  flow.workspaceId === active.workspaceId && active.teamId !== input.teamId
+                    ? 'workspace_changed'
+                    : 'workspace_in_use',
+              };
+            const current =
+              active ??
+              (await workspaces
+                .findOne({ appId: input.appId, teamId: input.teamId })
+                .session(session)
+                .lean());
+            if (
+              current &&
+              (current.tenantId || undefined) === tenantId &&
+              current.installOrder >= flow.installOrder
+            )
+              return { ok: false, code: 'stale_install' };
+            if (
+              flow.workspaceId &&
+              (current?.workspaceId !== flow.workspaceId ||
+                current.revision !== flow.workspaceRevision ||
+                (current.tenantId || undefined) !== tenantId)
+            )
+              return { ok: false, code: 'workspace_changed' };
+            const workspace: SlackWorkspaceRecord = {
+              ...input,
+              tenantId,
+              workspaceId:
+                current?.status === 'active' && (current.tenantId || undefined) === tenantId
+                  ? current.workspaceId
+                  : nanoid(),
+              revision: nanoid(),
+              status: 'active',
+              installOrder: flow.installOrder,
+            };
+            try {
+              if (current) {
+                if (current.workspaceId !== workspace.workspaceId)
+                  await botAccess.clear(current, session);
+                const updated = await workspaces.replaceOne(
+                  { workspaceId: current.workspaceId, revision: current.revision },
+                  workspace,
+                  { session },
+                );
+                if (!updated.matchedCount) throw new Error('Slack workspace ownership changed');
+              } else await workspaces.create([workspace], { session });
+            } catch (error) {
+              if (
+                error instanceof mongoose.mongo.MongoServerError &&
+                error.code === 11000 &&
+                error.keyPattern?.appId === 1 &&
+                Object.keys(error.keyPattern).every((key) => key === 'appId' || key === 'teamId')
+              )
+                throw new SlackWorkspaceInUse();
+              throw error;
+            }
+            return { ok: true, workspace: metadata(workspace) };
+          });
         });
-      });
+      } catch (error) {
+        if (!(error instanceof SlackWorkspaceInUse)) throw error;
+        await flows.deleteOne({ stateHash, callbackId, tenantId: tenantId ?? null });
+        return { ok: false, code: 'workspace_in_use' };
+      }
     },
     async list(cursor, limit = 50, userId) {
       const tenantId = tenant();
@@ -374,9 +483,10 @@ export function createSlackWorkspaceStorage(
         .read('primary')
         .lean();
       const page = records.slice(0, limit);
+      const views = await browserMetadata(page);
       return {
-        workspaces: page.map((record) => ({
-          ...metadata(record),
+        workspaces: views.map((record) => ({
+          ...record,
           ...(userId ? { canManageBot: true } : {}),
         })),
         ...(records.length > limit ? { next: page[page.length - 1].workspaceId } : {}),
@@ -387,12 +497,12 @@ export function createSlackWorkspaceStorage(
         .findOne({ workspaceId, tenantId: tenant() ?? null })
         .read('primary')
         .lean();
-      return record
-        ? {
-            ...metadata(record),
-            ...(userId ? { canManageBot: await botAccess.allows(record, userId) } : {}),
-          }
-        : null;
+      if (!record) return null;
+      const [views, canManageBot] = await Promise.all([
+        browserMetadata([record]),
+        userId ? botAccess.allows(record, userId) : undefined,
+      ]);
+      return { ...views[0], ...(userId ? { canManageBot } : {}) };
     },
     async read(workspaceId) {
       return workspaces

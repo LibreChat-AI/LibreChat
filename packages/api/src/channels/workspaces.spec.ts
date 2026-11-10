@@ -56,8 +56,8 @@ describe('Slack workspace installation', () => {
     if (!cookie) throw new Error(`Missing ${name} test cookie`);
     return cookie.split(';')[0];
   };
-  const start = async () => {
-    const result = await scoped(() => service.start(principal));
+  const start = async (workspaceId?: string) => {
+    const result = await scoped(() => service.start(principal, workspaceId));
     if (!result.ok) throw new Error(result.error.code);
     const state = new URL(result.value.url).searchParams.get('state')!;
     const pending = await service.flow(state);
@@ -154,6 +154,42 @@ describe('Slack workspace installation', () => {
     expect(await tenantStorage.run({ tenantId: 'org-b' }, () => storage.app('A123'))).toBeNull();
   });
 
+  it('validates display names and permits metadata-only edits without replacing encrypted secrets', async () => {
+    const input = {
+      appId: 'A123',
+      clientId: '123.456',
+      clientSecret: 'test-client-secret',
+      signingSecret: 'test-signing-secret',
+      name: '  Support bot  ',
+    };
+    const created = await scoped(() => service.configureApp(principal, input));
+    if (!created.ok) throw new Error('Test registration failed');
+    expect(created.value.name).toBe('Support bot');
+    const before = await scoped(() => storage.app('A123'));
+    const renamed = await scoped(() =>
+      service.configureApp(principal, {
+        appId: 'A123',
+        clientId: '123.456',
+        name: 'Help desk',
+        expectedRevision: created.value.revision,
+      }),
+    );
+    expect(renamed).toMatchObject({ ok: true, value: { name: 'Help desk' } });
+    const after = await scoped(() => storage.app('A123'));
+    expect(after?.encryptedClientSecret).toBe(before?.encryptedClientSecret);
+    expect(after?.encryptedSigningSecret).toBe(before?.encryptedSigningSecret);
+    expect(JSON.stringify(renamed)).not.toContain('secret');
+    expect(
+      await scoped(() => service.configureApp(principal, { appId: 'A999', clientId: '123.456' })),
+    ).toEqual({ ok: false, error: { code: 'invalid_install' } });
+    expect(
+      await scoped(() => service.configureApp(principal, { ...input, name: 'x'.repeat(101) })),
+    ).toEqual({ ok: false, error: { code: 'invalid_install' } });
+    expect(
+      await scoped(() => service.configureApp(principal, { ...input, clientSecret: '' })),
+    ).toEqual({ ok: false, error: { code: 'invalid_install' } });
+  });
+
   it('rejects users without organization management permission before creating an attempt', async () => {
     canManage.mockResolvedValue(false);
     expect(await scoped(() => service.start(principal))).toEqual({
@@ -206,6 +242,35 @@ describe('Slack workspace installation', () => {
     });
   });
 
+  it('rejects another workspace installation early while allowing explicit reconnect', async () => {
+    const { flow } = await start();
+    const installed = await scoped(() => service.finish(flow, 'first-code'));
+    if (!installed.ok) throw new Error('Test setup failed');
+    expect(await scoped(() => service.start(principal))).toEqual({
+      ok: false,
+      error: { code: 'workspace_in_use' },
+    });
+    expect(await scoped(() => service.start(principal, installed.value.workspaceId))).toMatchObject(
+      { ok: true },
+    );
+    await scoped(() => storage.disconnect(installed.value.workspaceId));
+    expect(await scoped(() => service.start(principal))).toMatchObject({ ok: true });
+  });
+
+  it('rejects a second-team callback even when both attempts started before installation', async () => {
+    const first = await start();
+    const second = await start();
+    expect((await scoped(() => service.finish(first.flow, 'first-code'))).ok).toBe(true);
+    request.mockImplementationOnce(async () =>
+      reply({ ...grant, team: { id: 'TSECOND', name: 'Another workspace' } }),
+    );
+    expect(await scoped(() => service.finish(second.flow, 'second-code'))).toEqual({
+      ok: false,
+      error: { code: 'workspace_in_use' },
+    });
+    expect((await scoped(() => storage.list())).workspaces).toHaveLength(1);
+  });
+
   it('rejects missing scopes and never stores the returned credential', async () => {
     const { flow } = await start();
     request.mockImplementationOnce(async () => reply({ ...grant, scope: 'chat:write' }));
@@ -252,7 +317,7 @@ describe('Slack workspace installation', () => {
     const initial = await start();
     const installed = await scoped(() => service.finish(initial.flow, 'initial-code'));
     if (!installed.ok) throw new Error('Setup failed');
-    const late = await start();
+    const late = await start(installed.value.workspaceId);
     request.mockImplementationOnce(async () => {
       await scoped(() => storage.disconnect(installed.value.workspaceId));
       return reply();
@@ -516,11 +581,61 @@ describe('Slack workspace installation', () => {
     expect(await scoped(() => storage.app('A123'))).toBeNull();
   });
 
+  it('accepts app display-name edits without secrets and rejects incomplete creates', async () => {
+    const put = (input: object) =>
+      http()
+        .put('/workspaces/apps')
+        .set('x-test-user', 'yes')
+        .set('x-test-tenant', 'org-a')
+        .send(input);
+    await put({ appId: 'A123', clientId: '123.456', name: 'Incomplete' }).expect(400);
+    const created = await put({
+      appId: 'A123',
+      clientId: '123.456',
+      name: ' Support ',
+      clientSecret: 'private-client',
+      signingSecret: 'private-signing',
+    }).expect(200);
+    const edited = await put({
+      appId: 'A123',
+      clientId: '123.456',
+      name: 'Help desk',
+      expectedRevision: created.body.revision,
+    }).expect(200);
+    expect(edited.body.name).toBe('Help desk');
+    expect(JSON.stringify(edited.body)).not.toMatch(/private-|encrypted/);
+    await put({
+      appId: 'A123',
+      clientId: '123.456',
+      name: 'x'.repeat(101),
+      expectedRevision: edited.body.revision,
+    }).expect(400);
+    await put({
+      appId: 'A123',
+      clientId: '123.456',
+      signingSecret: '',
+      expectedRevision: edited.body.revision,
+    }).expect(400);
+    await put({
+      appId: 'A123',
+      clientId: '123.456',
+      name: 'Stale',
+      expectedRevision: created.body.revision,
+    }).expect(409);
+    const cleared = await put({
+      appId: 'A123',
+      clientId: '123.456',
+      name: '',
+      expectedRevision: edited.body.revision,
+    }).expect(200);
+    expect(cleared.body).not.toHaveProperty('name');
+  });
+
   it('refuses a stale disconnect confirmation after another administrator reconnects', async () => {
     const { flow } = await start();
     const first = await scoped(() => service.finish(flow, 'first-code'));
     if (!first.ok) throw new Error(first.error.code);
-    const secondFlow = await start();
+    const secondFlow = await start(first.value.workspaceId);
     const second = await scoped(() => service.finish(secondFlow.flow, 'second-code'));
     if (!second.ok) throw new Error(second.error.code);
     expect(second.value.workspaceId).toBe(first.value.workspaceId);
@@ -588,6 +703,38 @@ describe('Slack workspace installation', () => {
       .set('x-test-user-tenant', 'org-b')
       .set('x-test-tenant', 'org-b')
       .expect(404);
+  });
+
+  it('returns the saved app name in permitted browser workspace metadata without credentials', async () => {
+    await scoped(() =>
+      service.configureApp(principal, {
+        appId: 'A123',
+        clientId: '123.456',
+        name: 'Support bot',
+        clientSecret: 'private-client',
+        signingSecret: 'private-signing',
+      }),
+    );
+    const { flow } = await start();
+    const installed = await scoped(() => service.finish(flow, 'test-code'));
+    if (!installed.ok) throw new Error(installed.error.code);
+    const browserGet = (path: string) =>
+      http().get(path).set('x-test-user', 'yes').set('x-test-tenant', 'org-a');
+    const listed = await browserGet('/workspaces').expect(200);
+    expect(listed.body.workspaces[0].appName).toBe('Support bot');
+    const detail = await browserGet(`/workspaces/${installed.value.workspaceId}`).expect(200);
+    expect(detail.body.workspace.appName).toBe('Support bot');
+    expect(JSON.stringify([listed.body, detail.body])).not.toMatch(
+      /private-|encrypted|clientId|clientSecret|signingSecret/,
+    );
+    await http()
+      .get(`/workspaces/${installed.value.workspaceId}`)
+      .set('x-test-user', 'yes')
+      .set('x-test-user-tenant', 'org-b')
+      .set('x-test-tenant', 'org-b')
+      .expect(404);
+    canManage.mockResolvedValue(false);
+    expect((await browserGet('/workspaces').expect(200)).body.workspaces).toEqual([]);
   });
 
   it('requires a signed-in same-tenant principal on browser management routes', async () => {

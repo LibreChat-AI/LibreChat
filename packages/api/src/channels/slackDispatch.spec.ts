@@ -54,10 +54,10 @@ describe('shared Slack service routing', () => {
   });
   const scoped = <T>(task: () => Promise<T>, tenantId = 'org-a') =>
     tenantStorage.run({ tenantId }, task);
-  const query = (teamId = 'T123') => ({
+  const query = (teamId = 'T123', appId = 'A123') => ({
     tenantId:
       ({ T456: 'org-b', TDOT: 'org.with.periods' } as Record<string, string>)[teamId] ?? 'org-a',
-    appId: 'A123',
+    appId,
     teamId,
     target: {
       kind: 'thread',
@@ -68,12 +68,12 @@ describe('shared Slack service routing', () => {
   });
   const post = (path: string, body: object) =>
     request.post(path).set('Authorization', `Bearer ${serviceToken}`).send(body);
-  async function install(teamId = 'T123', token = 'xoxb-first') {
-    const registration = await storage.app('A123');
+  async function install(teamId = 'T123', token = 'xoxb-first', appId = 'A123') {
+    const registration = await storage.app(appId);
     if (!registration?.clientId)
       await storage.configureApp(
         {
-          appId: 'A123',
+          appId,
           clientId: '123.456',
           encryptedClientSecret: await encryptCredential('oauth-secret'),
           encryptedSigningSecret: await encryptCredential('signing-secret'),
@@ -83,7 +83,7 @@ describe('shared Slack service routing', () => {
     const stateHash = `install-${++sequence}`;
     await storage.startInstall({
       stateHash,
-      appId: 'A123',
+      appId,
       clientId: '123.456',
       userId: 'admin',
       expiresAt: new Date(Date.now() + 60000),
@@ -94,7 +94,7 @@ describe('shared Slack service routing', () => {
       stateHash,
       claim.callbackId,
       {
-        appId: 'A123',
+        appId,
         teamId,
         teamName: 'Sandbox',
         botUserId: 'U123',
@@ -626,7 +626,7 @@ describe('shared Slack service routing', () => {
         .map((channel) => channel?.status)
         .sort(),
     ).toEqual(['active', 'pending_install']);
-    const dotted = await scoped(() => install('TDOT'), 'org.with.periods');
+    const dotted = await scoped(() => install('TDOT', 'xoxb-dotted', 'ADOT'), 'org.with.periods');
     const created = await request
       .post('/ui/dotted-agent/connections')
       .set('x-test-user', 'admin')
@@ -641,7 +641,7 @@ describe('shared Slack service routing', () => {
       .set('x-test-tenant', 'org.with.periods')
       .send({ channelRevision: created.body.revision })
       .expect(200);
-    expect((await post('/resolve', query('TDOT')).expect(200)).body.tenantId).toBe(
+    expect((await post('/resolve', query('TDOT', 'ADOT')).expect(200)).body.tenantId).toBe(
       'org.with.periods',
     );
   });
@@ -738,7 +738,7 @@ describe('shared Slack service routing', () => {
       return workspace;
     });
     const second = await scoped(async () => {
-      const workspace = await install('T456');
+      const workspace = await install('T456', 'xoxb-second', 'A456');
       await bind(workspace.workspaceId, 'binding-b');
       return workspace;
     }, 'org-b');
@@ -749,7 +749,7 @@ describe('shared Slack service routing', () => {
       channelId: 'binding-a',
       workspaceId: first.workspaceId,
     });
-    const b = await post('/resolve', query('T456')).expect(200);
+    const b = await post('/resolve', query('T456', 'A456')).expect(200);
     expect(b.body).toEqual({
       kind: 'bound',
       tenantId: 'org-b',

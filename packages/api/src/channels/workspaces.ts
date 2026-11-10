@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { createHash, randomBytes } from 'node:crypto';
-import { SLACK_CHANNEL_BOT_SCOPES } from 'librechat-data-provider';
 import { getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import { SLACK_CHANNEL_BOT_SCOPES, configureSlackAppSchema } from 'librechat-data-provider';
 import type {
   ChannelConfig,
   SlackWorkspace,
@@ -154,19 +154,23 @@ export function createSlackWorkspaceService(deps: {
       input: ConfigureSlackApp,
     ): Promise<Result<SlackAppRegistration>> {
       if (!inScope(principal) || !(await deps.canManage(principal))) return failure('forbidden');
+      const parsed = configureSlackAppSchema.safeParse(input);
+      if (!parsed.success) return failure('invalid_install');
+      const configuration = parsed.data;
       const [encryptedClientSecret, encryptedSigningSecret] = await Promise.all([
-        deps.encrypt(input.clientSecret),
-        deps.encrypt(input.signingSecret),
+        configuration.clientSecret ? deps.encrypt(configuration.clientSecret) : undefined,
+        configuration.signingSecret ? deps.encrypt(configuration.signingSecret) : undefined,
       ]);
       const saved = await deps.storage.configureApp(
         {
-          appId: input.appId,
-          clientId: input.clientId,
-          encryptedClientSecret,
-          encryptedSigningSecret,
+          appId: configuration.appId,
+          clientId: configuration.clientId,
+          ...(configuration.name !== undefined ? { name: configuration.name } : {}),
+          ...(encryptedClientSecret ? { encryptedClientSecret } : {}),
+          ...(encryptedSigningSecret ? { encryptedSigningSecret } : {}),
         },
         principal.id,
-        input.expectedRevision,
+        configuration.expectedRevision,
       );
       return saved ? { ok: true, value: saved } : failure('stale_install');
     },
@@ -191,6 +195,8 @@ export function createSlackWorkspaceService(deps: {
       if (!app) return failure('not_configured');
       if (workspaceId && (!current || current.appId !== app.appId))
         return failure('workspace_changed');
+      if (await deps.storage.appInUse(app.appId, current?.workspaceId))
+        return failure('workspace_in_use');
       const state = randomBytes(32).toString('base64url');
       const flowId = stateHash(state);
       await deps.storage.startInstall({

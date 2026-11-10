@@ -34,6 +34,7 @@ export interface SlackInstallGeneration {
   revision: string;
   writes: number;
   clientId?: string;
+  name?: string;
   encryptedClientSecret?: string;
   encryptedSigningSecret?: string;
 }
@@ -62,6 +63,10 @@ export function createSlackWorkspaceModel(
   schema.index({ workspaceId: 1 }, { unique: true });
   // Slack sends one event stream per app/workspace. Its tenant owner must be unambiguous.
   schema.index({ appId: 1, teamId: 1 }, { unique: true });
+  schema.index(
+    { appId: 1 },
+    { unique: true, partialFilterExpression: { status: 'active' }, name: 'slack_active_app' },
+  );
   schema.index({ tenantId: 1, workspaceId: 1 });
   applyTenantIsolation(schema);
   return (
@@ -105,6 +110,7 @@ export function createSlackInstallGenerationModel(
     revision: { type: String, required: true },
     writes: { type: Number, required: true, default: 0 },
     clientId: String,
+    name: { type: String, trim: true, maxlength: 100 },
     encryptedClientSecret: { type: String, select: false },
     encryptedSigningSecret: { type: String, select: false },
   });

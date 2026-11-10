@@ -92,6 +92,10 @@ async function openConnection(
     }),
   );
 }
+async function chooseBot(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('combobox', { name: 'com_ui_channels_slack_bot' }));
+  await user.click(await screen.findByRole('option', { name: /Engineering/ }));
+}
 async function openAdd(user: ReturnType<typeof userEvent.setup>) {
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'com_ui_channels_add' })).toBeEnabled(),
@@ -867,7 +871,7 @@ describe('organization workspace connections', () => {
     });
     const { submit } = renderChannels({ wrapInForm: true });
     await openAdd(user);
-    await user.click(await screen.findByRole('button', { name: 'Engineering' }));
+    await chooseBot(user);
     await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
     const activate = await screen.findByRole('button', {
       name: 'com_ui_channels_workspace_replace_assignment',
@@ -908,7 +912,7 @@ describe('organization workspace connections', () => {
     const user = userEvent.setup();
     renderChannels();
     await openAdd(user);
-    await user.click(await screen.findByRole('button', { name: 'Engineering' }));
+    await chooseBot(user);
     await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
     await screen.findByRole('button', { name: 'com_ui_channels_workspace_assign' });
     await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
@@ -956,7 +960,7 @@ describe('organization workspace connections', () => {
     const user = userEvent.setup();
     const { client } = renderChannels();
     await openAdd(user);
-    await user.click(await screen.findByRole('button', { name: 'Engineering' }));
+    await chooseBot(user);
     await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
     await user.click(
       await screen.findByRole('button', { name: 'com_ui_channels_workspace_replace_assignment' }),
@@ -1025,7 +1029,7 @@ describe('organization workspace connections', () => {
     const user = userEvent.setup();
     renderChannels();
     await openAdd(user);
-    await user.click(await screen.findByRole('button', { name: 'Engineering' }));
+    await chooseBot(user);
     await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
     await screen.findByText('com_ui_channels_bot_access_required');
     expect(
@@ -1046,7 +1050,7 @@ describe('organization workspace connections', () => {
     const user = userEvent.setup();
     renderChannels();
     await openAdd(user);
-    await user.click(await screen.findByRole('button', { name: 'Engineering' }));
+    await chooseBot(user);
     await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
     await user.click(
       await screen.findByRole('button', { name: 'com_ui_channels_workspace_assign' }),
@@ -1071,9 +1075,15 @@ describe('organization workspace connections', () => {
     await user.click(
       await screen.findByRole('button', { name: 'com_ui_channels_workspace_add_assignment' }),
     );
-    await user.click(
-      await screen.findByRole('button', { name: 'com_ui_channels_workspace_specific' }),
-    );
+    const defaultOption = await screen.findByRole('radio', {
+      name: 'com_ui_channels_workspace_default',
+    });
+    expect(defaultOption).toHaveAttribute('aria-checked', 'true');
+    defaultOption.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(
+      screen.getByRole('radio', { name: 'com_ui_channels_workspace_specific' }),
+    ).toHaveAttribute('aria-checked', 'true');
     await user.type(screen.getByLabelText('com_ui_channels_workspace_channel_id'), 'C999');
     const assign = screen.getByRole('button', { name: 'com_ui_channels_workspace_assign' });
     expect(assign).toBeDisabled();
@@ -1122,7 +1132,7 @@ describe('organization workspace connections', () => {
     expect(
       screen.queryByRole('button', { name: 'com_ui_channels_workspace_assign' }),
     ).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'com_ui_channels_workspace_specific' }));
+    await user.click(screen.getByRole('radio', { name: 'com_ui_channels_workspace_specific' }));
     await user.type(screen.getByLabelText('com_ui_channels_workspace_channel_id'), 'C999');
     await waitFor(() =>
       expect(
@@ -1132,6 +1142,25 @@ describe('organization workspace connections', () => {
     expect(screen.queryByText('com_ui_channels_workspace_assigned')).not.toBeInTheDocument();
     expect(dataService.setAgentChannelWorkspaceRoute).not.toHaveBeenCalled();
   });
+
+  test.each([undefined, 'C123'])(
+    'offers additional assignments only without a default (destination=%s)',
+    async (externalChannelId) => {
+      rows = [{ ...configured, status: 'active' }];
+      jest.mocked(dataService.getAgentChannelWorkspaceRoutes).mockResolvedValue({
+        routes: [{ externalChannelId, revision: 'route-1' }],
+      });
+      const user = userEvent.setup();
+      renderChannels();
+      await openConnection(user, 'active');
+      await screen.findByRole('button', { name: 'com_ui_channels_workspace_remove_route' });
+      const add = screen.queryByRole('button', {
+        name: 'com_ui_channels_workspace_add_assignment',
+      });
+      if (externalChannelId) expect(add).toBeEnabled();
+      else expect(add).not.toBeInTheDocument();
+    },
+  );
 
   test('removes a selected route only after confirmation and keeps the connection active', async () => {
     rows = [{ ...configured, status: 'active' }];
@@ -1168,5 +1197,395 @@ describe('organization workspace connections', () => {
     expect(rows[0].status).toBe('active');
     expect(dataService.deleteAgentChannel).not.toHaveBeenCalled();
     expect(dataService.disableAgentChannel).not.toHaveBeenCalled();
+  });
+  test.each([404, 410])(
+    'shows an unavailable connection for HTTP %s without fetching assignments',
+    async (status) => {
+      rows = [{ ...configured, status: 'disabled' }];
+      jest.mocked(dataService.getSlackWorkspace).mockRejectedValue({
+        isAxiosError: true,
+        response: { status, data: { private: 'not-for-display' } },
+      });
+      const user = userEvent.setup();
+      renderChannels();
+      await openConnection(user, 'disabled');
+      const dialog = screen.getByRole('dialog');
+      await within(dialog).findByText('com_ui_channels_workspace_unavailable');
+      expect(within(dialog).getByText('com_ui_channels_slack_connection')).toBeInTheDocument();
+      expect(
+        within(dialog).getByText('com_ui_channels_workspace_unavailable_status'),
+      ).toBeInTheDocument();
+      expect(dialog).toHaveFocus();
+      expect(within(dialog).queryByRole('tooltip')).not.toBeInTheDocument();
+      expect(
+        within(dialog).queryByRole('button', { name: 'com_ui_retry' }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(dialog).queryByRole('button', { name: 'com_ui_channels_workspace_add_assignment' }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(dialog).queryByRole('button', { name: 'com_ui_channels_disable' }),
+      ).not.toBeInTheDocument();
+      expect(dataService.getAgentChannelWorkspaceRoutes).not.toHaveBeenCalled();
+      expect(dataService.getAgentChannelWorkspaceTarget).not.toHaveBeenCalled();
+      expect(screen.queryByText('not-for-display')).not.toBeInTheDocument();
+      await user.click(within(dialog).getByRole('button', { name: 'com_ui_close' }));
+      expect(screen.getByRole('button', { name: 'com_ui_channels_manage' })).toHaveFocus();
+    },
+  );
+
+  test.each(['disconnected', 'unconfigured'] as const)(
+    'treats a successfully loaded %s installation as unavailable',
+    async (state) => {
+      rows = [{ ...configured, status: 'disabled' }];
+      jest.mocked(dataService.getSlackWorkspace).mockResolvedValue({
+        configured: state !== 'unconfigured',
+        canManage: true,
+        workspace: { ...workspace, status: state === 'disconnected' ? 'disconnected' : 'active' },
+      });
+      const user = userEvent.setup();
+      renderChannels();
+      await openConnection(user, 'disabled');
+      await screen.findByText('com_ui_channels_workspace_unavailable');
+      expect(screen.getByRole('dialog')).toHaveTextContent('Engineering');
+      expect(
+        screen.queryByRole('link', { name: 'com_ui_channels_workspace_open_bot' }),
+      ).not.toBeInTheDocument();
+      expect(dataService.getAgentChannelWorkspaceRoutes).not.toHaveBeenCalled();
+      expect(dataService.getAgentChannelWorkspaceTarget).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([401, 403])(
+    'distinguishes denied access (%s) from a missing connection',
+    async (status) => {
+      rows = [{ ...configured, status: 'active' }];
+      jest
+        .mocked(dataService.getSlackWorkspace)
+        .mockRejectedValue({ isAxiosError: true, response: { status } });
+      const user = userEvent.setup();
+      renderChannels();
+      await openConnection(user, 'active');
+      await screen.findByText('com_ui_channels_workspace_access_denied');
+      expect(screen.queryByText('com_ui_channels_workspace_unavailable')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'com_ui_channels_workspace_delete_connection' }),
+      ).toBeEnabled();
+      expect(dataService.getAgentChannelWorkspaceRoutes).not.toHaveBeenCalled();
+      expect(dataService.getAgentChannelWorkspaceTarget).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([undefined, 503])(
+    'retries a temporary workspace read failure (%s) and restores assignment management',
+    async (status) => {
+      rows = [{ ...configured, status: 'disabled' }];
+      jest
+        .mocked(dataService.getSlackWorkspace)
+        .mockRejectedValueOnce({ isAxiosError: true, response: status ? { status } : undefined });
+      const user = userEvent.setup();
+      renderChannels();
+      await openConnection(user, 'disabled');
+      await screen.findByText('com_ui_channels_workspace_load_error');
+      expect(screen.queryByText('com_ui_channels_workspace_unavailable')).not.toBeInTheDocument();
+      expect(dataService.getAgentChannelWorkspaceRoutes).not.toHaveBeenCalled();
+      await user.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+      await user.click(
+        await screen.findByRole('button', { name: 'com_ui_channels_workspace_add_assignment' }),
+      );
+      const assign = await screen.findByRole('button', {
+        name: 'com_ui_channels_workspace_assign',
+      });
+      await waitFor(() => expect(assign).toBeEnabled());
+      expect(dataService.getAgentChannelWorkspaceTarget).toHaveBeenCalled();
+    },
+  );
+
+  test('a failed refresh cannot leave cached assignment controls active', async () => {
+    rows = [{ ...configured, status: 'active' }];
+    const user = userEvent.setup();
+    const { client } = renderChannels();
+    await openConnection(user, 'active');
+    await user.click(
+      await screen.findByRole('button', { name: 'com_ui_channels_workspace_add_assignment' }),
+    );
+    await screen.findByRole('button', { name: 'com_ui_channels_workspace_assign' });
+    const routeReads = jest.mocked(dataService.getAgentChannelWorkspaceRoutes).mock.calls.length;
+    const targetReads = jest.mocked(dataService.getAgentChannelWorkspaceTarget).mock.calls.length;
+    jest
+      .mocked(dataService.getSlackWorkspace)
+      .mockRejectedValue({ isAxiosError: true, response: { status: 404 } });
+    await act(async () => {
+      await client.invalidateQueries([QueryKeys.slackWorkspaces]);
+    });
+    await screen.findByText('com_ui_channels_workspace_unavailable');
+    expect(screen.getByRole('dialog')).toHaveTextContent('Engineering');
+    expect(
+      screen.queryByRole('group', { name: 'com_ui_channels_workspace_target' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_channels_workspace_assign' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_channels_disable' }),
+    ).not.toBeInTheDocument();
+    expect(dataService.getAgentChannelWorkspaceRoutes).toHaveBeenCalledTimes(routeReads);
+    expect(dataService.getAgentChannelWorkspaceTarget).toHaveBeenCalledTimes(targetReads);
+    expect(
+      screen.getByRole('button', { name: 'com_ui_channels_workspace_delete_connection' }),
+    ).toBeEnabled();
+  });
+
+  test('can confirm, retry and cancel deletion even when the installation is unavailable', async () => {
+    rows = [{ ...configured, status: 'disabled' }];
+    jest
+      .mocked(dataService.getSlackWorkspace)
+      .mockRejectedValue({ isAxiosError: true, response: { status: 404 } });
+    jest
+      .mocked(dataService.deleteAgentChannel)
+      .mockRejectedValueOnce(new Error('private-error'))
+      .mockImplementationOnce(async () => {
+        rows = [];
+      });
+    const user = userEvent.setup();
+    renderChannels();
+    await openConnection(user, 'disabled');
+    await screen.findByText('com_ui_channels_workspace_unavailable');
+    const remove = screen.getByRole('button', {
+      name: 'com_ui_channels_workspace_delete_connection',
+    });
+    await user.click(remove);
+    let confirmation = screen.getByRole('dialog', {
+      name: 'com_ui_channels_workspace_delete_connection',
+    });
+    expect(dataService.deleteAgentChannel).not.toHaveBeenCalled();
+    await user.click(within(confirmation).getByRole('button', { name: /Cancel/i }));
+    expect(remove).toHaveFocus();
+    await user.click(remove);
+    confirmation = screen.getByRole('dialog', {
+      name: 'com_ui_channels_workspace_delete_connection',
+    });
+    await user.click(
+      within(confirmation).getByRole('button', {
+        name: 'com_ui_channels_workspace_delete_connection',
+      }),
+    );
+    await within(confirmation).findByRole('alert');
+    expect(screen.queryByText('private-error')).not.toBeInTheDocument();
+    await user.click(
+      within(confirmation).getByRole('button', {
+        name: 'com_ui_channels_workspace_delete_connection',
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(dataService.deleteAgentChannel).toHaveBeenCalledTimes(2);
+  });
+
+  test('revoked bot management hides Add while retaining stop and remove for the owner', async () => {
+    rows = [{ ...configured, status: 'active' }];
+    jest.mocked(dataService.getSlackWorkspace).mockResolvedValue({
+      configured: true,
+      canManage: false,
+      workspace: { ...workspace, canManageBot: false },
+    });
+    jest
+      .mocked(dataService.getAgentChannelWorkspaceRoutes)
+      .mockResolvedValue({ routes: [{ externalChannelId: 'C123', revision: 'route-1' }] });
+    const user = userEvent.setup();
+    renderChannels();
+    await openConnection(user, 'active');
+    await screen.findByText('com_ui_channels_bot_access_required');
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_channels_workspace_add_assignment' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_channels_disable' })).toBeEnabled();
+    expect(
+      screen.getByRole('button', { name: 'com_ui_channels_workspace_delete_connection' }),
+    ).toBeEnabled();
+    expect(
+      await screen.findByRole('button', { name: 'com_ui_channels_workspace_remove_route' }),
+    ).toBeEnabled();
+    expect(dataService.getAgentChannelWorkspaceTarget).not.toHaveBeenCalled();
+  });
+  test('waits for installation metadata before loading assignments', async () => {
+    rows = [{ ...configured, status: 'disabled' }];
+    let finish!: (value: Awaited<ReturnType<typeof dataService.getSlackWorkspace>>) => void;
+    jest.mocked(dataService.getSlackWorkspace).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    renderChannels();
+    await openConnection(user, 'disabled');
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('status')).toHaveTextContent('com_ui_channels_loading');
+    expect(
+      within(dialog).queryByText('com_ui_channels_workspace_unavailable'),
+    ).not.toBeInTheDocument();
+    expect(dataService.getAgentChannelWorkspaceRoutes).not.toHaveBeenCalled();
+    expect(dataService.getAgentChannelWorkspaceTarget).not.toHaveBeenCalled();
+    await act(async () => finish({ configured: true, canManage: true, workspace }));
+    await screen.findByRole('button', { name: 'com_ui_channels_workspace_add_assignment' });
+    expect(dataService.getAgentChannelWorkspaceRoutes).toHaveBeenCalled();
+  });
+  test('shared setup offers a searchable bot picker without manual source controls or automatic selection', async () => {
+    const bots = Array.from({ length: 20 }, (_, index) => ({
+      ...workspace,
+      workspaceId: `workspace-${index}`,
+      appId: `A${index}XYZ`,
+      appName: 'Same bot',
+      teamName: `Team ${index}`,
+    }));
+    jest
+      .mocked(dataService.getSlackWorkspaces)
+      .mockResolvedValue({ configured: true, canManage: true, workspaces: bots });
+    const user = userEvent.setup();
+    renderChannels();
+    await openAdd(user);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveFocus();
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_channels_org_workspace' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_channels_manual_app' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_channel_link_shared' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('com_ui_channels_workspace_identity')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeDisabled();
+    const picker = await screen.findByRole('combobox', { name: 'com_ui_channels_slack_bot' });
+    expect(
+      screen.getByText('com_ui_channels_slack_bot', { selector: 'label:not(.sr-only)' }),
+    ).toHaveAttribute('for', picker.id);
+    await user.click(picker);
+    await user.type(screen.getByPlaceholderText('com_ui_channels_slack_bot_search'), 'A19XYZ');
+    const option = await screen.findByRole('option', { name: /Same bot.*Team 19.*A19XYZ/ });
+    expect(within(option).getByText('Same bot')).toBeInTheDocument();
+    expect(within(option).getByText(/Team 19/)).toHaveClass('text-text-secondary');
+    await user.click(option);
+    expect(picker).toHaveTextContent('Same bot');
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    await waitFor(() =>
+      expect(dataService.createWorkspaceAgentChannel).toHaveBeenCalledWith(
+        'agent-1',
+        'workspace-19',
+      ),
+    );
+    expect(dataService.createAgentChannel).not.toHaveBeenCalled();
+  });
+
+  test('fallback bot labels keep app IDs searchable and closing Add resets selection', async () => {
+    const user = userEvent.setup();
+    renderChannels();
+    await openAdd(user);
+    await chooseBot(user);
+    expect(screen.getByRole('combobox', { name: 'com_ui_channels_slack_bot' })).toHaveTextContent(
+      'com_ui_channels_slack_app_fallback',
+    );
+    await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
+    await openAdd(user);
+    expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeDisabled();
+  });
+
+  test('a selected bot disappearing on refresh cannot create a connection', async () => {
+    const user = userEvent.setup();
+    const { client } = renderChannels();
+    await openAdd(user);
+    await chooseBot(user);
+    jest
+      .mocked(dataService.getSlackWorkspaces)
+      .mockResolvedValue({ configured: true, canManage: true, workspaces: [] });
+    await act(async () => {
+      await client.invalidateQueries([QueryKeys.slackWorkspaces]);
+    });
+    await screen.findByText('com_ui_channels_workspace_connect_first');
+    expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeDisabled();
+    expect(dataService.createWorkspaceAgentChannel).not.toHaveBeenCalled();
+    expect(dataService.createAgentChannel).not.toHaveBeenCalled();
+  });
+
+  test('workspace loading never falls back to manual credentials', async () => {
+    let finish!: (value: Awaited<ReturnType<typeof dataService.getSlackWorkspaces>>) => void;
+    jest.mocked(dataService.getSlackWorkspaces).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    renderChannels();
+    await openAdd(user);
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_channels_loading');
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_channel_link_shared' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeDisabled();
+    await act(async () => finish({ configured: true, canManage: true, workspaces: [workspace] }));
+    await screen.findByRole('combobox', { name: 'com_ui_channels_slack_bot' });
+    expect(dataService.createAgentChannel).not.toHaveBeenCalled();
+  });
+
+  test.each([false, true])(
+    'workspace read failure blocks creation instead of falling back to manual (cached=%s)',
+    async (cached) => {
+      const user = userEvent.setup();
+      if (!cached)
+        jest.mocked(dataService.getSlackWorkspaces).mockRejectedValue(new Error('private-error'));
+      const { client } = renderChannels();
+      await openAdd(user);
+      if (cached) {
+        await chooseBot(user);
+        jest.mocked(dataService.getSlackWorkspaces).mockRejectedValue(new Error('private-error'));
+        await act(async () => {
+          await client.invalidateQueries([QueryKeys.slackWorkspaces]);
+        });
+      }
+      await screen.findByText('com_ui_channels_workspace_load_error');
+      expect(
+        screen.queryByRole('button', { name: 'com_ui_channel_link_shared' }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeDisabled();
+      expect(screen.queryByText('private-error')).not.toBeInTheDocument();
+      jest
+        .mocked(dataService.getSlackWorkspaces)
+        .mockResolvedValue({ configured: true, canManage: true, workspaces: [workspace] });
+      await user.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+      await screen.findByRole('combobox', { name: 'com_ui_channels_slack_bot' });
+      expect(
+        screen.queryByRole('button', { name: 'com_ui_channel_link_shared' }),
+      ).not.toBeInTheDocument();
+      expect(dataService.createAgentChannel).not.toHaveBeenCalled();
+    },
+  );
+  test('loading another page keeps the selected picker visible while creation waits', async () => {
+    let finish!: (value: Awaited<ReturnType<typeof dataService.getSlackWorkspaces>>) => void;
+    jest.mocked(dataService.getSlackWorkspaces).mockImplementation(async (cursor) => {
+      if (cursor)
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      return { configured: true, canManage: true, workspaces: [workspace], next: 'page-2' };
+    });
+    const user = userEvent.setup();
+    renderChannels();
+    await openAdd(user);
+    await chooseBot(user);
+    const picker = screen.getByRole('combobox', { name: 'com_ui_channels_slack_bot' });
+    const more = screen.getByRole('button', { name: 'com_ui_slack_workspaces_more' });
+    await user.click(more);
+    expect(picker).toBeInTheDocument();
+    expect(picker).toBeDisabled();
+    expect(more).toBeInTheDocument();
+    expect(more).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeDisabled();
+    await act(async () => finish({ configured: true, canManage: true, workspaces: [] }));
+    await waitFor(() => expect(picker).toBeEnabled());
+    expect(picker).toHaveTextContent('com_ui_channels_slack_app_fallback');
+    expect(screen.getByRole('button', { name: 'com_ui_continue' })).toBeEnabled();
   });
 });

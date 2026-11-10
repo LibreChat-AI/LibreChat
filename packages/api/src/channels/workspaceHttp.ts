@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { configureSlackAppSchema } from 'librechat-data-provider';
 import { getTenantId, tenantStorage, TransactionUnavailableError } from '@librechat/data-schemas';
 import type { SlackWorkspaceStorage } from '@librechat/data-schemas';
 import type { Request, Response, RequestHandler } from 'express';
@@ -18,18 +19,7 @@ const appId = z
   .string()
   .regex(/^A[A-Z0-9]+$/)
   .max(256);
-const configureBody = z
-  .object({
-    appId,
-    clientId: z
-      .string()
-      .regex(/^\d+\.\d+$/)
-      .max(512),
-    clientSecret: z.string().trim().min(1).max(512),
-    signingSecret: z.string().trim().min(1).max(512),
-    expectedRevision: identifier.optional(),
-  })
-  .strict();
+const configureBody = configureSlackAppSchema;
 const connectBody = z
   .object({ workspaceId: identifier.optional(), appId: appId.optional() })
   .strict();

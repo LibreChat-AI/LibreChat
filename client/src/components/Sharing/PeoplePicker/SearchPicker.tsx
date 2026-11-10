@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Search } from 'lucide-react';
 import debounce from 'lodash/debounce';
 import * as Ariakit from '@ariakit/react';
-import { Input, Spinner, Skeleton } from '@librechat/client';
+import { Input, Spinner, Skeleton, useNestedPopoverStyle } from '@librechat/client';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -38,10 +38,16 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
   minQueryLengthForNoResults = 2,
 }: SearchPickerProps<TOption>) {
   const localize = useLocalize();
-  const [_open, setOpen] = React.useState(false);
+  const [open, setOpen] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [localQuery, setLocalQuery] = React.useState(query);
+  const popoverStyle = useNestedPopoverStyle();
+  const hasContent =
+    isLoading || options.length > 0 || localQuery.trim().length >= minQueryLengthForNoResults;
   const combobox = Ariakit.useComboboxStore({
+    open: open && hasContent,
+    setOpen,
+    virtualFocus: true,
     resetValueOnHide,
   });
 
@@ -64,13 +70,12 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
   }, [debouncedOnQueryChange]);
 
   const onPickHandler = (option: TOption) => {
+    debouncedOnQueryChange.cancel();
     setLocalQuery('');
     onQueryChange('');
     onPick(option);
-    setOpen(false);
-    if (inputRef.current) {
-      inputRef.current.focus();
-    }
+    inputRef.current?.focus();
+    combobox.hide();
   };
 
   return (
@@ -95,6 +100,7 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
           <Ariakit.Combobox
             render={<Input />}
             ref={inputRef}
+            onFocus={() => setOpen(true)}
             onKeyDown={(e) => {
               if (e.key === 'Escape' && combobox.getState().open) {
                 e.preventDefault();
@@ -102,7 +108,7 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
                 setLocalQuery('');
                 onQueryChange('');
                 debouncedOnQueryChange.cancel();
-                setOpen(false);
+                combobox.hide();
               }
             }}
             store={combobox}
@@ -111,32 +117,29 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
             onChange={(e) => {
               const value = e.target.value;
               setLocalQuery(value);
+              setOpen(true);
               debouncedOnQueryChange(value);
             }}
             value={localQuery}
-            // autoSelect
             placeholder={placeholder || localize('com_ui_select_options')}
             className={cn('h-10 w-full ps-10 text-sm leading-tight', inputClassName)}
           />
         </div>
       </>
       <Ariakit.ComboboxPopover
-        portal={false} //todo fix focus when set to true
+        portal
+        fixed
         gutter={8}
         sameWidth
-        open={
-          isLoading ||
-          options.length > 0 ||
-          (localQuery.trim().length >= minQueryLengthForNoResults && !isLoading)
-        }
         store={combobox}
         unmountOnHide
         autoFocusOnShow={false}
         modal={false}
-        className={cn(
-          'animate-popover border-border-light bg-surface-secondary z-[9999] max-w-[calc(100vw-1rem)] min-w-[min(16rem,calc(100vw-1rem))] overflow-hidden rounded-2xl border shadow-lg',
-          '[pointer-events:auto]', // Override body's pointer-events:none when in modal
-        )}
+        autoFocusOnHide={false}
+        // Shared modal depth determines portal stacking and pointer interaction.
+        style={popoverStyle}
+        data-variant="field"
+        className="popover-ui pointer-events-auto z-50"
       >
         {(() => {
           if (isLoading) {
@@ -160,7 +163,6 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
               <Ariakit.ComboboxItem
                 key={o.key}
                 focusOnHover
-                // hideOnClick
                 value={o.value}
                 selectValueOnClick={false}
                 onClick={() => onPickHandler(o)}

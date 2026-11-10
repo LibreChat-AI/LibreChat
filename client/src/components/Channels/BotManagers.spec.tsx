@@ -61,7 +61,7 @@ beforeEach(() => {
 });
 afterEach(() => jest.restoreAllMocks());
 async function open(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('button', { name: 'com_ui_slack_bot_managers' }));
+  await user.click(screen.getByRole('button', { name: 'com_ui_slack_manage_access_named' }));
   return screen.findByRole('dialog', { name: 'com_ui_slack_bot_managers' });
 }
 
@@ -87,10 +87,10 @@ test('cancel discards edits and returns focus without mutating access', async ()
   await user.click(
     within(dialog).getByRole('button', { name: 'com_ui_slack_bot_managers_remove' }),
   );
-  await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  await user.click(within(dialog).getByRole('button', { name: 'com_ui_cancel' }));
   expect(save).not.toHaveBeenCalled();
   await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'com_ui_slack_bot_managers' })).toHaveFocus(),
+    expect(screen.getByRole('button', { name: 'com_ui_slack_manage_access_named' })).toHaveFocus(),
   );
 });
 
@@ -143,4 +143,57 @@ test('search failures are visible and retryable without closing the manager dial
   await user.click(within(dialog).getByRole('button', { name: 'com_ui_retry' }));
   await user.click(await screen.findByRole('option', { name: /Bob/ }));
   expect(within(dialog).getByRole('button', { name: 'com_ui_save' })).toBeEnabled();
+});
+
+test('keeps guidance in a keyboard-accessible title hint without opening it on entry', async () => {
+  read.mockResolvedValue({ revision: 'r1', managers: [], maxManagers: 50 });
+  const user = userEvent.setup();
+  page();
+  const dialog = await open(user);
+  await within(dialog).findByRole('combobox');
+  expect(dialog).toHaveAccessibleName('com_ui_slack_bot_managers');
+  expect(dialog).toHaveAccessibleDescription('Engineering');
+  expect(dialog).toHaveFocus();
+  expect(screen.queryByText('com_ui_slack_bot_managers_hint')).not.toBeInTheDocument();
+  expect(
+    within(dialog).queryByText('com_ui_slack_bot_managers_description'),
+  ).not.toBeInTheDocument();
+  expect(within(dialog).queryByText('com_ui_slack_bot_managers_empty')).not.toBeInTheDocument();
+  expect(
+    within(dialog).queryByText('com_ui_slack_bot_managers_revocation'),
+  ).not.toBeInTheDocument();
+  await user.tab();
+  expect(
+    within(dialog).getByRole('button', { name: 'com_ui_slack_bot_managers_hint' }),
+  ).toHaveFocus();
+  expect(await screen.findByText('com_ui_slack_bot_managers_hint')).toBeVisible();
+  await user.tab();
+  await waitFor(() =>
+    expect(screen.queryByText('com_ui_slack_bot_managers_hint')).not.toBeInTheDocument(),
+  );
+  expect(within(dialog).getByRole('combobox')).toHaveFocus();
+});
+
+test('prevents cancelling a pending save and closes after it succeeds', async () => {
+  let complete!: () => void;
+  save.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        complete = resolve;
+      }),
+  );
+  const user = userEvent.setup();
+  page();
+  const dialog = await open(user);
+  await within(dialog).findByText('Alice');
+  await user.click(
+    within(dialog).getByRole('button', { name: 'com_ui_slack_bot_managers_remove' }),
+  );
+  await user.click(within(dialog).getByRole('button', { name: 'com_ui_save' }));
+  expect(within(dialog).getByRole('button', { name: 'com_ui_cancel' })).toBeDisabled();
+  await user.keyboard('{Escape}');
+  expect(dialog).toBeInTheDocument();
+  complete();
+  await waitFor(() => expect(dialog).not.toBeInTheDocument());
+  expect(screen.getByRole('button', { name: 'com_ui_slack_manage_access_named' })).toHaveFocus();
 });

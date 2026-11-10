@@ -1,7 +1,22 @@
 import { useRef, useState } from 'react';
+import { CircleHelpIcon, UsersRound } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, OGDialog, OGDialogTemplate, Spinner } from '@librechat/client';
 import { dataService, MutationKeys, PrincipalType, QueryKeys } from 'librechat-data-provider';
+import {
+  Alert,
+  Button,
+  IconButton,
+  OGDialog,
+  OGDialogContent,
+  OGDialogHeader,
+  OGDialogTitle,
+  OGDialogDescription,
+  OGDialogFooter,
+  OGDialogClose,
+  InfoHoverCard,
+  Spinner,
+  TooltipAnchor,
+} from '@librechat/client';
 import type { SlackWorkspace, SlackBotManager } from 'librechat-data-provider';
 import PeoplePickerSearchItem from '~/components/Sharing/PeoplePicker/PeoplePickerSearchItem';
 import { SearchPicker } from '~/components/Sharing/PeoplePicker/SearchPicker';
@@ -75,6 +90,7 @@ export default function BotManagers({
   const localize = useLocalize();
   const client = useQueryClient();
   const trigger = useRef<HTMLButtonElement | null>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [managers, setManagers] = useState<SlackBotManager[]>([]);
   const query = useQuery(
@@ -109,126 +125,145 @@ export default function BotManagers({
   const tooMany = Boolean(query.data && managers.length > query.data.maxManagers);
   return (
     <>
-      <Button
-        ref={trigger}
-        type="button"
-        variant="outline"
-        disabled={disabled}
-        onClick={() => {
-          mutation.reset();
-          setOpen(true);
-        }}
-      >
-        {localize('com_ui_slack_bot_managers')}
-      </Button>
+      <TooltipAnchor
+        description={localize('com_ui_slack_manage_access')}
+        render={
+          <IconButton
+            ref={trigger}
+            label={localize('com_ui_slack_manage_access_named', {
+              0: `${workspace.teamName} (${workspace.workspaceId})`,
+            })}
+            variant="ghost"
+            size="sm"
+            shape="control"
+            disabled={disabled}
+            onClick={() => {
+              mutation.reset();
+              setOpen(true);
+            }}
+          >
+            <UsersRound className="size-4" aria-hidden="true" />
+          </IconButton>
+        }
+      />
       <OGDialog
         open={open}
         onOpenChange={(value) => {
           if (!mutation.isLoading) setOpen(value);
         }}
       >
-        <OGDialogTemplate
-          className="max-w-lg"
-          headerClassName="break-words"
-          footerClassName="sm:justify-between"
-          title={localize('com_ui_slack_bot_managers')}
-          description={workspace.teamName}
-          cancelDisabled={mutation.isLoading}
+        <OGDialogContent
+          ref={contentRef}
+          tabIndex={-1}
+          focusOutline="hidden"
+          showCloseButton={false}
+          className="w-11/12 max-w-lg"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            contentRef.current?.focus();
+          }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             trigger.current?.focus();
           }}
-          main={
-            <div className="space-y-4 text-sm">
-              <p className="text-text-secondary">
-                {localize('com_ui_slack_bot_managers_description')}
-              </p>
-              {query.isFetching && <Spinner className="size-5" />}
-              {(query.isError || mutation.isError) && (
-                <Alert variant="error">
-                  <p>{localize('com_ui_slack_bot_managers_error')}</p>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={query.isFetching || mutation.isLoading}
-                    onClick={() => {
-                      mutation.reset();
-                      void query.refetch();
-                    }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <OGDialogHeader className="text-start break-words">
+            <div className="flex items-center gap-1.5">
+              <OGDialogTitle>{localize('com_ui_slack_bot_managers')}</OGDialogTitle>
+              <InfoHoverCard text={localize('com_ui_slack_bot_managers_hint')}>
+                <CircleHelpIcon className="text-text-tertiary size-4" aria-hidden="true" />
+              </InfoHoverCard>
+            </div>
+            <OGDialogDescription>{workspace.teamName}</OGDialogDescription>
+          </OGDialogHeader>
+          <div className="space-y-4 py-2 text-sm">
+            {query.isFetching && <Spinner className="size-5" />}
+            {(query.isError || mutation.isError) && (
+              <Alert variant="error">
+                <p>{localize('com_ui_slack_bot_managers_error')}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={query.isFetching || mutation.isLoading}
+                  onClick={() => {
+                    mutation.reset();
+                    void query.refetch();
+                  }}
+                >
+                  {localize('com_ui_slack_bot_managers_reload')}
+                </Button>
+              </Alert>
+            )}
+            {query.isSuccess && !query.isFetching && (
+              <>
+                {!mutation.isLoading && (
+                  <ManagerSearch
+                    workspaceId={workspace.workspaceId}
+                    principalKey={principalKey}
+                    managers={managers}
+                    onAdd={(manager) =>
+                      setManagers((current) =>
+                        current.some((person) => person.id === manager.id)
+                          ? current
+                          : [...current, manager],
+                      )
+                    }
+                  />
+                )}
+                {managers.map((manager) => (
+                  <div
+                    key={manager.id}
+                    className="border-border-light flex items-center justify-between gap-3 rounded-lg border p-3"
                   >
-                    {localize('com_ui_slack_bot_managers_reload')}
-                  </Button>
-                </Alert>
-              )}
-              {query.isSuccess && !query.isFetching && (
-                <>
-                  {!mutation.isLoading && (
-                    <ManagerSearch
-                      workspaceId={workspace.workspaceId}
-                      principalKey={principalKey}
-                      managers={managers}
-                      onAdd={(manager) =>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <PrincipalAvatar
+                        principal={{ ...manager, type: PrincipalType.USER }}
+                        size="sm"
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{manager.name || manager.email}</p>
+                        {manager.name && (
+                          <p className="text-text-secondary truncate text-xs">{manager.email}</p>
+                        )}
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="section-action"
+                      size="compact"
+                      disabled={mutation.isLoading}
+                      aria-label={localize('com_ui_slack_bot_managers_remove', {
+                        0: manager.name || manager.email,
+                      })}
+                      onClick={() =>
                         setManagers((current) =>
-                          current.some((person) => person.id === manager.id)
-                            ? current
-                            : [...current, manager],
+                          current.filter((person) => person.id !== manager.id),
                         )
                       }
-                    />
-                  )}
-                  {managers.length === 0 && (
-                    <p className="text-text-secondary">
-                      {localize('com_ui_slack_bot_managers_empty')}
-                    </p>
-                  )}
-                  {managers.map((manager) => (
-                    <div
-                      key={manager.id}
-                      className="border-border-light flex items-center justify-between gap-3 rounded-lg border p-3"
                     >
-                      <div className="flex min-w-0 items-center gap-3">
-                        <PrincipalAvatar
-                          principal={{ ...manager, type: PrincipalType.USER }}
-                          size="sm"
-                        />
-                        <div className="min-w-0">
-                          <p className="truncate font-medium">{manager.name || manager.email}</p>
-                          {manager.name && (
-                            <p className="text-text-secondary truncate text-xs">{manager.email}</p>
-                          )}
-                        </div>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="section-action"
-                        size="compact"
-                        disabled={mutation.isLoading}
-                        aria-label={localize('com_ui_slack_bot_managers_remove', {
-                          0: manager.name || manager.email,
-                        })}
-                        onClick={() =>
-                          setManagers((current) =>
-                            current.filter((person) => person.id !== manager.id),
-                          )
-                        }
-                      >
-                        {localize('com_nav_tool_remove')}
-                      </Button>
-                    </div>
-                  ))}
-                  <p className="text-text-secondary">
-                    {localize('com_ui_slack_bot_managers_revocation')}
-                  </p>
-                  {tooMany && (
-                    <Alert variant="warning">
-                      {localize('com_ui_slack_bot_managers_limit', { 0: query.data.maxManagers })}
-                    </Alert>
-                  )}
-                </>
-              )}
-            </div>
-          }
-          selection={
+                      {localize('com_nav_tool_remove')}
+                    </Button>
+                  </div>
+                ))}
+                {tooMany && (
+                  <Alert variant="warning">
+                    {localize('com_ui_slack_bot_managers_limit', { 0: query.data.maxManagers })}
+                  </Alert>
+                )}
+              </>
+            )}
+          </div>
+          <OGDialogFooter className="sm:justify-between">
+            <OGDialogClose asChild>
+              <Button
+                variant="outline"
+                aria-label={localize('com_ui_cancel')}
+                disabled={mutation.isLoading}
+              >
+                {localize('com_ui_cancel')}
+              </Button>
+            </OGDialogClose>
             <Button
               type="button"
               disabled={
@@ -246,8 +281,8 @@ export default function BotManagers({
               {mutation.isLoading && <Spinner className="size-4" aria-hidden="true" />}
               {localize('com_ui_save')}
             </Button>
-          }
-        />
+          </OGDialogFooter>
+        </OGDialogContent>
       </OGDialog>
     </>
   );
