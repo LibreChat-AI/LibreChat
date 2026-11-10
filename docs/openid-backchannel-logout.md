@@ -37,6 +37,10 @@ number of times with its own backoff; it does not retry indefinitely.
      revoked is not denied while the mode stays `off`.
    No mode change clears a record's `revokedAt` field. Switching back to `record` or `enforce`
    enforces the same revocations again. Rollback does not delete authentication data.
+   A session's existing association survives `off` too: a refresh taken while the mode is `off`
+   carries it forward unchanged instead of clearing it. A session created or rotated by the admin
+   panel while the mode is `off` has no association; after switching back to `record`, that
+   session still authenticates, and after switching back to `enforce`, it must sign in once.
 4. A logout notification the provider never delivers (network failure, provider outage, a logout
    path that does not call the configured URL) cannot be enforced; this design does not poll the
    provider to compensate, so coverage is limited to notifications that are actually delivered.
