@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
-import { SteerEvents } from 'librechat-data-provider';
+import { SteerEvents, DEFAULT_STEER_MAX_LENGTH } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
 import type {
@@ -16,13 +16,12 @@ import {
 } from '~/stream/interfaces/IJobStore';
 import { toSteerFileRef, collectFileIds, buildOwnerFilter } from './refs';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { sanitizeFileForTransmit } from '../../utils/message';
 import { isSteeringSupported } from './runtime';
 import { getReferencedQuotes } from '~/utils';
 
 /** Attachment cap per steer, mirroring the composer's practical limits. */
 export const STEER_MAX_FILES = 10;
-
-const DEFAULT_STEER_MAX_LENGTH = 16000;
 
 /**
  * How long a cancel waits for its disarm to publish before answering anyway.
@@ -218,7 +217,7 @@ async function resolveSteerFiles(
   const resolved: Partial<TFile>[] = [];
   for (const id of ids) {
     const doc = docsById.get(id);
-    const ref = doc == null ? null : toSteerFileRef(doc);
+    const ref = doc == null ? null : toSteerFileRef(sanitizeFileForTransmit(doc));
     if (ref == null) {
       return { error: 'INVALID_FILES' };
     }
@@ -236,8 +235,8 @@ function hasTenantMismatch(
 }
 
 /** DELIBERATELY quote-independent and display-metadata-independent: the
- *  legacy 3-field hash saw these same file refs before `llmDeliveryPath` was
- *  added, so a lost-ACK retry can replay its receipt across rollout versions.
+ *  legacy 3-field hash saw these same file refs before `llmDeliveryPath` and
+ *  `textPreview`, so a lost-ACK retry can replay across rollout versions.
  *  Quote identity is enforced separately via
  *  `SteerReceipt.requestedQuotesFingerprint`, which only quote-aware readers
  *  consult. */
@@ -247,7 +246,9 @@ function steerFingerprint(
   preempt: boolean,
 ): string {
   const stableFiles = (files ?? []).map((file) =>
-    Object.fromEntries(Object.entries(file).filter(([key]) => key !== 'llmDeliveryPath')),
+    Object.fromEntries(
+      Object.entries(file).filter(([key]) => key !== 'llmDeliveryPath' && key !== 'textPreview'),
+    ),
   );
   return createHash('sha256')
     .update(JSON.stringify({ text, files: stableFiles, preempt }))

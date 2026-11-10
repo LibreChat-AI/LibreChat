@@ -6351,6 +6351,30 @@ describe('createToolExecuteHandler', () => {
       });
     }
 
+    it('hands refs provisioned by a read_file batch to that sandbox read', async () => {
+      const fresh = {
+        id: 'fresh-1',
+        resource_id: 'user-1',
+        storage_session_id: 'sess-fresh',
+        name: 'input.csv',
+        kind: 'user' as const,
+      };
+      const readSandboxFile = jest.fn(async () => ({ content: 'a,b' }));
+      const handler = makeSandboxAuthoringHandler({
+        provisionFiles: jest.fn(async () => [fresh]),
+        readSandboxFile,
+      });
+
+      const [result] = await invokeHandler(handler, [
+        { id: 'first_read', name: Constants.READ_FILE, args: { path: '/mnt/data/input.csv' } },
+      ]);
+
+      expect(result.status).toBe('success');
+      expect(readSandboxFile).toHaveBeenCalledWith(
+        expect.objectContaining({ file_path: '/mnt/data/input.csv', files: [fresh] }),
+      );
+    });
+
     it('rejects exact replacement amplification before writing a non-attached sandbox file', async () => {
       const writeSandboxFile = jest.fn();
       const handler = makeSandboxAuthoringHandler({

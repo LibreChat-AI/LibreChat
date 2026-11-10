@@ -1,13 +1,14 @@
 import { memo, useId, useMemo, useState } from 'react';
 import { Button, IconButton } from '@librechat/client';
 import { ChevronDown, Download, Files } from 'lucide-react';
+import { useExpandCollapse } from '@librechat/chat/components';
 import type {
   TAttachment,
   TFile,
   WorkspaceChange as WorkspaceChangeMetadata,
 } from 'librechat-data-provider';
-import { useExpandCollapse, useLocalize } from '~/hooks';
 import { useAttachmentLink } from './LogLink';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 type StatefulWorkspaceAttachment = TAttachment & {

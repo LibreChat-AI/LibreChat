@@ -11,7 +11,7 @@ import {
 } from 'librechat-data-provider';
 import type { FilterQuery, Model, PipelineStage, ProjectionType, Types } from 'mongoose';
 import type { AgentSortOption, AgentToolResources } from 'librechat-data-provider';
-import type { IAgent, IAclEntry, IUser, ActionQuery, CacheStore } from '~/types';
+import type { IAgent, IAclEntry, IMongoFile, IUser, ActionQuery, CacheStore } from '~/types';
 import { evictAuthUserDocsForUsers, isAuthUserDocCacheEnabled } from '~/utils/eviction';
 import { withCodeEnvironmentReferences } from './codeEnvironment';
 import { OWNER_ACL_PERMISSION_BIT_SUPERSETS } from './aclEntry';
@@ -250,6 +250,24 @@ export class AgentSortCursorError extends Error {
   constructor(readonly failure: AgentSortCursorFailure) {
     super(`Agent sort cursor ${failure}`);
     this.name = 'AgentSortCursorError';
+  }
+}
+
+/** Options a caller passes after authorizing a restore against the agent it read. */
+export interface RevertAgentVersionOptions {
+  /** Authorized tools; replace the snapshot's, which were never checked for this user. */
+  tools?: string[];
+  /** Index resolved for `tools`. Derived from the restored tools when omitted. */
+  mcpServerNames?: string[];
+  /** The revision the caller authorized against; the restore is refused once it moves. */
+  expectedUpdatedAt?: Date;
+}
+
+export class AgentRevisionConflictError extends Error {
+  readonly statusCode = 409;
+  constructor() {
+    super('Agent was modified while reverting; reload and try again');
+    this.name = 'AgentRevisionConflictError';
   }
 }
 
@@ -1101,6 +1119,7 @@ export function createAgentMethods(
   revertAgentVersion: (
     searchParameter: FilterQuery<IAgent>,
     versionIndex: number,
+    options?: RevertAgentVersionOptions,
   ) => Promise<IAgent>;
   countPromotedAgents: () => Promise<number>;
   addAgentResourceFile: ({
@@ -1798,6 +1817,11 @@ export function createAgentMethods(
   /**
    * Removes the given file_ids from every agent's `tool_resources.*.file_ids`
    * so file deletion cannot leave orphaned stubs behind (see issue #12776).
+   *
+   * Only ids that no File document holds are removed. `file_id` is not unique on its own, so a
+   * record another owner keeps under the same id still backs that owner's agent references. The
+   * lookup runs in the caller's tenant scope like the update below, and a failed lookup rejects
+   * before any agent is touched instead of reading as "no holder".
    */
   async function removeAgentResourceFilesFromAllAgents({
     file_ids,
@@ -1808,14 +1832,21 @@ export function createAgentMethods(
       return { matchedCount: 0, modifiedCount: 0 };
     }
 
+    const File = mongoose.models.File as Model<IMongoFile>;
+    const held = new Set(await File.distinct('file_id', { file_id: { $in: file_ids } }));
+    const orphaned = file_ids.filter((fileId) => !held.has(fileId));
+    if (orphaned.length === 0) {
+      return { matchedCount: 0, modifiedCount: 0 };
+    }
+
     const Agent = mongoose.models.Agent as Model<IAgent>;
 
     const orQuery = TOOL_RESOURCE_KEYS.map((key) => ({
-      [`tool_resources.${key}.file_ids`]: { $in: file_ids },
+      [`tool_resources.${key}.file_ids`]: { $in: orphaned },
     }));
 
     const pullAllOps = TOOL_RESOURCE_KEYS.reduce<Record<string, string[]>>((acc, key) => {
-      acc[`tool_resources.${key}.file_ids`] = file_ids;
+      acc[`tool_resources.${key}.file_ids`] = orphaned;
       return acc;
     }, {});
 
@@ -2658,10 +2689,15 @@ export function createAgentMethods(
 
   /**
    * Reverts an agent to a specific version in its version history.
+   *
+   * The MCP server index is always rewritten for the restored tools rather than taken from
+   * the snapshot: a snapshot may predate the index or name servers its tools no longer use,
+   * and agent-scoped MCP access is granted from this index.
    */
   async function revertAgentVersion(
     searchParameter: FilterQuery<IAgent>,
     versionIndex: number,
+    options: RevertAgentVersionOptions = {},
   ): Promise<IAgent> {
     const Agent = mongoose.models.Agent as Model<IAgent>;
     const agent = await Agent.findOne(searchParameter);
@@ -2675,6 +2711,12 @@ export function createAgentMethods(
 
     const revertToVersion = { ...(agent.versions[versionIndex] as Record<string, unknown>) };
     const originalRevision = (agent as unknown as IAgent & { updatedAt: Date }).updatedAt;
+    if (
+      options.expectedUpdatedAt != null &&
+      new Date(options.expectedUpdatedAt).getTime() !== new Date(originalRevision).getTime()
+    ) {
+      throw new AgentRevisionConflictError();
+    }
     delete revertToVersion._id;
     delete revertToVersion.id;
     delete revertToVersion.versions;
@@ -2699,6 +2741,21 @@ export function createAgentMethods(
         revertToVersion.skills_enabled = false;
       }
     }
+
+    if (options.tools) {
+      revertToVersion.tools = options.tools;
+    }
+    const restoredTools = Array.isArray(revertToVersion.tools)
+      ? (revertToVersion.tools as string[])
+      : (agent.tools ?? []);
+    revertToVersion.mcpServerNames =
+      options.mcpServerNames ??
+      rebuildMCPServerNames(
+        restoredTools,
+        Array.isArray(revertToVersion.mcpServerNames)
+          ? (revertToVersion.mcpServerNames as string[])
+          : (agent.mcpServerNames ?? []),
+      );
 
     const unsetOnRestore: Record<string, 1> = {};
     for (const field of [
@@ -2741,7 +2798,8 @@ export function createAgentMethods(
       },
     );
     if (!revertedAgent) {
-      throw new Error('Agent not found');
+      /** The agent was read above, so a miss is the revision filter refusing a newer write. */
+      throw new AgentRevisionConflictError();
     }
     return revertedAgent;
   }

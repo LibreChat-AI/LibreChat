@@ -1,3 +1,5 @@
+import { once } from 'node:events';
+import { Readable } from 'node:stream';
 import {
   Tools,
   FileContext,
@@ -22,6 +24,7 @@ import {
   createCodeApiUploadRegistry,
   withCodeApiUploadSlot,
 } from '~/utils/code';
+import { isStorageNotFoundError } from '~/files/encode/utils';
 import { codeExecutionHeaders } from '~/agents/execution';
 import { buildCodeEnvDownloadQuery } from './identity';
 import { getCodeEnvUploadFilename } from './form';
@@ -314,4 +317,122 @@ export function appendCodeFileContextLine(
     return `${toolContext}${contextLine}`;
   }
   return `${CODE_FILE_CONTEXT_HEADERS[location]}${contextLine}`;
+}
+
+/** Dynamic tool context key for code files whose stored copy was deleted. */
+const MISSING_CODE_FILES_CONTEXT_KEY = 'missing_code_files';
+
+/**
+ * Names the conversation files that could not be restored into the code environment because
+ * storage no longer has them, so the model does not look for them there.
+ */
+export function formatMissingCodeFilesNote(filenames: string[]): string {
+  if (!filenames.length) {
+    return '';
+  }
+  const names = filenames.map((name) => `"${name}"`).join(', ');
+  return (
+    `The following conversation files were deleted from storage and are not available in the code environment: ${names}. ` +
+    'If they are needed, ask the user to upload them again.'
+  );
+}
+
+/**
+ * Raised when storage no longer has a code file's source object. Only the storage read throws
+ * it, so a 404 from the Code API upload is never mistaken for a deleted file. `code` keeps the
+ * operator-facing failure category `missing_backing_object`.
+ */
+export class CodeSourceMissingError extends Error {
+  readonly code = 'NotFound';
+
+  constructor() {
+    super('The source object of a code file is missing from storage.');
+    this.name = 'CodeSourceMissingError';
+  }
+}
+
+function isReadableStream(value: unknown): value is Readable {
+  return value instanceof Readable;
+}
+
+/**
+ * Opens a code file's source from storage, naming a storage miss as `CodeSourceMissingError`.
+ * Local storage hands back a stream that only reports a missing file once read, so a stream is
+ * held until its first chunk or error; the chunk stays buffered for the upload.
+ */
+export async function openCodeFileSource<T>(
+  open: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  try {
+    const source = await open();
+    if (isReadableStream(source) && !source.readableEnded) {
+      try {
+        await once(source, 'readable', signal ? { signal } : undefined);
+      } catch (error) {
+        /* The caller never receives this stream, so nothing else can close it. */
+        source.destroy();
+        throw error;
+      }
+    }
+    return source;
+  } catch (error) {
+    if (isStorageNotFoundError(error)) {
+      throw new CodeSourceMissingError();
+    }
+    throw error;
+  }
+}
+
+/** Puts the missing-files note under its own context key, which no workspace rebuild replaces. */
+export function setMissingCodeFilesContext(
+  dynamicToolContextMap: Record<string, unknown>,
+  missingFilesContext: string | undefined,
+): void {
+  if (missingFilesContext) {
+    dynamicToolContextMap[MISSING_CODE_FILES_CONTEXT_KEY] = missingFilesContext;
+  }
+}
+
+/**
+ * Tallies the reupload failures of one priming pass. A file whose source storage deleted is
+ * named to the model instead of failing the turn; every other failure, including a Code API
+ * 404, can still require resource recovery.
+ */
+export function createCodeReuploadFailures(): {
+  add: (
+    error: unknown,
+    category: string,
+    file: Pick<CodeContextFile, 'file_id' | 'filename'>,
+  ) => void;
+  readonly count: number;
+  readonly missingCount: number;
+  requiresRecovery: (required: number, primed: number) => boolean;
+  recoveryCategory: () => string;
+  missingFilesContext: () => string;
+} {
+  let count = 0;
+  const categories = new Set<string>();
+  const missingFilenames: string[] = [];
+  return {
+    add: (error, category, file) => {
+      count += 1;
+      if (error instanceof CodeSourceMissingError) {
+        missingFilenames.push(file.filename || file.file_id);
+        return;
+      }
+      categories.add(category);
+    },
+    get count() {
+      return count;
+    },
+    get missingCount() {
+      return missingFilenames.length;
+    },
+    requiresRecovery: (required, primed) =>
+      required > 0 && primed === 0 && count === required && categories.size > 0,
+    recoveryCategory: () =>
+      categories.size === 1 ? Array.from(categories)[0] : 'mixed_reupload_failure',
+    missingFilesContext: () => formatMissingCodeFilesNote(missingFilenames),
+  };
 }

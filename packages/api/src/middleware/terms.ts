@@ -17,7 +17,10 @@ export interface TermsAcceptanceGateOptions {
 
 const TERMS_NOT_ACCEPTED_MESSAGE = 'Terms of service must be accepted before using this feature';
 
-/** Reads never start new processing, so the app can load behind the acceptance modal. */
+/**
+ * Reads load data the app needs behind the acceptance modal, so the gate lets them through. A read
+ * route that starts a flow of its own instead of loading data mounts `createTermsRouteGate`.
+ */
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** Session upkeep, accepting, leaving, and stopping a run; credential management under /api/auth is not exempt. */
@@ -82,27 +85,20 @@ export function createTermsBlockCheck(deps: TermsAcceptanceGateDependencies) {
 }
 
 /**
- * Enforces `interface.termsOfService.modalAcceptance` on the server: an authenticated user who has
- * not accepted the terms may read but not write, so a client that skips the modal cannot start
- * chats, uploads or any other processing. A router that mounts `allowBeforeTermsAcceptance`
- * opts its requests out. Runs after authentication and reads `termsAccepted` from
- * the user document already on the request; the config is resolved only for a user who has not
- * accepted and is attempting a write.
+ * Answers a request from a user who must still accept the terms with a 403 and passes every
+ * other one on, whatever its method. The global gate lets reads through, so a route whose read
+ * method starts a flow of its own (an OAuth authorization, which contacts the provider and writes
+ * flow state) mounts this itself, after authentication and ahead of anything the flow does or
+ * sets. A router's opt-out does not lift it: mounting it is the route asking to be gated.
  */
-export function createTermsAcceptanceGate(
+export function createTermsRouteGate(
   deps: TermsAcceptanceGateDependencies,
   options: TermsAcceptanceGateOptions = {},
 ) {
   const isBlocked = createTermsBlockCheck(deps);
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const user = req.user as TermsUser | undefined;
-    if (SAFE_METHODS.has(req.method) || isOptedOut(req) || isExempt(req.method, getPathname(req))) {
-      next();
-      return;
-    }
-
     try {
-      if (!(await isBlocked(user))) {
+      if (!(await isBlocked(req.user as TermsUser | undefined))) {
         next();
         return;
       }
@@ -123,6 +119,29 @@ export function createTermsAcceptanceGate(
           }
         : { code: TERMS_NOT_ACCEPTED_CODE, message: TERMS_NOT_ACCEPTED_MESSAGE },
     );
+  };
+}
+
+/**
+ * Enforces `interface.termsOfService.modalAcceptance` on the server: an authenticated user who has
+ * not accepted the terms may read but not write, so a client that skips the modal cannot start
+ * chats, uploads or any other processing. A router that mounts `allowBeforeTermsAcceptance`
+ * opts its requests out, and a read route that starts a flow opts back in with
+ * `createTermsRouteGate`. Runs after authentication and reads `termsAccepted` from
+ * the user document already on the request; the config is resolved only for a user who has not
+ * accepted and is attempting a write.
+ */
+export function createTermsAcceptanceGate(
+  deps: TermsAcceptanceGateDependencies,
+  options: TermsAcceptanceGateOptions = {},
+) {
+  const enforce = createTermsRouteGate(deps, options);
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (SAFE_METHODS.has(req.method) || isOptedOut(req) || isExempt(req.method, getPathname(req))) {
+      next();
+      return;
+    }
+    await enforce(req, res, next);
   };
 }
 

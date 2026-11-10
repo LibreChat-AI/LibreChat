@@ -4,16 +4,26 @@ import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import { LoneGroupContext, SoleToolContext, useToolAutoExpand } from '@librechat/chat/react';
+import {
+  FailedRevealContext,
+  useFailedReveal,
+  FoldHeaderContext,
+  ToolAuthWarning,
+} from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import { FailedRevealContext, useFailedReveal } from '../reveal';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
 import ToolCallGroup from '../ToolCallGroup';
-import { FoldHeaderContext } from '../rail';
-import { ToolAuthWarning } from '../auth';
 
 const mockMCPServerNames: string[] = [];
 
+/** Moved components read the localizer from the package, so it delegates to the `~/hooks` mock. */
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
+}));
+
 jest.mock('~/hooks', () => ({
+  scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
   useLocalize: () => (key: string, values?: Record<string | number, string>) => {
     if (key === 'com_ui_ran_n_actions') {
       return `Ran ${values?.[0]} actions`;
@@ -89,8 +99,6 @@ jest.mock('~/hooks', () => ({
     }
     return key;
   },
-  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
-  scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
 }));
 
 jest.mock('~/hooks/MCP', () => {
@@ -171,10 +179,6 @@ jest.mock('@librechat/chat', () => ({
 jest.mock('~/utils', () => ({
   getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-  /** Real implementations: the group header resolves its text through these,
-   *  so stubbing them out would hide the header logic under test. */
-  getBatchActivityLabelPart: jest.requireActual('~/utils/activityLabels').getBatchActivityLabelPart,
-  getActivityLabelText: jest.requireActual('~/utils/activityLabels').getActivityLabelText,
   hasPendingApprovalInPart: jest.requireActual('~/utils/groupToolCalls').hasPendingApprovalInPart,
   hasPendingAuthInPart: jest.requireActual('~/utils/groupToolCalls').hasPendingAuthInPart,
 }));

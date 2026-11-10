@@ -192,6 +192,7 @@ export function createUserGroupMethods(
     limit?: number,
     session?: ClientSession,
   ) => Promise<IGroup[]>;
+  invalidatePrincipalMemberships: (memberIds: string[]) => Promise<void>;
   createGroup: (groupData: Partial<IGroup>, session?: ClientSession) => Promise<IGroup>;
   upsertGroupByExternalId: (
     idOnTheSource: string,
@@ -1265,6 +1266,7 @@ export function createUserGroupMethods(
   }
 
   return {
+    invalidatePrincipalMemberships: invalidateMemberGroupsCache,
     findGroupById,
     findGroupByExternalId,
     findGroupsByExternalIds,

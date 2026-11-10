@@ -52,6 +52,7 @@ import { GenerationJobManager } from '../stream/GenerationJobManager';
 import { ScheduledMCPPolicyError } from './authorization/policy';
 import { buildBalanceUpdateFields } from '../middleware/balance';
 import { getAppConfigOptionsFromUser } from '../app/service';
+import { createTermsBlockCheck } from '../middleware/terms';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { ScheduledMCPBearerError } from '../mcp/errors';
 import { startScheduleErasureSweep } from './erasure';
@@ -165,9 +166,12 @@ export interface SchedulesServiceDeps {
     ) => Promise<number>;
   };
   getAppConfig: (options?: GetAppConfigOptions) => Promise<AppConfig | undefined>;
-  findUserById: (
-    userId: string | Types.ObjectId,
-  ) => Promise<{ _id: Types.ObjectId; tenantId?: string; role?: string } | null>;
+  findUserById: (userId: string | Types.ObjectId) => Promise<{
+    _id: Types.ObjectId;
+    tenantId?: string;
+    role?: string;
+    termsAccepted?: boolean;
+  } | null>;
   /** Reads the balance record together with the credits unexpired in-flight reservations hold. */
   findBalance: (userId: string, options?: { applyReset?: boolean }) => Promise<IBalance | null>;
   /**
@@ -694,7 +698,12 @@ export function createSchedulesService(
       if (user == null) {
         return null;
       }
-      return { id: user._id.toString(), tenantId: user.tenantId, role: user.role };
+      return {
+        id: user._id.toString(),
+        tenantId: user.tenantId,
+        role: user.role,
+        termsAccepted: user.termsAccepted,
+      };
     },
     hasScheduleAccess: async (user) => {
       const role = await methods.getRoleByName(user.role);
@@ -722,7 +731,16 @@ export function createSchedulesService(
           // record in between must never be handed back its starting balance. Each case
           // fences the credit write so it can only create, never restore, credits. The
           // refill-config fields are a genuine sync and never carry a credit.
-          const { user: initUser, tokenCredits, ...syncFields } = updateFields;
+          const {
+            user: initUser,
+            tokenCredits,
+            allotment,
+            allottedAt,
+            lastRefill,
+            ...syncFields
+          } = updateFields;
+          // The grant tuple is written only with the credit, so a racing creator keeps its period.
+          const grant = { allotment, allottedAt, lastRefill };
           if (record == null) {
             // ABSENT record: upsert. The credit rides `$setOnInsert` so a document created
             // by a concurrent charge keeps its charged balance; the refill-config sync is
@@ -731,7 +749,7 @@ export function createSchedulesService(
               set: syncFields,
               setOnInsert: {
                 ...(initUser != null ? { user: initUser } : {}),
-                ...(tokenCredits != null ? { tokenCredits } : {}),
+                ...(tokenCredits != null ? { tokenCredits, ...grant } : {}),
               },
             });
           } else if (tokenCredits != null) {
@@ -739,9 +757,10 @@ export function createSchedulesService(
             // concurrent initializer/charge already set and spent between the read and
             // here. Initialize under a `{ tokenCredits: null }` CAS; on a miss re-read the
             // winner's balance instead of overwriting it.
+            // The allotment rides the CAS so it is written only with the credit it describes.
             const initialized = await deps.initializeNullBalance(user.id, {
               tokenCredits,
-              sync: syncFields,
+              sync: { ...syncFields, ...grant },
             });
             record =
               initialized ?? (await deps.findBalance(user.id, { applyReset: false })) ?? record;
@@ -951,6 +970,9 @@ export function createSchedulesService(
     // count would let multiple tenants collectively exceed fireConcurrency.
     countActiveRunsGlobal: () => runAsSystem(() => methods.countActiveRuns()),
     isOwnerDeleting: (userId) => deps.isUserDeleting(userId),
+    // The HTTP gate's own check, over this service's config reader, so a fire resolves the
+    // owner's effective `modalAcceptance` exactly as their requests do.
+    isTermsBlocked: createTermsBlockCheck({ getAppConfig: deps.getAppConfig }),
     isGloballyDisabled: async () => {
       // Env first: an incident lever that must work even if the DB/config plane is the
       // thing failing (a kill switch that needs a healthy DB is the one that fails when

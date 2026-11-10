@@ -4,10 +4,10 @@ import type { PrimitiveAtom } from 'jotai';
 import type { ReactNode } from 'react';
 
 /**
- * Action ids the user moved into the chat: the popover is hidden and the
- * composer is released, so the chat card is the question's only surface.
+ * Action ids the user moved into the composer popover. A question starts in the chat card, where
+ * it reads in thread order and fits narrow screens; only these ids take over the composer.
  */
-export const collapsedAskActionsAtom: PrimitiveAtom<string[]> = atom<string[]>([]);
+export const expandedAskActionsAtom: PrimitiveAtom<string[]> = atom<string[]>([]);
 
 /** Currently highlighted option row (keyboard cursor), or nothing. */
 export const askAnswerSelectionAtom: PrimitiveAtom<number | null> = atom<number | null>(null);

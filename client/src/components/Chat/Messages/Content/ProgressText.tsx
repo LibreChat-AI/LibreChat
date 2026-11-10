@@ -1,14 +1,20 @@
 import { useCallback, useRef } from 'react';
+import { useStore } from 'jotai';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
+import { phaseReceipts } from '@librechat/chat/react';
 import { Button, disclosureChevronVariants } from '@librechat/client';
 import { isReportableRunStepDuration } from 'librechat-data-provider';
-import { ElapsedTimer, CancelledIcon, ROW_GLYPH_SLOT } from '@librechat/chat/components';
+import {
+  ElapsedTimer,
+  CancelledIcon,
+  ROW_GLYPH_SLOT,
+  useToolPreparation,
+  useFailedReveal,
+} from '@librechat/chat/components';
 import type { ToolCallPhase } from '@librechat/chat';
 import { cn, getRunStepDurationLabels } from '~/utils';
-import { useToolPreparation } from './preparation';
-import { useFailedReveal } from './reveal';
 import { useLocalize } from '~/hooks';
 
 const wrapperClass =
@@ -58,6 +64,7 @@ export default function ProgressText({
   toolPreparationDurationMs,
   toolExecutionDurationMs,
   phaseStartAt,
+  phaseStepId,
   hasInput = true,
   popover = false,
   isExpanded = false,
@@ -85,6 +92,7 @@ export default function ProgressText({
   toolPreparationDurationMs?: number;
   toolExecutionDurationMs?: number;
   phaseStartAt?: number;
+  phaseStepId?: string;
   hasInput?: boolean;
   popover?: boolean;
   isExpanded?: boolean;
@@ -98,15 +106,21 @@ export default function ProgressText({
   const { i18n } = useTranslation();
   const preparationText = useToolPreparation();
   const isRunning = phase === 'running';
+  const receiptStore = useStore();
+  /** Stream receipts are recorded before the matching phase reaches the message renderer. */
+  const receivedAt =
+    phaseStepId != null && phaseStartAt != null
+      ? receiptStore.get(phaseReceipts).get(phaseStepId)?.get(phaseStartAt)
+      : undefined;
   /** A server-authored phase stamp is an identity, not a browser clock origin.
    * On reconnect we can only time from local receipt, never infer cross-host skew. */
   const phaseTimer = useRef<{ stamp?: number; receivedAt: number } | null>(null);
   if (!isRunning || phaseStartAt == null) {
     phaseTimer.current = null;
   } else if (phaseTimer.current?.stamp !== phaseStartAt) {
-    phaseTimer.current = { stamp: phaseStartAt, receivedAt: Date.now() };
+    phaseTimer.current = { stamp: phaseStartAt, receivedAt: receivedAt ?? Date.now() };
   }
-  const localPhaseStart = phaseTimer.current?.receivedAt;
+  const localPhaseStart = receivedAt ?? phaseTimer.current?.receivedAt;
   const rootRef = useRef<HTMLDivElement>(null);
   /** A header above asked for its failures. This control is the disclosure
    *  every card renders, so answering here reaches a failed bash, code,

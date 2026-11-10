@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { reasoningOverrideSchema } from 'librechat-data-provider';
-import { Constants, CODE_APPROVAL_MODES } from 'librechat-data-provider';
+import {
+  Constants,
+  CODE_APPROVAL_MODES,
+  MAX_FILE_TEXT_PREVIEW_LENGTH,
+} from 'librechat-data-provider';
 import type { TReasoningOverride } from 'librechat-data-provider';
 import type { CodeApprovalMode } from 'librechat-data-provider';
 import type { FilterQuery, Model, Types } from 'mongoose';
@@ -431,8 +435,16 @@ function normalizeFiles(files: readonly AgentQueuedTurnFileRef[] | undefined) {
       continue;
     }
     seen.add(fileId);
+    const textPreview = file.textPreview;
+    if (
+      textPreview != null &&
+      (typeof textPreview !== 'string' || textPreview.length > MAX_FILE_TEXT_PREVIEW_LENGTH)
+    ) {
+      throw new TypeError('Agent queued turn file preview has an invalid length');
+    }
     normalized.push({
       file_id: fileId,
+      ...(textPreview != null && { textPreview }),
       ...(normalizeOptionalString(file.type, 256) != null && {
         type: normalizeOptionalString(file.type, 256),
       }),
@@ -570,11 +582,12 @@ function normalizeEnqueue(input: EnqueueAgentQueuedTurnInput) {
 }
 
 function fingerprint(payload: ReturnType<typeof normalizeEnqueue>): string {
-  /** Delivery routing is display metadata, not user intent. Excluding it keeps
-   * retries compatible with replicas deployed before the field was persisted. */
+  /** Display metadata is not user intent; retries must survive mixed-version replicas. */
   const stableIntent = {
     ...payload,
-    files: payload.files?.map(({ llmDeliveryPath: _displayMetadata, ...file }) => file),
+    files: payload.files?.map(
+      ({ llmDeliveryPath: _deliveryPath, textPreview: _preview, ...file }) => file,
+    ),
   };
   return createHash('sha256').update(JSON.stringify(stableIntent)).digest('base64url');
 }

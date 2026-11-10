@@ -13,6 +13,9 @@ type MessageRowProps = {
   message?: TMessage;
   label: string;
   hoverLabel?: string | null;
+  /** Replaces the avatar and name row with its assistive technology text, for a turn whose author
+   *  the page already shows. */
+  authorHidden?: boolean;
   icon: ReactNode;
   children: ReactNode;
   footer: ReactNode;
@@ -85,6 +88,7 @@ export default function MessageRow({
   icon,
   label,
   hoverLabel,
+  authorHidden = false,
   footer,
   children,
   timestamp,
@@ -166,9 +170,17 @@ export default function MessageRow({
             <MessageTimestamp value={timestamp} />
           </h2>
         )}
+        {!hasParallelContent && !isSystem && !isCreatedByUser && authorHidden && (
+          <h2 className="sr-only">
+            {headerPrefix}
+            <HeaderLabel label={label} hoverLabel={hoverLabel} />
+            <MessageTimestamp value={timestamp} />
+          </h2>
+        )}
         {!hasParallelContent &&
           !isSystem &&
           (!isCreatedByUser || showAuthor) &&
+          !authorHidden &&
           renderAuthorHeader({
             icon,
             label,

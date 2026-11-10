@@ -63,6 +63,19 @@ describe('mergeSettledQueuedTurnEvidence', () => {
 });
 
 describe('toQueuedTurnFileRefs', () => {
+  it('keeps a bounded snippet without sending full extracted text to the queue', () => {
+    expect(
+      toQueuedTurnFileRefs([
+        {
+          file_id: 'paste',
+          type: 'text/plain',
+          textPreview: 'p'.repeat(500),
+          text: 'full private text',
+        },
+      ]),
+    ).toEqual([{ file_id: 'paste', type: 'text/plain', textPreview: 'p'.repeat(240) }]);
+  });
+
   it('keeps only files with an id and only the fields the server accepts', () => {
     expect(
       toQueuedTurnFileRefs([
@@ -91,6 +104,35 @@ describe('reconcileServerQueuedTurns', () => {
       server: { id: 'server-a', status: 'queued', revision: 1 },
     });
   });
+
+  it.each(['local', 'stored'] as const)(
+    'keeps a missing preview during %s reconciliation with delivery metadata present',
+    (source) => {
+      const files = [{ file_id: 'paste', type: 'text/plain', llmDeliveryPath: 'text' as const }];
+      const local: QueuedMessage[] =
+        source === 'local'
+          ? [
+              {
+                id: 'local-a',
+                text: 'a',
+                createdAt: 1,
+                clientRequestId: 'a',
+                files: [{ ...files[0], textPreview: 'restored excerpt' }],
+                server: { status: 'sending' },
+              },
+            ]
+          : [];
+      const [row] = reconcileServerQueuedTurns(
+        local,
+        [receipt('a', { files })],
+        settled([]),
+        true,
+        source === 'stored' ? { paste: { textPreview: 'restored excerpt' } } : undefined,
+      );
+      expect(row.files?.[0].textPreview).toBe('restored excerpt');
+      expect(row.files?.[0]).not.toHaveProperty('text');
+    },
+  );
 
   it('drops rows whose admission or cancellation is already settled', () => {
     const next = reconcileServerQueuedTurns(

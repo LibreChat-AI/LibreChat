@@ -16,6 +16,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  formatToolError: jest.requireActual('@librechat/api').formatToolError,
   logAxiosError: jest.fn(),
   oaiToolkit: {
     image_gen_oai: {
@@ -263,5 +264,108 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
         headers: expect.objectContaining({ 'api-key': 'test-api-key' }),
       }),
     );
+  });
+});
+
+describe('OpenAIImageTools - approved error text', () => {
+  const { logger } = require('@librechat/data-schemas');
+  const { logAxiosError } = require('@librechat/api');
+  const SECRET = 'PRIVATE-PROVIDER-DETAIL';
+  const FALLBACK = 'Error: The tool request failed.';
+  let originalEnv;
+
+  const providerError = (status) =>
+    Object.assign(new Error(`${status} ${SECRET}`), {
+      status,
+      response: { status, data: { error: { message: SECRET } } },
+    });
+
+  const createTools = () =>
+    createOpenAIImageTools({
+      isAgent: true,
+      override: false,
+      req: { user: { id: 'test-user' } },
+      imageFiles: [
+        {
+          file_id: 'source-image',
+          source: 'local',
+          filepath: 'source-image.png',
+          filename: 'source-image.png',
+          type: 'image/png',
+        },
+      ],
+    });
+
+  const failGeneration = (error) =>
+    OpenAI.mockImplementation(() => ({
+      images: { generate: jest.fn().mockRejectedValue(error) },
+    }));
+
+  /** True when any logged argument, including an error message, carries the text. */
+  const logged = (text) =>
+    [logger.warn, logger.error, logger.debug, logAxiosError]
+      .flatMap((method) => method.mock.calls.flat())
+      .some((arg) => `${arg instanceof Error ? arg.message : JSON.stringify(arg)}`.includes(text));
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    originalEnv = { ...process.env };
+    process.env.IMAGE_GEN_OAI_API_KEY = 'test-api-key';
+    delete process.env.IMAGE_GEN_OAI_BASEURL;
+    delete process.env.IMAGE_GEN_OAI_AZURE_API_VERSION;
+    getStrategyFunctions.mockReturnValue({
+      getDownloadStream: jest.fn(async () => Readable.from([Buffer.from('image-data')])),
+    });
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('words a failing generation from its status, never the provider message', async () => {
+    failGeneration(providerError(400));
+    const [imageGenTool] = createTools();
+
+    const [text] = await imageGenTool.func({ prompt: 'test prompt' });
+
+    expect(text).toBe(
+      'Error: OpenAI image generation rejected the request parameters; check them and try again (status 400).',
+    );
+    expect(logger.warn).toHaveBeenCalledWith('[OpenAI image generation] Tool request failed', {
+      status: 400,
+    });
+    expect(logged(SECRET)).toBe(false);
+  });
+
+  it('returns the stable fallback for a generation failure without a status', async () => {
+    failGeneration(new Error(`connect ECONNREFUSED ${SECRET}`));
+    const [imageGenTool] = createTools();
+
+    const [text] = await imageGenTool.func({ prompt: 'test prompt' });
+
+    expect(text).toBe(FALLBACK);
+    expect(logged(SECRET)).toBe(false);
+  });
+
+  it('words a failing edit from its status, never the provider message', async () => {
+    axios.post.mockRejectedValue(providerError(401));
+    const [, imageEditTool] = createTools();
+
+    const [text] = await imageEditTool.func({ prompt: 'test prompt', image_ids: ['source-image'] });
+
+    expect(text).toBe(
+      'Error: OpenAI image editing rejected the configured credentials (status 401).',
+    );
+    expect(logged(SECRET)).toBe(false);
+  });
+
+  it('returns the stable fallback for an edit failure without a status', async () => {
+    axios.post.mockRejectedValue(new Error(`socket hang up ${SECRET}`));
+    const [, imageEditTool] = createTools();
+
+    const [text] = await imageEditTool.func({ prompt: 'test prompt', image_ids: ['source-image'] });
+
+    expect(text).toBe(FALLBACK);
+    expect(logged(SECRET)).toBe(false);
   });
 });

@@ -52,6 +52,75 @@ describe('Bedrock OpenAI context windows', () => {
   });
 });
 
+describe('Bedrock NVIDIA Nemotron context windows', () => {
+  it.each([
+    ['nvidia.nemotron-super-3-120b', 256000],
+    ['nvidia.nemotron-nano-3-30b', 256000],
+    ['nvidia.nemotron-nano-9b-v2', 128000],
+    ['nvidia.nemotron-nano-12b-v2', 128000],
+  ])('resolves %s to its Bedrock context window', (model, context) => {
+    for (const prefix of ['', 'us.', 'global.']) {
+      expect(getModelMaxTokens(`${prefix}${model}`, EModelEndpoint.bedrock)).toBe(context);
+    }
+  });
+
+  it('keeps unknown NVIDIA models on the fallback and honors endpoint overrides', () => {
+    expect(getModelMaxTokens('nvidia.unknown-model', EModelEndpoint.bedrock)).toBeUndefined();
+    const override: EndpointTokenConfig = {
+      'nvidia.nemotron-super-3-120b': { context: 64000, prompt: 1, completion: 1 },
+    };
+    expect(
+      getModelMaxTokens('nvidia.nemotron-super-3-120b', EModelEndpoint.bedrock, override),
+    ).toBe(64000);
+  });
+});
+
+describe('Bedrock vendor-prefixed context windows', () => {
+  it.each([
+    ['ai21.jamba-1-5-large-v1:0', 256000],
+    ['ai21.jamba-1-5-mini-v1:0', 256000],
+    ['anthropic.claude-mythos-preview', 1000000],
+    ['google.gemma-3-4b-it', 128000],
+    ['google.gemma-3-12b-it', 128000],
+    ['google.gemma-3-27b-it', 128000],
+    ['minimax.minimax-m2', 1000000],
+    ['minimax.minimax-m2.1', 196000],
+    ['minimax.minimax-m2.5', 196000],
+    ['mistral.devstral-2-123b', 256000],
+    ['mistral.magistral-small-2509', 128000],
+    ['mistral.ministral-3-3b-instruct', 128000],
+    ['mistral.ministral-3-8b-instruct', 128000],
+    ['mistral.ministral-3-14b-instruct', 128000],
+    ['mistral.voxtral-mini-3b-2507', 32768],
+    ['mistral.voxtral-small-24b-2507', 32768],
+    ['openai.gpt-5.4', 950000],
+    ['openai.gpt-5.5', 950000],
+    ['openai.gpt-6.1-terra', 950000],
+    ['openai.gpt-oss-safeguard-20b', 128000],
+    ['openai.gpt-oss-safeguard-120b', 128000],
+    ['qwen.qwen3-32b-v1:0', 32768],
+    ['qwen.qwen3-235b-a22b-2507-v1:0', 262144],
+    ['qwen.qwen3-coder-30b-a3b-v1:0', 262144],
+    ['qwen.qwen3-coder-480b-a35b-v1:0', 262144],
+    ['qwen.qwen3-coder-next', 262144],
+    ['qwen.qwen3-next-80b-a3b', 256000],
+    ['qwen.qwen3-vl-235b-a22b', 256000],
+    ['writer.palmyra-vision-7b', 4096],
+    ['writer.palmyra-x4-v1:0', 128000],
+    ['writer.palmyra-x5-v1:0', 128000],
+    ['xai.grok-4.6', 500000],
+    ['xai.grok-4.7', 524288],
+    ['zai.glm-4.7', 203000],
+    ['zai.glm-4.7-flash', 203000],
+    ['zai.glm-5', 200000],
+    ['zai.glm-5.3', 1000000],
+  ])('resolves %s to its Bedrock context window', (model, context) => {
+    for (const prefix of ['', 'us.', 'global.']) {
+      expect(getModelMaxTokens(`${prefix}${model}`, EModelEndpoint.bedrock)).toBe(context);
+    }
+  });
+});
+
 describe('getModelMaxTokens partial-override fallback', () => {
   const partialOverride: EndpointTokenConfig = {
     'custom-model': { prompt: 1, completion: 2, context: 32000, output: 4096 },

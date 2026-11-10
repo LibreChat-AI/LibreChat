@@ -10,6 +10,7 @@ const {
   MCPApiKeyReentryRequiredError,
   MCPOAuthSecretReentryRequiredError,
 } = require('@librechat/api');
+const { TERMS_NOT_ACCEPTED_CODE } = require('librechat-data-provider');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 
 function generateTestCsrfToken(flowId) {
@@ -40,6 +41,7 @@ const mockRegistryInstance = {
 };
 let mockMCPUseAllowed = true;
 let mockRequestConfig = {};
+let mockTermsConfig = {};
 const mockLoadMCPServerCatalogs = jest.fn().mockResolvedValue({
   serverTools: new Map(),
   serversWithoutTools: [],
@@ -190,14 +192,20 @@ jest.mock('~/cache', () => ({
   getLogStores: jest.fn(),
 }));
 
-jest.mock('~/server/middleware', () => ({
-  requireJwtAuth: (req, res, next) => next(),
-  configMiddleware: (req, res, next) => {
-    req.config = mockRequestConfig;
-    next();
-  },
-  canAccessMCPServerResource: () => (req, res, next) => next(),
-}));
+jest.mock('~/server/middleware', () => {
+  const { createTermsAcceptanceGate, createTermsRouteGate } = jest.requireActual('@librechat/api');
+  const deps = { getAppConfig: async () => mockTermsConfig };
+  /** The same gates the app mounts, so each route is exercised behind them. */
+  return {
+    requireJwtAuth: createTermsAcceptanceGate(deps),
+    requireTermsAcceptanceOnRead: createTermsRouteGate(deps),
+    configMiddleware: (req, res, next) => {
+      req.config = mockRequestConfig;
+      next();
+    },
+    canAccessMCPServerResource: () => (req, res, next) => next(),
+  };
+});
 
 jest.mock(
   '~/server/middleware/limiters/mcpAppAdmissionLimiter',
@@ -271,6 +279,7 @@ describe('MCP Routes', () => {
       serversWithoutTools: [],
     });
     currentUser = undefined;
+    mockTermsConfig = {};
     mockResolveAllMcpConfigs.mockResolvedValue({});
     mockResolveMcpConfigNames.mockResolvedValue([]);
     mockRequestConfig = {};
@@ -742,6 +751,84 @@ describe('MCP Routes', () => {
 
       expect(response.status).toBe(400);
       expect(response.body).toEqual({ error: 'Invalid flow state' });
+    });
+
+    describe('when the user must still accept the terms', () => {
+      const termsRequired = { interfaceConfig: { termsOfService: { modalAcceptance: true } } };
+      const query = { userId: 'test-user-id', flowId: 'test-user-id:test-server' };
+      const authorizationUrl = 'https://oauth.example.com/auth?state=fresh-state';
+
+      /** A flow created while the terms were accepted, still pending when acceptance was reset. */
+      const pendingFlow = () => ({
+        getFlowState: jest.fn().mockResolvedValue({
+          status: 'PENDING',
+          createdAt: Date.now(),
+          metadata: {
+            serverUrl,
+            state: 'old-state-value',
+            oauth: { clientId: 'test-client-id' },
+          },
+        }),
+        initFlow: jest.fn().mockResolvedValue(),
+      });
+
+      beforeEach(() => {
+        mockTermsConfig = termsRequired;
+        currentUser = { id: 'test-user-id', termsAccepted: false };
+        mockResolveAllMcpConfigs.mockResolvedValue({ 'test-server': { url: serverUrl } });
+        MCPOAuthHandler.initiateOAuthFlow.mockResolvedValue({
+          authorizationUrl,
+          flowId: 'test-user-id:test-server',
+          flowMetadata: { state: 'fresh-state' },
+        });
+        MCPOAuthHandler.storeStateMapping.mockResolvedValue();
+      });
+
+      it.each(['get', 'head'])(
+        'refuses a %s before it reads or writes any flow state, or sets a cookie',
+        async (method) => {
+          const flowManager = pendingFlow();
+          getLogStores.mockReturnValue({});
+          require('~/config').getFlowStateManager.mockReturnValue(flowManager);
+
+          const response = await request(app)
+            [method]('/api/mcp/test-server/oauth/initiate')
+            .query(query);
+
+          expect(response.status).toBe(403);
+          if (method === 'get') {
+            expect(response.body).toEqual({
+              code: TERMS_NOT_ACCEPTED_CODE,
+              message: expect.any(String),
+            });
+          }
+          expect(response.headers.location).toBeUndefined();
+          expect(response.headers['set-cookie']).toBeUndefined();
+          expect(flowManager.getFlowState).not.toHaveBeenCalled();
+          expect(MCPOAuthHandler.initiateOAuthFlow).not.toHaveBeenCalled();
+          expect(MCPOAuthHandler.deleteStateMapping).not.toHaveBeenCalled();
+          expect(flowManager.initFlow).not.toHaveBeenCalled();
+          expect(MCPOAuthHandler.storeStateMapping).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([
+        ['has accepted', { id: 'test-user-id', termsAccepted: true }, termsRequired],
+        ['is not asked to by the deployment', { id: 'test-user-id', termsAccepted: false }, {}],
+      ])('starts the flow once the user %s', async (_label, user, config) => {
+        currentUser = user;
+        mockTermsConfig = config;
+        const flowManager = pendingFlow();
+        getLogStores.mockReturnValue({});
+        require('~/config').getFlowStateManager.mockReturnValue(flowManager);
+
+        const response = await request(app).get('/api/mcp/test-server/oauth/initiate').query(query);
+
+        expect(response.status).toBe(302);
+        expect(response.headers.location).toBe(authorizationUrl);
+        expect(flowManager.initFlow).toHaveBeenCalledTimes(1);
+        expect(MCPOAuthHandler.storeStateMapping).toHaveBeenCalledTimes(1);
+      });
     });
   });
 

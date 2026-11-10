@@ -19,7 +19,12 @@ import type { TPrincipal } from 'librechat-data-provider';
 import type { PermissionChange, PermissionSnapshot } from './types';
 import type { ResolvedPrincipal } from '~/types/principal';
 import type { PermissionPlan } from './audit';
-import { PERMISSION_AUDIT_UNAVAILABLE, RESOURCE_PERMISSIONS_UNAVAILABLE } from './codes';
+import {
+  PERMISSION_AUDIT_UNAVAILABLE,
+  RESOURCE_PERMISSIONS_UNAVAILABLE,
+  PRINCIPAL_PREPARATION_FAILED,
+  DIRECTORY_VERIFICATION_UNAVAILABLE,
+} from './codes';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { userPrincipalsCache } from '~/cache';
 
@@ -73,6 +78,8 @@ export class ResourcePermissionsBusyError extends Error {
 }
 
 const APPROVED_ERROR_CODES = new Set([
+  PRINCIPAL_PREPARATION_FAILED,
+  DIRECTORY_VERIFICATION_UNAVAILABLE,
   'RESOURCE_PERMISSIONS_BUSY',
   PERMISSION_AUDIT_UNAVAILABLE,
   RESOURCE_PERMISSIONS_UNAVAILABLE,

@@ -351,6 +351,7 @@ jest.mock('@librechat/api', () => ({
   ]),
   extractAgentContent: jest.fn().mockReturnValue([]),
   extractFileContent: jest.fn().mockReturnValue([]),
+  extractResponseInputFileContent: jest.fn().mockReturnValue([]),
   extractMessageContent: jest.fn().mockReturnValue([]),
   extractModelParameterContent: jest.fn().mockReturnValue([]),
   extractSkillContent: jest.fn().mockReturnValue([]),
@@ -502,7 +503,7 @@ jest.mock('~/server/services/PermissionService', () => ({
 }));
 
 jest.mock('~/server/controllers/ModelController', () => ({
-  getModelsConfig: jest.fn().mockResolvedValue({}),
+  getEndpointModelsConfig: jest.fn().mockResolvedValue({}),
 }));
 
 jest.mock('~/server/services/MCP', () => ({
@@ -2643,6 +2644,29 @@ describe('createResponse controller', () => {
       const finalizeStream =
         api.createResponsesEventHandlers.mock.results.at(-1).value.finalizeStream;
       expect(finalizeStream).toHaveBeenCalledWith(mockResponsesUsage);
+    });
+  });
+
+  describe('handoff model validation', () => {
+    it('validates handoff agents through a loader that reads only their own provider models', async () => {
+      const { initializeAgent, discoverConnectedAgents } = require('@librechat/api');
+      const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
+      initializeAgent.mockResolvedValueOnce({
+        id: 'agent-123',
+        model: 'claude-3',
+        model_parameters: {},
+        toolRegistry: new Map(),
+        edges: [{ source: 'agent-123', target: 'agent-handoff' }],
+      });
+
+      await createResponse(req, res);
+
+      const [params] = discoverConnectedAgents.mock.calls.at(-1);
+      expect(params).not.toHaveProperty('modelsConfig');
+      expect(getEndpointModelsConfig).not.toHaveBeenCalled();
+      await params.getEndpointModels('anthropic');
+      expect(getEndpointModelsConfig).toHaveBeenCalledTimes(1);
+      expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, 'anthropic');
     });
   });
 

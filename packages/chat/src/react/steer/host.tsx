@@ -1,9 +1,6 @@
 import { createContext, useContext } from 'react';
 import type {
-  TMessage,
   TConversation,
-  CodeApprovalMode,
-  CodeEnvironmentMode,
   TAgentQueuedTurnReceipt,
   TEnqueueAgentQueuedTurnRequest,
 } from 'librechat-data-provider';
@@ -20,6 +17,7 @@ import type {
 } from '../../core/types';
 import type { StreamStatusResponse } from '../../core/resumable/host';
 import type { FileDeliveryMetadataMap } from '../../core/files';
+import type { CodeApprovalModeInputs } from '../../core/code';
 
 /** Callbacks of a fire-and-forget request, called once it settles. */
 export type SteerRequestCallbacks<Result> = {
@@ -40,7 +38,8 @@ export type SteerMessageKey =
   | 'com_ui_steer_arm_unconfirmed'
   | 'com_ui_steer_cancel_failed'
   | 'com_ui_steer_paused_queued'
-  | 'com_ui_steer_preempt_unsupported';
+  | 'com_ui_steer_preempt_unsupported'
+  | 'com_ui_pasted_text_wait_upload';
 
 /** One mounted chat pane and the conversation it shows. */
 export type SteerPane = {
@@ -75,8 +74,8 @@ export type QueuedTurnCache = {
 };
 
 /**
- * What the steer and queue hooks need from the app that hosts them. Every member is a hook,
- * called by a steer hook exactly where it needs the service, so the host can back each one with
+ * What the steer and queue hooks need from the app that hosts them. Members named `use*` are
+ * hooks, called unconditionally where needed, so the host can back each one with
  * its own query cache, router or store without the package reaching into any of them.
  */
 export interface SteerHost {
@@ -119,20 +118,22 @@ export interface SteerHost {
   useQueuedTurnCache(conversationId: string): QueuedTurnCache;
   /** Reads a conversation's generation state, including steers it could not deliver. */
   useFetchStreamStatus(): (conversationId: string) => Promise<ChatStreamStatus>;
-  /** The latest message of the pane, on the branch on screen. */
-  useLatestMessage(index: number, conversationId: string | null): TMessage | null;
-  /** The code approval mode a new turn would run under. */
-  useCodeApprovalMode(
+  /** The conversation id in the route, when the route names one. */
+  useRouteConversationId(): string | undefined;
+  /** Storage read: the raw values a new turn's code approval mode is computed from, as the app
+   *  holds them. The package derives the mode; see `resolveCodeApprovalModes`. */
+  useCodeApprovalInputs(
     conversation: TConversation | null,
     addedConversation?: TConversation | null,
-    codeEnvironmentMode?: CodeEnvironmentMode,
-  ): CodeApprovalMode | undefined;
+  ): Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'>;
   useLocalize(): (key: SteerMessageKey) => string;
   useNotify(): (notification: SteerNotification) => void;
   /** Delivery metadata of the files the user owns, by id. */
   useFileMap(): FileDeliveryMetadataMap | undefined;
   /** Drops the composer's pending file deletions once its attachments ride a message. */
   useClearFilesToDelete(): () => void;
+  /** Cancels uploads whose exact local paste was accepted inline, without marking them submitted. */
+  cancelUploads?: (fileIds: string[]) => void;
   useSettings(): SteerSettings;
 }
 

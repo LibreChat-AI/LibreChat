@@ -161,6 +161,9 @@ export type RunFileProvenance = {
   inputFileIds: string[];
 };
 
+/** Shared wire bound, not a deployment setting. */
+export const MAX_FILE_TEXT_PREVIEW_LENGTH = 240;
+
 export type TFile = {
   _id?: string;
   __v?: number;
@@ -192,6 +195,8 @@ export type TFile = {
   expiredAt?: string | Date | null;
   preview?: string;
   text?: string;
+  /** Bounded display-only snippet, never editable source text. */
+  textPreview?: string;
   /**
    * Format of the `text` field. `'html'` means the backend produced
    * a sanitized full-document HTML preview the client may inject as

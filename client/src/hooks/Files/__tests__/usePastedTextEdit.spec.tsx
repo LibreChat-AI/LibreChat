@@ -120,6 +120,8 @@ jest.mock('~/Providers', () => ({
   }),
 }));
 
+jest.mock('../useFileHandling', () => ({ retainPasteUpload: jest.fn() }));
+
 jest.mock('../useFileUploadRouter', () => ({
   __esModule: true,
   default: () => mockRouteFiles,
@@ -170,6 +172,7 @@ jest.mock('librechat-data-provider', () => ({
 }));
 
 import usePastedTextEdit from '../usePastedTextEdit';
+import { retainPasteUpload } from '../useFileHandling';
 
 const pastedFile = (overrides: Partial<ExtendedFile> = {}): ExtendedFile => ({
   file_id: 'pasted-file',
@@ -186,6 +189,7 @@ describe('usePastedTextEdit', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockDeleteFile.mockReset();
     mockDeleteFiles.mockResolvedValue(undefined);
     capturedLifecycle = undefined;
     mockState.conversation = {
@@ -259,6 +263,198 @@ describe('usePastedTextEdit', () => {
       setFiles: expect.anything(),
     });
   });
+  it('accepts only one save against an original in the same turn', async () => {
+    const editor = await openEditor();
+    await act(async () =>
+      Promise.all([
+        editor.result.current.saveEdit('first correction'),
+        editor.result.current.saveEdit('second correction'),
+      ]),
+    );
+    expect(mockRouteFiles).toHaveBeenCalledTimes(1);
+    expect(capturedLifecycle?.pastedText).toBe('first correction');
+  });
+
+  it('takes failure recovery from the original before staging a pending edit', async () => {
+    const original = pastedFile({
+      file_id: 'pending-original',
+      progress: 0.2,
+      pastedText: 'original',
+    });
+    const editor = renderEditor(new Map([[original.file_id, original]]));
+    await act(async () => editor.result.current.openEditor(original));
+    expect(retainPasteUpload).toHaveBeenCalledWith(['pending-original']);
+    await act(async () => editor.result.current.saveEdit('corrected'));
+    expect(jest.mocked(retainPasteUpload).mock.invocationCallOrder[0]).toBeLessThan(
+      mockRouteFiles.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('keeps edit and inline actions locked across original-upload completion', async () => {
+    const pending = pastedFile({ file_id: 'upload-id', progress: 0.2, pastedText: 'original' });
+    const editor = renderEditor(new Map([['upload-id', pending]]));
+    await act(async () => editor.result.current.openEditor(pending));
+    await act(async () => editor.result.current.saveEdit('first correction'));
+    const complete = { ...pending, file_id: 'server-id', temp_file_id: 'upload-id', progress: 1 };
+    editor.rerender({ files: new Map([['upload-id', complete]]) });
+    expect(editor.result.current.isActionPending(complete)).toBe(true);
+    await act(async () => editor.result.current.openEditor(complete));
+    await act(async () => editor.result.current.moveInline(complete));
+    expect(editor.result.current.editing).toBeNull();
+    expect(mockSetValue).not.toHaveBeenCalled();
+    expect(mockDeleteFile).not.toHaveBeenCalled();
+    expect(mockRouteFiles).toHaveBeenCalledTimes(1);
+    await act(async () => capturedLifecycle?.onSuccess?.('replacement-id'));
+    expect(editor.result.current.isActionPending(complete)).toBe(false);
+  });
+
+  it('completes a pending correction moved inline without reviving the original editor', async () => {
+    const original = pastedFile();
+    const editor = renderEditor(new Map([[original.file_id, original]]));
+    await act(async () => editor.result.current.openEditor(original));
+    await act(async () => editor.result.current.saveEdit('corrected text'));
+    const lifecycle = capturedLifecycle!;
+    const correction = pastedFile({
+      file_id: lifecycle.fileId!,
+      progress: 0.2,
+      pastedText: 'corrected text',
+      replacesFileId: original.file_id,
+    });
+    editor.rerender({
+      files: new Map([
+        [original.file_id, original],
+        [correction.file_id, correction],
+      ]),
+    });
+    mockDeleteFile.mockImplementation(({ file }: { file: ExtendedFile }) => {
+      if (file.file_id === correction.file_id) lifecycle.onAbort?.(correction.file_id);
+    });
+    await act(async () => editor.result.current.moveInline(correction));
+    expect(mockDeleteFile).toHaveBeenCalledWith({ file: original, setFiles: expect.anything() });
+    expect(mockDeleteFile).toHaveBeenCalledWith({ file: correction, setFiles: expect.anything() });
+    expect(editor.result.current.editing).toBeNull();
+    expect(mockSetValue).toHaveBeenCalledWith('text', 'corrected text', expect.anything());
+    expect(editor.result.current.isActionPending(original)).toBe(false);
+    mockDeleteFile.mockReset();
+  });
+
+  it('retires all superseded pastes when an edit of a pending correction succeeds', async () => {
+    const original = pastedFile();
+    const editor = renderEditor(new Map([[original.file_id, original]]));
+    await act(async () => editor.result.current.openEditor(original));
+    await act(async () => editor.result.current.saveEdit('first correction'));
+    const first = capturedLifecycle!;
+    const correction = pastedFile({
+      file_id: first.fileId!,
+      progress: 0.2,
+      pastedText: 'first correction',
+      replacesFileId: original.file_id,
+    });
+    editor.rerender({
+      files: new Map([
+        [original.file_id, original],
+        [correction.file_id, correction],
+      ]),
+    });
+    await act(async () => editor.result.current.openEditor(correction));
+    await act(async () => editor.result.current.saveEdit('final correction'));
+    const second = capturedLifecycle!;
+    mockDeleteFile.mockImplementation(({ file }: { file: ExtendedFile }) => {
+      if (file.file_id === correction.file_id) first.onAbort?.(correction.file_id);
+    });
+    await act(async () => second.onSuccess?.(second.fileId!));
+    expect(mockDeleteFile).toHaveBeenCalledWith({ file: original, setFiles: expect.anything() });
+    expect(mockDeleteFile).toHaveBeenCalledWith({ file: correction, setFiles: expect.anything() });
+    expect(editor.result.current.editing).toBeNull();
+    expect(editor.result.current.isActionPending(original)).toBe(false);
+    mockDeleteFile.mockReset();
+  });
+
+  it.each(['before-save', 'after-save'])(
+    'keeps the original as the final correction source when its intermediate fails %s',
+    async (failure) => {
+      const original = pastedFile();
+      const editor = renderEditor(new Map([[original.file_id, original]]));
+      await act(async () => editor.result.current.openEditor(original));
+      await act(async () => editor.result.current.saveEdit('first correction'));
+      const first = capturedLifecycle!;
+      const correction = pastedFile({
+        file_id: first.fileId!,
+        progress: 0.2,
+        pastedText: 'first correction',
+        replacesFileId: original.file_id,
+      });
+      editor.rerender({
+        files: new Map([
+          [original.file_id, original],
+          [correction.file_id, correction],
+        ]),
+      });
+      await act(async () => editor.result.current.openEditor(correction));
+      if (failure === 'before-save') {
+        await act(async () => first.onError?.(first.fileId!));
+        editor.rerender({ files: new Map([[original.file_id, original]]) });
+      }
+      mockDeleteFile.mockImplementation(({ file }: { file: ExtendedFile }) => {
+        if (file.file_id === first.fileId) first.onAbort?.(first.fileId!);
+      });
+      await act(async () => editor.result.current.saveEdit('final correction'));
+      const final = capturedLifecycle!;
+      expect(final.replacesFileId).toBe(original.file_id);
+      expect(final.shouldCommit?.()).toBe(true);
+      editor.rerender({ files: new Map([[original.file_id, original]]) });
+      if (failure === 'after-save') {
+        await act(async () => first.onError?.(first.fileId!));
+      }
+      expect(editor.result.current.editing).toBeNull();
+      expect(editor.result.current.isActionPending(original)).toBe(true);
+      await act(async () => final.onSuccess?.(final.fileId!));
+      expect(mockDeleteFile).toHaveBeenCalledWith({ file: original, setFiles: expect.anything() });
+      expect(editor.result.current.editing).toBeNull();
+    },
+  );
+
+  it('restores only the latest correction if successive pending edits fail', async () => {
+    const original = pastedFile();
+    const editor = renderEditor(new Map([[original.file_id, original]]));
+    await act(async () => editor.result.current.openEditor(original));
+    await act(async () => editor.result.current.saveEdit('first correction'));
+    const first = capturedLifecycle!;
+    const correction = pastedFile({
+      file_id: first.fileId!,
+      progress: 0.2,
+      pastedText: 'first correction',
+      replacesFileId: original.file_id,
+    });
+    editor.rerender({
+      files: new Map([
+        [original.file_id, original],
+        [correction.file_id, correction],
+      ]),
+    });
+    await act(async () => editor.result.current.openEditor(correction));
+    await act(async () => editor.result.current.saveEdit('final correction'));
+    const final = capturedLifecycle!;
+    editor.rerender({ files: new Map([[original.file_id, original]]) });
+    await act(async () => first.onError?.(first.fileId!));
+    await act(async () => final.onError?.(final.fileId!));
+    expect(editor.result.current.editing?.text).toBe('final correction');
+    expect(editor.result.current.editing?.file).toBe(original);
+    act(() => editor.result.current.closeEditor());
+    expect(editor.result.current.editing).toBeNull();
+  });
+
+  it('detaches the completed original when editing began during its upload', async () => {
+    const pending = pastedFile({ file_id: 'upload-id', progress: 0.2, pastedText: 'original' });
+    const editor = renderEditor(new Map([['upload-id', pending]]));
+    await act(async () => editor.result.current.openEditor(pending));
+    const complete = { ...pending, file_id: 'server-id', temp_file_id: 'upload-id', progress: 1 };
+    editor.rerender({ files: new Map([['upload-id', complete]]) });
+    await act(async () => editor.result.current.saveEdit('corrected'));
+    await act(async () => capturedLifecycle?.onSuccess?.('replacement-id'));
+    expect(mockDeleteFile).toHaveBeenCalledWith({ file: complete, setFiles: expect.anything() });
+  });
+
   it('removes a live paste claimed by another tab without scheduling deletion or retry', async () => {
     const live = pastedFile({ file_id: 'claimed-live-file' });
     mockState.draftsById['other-tab-draft'] = {
@@ -394,7 +590,7 @@ describe('usePastedTextEdit', () => {
       void editor.result.current.saveEdit('corrected');
     });
 
-    expect(editor.result.current.isActionPending('pasted-file')).toBe(true);
+    expect(editor.result.current.isActionPending({ file_id: 'pasted-file' })).toBe(true);
     await act(async () => {
       await editor.result.current.openEditor(pastedFile());
     });

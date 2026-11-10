@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, type FC } from 'react';
 import { useAtomValue } from 'jotai';
 import throttle from 'lodash/throttle';
 import { useRecoilValue } from 'recoil';
+import { mergeMessageFile } from 'librechat-data-provider';
 import { Search as SearchIcon, SearchX } from 'lucide-react';
 import { getMessageRowWidthClass } from '@librechat/chat/components';
 import { List, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
@@ -119,7 +120,7 @@ export default function Search() {
           }
           return {
             ...message,
-            files: message.files.map((file) => fileMap[file.file_id ?? ''] ?? file),
+            files: message.files.map((file) => mergeMessageFile(file, fileMap[file.file_id ?? ''])),
           };
         }),
       ) ?? [],

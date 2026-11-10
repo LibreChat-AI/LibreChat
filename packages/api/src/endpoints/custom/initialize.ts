@@ -307,6 +307,7 @@ export async function initializeCustom(
   ) {
     await fetchModels({
       apiKey,
+      provider: endpointConfig.provider,
       baseURL,
       baseURLIsUserProvided: userProvidesURL,
       allowedAddresses: appConfig?.endpoints?.allowedAddresses,

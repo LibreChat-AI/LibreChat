@@ -91,6 +91,30 @@ describe('ComposerActions', () => {
     expect(screen.getByTestId('stop-generation-button')).toHaveAttribute('hidden');
   });
 
+  it('exposes the during-run submit target for an inlineable paste without typed text', () => {
+    renderActions({
+      text: '',
+      hasInlinePaste: true,
+      isSubmitting: true,
+      showStopButton: true,
+      steering: steering({ duringRunActive: true }),
+    });
+    expect(screen.getByTestId('during-run-send-button')).toBeEnabled();
+    expect(screen.getByTestId('stop-generation-button')).toHaveAttribute('hidden');
+  });
+
+  it('keeps Stop for files that do not provide an inline paste fallback', () => {
+    renderActions({
+      text: '',
+      fileCount: 1,
+      isSubmitting: true,
+      showStopButton: true,
+      steering: steering({ duringRunActive: true }),
+    });
+    expect(screen.queryByTestId('during-run-send-button')).toBeNull();
+    expect(stopButton()).toBeVisible();
+  });
+
   it('keeps a disabled send while the run has not yet offered Stop', () => {
     renderActions({ text: 'hello', isSubmitting: true });
     expect(sendButton()).toBeDisabled();

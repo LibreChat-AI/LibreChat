@@ -35,7 +35,6 @@ const {
   resolveSubagentGraphs,
   inspectContent,
   extractAgentContent,
-  extractFileContent,
   extractMessageContent,
   extractModelParameterContent,
   extractSkillContent,
@@ -71,6 +70,7 @@ const {
   setupStreamingResponse,
   emitResponseInProgress,
   convertInputToMessages,
+  extractResponseInputFileContent,
   validateResponseRequest,
   buildAggregatedResponse,
   buildResponsesUsage,
@@ -126,7 +126,7 @@ const { checkSessionsAlive, loadCodeApiKey } = require('~/server/services/Files/
 const {
   getLinkedInstructionsResolver,
 } = require('~/server/services/Endpoints/agents/linkedInstructions');
-const { getModelsConfig } = require('~/server/controllers/ModelController');
+const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { resolveConfigServers, getAccessibleMcpServerNames } = require('~/server/services/MCP');
 const { resolveConversationTitle } = require('~/server/services/Endpoints/titlePolicy');
@@ -264,26 +264,7 @@ function extractResponseRequestContent(request, messageFragments) {
     ...messageFragments,
   ];
 
-  if (Array.isArray(request.input)) {
-    for (const item of request.input) {
-      if (item?.type !== 'message' || !Array.isArray(item.content)) {
-        continue;
-      }
-      for (const part of item.content) {
-        if (part?.type === 'input_file') {
-          fragments.push(...extractFileContent({ name: part.filename }));
-          continue;
-        }
-        if (
-          part?.type === 'input_image' &&
-          typeof part.image_url === 'string' &&
-          !part.image_url.startsWith('data:')
-        ) {
-          fragments.push(...extractFileContent({ uri: part.image_url }));
-        }
-      }
-    }
-  }
+  fragments.push(...extractResponseInputFileContent(request.input));
 
   for (const tool of request.tools ?? []) {
     if (tool?.type !== 'function') {
@@ -953,7 +934,6 @@ const executeResponse = async (envelope, { req, res }) => {
         primaryConfig.subagents?.enabled === true &&
         (primaryConfig.subagents.graphs?.length ?? 0) > 0;
       if (primaryConfig.edges?.length || primaryHasGraphSubagents) {
-        const modelsConfig = await getModelsConfig(req);
         const discoveryParams = {
           req,
           res,
@@ -961,7 +941,7 @@ const executeResponse = async (envelope, { req, res }) => {
           primaryConfig,
           endpointOption,
           allowedProviders,
-          modelsConfig,
+          getEndpointModels: (endpoint) => getEndpointModelsConfig(req, endpoint),
           loadTools,
           requestFiles: [],
           conversationId,

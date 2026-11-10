@@ -149,6 +149,8 @@ export type FileSearchSource = {
 export type Artifacts =
   | {
       content?: FormattedContent[];
+      /** Original generated images for storage, separate from model-bound content. */
+      imageAttachments?: FormattedContent[];
       [Tools.ui_resources]?: {
         data: UIResource[];
       };

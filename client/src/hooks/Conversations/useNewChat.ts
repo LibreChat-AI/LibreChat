@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { filesFamily } from '@librechat/chat/react';
-import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
+import { QueryKeys, fileConfig as defaultFileConfig } from 'librechat-data-provider';
 import type { FileSources, TFile } from 'librechat-data-provider';
 import type { MouseEvent } from 'react';
 import type { ExtendedFile } from '~/common';
@@ -139,6 +139,30 @@ export default function useNewChat({
     loadPendingDiscardIds(index),
   );
   const [retainedGeneration, setRetainedGeneration] = useState(0);
+  const reconciliationAttempts = useRef(new Map<string, number>());
+  const fileListRef = useRef(fileList);
+  fileListRef.current = fileList;
+
+  useEffect(() => {
+    if (!hasFileConfig) return;
+    const pending = new Set(pendingDiscardIds);
+    for (const id of reconciliationAttempts.current.keys()) {
+      if (!pending.has(id)) reconciliationAttempts.current.delete(id);
+    }
+    let refresh = false;
+    const limit = retryLimit ?? defaultFileConfig.deletionRetryLimit;
+    for (const id of pendingDiscardIds) {
+      if (findFilesRecord(fileListRef.current, id)) continue;
+      const attempts = reconciliationAttempts.current.get(id) ?? 0;
+      if (attempts >= limit) continue;
+      reconciliationAttempts.current.set(id, attempts + 1);
+      refresh = true;
+    }
+    if (!refresh) return;
+    // An aborted response can outlive its client. Resolve its UUID through the owner-scoped list.
+    void queryClient.refetchQueries({ queryKey: [QueryKeys.files] }, { cancelRefetch: false });
+    scheduleRetainedFileDeletionRetry(true);
+  }, [pendingDiscardIds, retainedGeneration, hasFileConfig, retryLimit, queryClient]);
 
   const setPendingDiscardIds = useCallback(
     (updater: string[] | ((current: string[]) => string[])) => {
@@ -233,10 +257,16 @@ export default function useNewChat({
         const record = findFilesRecord(fileList, fileId);
         return [fileId, record?.file_id, record?.temp_file_id].some((id) => isPasteSubmitted(id));
       };
+      const reattachedByIdentity = (fileId: string): boolean => {
+        const record = findFilesRecord(fileList, fileId);
+        return [fileId, record?.file_id, record?.temp_file_id].some(
+          (id) => id != null && reattached.has(id),
+        );
+      };
       const deletable: DeletableRecord[] = [];
       const stillPending: string[] = [];
       for (const fileId of pendingDiscardIds) {
-        if (reattached.has(fileId) || consumedBySubmission(fileId)) {
+        if (reattachedByIdentity(fileId) || consumedBySubmission(fileId)) {
           continue;
         }
         const record = findFilesRecord(fileList, fileId);
@@ -253,10 +283,10 @@ export default function useNewChat({
        * cannot be rebuilt, so they retry here until one succeeds. A file the composer has
        * since reattached, or that a message has since consumed, is no longer ours to retry. */
       const retainedToRetry = retained.filter(
-        (record) => !reattached.has(record.file_id) && !consumedBySubmission(record.file_id),
+        (record) => !reattachedByIdentity(record.file_id) && !consumedBySubmission(record.file_id),
       );
       for (const record of retained) {
-        if (reattached.has(record.file_id) || consumedBySubmission(record.file_id)) {
+        if (reattachedByIdentity(record.file_id) || consumedBySubmission(record.file_id)) {
           clearRetainedFileDeletion(record.file_id);
         }
       }

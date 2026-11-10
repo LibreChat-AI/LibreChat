@@ -27,8 +27,6 @@ export const errorCopy: Record<string, TranslationKeys> = {
   [ErrorTypes.STATEFUL_CODE_ENVIRONMENT_NOT_ALLOWED]:
     'com_error_stateful_code_environment_not_allowed',
   [ErrorTypes.STREAM_EXPIRED]: 'com_error_stream_expired',
-  [ErrorTypes.MODEL_NOT_FOUND]: 'com_error_model_not_found',
-  [ErrorTypes.MODEL_RATE_LIMIT]: 'com_error_model_rate_limit',
   [ErrorTypes.MODEL_STREAM_CLOSED]: 'com_error_model_stream_closed',
   [ErrorTypes.MODEL_STREAM_STALLED]: 'com_error_model_stream_stalled',
   [ErrorTypes.COMPACTION_FAILED]: 'com_error_compaction_failed',
@@ -67,6 +65,8 @@ export const errorRenderers: Record<string, ComponentType<ErrorRendererProps>> =
   [ErrorTypes.GOOGLE_ERROR]: ProviderError,
   [ErrorTypes.INVALID_REQUEST]: ProviderError,
   [ErrorTypes.NO_SYSTEM_MESSAGES]: ProviderError,
+  [ErrorTypes.MODEL_NOT_FOUND]: ProviderError,
+  [ErrorTypes.MODEL_RATE_LIMIT]: ProviderError,
   [ErrorTypes.INPUT_LENGTH]: ContextError,
   [ErrorTypes.EMPTY_MESSAGES]: ContextError,
   [ErrorTypes.FINAL_CONTEXT_OVERFLOW]: ContextError,

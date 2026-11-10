@@ -2065,6 +2065,11 @@ describe('allowedAddressesSchema', () => {
       ['[fd00::1]:8080', 'IPv6 unique-local with port'],
       ['[fe80::1]:8080', 'IPv6 link-local with port'],
       ['[::ffff:10.0.0.5]:8080', 'IPv4-mapped IPv6 of a private address'],
+      ['[::ffff:0:10.0.0.1]:8080', 'IPv4-translated dotted private address'],
+      ['[::ffff:0:a00:1]:8080', 'IPv4-translated hex private address'],
+      ['[::ffff:0:a9fe:a9fe]:80', 'IPv4-translated metadata address'],
+      ['[0:0:0:0:ffff:0:10.0.0.1]:8080', 'expanded IPv4-translated address'],
+      ['[0000:0000:0000:0000:FFFF:0000:0A00:0001]:8080', 'padded translated address'],
       ['[64:ff9b::a00:1]:8080', 'NAT64 embedding private 10.0.0.1'],
       ['[2002:a00:1::]:8080', '6to4 embedding private 10.0.0.1'],
       ['[2001::ffff:f5ff:fffe]:8080', 'Teredo embedding a private address'],
@@ -2090,6 +2095,9 @@ describe('allowedAddressesSchema', () => {
       ['ws://10.0.0.5', 'ws URL'],
       ['10.0.0.0/24', 'CIDR range'],
       ['[64:ff9b::808:808]:8080', 'NAT64 embedding public 8.8.8.8'],
+      ['[::ffff:0:808:808]:8080', 'translated public IPv4 in hex form'],
+      ['[::ffff:0:8.8.8.8]:8080', 'translated public IPv4 in dotted form'],
+      ['[::ffff:1:a00:1]:8080', 'address outside the translated prefix'],
       ['[2002:808:808::]:8080', '6to4 embedding public 8.8.8.8'],
       ['/path', 'leading slash / path'],
       ['10.0.0.5/api', 'embedded path'],
@@ -2200,6 +2208,21 @@ describe('allowedAddressesSchema', () => {
   });
 
   describe('integration with configSchema', () => {
+    it.each(['actions', 'mcpSettings'] as const)(
+      'accepts translated private-address exemptions on %s',
+      (section) => {
+        const allowedAddresses = ['[::ffff:0:10.0.0.1]:8080'];
+        const result = configSchema.safeParse({
+          version: '1.0',
+          [section]: { allowedAddresses },
+        });
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect(result.data[section]?.allowedAddresses).toEqual(allowedAddresses);
+        }
+      },
+    );
+
     it('accepts the field on endpoints', () => {
       const result = configSchema.safeParse({
         version: '1.0',
@@ -3315,5 +3338,36 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
       const prefixes = segments.map((_, index) => segments.slice(0, index + 1).join('.'));
       expect(prefixes.filter((prefix) => baseOnly.has(prefix))).toEqual([]);
     }
+  });
+});
+
+describe('Permission principal concurrency', () => {
+  it('accepts bounded permission lookup concurrency', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', concurrency: { permissionPrincipalLookups: 2 } })
+        .concurrency?.permissionPrincipalLookups,
+    ).toBe(2);
+  });
+  it.each([0, 33, 1.5])(
+    'rejects invalid principal concurrency: %s',
+    (permissionPrincipalLookups) => {
+      expect(
+        configSchema.safeParse({ version: '1.3.5', concurrency: { permissionPrincipalLookups } })
+          .success,
+      ).toBe(false);
+    },
+  );
+});
+
+describe('directory verification deadline configuration', () => {
+  it('preserves an explicitly configured directory budget', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', timeouts: { directoryMs: 50 } }).timeouts?.directoryMs,
+    ).toBe(50);
+  });
+  it.each([0, -1, 1.5, 2147483648])('rejects unsafe directory budget %s', (directoryMs) => {
+    expect(configSchema.safeParse({ version: '1.3.5', timeouts: { directoryMs } }).success).toBe(
+      false,
+    );
   });
 });

@@ -60,6 +60,8 @@ test.describe('streaming thought peek', () => {
     /** The endpoint choice persists across new chats on some viewports only. */
     const trigger = page.getByRole('button', { name: 'Select a model' }).first();
     await expect(trigger).toBeVisible();
+    /** Target restoration can finish after the selector first becomes visible. */
+    await expect(trigger).not.toHaveText('Select a model');
     if (!(await trigger.textContent())?.includes(ENDPOINT.model)) {
       await selectMockEndpoint(page, ENDPOINT);
     }

@@ -1,3 +1,10 @@
+import { createPermissionPrincipalMethods, type PermissionPrincipalStorage } from './provisioning';
+export type {
+  PermissionPrincipalStorage,
+  PermissionPrincipalChange,
+  PermissionPrincipalRecord,
+  PermissionPrincipalData,
+} from './provisioning';
 import { createSubagentContentMethods, type SubagentContentMethods } from './subagentContent';
 export type {
   SubagentContentScope,
@@ -275,7 +282,8 @@ export {
   AgentQueuedTurnLaneRetiredError,
 };
 
-export type AllMethods = SubagentContentMethods &
+export type AllMethods = PermissionPrincipalStorage &
+  SubagentContentMethods &
   ToolApprovalGrantStorage &
   UserMethods &
   SessionMethods &
@@ -544,6 +552,7 @@ export function createMethods(
     ...createCodeEnvironmentMethods(mongoose),
     ...createAccessRoleMethods(mongoose),
     ...userGroupMethods,
+    ...createPermissionPrincipalMethods(mongoose, userGroupMethods.invalidatePrincipalMemberships),
     ...aclEntryMethods,
     ...systemGrantMethods,
     ...createAuditLogMethods(mongoose),

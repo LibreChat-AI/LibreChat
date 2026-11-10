@@ -2,6 +2,7 @@
  * @jest-environment jsdom
  */
 import { Provider, createStore } from 'jotai';
+import { EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { TFile, TMessage } from 'librechat-data-provider';
@@ -52,27 +53,43 @@ const branchedTree = (): TMessage[] => {
   return [{ ...user, children: [older, newer] }];
 };
 
-const partsHost = { useFontSize: () => 'text-base' } as unknown as MessagePartsHost;
+const partsHost: MessagePartsHost = {
+  useMessage: () => ({ messageId: '' }),
+  renderMarkdown: ({ content }) => <p>{content}</p>,
+  useSmoothStreaming: () => false,
+  useAgent: () => undefined,
+  renderAgentIcon: () => null,
+  renderAgentAvatar: () => null,
+  renderContentParts: () => null,
+  renderImage: () => null,
+  renderFilePreview: () => null,
+  useFontSize: () => 'text-base',
+  useShowThinking: () => false,
+  useAutoExpandTools: () => false,
+  useLaTeXParsing: () => false,
+  useChatDirection: () => 'auto',
+  useUserTextPreferences: () => ({
+    enableUserMsgMarkdown: false,
+    collapseLongUserMessages: false,
+    usernameDisplay: false,
+  }),
+  useUser: () => undefined,
+  useFileMap: () => undefined,
+  useToast: () => () => undefined,
+  useSandboxStarting: () => false,
+  useToolArtifactClaim: () => [null, () => undefined],
+  useSteerEscalating: () => false,
+  usePaneConversationId: () => null,
+  useLiveAppliedSteer: () => [false, () => undefined],
+  useShare: () => ({}),
+};
 
 const renderActivity = jest.fn<null, Parameters<MessagesHost['renderActivity']>>(() => null);
 
 function createHost(overrides: Partial<MessagesHost> = {}): MessagesHost {
   return createMessagesHost({
-    renderMessageRow: ({
-      message: row,
-      siblingIdx,
-      siblingCount,
-      setSiblingIdx,
-      setCurrentEditId,
-    }) => (
-      <article aria-label={row.messageId} data-sibling={`${siblingIdx + 1} / ${siblingCount}`}>
-        <span>{row.files?.map((file) => file.filename).join(',')}</span>
-        <button aria-label="Previous" onClick={() => setSiblingIdx(siblingIdx - 1)} />
-        <button aria-label="Next" onClick={() => setSiblingIdx(siblingIdx + 1)} />
-        <button aria-label="Edit" onClick={() => setCurrentEditId(row.messageId)} />
-        <button aria-label="Cancel" onClick={() => setCurrentEditId(-1)} />
-      </article>
-    ),
+    renderMessageBody: ({ text }) => <p>{text}</p>,
+    renderFiles: (row) => <span>{row.files?.map((file) => file.filename).join(',')}</span>,
     renderActivity: (props) => {
       renderActivity(props);
       return <aside aria-label={`Activity ${props.parentMessageIds.join(',')}`} />;
@@ -86,6 +103,7 @@ const contract = {
   isSubmitting: false,
   latestMessageDepth: 0,
   messagesKey: 'convo-1',
+  conversation: { conversationId: 'convo-1', endpoint: EModelEndpoint.agents },
 } as ChatContract;
 
 function renderThread(
@@ -119,8 +137,21 @@ function renderThread(
   };
 }
 
-const rows = () => screen.queryAllByRole('article').map((row) => row.getAttribute('aria-label'));
-const row = (id: string) => screen.getByRole('article', { name: id });
+/** The real row is a labelled group whose id is the message id. */
+const rowElements = () => screen.queryAllByRole('group', { name: /^Message/ });
+const rows = () => rowElements().map((element) => element.id);
+const row = (id: string) => {
+  const element = rowElements().find((candidate) => candidate.id === id);
+  if (element == null) {
+    throw new Error(`No row rendered for ${id}`);
+  }
+  return element;
+};
+const position = (id: string) => within(row(id)).queryByRole('status')?.textContent;
+const previous = (id: string) =>
+  within(row(id)).getByRole('button', { name: 'Previous sibling message' });
+const next = (id: string) => within(row(id)).getByRole('button', { name: 'Next sibling message' });
+const edit = (id: string) => within(row(id)).getByRole('button', { name: 'Edit' });
 
 beforeEach(() => {
   renderActivity.mockClear();
@@ -144,16 +175,17 @@ describe('MessagesView default thread', () => {
 
   it.each([true, false])('switches siblings through the row slot (flat %s)', (flatThread) => {
     renderThread({ flatThread, messages: branched(), messagesTree: branchedTree() });
-    expect(row('a1')).toHaveAttribute('data-sibling', '2 / 2');
-    expect(row('u1')).toHaveAttribute('data-sibling', '1 / 1');
+    expect(position('a1')).toBe('2 / 2');
+    /** A lone turn has no siblings, so the real switch is not rendered at all. */
+    expect(position('u1')).toBeUndefined();
 
-    fireEvent.click(within(row('a1')).getByRole('button', { name: 'Previous' }));
+    fireEvent.click(previous('a1'));
     expect(rows()).toEqual(['u1', 'a1-old']);
-    expect(row('a1-old')).toHaveAttribute('data-sibling', '1 / 2');
+    expect(position('a1-old')).toBe('1 / 2');
 
-    fireEvent.click(within(row('a1-old')).getByRole('button', { name: 'Next' }));
+    fireEvent.click(next('a1-old'));
     expect(rows()).toEqual(['u1', 'a1']);
-    expect(row('a1')).toHaveAttribute('data-sibling', '2 / 2');
+    expect(position('a1')).toBe('2 / 2');
   });
 
   it.each([true, false])(
@@ -169,10 +201,10 @@ describe('MessagesView default thread', () => {
         screen.getAllByRole('complementary').map((group) => group.getAttribute('aria-label')),
       ).toEqual(['Activity a1,u1']);
 
-      fireEvent.click(within(row('u1')).getByRole('button', { name: 'Edit' }));
+      fireEvent.click(edit('u1'));
       expect(screen.queryByRole('complementary')).not.toBeInTheDocument();
 
-      fireEvent.click(within(row('u1')).getByRole('button', { name: 'Cancel' }));
+      fireEvent.click(edit('u1'));
       expect(screen.getByRole('complementary', { name: 'Activity a1,u1' })).toBeInTheDocument();
     },
   );
@@ -192,7 +224,8 @@ describe('MessagesView default thread', () => {
   });
 
   it('does not reuse outgoing rows while the conversation context still names the source', () => {
-    const large = Array.from({ length: 12_000 }, (_, index) =>
+    /** Real rows mount for every message, so the outgoing thread stays modest. */
+    const large = Array.from({ length: 60 }, (_, index) =>
       message(`large-${index}`, index === 0 ? ROOT : `large-${index - 1}`),
     );
     const view = renderThread({ messages: large, messagesTree: large });

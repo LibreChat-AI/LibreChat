@@ -1,8 +1,8 @@
 import { useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import { useSetAtom } from 'jotai';
 import { ChevronRight, Users } from 'lucide-react';
-import { FOLD_GLYPH_CLASS } from '@librechat/chat/components';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
+import { FOLD_GLYPH_CLASS, useToolPreparation, useFailedReveal } from '@librechat/chat/components';
 import {
   parseSubagentBackgroundHandle,
   tailOverflowDirection,
@@ -33,11 +33,9 @@ import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { isError } from '../ToolOutput/OutputRenderer';
-import { useToolPreparation } from '../preparation';
 import { useAgentsMapContext } from '~/Providers';
 import { useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup } from './Attachment';
-import { useFailedReveal } from '../reveal';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

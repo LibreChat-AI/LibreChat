@@ -1,3 +1,9 @@
+export type {
+  PermissionPrincipalStorage,
+  PermissionPrincipalChange,
+  PermissionPrincipalRecord,
+  PermissionPrincipalData,
+} from './methods/provisioning';
 export * from './app';
 export * from './admin';
 export * from './common';

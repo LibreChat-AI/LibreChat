@@ -190,6 +190,11 @@ test.describe('logged out', () => {
       expect(parseFloat(transition.duration)).toBeGreaterThan(0);
     };
 
+    await page.route('**/api/config', async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({ json: { ...(await response.json()), emailEnabled: true } });
+    });
+
     await page.goto('/register', { timeout: 15000 });
     await expectColorTransition(page.getByRole('link', { name: 'Login', exact: true }));
 

@@ -111,6 +111,7 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
           value={authType || AuthTypeEnum.None}
           onChange={(val) => setValue('auth.auth_type', val as AuthTypeEnum)}
           fullWidth
+          wrap
           disabled={isOboLockedReadOnly}
           aria-labelledby="auth-type-label"
         />
@@ -173,6 +174,7 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
                     setValue('auth.api_key_authorization_type', val as AuthorizationTypeEnum)
                   }
                   fullWidth
+                  wrap
                   aria-labelledby="header-format-label"
                 />
               </fieldset>
@@ -316,6 +318,7 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
                   )
                 }
                 fullWidth
+                wrap
                 aria-labelledby="oauth-token-exchange-method-label"
               />
             </fieldset>
