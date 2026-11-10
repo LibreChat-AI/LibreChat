@@ -1,4 +1,22 @@
-const availableTools = require('./manifest.json');
+const availableTools = require('./manifest.json').map((tool) => {
+  if (
+    tool.pluginKey !== 'flux' ||
+    !['azure-foundry', 'azure-foundry-images'].includes(process.env.FLUX_API_PROVIDER)
+  ) {
+    return tool;
+  }
+
+  const foundryTool = {
+    ...tool,
+    description:
+      process.env.FLUX_API_PROVIDER === 'azure-foundry-images'
+        ? 'Generate images using the Microsoft Foundry Images API (FLUX-1.1-pro or FLUX.1-Kontext-pro).'
+        : 'Generate and edit images using the configured Microsoft Foundry FLUX deployment.',
+    authConfig: [],
+  };
+  delete foundryTool.isAuthRequired;
+  return foundryTool;
+});
 
 /** @type {Record<string, TPlugin | undefined>} */
 const manifestToolMap = {};

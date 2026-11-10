@@ -18,6 +18,7 @@ const {
   findShadowedServerNames,
   isNormalizationSensitiveName,
   buildInlineMemoryTool,
+  buildFluxToolContext,
   getCodeApiAuthHeaders,
   buildImageToolContext,
   SET_MEMORY_TOOL_NAME,
@@ -72,7 +73,14 @@ const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/pro
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getMCPServerTools, checkCapability } = require('~/server/services/Config');
 const { getMCPServersRegistry } = require('~/config');
-const { getRoleByName, setMemory, deleteMemory, getFormattedMemories } = require('~/models');
+const {
+  getRoleByName,
+  setMemory,
+  deleteMemory,
+  getFormattedMemories,
+  getFiles,
+} = require('~/models');
+const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 
 /** @typedef {typeof import('@librechat/agents/langchain/tools').Tool} ToolConstructor */
 /** @typedef {import('@librechat/agents/langchain/tools').Tool} Tool */
@@ -148,7 +156,6 @@ const loadTools = async ({
   imageOutputType,
 }) => {
   const toolConstructors = {
-    flux: FluxAPI,
     calculator: Calculator,
     google: GoogleSearchAPI,
     open_weather: OpenWeather,
@@ -167,6 +174,34 @@ const loadTools = async ({
         fetch,
         getDispatcher: getProxyDispatcher,
       }),
+    /**
+     * The Foundry BFL route edits images through the `image_edit` action of
+     * the single flux tool, so the tool instance decides from its provider
+     * whether reference images are usable, and the request's image_edit files
+     * reach the model as a tool context listing their IDs. Agent-attached
+     * files arrive hydrated — primeResources resolves the agent's persisted
+     * image_edit file_ids into `files` before this runs.
+     */
+    flux: async (_toolContextMap, dynamicToolContextMap) => {
+      const authValues = await loadAuthValues({ userId: user, authFields: getAuthFields('flux') });
+      const imageFiles = options.tool_resources?.[EToolResources.image_edit]?.files ?? [];
+      const fluxTool = new FluxAPI({
+        ...authValues,
+        userId: user,
+        ...imageGenOptions,
+        imageFiles,
+        getFiles,
+        getStrategyFunctions,
+      });
+      const toolContext = buildFluxToolContext({
+        imageFiles,
+        supportsEditing: fluxTool.supportsEditing,
+      });
+      if (toolContext) {
+        dynamicToolContextMap.flux = toolContext;
+      }
+      return fluxTool;
+    },
     image_gen_oai: async (_toolContextMap, dynamicToolContextMap) => {
       const authFields = getAuthFields('image_gen_oai');
       const authValues = await loadAuthValues({ userId: user, authFields });
@@ -238,7 +273,6 @@ const loadTools = async ({
     open_weather: timeoutOptions,
     traversaal_search: timeoutOptions,
     tavily_search_results_json: timeoutOptions,
-    flux: imageGenOptions,
     'stable-diffusion': imageGenOptions,
     gemini_image_gen: imageGenOptions,
   };

@@ -20,3 +20,54 @@ describe('isAgentsOnlyTool', () => {
     expect(isAgentsOnlyTool({ type: 'code_interpreter' })).toBe(false);
   });
 });
+
+describe('Flux authentication manifest', () => {
+  const loadManifest = () => {
+    let manifest;
+    jest.isolateModules(() => {
+      manifest = require('./manifest');
+    });
+    return manifest;
+  };
+
+  it.each(['azure-foundry', 'azure-foundry-images'])(
+    'hides user API key configuration when %s is configured',
+    (provider) => {
+      const previousProvider = process.env.FLUX_API_PROVIDER;
+      process.env.FLUX_API_PROVIDER = provider;
+
+      try {
+        const { manifestToolMap } = loadManifest();
+        expect(manifestToolMap.flux.authConfig).toEqual([]);
+        expect(manifestToolMap.flux.isAuthRequired).toBeUndefined();
+        expect(manifestToolMap.flux.description).toContain('Microsoft Foundry');
+        if (provider === 'azure-foundry-images') {
+          expect(manifestToolMap.flux.description).toContain('FLUX-1.1-pro');
+        }
+      } finally {
+        if (previousProvider === undefined) {
+          delete process.env.FLUX_API_PROVIDER;
+        } else {
+          process.env.FLUX_API_PROVIDER = previousProvider;
+        }
+      }
+    },
+  );
+
+  it('keeps the user API key configuration for direct BFL by default', () => {
+    const previousProvider = process.env.FLUX_API_PROVIDER;
+    delete process.env.FLUX_API_PROVIDER;
+
+    try {
+      const { manifestToolMap } = loadManifest();
+      expect(manifestToolMap.flux.authConfig).toEqual(
+        expect.arrayContaining([expect.objectContaining({ authField: 'FLUX_API_KEY' })]),
+      );
+      expect(manifestToolMap.flux.isAuthRequired).toBe('true');
+    } finally {
+      if (previousProvider !== undefined) {
+        process.env.FLUX_API_PROVIDER = previousProvider;
+      }
+    }
+  });
+});

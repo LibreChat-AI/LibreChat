@@ -117,6 +117,93 @@ export const fluxApiSchema: ExtendedJsonSchema = {
   required: [],
 };
 
+/**
+ * Input keys the Foundry payload builders actually forward: prompt, width,
+ * height, seed and safety_tolerance reach the request body, while the rest of
+ * the BFL schema (steps, guidance, finetunes, aspect ratio, raw, prompt
+ * upsampling, endpoint) describes direct-BFL routes the Foundry payloads
+ * would silently drop.
+ */
+const foundryFluxInputKeys: readonly string[] = [
+  'action',
+  'prompt',
+  'width',
+  'height',
+  'seed',
+  'safety_tolerance',
+];
+
+/**
+ * Filters the BFL flux schema down to the inputs a Foundry provider route
+ * serves, so the registry definition and the structured tool's instance
+ * schema advertise the same contract.
+ */
+export function filterFluxPropertiesForProvider(
+  properties: Record<string, ExtendedJsonSchema>,
+  provider: string,
+): Record<string, ExtendedJsonSchema> {
+  const keys = provider === 'azure-foundry-images' ? ['action', 'prompt'] : foundryFluxInputKeys;
+  return Object.fromEntries(Object.entries(properties).filter(([key]) => keys.includes(key)));
+}
+
+/**
+ * The reference-image input advertised by the Foundry BFL edit route, shared
+ * between this registry definition and the structured tool's instance schema
+ * (api/app/clients/tools/structured/FluxAPI.js) so the two cannot drift.
+ * Eight is FLUX.2's reference-image ceiling over the API.
+ */
+export const fluxImageIdsSchema: ExtendedJsonSchema = {
+  type: 'array',
+  items: { type: 'string' },
+  description:
+    'Required for "image_edit": file IDs of up to 8 reference images to edit, ordered by relevance. Use IDs of images attached to the message or the generated_image_id of a previous Flux result.',
+};
+
+/**
+ * The agent runtime serves its flux tool definition from this registry while
+ * execution runs the structured tool, and the executor validates input
+ * against the instance schema. api/app/clients/tools/structured/FluxAPI.js
+ * serves the same provider filter through `filterFluxPropertiesForProvider`,
+ * so the registry entry has to use it too or the model keeps calling inputs
+ * (list_finetunes, /v1/... endpoints) that the executor then rejects.
+ */
+export function resolveFluxDefinition(
+  provider: string | undefined = process.env.FLUX_API_PROVIDER,
+): ToolRegistryDefinition {
+  const bflDefinition: ToolRegistryDefinition = {
+    name: 'flux',
+    description:
+      'Use Flux to generate images from text descriptions. This tool can generate images and list available finetunes. Each generate call creates one image. For multiple images, make multiple consecutive calls.',
+    schema: fluxApiSchema,
+    toolType: 'builtin',
+  };
+  if (provider !== 'azure-foundry' && provider !== 'azure-foundry-images') {
+    return bflDefinition;
+  }
+  const isImagesApi = provider === 'azure-foundry-images';
+  const properties: Record<string, ExtendedJsonSchema> = filterFluxPropertiesForProvider(
+    fluxApiSchema.properties ?? {},
+    provider,
+  );
+  properties.action = {
+    ...(fluxApiSchema.properties?.action ?? {}),
+    enum: isImagesApi ? ['generate'] : ['generate', 'image_edit'],
+    description: isImagesApi
+      ? 'Generate an image using the configured Microsoft Foundry model.'
+      : 'Action to perform: "generate" for image generation, "image_edit" to edit attached images or a previous result.',
+  };
+  if (!isImagesApi) {
+    properties.image_ids = fluxImageIdsSchema;
+  }
+  return {
+    ...bflDefinition,
+    description: isImagesApi
+      ? `Use Flux to generate images from text descriptions using the Microsoft Foundry Images API (FLUX-1.1-pro or FLUX.1-Kontext-pro). Each generate call creates one image. For multiple images, make multiple consecutive calls.`
+      : `Use Flux to generate images from text descriptions and edit attached images using the Microsoft Foundry BFL provider API. Each generate call creates one image. For multiple images, make multiple consecutive calls.`,
+    schema: { ...fluxApiSchema, properties },
+  };
+}
+
 /** OpenWeather tool JSON schema */
 export const openWeatherSchema: ExtendedJsonSchema = {
   type: 'object',
@@ -309,13 +396,7 @@ export const toolDefinitions: Record<string, ToolRegistryDefinition> = {
     schema: googleSearchSchema,
     toolType: 'builtin',
   },
-  flux: {
-    name: 'flux',
-    description:
-      'Use Flux to generate images from text descriptions. This tool can generate images and list available finetunes. Each generate call creates one image. For multiple images, make multiple consecutive calls.',
-    schema: fluxApiSchema,
-    toolType: 'builtin',
-  },
+  flux: resolveFluxDefinition(),
   open_weather: {
     name: 'open_weather',
     description:

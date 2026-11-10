@@ -150,7 +150,7 @@
       {
         "authField": "FLUX_API_KEY",
         "label": "Your Flux API Key",
-        "description": "Provide your Flux API key from your user profile."
+        "description": "Provide your direct BFL API key from your user profile."
       }
     ]
   },

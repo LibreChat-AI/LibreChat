@@ -336,6 +336,65 @@ describe('Tool Handlers', () => {
       delete process.env.SD_WEBUI_URL;
     });
 
+    it('builds the image-edit tool context for the Foundry flux route', async () => {
+      process.env.FLUX_API_PROVIDER = 'azure-foundry';
+      process.env.FLUX_API_BASE_URL = 'https://resource.services.ai.azure.com';
+      process.env.FLUX_API_MODEL_PATH = 'flux-2-pro';
+      process.env.FLUX_API_MODEL = 'FLUX.2-pro';
+
+      const { loadedTools, dynamicToolContextMap } = await loadTools({
+        user: fakeUser._id,
+        tools: ['flux'],
+        options: {
+          tool_resources: {
+            image_edit: { files: [{ file_id: 'attached-1' }, { file_id: 'attached-2' }] },
+          },
+        },
+      });
+
+      expect(loadedTools).toHaveLength(1);
+      expect(loadedTools[0]).toBeInstanceOf(FluxAPI);
+      expect(loadedTools[0].supportsEditing).toBe(true);
+      expect(dynamicToolContextMap.flux).toContain('- attached-1');
+      expect(dynamicToolContextMap.flux).toContain('- attached-2');
+      expect(dynamicToolContextMap.flux).toContain('action "image_edit"');
+    });
+
+    it('announces the previous-result affordance for the Foundry flux route without attachments', async () => {
+      process.env.FLUX_API_PROVIDER = 'azure-foundry';
+      process.env.FLUX_API_BASE_URL = 'https://resource.services.ai.azure.com';
+      process.env.FLUX_API_MODEL_PATH = 'flux-2-pro';
+      process.env.FLUX_API_MODEL = 'FLUX.2-pro';
+
+      const { dynamicToolContextMap } = await loadTools({
+        user: fakeUser._id,
+        tools: ['flux'],
+        options: {},
+      });
+
+      expect(dynamicToolContextMap.flux).toContain('No images are attached to this request');
+      expect(dynamicToolContextMap.flux).toContain('generated_image_id');
+    });
+
+    it('skips the flux image context when the provider cannot edit images', async () => {
+      delete process.env.FLUX_API_PROVIDER;
+      delete process.env.FLUX_API_BASE_URL;
+
+      const { loadedTools, dynamicToolContextMap } = await loadTools({
+        user: fakeUser._id,
+        tools: ['flux'],
+        options: {
+          tool_resources: {
+            image_edit: { files: [{ file_id: 'attached-1' }] },
+          },
+        },
+      });
+
+      expect(loadedTools).toHaveLength(1);
+      expect(loadedTools[0].supportsEditing).toBe(false);
+      expect(dynamicToolContextMap.flux).toBeUndefined();
+    });
+
     it('loads the ask_user_question tool when not returning a map', async () => {
       const { loadedTools } = await loadTools({
         user: fakeUser._id,
