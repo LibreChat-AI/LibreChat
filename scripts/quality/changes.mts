@@ -25,7 +25,7 @@ export interface ChangedFile {
 }
 
 export function literalGlob(file: string): string {
-  return file.replace(/[\\*?\[\]{}()!+@]/gu, '\\$&');
+  return file.replace(/[\\*?[\]{}()!+@]/gu, '\\$&');
 }
 
 export function git(args: string[], cwd = process.cwd()): string {
@@ -36,9 +36,20 @@ export function git(args: string[], cwd = process.cwd()): string {
   });
 }
 
+// Shared test suites and fixtures colocated with database production source.
+const DATABASE_TEST_SUPPORT = new Set([
+  'packages/data-schemas/src/app/conformance.ts',
+  'packages/data-schemas/src/tenant/conformance.ts',
+  'packages/data-schemas/src/tenant/harness.ts',
+  'packages/data-schemas/src/tenant/probe.ts',
+  'packages/data-schemas/src/methods/test-helpers.ts',
+]);
+
 export function isSource(file: string): boolean {
   return (
     /\.[cm]?[jt]sx?$/u.test(file) &&
+    !file.startsWith('packages/data-schemas/src/contracts/') &&
+    !DATABASE_TEST_SUPPORT.has(file) &&
     !/\.(?:d|spec|test|helper|manual)\.[cm]?[jt]sx?$/u.test(file) &&
     !/(?:^|\/)(?:__tests__|__mocks__|test|tests|specs|fixtures|misc|dist|node_modules)\//u.test(
       file,
