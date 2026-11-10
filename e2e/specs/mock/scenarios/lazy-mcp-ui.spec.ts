@@ -191,18 +191,20 @@ test.describe('the on-demand MCP UI and export chunks', () => {
       await expect(open).toBeVisible();
       expect(requested, 'a placeholder must not fetch the bridge').toEqual([]);
 
-      /* The Close control does not wait for the bridge, and the existing loading status stands in
-       * for the frame until it arrives. */
+      /* The Close control does not wait for the bridge, and a silent loading box stands in for the
+       * frame until it arrives: the frame's own status announces the loading once it mounts, so
+       * one open never announces it twice. */
       await open.click();
       await expect(close).toBeFocused();
-      await expect(view.getByRole('status')).toHaveText('Loading interactive view...');
+      await expect(view.getByText('Loading interactive view...')).toBeVisible();
+      await expect(view.getByRole('status')).toHaveCount(0);
       await expect(frame).toHaveCount(0);
 
       /* Closing while the bridge is on its way returns to the placeholder, and the late arrival
        * mounts nothing. */
       await close.click();
       await expect(open).toBeFocused();
-      await expect(view.getByRole('status')).toHaveCount(0);
+      await expect(view.getByText('Loading interactive view...')).toHaveCount(0);
       releaseBridge();
       await expect.poll(() => bridgeArrived).toBe(true);
       await page.evaluate(

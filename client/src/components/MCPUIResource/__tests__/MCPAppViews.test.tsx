@@ -105,13 +105,14 @@ describe('MCPAppViews', () => {
 
     const close = view.getByRole('button', { name: /com_ui_mcp_app_close_named/ });
     expect(close).toHaveFocus();
-    const loading = view.getByRole('status');
-    expect(loading).toHaveTextContent('com_ui_loading_interactive_view');
+    const loading = view.getByText('com_ui_loading_interactive_view');
     expect(loading.parentElement).toHaveStyle({ height: '320px' });
+    /** The frame's own overlay announces the loading once the bridge arrives, so this box stays silent. */
+    expect(view.queryByRole('status')).not.toBeInTheDocument();
     expect(mockUseAppBridge).not.toHaveBeenCalled();
 
     await waitForBridges(1);
-    expect(view.queryByRole('status')).not.toBeInTheDocument();
+    expect(view.queryByText('com_ui_loading_interactive_view')).not.toBeInTheDocument();
     expect(frames(view.container)).toHaveLength(1);
     expect(view.getByRole('button', { name: /com_ui_mcp_app_close_named/ })).toBe(close);
     expect(close).toHaveFocus();

@@ -22,14 +22,18 @@ const DEFAULT_APP_VIEW_HEIGHT = 320;
 
 const BridgedAppFrame = lazyWithRecovery(() => import('./Bridge'));
 
-/** Same box the opened view occupies before its app reports a size, so the swap does not move anything. */
+/**
+ * Same box the opened view occupies before its app reports a size, so the swap does not move
+ * anything. It is silent: the frame that replaces it announces the same loading through its own
+ * status, so a live region here would announce it twice.
+ */
 function BridgeLoading() {
   return (
     <div
       className="relative my-2 overflow-hidden"
       style={{ height: DEFAULT_APP_VIEW_HEIGHT, maxWidth: '100%' }}
     >
-      <MCPAppLoading spinner />
+      <MCPAppLoading spinner live={false} />
     </div>
   );
 }

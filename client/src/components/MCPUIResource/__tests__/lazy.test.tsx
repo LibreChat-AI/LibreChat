@@ -118,7 +118,8 @@ describe('on-demand MCP UI chunks', () => {
     expect(mockEvaluated).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Open app: show_app (1)' }));
-    expect(screen.getByRole('status')).toHaveTextContent('Loading interactive view...');
+    expect(screen.getByText('Loading interactive view...')).toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
 
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(mockEvaluated).toHaveBeenCalledWith('@modelcontextprotocol/ext-apps/app-bridge');
