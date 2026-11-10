@@ -1,25 +1,18 @@
 import { Provider } from 'jotai';
+import { RecoilRoot } from 'recoil';
+import axios, { AxiosHeaders } from 'axios';
+import { QueryKeys } from 'librechat-data-provider';
 import userEvent from '@testing-library/user-event';
-import { act, render, screen, within, waitFor } from '@testing-library/react';
-import type { TBalanceResponse } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, render, screen, within, waitFor } from '@testing-library/react';
+import type { TBalanceResponse, TUser } from 'librechat-data-provider';
+import type { AxiosResponse } from 'axios';
+import type { ReactNode } from 'react';
+import type { TAuthContext } from '~/common';
 import { TokenCredits, AutoRefill } from '~/components/Nav/Settings/BillingControls';
+import { AuthContext } from '~/hooks/AuthContext';
 import Credits from '../Credits';
-
-const mockStartupConfig = jest.fn();
-const mockBalance = jest.fn();
-const mockBalanceQuery = jest.fn();
-let mockAuthenticated = true;
-
-jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: mockStartupConfig() }),
-  useGetUserBalance: (config?: { enabled?: boolean }) =>
-    config?.enabled === false
-      ? { data: undefined, isError: false, isFetched: false }
-      : (mockBalanceQuery() ?? { data: mockBalance(), isError: false, isFetched: true }),
-}));
-jest.mock('~/hooks/AuthContext', () => ({
-  useAuthContext: () => ({ isAuthenticated: mockAuthenticated }),
-}));
+import store from '~/store';
 
 const NOW = Date.parse('2026-07-05T00:00:00.000Z');
 const balance: TBalanceResponse = {
@@ -30,6 +23,28 @@ const balance: TBalanceResponse = {
   refillIntervalUnit: 'days',
   lastRefill: '2026-07-01T00:00:00.000Z',
 };
+const user: TUser = {
+  id: 'usage-user',
+  username: 'usage-user',
+  email: 'usage@example.com',
+  name: 'Usage User',
+  avatar: '',
+  role: 'USER',
+  provider: 'local',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+const auth: TAuthContext = {
+  user,
+  token: undefined,
+  isAuthenticated: true,
+  isAuthReady: true,
+  error: undefined,
+  login: jest.fn(),
+  logout: jest.fn(),
+  completeAuthentication: jest.fn(),
+  setError: jest.fn(),
+};
 const config = ({
   balanceEnabled = true,
   display = 'credits',
@@ -37,35 +52,81 @@ const config = ({
   balance: { enabled: balanceEnabled, startBalance: 20_000, display },
   interface: { contextUsage: false, currency: { code: 'USD', rate: 1 } },
 });
-const renderCredits = (mobile = false) =>
-  render(
-    <Provider>
-      <Credits mobile={mobile} />
-    </Provider>,
+function response<T>(data: T): AxiosResponse<T> {
+  return {
+    data,
+    status: 200,
+    statusText: 'OK',
+    headers: {},
+    config: { headers: new AxiosHeaders() },
+  };
+}
+function deferred<T>() {
+  let resolve!: (value: AxiosResponse<T>) => void;
+  const promise = new Promise<AxiosResponse<T>>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve: (data: T) => resolve(response(data)) };
+}
+const getConfig = jest.fn<Promise<AxiosResponse<ReturnType<typeof config>>>, []>();
+const getBalance = jest.fn<Promise<AxiosResponse<TBalanceResponse | null>>, []>();
+let client: QueryClient;
+let authenticated = true;
+let queriesEnabled = true;
+function Wrapper({ children }: { children: ReactNode }) {
+  const currentUser = authenticated ? user : undefined;
+  return (
+    <QueryClientProvider client={client}>
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(store.user, currentUser);
+          set(store.queriesEnabled, queriesEnabled);
+        }}
+      >
+        <Provider>
+          <AuthContext.Provider
+            value={{ ...auth, user: currentUser, isAuthenticated: authenticated }}
+          >
+            {children}
+          </AuthContext.Provider>
+        </Provider>
+      </RecoilRoot>
+    </QueryClientProvider>
   );
+}
+const renderCredits = (mobile = false) => render(<Credits mobile={mobile} />, { wrapper: Wrapper });
 const openCard = async () => {
-  const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
-  await user.click(screen.getByRole('button', { name: 'Account usage' }));
+  const interaction = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+  await interaction.click(await screen.findByRole('button', { name: 'Account usage' }));
   return screen.findByRole('dialog', { name: 'Account usage' });
 };
 
 describe('sidebar credits', () => {
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(NOW);
-    jest.clearAllMocks();
-    mockStartupConfig.mockReturnValue(config());
-    mockBalance.mockReturnValue(balance);
-    mockBalanceQuery.mockReset();
-    mockAuthenticated = true;
+    authenticated = true;
+    queriesEnabled = true;
+    client = new QueryClient({ defaultOptions: { queries: { retry: false, cacheTime: 0 } } });
+    getConfig.mockReset().mockResolvedValue(response(config()));
+    getBalance.mockReset().mockResolvedValue(response(balance));
+    jest.spyOn(axios, 'get').mockImplementation((url) => {
+      if (url === '/api/config') return getConfig();
+      if (url === '/api/balance') return getBalance();
+      throw new Error(`Unexpected GET ${url}`);
+    });
   });
-  afterEach(() => jest.useRealTimers());
+  afterEach(() => {
+    cleanup();
+    client.clear();
+    jest.useRealTimers();
+  });
 
   it.each([false, true])(
     'shows the account balance independently of context usage, mobile=%s',
     async (mobile) => {
       renderCredits(mobile);
       const card = await openCard();
-      expect(within(card).getByText('62% left')).toBeVisible();
+      expect(await within(card).findByText('62% left')).toBeVisible();
       expect(within(card).getByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
       expect(within(card).getByTestId('balance-refill')).toHaveTextContent(
         '+5,000,000 available in 3 days',
@@ -77,122 +138,173 @@ describe('sidebar credits', () => {
 
   it('supports keyboard opening, Escape and focus return', async () => {
     renderCredits();
-    const trigger = screen.getByRole('button', { name: 'Account usage' });
-    const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+    const trigger = await screen.findByRole('button', { name: 'Account usage' });
+    const interaction = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
     act(() => trigger.focus());
-    await user.keyboard('{Enter}');
+    await interaction.keyboard('{Enter}');
     expect(await screen.findByRole('dialog', { name: 'Account usage' })).toBeVisible();
-    await user.keyboard('{Escape}');
+    await interaction.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
-  it.each(['disabled', 'signed out', 'missing config', 'missing record'])(
-    'hides the control when %s',
-    (reason) => {
-      if (reason === 'disabled')
-        mockStartupConfig.mockReturnValue(config({ balanceEnabled: false }));
-      if (reason === 'signed out') mockAuthenticated = false;
-      if (reason === 'missing config') mockStartupConfig.mockReturnValue(undefined);
-      if (reason === 'missing record') mockBalance.mockReturnValue(undefined);
-      renderCredits();
-      expect(screen.queryByRole('button', { name: 'Account usage' })).not.toBeInTheDocument();
-      if (reason !== 'missing record') expect(mockBalanceQuery).not.toHaveBeenCalled();
-    },
-  );
+  it.each(['disabled', 'signed out'])('does not request a balance when %s', async (reason) => {
+    if (reason === 'disabled')
+      getConfig.mockResolvedValue(response(config({ balanceEnabled: false })));
+    if (reason === 'signed out') authenticated = false;
+    renderCredits();
+    await waitFor(() =>
+      expect(
+        client.getQueryState([QueryKeys.startupConfig, authenticated, 'default'])?.status,
+      ).toBe('success'),
+    );
+    expect(screen.queryByRole('button', { name: 'Account usage' })).not.toBeInTheDocument();
+    expect(getBalance).not.toHaveBeenCalled();
+  });
+
+  it('does not request config or balance while queries are disabled', () => {
+    queriesEnabled = false;
+    renderCredits();
+    expect(screen.queryByRole('button', { name: 'Account usage' })).not.toBeInTheDocument();
+    expect(getConfig).not.toHaveBeenCalled();
+    expect(getBalance).not.toHaveBeenCalled();
+  });
+
+  it('waits for config before requesting the balance', async () => {
+    const pending = deferred<ReturnType<typeof config>>();
+    getConfig.mockReturnValue(pending.promise);
+    renderCredits();
+    await waitFor(() => expect(getConfig).toHaveBeenCalledTimes(1));
+    expect(getBalance).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Account usage' })).not.toBeInTheDocument();
+    pending.resolve(config());
+    const card = await openCard();
+    expect(await within(card).findByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
+  });
+
+  it('hides the control after a successful response with no balance record', async () => {
+    getBalance.mockResolvedValue(response(null));
+    renderCredits();
+    await waitFor(() => expect(client.getQueryState([QueryKeys.balance])?.status).toBe('success'));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Account usage' })).not.toBeInTheDocument(),
+    );
+    expect(getBalance).toHaveBeenCalledTimes(1);
+  });
 
   it('shows no amounts in percent mode', async () => {
-    mockStartupConfig.mockReturnValue(config({ display: 'percent' }));
+    getConfig.mockResolvedValue(response(config({ display: 'percent' })));
     renderCredits();
     const card = await openCard();
-    expect(within(card).getByTestId('balance-value')).toHaveTextContent('62% left');
+    expect(await within(card).findByTestId('balance-value')).toHaveTextContent('62% left');
     expect(card).not.toHaveTextContent(/credits|3,100,000|5,000,000|\$/i);
   });
 
   it('keeps unknown allowance distinct from zero remaining', async () => {
-    mockStartupConfig.mockReturnValue({
-      balance: { enabled: true, startBalance: 0, display: 'percent' },
-    });
-    mockBalance.mockReturnValue({ tokenCredits: 900, autoRefillEnabled: false });
+    getConfig.mockResolvedValue(
+      response({
+        ...config({ display: 'percent' }),
+        balance: { enabled: true, startBalance: 0, display: 'percent' },
+      }),
+    );
+    getBalance.mockResolvedValue(response({ tokenCredits: 900, autoRefillEnabled: false }));
     renderCredits();
     const card = await openCard();
-    expect(within(card).getByTestId('balance-value')).toHaveTextContent('Usage unavailable');
+    expect(await within(card).findByTestId('balance-value')).toHaveTextContent('Usage unavailable');
     expect(card).not.toHaveTextContent('0% left');
   });
 
-  it('shows exhausted credits and keeps the shared stale reading after a refetch failure', async () => {
-    mockBalanceQuery.mockReturnValue({
-      data: { ...balance, tokenCredits: 0 },
-      isError: true,
-      isFetched: true,
-    });
+  it('keeps exhausted credits visible after a real failed refetch', async () => {
+    getBalance
+      .mockResolvedValueOnce(response({ ...balance, tokenCredits: 0 }))
+      .mockRejectedValue(new Error('Balance service unavailable'));
     renderCredits();
     const card = await openCard();
+    expect(await within(card).findByTestId('balance-value')).toHaveTextContent('0 credits');
+    await act(async () => {
+      await client.refetchQueries({ queryKey: [QueryKeys.balance], exact: true });
+    });
+    expect(getBalance).toHaveBeenCalledTimes(2);
+    expect(client.getQueryState([QueryKeys.balance])?.status).toBe('error');
     expect(within(card).getByTestId('balance-value')).toHaveTextContent('0 credits');
     expect(within(card).getByRole('status')).toHaveTextContent('Out of credits');
     expect(within(card).queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it.each([
-    ['loading', { data: undefined, isError: false, isFetched: false }],
-    ['error', { data: undefined, isError: true, isFetched: true }],
-  ] as const)('keeps %s feedback in the popover', async (status, query) => {
-    mockBalanceQuery.mockReturnValue(query);
+  it('shows loading until the balance HTTP response arrives', async () => {
+    const pending = deferred<TBalanceResponse>();
+    getBalance.mockReturnValue(pending.promise);
     renderCredits();
     const card = await openCard();
-    if (status === 'loading')
-      expect(within(card).getByTestId('balance-summary')).toHaveAttribute('aria-busy', 'true');
-    else expect(within(card).getByRole('alert')).toHaveTextContent("Couldn't load your balance");
+    expect(within(card).getByTestId('balance-summary')).toHaveAttribute('aria-busy', 'true');
+    pending.resolve(balance);
+    expect(await within(card).findByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
+  });
+
+  it('shows an alert when the initial balance request fails', async () => {
+    getBalance.mockRejectedValue(new Error('Balance service unavailable'));
+    renderCredits();
+    const card = await openCard();
+    expect(await within(card).findByRole('alert')).toHaveTextContent("Couldn't load your balance");
+    expect(getBalance).toHaveBeenCalledTimes(1);
   });
 
   it.each(['credits', 'currency', 'dollars'])(
-    'preserves the configured %s amount and refill in settings',
+    'agrees with Settings in %s mode',
     async (display) => {
-      mockStartupConfig.mockReturnValue(config({ display }));
+      getConfig.mockResolvedValue(response(config({ display })));
       renderCredits();
       const card = await openCard();
-      const amount = within(card).getByTestId('balance-value').textContent;
+      const amount = (await within(card).findByTestId('balance-value')).textContent;
       const refill = within(card).getByTestId('balance-refill').textContent;
       const settings = render(
         <>
           <TokenCredits />
           <AutoRefill />
         </>,
+        { wrapper: Wrapper },
       );
-      expect(within(settings.container).getByTestId('balance-value')).toHaveTextContent(amount!);
+      expect(await within(settings.container).findByTestId('balance-value')).toHaveTextContent(
+        amount!,
+      );
       expect(within(settings.container).getByTestId('balance-refill')).toHaveTextContent(refill!);
+      expect(getBalance).toHaveBeenCalledTimes(1);
     },
   );
-  it('agrees with the card when auto-refill is on but the refill amount is not positive', async () => {
-    mockStartupConfig.mockReturnValue(config());
-    mockBalance.mockReturnValue({ ...balance, refillAmount: 0 });
+
+  it('agrees with Settings when the refill amount is not positive', async () => {
+    getBalance.mockResolvedValue(response({ ...balance, refillAmount: 0 }));
     renderCredits();
     const card = await openCard();
-    expect(within(card).getByTestId('balance-refill')).toHaveTextContent(
+    expect(await within(card).findByTestId('balance-refill')).toHaveTextContent(
       "Doesn't refill automatically",
     );
-    const settings = render(<AutoRefill />);
-    expect(settings.container).toHaveTextContent('Auto-Refill is disabled.');
+    const settings = render(<AutoRefill />, { wrapper: Wrapper });
+    expect(await within(settings.container).findByText('Auto-Refill is disabled.')).toBeVisible();
     expect(settings.container).not.toHaveTextContent('Error loading auto-refill settings.');
   });
 
-  it.each([
-    ['loading', { data: undefined, isError: false, isFetched: false }, 'auto-refill-loading'],
-    ['failed', { data: undefined, isError: true, isFetched: true }, 'alert'],
-  ] as const)(
-    'shows the auto-refill row %s on its own when settings search hides the balance row',
-    (_state, query, marker) => {
-      mockStartupConfig.mockReturnValue(config());
-      mockBalanceQuery.mockReturnValue(query);
-      const settings = render(<AutoRefill />);
-      const node =
-        marker === 'alert'
-          ? within(settings.container).getByRole('alert')
-          : within(settings.container).getByTestId(marker);
-      expect(node).toBeInTheDocument();
-      if (marker === 'alert') {
-        expect(node).toHaveTextContent('Error loading auto-refill settings.');
-      }
-    },
-  );
+  it('shows the auto-refill row loading without the balance row', async () => {
+    const pending = deferred<TBalanceResponse>();
+    getBalance.mockReturnValue(pending.promise);
+    const settings = render(<AutoRefill />, { wrapper: Wrapper });
+    await waitFor(() => expect(getBalance).toHaveBeenCalledTimes(1));
+    expect(within(settings.container).getByTestId('auto-refill-loading')).toBeInTheDocument();
+    pending.resolve(balance);
+    await waitFor(() =>
+      expect(
+        within(settings.container).queryByTestId('auto-refill-loading'),
+      ).not.toBeInTheDocument(),
+    );
+    expect(getBalance).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the auto-refill error without the balance row', async () => {
+    getBalance.mockRejectedValue(new Error('Balance service unavailable'));
+    const settings = render(<AutoRefill />, { wrapper: Wrapper });
+    expect(await within(settings.container).findByRole('alert')).toHaveTextContent(
+      'Error loading auto-refill settings.',
+    );
+    expect(getBalance).toHaveBeenCalledTimes(1);
+  });
 });
