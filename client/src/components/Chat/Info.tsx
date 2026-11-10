@@ -22,12 +22,12 @@ import type { ReactNode, RefObject } from 'react';
 import type { CurrencyConfig } from '~/utils';
 import { useCopyToClipboard, useLocalize } from '~/hooks';
 import { useCachedMessages } from '~/data-provider';
-import useClockFormat from '~/hooks/useClockFormat';
 
 interface InfoProps {
   conversation: TConversation;
   showUsage: boolean;
   showCost: boolean;
+  hour12: boolean;
   currency?: CurrencyConfig;
 }
 
@@ -65,10 +65,9 @@ function Detail({ label, children }: { label: string; children?: ReactNode }) {
 }
 
 /** Reads the existing message cache and usage rollup only while the dialog is open. */
-function Details({ conversation, showUsage, showCost, currency }: InfoProps) {
+function Details({ conversation, showUsage, showCost, hour12, currency }: InfoProps) {
   const localize = useLocalize();
   const { i18n } = useTranslation();
-  const hour12 = useClockFormat();
   const conversationId = conversation.conversationId ?? '';
   const { data: summary } = useCachedMessages(conversationId, summarizeMessages);
   const committed = useAtomValue(totalUsageFamily(conversationId));

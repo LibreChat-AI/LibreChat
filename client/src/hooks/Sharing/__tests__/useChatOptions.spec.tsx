@@ -1,11 +1,14 @@
 import '@testing-library/jest-dom';
+import { getDefaultStore } from 'jotai';
+import { MemoryRouter } from 'react-router-dom';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { Constants, QueryKeys } from 'librechat-data-provider';
-import { render, screen, renderHook, act } from '@testing-library/react';
+import { render, screen, renderHook, act, within } from '@testing-library/react';
 import type { QueryClient } from '@tanstack/react-query';
-import type { ComponentProps, ReactNode } from 'react';
-import type ConversationInfo from '~/components/Chat/Info';
+import type { ReactNode } from 'react';
 import type { MenuItemProps } from '~/common';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
+import { clockFormatAtom } from '~/store/clockFormat';
 import useChatOptions from '../useChatOptions';
 
 const mockState = {
@@ -40,12 +43,17 @@ const mockSetConversation = jest.fn();
 const mockAnnounce = jest.fn();
 
 jest.mock('recoil', () => ({ useRecoilValue: () => mockState.conversation }));
-jest.mock('@tanstack/react-query', () => ({ useQueryClient: () => mockClient.current }));
+jest.mock('@tanstack/react-query', () => ({
+  ...jest.requireActual('@tanstack/react-query'),
+  useQueryClient: () => mockClient.current,
+}));
 jest.mock('react-router-dom', () => ({
+  ...jest.requireActual('react-router-dom'),
   useNavigate: () => mockNavigate,
   useParams: () => ({ conversationId: mockState.route }),
 }));
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   Spinner: () => null,
   useToastContext: () => ({ showToast: jest.fn() }),
 }));
@@ -53,6 +61,7 @@ jest.mock('~/store', () => ({ __esModule: true, default: { conversationByIndex: 
 jest.mock('~/common', () => ({ NotificationSeverity: { SUCCESS: 'success', ERROR: 'error' } }));
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
+  useCopyToClipboard: jest.requireActual('~/hooks/Messages/useCopyToClipboard').default,
   useNewConvo: () => ({ newConversation: mockNewConversation }),
   useNavigateToConvo: () => ({ navigateToConvo: jest.fn() }),
 }));
@@ -61,6 +70,7 @@ jest.mock('~/Providers', () => ({
   useLiveAnnouncer: () => ({ announcePolite: mockAnnounce }),
 }));
 jest.mock('~/data-provider', () => ({
+  useCachedMessages: jest.requireActual('~/data-provider/Messages/queries').useCachedMessages,
   useGetStartupConfig: () => ({ data: { interface: { contextUsage: true, contextCost: false } } }),
   useGetConvoIdQuery: () => ({ data: mockState.cached }),
   useActiveJobs: () => ({ data: { activeJobIds: mockState.activeJobs } }),
@@ -102,14 +112,6 @@ jest.mock('~/components/Conversations/ConvoOptions/DeleteButton', () => ({
 jest.mock('~/components/Chat/Rename', () => ({
   __esModule: true,
   default: () => <div data-testid="rename-dialog" />,
-}));
-const mockInfoProps: { current?: ComponentProps<typeof ConversationInfo> } = {};
-jest.mock('~/components/Chat/Info', () => ({
-  __esModule: true,
-  default: (props: ComponentProps<typeof ConversationInfo>) => {
-    mockInfoProps.current = props;
-    return props.open ? <div data-testid="info-dialog" /> : null;
-  },
 }));
 jest.mock('../useExportShare', () => ({
   __esModule: true,
@@ -173,7 +175,7 @@ describe('useChatOptions', () => {
     mockState.fetchingNext = false;
     mockState.assigning = undefined;
     mockProjectsConfig.current = undefined;
-    mockInfoProps.current = undefined;
+    getDefaultStore().set(clockFormatAtom, '24h');
   });
 
   it('lists share and export first, then the sidebar actions for the open chat', () => {
@@ -562,27 +564,53 @@ describe('useChatOptions', () => {
     expect(labels(result.current.items)).toEqual(['share', 'export', 'com_ui_conversation_info']);
   });
 
-  it.each([false, true])('opens conversation info from the menu, readOnly=%s', (readOnly) => {
-    const { result, rerender } = setup(readOnly);
-    const item = find(result.current.items, 'com_ui_conversation_info');
-    expect(item.ariaHasPopup).toBe('dialog');
-    expect(item.render).toBeDefined();
-    act(() => item.onClick?.({} as never));
-    const { rerender: rerenderDialogs } = render(<>{result.current.dialogs}</>);
-    expect(screen.getByTestId('info-dialog')).toBeInTheDocument();
-    expect(mockInfoProps.current).toMatchObject({
-      conversation: expect.objectContaining({ conversationId: 'convo-1' }),
-      triggerRef: item.ref,
-      showUsage: true,
-      showCost: false,
-    });
+  it.each([false, true])(
+    'opens real conversation info from the menu, readOnly=%s',
+    async (readOnly) => {
+      getDefaultStore().set(clockFormatAtom, readOnly ? '12h' : '24h');
+      mockState.conversation.updatedAt = '2026-11-05T15:00:00';
+      const client = mockClient.current!;
+      client.setQueryData(
+        [QueryKeys.messages, 'convo-1'],
+        [
+          {
+            conversationId: 'convo-1',
+            messageId: 'reply-1',
+            parentMessageId: 'user-1',
+            text: 'Hello',
+            sender: 'Assistant',
+            isCreatedByUser: false,
+            metadata: { usage: { input: 42, output: 7, cost: 0.01 } },
+          },
+        ],
+      );
+      const { result, rerender } = setup(readOnly);
+      const item = find(result.current.items, 'com_ui_conversation_info');
+      expect(item.ariaHasPopup).toBe('dialog');
+      expect(item.render).toBeDefined();
+      act(() => item.onClick?.({} as never));
+      const { rerender: rerenderDialogs } = render(<>{result.current.dialogs}</>, {
+        wrapper: ({ children }) => (
+          <QueryClientProvider client={client}>
+            <MemoryRouter>{children}</MemoryRouter>
+          </QueryClientProvider>
+        ),
+      });
+      const dialog = await screen.findByRole('dialog', { name: 'com_ui_conversation_info' });
+      expect(within(dialog).getByText('convo-1')).toBeVisible();
+      expect(within(dialog).getByText('42')).toBeVisible();
+      expect(within(dialog).queryByTestId('usage-cost')).not.toBeInTheDocument();
+      expect(
+        within(dialog).getByText('com_ui_conversation_updated').nextElementSibling,
+      ).toHaveTextContent(readOnly ? '3:00 PM' : '15:00');
 
-    mockState.route = 'convo-2';
-    rerender();
-    rerenderDialogs(<>{result.current.dialogs}</>);
-    expect(screen.queryByTestId('info-dialog')).not.toBeInTheDocument();
-    expect(labels(result.current.items)).not.toContain('com_ui_conversation_info');
-  });
+      mockState.route = 'convo-2';
+      rerender();
+      rerenderDialogs(<>{result.current.dialogs}</>);
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(labels(result.current.items)).not.toContain('com_ui_conversation_info');
+    },
+  );
 
   it.each(['', Constants.NEW_CONVO, Constants.PENDING_CONVO, Constants.SEARCH] as const)(
     'hides conversation info for an unsaved conversation: %s',
