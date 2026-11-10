@@ -785,6 +785,7 @@ describe('getOpenAIModels sorting behavior', () => {
           { id: 'chat-latest' },
           { id: 'gpt-5.5' },
           { id: 'dall-e-3' },
+          { id: 'gpt-image-2.6-flare' },
           { id: 'gpt-realtime-2' },
         ],
       },
@@ -795,6 +796,7 @@ describe('getOpenAIModels sorting behavior', () => {
     expect(models).toContain('chat-latest');
     expect(models).toContain('gpt-5.5');
     expect(models).not.toContain('dall-e-3');
+    expect(models).not.toContain('gpt-image-2.6-flare');
     expect(models).not.toContain('gpt-realtime-2');
   });
 });

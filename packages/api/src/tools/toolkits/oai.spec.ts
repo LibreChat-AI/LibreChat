@@ -34,3 +34,43 @@ describe('OpenAI image toolkit size schema', () => {
     },
   );
 });
+
+describe('gpt-image-2.6-flare quality schema', () => {
+  const originalModel = process.env.IMAGE_GEN_OAI_MODEL;
+
+  afterEach(() => {
+    if (originalModel === undefined) {
+      delete process.env.IMAGE_GEN_OAI_MODEL;
+    } else {
+      process.env.IMAGE_GEN_OAI_MODEL = originalModel;
+    }
+  });
+
+  it.each([
+    [undefined, ['auto', 'high', 'medium', 'low']],
+    ['', ['auto', 'high', 'medium', 'low']],
+    ['gpt-image-1', ['auto', 'high', 'medium', 'low']],
+    ['gpt-image-1.5', ['auto', 'high', 'medium', 'low']],
+    ['gpt-image-2.5-flare', ['auto', 'high', 'medium', 'low']],
+    ['gpt-image-2.5-sunburst', ['auto', 'high', 'medium', 'low']],
+    ['custom-image-deployment', ['auto', 'high', 'medium', 'low']],
+    ['gpt-image-2.6-flare', ['auto', 'high', 'medium', 'low', 'xhigh', 'max']],
+  ])('exposes only the configured quality levels for %j', (model, qualities) => {
+    if (model === undefined) {
+      delete process.env.IMAGE_GEN_OAI_MODEL;
+    } else {
+      process.env.IMAGE_GEN_OAI_MODEL = model;
+    }
+
+    jest.isolateModules(() => {
+      const { oaiToolkit: toolkit } = jest.requireActual<typeof import('./oai')>('./oai');
+      for (const tool of [toolkit.image_gen_oai, toolkit.image_edit_oai]) {
+        expect(tool.schema.properties?.quality?.enum).toEqual(qualities);
+        expect(tool.schema.properties?.quality?.description).not.toContain('only supported');
+        expect(tool.schema.properties?.size?.pattern).toBe(IMAGE_SIZE_PATTERN);
+        expect(tool.schema.properties?.complexity).toBeUndefined();
+        expect(tool.schema.properties?.output_format).toBeUndefined();
+      }
+    });
+  });
+});

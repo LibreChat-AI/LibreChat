@@ -131,7 +131,7 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
     );
   });
 
-  it.each(['gpt-image-1', 'gpt-image-1.5', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', ' '])(
+  it.each(['gpt-image-1', 'gpt-image-1.5', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2.6-flare', ' '])(
     'should preserve the configured generation model %j',
     async (model) => {
       process.env.IMAGE_GEN_OAI_MODEL = model;
@@ -207,6 +207,7 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
     ['gpt-image-1.5', 'gpt-image-1.5'],
     ['gpt-image-2.5-flare', 'gpt-image-2.5-flare'],
     ['gpt-image-2.5-sunburst', 'gpt-image-2.5-sunburst'],
+    ['gpt-image-2.6-flare', 'gpt-image-2.6-flare'],
     ['custom-image-model', 'custom-image-model'],
     [' ', ' '],
   ])('preserves the editing model for IMAGE_GEN_OAI_MODEL=%j', async (model, expectedModel) => {
@@ -225,6 +226,44 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
       expect.any(Object),
     );
   });
+
+  it.each(['low', 'medium', 'high', 'xhigh', 'max'])(
+    'passes gpt-image-2.6-flare quality %s to generations and edits',
+    async (quality) => {
+      process.env.IMAGE_GEN_OAI_MODEL = 'gpt-image-2.6-flare';
+      const generate = jest.fn().mockResolvedValue({
+        data: [{ b64_json: 'base64-encoded-image-data' }],
+      });
+      OpenAI.mockImplementation(() => ({ images: { generate } }));
+      const append = jest.spyOn(FormData.prototype, 'append');
+      const [imageGenTool, imageEditTool] = createTools();
+
+      const [, generation] = await imageGenTool.func({ prompt: 'test prompt', quality });
+      const [, edit] = await imageEditTool.func({
+        prompt: 'test prompt',
+        image_ids: ['source-image'],
+        quality,
+      });
+
+      expect(generate).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'gpt-image-2.6-flare', quality, size: 'auto' }),
+        expect.any(Object),
+      );
+      expect(append).toHaveBeenCalledWith('model', 'gpt-image-2.6-flare');
+      expect(append).toHaveBeenCalledWith('quality', quality);
+      expect(axios.post).toHaveBeenCalledWith(
+        '/images/edits',
+        expect.any(FormData),
+        expect.any(Object),
+      );
+      for (const artifact of [generation, edit]) {
+        expect(artifact.content[0].image_url.url).toBe(
+          'data:image/png;base64,base64-encoded-image-data',
+        );
+        expect(artifact.file_ids).toHaveLength(1);
+      }
+    },
+  );
 
   it('should preserve the configured Azure deployment for generation and editing', async () => {
     const model = 'azure-image-deployment';
