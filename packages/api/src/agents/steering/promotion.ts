@@ -202,12 +202,10 @@ async function promoteOne(
   };
   const { turn } = await deps.methods.enqueueAgentQueuedTurn({
     ...enqueueInput,
-    /** An approval-bearing row is published under its own reservation, the
-     * same as one a client enqueues, so a replica that cannot read the mode
-     * never starts the turn without it. */
-    ...(item.codeApprovalMode != null && {
-      deliveryReservation: createQueuedTurnDeliveryReservation(enqueueInput),
-    }),
+    /** Reserved before insertion under the promoted delivery version, so a
+     * replica that predates the ownership check can neither publish this row
+     * nor run it, even if this process dies before scheduling it. */
+    deliveryReservation: createQueuedTurnDeliveryReservation(enqueueInput),
   });
   const promoted = (): PromotionAttempt => ({
     kind: 'promoted',

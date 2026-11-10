@@ -27,6 +27,7 @@ import {
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
 } from '~/types/triggerDelivery';
 import { createIndexesWithRetry } from '~/utils/retry';
 import logger from '~/config/winston';
@@ -1190,7 +1191,8 @@ export function createAgentTriggerDeliveryMethods(
         AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3 &&
       input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1 &&
       input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1 &&
-      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2
+      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2 &&
+      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3
     ) {
       throw new TypeError('Agent trigger delivery requires an unsupported worker capability');
     }

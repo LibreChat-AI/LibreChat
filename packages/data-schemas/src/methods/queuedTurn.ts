@@ -118,7 +118,7 @@ export interface EnqueueAgentQueuedTurnInput extends AgentQueuedTurnConversation
   quotes?: readonly string[];
   manualSkills?: readonly string[];
   codeApprovalMode?: CodeApprovalMode;
-  /** Internal publication fence, committed with approval-bearing rows. */
+  /** Internal publication fence, committed with approval-bearing and promoted rows. */
   deliveryReservation?: { queuedTurnId: string; deliveryKey: string };
   reasoningOverride?: TReasoningOverride;
   expectedPredecessorCreatedAt?: number;
@@ -1162,6 +1162,9 @@ export function createAgentQueuedTurnMethods(
     const normalized = normalizeEnqueue(input);
     if (input.codeApprovalMode != null && input.deliveryReservation == null) {
       throw new TypeError('Approval snapshots require a versioned delivery reservation');
+    }
+    if (input.steerSource != null && input.deliveryReservation == null) {
+      throw new TypeError('Promoted steers require a versioned delivery reservation');
     }
     const requestFingerprint = fingerprint(normalized);
     const existing = await Turn()

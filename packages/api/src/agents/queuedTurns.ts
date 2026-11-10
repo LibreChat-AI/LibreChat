@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
   logger,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -791,6 +792,36 @@ function createAgentQueuedTurnResolver({
   };
 }
 
+/**
+ * What a row needs from the worker that runs it, and the delivery identity
+ * that keeps a worker without it away. Each version includes the ones before:
+ * v2 carries the approval snapshot through admission, and v3 proves a promoted
+ * steer's ownership before running it. The version is part of the delivery
+ * key, so a replica that projects an older version can neither publish the
+ * row's reserved delivery nor claim it.
+ */
+function deliveryVersion(turn: Pick<AgentQueuedTurnRecord, 'codeApprovalMode' | 'steerSource'>): {
+  capability: string;
+  eventId: (queuedTurnId: string) => string;
+} {
+  if (turn.steerSource != null) {
+    return {
+      capability: AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
+      eventId: (queuedTurnId) => `${queuedTurnId}:v3`,
+    };
+  }
+  if (turn.codeApprovalMode != null) {
+    return {
+      capability: AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+      eventId: (queuedTurnId) => `${queuedTurnId}:v2`,
+    };
+  }
+  return {
+    capability: AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+    eventId: (queuedTurnId) => queuedTurnId,
+  };
+}
+
 function deliveryEnvelope(
   turn: Pick<
     AgentQueuedTurnRecord,
@@ -803,6 +834,7 @@ function deliveryEnvelope(
     | 'conversationId'
     | 'parentMessageId'
     | 'codeApprovalMode'
+    | 'steerSource'
   >,
 ) {
   const occurredAt = turn.createdAt.getTime();
@@ -816,7 +848,7 @@ function deliveryEnvelope(
       ...(turn.tenantId != null && { tenantId: turn.tenantId }),
     },
     event: {
-      id: turn.codeApprovalMode != null ? `${turn.queuedTurnId}:v2` : turn.queuedTurnId,
+      id: deliveryVersion(turn).eventId(turn.queuedTurnId),
       type: AGENT_QUEUED_TURN_EVENT,
       occurredAt,
       source: { id: AGENT_QUEUED_TURN_SOURCE, type: 'internal' },
@@ -875,10 +907,7 @@ function createAgentQueuedTurnScheduler({
        * A lane per durable row prevents a later published delivery from
        * blocking recovery of an earlier record-first outbox row. */
       orderingKey: `agent-queued-turn-delivery:${turn.queuedTurnId}`,
-      requiredWorkerCapability:
-        turn.codeApprovalMode != null
-          ? AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2
-          : AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+      requiredWorkerCapability: deliveryVersion(turn).capability,
     });
     if (receipt.deliveryKey !== deliveryKey) {
       throw new Error('The queued turn delivery identity changed during publication');

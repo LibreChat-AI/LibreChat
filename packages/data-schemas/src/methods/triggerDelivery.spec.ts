@@ -14,6 +14,7 @@ import {
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
 } from '~/types/triggerDelivery';
 import {
@@ -1503,6 +1504,7 @@ describe('agent trigger delivery methods', () => {
   it.each([
     AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
     AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+    AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
   ])('keeps %s fenced through lease recovery', async (capability) => {
     const queued = await methods.enqueueAgentTriggerDelivery(
       enqueueInput({
@@ -1524,7 +1526,11 @@ describe('agent trigger delivery methods', () => {
       methods.claimNextAgentTriggerDelivery({
         ...claimInput,
         workerId: 'old-worker',
-        workerCapabilities: [AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1],
+        /** Everything an earlier worker advertises, short of this capability. */
+        workerCapabilities: [
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+        ].filter((earlier) => earlier !== capability),
         claimToken: 'old-claim',
       }),
     ).resolves.toBeNull();

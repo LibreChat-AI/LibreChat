@@ -1,15 +1,22 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { createMethods, createModels } from '@librechat/data-schemas';
+import {
+  createModels,
+  createMethods,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
+} from '@librechat/data-schemas';
 import type { AgentContinueTriggerEnvelope } from '~/agents/triggers/envelope';
 import type { AgentTriggerContinuePreparation } from '~/agents/triggers/host';
 import type { AgentQueuedTurnLifecycle } from '~/agents/queuedTurns';
 import type { SteerPromotionDeps } from '../promotion';
+import {
+  createAgentQueuedTurnLifecycle,
+  createQueuedTurnDeliveryReservation,
+} from '~/agents/queuedTurns';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { promoteDrainedSteers, completePromotedSteerHandoff } from '../promotion';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { getAgentTriggerIdempotencyKey } from '~/agents/triggers/envelope';
-import { createAgentQueuedTurnLifecycle } from '~/agents/queuedTurns';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
 import { getPromotedSteerRequestId } from '../refs';
 import { handleSteerRequest } from '../request';
@@ -30,6 +37,7 @@ let methods: ReturnType<typeof createMethods>;
 let userId: string;
 let conversationId: string;
 let envelopes: AgentContinueTriggerEnvelope[];
+let requiredCapabilities: (string | undefined)[];
 let lifecycle: AgentQueuedTurnLifecycle;
 let deps: SteerPromotionDeps;
 
@@ -67,15 +75,17 @@ beforeEach(async () => {
     agent_id: agentId,
   });
   envelopes = [];
+  requiredCapabilities = [];
   lifecycle = createAgentQueuedTurnLifecycle({
     methods,
     getGenerationJob: async (id) => (await GenerationJobManager.getJob(id)) ?? null,
     completeSteerHandoff: (handoff) =>
       completePromotedSteerHandoff(GenerationJobManager.steering, handoff),
     getGenerationAdmissionEvidence: async () => null,
-    enqueue: async (envelope) => {
+    enqueue: async (envelope, options) => {
       const parsed = envelope as AgentContinueTriggerEnvelope;
       envelopes.push(parsed);
+      requiredCapabilities.push(options?.requiredWorkerCapability);
       return { deliveryKey: getAgentTriggerIdempotencyKey(parsed) };
     },
   });
@@ -228,6 +238,9 @@ describe('promoteDrainedSteers', () => {
       handoffAt: expect.any(Date),
     });
     expect(envelopes).toHaveLength(1);
+    /** Only a worker that proves a promoted steer's ownership may take this delivery. */
+    expect(requiredCapabilities).toEqual([AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3]);
+    expect(envelopes[0].event.id).toBe(`${row?.queuedTurnId}:v3`);
 
     /** FINAL is not yet durable: the ended generation still owns the conversation. */
     await expect(prepare(envelopes[0])).rejects.toMatchObject({ code: 'PARENT_NOT_READY' });
@@ -691,7 +704,7 @@ describe('promoteDrainedSteers', () => {
     async function crashAfterRow() {
       const { job, steerId, clientSteerId } = await acceptSteer();
       const claim = await endRunUnapplied(job.createdAt);
-      const { turn } = await methods.enqueueAgentQueuedTurn({
+      const input = {
         user: new mongoose.Types.ObjectId(userId),
         conversationId,
         agentId,
@@ -701,6 +714,10 @@ describe('promoteDrainedSteers', () => {
         priority: false,
         expectedPredecessorCreatedAt: job.createdAt,
         steerSource: { steerId, clientSteerId, generationCreatedAt: job.createdAt },
+      };
+      const { turn } = await methods.enqueueAgentQueuedTurn({
+        ...input,
+        deliveryReservation: createQueuedTurnDeliveryReservation(input),
       });
       await publishFinal(claim);
       await lifecycle.schedule(turn);

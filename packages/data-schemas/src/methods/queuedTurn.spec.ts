@@ -3157,9 +3157,18 @@ describe('agent queued turn methods', () => {
 describe('turns promoted from an unapplied steer', () => {
   const scope = () => ({ user, tenantId: 'tenant-1', conversationId: 'conversation-1' });
   const steerSource = { steerId: 'steer-1', clientSteerId: 'local-1', generationCreatedAt: 7_000 };
+  const promotedInput = (overrides: Parameters<typeof enqueueInput>[0] = {}) =>
+    enqueueInput({
+      steerSource,
+      deliveryReservation: {
+        queuedTurnId: new mongoose.Types.ObjectId().toString(),
+        deliveryKey: `reserved-${counter}`,
+      },
+      ...overrides,
+    });
 
   it('writes the steer source with the row and marks ownership once, while the row can still run', async () => {
-    const { turn } = await methods.enqueueAgentQueuedTurn(enqueueInput({ steerSource }));
+    const { turn } = await methods.enqueueAgentQueuedTurn(promotedInput());
     expect(turn.steerSource).toEqual(steerSource);
     const target = { ...scope(), queuedTurnId: turn.queuedTurnId };
 
@@ -3180,7 +3189,7 @@ describe('turns promoted from an unapplied steer', () => {
   it('never marks ownership on an ordinary row or on one that already settled', async () => {
     const ordinary = await methods.enqueueAgentQueuedTurn(enqueueInput());
     const promoted = await methods.enqueueAgentQueuedTurn(
-      enqueueInput({ clientRequestId: 'promoted', steerSource }),
+      promotedInput({ clientRequestId: 'promoted' }),
     );
     await methods.cancelAgentQueuedTurn({
       ...scope(),
@@ -3204,9 +3213,16 @@ describe('turns promoted from an unapplied steer', () => {
   it('rejects a steer source without the generation that accepted it', async () => {
     await expect(
       methods.enqueueAgentQueuedTurn(
-        enqueueInput({ steerSource: { steerId: 'steer-1', clientSteerId: 'local-1' } as never }),
+        promotedInput({ steerSource: { steerId: 'steer-1', clientSteerId: 'local-1' } as never }),
       ),
     ).rejects.toThrow('steer source requires its generation');
+  });
+
+  it('refuses a promoted row that no versioned delivery was reserved for', async () => {
+    await expect(methods.enqueueAgentQueuedTurn(enqueueInput({ steerSource }))).rejects.toThrow(
+      'Promoted steers require a versioned delivery reservation',
+    );
+    await expect(Turn.countDocuments({})).resolves.toBe(0);
   });
 
   describe('generation lineage', () => {
