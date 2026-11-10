@@ -9468,6 +9468,106 @@ describe('AgentClient - titleConvo', () => {
       );
     });
 
+    it.each([
+      ['temporary request', { body: { isTemporary: true } }, true],
+      ['stored temporary conversation', { resolvedConversation: { isTemporary: true } }, true],
+      ['ordinary conversation', { body: {} }, false],
+    ])(
+      'forwards the request tracing policy for a %s',
+      async (_name, requestFields, isTemporary) => {
+        Object.assign(mockReq, requestFields);
+        mockReq.config.langfuse = { trace: { userIdField: 'email' } };
+        mockCheckAccess.mockResolvedValue(true);
+        mockInitializeAgent.mockResolvedValue({ ...mockAgent, provider: EModelEndpoint.openAI });
+        mockCreateMemoryProcessor.mockResolvedValue(['', jest.fn()]);
+        client = new AgentClient({
+          ...mockOptions,
+          endpoint: EModelEndpoint.agents,
+          endpointType: EModelEndpoint.agents,
+          traceContext: { modelLabel: 'Chat Model' },
+          spec: 'spec-1',
+        });
+        client.conversationId = 'convo-123';
+        client.responseMessageId = 'response-123';
+
+        await client.useMemory();
+
+        expect(mockCreateMemoryProcessor).toHaveBeenCalledWith(
+          expect.objectContaining({
+            appConfig: mockReq.config,
+            isTemporary,
+            traceContext: {
+              endpoint: EModelEndpoint.agents,
+              endpointType: EModelEndpoint.agents,
+              modelLabel: 'Chat Model',
+              spec: 'spec-1',
+            },
+          }),
+        );
+      },
+    );
+
+    it.each([false, true])(
+      'applies policy through useMemory, the real processor, and Run.create (temporary=%s)',
+      async (isTemporary) => {
+        const { Run } = require('@librechat/agents');
+        const { HumanMessage } = require('@librechat/agents/langchain/messages');
+        const originalEnv = process.env;
+        process.env = {
+          ...originalEnv,
+          LANGFUSE_PUBLIC_KEY: 'pk-synthetic',
+          LANGFUSE_SECRET_KEY: 'sk-synthetic',
+          LANGFUSE_BASE_URL: 'https://central.example.com',
+          LANGFUSE_TRACING_ENABLED: 'true',
+          LANGFUSE_SAMPLE_RATE: '1',
+          LANGFUSE_FANOUT_ENABLED: 'false',
+          TENANT_ISOLATION_STRICT: 'false',
+        };
+        const create = jest.spyOn(Run, 'create').mockResolvedValue({
+          processStream: jest.fn().mockResolvedValue('done'),
+        });
+        try {
+          mockReq.body = { isTemporary };
+          mockReq.user.email = 'memory@example.com';
+          mockReq.config.langfuse = {
+            trace: {
+              userIdField: 'email',
+              conversationMetadataFields: ['conversationId', 'endpoint', 'model', 'provider'],
+            },
+          };
+          mockCheckAccess.mockResolvedValue(true);
+          mockInitializeAgent.mockResolvedValue({ ...mockAgent });
+          mockCreateMemoryProcessor.mockImplementation(
+            jest.requireActual('@librechat/api').createMemoryProcessor,
+          );
+          client = new AgentClient({ ...mockOptions, endpoint: EModelEndpoint.agents });
+          client.conversationId = 'convo-123';
+          client.responseMessageId = 'response-123';
+
+          await client.useMemory();
+          await client.processMemory([new HumanMessage('Synthetic memory input')]);
+
+          expect(create).toHaveBeenCalledTimes(1);
+          const run = create.mock.calls[0][0];
+          expect(run.langfuse).toMatchObject({
+            userId: 'memory@example.com',
+            deterministicTraceId: false,
+            metadata: {
+              'librechat.conversation.id': 'convo-123',
+              'librechat.endpoint': EModelEndpoint.agents,
+              'librechat.model': 'gpt-4',
+              'librechat.provider': EModelEndpoint.openAI,
+            },
+          });
+          expect(run.langfuse.enabled === false).toBe(isTemporary);
+        } finally {
+          process.env = originalEnv;
+          create.mockRestore();
+          mockCreateMemoryProcessor.mockReset();
+        }
+      },
+    );
+
     it('should bind memory processing to the current generation epoch', async () => {
       mockReq._resumableStreamId = 'convo-123';
       mockCheckAccess.mockResolvedValue(true);
