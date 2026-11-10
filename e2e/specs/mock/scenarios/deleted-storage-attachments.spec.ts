@@ -41,7 +41,9 @@ async function attachMarkdown(page: Page) {
   expect(response.ok()).toBeTruthy();
   const file = (await response.json()) as UploadedFile & { filepath?: string };
   expect(file.llmDeliveryPath).toBe('provider');
-  await expect(page.getByRole('button', { name })).toBeVisible({ timeout: 15000 });
+  await expect(
+    page.getByTestId('composer-tray').getByRole('button', { name, exact: true }),
+  ).toBeVisible({ timeout: 15000 });
   return { name, file };
 }
 
