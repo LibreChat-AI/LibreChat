@@ -176,7 +176,7 @@ export async function selectCodeFiles({
         !ref ||
         !checkCodeFileActive(info?.lastModified) ||
         (plannedName != null &&
-          (plannedName !== storedName ||
+          (plannedName !== (storedName ?? getCodeFileDestination(file, routeKey)) ||
             (file.context === FileContext.execute_code &&
               plannedName !== getCodeFileDestination(file, routeKey))));
       const sandboxName =

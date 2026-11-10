@@ -28,6 +28,31 @@ const file = (id: string, name: string, ref: Partial<CodeEnvRef> = {}, time = 1)
 const fresh = { lastModified: new Date().toISOString() };
 
 describe('selectCodeFiles', () => {
+  it.each(['default', 'stateful'] as const)(
+    'reuses a fresh unnamed legacy ref with timestamp-only metadata on %s',
+    async (routeKey) => {
+      const legacy = {
+        ...file('legacy', 'rows.csv', { executionProfile: routeKey }),
+        context: FileContext.execute_code,
+      };
+      const getFileInfo = jest.fn(async () => fresh);
+      const result = await selectCodeFiles({ files: [legacy], routeKey, getFileInfo });
+
+      expect(result.selected).toHaveLength(1);
+      expect(result.selected[0]).toMatchObject({
+        ref: legacy.metadata!.codeEnvRef,
+        sourceRef: legacy.metadata!.codeEnvRef,
+        sandboxName: 'rows.csv',
+        isActive: true,
+      });
+      expect(result.skippedNoRef).toBe(0);
+      expect(result.skippedSuperseded).toBe(0);
+      await expect(result.selected[0].getUploadTime()).resolves.toBe(fresh.lastModified);
+      await expect(result.selected[0].getUploadTime()).resolves.toBe(fresh.lastModified);
+      expect(getFileInfo).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('keeps the newest snapshot at the live path across legacy records and route recovery', async () => {
     const legacy = {
       ...file('legacy', 'rows.csv', { sandboxFilename: 'rows.csv' }),
