@@ -32,7 +32,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
   for (const key of ENV_KEYS) {
     if (originalEnv[key] === undefined) {
       delete process.env[key];

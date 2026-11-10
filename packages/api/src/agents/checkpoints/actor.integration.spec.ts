@@ -25,7 +25,7 @@ beforeAll(async () => {
 }, 60000);
 afterAll(async () => {
   await mongoose.disconnect();
-  await server.stop();
+  await server?.stop();
 });
 afterEach(async () => {
   jest.restoreAllMocks();

@@ -166,7 +166,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongod.stop();
+  await mongod?.stop();
 }, DB_SETUP_TIMEOUT_MS);
 
 describeWithRedis('subagent cross-replica orchestration', () => {
