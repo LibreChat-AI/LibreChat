@@ -12,8 +12,10 @@ test('opening the sidebar preserves focus moved during its delay @scenario:sideb
   await page.setViewportSize({ width: 390, height: 844 });
   const opener = page.getByTestId('header-open-sidebar-button');
   await expect(opener).toBeVisible();
-  await page.clock.install();
-  await page.clock.pauseAt(new Date());
+  /** An installed clock keeps running until paused, so pausing "now" can land behind it. */
+  const start = Date.now();
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(start + 5_000);
   await opener.click();
   await page.clock.runFor(100);
   const close = page.getByTestId('close-sidebar-button');
