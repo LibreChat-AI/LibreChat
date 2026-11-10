@@ -321,18 +321,21 @@ export function planCodeSnapshotMounts<T extends CodePathCandidate>(
   const ordered = sortCodeFilesByDestinationPriority(files, privateFileIds);
   const snapshots: T[] = [];
   const receipts: T[] = [];
+  const convertedLegacy: T[] = [];
+  const isConverted = (file: T): boolean =>
+    getCodeEnvUploadFilename(resolveSandboxFilename(file.filename ?? '', file.type ?? '')) !==
+    file.filename;
   const seen = new Set<string>();
   for (const file of ordered) {
     if (!file || (file.file_id && seen.has(file.file_id))) continue;
     if (file.file_id) seen.add(file.file_id);
     if (file.context === FileContext.execute_code_snapshot) snapshots.push(file);
+    else if (file.context === FileContext.execute_code && isConverted(file))
+      convertedLegacy.push(file);
     else receipts.push(file);
   }
   const priority = (file: T): number => {
-    const converted =
-      getCodeEnvUploadFilename(resolveSandboxFilename(file.filename ?? '', file.type ?? '')) !==
-      file.filename;
-    if (!converted) return 0;
+    if (!isConverted(file)) return 0;
     const assigned =
       preferred?.has(file.file_id ?? '') ||
       getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename;
@@ -354,8 +357,8 @@ export function planCodeSnapshotMounts<T extends CodePathCandidate>(
       const destination = claimCodeDestination(destinations, name, file.file_id ?? name);
       if (file.file_id && destination !== name) names.set(file.file_id, destination);
     }
-    for (const file of snapshots) {
-      if (!file.file_id || !inScope(file)) continue;
+    const claimSnapshot = (file: T): void => {
+      if (!file.file_id || !inScope(file)) return;
       names.set(
         file.file_id,
         claimCodeDestination(
@@ -364,6 +367,18 @@ export function planCodeSnapshotMounts<T extends CodePathCandidate>(
           file.file_id,
         ),
       );
+    };
+    for (const file of snapshots) {
+      if (!isConverted(file)) claimSnapshot(file);
+    }
+    for (const file of convertedLegacy) {
+      if (!file.file_id || !inScope(file)) continue;
+      // Retain this turn's admission plan, not an alias persisted on another branch.
+      const name = preferred?.get(file.file_id) ?? getCodeFileDestination(file, routeKey);
+      names.set(file.file_id, claimCodeDestination(destinations, name, file.file_id));
+    }
+    for (const file of snapshots) {
+      if (isConverted(file)) claimSnapshot(file);
     }
   }
   return names;

@@ -664,7 +664,7 @@ describe('initializeAgent: ChatProject context', () => {
         res,
         primaryConfig,
         allowedProviders: new Set([Providers.OPENAI]),
-        getEndpointModels: async () => ({ openai: ['test-model'] }),
+        modelsConfig: { openai: ['test-model'] },
         loadTools,
         useChatProjectContext: true,
       },
@@ -727,7 +727,7 @@ describe('initializeAgent: ChatProject context', () => {
         primaryConfig,
         rootConfigs: [primaryConfig],
         allowedProviders: new Set([Providers.OPENAI]),
-        getEndpointModels: async () => ({ openai: ['test-model'] }),
+        modelsConfig: { openai: ['test-model'] },
         loadTools,
         useChatProjectContext: true,
       },
@@ -7510,29 +7510,36 @@ describe('snapshot destination admission invariants', () => {
       'upload',
     ]);
   });
-  it('charges independent capture and assigned-path writes separately across repeated initialization', async () => {
-    const original = snapshot('png', 100, {
-      filename: 'nested/chart.png',
-      type: 'image/webp',
-      metadata: {
-        codeDestination: true,
-        sourceDispatchedAt: 100,
-        codeEnvRef: {
-          kind: 'user',
-          id: 'user-1',
-          storage_session_id: 'sandbox',
-          file_id: 'png-copy',
-          sandboxFilename: 'nested/chart.webp',
+  it.each([FileContext.execute_code_snapshot, FileContext.execute_code] as const)(
+    'charges independent capture and assigned-path writes separately across repeated initialization (%s)',
+    async (context) => {
+      const original = snapshot('png', 100, {
+        context,
+        filename: 'nested/chart.png',
+        type: 'image/webp',
+        metadata: {
+          codeDestination: true,
+          sourceDispatchedAt: 100,
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user-1',
+            storage_session_id: 'sandbox',
+            file_id: 'png-copy',
+            sandboxFilename: 'nested/chart.webp',
+          },
         },
-      },
-    });
-    const literal = snapshot('literal', 200, { filename: 'nested/chart.webp', type: 'image/webp' });
-    const first = await run([original, literal]);
-    expect([...first.staged.values()]).toEqual(['png']);
-    expect(first.staged.has('nested/chart.webp')).toBe(false);
-    const again = await run([original, literal]);
-    expect(again.staged).toEqual(first.staged);
-  });
+      });
+      const literal = snapshot('literal', 200, {
+        filename: 'nested/chart.webp',
+        type: 'image/webp',
+      });
+      const first = await run([original, literal]);
+      expect([...first.staged.values()]).toEqual(['png']);
+      expect(first.staged.has('nested/chart.webp')).toBe(false);
+      const again = await run([original, literal]);
+      expect(again.staged).toEqual(first.staged);
+    },
+  );
   it.each([false, true])(
     'normalizes an unreferenced converted upload before code admission (deferred newest %s)',
     async (deferred) => {

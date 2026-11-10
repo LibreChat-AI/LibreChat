@@ -49,6 +49,58 @@ describe('selectCodeFiles', () => {
     expect(result.skippedSuperseded).toBe(1);
   });
 
+  it.each([
+    ['default', false],
+    ['default', true],
+    ['stateful', false],
+    ['stateful', true],
+  ] as const)(
+    'keeps literal snapshot paths ahead of converted legacy receipts on %s (stale=%s)',
+    async (routeKey, stale) => {
+      const name = 'nested/chart.webp';
+      const legacy = {
+        ...file('legacy', 'nested/chart.png', {
+          sandboxFilename: name,
+          executionProfile: routeKey,
+        }),
+        type: 'image/webp',
+        context: FileContext.execute_code,
+      };
+      const snapshot = {
+        ...file('snapshot', name, {}, 2),
+        type: 'image/webp',
+        context: FileContext.execute_code_snapshot,
+      };
+      const result = await selectCodeFiles({
+        files: [legacy, snapshot],
+        routeKey,
+        getFileInfo: async () => (stale ? null : fresh),
+      });
+      expect(result.selected).toHaveLength(2);
+      expect(result.skippedSuperseded).toBe(0);
+      expect(result.selected.find((entry) => entry.file.file_id === 'snapshot')).toMatchObject({
+        sandboxName: name,
+        isActive: false,
+      });
+      expect(result.selected.find((entry) => entry.file.file_id === 'legacy')).toMatchObject({
+        sandboxName: expect.stringMatching(/^nested\/chart-.+\.webp$/),
+        isActive: false,
+        sourceRef: { file_id: 'legacy' },
+      });
+      const alias = result.selected.find((entry) => entry.file.file_id === 'legacy')!.sandboxName;
+      legacy.metadata!.codeEnvRef!.sandboxFilename = alias;
+      const repeated = await selectCodeFiles({
+        files: [legacy, snapshot],
+        routeKey,
+        getFileInfo: async () => (stale ? null : fresh),
+      });
+      expect(repeated.selected.find((entry) => entry.file.file_id === 'legacy')).toMatchObject({
+        sandboxName: alias,
+        isActive: false,
+      });
+    },
+  );
+
   it('preserves provisioned aliases across turns and reuses legacy metadata probes', async () => {
     const getFileInfo = jest.fn(async (ref: CodeEnvRef) => ({
       ...fresh,

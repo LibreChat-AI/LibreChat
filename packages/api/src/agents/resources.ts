@@ -19,7 +19,11 @@ import type { IMongoFile, AppConfig, IUser } from '@librechat/data-schemas';
 import type { FilterQuery, QueryOptions, ProjectionType } from 'mongoose';
 import type { CodeExecutionContext } from './execution';
 import type { ServerRequest } from '~/types';
-import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
+import {
+  getCodeFileDestination,
+  selectCodeFileGenerations,
+  planCodeSnapshotMounts,
+} from '~/files/code/destinations';
 import { allowsFileResource } from '~/files/consumers';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { TOOL_RESOURCE_KEYS } from './orphans';
@@ -694,7 +698,9 @@ const computeProvisionState = async ({
       const displaced =
         routeRef?.sandboxFilename != null &&
         plannedName != null &&
-        plannedName !== routeRef.sandboxFilename;
+        (plannedName !== routeRef.sandboxFilename ||
+          (file.context === FileContext.execute_code &&
+            plannedName !== getCodeFileDestination(file, activeCodeRouteKey)));
       if (file.context === FileContext.execute_code_snapshot || displaced) {
         codeEnvFiles.push(file);
         if (displaced) displacedCodeFileIds.add(file.file_id);

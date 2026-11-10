@@ -3,6 +3,7 @@ import {
   claimCodeDestination,
   selectCodeFileGenerations,
   getCodeFileDestination,
+  planCodeSnapshotMounts,
   reserveCodeDestination,
   createCodeDestinationSet,
   sortCodeFilesByDestinationPriority,
@@ -365,5 +366,41 @@ describe('scoped generated destination selection', () => {
       },
     });
     expect(getCodeFileDestination(file)).toBe('nested/report.txt');
+  });
+});
+
+describe('converted legacy mount preferences', () => {
+  it('preserves the turn plan after policy rejection without persisting alias lineage', () => {
+    const name = 'nested/chart.webp';
+    const legacy = {
+      file_id: 'legacy',
+      filename: 'nested/chart.png',
+      type: 'image/webp',
+      context: FileContext.execute_code,
+      metadata: {
+        codeEnvRef: {
+          kind: 'user' as const,
+          id: 'owner',
+          storage_session_id: 'session',
+          file_id: 'object',
+          sandboxFilename: name,
+        },
+      },
+    };
+    const literal = {
+      file_id: 'literal',
+      filename: name,
+      type: 'image/webp',
+      context: FileContext.execute_code_snapshot,
+    };
+    const admitted = planCodeSnapshotMounts([legacy, literal]);
+    const alias = admitted.get(legacy.file_id)!;
+    expect(admitted.get(literal.file_id)).toBe(name);
+    expect(alias).toMatch(/^nested\/chart-.+\.webp$/);
+    expect(
+      planCodeSnapshotMounts([legacy], undefined, 'default', admitted).get(legacy.file_id),
+    ).toBe(alias);
+    legacy.metadata.codeEnvRef.sandboxFilename = alias;
+    expect(planCodeSnapshotMounts([legacy]).get(legacy.file_id)).toBe(name);
   });
 });

@@ -175,7 +175,10 @@ export async function selectCodeFiles({
       const recovering =
         !ref ||
         !checkCodeFileActive(info?.lastModified) ||
-        (plannedName != null && plannedName !== storedName);
+        (plannedName != null &&
+          (plannedName !== storedName ||
+            (file.context === FileContext.execute_code &&
+              plannedName !== getCodeFileDestination(file, routeKey))));
       const sandboxName =
         file.context === FileContext.execute_code_snapshot
           ? (snapshotMounts.get(file.file_id) ?? getCodeFileDestination(file, routeKey))

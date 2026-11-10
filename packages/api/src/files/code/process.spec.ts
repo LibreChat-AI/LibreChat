@@ -186,6 +186,7 @@ describe('Generated file snapshots', () => {
     privateIds: string[] = [],
     deferred = true,
     failOnceAt?: string,
+    stale = false,
   ) {
     const files = (
       (await methods.getFiles({ file_id: { $in: ids }, user, tenantId: req.user.tenantId })) ?? []
@@ -249,7 +250,7 @@ describe('Generated file snapshots', () => {
       files: context.tool_resources?.execute_code?.files ?? [],
       privateFileIds: new Set(privateIds),
       routeKey: 'default',
-      getFileInfo: async () => ({ lastModified: new Date().toISOString() }),
+      getFileInfo: async () => (stale ? null : { lastModified: new Date().toISOString() }),
     });
     for (const selected of eager.selected) {
       if (!selected.isActive)
@@ -421,6 +422,61 @@ describe('Generated file snapshots', () => {
         restored.context.tool_resources?.execute_code?.files?.map((file) => file.file_id),
       ).toEqual([first.file_id]);
       expect((await reload(second.file_id)).bytes.toString()).toBe('Version 2');
+    },
+  );
+
+  it.each([true, false])(
+    'restores a literal WebP rewrite ahead of a stale converted legacy receipt (deferred %s)',
+    async (deferred) => {
+      const blue = await sharp({ create: { width: 2, height: 2, channels: 3, background: 'blue' } })
+        .png()
+        .toBuffer();
+      const green = await sharp({
+        create: { width: 2, height: 2, channels: 3, background: 'green' },
+      })
+        .webp()
+        .toBuffer();
+      const legacy = await emit(blue, 'legacy', 'nested/chart.png', 100);
+      await methods.updateFile({ file_id: legacy.file_id, context: FileContext.execute_code });
+      await mongoose.models.File.updateOne(
+        { file_id: legacy.file_id },
+        { $unset: { 'metadata.codeEnvRef': '', 'metadata.codeEnvRefs': '' } },
+      );
+      const original = await initializeCode([legacy.file_id], [], deferred, undefined, true);
+      const name = original.destinations.get(legacy.file_id)!;
+      expect(name).toBe('nested/chart.webp');
+      expect((await reload(legacy.file_id)).file.metadata?.codeEnvRef?.sandboxFilename).toBe(name);
+      const live = path.join(directory, 'sandbox', name);
+      await writeLocalFile(path.dirname(live), path.basename(live), green);
+      const edited = await emit(await readFile(live), 'edited', name, 200);
+      const oldBytes = (await reload(legacy.file_id)).bytes;
+      const newBytes = (await reload(edited.file_id)).bytes;
+      expect(oldBytes).not.toEqual(newBytes);
+      let alias: string | undefined;
+      for (const ids of [
+        [legacy.file_id, edited.file_id],
+        [legacy.file_id, edited.file_id],
+        [legacy.file_id],
+        [legacy.file_id, edited.file_id],
+      ]) {
+        await rm(path.join(directory, 'sandbox'), { recursive: true, force: true });
+        const restored = await initializeCode(ids, [], deferred, undefined, true);
+        expect(restored.destinations.size).toBe(ids.length);
+        if (ids.length === 1) {
+          expect(restored.destinations.get(legacy.file_id)).toBe(name);
+          expect(await readFile(live)).toEqual(oldBytes);
+        } else {
+          expect(restored.destinations.get(edited.file_id)).toBe(name);
+          const legacyName = restored.destinations.get(legacy.file_id)!;
+          expect(legacyName).toMatch(/^nested\/chart-.+\.webp$/);
+          if (alias) expect(legacyName).toBe(alias);
+          alias = legacyName;
+          expect(await readFile(live)).toEqual(newBytes);
+          expect(await readFile(path.join(directory, 'sandbox', legacyName))).toEqual(oldBytes);
+        }
+        expect((await reload(legacy.file_id)).bytes).toEqual(oldBytes);
+        expect((await reload(edited.file_id)).bytes).toEqual(newBytes);
+      }
     },
   );
 
