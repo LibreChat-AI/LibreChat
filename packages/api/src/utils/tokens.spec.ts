@@ -470,3 +470,32 @@ describe('Claude version boundaries', () => {
     },
   );
 });
+
+describe('Claude Mythos 5.2 context window', () => {
+  it.each(['claude-mythos-5-2', 'anthropic/claude-mythos-5-2'])(
+    'resolves the 1M context window for %s',
+    (model) => {
+      expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
+      expect(getModelMaxTokens(model, EModelEndpoint.custom)).toBe(1000000);
+    },
+  );
+});
+
+describe('Claude Mythos version boundaries', () => {
+  const rates = { 'claude-mythos-5': 10, 'claude-mythos-5-1': 10, 'claude-mythos-5-2': 8 };
+
+  it.each([
+    'claude-mythos-5-20260609',
+    'anthropic/claude-mythos-5-20260609',
+    'anthropic.claude-mythos-5-20260609',
+  ])('does not mistake the date in %s for a minor version', (model) => {
+    expect(findMatchingPattern(model, rates)).toBe('claude-mythos-5');
+  });
+
+  it.each(['claude-mythos-5-2', 'claude-mythos-5-2-20261109'])(
+    'still resolves a complete minor version in %s',
+    (model) => {
+      expect(findMatchingPattern(model, rates)).toBe('claude-mythos-5-2');
+    },
+  );
+});
