@@ -1801,7 +1801,7 @@ describe('resolveAdminRefreshToken', () => {
     });
   });
 
-  it('uses the binding tenant over the request tenantId when looking up the bridge', async () => {
+  it('uses the request tenantId over the binding tenant when looking up the bridge', async () => {
     const getRefreshTokenBridge = jest.fn().mockResolvedValue(null);
 
     const result = await resolveAdminRefreshToken(
@@ -1811,13 +1811,37 @@ describe('resolveAdminRefreshToken', () => {
       { tenantId: undefined },
     );
 
+    // The Session row behind `binding` is gone by the time a retry presents the token it
+    // replaced, so keying the lookup by its tenant instead of the request tenant would make the
+    // same client's retry miss the bridge it stored under the request tenant. `options.tenantId`
+    // is the one value both requests of the same client resolve identically.
     expect(getRefreshTokenBridge).toHaveBeenCalledWith(
-      expect.objectContaining({ tenantId: 'tenant-T' }),
+      expect.objectContaining({ tenantId: undefined }),
     );
     expect(result).toEqual({
       refreshToken: 'refresh-token',
       bridged: false,
-      identity: { userId: 'user-1', tenantId: 'tenant-T', openidIssuer: undefined },
+      identity: { userId: 'user-1', tenantId: undefined, openidIssuer: undefined },
+    });
+  });
+
+  it('uses the request tenantId for the bridge lookup even when it differs from the binding tenant', async () => {
+    const getRefreshTokenBridge = jest.fn().mockResolvedValue({ refreshToken: 'bridged-refresh' });
+
+    const result = await resolveAdminRefreshToken(
+      'refresh-token',
+      { ok: true, binding: { userId: 'user-1', tenantId: 'tenant-session' } },
+      { getRefreshTokenBridge },
+      { tenantId: 'tenant-request' },
+    );
+
+    expect(getRefreshTokenBridge).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: 'tenant-request' }),
+    );
+    expect(result.identity).toEqual({
+      userId: 'user-1',
+      tenantId: 'tenant-request',
+      openidIssuer: undefined,
     });
   });
 

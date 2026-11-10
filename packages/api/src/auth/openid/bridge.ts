@@ -33,6 +33,9 @@ interface BridgeQuery {
 export interface ResolvedRefreshTokenBridge {
   refreshToken: string;
   providerSession?: ProviderSessionRef;
+  /** The bridge row's version, so a caller that later deletes it by version never races a newer
+   *  bridge stored for the same old token after this read. */
+  version?: string;
 }
 
 type IdentityInput = Partial<RefreshTokenBridgeIdentity>;
@@ -190,6 +193,7 @@ export function createRefreshTokenBridgeService(
     return {
       refreshToken: await decrypt(bridge.encryptedNewRefreshToken),
       providerSession: bridge.providerSession,
+      version: bridge.version,
     };
   }
 

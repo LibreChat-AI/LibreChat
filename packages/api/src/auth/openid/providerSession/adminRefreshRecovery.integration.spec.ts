@@ -23,10 +23,14 @@ import { applyAdminRefresh } from '~/auth/refresh';
 /**
  * End-to-end coverage for the admin refresh recovery sequence
  * (`prepareAdminOpenIdRefresh` -> `runAdminOpenIdRefreshGrant` -> `applyAdminRefresh`) against a
- * real database, exercising the fix for the bridge-before-missing-session-denial ordering: a
- * retry that presents a refresh token a prior rotation already replaced must recover through the
- * refresh-token bridge instead of being denied as an unassociated credential, in both `record` and
- * `enforce` mode. Only the IdP grant is mocked.
+ * real database, in both `record` and `enforce` mode. Only the IdP grant is mocked. Covers:
+ *   - the bridge-before-missing-session-denial ordering: a retry that presents a refresh token a
+ *     prior rotation already replaced must recover through the refresh-token bridge instead of
+ *     being denied as an unassociated credential;
+ *   - the Session row a bridged-and-rotated retry replaces is deleted, not left orphaned, while a
+ *     bridged retry a non-rotating IdP answers keeps its Session row; and
+ *   - a tenant user's bridge is found on retry regardless of whether the request carries tenant
+ *     context, as long as it carries the same context (or lack of it) on both requests.
  */
 
 let mongoServer: MongoMemoryServer;
@@ -47,6 +51,21 @@ const testUser = {
   provider: 'openid',
   openidId: 'sub-1',
   openidIssuer: ISSUER,
+} as unknown as IUser;
+
+const TENANT_ID = 'tenant-t';
+const tenantUserId = new mongoose.Types.ObjectId();
+const TENANT_USER_ID = tenantUserId.toString();
+const tenantUser = {
+  _id: tenantUserId,
+  email: 'tenant-admin@example.com',
+  name: 'Tenant Admin User',
+  username: 'tenant-admin',
+  role: 'ADMIN',
+  provider: 'openid',
+  openidId: 'sub-tenant-1',
+  openidIssuer: ISSUER,
+  tenantId: TENANT_ID,
 } as unknown as IUser;
 
 function makeLogger() {
@@ -72,16 +91,38 @@ function makeConfig(
   };
 }
 
-function makeTokenset(presentedRefreshToken: string, sid: string = SID): RefreshTokenset {
+function makeTokenset(
+  presentedRefreshToken: string,
+  sid: string = SID,
+  sub: string = 'sub-1',
+): RefreshTokenset {
   return {
     access_token: `at-${presentedRefreshToken}`,
     refresh_token: `${presentedRefreshToken}-r`,
-    claims: () => ({ sub: 'sub-1', iss: ISSUER, sid }),
+    claims: () => ({ sub, iss: ISSUER, sid }),
   };
 }
 
-function makeGrant(): jest.Mock<Promise<RefreshTokenset>, [string]> {
-  return jest.fn((presented: string) => Promise.resolve(makeTokenset(presented)));
+function makeGrant(sub?: string): jest.Mock<Promise<RefreshTokenset>, [string]> {
+  return jest.fn((presented: string) => Promise.resolve(makeTokenset(presented, SID, sub)));
+}
+
+/** A grant whose first call rotates the presented token (establishing the bridge a retry will
+ *  recover), but whose second call — the retry's grant against the bridged token — returns no
+ *  `refresh_token`, mirroring an IdP with rotation disabled. */
+function makeNonRotatingRetryGrant(): jest.Mock<Promise<RefreshTokenset>, [string]> {
+  let calls = 0;
+  return jest.fn((presented: string) => {
+    calls += 1;
+    if (calls === 1) {
+      return Promise.resolve(makeTokenset(presented));
+    }
+    return Promise.resolve({
+      access_token: `at-${presented}`,
+      refresh_token: undefined,
+      claims: () => ({ sub: 'sub-1', iss: ISSUER, sid: SID }),
+    });
+  });
 }
 
 async function makeBridgeService() {
@@ -147,14 +188,14 @@ function buildDepsInput(
 async function seedLoggedIn(
   refreshToken: string,
   userId: string,
-  options: { tenantId?: string; sid?: string } = {},
+  options: { tenantId?: string; sid?: string; subject?: string } = {},
 ): Promise<ProviderSessionRef> {
   const ref: ProviderSessionRef = { issuer: ISSUER, clientId: CLIENT_ID, sid: options.sid ?? SID };
   await methods.establishProviderSession({
     issuer: ref.issuer,
     clientId: ref.clientId,
     sid: ref.sid,
-    subject: 'sub-1',
+    subject: options.subject ?? 'sub-1',
     expiresAt: future(),
     now: new Date(),
   });
@@ -220,7 +261,11 @@ async function runAdminRefresh(args: {
       tokenset,
       {
         findUsers: jest.fn().mockResolvedValue([]),
-        getUserById: async (id: string) => (id === ADMIN_USER_ID ? testUser : null),
+        getUserById: async (id: string) => {
+          if (id === ADMIN_USER_ID) return testUser;
+          if (id === TENANT_USER_ID) return tenantUser;
+          return null;
+        },
         mintToken: async (_user, ts) => ({
           token: `minted-${ts.refresh_token}`,
           expiresAt: Date.now() + 100_000,
@@ -357,6 +402,13 @@ describe.each(['record', 'enforce'] as const)('admin refresh recovery (%s mode)'
 
     const newSession = await methods.findSession({ refreshToken: `${A}-r-r` }, { lean: true });
     expect(newSession).not.toBeNull();
+
+    // Orphan-session fix: the Session row the first (lost) request wrote for the bridged token
+    // (A-r, i.e. C) must not outlive the retry that rotated it again — only Session(C2) survives.
+    const staleA = await methods.findSession({ refreshToken: A }, { lean: true });
+    expect(staleA).toBeNull();
+    const staleC = await methods.findSession({ refreshToken: `${A}-r` }, { lean: true });
+    expect(staleC).toBeNull();
 
     const bridge = await bridgeService.getRefreshTokenBridge({
       oldRefreshToken: A,
@@ -579,5 +631,113 @@ describe.each(['record', 'enforce'] as const)('admin refresh recovery (%s mode)'
     expect(result.depsInput.deleteSession).not.toHaveBeenCalled();
     expect(result.depsInput.getProviderSessionClient).not.toHaveBeenCalled();
     expect(grant).toHaveBeenCalledTimes(1);
+  });
+
+  it('(h) keeps the bridged Session when a non-rotating IdP returns the same token on the retry grant', async () => {
+    const bridgeService = await makeBridgeService();
+    const A = 'refresh-h';
+    await seedLoggedIn(A, ADMIN_USER_ID);
+    const grant = makeNonRotatingRetryGrant();
+
+    const first = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: ADMIN_USER_ID,
+      grant,
+    });
+    expect(first.status).toBe(200);
+    // response "lost"; the bridge now points A -> C (`${A}-r`), and Session(C) exists.
+
+    const C = `${A}-r`;
+    const sessionCBeforeRetry = await methods.findSession({ refreshToken: C }, { lean: true });
+    expect(sessionCBeforeRetry).not.toBeNull();
+
+    const retry = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: ADMIN_USER_ID,
+      grant,
+    });
+
+    expect(retry.status).toBe(200);
+    expect(grant).toHaveBeenNthCalledWith(2, C); // retry's grant uses the bridged token C
+    expect(grant).toHaveBeenCalledTimes(2);
+
+    // The IdP didn't rotate C, so the token being stored IS the grant token: Session(C) must
+    // survive, not be deleted as a stale bridged predecessor.
+    const sessionCAfterRetry = await methods.findSession({ refreshToken: C }, { lean: true });
+    expect(sessionCAfterRetry).not.toBeNull();
+    const staleA = await methods.findSession({ refreshToken: A }, { lean: true });
+    expect(staleA).toBeNull();
+  });
+
+  it('(i) recovers a bridged retry for a tenant user when neither request carries tenant context', async () => {
+    const bridgeService = await makeBridgeService();
+    const A = 'refresh-i';
+    await seedLoggedIn(A, TENANT_USER_ID, { tenantId: TENANT_ID, subject: 'sub-tenant-1' });
+    const grant = makeGrant('sub-tenant-1');
+
+    const first = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: TENANT_USER_ID,
+      // tenantId intentionally omitted on both requests: no X-Tenant-Id / tenant ALS context.
+      grant,
+    });
+    expect(first.status).toBe(200);
+    // response "lost"; Session(A) is gone by the time the retry presents A again.
+
+    const retry = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: TENANT_USER_ID,
+      grant,
+    });
+
+    expect(retry.status).toBe(200);
+    expect(grant).toHaveBeenNthCalledWith(2, `${A}-r`); // the retry recovered the bridge
+    expect(grant).toHaveBeenCalledTimes(2);
+
+    const newSession = await methods.findSession({ refreshToken: `${A}-r-r` }, { lean: true });
+    expect(newSession).not.toBeNull();
+    expect(newSession?.tenantId).toBe(TENANT_ID); // the user's own tenant, not the absent request tenant
+  });
+
+  it('(j) recovers a bridged retry for a tenant user when both requests carry the same tenant context', async () => {
+    const bridgeService = await makeBridgeService();
+    const A = 'refresh-j';
+    await seedLoggedIn(A, TENANT_USER_ID, { tenantId: TENANT_ID, subject: 'sub-tenant-1' });
+    const grant = makeGrant('sub-tenant-1');
+
+    const first = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: TENANT_USER_ID,
+      tenantId: TENANT_ID,
+      grant,
+    });
+    expect(first.status).toBe(200);
+
+    const retry = await runAdminRefresh({
+      refreshToken: A,
+      config,
+      bridgeService,
+      userId: TENANT_USER_ID,
+      tenantId: TENANT_ID,
+      grant,
+    });
+
+    expect(retry.status).toBe(200);
+    expect(grant).toHaveBeenNthCalledWith(2, `${A}-r`);
+    expect(grant).toHaveBeenCalledTimes(2);
+
+    const newSession = await methods.findSession({ refreshToken: `${A}-r-r` }, { lean: true });
+    expect(newSession).not.toBeNull();
+    expect(newSession?.tenantId).toBe(TENANT_ID);
   });
 });
