@@ -1765,7 +1765,7 @@ function applyModelFamilyDefaults(
     );
   }
   const tier = gpt6Tier(model);
-  if (tier === 'sol' || tier === 'luna') {
+  if (tier === 'sol' || tier === 'terra' || tier === 'luna') {
     return settings.map((setting) => {
       if (setting.key === 'reasoning_effort') {
         return {

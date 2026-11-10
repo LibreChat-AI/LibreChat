@@ -415,10 +415,29 @@ describe('Sonnet 5.5 token limits', () => {
   });
 });
 
-describe.each(['gpt-6-sol', 'gpt-6-luna'])('%s token limits', (model) => {
+describe.each(['gpt-6-sol', 'gpt-6.1-terra', 'gpt-6-luna'])('%s token limits', (model) => {
   it('resolves exact, snapshot, and provider-prefixed IDs', () => {
     for (const name of [model, `${model}-2026-09-22`, `openai/${model}`]) {
       expect(getModelMaxTokens(name, EModelEndpoint.openAI)).toBe(1050000);
     }
+  });
+});
+
+describe('Terra context overrides', () => {
+  const model = 'gpt-6.1-terra';
+  it('honors explicit overrides and falls back for unlisted native models', () => {
+    expect(
+      getModelMaxTokens(model, EModelEndpoint.openAI, {
+        [model]: { context: 64000, prompt: 1, completion: 5 },
+      }),
+    ).toBe(64000);
+    expect(
+      getModelMaxTokens(model, EModelEndpoint.openAI, {
+        'gpt-4.1': { context: 64000, prompt: 1, completion: 1 },
+      }),
+    ).toBe(1050000);
+  });
+  it('keeps the separate Bedrock context window', () => {
+    expect(getModelMaxTokens(`us.openai.${model}`, EModelEndpoint.bedrock)).toBe(950000);
   });
 });
