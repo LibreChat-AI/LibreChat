@@ -2935,6 +2935,8 @@ export const DEFAULT_HISTORY_CACHE_MAX_BYTES = 8 * 1024 * 1024;
 
 const mcpServersSchema = z
   .object({
+    /** Allow chat-selectable MCP servers in the composer's @ picker. */
+    mentions: z.boolean().optional(),
     /** Foreground polling intervals in milliseconds; 0 disables polling. */
     toolsRefreshInterval: z.number().int().nonnegative().max(2_147_483_647).optional(),
     statusRefreshInterval: z.number().int().nonnegative().max(2_147_483_647).optional(),
@@ -3474,6 +3476,7 @@ export const interfaceSchema = z
       use: false,
     },
     mcpServers: {
+      mentions: false,
       use: true,
       create: true,
       share: false,

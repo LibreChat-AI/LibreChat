@@ -2812,6 +2812,22 @@ describe('MCP Apps configuration', () => {
 });
 
 describe('MCP UI refresh configuration', () => {
+  it('keeps MCP mentions opt-in and accepts explicit boolean settings', () => {
+    expect(configSchema.parse({ version: '1.3.5' }).interface?.mcpServers?.mentions).toBe(false);
+    for (const mentions of [false, true]) {
+      const result = configSchema.parse({
+        version: '1.3.5',
+        interface: { mcpServers: { mentions } },
+      });
+      expect(result.interface?.mcpServers?.mentions).toBe(mentions);
+    }
+    expect(
+      configSchema.safeParse({
+        version: '1.3.5',
+        interface: { mcpServers: { mentions: 'true' } },
+      }).success,
+    ).toBe(false);
+  });
   it('preserves configured intervals, including zero to disable polling', () => {
     const result = configSchema.parse({
       version: '1.3.5',

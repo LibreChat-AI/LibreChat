@@ -117,12 +117,13 @@ const makeKeyEvent = (key: string) =>
 
 const renderUseHandleKeyUp = (
   textAreaRef: React.RefObject<HTMLTextAreaElement>,
-  overrides?: { index?: number },
+  overrides?: { index?: number; mcpMentionsEnabled?: boolean },
 ) => {
   const { result } = renderHook(() =>
     useHandleKeyUp({
       index: overrides?.index ?? 0,
       textAreaRef,
+      mcpMentionsEnabled: overrides?.mcpMentionsEnabled,
     }),
   );
 
@@ -149,6 +150,49 @@ beforeEach(() => {
 });
 
 describe('useHandleKeyUp', () => {
+  describe('opt-in inline MCP mentions', () => {
+    it.each(['Find @', 'Find @git', 'Find\n@'])('opens for %s', (text) => {
+      const { handleKeyUp } = renderUseHandleKeyUp(makeTextAreaRef(text), {
+        mcpMentionsEnabled: true,
+      });
+      act(() => handleKeyUp(makeKeyEvent('@')));
+      expect(mockSetShowMentionPopover).toHaveBeenCalledWith(true);
+    });
+
+    it.each(['person@example.com', 'Find @github-too-long', 'Find @git later'])(
+      'does not trigger for %s',
+      (text) => {
+        const { handleKeyUp } = renderUseHandleKeyUp(makeTextAreaRef(text), {
+          mcpMentionsEnabled: true,
+        });
+        act(() => handleKeyUp(makeKeyEvent('@')));
+        expect(mockSetShowMentionPopover).not.toHaveBeenCalled();
+      },
+    );
+
+    it('preserves the legacy trigger when disabled', () => {
+      const { handleKeyUp } = renderUseHandleKeyUp(makeTextAreaRef('Find @'));
+      act(() => handleKeyUp(makeKeyEvent('@')));
+      expect(mockSetShowMentionPopover).not.toHaveBeenCalled();
+    });
+
+    it('respects the user preference and composition', () => {
+      mockCommandToggles.at = false;
+      const { handleKeyUp } = renderUseHandleKeyUp(makeTextAreaRef('Find @'), {
+        mcpMentionsEnabled: true,
+      });
+      act(() => handleKeyUp(makeKeyEvent('@')));
+      expect(mockSetShowMentionPopover).not.toHaveBeenCalled();
+      mockCommandToggles.at = true;
+      const composing = renderUseHandleKeyUp(makeTextAreaRef('Find @'), {
+        mcpMentionsEnabled: true,
+      });
+      const event = makeKeyEvent('@');
+      Object.defineProperty(event, 'nativeEvent', { value: { isComposing: true } });
+      act(() => composing.handleKeyUp(event));
+      expect(mockSetShowMentionPopover).not.toHaveBeenCalled();
+    });
+  });
   describe('command triggering — normal typing speed (cursor at position 1)', () => {
     it('triggers slash command for "/" at position 1', () => {
       const ref = makeTextAreaRef('/', 1);

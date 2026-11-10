@@ -1,6 +1,6 @@
 import React from 'react';
-import { Clock4 } from 'lucide-react';
 import { cn } from '@librechat/client';
+import { Check, Clock4 } from 'lucide-react';
 
 export interface MentionItemProps {
   name: string;
@@ -9,6 +9,8 @@ export interface MentionItemProps {
   type?: 'prompt' | 'mention' | 'add-convo' | 'skill';
   icon?: React.ReactNode;
   isActive?: boolean;
+  /** Domain selection is separate from the listbox's keyboard-active option. */
+  isSelected?: boolean;
   description?: string;
   style?: React.CSSProperties;
   /** `option` makes the row a listbox option the popover's input points at, out of the tab order. */
@@ -21,6 +23,7 @@ export default function MentionItem({
   index,
   icon,
   isActive,
+  isSelected,
   description,
   style,
   role,
@@ -48,10 +51,14 @@ export default function MentionItem({
           <div className="truncate">
             <span className="font-medium">{name}</span>
             {description != null && description ? (
-              <span className="text-text-tertiary ms-2 text-sm font-light">{description}</span>
+              <>
+                {' '}
+                <span className="text-text-tertiary ms-2 text-sm font-light">{description}</span>
+              </>
             ) : null}
           </div>
-          <Clock4 size={16} className="ms-2 shrink-0" />
+          {isSelected === true && <Check size={16} className="ms-2 shrink-0" aria-hidden="true" />}
+          {isSelected == null && <Clock4 size={16} className="ms-2 shrink-0" aria-hidden="true" />}
         </div>
       </div>
     </button>

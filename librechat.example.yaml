@@ -424,6 +424,8 @@ interface:
   #   public: true # Allows users to toggle "share with everyone" for their links. Whether anonymous access is permitted is controlled by ALLOW_SHARED_LINKS_PUBLIC.
   #   snapshotFiles: true # Snapshot files referenced by a shared chat so viewers can preview/download them via the link. Enabled by default; the SHARED_LINKS_SNAPSHOT_FILES env var overrides this.
   # mcpServers:
+  #   # Offer MCP servers through @ mentions in the chat composer (default: false).
+  #   mentions: false
   #   # Poll only while MCP controls are visible, in milliseconds (0 disables polling).
   #   toolsRefreshInterval: 300000
   #   statusRefreshInterval: 30000

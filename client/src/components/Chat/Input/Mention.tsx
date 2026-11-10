@@ -1,10 +1,12 @@
-import { memo } from 'react';
+import { memo, useMemo, useState } from 'react';
+import { findMentionRange } from '@librechat/chat';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import { MentionPopover } from '@librechat/chat/components';
 import type { RecoilState } from 'recoil';
 import type { ConvoGenerator } from '~/common';
 import { useGetConversation, useLocalize, TranslationKeys } from '~/hooks';
 import useSelectMention from '~/hooks/Input/useSelectMention';
+import useMCPMentions from '~/hooks/Input/useMCPMentions';
 import { useAssistantsMapContext } from '~/Providers';
 import useMentions from '~/hooks/Input/useMentions';
 
@@ -16,6 +18,7 @@ type MentionProps = {
   commandChar?: string;
   placeholder?: TranslationKeys;
   includeAssistants?: boolean;
+  mcpMentionsEnabled?: boolean;
 };
 
 function MentionContent({
@@ -25,11 +28,20 @@ function MentionContent({
   commandChar = '@',
   placeholder = 'com_ui_mention',
   includeAssistants = true,
+  mcpMentionsEnabled = false,
 }: Omit<MentionProps, 'index'>) {
   const localize = useLocalize();
   const getConversation = useGetConversation(0);
   const assistantsMap = useAssistantsMapContext();
   const setShowPopover = useSetRecoilState(popoverAtom);
+  const enabled = commandChar === '@' && mcpMentionsEnabled;
+  const [commandRange] = useState(() => {
+    const textarea = textAreaRef.current;
+    return enabled && textarea
+      ? findMentionRange(textarea.value, textarea.selectionStart, textarea.selectionEnd)
+      : undefined;
+  });
+  const mcp = useMCPMentions(enabled);
   const {
     options,
     presets,
@@ -48,18 +60,32 @@ function MentionContent({
     getConversation,
     newConversation,
   });
+  const mentionOptions = useMemo(
+    () => (commandRange && commandRange.start > 0 ? mcp.options : [...options, ...mcp.options]),
+    [commandRange, mcp.options, options],
+  );
 
   return (
     <MentionPopover
       textAreaRef={textAreaRef}
       commandChar={commandChar}
-      placeholder={localize(placeholder)}
-      options={options}
-      isLoading={isLoading}
+      commandRange={commandRange}
+      placeholder={localize(
+        commandRange && commandRange.start > 0 ? 'com_ui_mcp_mention' : placeholder,
+      )}
+      options={mentionOptions}
+      isLoading={isLoading || mcp.isLoading}
+      notice={mcp.notice}
       agentsList={agentsList}
       assistantListMap={assistantListMap}
       modelsConfig={modelsConfig}
-      onSelectMention={(option) => onSelectMention?.(option)}
+      onSelectMention={(option) => {
+        if (enabled && option.type === 'mcp') {
+          mcp.selectServer?.(option.value);
+          return;
+        }
+        onSelectMention?.(option);
+      }}
       onClose={() => setShowPopover(false)}
     />
   );
