@@ -25,7 +25,7 @@ const harness: ConfigStoreHarness = {
 
   async teardown() {
     await mongoose.disconnect();
-    await server.stop();
+    await server?.stop();
   },
 
   async reset() {
