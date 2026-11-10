@@ -1,10 +1,15 @@
+import axios from 'axios';
 import { useSetAtom } from 'jotai';
 import { RecoilRoot } from 'recoil';
+import { MemoryRouter } from 'react-router-dom';
+import { ToastContext } from '@librechat/client';
 import { presetFamily } from '@librechat/chat/react';
 import { act, renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TPreset } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import translationEn from '~/locales/en/translation.json';
+import { AuthContextProvider } from '~/hooks/AuthContext';
 import usePresets from '../usePresets';
 
 /** Counts the times the library is actually evaluated, which only the lazy loader may trigger. */
@@ -16,43 +21,24 @@ jest.mock('export-from-json', () => {
   mockEvaluated('export-from-json');
   return Object.assign(mockExportFromJSON, { types: { json: 'json' } });
 });
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useToastContext: () => ({ showToast: mockShowToast }),
-}));
-jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
-jest.mock('~/hooks/AuthContext', () => ({
-  useAuthContext: () => ({ user: { id: 'user-1' }, isAuthenticated: true }),
-}));
-jest.mock('~/hooks/useNewConvo', () => ({
-  __esModule: true,
-  default: () => ({ newConversation: jest.fn() }),
-}));
-jest.mock('~/hooks/Conversations/useGetConversation', () => ({
-  __esModule: true,
-  default: () => jest.fn(),
-}));
-jest.mock('~/hooks/Conversations/useDefaultConvo', () => ({
-  __esModule: true,
-  default: () => jest.fn(),
-}));
-jest.mock('~/data-provider', () => ({
-  useGetPresetsQuery: () => ({ data: [], refetch: jest.fn() }),
-  useUpdatePresetMutation: () => ({ mutate: jest.fn() }),
-  useDeletePresetMutation: () => ({ mutate: jest.fn() }),
-}));
-jest.mock('librechat-data-provider/react-query', () => ({
-  useCreatePresetMutation: () => ({ mutate: jest.fn() }),
-}));
 
 const preset = { title: 'My preset', endpoint: 'openAI', model: 'gpt-4o' } as TPreset;
 
+/** The hook runs on the real providers, stores and data layer; only the HTTP client is faked. */
 function wrapper() {
-  const client = new QueryClient();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={client}>
-        <RecoilRoot>{children}</RecoilRoot>
+        <RecoilRoot>
+          <MemoryRouter>
+            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+              <ToastContext.Provider value={{ showToast: mockShowToast }}>
+                {children}
+              </ToastContext.Provider>
+            </AuthContextProvider>
+          </MemoryRouter>
+        </RecoilRoot>
       </QueryClientProvider>
     );
   };
@@ -68,6 +54,10 @@ function setup() {
 }
 
 describe('exportPreset', () => {
+  beforeEach(() => {
+    jest.spyOn(axios, 'get').mockResolvedValue({ data: {} });
+  });
+
   afterEach(() => {
     delete window.__lcRecoverStaleAssets;
   });
@@ -112,7 +102,7 @@ describe('exportPreset', () => {
     });
 
     expect(mockShowToast).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'com_endpoint_preset_export_error' }),
+      expect.objectContaining({ message: translationEn.com_endpoint_preset_export_error }),
     );
     expect(recover).toHaveBeenCalledTimes(1);
     expect(mockExportFromJSON).not.toHaveBeenCalled();

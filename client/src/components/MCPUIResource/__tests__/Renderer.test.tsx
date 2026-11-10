@@ -4,8 +4,6 @@ import type { TStartupConfig, UIResource } from 'librechat-data-provider';
 import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
 import UIResourceRenderer from '../Renderer';
 
-jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
-
 jest.mock('@mcp-ui/client', () => ({
   UIResourceRenderer: jest.fn(({ resource }) => (
     <div data-testid="legacy-ui-resource" data-mime-type={resource.mimeType} />
@@ -45,7 +43,7 @@ describe('UIResourceRenderer', () => {
       />,
     );
 
-    expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading_interactive_view');
+    expect(screen.getByRole('status')).toHaveTextContent('Loading interactive view...');
     expect(mockLegacyRenderer).not.toHaveBeenCalled();
 
     expect(await screen.findByTestId('legacy-ui-resource')).toBeInTheDocument();

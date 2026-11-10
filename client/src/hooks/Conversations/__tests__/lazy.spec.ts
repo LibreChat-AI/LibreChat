@@ -7,7 +7,6 @@ import useExportConversation from '../useExportConversation';
  * (or anything it imports) makes this suite fail.
  */
 const mockEvaluated = jest.fn();
-jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 jest.mock('downloadjs', () => {
   mockEvaluated('downloadjs');
   return jest.fn();

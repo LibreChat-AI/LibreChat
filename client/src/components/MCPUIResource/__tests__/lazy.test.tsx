@@ -14,7 +14,6 @@ import UIResourceRenderer from '../Renderer';
  * They throw what a stale or unreachable chunk throws, to exercise the failure path.
  */
 const mockEvaluated = jest.fn();
-jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 jest.mock('@mcp-ui/client', () => {
   mockEvaluated('@mcp-ui/client');
   throw new TypeError('Failed to fetch dynamically imported module: /assets/mcp-ui-old.js');
@@ -89,7 +88,7 @@ describe('on-demand MCP UI chunks', () => {
       </MCPAppsPolicyProvider>,
     );
 
-    expect(view.getByRole('button', { name: /com_ui_mcp_app_open_named/ })).toBeInTheDocument();
+    expect(view.getByRole('button', { name: 'Open app: show_app (1)' })).toBeInTheDocument();
     expect(mockEvaluated).not.toHaveBeenCalled();
   });
 
@@ -102,7 +101,7 @@ describe('on-demand MCP UI chunks', () => {
       </Boundary>,
     );
 
-    expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading_interactive_view');
+    expect(screen.getByRole('status')).toHaveTextContent('Loading interactive view...');
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(mockEvaluated).toHaveBeenCalledWith('@mcp-ui/client');
     expect(recover).toHaveBeenCalledTimes(1);
@@ -118,8 +117,8 @@ describe('on-demand MCP UI chunks', () => {
     );
     expect(mockEvaluated).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_mcp_app_open_named/ }));
-    expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading_interactive_view');
+    fireEvent.click(screen.getByRole('button', { name: 'Open app: show_app (1)' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Loading interactive view...');
 
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(mockEvaluated).toHaveBeenCalledWith('@modelcontextprotocol/ext-apps/app-bridge');
