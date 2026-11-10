@@ -301,6 +301,11 @@ export interface AdminRefreshTokenResolution {
    *  Feeds the post-grant bridge store in {@link applyAdminRefresh} via
    *  `options.bridgeIdentity`. */
   identity?: { userId: string; tenantId?: string; openidIssuer?: string };
+  /** The provider session the recovered bridge was stored under, when `bridged` is true. The
+   *  caller's missing-session precheck runs against this ref instead of denying outright, since
+   *  a bridge found after the Session row it replaced is gone is still evidence of a live
+   *  association, not an unassociated credential. */
+  providerSession?: ProviderSessionRef | null;
 }
 
 /**
@@ -336,7 +341,7 @@ export async function resolveAdminRefreshToken(
   const openidIssuer = normalizeOpenIdIssuer(options.expectedIssuer);
   const identity = { userId, tenantId, openidIssuer };
 
-  let bridge: { refreshToken: string } | null;
+  let bridge: { refreshToken: string; providerSession?: ProviderSessionRef } | null;
   try {
     bridge = await deps.getRefreshTokenBridge({
       oldRefreshToken: refreshToken,
@@ -355,7 +360,12 @@ export async function resolveAdminRefreshToken(
     return { refreshToken, bridged: false, identity };
   }
 
-  return { refreshToken: bridge.refreshToken, bridged: true, identity };
+  return {
+    refreshToken: bridge.refreshToken,
+    bridged: true,
+    identity,
+    providerSession: bridge.providerSession ?? null,
+  };
 }
 
 function applyTenantFilter(
