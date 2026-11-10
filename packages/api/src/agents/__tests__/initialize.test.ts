@@ -2741,6 +2741,32 @@ describe('initializeAgent — maxContextTokens', () => {
     },
   );
 
+  it('budgets Bedrock Nemotron with its context window instead of the default', async () => {
+    const model = 'nvidia.nemotron-super-3-120b';
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: Providers.BEDROCK,
+      model,
+      maxOutputTokens: 4096,
+      useRealTokenLookup: true,
+    });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.BEDROCK]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(mockGetModelMaxTokens).toHaveBeenCalledWith(model, EModelEndpoint.bedrock, undefined);
+    expect(result.maxContextTokens).toBe(Math.round((256000 - 4096) * 0.95));
+  });
+
   it('uses user-configured maxContextTokens when provided via model_parameters', async () => {
     const userValue = 50000;
     const { agent, req, res, loadTools, db } = createMocks({
