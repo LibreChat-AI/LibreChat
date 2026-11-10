@@ -118,7 +118,11 @@ export interface AdminRefreshDeps {
     userId: string;
     tenantId?: string;
     openidIssuer?: string;
-  }) => Promise<{ refreshToken: string; providerSession?: ProviderSessionRef } | null>;
+  }) => Promise<{
+    refreshToken: string;
+    providerSession?: ProviderSessionRef;
+    version?: string;
+  } | null>;
   /** Stores the rotated refresh token under the just-spent one immediately after the IdP grant,
    *  so a retry after any later failure can recover without repeating the spent grant. */
   storeRefreshTokenBridge?: (args: RefreshTokenBridgeInput) => Promise<string | null>;
@@ -306,6 +310,10 @@ export interface AdminRefreshTokenResolution {
    *  a bridge found after the Session row it replaced is gone is still evidence of a live
    *  association, not an unassociated credential. */
   providerSession?: ProviderSessionRef | null;
+  /** The recovered bridge's version, present whenever `bridged` is true. Lets a caller that later
+   *  deletes the bridge on a confirmed denial delete by version, so a newer bridge stored for the
+   *  same old token after this read survives. */
+  bridgeVersion?: string;
 }
 
 /**
@@ -337,11 +345,26 @@ export async function resolveAdminRefreshToken(
     return { refreshToken, bridged: false };
   }
 
-  const tenantId = lookup.binding?.tenantId ?? options.tenantId;
+  /**
+   * Always the request tenant, never `lookup.binding?.tenantId`: the Session row a rotating
+   * admin refresh replaces is gone by the time a retry presents the token it replaced, so a
+   * binding fallback would key this request's bridge lookup by the request tenant while the
+   * original request (whose Session row still existed) keyed the store by the Session's tenant —
+   * the same client can miss its own bridge whenever those two differ. `options.tenantId` is the
+   * one value both requests of the same client resolve identically (the route's tenant context),
+   * and the bridge key already includes the presented token's hash, so tenant isn't the security
+   * boundary here — the Session rows written by `storeOpenIdSession` still carry the user's own
+   * `tenantId` regardless.
+   */
+  const tenantId = options.tenantId;
   const openidIssuer = normalizeOpenIdIssuer(options.expectedIssuer);
   const identity = { userId, tenantId, openidIssuer };
 
-  let bridge: { refreshToken: string; providerSession?: ProviderSessionRef } | null;
+  let bridge: {
+    refreshToken: string;
+    providerSession?: ProviderSessionRef;
+    version?: string;
+  } | null;
   try {
     bridge = await deps.getRefreshTokenBridge({
       oldRefreshToken: refreshToken,
@@ -365,6 +388,7 @@ export async function resolveAdminRefreshToken(
     bridged: true,
     identity,
     providerSession: bridge.providerSession ?? null,
+    bridgeVersion: bridge.version,
   };
 }
 
@@ -617,6 +641,7 @@ export async function applyAdminRefresh(
             refreshToken: sessionRefreshToken,
             tenantId: user.tenantId ?? options.tenantId,
             previousRefreshToken: options.previousRefreshToken,
+            grantRefreshToken: options.grantRefreshToken,
             providerSession: mergedRef,
             authMethod: 'openid',
           },

@@ -145,6 +145,46 @@ describe('prepareAdminOpenIdRefresh', () => {
     });
   });
 
+  it('deletes a stale recovered bridge by its version on a confirmed OPENID_SESSION_ENDED denial', async () => {
+    const input = makeBuildInput('enforce');
+    // The Session row for the presented token is gone; only the bridge recovers the identity.
+    input.findProviderSessionBinding.mockResolvedValue(null);
+    input.getRefreshTokenBridge.mockResolvedValue({
+      refreshToken: 'bridged-refresh',
+      version: 'bridge-version-1',
+    });
+    input.authorizer.preCheck.mockResolvedValue({ ok: false, code: 'OPENID_SESSION_ENDED' });
+
+    await expect(
+      prepareAdminOpenIdRefresh('refresh-token', input, { userId: 'user-1' }),
+    ).rejects.toMatchObject({ code: 'OPENID_SESSION_ENDED' });
+
+    expect(input.deleteRefreshTokenBridges).toHaveBeenCalledWith({
+      refreshTokens: ['refresh-token'],
+      userId: 'user-1',
+      tenantId: undefined,
+      version: 'bridge-version-1',
+    });
+  });
+
+  it('does not pass a version to the stale-bridge delete when the recovered bridge read had none', async () => {
+    const input = makeBuildInput('enforce');
+    input.findProviderSessionBinding.mockResolvedValue(null);
+    input.getRefreshTokenBridge.mockResolvedValue({ refreshToken: 'bridged-refresh' });
+    input.authorizer.preCheck.mockResolvedValue({ ok: false, code: 'OPENID_SESSION_ENDED' });
+
+    await expect(
+      prepareAdminOpenIdRefresh('refresh-token', input, { userId: 'user-1' }),
+    ).rejects.toMatchObject({ code: 'OPENID_SESSION_ENDED' });
+
+    expect(input.deleteRefreshTokenBridges).toHaveBeenCalledWith({
+      refreshTokens: ['refresh-token'],
+      userId: 'user-1',
+      tenantId: undefined,
+      version: undefined,
+    });
+  });
+
   it('reads the provider-session binding once, sharing it between the precheck and the bridge resolution', async () => {
     const input = makeBuildInput('enforce');
     input.authorizer.preCheck.mockResolvedValue({ ok: true });

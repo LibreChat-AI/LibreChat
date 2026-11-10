@@ -45,7 +45,11 @@ export interface BuildAdminRefreshProviderSessionDepsInput {
     userId: string;
     tenantId?: string;
     openidIssuer?: string;
-  }) => Promise<{ refreshToken: string; providerSession?: ProviderSessionRef } | null>;
+  }) => Promise<{
+    refreshToken: string;
+    providerSession?: ProviderSessionRef;
+    version?: string;
+  } | null>;
   storeRefreshTokenBridge: (args: RefreshTokenBridgeInput) => Promise<string | null>;
   deleteRefreshTokenBridges: (args: RefreshTokenBridgeDeleteInput) => Promise<object | null>;
   bridgeGraceMs: number;
@@ -97,6 +101,7 @@ export interface AdminOpenIdRefreshPrepareResult {
 async function deleteStaleAdminRefreshBridge(
   refreshToken: string,
   identity: { userId: string; tenantId?: string },
+  version: string | undefined,
   deps: AdminRefreshProviderSessionDeps,
 ): Promise<void> {
   if (!deps.deleteRefreshTokenBridges) return;
@@ -105,6 +110,7 @@ async function deleteStaleAdminRefreshBridge(
       refreshTokens: [refreshToken],
       userId: identity.userId,
       tenantId: identity.tenantId,
+      version,
     });
   } catch (error) {
     logger.warn(
@@ -162,7 +168,12 @@ export async function prepareAdminOpenIdRefresh(
       error instanceof AdminRefreshError &&
       error.code === OPENID_SESSION_ENDED
     ) {
-      await deleteStaleAdminRefreshBridge(refreshToken, recoveredIdentity, providerSessionDeps);
+      await deleteStaleAdminRefreshBridge(
+        refreshToken,
+        recoveredIdentity,
+        resolution.bridgeVersion,
+        providerSessionDeps,
+      );
     }
     throw error;
   }
