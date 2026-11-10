@@ -1,5 +1,5 @@
-import { Constants, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
-import type { TFile, TMessage } from 'librechat-data-provider';
+import { Tools, Constants, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
+import type { TFile, TMessage, TAttachment } from 'librechat-data-provider';
 import {
   sanitizeMessageForTransmit,
   sanitizeFileForTransmit,
@@ -167,6 +167,53 @@ describe('sanitizeMessageForTransmit', () => {
     expect(result.messageId).toBe('msg-123');
     expect(result.text).toBe('Hello world');
     expect(result).not.toHaveProperty('fileContext');
+  });
+
+  it('removes encoded provider inputs before transmission without consuming the originals', () => {
+    const payload = Object.freeze({
+      toJSON: () => {
+        throw new Error('Provider payload must not be serialized');
+      },
+    });
+    const files = [{ file_id: 'f-1', filename: 'clip.mp4', type: 'video/mp4', bytes: 1000 }];
+    const message = Object.freeze({
+      messageId: 'msg-123',
+      text: 'Summarize the attachments',
+      documents: [payload],
+      videos: [payload],
+      audios: [payload],
+      files,
+      attachments: [
+        {
+          file_id: 'output-1',
+          messageId: 'msg-123',
+          toolCallId: 'call-1',
+          user: 'user-1',
+          bytes: 16,
+          embedded: false,
+          filename: 'output.txt',
+          filepath: '/uploads/output.txt',
+          object: 'file',
+          type: Tools.execute_code,
+          usage: 1,
+          text: 'Generated output',
+        } satisfies TAttachment,
+      ],
+    });
+
+    const result = sanitizeMessageForTransmit(message);
+
+    expect(result).not.toHaveProperty('documents');
+    expect(result).not.toHaveProperty('videos');
+    expect(result).not.toHaveProperty('audios');
+    expect(result.files).toEqual(files);
+    expect(result.attachments).toBe(message.attachments);
+    expect(result.text).toBe(message.text);
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(sanitizeMessageForTransmit(result)).toEqual(result);
+    expect(message.documents[0]).toBe(payload);
+    expect(message.videos[0]).toBe(payload);
+    expect(message.audios[0]).toBe(payload);
   });
 
   it('should sanitize files array', () => {
