@@ -1,5 +1,5 @@
 import { Constants, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
-import type { TFile, TMessage } from 'librechat-data-provider';
+import type { TFile, TMessage, TAttachment } from 'librechat-data-provider';
 import {
   sanitizeMessageForTransmit,
   sanitizeFileForTransmit,
@@ -183,7 +183,22 @@ describe('sanitizeMessageForTransmit', () => {
       videos: [payload],
       audios: [payload],
       files,
-      attachments: [{ file_id: 'output-1', text: 'Generated output' }],
+      attachments: [
+        {
+          file_id: 'output-1',
+          messageId: 'msg-123',
+          toolCallId: 'call-1',
+          user: 'user-1',
+          bytes: 16,
+          embedded: false,
+          filename: 'output.txt',
+          filepath: '/uploads/output.txt',
+          object: 'file',
+          type: 'text/plain',
+          usage: 1,
+          text: 'Generated output',
+        } satisfies TAttachment,
+      ],
     });
 
     const result = sanitizeMessageForTransmit(message);
