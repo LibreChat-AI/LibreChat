@@ -560,6 +560,74 @@ describe('Generated file snapshots', () => {
     },
   );
 
+  it.each(['no-storage-writer', 'processing-before-upload'] as const)(
+    'does not retain an unfinished snapshot claim after %s',
+    async (mode) => {
+      const kept = await emit(Buffer.from('Committed V1'), 'kept');
+      if (mode === 'no-storage-writer') deps.getStrategyFunctions = () => ({});
+      else
+        deps.determineFileType = async () => {
+          throw new Error('Processing failed before upload');
+        };
+      const attempt = processCodeOutput(
+        {
+          req,
+          id: 'fallback-source',
+          session_id: 'fallback-session',
+          name: 'report.txt',
+          messageId: 'fallback',
+          conversationId: 'conversation-a',
+          preparedBuffer: Buffer.from('Fallback bytes'),
+        },
+        deps,
+      );
+      if (mode === 'processing-before-upload')
+        await expect(attempt).rejects.toThrow('Processing failed before upload');
+      else expect((await attempt)?.file?.filepath).toBe('fallback');
+      expect((await reload(kept.file_id)).bytes.toString()).toBe('Committed V1');
+      expect(
+        await mongoose.models.File.countDocuments({
+          context: FileContext.execute_code_snapshot,
+          user,
+          tenantId: 'tenant-a',
+        }),
+      ).toBe(1);
+    },
+  );
+
+  it('retains the unfinished claim after an uncertain external write', async () => {
+    const kept = await emit(Buffer.from('Committed V1'), 'kept');
+    const { saveBuffer } = deps.getStrategyFunctions(FileSources.local);
+    deps.getStrategyFunctions = () => ({
+      saveBuffer: async (input) => {
+        await saveBuffer!(input);
+        throw new Error('Storage acknowledgement lost');
+      },
+    });
+    await expect(emit(Buffer.from('Uncertain V2'), 'uncertain')).rejects.toThrow(
+      'File provisioning outcome is unknown',
+    );
+    const records = await mongoose.models.File.find({
+      context: FileContext.execute_code_snapshot,
+      user,
+      tenantId: 'tenant-a',
+    }).lean<IMongoFile[]>();
+    expect(records).toHaveLength(2);
+    const unfinished = records.find((file) => file.file_id !== kept.file_id)!;
+    expect(unfinished.filepath).toBeUndefined();
+    expect(unfinished.storageOperations?.provisioning).toHaveLength(1);
+    await expect(
+      deps.fileStorage.recovery.recover(
+        { file_id: unfinished.file_id, userId: user, tenantId: 'tenant-a' },
+        deps.fileStorage,
+      ),
+    ).rejects.toThrow('File provisioning outcome is unknown');
+    expect(await mongoose.models.File.findOne({ file_id: unfinished.file_id }).lean()).toEqual(
+      unfinished,
+    );
+    expect((await reload(kept.file_id)).bytes.toString()).toBe('Committed V1');
+  });
+
   it('retains V1 and V2 bytes and message references after same-path rewrites and reload', async () => {
     const first = await emit(Buffer.from('Version 1'), 'message-1');
     const second = await emit(Buffer.from('Version 2'), 'message-2');

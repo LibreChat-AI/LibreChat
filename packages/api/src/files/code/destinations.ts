@@ -281,7 +281,7 @@ export function selectCodeFileGenerations<T extends CodePathCandidate>(
     const destination = generated
       ? file.filename
       : (getCodeEnvRefForProfile(file.metadata ?? undefined, routeKey)?.sandboxFilename ??
-        getCodeEnvUploadFilename(file.filename ?? ''));
+        getCodeEnvUploadFilename(resolveSandboxFilename(file.filename ?? '', file.type ?? '')));
     return JSON.stringify([
       privateFileIds?.has(file.file_id ?? '') ?? false,
       file.tenantId ?? null,

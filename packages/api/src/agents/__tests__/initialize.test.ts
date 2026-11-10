@@ -7533,6 +7533,24 @@ describe('snapshot destination admission invariants', () => {
     const again = await run([original, literal]);
     expect(again.staged).toEqual(first.staged);
   });
+  it.each([false, true])(
+    'normalizes an unreferenced converted upload before code admission (deferred newest %s)',
+    async (deferred) => {
+      const upload = snapshot('converted-upload', 100, {
+        filename: 'chart.png',
+        type: 'image/webp',
+        context: FileContext.message_attachment,
+        metadata: { destinationChosen: false, codeDestination: true },
+      });
+      const output = snapshot('literal', 200, { filename: 'chart.webp', type: 'image/webp' });
+      const { staged } = await run(
+        deferred ? [upload] : [upload, output],
+        deferred ? [output] : [],
+      );
+      expect([...staged.entries()]).toEqual([['chart.webp', 'literal']]);
+    },
+  );
+
   it('keeps unrelated files subject to their original shared budget and order', async () => {
     const { staged } = await run([
       snapshot('first', 100, { filename: 'first.txt' }),
