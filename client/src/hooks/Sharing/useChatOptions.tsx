@@ -23,6 +23,7 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useProjectMenuItem from '~/hooks/Chat/useProjectMenuItem';
 import { useChatContext, useLiveAnnouncer } from '~/Providers';
 import ConversationInfo from '~/components/Chat/Info';
+import useClockFormat from '~/hooks/useClockFormat';
 import { NotificationSeverity } from '~/common';
 import useExportShare from './useExportShare';
 import Rename from '~/components/Chat/Rename';
@@ -60,6 +61,7 @@ export default function useChatOptions({
   readOnly?: boolean;
 }): UseChatOptionsResult {
   const localize = useLocalize();
+  const hour12 = useClockFormat();
   const navigate = useNavigate();
   const { showToast } = useToastContext();
   const { announcePolite } = useLiveAnnouncer();
@@ -300,6 +302,7 @@ export default function useChatOptions({
             triggerRef={infoRef}
             showUsage={startupConfig != null && startupConfig.interface?.contextUsage !== false}
             showCost={startupConfig?.interface?.contextCost === true}
+            hour12={hour12}
             currency={startupConfig?.interface?.currency}
           />
         )}

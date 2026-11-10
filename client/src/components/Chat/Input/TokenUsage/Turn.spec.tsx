@@ -1,17 +1,22 @@
+import axios from 'axios';
+import { RecoilRoot } from 'recoil';
 import userEvent from '@testing-library/user-event';
 import { clearIndex, upsertEntries } from '@librechat/chat';
 import { Provider, createStore, getDefaultStore } from 'jotai';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { removeUsageAtoms, useUsageHandler } from '@librechat/chat/react';
-import { act, render, renderHook, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, renderHook, screen, waitFor, within } from '@testing-library/react';
+import type { TMessage, TStartupConfig } from 'librechat-data-provider';
 import type { MessageUsageProps } from '@librechat/chat/react';
-import type { TMessage } from 'librechat-data-provider';
+import { startupConfigKey } from '~/data-provider';
+import store from '~/store';
 import Turn from './Turn';
 
-const mockConfig = jest.fn();
-jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: mockConfig() }),
-}));
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
+
+let client: QueryClient;
+const setConfig = (interfaceConfig: TStartupConfig['interface']) =>
+  client.setQueryData(startupConfigKey(false), { interface: interfaceConfig });
 
 const usage = { input: 120, output: 35, cacheRead: 400, cacheWrite: 20, cost: 0.02 };
 const message = {
@@ -23,12 +28,16 @@ const message = {
   metadata: { usage },
 } as TMessage;
 
-const renderTurn = (props: Partial<MessageUsageProps> = {}, store = createStore()) =>
-  render(
-    <Provider store={store}>
-      <Turn message={message} {...props} />
-    </Provider>,
-  );
+const renderTurn = (props: Partial<MessageUsageProps> = {}, jotaiStore = createStore()) =>
+  render(<Turn message={message} {...props} />, {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={client}>
+        <RecoilRoot initializeState={({ set }) => set(store.queriesEnabled, true)}>
+          <Provider store={jotaiStore}>{children}</Provider>
+        </RecoilRoot>
+      </QueryClientProvider>
+    ),
+  });
 
 const openCard = async () => {
   await userEvent.click(screen.getByRole('button', { name: 'com_ui_context_turn_usage' }));
@@ -36,9 +45,15 @@ const openCard = async () => {
 };
 
 beforeEach(() => {
-  mockConfig.mockReturnValue({ interface: { contextUsage: true, contextCost: true } });
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, cacheTime: Infinity } } });
+  setConfig({ contextUsage: true, contextCost: true });
   clearIndex('turn-card');
   removeUsageAtoms('turn-card');
+});
+
+afterEach(() => {
+  cleanup();
+  client.clear();
 });
 
 describe('Message turn usage', () => {
@@ -98,18 +113,10 @@ describe('Message turn usage', () => {
     const card = await openCard();
     expect(card).toHaveTextContent('com_ui_context_current_turn');
     expect(within(card).getByText('15')).toBeVisible();
-    rerender(
-      <Provider store={store}>
-        <Turn message={{ ...message, messageId: 'older-response' }} />
-      </Provider>,
-    );
+    rerender(<Turn message={{ ...message, messageId: 'older-response' }} />);
     expect(within(card).getByText('120')).toBeVisible();
     expect(card).not.toHaveTextContent('com_ui_context_current_turn');
-    rerender(
-      <Provider store={store}>
-        <Turn message={liveMessage} />
-      </Provider>,
-    );
+    rerender(<Turn message={liveMessage} />);
     act(() => result.current.finalizeUsage({ responseMessage: message }, submission));
     expect(card).toHaveTextContent('com_ui_context_turn_usage');
     expect(within(card).getByText('120')).toBeVisible();
@@ -175,9 +182,7 @@ describe('Message turn usage', () => {
   it.each([false, true])(
     'honors the cost gate and configured currency, showCost=%s',
     async (showCost) => {
-      mockConfig.mockReturnValue({
-        interface: { contextCost: showCost, currency: { code: 'EUR', rate: 2 } },
-      });
+      setConfig({ contextCost: showCost, currency: { code: 'EUR', rate: 2 } });
       renderTurn();
       const card = await openCard();
       if (showCost) {
@@ -201,15 +206,22 @@ describe('Message turn usage', () => {
     },
   );
 
-  it('mounts no control while disabled, waiting for config, or rendering a user message', () => {
-    mockConfig.mockReturnValue(undefined);
-    const { rerender } = renderTurn();
+  it('mounts no control while the real config request is pending', async () => {
+    client.removeQueries(startupConfigKey(false));
+    const request = jest.spyOn(axios, 'get').mockImplementation(() => new Promise(() => {}));
+    renderTurn();
+    await waitFor(() => expect(request).toHaveBeenCalled());
     expect(screen.queryByTestId('message-usage-button')).not.toBeInTheDocument();
-    mockConfig.mockReturnValue({ interface: { contextUsage: false } });
-    rerender(<Turn message={message} />);
+  });
+
+  it('mounts no control when context usage is disabled', () => {
+    setConfig({ contextUsage: false });
+    renderTurn();
     expect(screen.queryByTestId('message-usage-button')).not.toBeInTheDocument();
-    mockConfig.mockReturnValue({ interface: {} });
-    rerender(<Turn message={{ ...message, isCreatedByUser: true }} />);
+  });
+
+  it('mounts no control for a user message', () => {
+    renderTurn({ message: { ...message, isCreatedByUser: true } });
     expect(screen.queryByTestId('message-usage-button')).not.toBeInTheDocument();
   });
 });

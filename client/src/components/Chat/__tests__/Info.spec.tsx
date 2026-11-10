@@ -72,7 +72,7 @@ function setup(props: Partial<InfoProps> = {}, cached = messages) {
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <Provider store={store}>
-          <InfoHarness conversation={conversation} showUsage showCost {...props} />
+          <InfoHarness conversation={conversation} showUsage showCost hour12={false} {...props} />
         </Provider>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -86,6 +86,14 @@ async function openInfo() {
 }
 
 beforeEach(() => jest.mocked(copy).mockReturnValue(true));
+
+it.each([false, true])('uses the host clock preference, hour12=%s', async (hour12) => {
+  setup({ hour12, conversation: { ...conversation, updatedAt: '2026-11-05T15:00:00' } });
+  const dialog = await openInfo();
+  expect(
+    within(dialog).getByText('com_ui_conversation_updated').nextElementSibling,
+  ).toHaveTextContent(hour12 ? '3:00 PM' : '15:00');
+});
 
 it('mounts cache observers only while open, shows metadata, and restores focus on Escape', async () => {
   const { client } = setup();
