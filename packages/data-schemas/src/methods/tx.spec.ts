@@ -3280,7 +3280,7 @@ describe('Bedrock vendor-prefixed pricing', () => {
     ['mistral.ministral-3-3b-instruct', 'mistral.ministral-3-3b-instruct', 0.1, 0.1],
     ['mistral.ministral-3-8b-instruct', 'mistral.ministral-3-8b-instruct', 0.15, 0.15],
     ['mistral.ministral-3-14b-instruct', 'mistral.ministral-3-14b-instruct', 0.2, 0.2],
-    ['openai.gpt-6.1-terra', 'openai.gpt-6.1-terra', 1.0, 5.0],
+    ['openai.gpt-6.1-terra', 'openai.gpt-6.1-terra', 1.1, 5.5],
     ['writer.palmyra-vision-7b', 'writer.palmyra-vision-7b', 0.15, 0.6],
     ['writer.palmyra-x4', 'writer.palmyra-x4-v1:0', 2.5, 10.0],
     ['writer.palmyra-x5', 'writer.palmyra-x5-v1:0', 0.6, 6.0],
@@ -3290,6 +3290,14 @@ describe('Bedrock vendor-prefixed pricing', () => {
       expect(getMultiplier({ model: id, tokenType: 'prompt' })).toBe(prompt);
       expect(getMultiplier({ model: id, tokenType: 'completion' })).toBe(completion);
     }
+  });
+
+  it('bills the GPT-6.1 Terra global profile below the regional one', () => {
+    const model = 'global.openai.gpt-6.1-terra';
+    expect(getValueKey(model)).toBe(model);
+    expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(1.0);
+    expect(getMultiplier({ model, tokenType: 'completion' })).toBe(5.0);
+    expect(getMultiplier({ model: 'eu.openai.gpt-6.1-terra', tokenType: 'prompt' })).toBe(1.1);
   });
 });
 

@@ -120,8 +120,9 @@ const bedrockValues: Record<string, { prompt: number; completion: number }> = {
   'mistral.ministral-3-3b-instruct': { prompt: 0.1, completion: 0.1 },
   'mistral.ministral-3-8b-instruct': { prompt: 0.15, completion: 0.15 },
   'mistral.ministral-3-14b-instruct': { prompt: 0.2, completion: 0.2 },
-  /* Global inference profile rate; regional profiles bill 10% more. */
-  'openai.gpt-6.1-terra': { prompt: 1.0, completion: 5.0 },
+  /* Regional inference profiles (`us.`, `eu.`) bill 10% over the global profile. */
+  'openai.gpt-6.1-terra': { prompt: 1.1, completion: 5.5 },
+  'global.openai.gpt-6.1-terra': { prompt: 1.0, completion: 5.0 },
   'writer.palmyra-vision-7b': { prompt: 0.15, completion: 0.6 },
   'writer.palmyra-x4': { prompt: 2.5, completion: 10.0 },
   'writer.palmyra-x5': { prompt: 0.6, completion: 6.0 },
