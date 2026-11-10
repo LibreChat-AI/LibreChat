@@ -151,6 +151,10 @@ describe('TokenUsage gauge', () => {
   it('keeps the card inside the viewport', async () => {
     mockStartupConfig.mockReturnValue(config());
     renderGauge();
+    expect(screen.getByTestId('token-usage')).toHaveClass(
+      'size-theme-control',
+      'rounded-theme-control-round',
+    );
     const card = await openCard();
     expect(card).toHaveClass(
       'max-h-[calc(100dvh-1rem)]',
