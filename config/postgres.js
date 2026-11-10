@@ -4,13 +4,11 @@ require('module-alias/register');
 const path = require('node:path');
 require('module-alias').addAlias('~', path.resolve(__dirname, '../api'));
 const { runPostgresCommand } = require('@librechat/api');
-const { createModels } = require('@librechat/data-schemas');
 const mongoose = require('mongoose');
 const loadCustomConfig = require('~/server/services/Config/loadCustomConfig');
 runPostgresCommand({
   mongoose,
-  createModels,
-  connectDb: () => require('~/db').connectDb(),
+  connectDb: (options) => mongoose.connect(process.env.MONGO_URI, options),
   loadCustomConfig,
   args: process.argv.slice(2),
   env: process.env,

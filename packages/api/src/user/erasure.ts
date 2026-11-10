@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import type { TCheckpointerConfig, MCPOptions } from 'librechat-data-provider';
 import type { AllMethods, IMongoFile } from '@librechat/data-schemas';
@@ -119,6 +120,12 @@ type UserDeletionCancellationDeps = Pick<
 >;
 
 export interface UserDeletionAttempt {
+  readonly id: string;
+  adopt(
+    userId: string,
+    startedAt: Date,
+    deps: Pick<AllMethods, 'getAgentTriggerUserDeletionAttemptId'>,
+  ): Promise<void>;
   commit<T>(operation: () => Promise<T>): Promise<T>;
   cancel(params: UserDeletionCancellationParams, deps: UserDeletionCancellationDeps): Promise<void>;
 }
@@ -126,13 +133,25 @@ export interface UserDeletionAttempt {
 /** A started user delete may still commit after an error or a lost acknowledgement. */
 export function createUserDeletionAttempt(): UserDeletionAttempt {
   let commitStarted = false;
+  let identityKnown = true;
+  let attemptId: string = randomUUID();
   return {
+    get id() {
+      return attemptId;
+    },
+    async adopt(userId, startedAt, deps) {
+      identityKnown = false;
+      const stored = await deps.getAgentTriggerUserDeletionAttemptId(userId, startedAt);
+      if (stored === null) throw new Error('User deletion attempt identity unavailable');
+      attemptId = stored;
+      identityKnown = true;
+    },
     async commit<T>(operation: () => Promise<T>): Promise<T> {
       commitStarted = true;
       return operation();
     },
     async cancel(params, deps) {
-      if (!commitStarted) await cancelUserDataDeletion(params, deps);
+      if (!commitStarted && identityKnown) await cancelUserDataDeletion(params, deps);
     },
   };
 }
@@ -144,10 +163,12 @@ export async function cancelUserDataDeletion(
 ): Promise<void> {
   const { userId, startedAt, deletionAttemptId } = params;
   if (deletionAttemptId !== undefined && deps.cancelUserToolFavoriteDeletion) {
-    if ((await deps.isAgentTriggerUserDeletionOwner(userId, startedAt)) !== true) return;
+    if ((await deps.isAgentTriggerUserDeletionOwner(userId, startedAt, deletionAttemptId)) !== true)
+      return;
     await deps.cancelUserToolFavoriteDeletion(userId, deletionAttemptId);
   }
-  await deps.cancelAgentTriggerUserDeletion(userId, startedAt);
+  if (deletionAttemptId === undefined) await deps.cancelAgentTriggerUserDeletion(userId, startedAt);
+  else await deps.cancelAgentTriggerUserDeletion(userId, startedAt, deletionAttemptId);
 }
 
 export type MCPServerCleanupDeps = Pick<

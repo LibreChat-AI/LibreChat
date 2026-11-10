@@ -111,6 +111,7 @@ jobs:
       - run: npm run test:postgres --workspace packages/data-schemas
       - run: npx --no-install jest src/app/persistence.spec.ts src/app/postgres.spec.ts src/favorites/handlers.spec.ts src/user/erasure.spec.ts --coverage=false --runInBand
         working-directory: packages/api
+      - run: npx --no-install jest --config config/jest.config.js --runTestsByPath config/__tests__/delete-user.recovery.spec.js --coverage=false --runInBand
 
   reports:
     name: ${{ matrix.check == 'risk' && 'Change risk' || 'Mutation testing' }} (${{ matrix.workspace }})

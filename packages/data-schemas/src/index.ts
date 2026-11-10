@@ -138,3 +138,4 @@ export * from './postgres/pool';
 export * from './postgres/migrations';
 export * from './postgres/favorite';
 export * from './postgres/import';
+export * from './postgres/mongo';

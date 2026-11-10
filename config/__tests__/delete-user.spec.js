@@ -196,6 +196,7 @@ describe('Delete user CLI', () => {
     expect(mockMethods.beginAgentTriggerUserDeletion).toHaveBeenCalledWith(
       USER_ID,
       expect.any(Date),
+      expect.any(String),
     );
     expect(mockMethods.prepareAgentTriggerUserPurge).toHaveBeenCalledWith(
       USER_ID,
@@ -247,7 +248,11 @@ describe('Delete user CLI', () => {
     expect(mockMethods.deleteUserById).not.toHaveBeenCalled();
     const deletionFence = mockMethods.beginAgentTriggerUserDeletion.mock.calls[0][1];
     expect(mockMethods.cancelAgentTriggerUserPurge).toHaveBeenCalledWith(USER_ID, deletionFence);
-    expect(mockMethods.cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(USER_ID, deletionFence);
+    expect(mockMethods.cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
+      USER_ID,
+      deletionFence,
+      expect.any(String),
+    );
   });
 
   /**
@@ -287,7 +292,7 @@ describe('Delete user CLI', () => {
   it('releases only the cascade UUID before releasing Mongo ownership', async () => {
     mockEraseUserData.mockRejectedValueOnce(new Error('shared link failure'));
     expect(await runCli()).toBe(1);
-    const token = mockMethods.suspendUserSchedulesForDeletion.mock.calls[0][1];
+    const token = mockMethods.beginAgentTriggerUserDeletion.mock.calls[0][2];
     expect(mockEraseUserData.mock.calls[0][0].deletionAttemptId).toBe(token);
     expect(mockMongoFavorites.cancelUserToolFavoriteDeletion).toHaveBeenCalledWith(USER_ID, token);
     expect(mockMethods.isAgentTriggerUserDeletionOwner.mock.invocationCallOrder[0]).toBeLessThan(
@@ -348,7 +353,7 @@ describe('Delete user CLI', () => {
       tenantId: 'tenant-1',
       checkpointer: { ttl: 60 },
       keepTransactions: true,
-      deletionAttemptId: mockMethods.suspendUserSchedulesForDeletion.mock.calls[0][1],
+      deletionAttemptId: mockMethods.beginAgentTriggerUserDeletion.mock.calls[0][2],
     });
     expect(deps).toEqual(
       expect.objectContaining({
@@ -471,7 +476,11 @@ describe('Delete user CLI', () => {
     expect(mockMethods.deleteUserById).not.toHaveBeenCalled();
     const deletionFence = mockMethods.beginAgentTriggerUserDeletion.mock.calls[0][1];
     expect(mockMethods.restoreUserSchedulesFromDeletion).toHaveBeenCalled();
-    expect(mockMethods.cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(USER_ID, deletionFence);
+    expect(mockMethods.cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
+      USER_ID,
+      deletionFence,
+      expect.any(String),
+    );
   });
 
   it('passes deleteUserPrompts through to the shared cascade, which keeps a synced group with a synthetic author untouched', async () => {
@@ -492,6 +501,10 @@ describe('Delete user CLI', () => {
     expect(mockMethods.deleteUserById).not.toHaveBeenCalled();
     const deletionFence = mockMethods.beginAgentTriggerUserDeletion.mock.calls[0][1];
     expect(mockMethods.cancelAgentTriggerUserPurge).toHaveBeenCalledWith(USER_ID, deletionFence);
-    expect(mockMethods.cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(USER_ID, deletionFence);
+    expect(mockMethods.cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
+      USER_ID,
+      deletionFence,
+      expect.any(String),
+    );
   });
 });

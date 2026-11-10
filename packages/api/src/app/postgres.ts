@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import { persistenceConfigSchema } from 'librechat-data-provider';
 import {
   createPostgresDatabase,
@@ -7,21 +6,15 @@ import {
   fingerprintFavorites,
   readPostgresFavorites,
   assertPostgresDataReady,
-  buildIndexWithRetry,
+  createMongoFavoriteStore,
 } from '@librechat/data-schemas';
-import type {
-  FavoriteSnapshotSource,
-  FavoriteSnapshotRow,
-  createModels,
-  PostgresDatabase,
-} from '@librechat/data-schemas';
+import type { FavoriteSnapshotRow, PostgresDatabase } from '@librechat/data-schemas';
 import type mongoose from 'mongoose';
 import { getPersistenceConfig } from './persistence';
 
 export async function runPostgresCommand(deps: {
   mongoose: typeof mongoose;
-  createModels: typeof createModels;
-  connectDb(): Promise<unknown>;
+  connectDb(options: { autoCreate: false; autoIndex: false }): Promise<unknown>;
   loadCustomConfig(
     print: boolean,
     options: { mode: 'reload'; storageSelection: true },
@@ -70,29 +63,9 @@ export async function runPostgresCommand(deps: {
       console.info('PostgreSQL schema migrated. Favorites data is not yet verified.');
       return;
     }
-    await deps.connectDb();
-    const { ToolFavorite } = deps.createModels(deps.mongoose);
-    const collection = ToolFavorite.collection;
-    const snapshotSource = (sourceCollection: typeof collection): FavoriteSnapshotSource =>
-      async function* () {
-        const cursor = sourceCollection.find({}).sort({ _id: 1 }).batchSize(250);
-        try {
-          for await (const row of cursor) {
-            yield {
-              id: String(row._id),
-              userId: String(row.user),
-              tenantId: row.tenantId ?? null,
-              itemType: row.itemType,
-              itemId: row.itemId,
-              createdAt: row.createdAt,
-              updatedAt: row.updatedAt,
-            };
-          }
-        } finally {
-          await cursor.close();
-        }
-      };
-    const source = snapshotSource(collection);
+    await deps.connectDb({ autoCreate: false, autoIndex: false });
+    const mongo = createMongoFavoriteStore(deps.mongoose);
+    const source = mongo.source;
     if (command === 'import') {
       const result = await importFavorites(db, source, {
         offline: true,
@@ -131,35 +104,12 @@ export async function runPostgresCommand(deps: {
           );
           return;
         }
-        const name = `${collection.name}_reconcile_${randomBytes(6).toString('hex')}`;
-        const staging = deps.mongoose.connection.collection(name);
+        const staging = await mongo.stage();
         let renamed = false;
         try {
-          for (const index of await collection.indexes()) {
-            if (index.name === '_id_') {
-              continue;
-            }
-            const options = Object.fromEntries(
-              Object.entries(index).filter(([key]) => !['key', 'v', 'ns'].includes(key)),
-            );
-            await buildIndexWithRetry(
-              () => staging.createIndex(index.key, options),
-              'favorites_reconciliation_index',
-            );
-          }
           let batch: FavoriteSnapshotRow[] = [];
           const write = async () => {
-            await staging.insertMany(
-              batch.map((row) => ({
-                _id: new deps.mongoose.Types.ObjectId(row.id),
-                user: new deps.mongoose.Types.ObjectId(row.userId),
-                tenantId: row.tenantId,
-                itemType: row.itemType,
-                itemId: row.itemId,
-                createdAt: row.createdAt,
-                updatedAt: row.updatedAt,
-              })),
-            );
+            await staging.insert(batch);
             batch = [];
           };
           for await (const row of pgSource()) {
@@ -171,7 +121,7 @@ export async function runPostgresCommand(deps: {
           if (batch.length) {
             await write();
           }
-          const staged = await fingerprintFavorites(snapshotSource(staging));
+          const staged = await fingerprintFavorites(staging.source);
           const current = await fingerprintFavorites(pgSource);
           if (
             current.digest !== postgres.digest ||
@@ -182,14 +132,14 @@ export async function runPostgresCommand(deps: {
             throw new Error('PostgreSQL changed during reconciliation');
           }
           await assertPostgresDataReady(session);
-          await staging.rename(collection.name, { dropTarget: true });
+          await staging.replace();
           renamed = true;
           console.info(
             `Mongo favorites reconciled: ${postgres.count} rows. Storage selection was not changed.`,
           );
         } finally {
           if (!renamed) {
-            await staging.drop().catch(() => undefined);
+            await staging.discard();
           }
         }
       } finally {

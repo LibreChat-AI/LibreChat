@@ -955,6 +955,7 @@ realPostgres('attempt-scoped PostgreSQL account erasure', () => {
     await model('User').insertOne({
       _id: new mongoose.Types.ObjectId(userId),
       agentTriggerDeletionStartedAt: startedAt,
+      agentTriggerDeletionAttemptId: deletionAttemptId,
     });
     const runtime = createFavoriteRuntime(methods, { PG_TEST_URL: options.connectionString });
     await runtime.initialize(config);
@@ -1099,7 +1100,7 @@ realPostgres('attempt-scoped PostgreSQL account erasure', () => {
     try {
       await eraseUserData(params, erasure);
       cancel.cancelAgentTriggerUserDeletion = async (userId, startedAt) => {
-        await methods.cancelAgentTriggerUserDeletion(userId, startedAt);
+        await methods.cancelAgentTriggerUserDeletion(userId, startedAt, params.deletionAttemptId);
         throw new Error('release acknowledgement lost');
       };
       await expect(cancelUserDataDeletion(params, cancel)).rejects.toThrow(
@@ -1144,8 +1145,8 @@ realPostgres('attempt-scoped PostgreSQL account erasure', () => {
       await eraseUserData(params, erasure);
       cancel.isAgentTriggerUserDeletionOwner = async (userId, startedAt) => {
         const owned = await methods.isAgentTriggerUserDeletionOwner(userId, startedAt);
-        await methods.cancelAgentTriggerUserDeletion(userId, startedAt);
-        await methods.beginAgentTriggerUserDeletion(userId, nextStartedAt);
+        await methods.cancelAgentTriggerUserDeletion(userId, startedAt, params.deletionAttemptId);
+        await methods.beginAgentTriggerUserDeletion(userId, nextStartedAt, successor);
         await runtime.methods.deleteUserToolFavorites(userId, successor);
         return owned;
       };

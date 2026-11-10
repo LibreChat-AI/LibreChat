@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   CacheKeys,
@@ -1613,6 +1614,60 @@ describe('User Methods - Database Tests', () => {
           new Date(),
         ),
       ).rejects.toThrow(failure);
+    });
+
+    test('persists identity across repeated offline recoveries and fences stale Date and UUID owners', async () => {
+      const user = await User.create({ email: 'durable-attempt@example.com', provider: 'local' });
+      const id = user._id.toString();
+      const attempt = randomUUID();
+      const other = randomUUID();
+      const first = new Date('2026-01-01');
+      const second = new Date(first.getTime() + USER_DELETION_FENCE_STALE_MS + 1);
+      const third = new Date(second.getTime() + USER_DELETION_FENCE_STALE_MS + 1);
+      expect(await methods.beginAgentTriggerUserDeletion(id, first, attempt)).toBe('acquired');
+      expect((await User.findById(id).lean())?.agentTriggerDeletionAttemptId).toBeUndefined();
+      expect(await methods.recoverStaleAgentTriggerUserDeletion(id, second, other)).toBe(
+        'acquired',
+      );
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, first)).toBeNull();
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, second)).toBe(attempt);
+      expect(await methods.cancelAgentTriggerUserDeletion(id, first, attempt)).toBe(false);
+      expect(await methods.cancelAgentTriggerUserDeletion(id, second, other)).toBe(false);
+      expect(await methods.isAgentTriggerUserDeletionOwner(id, second, other)).toBe(false);
+      // Recovery can itself crash before adopting the identity; the next process still finds it.
+      expect(await methods.recoverStaleAgentTriggerUserDeletion(id, third, randomUUID())).toBe(
+        'acquired',
+      );
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, third)).toBe(attempt);
+      expect(await methods.cancelAgentTriggerUserDeletion(id, third, attempt)).toBe(true);
+      expect(
+        await User.findById(id)
+          .select('+agentTriggerDeletionAttemptId +agentTriggerDeletionStartedAt')
+          .lean(),
+      ).toEqual(expect.not.objectContaining({ agentTriggerDeletionAttemptId: expect.anything() }));
+      expect(await methods.beginAgentTriggerUserDeletion(id, third, other)).toBe('acquired');
+      expect(await methods.cancelAgentTriggerUserDeletion(id, third, attempt)).toBe(false);
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, third)).toBe(other);
+    });
+    test('initializes only a legacy missing UUID and clears stray identity on a no-token acquisition', async () => {
+      const user = await User.create({ email: 'legacy-attempt@example.com', provider: 'local' });
+      const id = user._id.toString();
+      const first = new Date('2026-01-01');
+      const second = new Date(first.getTime() + USER_DELETION_FENCE_STALE_MS + 1);
+      const fallback = randomUUID();
+      await methods.beginAgentTriggerUserDeletion(id, first);
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, first)).toBeNull();
+      expect(await methods.recoverStaleAgentTriggerUserDeletion(id, second, fallback)).toBe(
+        'acquired',
+      );
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, second)).toBe(fallback);
+      await methods.cancelAgentTriggerUserDeletion(id, second, fallback);
+      await User.updateOne({ _id: id }, { $set: { agentTriggerDeletionAttemptId: randomUUID() } });
+      await methods.beginAgentTriggerUserDeletion(id, second);
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, second)).toBeNull();
+      await expect(methods.beginAgentTriggerUserDeletion(id, second, '')).rejects.toThrow(
+        'attempt',
+      );
     });
 
     test('reports a missing principal without creating a deletion fence', async () => {

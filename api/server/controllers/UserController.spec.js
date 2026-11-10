@@ -596,7 +596,11 @@ describe('deleteUserController', () => {
     expect(mockRes.send).toHaveBeenCalledWith({ message: 'User deleted' });
     expect(mockRes.clearCookie).toHaveBeenCalledWith('session_hint');
     expect(deletePasskeysByUser).toHaveBeenCalledWith(userIdStr);
-    expect(beginAgentTriggerUserDeletion).toHaveBeenCalledWith(userId.toString(), expect.any(Date));
+    expect(beginAgentTriggerUserDeletion).toHaveBeenCalledWith(
+      userId.toString(),
+      expect.any(Date),
+      expect.any(String),
+    );
     expect(mockPrepareAgentTriggerUserPurge).toHaveBeenCalledWith(
       userId.toString(),
       expect.any(Date),
@@ -931,7 +935,11 @@ describe('deleteUserController', () => {
     expect(deleteMessages).not.toHaveBeenCalled();
     const deletionFence = beginAgentTriggerUserDeletion.mock.calls[0][1];
     expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(userIdString, deletionFence);
-    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(userIdString, deletionFence);
+    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
+      userIdString,
+      deletionFence,
+      expect.any(String),
+    );
     expect(deleteUserById).not.toHaveBeenCalled();
     // Account survives -> its suspended schedules are restored under the quiesce token.
     expect(mockRestoreUserSchedules).toHaveBeenCalledWith(
@@ -959,7 +967,7 @@ describe('deleteUserController', () => {
       expect(mockRes.status).toHaveBeenCalledWith(500);
       expect(db.deleteUserToolFavorites).toHaveBeenCalledWith(
         userId,
-        mockQuiesceUserSchedules.mock.calls[0][1],
+        beginAgentTriggerUserDeletion.mock.calls[0][2],
       );
       expect(db.cancelUserToolFavoriteDeletion).not.toHaveBeenCalled();
     },
@@ -970,7 +978,7 @@ describe('deleteUserController', () => {
     db.deleteUserAgents.mockRejectedValueOnce(new Error('later cascade failure'));
     const userId = new mongoose.Types.ObjectId().toString();
     await deleteUserController({ user: { id: userId, tenantId: 'tenant-1' } }, mockRes);
-    const token = mockQuiesceUserSchedules.mock.calls[0][1];
+    const token = beginAgentTriggerUserDeletion.mock.calls[0][2];
     expect(mockRes.status).toHaveBeenCalledWith(500);
     expect(db.deleteUserToolFavorites).toHaveBeenCalledWith(userId, token);
     expect(db.cancelUserToolFavoriteDeletion).toHaveBeenCalledWith(userId, token);
@@ -1001,6 +1009,7 @@ describe('deleteUserController', () => {
     expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
       userId.toString(),
       expect.any(Date),
+      expect.any(String),
     );
     expect(deleteUserById).not.toHaveBeenCalled();
   });
@@ -1025,7 +1034,11 @@ describe('deleteUserController', () => {
     expect(mockGetActiveJobIdsForUser).not.toHaveBeenCalled();
     const deletionFence = beginAgentTriggerUserDeletion.mock.calls[0][1];
     expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(userIdString, deletionFence);
-    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(userIdString, deletionFence);
+    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
+      userIdString,
+      deletionFence,
+      expect.any(String),
+    );
     expect(deleteUserById).not.toHaveBeenCalled();
     // Account survives -> its suspended schedules are restored under the quiesce token.
     expect(mockRestoreUserSchedules).toHaveBeenCalledWith(
@@ -1112,6 +1125,7 @@ describe('deleteUserController', () => {
     expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
       userId.toString(),
       expect.any(Date),
+      expect.any(String),
     );
     expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(
       userId.toString(),
@@ -1128,7 +1142,11 @@ describe('deleteUserController', () => {
 
     expect(mockPurgeAgentTriggerDeliveriesForUser).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserPurge).toHaveBeenCalledWith(String(userId), expect.any(Date));
-    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(String(userId), expect.any(Date));
+    expect(cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(
+      String(userId),
+      expect.any(Date),
+      expect.any(String),
+    );
   });
 
   it('retains both erasure fences after an unknown final delete outcome', async () => {

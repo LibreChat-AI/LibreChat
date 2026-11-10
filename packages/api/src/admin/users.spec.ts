@@ -394,6 +394,7 @@ describe('createAdminUsersHandlers', () => {
       expect(deps.beginAgentTriggerUserDeletion).toHaveBeenCalledWith(
         validUserId,
         expect.any(Date),
+        expect.any(String),
       );
       expect(deps.drainAgentTriggerDeliveriesForUser).toHaveBeenCalledWith(validUserId);
       expect(deps.prepareAgentTriggerUserPurge).toHaveBeenCalledWith(
@@ -600,7 +601,7 @@ describe('createAdminUsersHandlers', () => {
         });
         const { req, res } = createReqRes({ params: { id: validUserId } });
         await createAdminUsersHandlers(deps).deleteUser(req, res);
-        const token = jest.mocked(deps.quiesceUserSchedules).mock.calls[0][1];
+        const token = jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][2];
         expect(eraseUserData).toHaveBeenCalledWith(
           expect.objectContaining({ deletionAttemptId: token }),
           expect.anything(),

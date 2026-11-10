@@ -393,7 +393,11 @@ const deleteUserController = async (req, res) => {
     // Block new trigger admissions across replicas while preserving the user
     // principal so a transient cleanup failure remains retryable.
     triggerDeletionFence = new Date();
-    const fenceState = await db.beginAgentTriggerUserDeletion(user.id, triggerDeletionFence);
+    const fenceState = await db.beginAgentTriggerUserDeletion(
+      user.id,
+      triggerDeletionFence,
+      deletionAttempt.id,
+    );
     if (fenceState === 'in_progress') {
       triggerDeletionFence = undefined;
       throw new Error('Agent trigger account deletion is already in progress');
@@ -427,7 +431,7 @@ const deleteUserController = async (req, res) => {
     await eraseUserData(
       {
         userId: user.id,
-        deletionAttemptId: scheduleSuspensionToken,
+        deletionAttemptId: deletionAttempt.id,
         tenantId,
         checkpointer: appConfig?.endpoints?.agents?.checkpointer,
       },
@@ -513,7 +517,7 @@ const deleteUserController = async (req, res) => {
           {
             userId: user.id,
             startedAt: triggerDeletionFence,
-            deletionAttemptId: scheduleSuspensionToken,
+            deletionAttemptId: deletionAttempt.id,
           },
           db,
         );

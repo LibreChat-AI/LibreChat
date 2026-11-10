@@ -122,7 +122,7 @@ async function gracefulExit(code = 0) {
   try {
     deletionFence = new Date();
     let fenceState = await runAsSystem(() =>
-      methods.beginAgentTriggerUserDeletion(uid, deletionFence),
+      methods.beginAgentTriggerUserDeletion(uid, deletionFence, deletionAttempt.id),
     );
     if (fenceState === 'in_progress') {
       deletionFence = undefined;
@@ -138,7 +138,7 @@ async function gracefulExit(code = 0) {
 
       const recoveredAt = new Date();
       fenceState = await runAsSystem(() =>
-        methods.recoverStaleAgentTriggerUserDeletion(uid, recoveredAt),
+        methods.recoverStaleAgentTriggerUserDeletion(uid, recoveredAt, deletionAttempt.id),
       );
       if (fenceState !== 'acquired') {
         throw new Error(
@@ -148,6 +148,7 @@ async function gracefulExit(code = 0) {
         );
       }
       deletionFence = recoveredAt;
+      await runAsSystem(() => deletionAttempt.adopt(uid, recoveredAt, methods));
     }
     if (fenceState === 'missing') {
       deletionFence = undefined;
@@ -217,7 +218,7 @@ async function gracefulExit(code = 0) {
       eraseUserData(
         {
           userId: uid,
-          deletionAttemptId: scheduleSuspensionToken,
+          deletionAttemptId: deletionAttempt.id,
           tenantId: user.tenantId,
           checkpointer: userAppConfig?.endpoints?.agents?.checkpointer,
           keepTransactions: !deleteTx,
@@ -334,7 +335,7 @@ async function gracefulExit(code = 0) {
       );
       await runAsSystem(() =>
         deletionAttempt.cancel(
-          { userId: uid, startedAt: deletionFence, deletionAttemptId: scheduleSuspensionToken },
+          { userId: uid, startedAt: deletionFence, deletionAttemptId: deletionAttempt.id },
           methods,
         ),
       ).catch((error) => console.error('Failed to release account-deletion fence:', error));

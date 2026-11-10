@@ -1,8 +1,9 @@
 import pg from 'pg';
 import mongoose from 'mongoose';
 import { resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import {
@@ -34,7 +35,6 @@ describe('PostgreSQL command arguments', () => {
     const end = jest.spyOn(pg.Pool.prototype, 'end');
     const operation = runPostgresCommand({
       mongoose,
-      createModels,
       connectDb,
       loadCustomConfig,
       args,
@@ -58,7 +58,7 @@ describe('PostgreSQL command arguments', () => {
     const loadCustomConfig = jest.fn();
     const connectDb = jest.fn();
     await expect(
-      runPostgresCommand({ mongoose, createModels, connectDb, loadCustomConfig, args, env: {} }),
+      runPostgresCommand({ mongoose, connectDb, loadCustomConfig, args, env: {} }),
     ).rejects.toThrow('Usage:');
     expect(loadCustomConfig).not.toHaveBeenCalled();
     expect(connectDb).not.toHaveBeenCalled();
@@ -86,10 +86,12 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
   const admin = createPostgresDatabase({ ...options, connectionString: baseUrl });
   const db = createPostgresDatabase(options);
   let mongo: MongoMemoryServer;
-  const connectDb = jest.fn(async () => mongoose.connect(mongo.getUri()));
+  const connectDb = jest.fn(async (options: { autoCreate: false; autoIndex: false }) =>
+    mongoose.connect(mongo.getUri(), options),
+  );
   const loadCustomConfig = jest.fn(async () => config);
   const run = (args: string[]) =>
-    runPostgresCommand({ mongoose, createModels, connectDb, loadCustomConfig, args, env });
+    runPostgresCommand({ mongoose, connectDb, loadCustomConfig, args, env });
   const collection = () => createModels(mongoose).ToolFavorite.collection;
   const reconnect = () => mongoose.connect(mongo.getUri());
   const uid = new mongoose.Types.ObjectId('0123456789abcdef01234567');
@@ -149,6 +151,7 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
           env: { ...process.env, ...env, CONFIG_PATH: configPath },
           encoding: 'utf8',
           timeout: 15000,
+          killSignal: 'SIGKILL',
         },
       );
       expect({ status: child.status, error: child.error?.message, stderr: child.stderr }).toEqual({
@@ -161,6 +164,152 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
       rmSync(scratch, { recursive: true, force: true });
     }
   });
+  it.each([
+    { args: ['import', '--offline', '--dry-run'], seeded: true },
+    { args: ['import', '--offline', '--dry-run', '--verified-empty'], seeded: false },
+    { args: ['reconcile-mongo', '--offline', '--dry-run'], seeded: true },
+    { args: ['reconcile-mongo', '--offline', '--dry-run'], seeded: false },
+    { args: ['import', '--offline'], seeded: true },
+    { args: ['verify', '--offline'], seeded: true },
+    { args: ['reconcile-mongo', '--offline'], seeded: true },
+  ])(
+    'isolates actual CLI $args from Mongo schema initialization (seeded=$seeded)',
+    async ({ args, seeded }) => {
+      const native = await mongoose
+        .createConnection(mongo.getUri(`cli_${randomBytes(6).toString('hex')}`), {
+          autoCreate: false,
+          autoIndex: false,
+        })
+        .asPromise();
+      const scratchRoot = resolve(__dirname, '../../../../node_modules/.cache/pg-lifecycle');
+      mkdirSync(scratchRoot, { recursive: true });
+      const scratch = mkdtempSync(resolve(scratchRoot, 'cli-'));
+      const favorites = native.collection(collection().name);
+      const mongoSnapshot = async () => {
+        const collections = await native.db!.listCollections().toArray();
+        return Promise.all(
+          collections
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map(async (metadata) => ({
+              metadata,
+              indexes: await native.collection(metadata.name).indexes(),
+              rows: await native.collection(metadata.name).find().sort({ _id: 1 }).toArray(),
+            })),
+        );
+      };
+      const postgresSnapshot = async () => {
+        const tables = await db.query<{ tablename: string }>(
+          'SELECT tablename FROM pg_tables WHERE schemaname=current_schema() ORDER BY tablename',
+        );
+        return {
+          columns: (
+            await db.query(
+              'SELECT * FROM information_schema.columns WHERE table_schema=current_schema() ORDER BY table_name,ordinal_position',
+            )
+          ).rows,
+          indexes: (
+            await db.query(
+              'SELECT * FROM pg_indexes WHERE schemaname=current_schema() ORDER BY tablename,indexname',
+            )
+          ).rows,
+          tables: await Promise.all(
+            tables.rows.map(async ({ tablename }) => ({
+              tablename,
+              rows: (await db.query(`SELECT * FROM "${tablename}" ORDER BY 1`)).rows,
+            })),
+          ),
+        };
+      };
+      try {
+        if (seeded) await favorites.insertOne(row(1));
+        if (args[0] !== 'import') {
+          await db.query(
+            'INSERT INTO tool_favorites(id,user_id,tenant_id,item_type,item_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7)',
+            [
+              row(1)._id.toHexString(),
+              uid.toHexString(),
+              row(1).tenantId,
+              'tool',
+              row(1).itemId,
+              row(1).createdAt,
+              row(1).updatedAt,
+            ],
+          );
+          const snapshot = await fingerprintFavorites(readPostgresFavorites(db, 250));
+          await db.query(
+            'UPDATE tool_favorite_readiness SET verified=true,activated=true,snapshot=$1',
+            [snapshot.digest],
+          );
+        }
+        const beforeMongo = await mongoSnapshot();
+        const beforePostgres = await postgresSnapshot();
+        const configPath = resolve(scratch, 'config.yaml');
+        writeFileSync(
+          configPath,
+          'version: 1.3.1\npersistence:\n  favorites: postgres\n  postgres:\n    connectionStringEnv: PG_TEST_URL\n',
+        );
+        const guardPath = resolve(scratch, 'guard.cjs');
+        writeFileSync(
+          guardPath,
+          `
+const assert = require('node:assert/strict');
+const mongoose = require(${JSON.stringify(require.resolve('mongoose'))});
+const connect = mongoose.connect.bind(mongoose);
+mongoose.connect = (uri, options) => {
+  assert.equal(options.autoCreate, false);
+  assert.equal(options.autoIndex, false);
+  return connect(uri, options);
+};
+mongoose.model = () => { throw new Error('CLI registered a connected model'); };
+process.on('beforeExit', () => {
+  assert.deepEqual(mongoose.modelNames(), []);
+  assert.equal(Object.keys(require.cache).some(path => path.endsWith('/api/db/index.js')), false);
+});
+`,
+        );
+        const child = await promisify(execFile)(
+          process.execPath,
+          ['--require', guardPath, resolve(__dirname, '../../../../config/postgres.js'), ...args],
+          {
+            cwd: scratch,
+            env: {
+              ...process.env,
+              ...env,
+              CONFIG_PATH: configPath,
+              MONGO_URI: mongo.getUri(native.name),
+              MONGO_AUTO_CREATE: 'true',
+              MONGO_AUTO_INDEX: 'true',
+            },
+            encoding: 'utf8',
+            timeout: 15000,
+            killSignal: 'SIGKILL',
+          },
+        );
+        expect(child.stderr).toBe('');
+        const afterMongo = await mongoSnapshot();
+        if (args[0] === 'reconcile-mongo' && !args.includes('--dry-run')) {
+          expect(afterMongo).toHaveLength(1);
+          const before = beforeMongo[0].metadata;
+          const after = afterMongo[0].metadata;
+          if (!('info' in before) || !before.info || !('info' in after) || !after.info) {
+            throw new Error('Full Mongo collection metadata is required');
+          }
+          expect(after.info.uuid).not.toEqual(before.info.uuid);
+          before.info.uuid = after.info.uuid;
+        }
+        expect(afterMongo).toEqual(beforeMongo);
+        if (args[0] !== 'import' || args.includes('--dry-run')) {
+          expect(await postgresSnapshot()).toEqual(beforePostgres);
+        } else {
+          expect((await db.query('SELECT count(*) FROM tool_favorites')).rows[0].count).toBe('1');
+        }
+      } finally {
+        await native.dropDatabase();
+        await native.close();
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+  );
   it('rejects a migration dry run before creating any schema objects or opening connections', async () => {
     const emptySchema = `favorites_dry_run_${randomBytes(6).toString('hex')}`;
     await admin.query(`CREATE SCHEMA ${emptySchema}`);
@@ -171,7 +320,6 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
     try {
       const result = await runPostgresCommand({
         mongoose,
-        createModels,
         connectDb,
         loadCustomConfig,
         args: ['migrate', '--dry-run'],

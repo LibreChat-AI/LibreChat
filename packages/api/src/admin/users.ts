@@ -75,9 +75,18 @@ export interface AdminUsersDeps {
   beginAgentTriggerUserDeletion: (
     userId: string,
     startedAt: Date,
+    attemptId?: string,
   ) => Promise<'acquired' | 'in_progress' | 'missing'>;
-  isAgentTriggerUserDeletionOwner: (userId: string, startedAt: Date) => Promise<boolean>;
-  cancelAgentTriggerUserDeletion: (userId: string, startedAt: Date) => Promise<boolean>;
+  isAgentTriggerUserDeletionOwner: (
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ) => Promise<boolean>;
+  cancelAgentTriggerUserDeletion: (
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ) => Promise<boolean>;
   drainAgentTriggerDeliveriesForUser: (userId: string) => Promise<void>;
   prepareAgentTriggerUserPurge: (
     userId: string,
@@ -259,7 +268,11 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
       }
 
       triggerDeletionFence = new Date();
-      const fenceState = await beginAgentTriggerUserDeletion(id, triggerDeletionFence);
+      const fenceState = await beginAgentTriggerUserDeletion(
+        id,
+        triggerDeletionFence,
+        deletionAttempt.id,
+      );
       if (fenceState === 'in_progress') {
         triggerDeletionFence = undefined;
         return res.status(409).json({ error: 'User deletion is already in progress' });
@@ -291,7 +304,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
           userId: id,
           tenantId: targetUser?.tenantId,
           checkpointer: erasure.checkpointer,
-          deletionAttemptId: scheduleSuspensionToken,
+          deletionAttemptId: deletionAttempt.id,
         },
         erasureDeps,
       );
@@ -303,7 +316,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
           {
             userId: id,
             startedAt: triggerDeletionFence,
-            deletionAttemptId: scheduleSuspensionToken,
+            deletionAttemptId: deletionAttempt.id,
           },
           {
             isAgentTriggerUserDeletionOwner,
@@ -378,7 +391,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
             {
               userId: targetUserId,
               startedAt: triggerDeletionFence,
-              deletionAttemptId: scheduleSuspensionToken,
+              deletionAttemptId: deletionAttempt.id,
             },
             {
               isAgentTriggerUserDeletionOwner,

@@ -169,6 +169,10 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
       type: Date,
       select: false,
     },
+    agentTriggerDeletionAttemptId: {
+      type: String,
+      select: false,
+    },
     subagentAdmissionFences: {
       type: [
         {
