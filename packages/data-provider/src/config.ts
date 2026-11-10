@@ -2769,7 +2769,7 @@ export const outboundTimeoutsSchema = z.object({
   toolsMs: outboundTimeoutMs,
   /** Each text-to-speech or speech-to-text provider request. */
   speechMs: outboundTimeoutMs,
-  /** Each Stable Diffusion image generation request. */
+  /** Each Stable Diffusion or `image_gen_oai` generation request. */
   imageGenerationMs: outboundTimeoutMs,
 });
 
@@ -3963,6 +3963,7 @@ export const webSearchSchema = z.object({
   scraperProvider: z.nativeEnum(ScraperProviders).optional(),
   rerankerType: z.nativeEnum(RerankerTypes).optional(),
   scraperTimeout: z.number().int().nonnegative().optional(),
+  rerankerTimeout: z.number().int().nonnegative().optional(),
   safeSearch: z.nativeEnum(SafeSearchTypes).default(SafeSearchTypes.MODERATE),
   firecrawlOptions: z
     .object({
