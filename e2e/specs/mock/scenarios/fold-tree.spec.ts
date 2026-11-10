@@ -114,6 +114,39 @@ async function openConversation(page: Page, content: Part[]) {
   });
 }
 
+/**
+ * Opening a fold animates its height and can move rows under a pointer that stays put; the
+ * fold then re-hits the pointer and lights whichever row is under it now. A hover only names
+ * a row once nothing in the transcript is moving.
+ */
+async function waitForStillTranscript(page: Page) {
+  const view = messagesView(page);
+  await expect
+    .poll(() =>
+      view.evaluate(
+        (element) =>
+          element
+            .getAnimations({ subtree: true })
+            .filter(
+              (animation) =>
+                animation.playState === 'running' &&
+                animation.effect?.getComputedTiming().iterations !== Infinity,
+            ).length,
+      ),
+    )
+    .toBe(0);
+  let previous = '';
+  await expect
+    .poll(async () => {
+      const box = await view.getByRole('button', { name: /^Ran / }).last().boundingBox();
+      const current = JSON.stringify(box);
+      const still = current === previous;
+      previous = current;
+      return still;
+    })
+    .toBe(true);
+}
+
 /** The panel of the tool group whose header reads `name`, opened if it is folded. */
 async function openGroup(page: Page, name: RegExp): Promise<Locator> {
   const header = messagesView(page).getByRole('button', { name }).first();
@@ -122,6 +155,7 @@ async function openGroup(page: Page, name: RegExp): Promise<Locator> {
     await header.click();
   }
   await expect(header).toHaveAttribute('aria-expanded', 'true');
+  await waitForStillTranscript(page);
   return messagesView(page)
     .getByTestId('tool-call-group-panel')
     .filter({ has: page.getByRole('button', { name: /^Ran / }) })
@@ -267,6 +301,7 @@ test.describe('tool fold tree (pointer)', () => {
     const rail = railOf(panel);
     const rows = rowsOf(panel);
     await rows.nth(2).hover();
+    await expect(rail).toHaveAttribute('data-fold-lit', '2');
     await expectRouteEndsAt(rail, rows.nth(2));
 
     const { samples, centers } = await sampleRoute(rail, () => rows.nth(1).hover());

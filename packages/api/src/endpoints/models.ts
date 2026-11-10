@@ -8,9 +8,9 @@ import {
   EModelEndpoint,
   defaultModels,
 } from 'librechat-data-provider';
+import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import type { TEndpoint } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
-import type { AxiosRequestConfig } from 'axios';
 import {
   processModelData,
   extractBaseURL,
@@ -26,6 +26,36 @@ import { createSSRFSafeAgents, validateEndpointURL } from '~/auth';
 import { standardCache, tokenConfigCache } from '~/cache';
 
 type SSRFSafeAgents = ReturnType<typeof createSSRFSafeAgents>;
+
+/** Provider requests in flight by cache key, so concurrent cache misses for one key share one. */
+const ollamaRequests = new Map<string, Promise<string[]>>();
+const modelsRequests = new Map<string, Promise<AxiosResponse>>();
+
+/**
+ * Runs `start` unless a request is already in flight under `key`, which is then joined. A request
+ * leaves the map as soon as it settles, so neither a result nor a failure outlives it. An empty
+ * key is never shared.
+ */
+function shareInFlight<T>(
+  requests: Map<string, Promise<T>>,
+  key: string,
+  start: () => Promise<T>,
+): Promise<T> {
+  if (!key) {
+    return start();
+  }
+  const active = requests.get(key);
+  if (active != null) {
+    return active;
+  }
+  const request: Promise<T> = start().finally(() => {
+    if (requests.get(key) === request) {
+      requests.delete(key);
+    }
+  });
+  requests.set(key, request);
+  return request;
+}
 
 export interface FetchModelsParams {
   /** User ID for API requests */
@@ -226,11 +256,13 @@ export async function fetchModels({
   if (!isCustomAnthropic && name && name.toLowerCase().startsWith(KnownEndpoints.ollama)) {
     let ollamaModels: string[] | null = null;
     try {
-      ollamaModels = await fetchOllamaModels(baseURL ?? '', {
-        headers,
-        ssrfAgents,
-        user: userObject,
-      });
+      ollamaModels = await shareInFlight(ollamaRequests, cacheKey, () =>
+        fetchOllamaModels(baseURL ?? '', {
+          headers,
+          ssrfAgents,
+          user: userObject,
+        }),
+      );
     } catch (ollamaError) {
       logAxiosError({
         message:
@@ -297,7 +329,10 @@ export async function fetchModels({
     }
     applyAxiosProxyConfig(options, url);
     applyUserProvidedBaseURLProtection(options, ssrfAgents);
-    const res = await axios.get(url.toString(), options);
+    /** Only the request is shared: each caller still derives and stores its own token config. */
+    const res = await shareInFlight(modelsRequests, cacheKey, async () =>
+      axios.get(url.toString(), options),
+    );
 
     const input = res.data;
 

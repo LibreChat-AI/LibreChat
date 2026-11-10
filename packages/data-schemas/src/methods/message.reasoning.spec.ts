@@ -13,12 +13,11 @@ jest.mock('~/config/winston', () => ({
 
 let mongoServer: InstanceType<typeof MongoMemoryServer>;
 let Message: mongoose.Model<IMessage>;
-let getBranchReasoningOverride: ReturnType<
-  typeof createMessageMethods
->['getBranchReasoningOverride'];
+let getBranchLinks: ReturnType<typeof createMessageMethods>['getBranchLinks'];
 
 const user = 'user-1';
 const conversationId = 'convo-1';
+const root = '00000000-0000-0000-0000-000000000000';
 const high = { key: 'reasoning_effort', value: 'high' } as NonNullable<
   IMessage['reasoningOverride']
 >;
@@ -43,7 +42,7 @@ beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   Object.assign(mongoose.models, createModels(mongoose));
   Message = mongoose.models.Message;
-  getBranchReasoningOverride = createMessageMethods(mongoose).getBranchReasoningOverride;
+  getBranchLinks = createMessageMethods(mongoose).getBranchLinks;
   await mongoose.connect(mongoServer.getUri());
 });
 
@@ -56,23 +55,10 @@ beforeEach(async () => {
   await Message.deleteMany({});
 });
 
-describe('getBranchReasoningOverride', () => {
-  it('returns the level of the nearest user message on the branch that carries one', async () => {
+describe('getBranchLinks', () => {
+  it('returns the link fields of every message on every branch', async () => {
     await Message.insertMany([
-      turn('u1', '00000000-0000-0000-0000-000000000000', true, high),
-      turn('a1', 'u1', false),
-      turn('u2', 'a1', true),
-      turn('a2', 'u2', false),
-    ]);
-
-    await expect(
-      getBranchReasoningOverride({ user, conversationId, parentMessageId: 'a2' }),
-    ).resolves.toEqual(high);
-  });
-
-  it('follows the branch, not the newest message in the conversation', async () => {
-    await Message.insertMany([
-      turn('u1', '00000000-0000-0000-0000-000000000000', true, high),
+      turn('u1', root, true, high),
       turn('a1', 'u1', false),
       turn('u2', 'a1', true, low),
       turn('a2', 'u2', false),
@@ -80,32 +66,39 @@ describe('getBranchReasoningOverride', () => {
       turn('a2b', 'u2b', false),
     ]);
 
-    await expect(
-      getBranchReasoningOverride({ user, conversationId, parentMessageId: 'a2b' }),
-    ).resolves.toEqual(high);
+    const rows = await getBranchLinks({ user, conversationId });
+
+    expect(rows.map((row) => row.messageId).sort()).toEqual(['a1', 'a2', 'a2b', 'u1', 'u2', 'u2b']);
+    expect(rows.find((row) => row.messageId === 'u2')).toEqual({
+      messageId: 'u2',
+      parentMessageId: 'a1',
+      isCreatedByUser: true,
+      reasoningOverride: low,
+    });
   });
 
-  it('returns null when no user message on the branch carries a level', async () => {
-    await Message.insertMany([
-      turn('u1', '00000000-0000-0000-0000-000000000000', true),
-      turn('a1', 'u1', false),
-    ]);
+  it('projects to the link fields: no id, text or ownership leaves the read', async () => {
+    await Message.insertMany([turn('u1', root, true), turn('a1', 'u1', false)]);
 
-    await expect(
-      getBranchReasoningOverride({ user, conversationId, parentMessageId: 'a1' }),
-    ).resolves.toBeNull();
+    const rows = await getBranchLinks({ user, conversationId });
+
+    expect(rows.find((row) => row.messageId === 'a1')).toEqual({
+      messageId: 'a1',
+      parentMessageId: 'u1',
+      isCreatedByUser: false,
+    });
   });
 
   it('answers with a single read of the conversation', async () => {
     await Message.insertMany([
-      turn('u1', '00000000-0000-0000-0000-000000000000', true, high),
+      turn('u1', root, true, high),
       turn('a1', 'u1', false),
       turn('u2', 'a1', true),
       turn('a2', 'u2', false),
     ]);
     const find = jest.spyOn(Message, 'find');
 
-    await getBranchReasoningOverride({ user, conversationId, parentMessageId: 'a2' });
+    await getBranchLinks({ user, conversationId });
 
     expect(find).toHaveBeenCalledTimes(1);
     find.mockRestore();
@@ -113,12 +106,21 @@ describe('getBranchReasoningOverride', () => {
 
   it("does not read another user's messages", async () => {
     await Message.insertMany([
-      { ...turn('u1', '00000000-0000-0000-0000-000000000000', true, high), user: 'user-2' },
+      { ...turn('u1', root, true, high), user: 'user-2' },
       { ...turn('a1', 'u1', false), user: 'user-2' },
     ]);
 
-    await expect(
-      getBranchReasoningOverride({ user, conversationId, parentMessageId: 'a1' }),
-    ).resolves.toBeNull();
+    await expect(getBranchLinks({ user, conversationId })).resolves.toEqual([]);
+  });
+
+  it("does not read another conversation's messages", async () => {
+    await Message.insertMany([
+      turn('u1', root, true),
+      { ...turn('u9', root, true), conversationId: 'convo-2' },
+    ]);
+
+    const rows = await getBranchLinks({ user, conversationId });
+
+    expect(rows.map((row) => row.messageId)).toEqual(['u1']);
   });
 });

@@ -592,6 +592,11 @@ export type BackgroundToolResultClaim =
     }
   | { status: 'acquired'; results: BackgroundToolResultRecord[]; messageId?: string };
 
+export type BranchLinkRow = Pick<
+  IMessage,
+  'messageId' | 'parentMessageId' | 'isCreatedByUser' | 'reasoningOverride'
+>;
+
 export type SubagentThreadViewMessageRecord = Pick<
   IMessage,
   | 'messageId'
@@ -943,11 +948,7 @@ export interface MessageMethods {
     limitPerThread: number;
   }): Promise<ParentSubagentTaskRecord[]>;
   getMessage(params: { user: string; messageId: string }): Promise<IMessage | null>;
-  getBranchReasoningOverride(params: {
-    user: string;
-    conversationId: string;
-    parentMessageId: string;
-  }): Promise<IMessage['reasoningOverride'] | null>;
+  getBranchLinks(params: { user: string; conversationId: string }): Promise<BranchLinkRow[]>;
   getMessagesByCursor(
     filter: FilterQuery<IMessage>,
     options?: {
@@ -4208,37 +4209,22 @@ export function createMessageMethods(
   }
 
   /**
-   * The reasoning level a branch runs at: the override on the nearest user message at or above
-   * `parentMessageId` that carries one, or `null` when none does. One read of the conversation's
-   * links and levels, projected to those fields; the walk itself is in memory.
+   * Every message of a conversation, on every branch, reduced to the fields a parent-chain walk
+   * reads. One small read answers which level a branch last ran at and which rows a later history
+   * read can skip; the walks themselves are in memory.
    */
-  async function getBranchReasoningOverride({
+  async function getBranchLinks({
     user,
     conversationId,
-    parentMessageId,
   }: {
     user: string;
     conversationId: string;
-    parentMessageId: string;
-  }): Promise<IMessage['reasoningOverride'] | null> {
+  }): Promise<BranchLinkRow[]> {
     const Message = mongoose.models.Message as Model<IMessage>;
-    const rows = await Message.find(
+    return Message.find(
       { user, conversationId },
       { _id: 0, messageId: 1, parentMessageId: 1, isCreatedByUser: 1, reasoningOverride: 1 },
-    ).lean<
-      Pick<IMessage, 'messageId' | 'parentMessageId' | 'isCreatedByUser' | 'reasoningOverride'>[]
-    >();
-    const byId = new Map(rows.map((row) => [row.messageId, row]));
-    const visited = new Set<string>();
-    let current = byId.get(parentMessageId);
-    while (current != null && !visited.has(current.messageId)) {
-      visited.add(current.messageId);
-      if (current.isCreatedByUser === true && current.reasoningOverride != null) {
-        return current.reasoningOverride;
-      }
-      current = current.parentMessageId != null ? byId.get(current.parentMessageId) : undefined;
-    }
-    return null;
+    ).lean<BranchLinkRow[]>();
   }
 
   /**
@@ -4484,7 +4470,7 @@ export function createMessageMethods(
     getMessagesForSubagentThreadView,
     listSubagentTasksForThreads,
     getMessage,
-    getBranchReasoningOverride,
+    getBranchLinks,
     getMessagesByCursor,
     searchMessages,
     deleteMessages,

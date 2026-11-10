@@ -451,6 +451,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     user: string;
     tenantId?: string | null;
     sourceDispatchedAt?: number;
+    snapshot?: boolean;
   }) => Promise<IMongoFile>;
   commitCodeFile: (data: CodeFileCommitData, sourceDispatchedAt?: number) => Promise<boolean>;
   createFile: (data: Partial<IMongoFile>, disableTTL?: boolean) => Promise<IMongoFile | null>;
@@ -908,7 +909,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       const filter = withOwnerScope(
         {
           file_id: { $in: fileIds },
-          context: { $ne: FileContext.execute_code },
+          context: { $nin: [FileContext.execute_code, FileContext.execute_code_snapshot] },
           $or: orConditions,
         },
         ownerScope,
@@ -982,7 +983,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       const filter = withOwnerScope(
         {
           conversationId,
-          context: FileContext.execute_code,
+          context: { $in: [FileContext.execute_code, FileContext.execute_code_snapshot] },
           file_id: { $in: threadFileIds },
           $or: [
             { 'metadata.codeEnvRef': { $exists: true } },
@@ -1113,7 +1114,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       const filter = withOwnerScope(
         {
           file_id: { $in: fileIds },
-          context: { $ne: FileContext.execute_code },
+          context: { $nin: [FileContext.execute_code, FileContext.execute_code_snapshot] },
           ...(hydrateEverything ? {} : { $or: missingConditions }),
         },
         ownerScope,
@@ -1154,7 +1155,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       const filter = withOwnerScope(
         {
           file_id: { $in: fileIds },
-          context: { $ne: FileContext.execute_code },
+          context: { $nin: [FileContext.execute_code, FileContext.execute_code_snapshot] },
           $or: [
             { 'metadata.codeEnvRef': { $exists: true } },
             { 'metadata.codeEnvRefs': { $exists: true } },
@@ -1190,6 +1191,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
      *  freshly claimed (not-yet-written) row still carries an ownership
      *  signal for the background harvest's stale-output guard. */
     sourceDispatchedAt?: number;
+    snapshot?: boolean;
   }): Promise<IMongoFile> {
     const File = mongoose.models.File as Model<IMongoFile>;
     const tenantFilter = data.tenantId ? { tenantId: data.tenantId } : { tenantId: null };
@@ -1199,6 +1201,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       file_id: data.file_id,
       user: data.user,
       ...(data.tenantId ? { tenantId: data.tenantId } : {}),
+      ...(data.snapshot ? { expiresAt: new Date(Date.now() + 3600 * 1000) } : {}),
       ...(data.sourceDispatchedAt != null
         ? { metadata: { sourceDispatchedAt: data.sourceDispatchedAt } }
         : {}),
@@ -1209,7 +1212,8 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
         {
           filename: data.filename,
           conversationId: data.conversationId,
-          context: FileContext.execute_code,
+          context: data.snapshot ? FileContext.execute_code_snapshot : FileContext.execute_code,
+          ...(data.snapshot ? { file_id: data.file_id, user: data.user } : {}),
           ...tenantFilter,
           ...codeFileStorageFilter(),
         },
@@ -1251,7 +1255,9 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       delete fileData.expiresAt;
     }
 
-    const generatedOutput = data.context === FileContext.execute_code;
+    const generatedOutput =
+      data.context === FileContext.execute_code ||
+      data.context === FileContext.execute_code_snapshot;
     try {
       return await File.findOneAndUpdate(
         {

@@ -1,12 +1,14 @@
 import {
+  ErrorTypes,
   EModelEndpoint,
   MAX_SUBAGENTS,
   setMaxSubagents,
   MAX_SUBAGENT_GRAPH_NODES,
   MAX_GRAPH_SUBAGENT_MEMBERS,
   Providers,
+  ViolationTypes,
 } from 'librechat-data-provider';
-import type { Agent } from 'librechat-data-provider';
+import type { Agent, TModelsConfig } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import {
   agentCreateSchema,
@@ -692,9 +694,133 @@ describe('validateAgentModel', () => {
   const request = {} as Request<unknown, unknown, unknown>;
   const response = {} as Response;
   const logViolation = jest.fn().mockResolvedValue(undefined);
+  const catalog = (models: TModelsConfig) => jest.fn(async (): Promise<TModelsConfig> => models);
 
   beforeEach(() => {
     logViolation.mockClear();
+  });
+
+  it('accepts a model in the endpoint catalog and requests only the agent provider', async () => {
+    const getEndpointModels = catalog({ [EModelEndpoint.openAI]: ['gpt-4o'] });
+
+    const result = await validateAgentModel({
+      req: request,
+      res: response,
+      agent: { provider: EModelEndpoint.openAI, model: 'gpt-4o' } as Agent,
+      getEndpointModels,
+      logViolation,
+    });
+
+    expect(result).toEqual({ isValid: true });
+    expect(getEndpointModels).toHaveBeenCalledTimes(1);
+    expect(getEndpointModels).toHaveBeenCalledWith(EModelEndpoint.openAI);
+    expect(logViolation).not.toHaveBeenCalled();
+  });
+
+  it('rejects an agent without a model before loading any models', async () => {
+    const getEndpointModels = catalog({ [EModelEndpoint.openAI]: ['gpt-4o'] });
+
+    const result = await validateAgentModel({
+      req: request,
+      res: response,
+      agent: { provider: EModelEndpoint.openAI, model: '' } as Agent,
+      getEndpointModels,
+      logViolation,
+    });
+
+    expect(result).toEqual({
+      isValid: false,
+      error: { message: `{ "type": "${ErrorTypes.MISSING_MODEL}", "info": "openAI" }` },
+    });
+    expect(getEndpointModels).not.toHaveBeenCalled();
+    expect(logViolation).not.toHaveBeenCalled();
+  });
+
+  it('reports models that could not be loaded', async () => {
+    const result = await validateAgentModel({
+      req: request,
+      res: response,
+      agent: { provider: EModelEndpoint.openAI, model: 'gpt-4o' } as Agent,
+      getEndpointModels: jest.fn().mockResolvedValue(undefined),
+      logViolation,
+    });
+
+    expect(result).toEqual({
+      isValid: false,
+      error: { message: `{ "type": "${ErrorTypes.MODELS_NOT_LOADED}" }` },
+    });
+    expect(logViolation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an empty catalog', {}],
+    ['a catalog without the provider', { [EModelEndpoint.anthropic]: ['claude'] }],
+  ])('reports an endpoint whose models are not loaded: %s', async (_label, models) => {
+    const result = await validateAgentModel({
+      req: request,
+      res: response,
+      agent: { provider: EModelEndpoint.openAI, model: 'gpt-4o' } as Agent,
+      getEndpointModels: catalog(models),
+      logViolation,
+    });
+
+    expect(result).toEqual({
+      isValid: false,
+      error: {
+        message: `{ "type": "${ErrorTypes.ENDPOINT_MODELS_NOT_LOADED}", "info": "openAI" }`,
+      },
+    });
+    expect(logViolation).not.toHaveBeenCalled();
+  });
+
+  it('logs one violation and rejects a model outside the endpoint catalog', async () => {
+    const result = await validateAgentModel({
+      req: request,
+      res: response,
+      agent: { provider: EModelEndpoint.openAI, model: 'gpt-5' } as Agent,
+      getEndpointModels: catalog({ [EModelEndpoint.openAI]: ['gpt-4o'] }),
+      logViolation,
+    });
+
+    expect(result).toEqual({
+      isValid: false,
+      error: {
+        message: `{ "type": "${ViolationTypes.ILLEGAL_MODEL_REQUEST}", "info": "openAI|gpt-5" }`,
+      },
+    });
+    expect(logViolation).toHaveBeenCalledTimes(1);
+    expect(logViolation).toHaveBeenCalledWith(
+      request,
+      response,
+      ViolationTypes.ILLEGAL_MODEL_REQUEST,
+      { type: ViolationTypes.ILLEGAL_MODEL_REQUEST, model: 'gpt-5', endpoint: 'openAI' },
+      expect.anything(),
+    );
+  });
+
+  it('propagates a failure to load models instead of treating it as an empty catalog', async () => {
+    await expect(
+      validateAgentModel({
+        req: request,
+        res: response,
+        agent: { provider: EModelEndpoint.openAI, model: 'gpt-4o' } as Agent,
+        getEndpointModels: jest.fn().mockRejectedValue(new Error('models unavailable')),
+        logViolation,
+      }),
+    ).rejects.toThrow('models unavailable');
+    expect(logViolation).not.toHaveBeenCalled();
+  });
+
+  it('reads the catalog under the served name for another spelling of a provider', async () => {
+    const result = await validateAgentModel({
+      req: request,
+      res: response,
+      agent: { provider: 'Ollama', model: 'llama3.2' } as Agent,
+      getEndpointModels: catalog({ ollama: ['llama3.2'] }),
+      logViolation,
+    });
+
+    expect(result).toEqual({ isValid: true });
   });
 
   it('uses the Google catalog for a Vertex AI agent', async () => {
@@ -702,7 +828,7 @@ describe('validateAgentModel', () => {
       req: request,
       res: response,
       agent: { provider: Providers.VERTEXAI, model: 'gemini-3.7-flash' } as Agent,
-      modelsConfig: { [EModelEndpoint.google]: ['gemini-3.7-flash'] },
+      getEndpointModels: catalog({ [EModelEndpoint.google]: ['gemini-3.7-flash'] }),
       logViolation,
     });
 
@@ -715,10 +841,10 @@ describe('validateAgentModel', () => {
       req: request,
       res: response,
       agent: { provider: Providers.VERTEXAI, model: 'custom-vertex-model' } as Agent,
-      modelsConfig: {
+      getEndpointModels: catalog({
         [EModelEndpoint.google]: ['gemini-3.7-flash'],
         [Providers.VERTEXAI]: ['custom-vertex-model'],
-      },
+      }),
       logViolation,
     });
 
@@ -731,7 +857,7 @@ describe('validateAgentModel', () => {
       req: request,
       res: response,
       agent: { provider: Providers.VERTEXAI, model: 'gemini-not-available' } as Agent,
-      modelsConfig: { [EModelEndpoint.google]: ['gemini-3.7-flash'] },
+      getEndpointModels: catalog({ [EModelEndpoint.google]: ['gemini-3.7-flash'] }),
       logViolation,
     });
 

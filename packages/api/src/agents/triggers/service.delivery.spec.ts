@@ -340,7 +340,7 @@ describe('durable agent trigger service', () => {
       );
     });
 
-    it("expedites a principal's completion deliveries when one of its generations settles", async () => {
+    it("expedites a principal's completion deliveries and queued turns when one of its generations settles", async () => {
       const methods = deliveryMethods({
         expediteAgentTriggerDeliveries: jest.fn(async () => ({ expedited: 2, held: 0 })),
       });
@@ -363,7 +363,7 @@ describe('durable agent trigger service', () => {
       expect(methods.expediteAgentTriggerDeliveries).toHaveBeenCalledWith({
         user: '507f1f77bcf86cd799439011',
         conversationId: 'conversation-1',
-        sourceIds: ['background-tool-completion', 'subagent-completion'],
+        sourceIds: ['background-tool-completion', 'subagent-completion', 'agent-queued-turn'],
         now: expect.any(Date),
       });
       expect(methods.claimNextAgentTriggerDelivery).toHaveBeenCalled();

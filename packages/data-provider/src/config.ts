@@ -2790,7 +2790,7 @@ export const lookupConcurrencySchema = z.object({
   permissionPrincipalLookups: lookupConcurrency,
   /** Connected agents initialized together per level while discovering a handoff graph. */
   connectedAgentLoads: lookupConcurrency,
-  /** MCP tool catalog reads when assembling an ephemeral or added agent. */
+  /** MCP tool catalog reads when assembling an agent's tools. */
   mcpCatalogLookups: lookupConcurrency,
   /** Model spec skill name resolutions. */
   skillNameLookups: lookupConcurrency,
@@ -4923,9 +4923,9 @@ export const alternateName = {
  * catalogs consume.
  */
 const responsesOnlyOpenAIModels = ['gpt-6-astra'];
-/** Tool calls with Sol/Luna's default reasoning require Responses. Do not offer
+/** Tool calls with Sol/Luna/Terra require Responses. Do not offer
  * these on Assistants, which cannot use the native request-routing path. */
-const responsesReasoningOpenAIModels = ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna'];
+const responsesReasoningOpenAIModels = ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6.1-terra', 'gpt-6-luna'];
 /** Catalog models whose native execution defaults to the Responses API. */
 export const responsesPreferredOpenAIModels: readonly string[] = [
   ...responsesOnlyOpenAIModels,
@@ -4960,6 +4960,7 @@ const sharedOpenAIModels = [
 ];
 
 const sharedAnthropicModels = [
+  'claude-fable-5-2',
   'claude-fable-5-1',
   'claude-fable-5',
   'claude-opus-5-5',

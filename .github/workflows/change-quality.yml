@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.QUALITY_HEAD }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v5
         with:
@@ -57,7 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.QUALITY_HEAD }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v5
@@ -75,6 +75,9 @@ jobs:
     if: needs.select.outputs.hasChanges == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: source
     strategy:
       fail-fast: false
       matrix:
@@ -96,13 +99,26 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.QUALITY_HEAD }}
+          path: source
           fetch-depth: 0
+          persist-credentials: false
+      - name: Check out quality tooling
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
           persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: '24.22.1'
           cache: npm
+          cache-dependency-path: |
+            source/package-lock.json
+            tooling/package-lock.json
       - run: npm ci
+      - name: Install quality tooling
+        working-directory: tooling
+        run: npm ci --ignore-scripts --workspaces=false
       - name: Build shared packages
         run: |
           if [ "$QUALITY_SCOPE" = data-schemas ]; then
@@ -117,13 +133,13 @@ jobs:
           QUALITY_WORKSPACE: ${{ matrix.workspace }}
           QUALITY_CHECK: ${{ matrix.check }}
         run: >-
-          node scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD"
+          node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD"
           --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK"
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: change-${{ matrix.check }}-${{ matrix.workspace }}-${{ github.event.pull_request.head.sha || github.sha }}
-          path: coverage/changes/${{ matrix.workspace }}/${{ matrix.check }}/
+          path: source/coverage/changes/${{ matrix.workspace }}/${{ matrix.check }}/
           if-no-files-found: warn
           retention-days: 14

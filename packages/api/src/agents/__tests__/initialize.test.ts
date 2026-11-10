@@ -98,6 +98,8 @@ const mockOptionalChainWithEmptyCheck = jest.fn();
 const mockGetThreadData = jest.fn();
 
 jest.mock('~/utils', () => ({
+  createCodeApiRateLimitBudget: (...args: unknown[]) =>
+    jest.requireActual('~/utils').createCodeApiRateLimitBudget(...args),
   extractLibreChatParams: (...args: unknown[]) => mockExtractLibreChatParams(...args),
   getModelMaxTokens: (...args: unknown[]) => mockGetModelMaxTokens(...args),
   optionalChainWithEmptyCheck: (...args: unknown[]) => mockOptionalChainWithEmptyCheck(...args),
@@ -139,6 +141,9 @@ jest.mock('../../middleware/modelBoundContent', () => {
 });
 
 import { initializeAgent } from '../initialize';
+import { createProvisionFilesCallback } from '~/files/provision/callback';
+import { createFileProvisionRecovery } from '~/files/operations';
+import { selectCodeFiles } from '~/files/code/priming';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
 import { canAgentGraphPause } from '../hitl/admission';
@@ -660,7 +665,7 @@ describe('initializeAgent: ChatProject context', () => {
         res,
         primaryConfig,
         allowedProviders: new Set([Providers.OPENAI]),
-        modelsConfig: { openai: ['test-model'] },
+        getEndpointModels: async () => ({ openai: ['test-model'] }),
         loadTools,
         useChatProjectContext: true,
       },
@@ -723,7 +728,7 @@ describe('initializeAgent: ChatProject context', () => {
         primaryConfig,
         rootConfigs: [primaryConfig],
         allowedProviders: new Set([Providers.OPENAI]),
-        modelsConfig: { openai: ['test-model'] },
+        getEndpointModels: async () => ({ openai: ['test-model'] }),
         loadTools,
         useChatProjectContext: true,
       },
@@ -7200,5 +7205,385 @@ describe('initializeAgent — deferral without a loader registry', () => {
     expect(result.toolRegistry?.get('bash_tool')).toBe(bash);
     expect(result.toolRegistry?.has('tool_search')).toBe(true);
     expect(result.hasDeferredTools).toBe(true);
+  });
+});
+
+describe('snapshot destination admission invariants', () => {
+  const MB = 1024 * 1024;
+  const filterMock = jest.requireMock('~/files') as {
+    filterFilesByEndpointRuntimeConfig: jest.Mock;
+  };
+  const realFilters = jest.requireActual<typeof import('~/files/filter')>('~/files/filter');
+  const realResources = jest.requireActual<typeof import('../resources')>('../resources');
+  beforeEach(() => {
+    jest.clearAllMocks();
+    filterMock.filterFilesByEndpointRuntimeConfig
+      .mockReset()
+      .mockImplementation(realFilters.filterFilesByEndpointRuntimeConfig);
+    jest.mocked(primeResources).mockReset().mockImplementation(realResources.primeResources);
+  });
+  afterEach(() => {
+    filterMock.filterFilesByEndpointRuntimeConfig.mockReset().mockReturnValue([]);
+    jest.mocked(primeResources).mockReset().mockResolvedValue({
+      attachments: [],
+      requestAttachments: [],
+      agentContextAttachments: undefined,
+      tool_resources: undefined,
+      warnings: [],
+    });
+  });
+  function snapshot(id: string, time: number, overrides: Partial<TFile> = {}): TFile {
+    return {
+      file_id: id,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      filename: 'report.txt',
+      filepath: `/uploads/${id}`,
+      source: FileSources.local,
+      type: 'text/plain',
+      bytes: 12 * MB,
+      object: 'file',
+      embedded: false,
+      usage: 0,
+      context: FileContext.execute_code_snapshot,
+      createdAt: new Date(time),
+      metadata: {
+        codeDestination: true,
+        sourceDispatchedAt: time,
+        codeEnvSource: {
+          kind: 'user',
+          id: 'user-1',
+          file_id: 'live-report',
+          storage_session_id: 'sandbox',
+        },
+      },
+      ...overrides,
+    };
+  }
+  async function run(
+    files: TFile[],
+    deferred: TFile[] = [],
+    config: { fileSizeLimit?: number; supportedMimeTypes?: string[]; disabled?: boolean } = {},
+    filters?: FiltersConfig,
+    tools: string[] = [Tools.execute_code],
+  ) {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = tools;
+    agent.endpoint = EModelEndpoint.openAI;
+    req.user!.tenantId = 'tenant-1';
+    req.config!.filters = filters;
+    req.config!.fileConfig = {
+      endpoints: { openAI: { totalSizeLimit: 20, fileSizeLimit: 20, ...config } },
+    };
+    mockExtractLibreChatParams.mockReturnValue({
+      resendFiles: true,
+      modelOptions: { model: agent.model },
+    });
+    const getFiles = jest.fn().mockResolvedValue([...files, ...deferred]);
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'snapshot-conversation',
+        codeEnvAvailable: true,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+      },
+      {
+        ...db,
+        getFiles,
+        getConvoFiles: jest
+          .fn()
+          .mockResolvedValue([...files, ...deferred].map((file) => file.file_id)),
+        getCodeGeneratedFiles: jest
+          .fn()
+          .mockResolvedValue(
+            files.filter((file) => file.context === FileContext.execute_code_snapshot),
+          ),
+        getToolFilesByIds: jest
+          .fn()
+          .mockResolvedValue(
+            files.filter((file) => file.context !== FileContext.execute_code_snapshot),
+          ),
+        getDeferredProvisionFiles: jest.fn().mockResolvedValue(deferred),
+      },
+    );
+    const eager = await selectCodeFiles({
+      files: result.tool_resources?.execute_code?.files ?? [],
+      routeKey: 'default',
+      getFileInfo: async () => ({ lastModified: new Date().toISOString() }),
+    });
+    const staged = new Map<string, string>();
+    const callback = createProvisionFilesCallback({
+      req,
+      agentToolContexts: new Map([['agent-1', result]]),
+      fileStorage: {
+        recovery: createFileProvisionRecovery(),
+        acquireFileProvision: jest.fn().mockResolvedValue(true),
+        releaseFileProvision: jest.fn().mockResolvedValue(true),
+        commitFileProvision: jest.fn().mockResolvedValue(true),
+      },
+      provisionToCodeEnv: async ({ file, sandboxFilename }) => {
+        const name = sandboxFilename ?? file.filename;
+        staged.set(name, file.file_id);
+        return {
+          referenceSet: {},
+          sandboxFilename: name,
+          refUpdate: {
+            file_id: file.file_id,
+            routeKey: 'default',
+            ref: {
+              kind: 'user',
+              id: 'user-1',
+              file_id: file.file_id,
+              storage_session_id: 'sandbox',
+              sandboxFilename: name,
+            },
+          },
+        };
+      },
+      provisionToVectorDB: async ({ file }) => ({
+        embedded: true,
+        fileUpdate: { file_id: file.file_id, embedded: true },
+      }),
+      updateFile: async () => undefined,
+      updateCodeEnvRef: async () => undefined,
+      addEmbeddedEntity: async () => undefined,
+    });
+    await callback(tools, 'agent-1');
+    expect(getFiles).toHaveBeenCalledTimes(1);
+    expect(getFiles).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'user-1', tenantId: 'tenant-1' }),
+      {},
+      {},
+    );
+    return { result, staged, eager };
+  }
+  it.each([false, true])(
+    'selects two 12 MiB versions before the 20 MiB budget (deferred newest %s)',
+    async (deferred) => {
+      const old = snapshot('v1', 100);
+      const newest = snapshot('v2', 200);
+      const { staged } = await run(deferred ? [old] : [old, newest], deferred ? [newest] : []);
+      expect(staged.get('report.txt')).toBe('v2');
+      expect([...staged.values()]).not.toContain('v1');
+    },
+  );
+  it.each(['oversized', 'mime', 'disabled'] as const)(
+    'never revives an older version when the newest is %s',
+    async (policy) => {
+      const overrides: Partial<TFile> = {};
+      const config: Parameters<typeof run>[2] = {};
+      if (policy === 'oversized') overrides.bytes = 25 * MB;
+      if (policy === 'mime') {
+        overrides.type = 'application/pdf';
+        config.supportedMimeTypes = ['text/plain'];
+      }
+      if (policy === 'disabled') config.disabled = true;
+      const { staged } = await run(
+        [snapshot('v1', 100), snapshot('v2', 200, overrides)],
+        [],
+        config,
+      );
+      expect(staged.size).toBe(0);
+    },
+  );
+  it('inspects the selected generation instead of reviving safe older bytes', async () => {
+    await expect(
+      run(
+        [
+          snapshot('v1', 100, { text: 'Safe old content' }),
+          snapshot('v2', 200, { text: 'BLOCKED' }),
+        ],
+        [],
+        {},
+        {
+          files: {
+            pii: {
+              fields: ['extracted_text'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'snapshot-policy', label: 'Snapshot policy', regex: 'BLOCKED' },
+              ],
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow();
+  });
+  it.each([
+    { tools: [Tools.execute_code, Tools.file_search] },
+    { tools: [Tools.execute_code] },
+    { tools: [Tools.file_search] },
+  ])('keeps independent consumer records when tools are $tools', async ({ tools }) => {
+    const upload = snapshot('upload', 100, {
+      context: FileContext.message_attachment,
+      bytes: MB,
+      embedded: true,
+      metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+    });
+    const output = snapshot('output', 200, { bytes: MB });
+    const { result, staged } = await run([upload, output], [], {}, undefined, tools);
+    expect(staged.get('report.txt')).toBe(
+      tools.includes(Tools.execute_code) ? 'output' : undefined,
+    );
+    const search = result.tool_resources?.file_search?.files?.map((file) => file.file_id) ?? [];
+    expect(search).toEqual(tools.includes(Tools.file_search) ? ['upload'] : []);
+  });
+  it.each([
+    { deferred: false, tools: [Tools.execute_code, Tools.file_search] },
+    { deferred: true, tools: [Tools.execute_code, Tools.file_search] },
+    { deferred: false, tools: [Tools.execute_code] },
+    { deferred: false, tools: [Tools.file_search] },
+  ])(
+    'keeps newer search-only intent independent (deferred $deferred, tools $tools)',
+    async ({ deferred, tools }) => {
+      const output = snapshot('output', 100, { bytes: MB });
+      const upload = snapshot('search', 200, {
+        context: FileContext.message_attachment,
+        bytes: MB,
+        embedded: !deferred,
+        metadata: { destinationChosen: true, searchDestination: true },
+      });
+      const { result, staged } = await run(
+        deferred ? [output] : [output, upload],
+        deferred ? [upload] : [],
+        {},
+        undefined,
+        tools,
+      );
+      expect(staged.get('report.txt')).toBe(
+        tools.includes(Tools.execute_code) ? 'output' : undefined,
+      );
+      expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id) ?? []).toEqual(
+        tools.includes(Tools.file_search) ? ['search'] : [],
+      );
+    },
+  );
+  it('retains model-bound input independently of its superseded code copy', async () => {
+    const input = snapshot('model-input', 100, {
+      context: FileContext.message_attachment,
+      bytes: MB,
+      llmDeliveryPath: 'text',
+      text: 'Prompt input',
+      metadata: { destinationChosen: true, codeDestination: true },
+    });
+    const { result, staged } = await run([input, snapshot('output', 200, { bytes: MB })]);
+    expect(staged.get('report.txt')).toBe('output');
+    expect(result.attachments?.map((file) => file?.file_id)).toContain('model-input');
+  });
+  it.each(['oversized', 'mime'] as const)(
+    'keeps search input but never restores its old code bytes when newest is %s',
+    async (policy) => {
+      const upload = snapshot('upload', 100, {
+        context: FileContext.message_attachment,
+        bytes: MB,
+        embedded: true,
+        metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+      });
+      const output = snapshot(
+        'output',
+        200,
+        policy === 'oversized' ? { bytes: 25 * MB } : { bytes: MB, type: 'application/pdf' },
+      );
+      const { result, staged } = await run(
+        [upload, output],
+        [],
+        policy === 'mime' ? { supportedMimeTypes: ['text/plain'] } : {},
+        undefined,
+        [Tools.execute_code, Tools.file_search],
+      );
+      expect(staged.size).toBe(0);
+      expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id)).toEqual([
+        'upload',
+      ]);
+    },
+  );
+  it('charges search-needed superseded inputs without reviving them for code when the union exceeds budget', async () => {
+    const upload = snapshot('upload', 100, {
+      context: FileContext.message_attachment,
+      embedded: true,
+      metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+    });
+    const { result, staged } = await run([upload, snapshot('output', 200)], [], {}, undefined, [
+      Tools.execute_code,
+      Tools.file_search,
+    ]);
+    expect(staged.size).toBe(0);
+    expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id)).toEqual([
+      'upload',
+    ]);
+  });
+  it.each([
+    [FileContext.execute_code_snapshot, true, false],
+    [FileContext.execute_code, true, false],
+    [FileContext.execute_code, false, false],
+    [FileContext.execute_code, true, true],
+    [FileContext.execute_code, false, true],
+  ] as const)(
+    'charges independent capture and assigned-path writes separately across repeated initialization (%s, named %s, deferred newest %s)',
+    async (context, named, deferred) => {
+      const original = snapshot('png', 100, {
+        context,
+        filename: 'nested/chart.png',
+        type: 'image/webp',
+        metadata: {
+          codeDestination: true,
+          sourceDispatchedAt: 100,
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user-1',
+            storage_session_id: 'sandbox',
+            file_id: 'png-copy',
+            sandboxFilename: named ? 'nested/chart.webp' : undefined,
+          },
+        },
+      });
+      const literal = snapshot('literal', 200, {
+        filename: 'nested/chart.webp',
+        type: 'image/webp',
+      });
+      const first = await run(
+        deferred ? [original] : [original, literal],
+        deferred ? [literal] : [],
+      );
+      expect([...first.staged.values()]).toEqual(['png']);
+      expect(first.staged.has('nested/chart.webp')).toBe(false);
+      expect(first.eager.selected.map((entry) => entry.sandboxName)).not.toContain(
+        'nested/chart.webp',
+      );
+      const again = await run(
+        deferred ? [original] : [original, literal],
+        deferred ? [literal] : [],
+      );
+      expect(again.staged).toEqual(first.staged);
+    },
+  );
+  it.each([false, true])(
+    'normalizes an unreferenced converted upload before code admission (deferred newest %s)',
+    async (deferred) => {
+      const upload = snapshot('converted-upload', 100, {
+        filename: 'chart.png',
+        type: 'image/webp',
+        context: FileContext.message_attachment,
+        metadata: { destinationChosen: false, codeDestination: true },
+      });
+      const output = snapshot('literal', 200, { filename: 'chart.webp', type: 'image/webp' });
+      const { staged } = await run(
+        deferred ? [upload] : [upload, output],
+        deferred ? [output] : [],
+      );
+      expect([...staged.entries()]).toEqual([['chart.webp', 'literal']]);
+    },
+  );
+
+  it('keeps unrelated files subject to their original shared budget and order', async () => {
+    const { staged } = await run([
+      snapshot('first', 100, { filename: 'first.txt' }),
+      snapshot('other', 200, { filename: 'other.txt', bytes: 9 * MB }),
+    ]);
+    expect([...staged.entries()]).toEqual([['first.txt', 'first']]);
   });
 });

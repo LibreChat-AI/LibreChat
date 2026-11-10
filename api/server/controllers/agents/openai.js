@@ -110,7 +110,7 @@ const { checkSessionsAlive, loadCodeApiKey } = require('~/server/services/Files/
 const {
   getLinkedInstructionsResolver,
 } = require('~/server/services/Endpoints/agents/linkedInstructions');
-const { getModelsConfig } = require('~/server/controllers/ModelController');
+const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { resolveConfigServers } = require('~/server/services/MCP');
 const { getMCPManager } = require('~/config');
@@ -698,7 +698,6 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         primaryConfig.subagents?.enabled === true &&
         (primaryConfig.subagents.graphs?.length ?? 0) > 0;
       if (primaryConfig.edges?.length || primaryHasGraphSubagents) {
-        const modelsConfig = await getModelsConfig(req);
         const discoveryParams = {
           req,
           res,
@@ -706,7 +705,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           primaryConfig,
           endpointOption,
           allowedProviders,
-          modelsConfig,
+          getEndpointModels: (endpoint) => getEndpointModelsConfig(req, endpoint),
           loadTools,
           requestFiles: [],
           conversationId,
