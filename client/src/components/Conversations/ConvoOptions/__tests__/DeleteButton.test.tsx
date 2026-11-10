@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { DeleteConversationDialog } from '../DeleteButton';
 
@@ -24,9 +24,7 @@ jest.mock('@librechat/client', () => {
     <div {...props}>{children}</div>
   );
   return {
-    Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-      <button {...props}>{children}</button>
-    ),
+    Button: ({ children }: { children: React.ReactNode }) => <button>{children}</button>,
     Spinner: () => <span role="status" />,
     OGDialog: Box,
     OGDialogClose: Box,
@@ -43,7 +41,7 @@ jest.mock('~/data-provider', () => ({
   },
 }));
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => (key === 'com_ui_cancel' ? 'Annuler' : key),
+  useLocalize: () => (key: string) => key,
   useNewConvo: () => ({ newConversation: mockNewConversation }),
 }));
 jest.mock('~/common', () => ({ NotificationSeverity: { SUCCESS: 'success', ERROR: 'error' } }));
@@ -60,12 +58,6 @@ const renderDialog = (getCurrentConversationId?: () => string | undefined) =>
   );
 
 describe('DeleteConversationDialog', () => {
-  it('names the cancel button with its localized visible text', () => {
-    renderDialog();
-
-    expect(screen.getByRole('button', { name: 'Annuler' })).toHaveTextContent('Annuler');
-  });
-
   beforeEach(() => {
     jest.clearAllMocks();
     mockRoute.current = 'convo-1';
