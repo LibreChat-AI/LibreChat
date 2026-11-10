@@ -70,7 +70,13 @@ const getImageEditPromptDescription = () => {
 /** `auto` or `WIDTHxHEIGHT`; the image API enforces which dimensions the configured model supports. */
 export const IMAGE_SIZE_PATTERN = '^(auto|[1-9][0-9]*x[1-9][0-9]*)$';
 
-const supportsExtendedQuality = process.env.IMAGE_GEN_OAI_MODEL === 'gpt-image-2.6-flare';
+const supportsExtendedQuality = [
+  'gpt-image-2.5-flare',
+  'gpt-image-2.5-flare-2026-09-08',
+  'gpt-image-2.5-sunburst',
+  'gpt-image-2.5-sunburst-2026-09-08',
+  'gpt-image-2.6-flare',
+].includes(process.env.IMAGE_GEN_OAI_MODEL || 'gpt-image-2.5-flare');
 
 const imageQualitySchema: ExtendedJsonSchema = {
   type: 'string',

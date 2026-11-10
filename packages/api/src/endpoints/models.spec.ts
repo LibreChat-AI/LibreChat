@@ -786,6 +786,7 @@ describe('getOpenAIModels sorting behavior', () => {
           { id: 'gpt-5.5' },
           { id: 'dall-e-3' },
           { id: 'gpt-image-2.6-flare' },
+          { id: 'chatgpt-image-latest' },
           { id: 'gpt-realtime-2' },
         ],
       },
@@ -797,8 +798,39 @@ describe('getOpenAIModels sorting behavior', () => {
     expect(models).toContain('gpt-5.5');
     expect(models).not.toContain('dall-e-3');
     expect(models).not.toContain('gpt-image-2.6-flare');
+    expect(models).not.toContain('chatgpt-image-latest');
     expect(models).not.toContain('gpt-realtime-2');
   });
+
+  it('preserves image aliases returned by a custom gateway', async () => {
+    const imageModels = ['chatgpt-image-latest', 'gpt-image-2.5-flare'];
+    process.env.OPENAI_REVERSE_PROXY = 'https://gateway.example.com/v1';
+    mockedAxios.get.mockResolvedValue({ data: { data: imageModels.map((id) => ({ id })) } });
+
+    expect(await getOpenAIModels()).toEqual(imageModels);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'https://gateway.example.com/v1/models',
+      expect.any(Object),
+    );
+  });
+
+  it('preserves explicitly configured image aliases without discovery', async () => {
+    const configuredModels = ['chatgpt-image-latest', 'gpt-image-2.5-flare'];
+
+    expect(await getOpenAIModels({ configuredModels })).toEqual(configuredModels);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'preserves image aliases configured through the environment (azure=%s)',
+    async (azure) => {
+      const imageModels = ['chatgpt-image-latest', 'gpt-image-2.5-flare'];
+      process.env[azure ? 'AZURE_OPENAI_MODELS' : 'OPENAI_MODELS'] = imageModels.join(',');
+
+      expect(await getOpenAIModels({ azure })).toEqual(imageModels);
+      expect(mockedAxios.get).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('fetchModels with Ollama specific logic', () => {

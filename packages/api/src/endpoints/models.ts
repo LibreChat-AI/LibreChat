@@ -397,7 +397,7 @@ export async function fetchOpenAIModels(
 
   if (baseURL === openaiBaseURL) {
     const regex = /(text-davinci-003|gpt-|o\d+|chat-latest)/;
-    const excludeRegex = /audio|realtime|^gpt-image-/;
+    const excludeRegex = /audio|realtime|^gpt-image-|^chatgpt-image-latest$/;
     models = models.filter((model) => regex.test(model) && !excludeRegex.test(model));
     const instructModels = models.filter((model) => model.includes('instruct'));
     const otherModels = models.filter((model) => !model.includes('instruct'));
