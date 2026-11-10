@@ -121,26 +121,43 @@ class MongoCheckpointRepository implements CheckpointRepository {
       );
   }
   async setup(): Promise<Error[]> {
+    // Return individual errors; setupCheckpointIndexes owns the batch retry deadline.
+    const options = { maxAttempts: 1, peerBuildDeadlineMs: 0 };
     const operations = [
-      this.db
-        .collection(this.checkpoints)
-        .createIndex(
-          { thread_id: 1, checkpoint_ns: 1, checkpoint_id: -1 },
-          { name: 'thread_ns_checkpoint_idx' },
-        ),
-      this.db
-        .collection(this.writes)
-        .createIndex(
-          { thread_id: 1, checkpoint_ns: 1, checkpoint_id: 1, task_id: 1, idx: 1 },
-          { name: 'thread_ns_checkpoint_task_idx' },
-        ),
+      buildIndexWithRetry(
+        () =>
+          this.db
+            .collection(this.checkpoints)
+            .createIndex(
+              { thread_id: 1, checkpoint_ns: 1, checkpoint_id: -1 },
+              { name: 'thread_ns_checkpoint_idx' },
+            ),
+        `${this.checkpoints}.thread_ns_checkpoint_idx`,
+        options,
+      ),
+      buildIndexWithRetry(
+        () =>
+          this.db
+            .collection(this.writes)
+            .createIndex(
+              { thread_id: 1, checkpoint_ns: 1, checkpoint_id: 1, task_id: 1, idx: 1 },
+              { name: 'thread_ns_checkpoint_task_idx' },
+            ),
+        `${this.writes}.thread_ns_checkpoint_task_idx`,
+        options,
+      ),
     ];
     if (this.options.ttl != null)
       for (const name of [this.checkpoints, this.writes])
         operations.push(
-          this.db
-            .collection(name)
-            .createIndex({ upserted_at: 1 }, { expireAfterSeconds: this.options.ttl }),
+          buildIndexWithRetry(
+            () =>
+              this.db
+                .collection(name)
+                .createIndex({ upserted_at: 1 }, { expireAfterSeconds: this.options.ttl }),
+            `${name}.checkpoint_expiry`,
+            options,
+          ),
         );
     return (await Promise.allSettled(operations)).flatMap((result) =>
       result.status === 'rejected' ? [result.reason as Error] : [],

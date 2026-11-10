@@ -4,6 +4,7 @@ import type { CheckpointIdentity, CheckpointRepository, SerializedCheckpoint } f
 import { createCheckpointDeletionJournal, checkpointDeletionTarget } from './journal';
 import { checkpointOwnerNamespacePrefix } from './identity';
 import { createMongoCheckpointRepository } from './mongo';
+import { setupCheckpointIndexes } from './indexes';
 
 let server: MongoMemoryServer;
 let repository: CheckpointRepository;
@@ -180,3 +181,54 @@ test.each(['conversations', 'messages', 'toolcalls', 'sharedlinks'])(
     expect(await journal.hasPersistence(target)).toBe(true);
   },
 );
+
+test('retries checkpoint index conflicts through the batch deadline and creates TTL indexes', async () => {
+  const conflict = new mongoose.mongo.MongoServerError({
+    code: 40333,
+    message: 'index build in progress',
+  });
+  const createIndex = mongoose.mongo.Collection.prototype.createIndex;
+  const builds = new Map<string, number>();
+  jest.spyOn(mongoose.mongo.Collection.prototype, 'createIndex').mockImplementation(function (
+    this: mongoose.mongo.Collection,
+    ...args: Parameters<typeof createIndex>
+  ) {
+    const count = (builds.get(this.collectionName) ?? 0) + 1;
+    builds.set(this.collectionName, count);
+    if (count === 1) return Promise.reject(conflict);
+    return createIndex.apply(this, args);
+  });
+
+  expect(
+    await setupCheckpointIndexes(repository, { peerBuildPollMs: 1, peerBuildDeadlineMs: 200 }),
+  ).toEqual([]);
+  expect([...builds]).toEqual([
+    ['cp', 4],
+    ['writes', 4],
+  ]);
+  for (const name of ['cp', 'writes']) {
+    expect(await mongoose.connection.db!.collection(name).indexes()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: { upserted_at: 1 }, expireAfterSeconds: 3600 }),
+      ]),
+    );
+  }
+});
+
+test('reports every nonretryable index error without retrying individual builds', async () => {
+  const failure = new Error('index permission denied');
+  const createIndex = mongoose.mongo.Collection.prototype.createIndex;
+  let builds = 0;
+  jest.spyOn(mongoose.mongo.Collection.prototype, 'createIndex').mockImplementation(function (
+    this: mongoose.mongo.Collection,
+    ...args: Parameters<typeof createIndex>
+  ) {
+    if (this.collectionName === 'cp') {
+      builds++;
+      return Promise.reject(failure);
+    }
+    return createIndex.apply(this, args);
+  });
+  expect(await setupCheckpointIndexes(repository)).toEqual([failure, failure]);
+  expect(builds).toBe(2);
+});
