@@ -8,8 +8,8 @@ import { setupCheckpointIndexes } from './indexes';
 
 let server: MongoMemoryServer;
 let repository: CheckpointRepository;
-const owner = checkpointOwnerNamespacePrefix('owner', 'tenant');
-const key: CheckpointIdentity = { threadId: 'child', checkpointNs: 'generation[1]', owner };
+let owner: string;
+let key: CheckpointIdentity;
 const payload = (id: string, parentCheckpointId?: string): SerializedCheckpoint => ({
   identity: { threadId: key.threadId, checkpointNs: key.checkpointNs, checkpointId: id },
   parentCheckpointId,
@@ -26,6 +26,8 @@ afterAll(async () => {
   await server.stop();
 });
 beforeEach(() => {
+  owner = checkpointOwnerNamespacePrefix('owner', 'tenant');
+  key = { threadId: 'child', checkpointNs: 'generation[1]', owner };
   repository = createMongoCheckpointRepository({
     checkpointCollectionName: 'cp',
     checkpointWritesCollectionName: 'writes',
