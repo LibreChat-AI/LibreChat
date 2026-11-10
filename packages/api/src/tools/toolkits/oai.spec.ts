@@ -35,7 +35,9 @@ describe('OpenAI image toolkit size schema', () => {
   );
 });
 
-describe('gpt-image-2.6-sunburst quality schema', () => {
+describe('OpenAI image toolkit quality schema', () => {
+  const standardQuality = ['auto', 'high', 'medium', 'low'];
+  const extendedQuality = [...standardQuality, 'xhigh', 'max'];
   const originalModel = process.env.IMAGE_GEN_OAI_MODEL;
 
   afterEach(() => {
@@ -47,14 +49,22 @@ describe('gpt-image-2.6-sunburst quality schema', () => {
   });
 
   it.each([
-    [undefined, ['auto', 'high', 'medium', 'low']],
-    ['', ['auto', 'high', 'medium', 'low']],
-    ['gpt-image-1', ['auto', 'high', 'medium', 'low']],
-    ['gpt-image-1.5', ['auto', 'high', 'medium', 'low']],
-    ['gpt-image-2.5-flare', ['auto', 'high', 'medium', 'low']],
-    ['gpt-image-2.5-sunburst', ['auto', 'high', 'medium', 'low']],
-    ['custom-image-deployment', ['auto', 'high', 'medium', 'low']],
-    ['gpt-image-2.6-sunburst', ['auto', 'high', 'medium', 'low', 'xhigh', 'max']],
+    [undefined, extendedQuality],
+    ['', extendedQuality],
+    ['gpt-image-2.5-flare', extendedQuality],
+    ['gpt-image-2.5-flare-2026-09-08', extendedQuality],
+    ['gpt-image-2.5-sunburst', extendedQuality],
+    ['gpt-image-2.5-sunburst-2026-09-08', extendedQuality],
+    ['gpt-image-2.6-sunburst', extendedQuality],
+    ['gpt-image-1', standardQuality],
+    ['gpt-image-1-mini', standardQuality],
+    ['gpt-image-1.5', standardQuality],
+    ['gpt-image-2', standardQuality],
+    ['gpt-image-2-2026-04-21', standardQuality],
+    ['gpt-image-2.6-flare', standardQuality],
+    ['gpt-image-2.5-flare-custom', standardQuality],
+    ['custom-image-deployment', standardQuality],
+    [' ', standardQuality],
   ])('exposes only the configured quality levels for %j', (model, qualities) => {
     if (model === undefined) {
       delete process.env.IMAGE_GEN_OAI_MODEL;
