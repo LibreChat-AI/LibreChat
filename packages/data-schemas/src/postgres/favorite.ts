@@ -95,8 +95,8 @@ export function createPostgresFavoriteMethods(db: PostgresDatabase): ToolFavorit
       await db.transaction(async (sql) => {
         await lock(sql, user);
         await sql.query(
-          'DELETE FROM tool_favorite_erasure WHERE user_id=$1 AND scope=$2 AND attempt_id=$3',
-          [user, tenant == null ? '*' : `tenant:${tenant}`, deletionAttemptId],
+          'DELETE FROM tool_favorite_erasure WHERE user_id=$1 AND ($2::text IS NULL OR scope=$2) AND attempt_id=$3',
+          [user, tenant == null ? null : `tenant:${tenant}`, deletionAttemptId],
         );
       });
     },

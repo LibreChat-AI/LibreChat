@@ -7,7 +7,7 @@ import type {
   ConfigRecord,
   AdminUserListItem,
   AdminUserSearchResult,
-  UserDeleteResult,
+  AllMethods,
 } from '@librechat/data-schemas';
 import type { TCheckpointerConfig } from 'librechat-data-provider';
 import type { FilterQuery } from 'mongoose';
@@ -112,7 +112,7 @@ export interface AdminUsersDeps {
    */
   resolveErasure: (target: AdminErasureTarget) => Promise<AdminErasureContext>;
   /** Thin data-layer delete: removes the User document after the erasure cascade has run. */
-  deleteUserById: (userId: string) => Promise<UserDeleteResult>;
+  deleteUserById: AllMethods['deleteUserById'];
   deleteUserCodeEnvironments: (userId: string | Types.ObjectId) => Promise<number>;
   invalidateCodeEnvironmentConfigCache: (tenantId?: string) => Promise<void>;
   deleteConfig: (
@@ -308,7 +308,8 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
         },
         erasureDeps,
       );
-      const result = await deletionAttempt.commit(() => deleteUserById(id));
+      const deletionFence = { startedAt: triggerDeletionFence, attemptId: deletionAttempt.id };
+      const result = await deletionAttempt.commit(() => deleteUserById(id, deletionFence));
 
       if (result.deletedCount === 0) {
         await cancelAgentTriggerUserPurge(id, triggerDeletionFence);

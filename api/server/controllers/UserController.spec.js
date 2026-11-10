@@ -594,6 +594,13 @@ describe('deleteUserController', () => {
 
     expect(mockRes.status).toHaveBeenCalledWith(200);
     expect(mockRes.send).toHaveBeenCalledWith({ message: 'User deleted' });
+    expect(deleteUserById).toHaveBeenCalledWith(userIdStr, {
+      startedAt: beginAgentTriggerUserDeletion.mock.calls[0][1],
+      attemptId: beginAgentTriggerUserDeletion.mock.calls[0][2],
+    });
+    expect(deleteUserById.mock.calls[0][1].attemptId).not.toBe(
+      mockQuiesceUserSchedules.mock.calls[0][1],
+    );
     expect(mockRes.clearCookie).toHaveBeenCalledWith('session_hint');
     expect(deletePasskeysByUser).toHaveBeenCalledWith(userIdStr);
     expect(beginAgentTriggerUserDeletion).toHaveBeenCalledWith(

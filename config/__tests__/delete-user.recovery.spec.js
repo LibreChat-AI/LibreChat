@@ -153,19 +153,46 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
     await db.query('DROP TRIGGER reject_cancel ON tool_favorite_erasure');
     await db.query('DROP FUNCTION reject_cancel()');
   }
-  it.each(['cancel', 'commit'])(
-    'adopts the canonical UUID through real offline CLI recovery and then %s',
-    async (outcome) => {
+  it.each([
+    { outcome: 'cancel', origin: 'system' },
+    { outcome: 'commit', origin: 'system' },
+    { outcome: 'cancel', origin: 'tenant' },
+    { outcome: 'commit', origin: 'tenant' },
+  ])(
+    'adopts the canonical UUID from $origin through real offline CLI recovery and then $outcome',
+    async ({ outcome, origin }) => {
       const id = new mongoose.Types.ObjectId();
       const email = `${id}@example.com`;
-      await mongoose.models.User.create({ _id: id, email, provider: 'local' });
+      await mongoose.models.User.create({
+        _id: id,
+        email,
+        provider: 'local',
+        ...(origin === 'tenant' ? { tenantId: 'tenant-a' } : {}),
+      });
       const time = Date.now();
+      const stale = 15 * 60_000 + 1;
+      const priorToken = randomUUID();
+      if (origin === 'tenant') {
+        const priorMethods = schemas.createMethods(mongoose);
+        await schemas.runAsSystem(() =>
+          priorMethods.beginAgentTriggerUserDeletion(
+            id.toString(),
+            new Date(time - stale),
+            priorToken,
+          ),
+        );
+        await schemas.tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+          schemas
+            .createPostgresFavoriteMethods(db)
+            .deleteUserToolFavorites(id.toString(), priorToken),
+        );
+      }
       const first = await runCli(email, time, { failCancel: true });
       expect(first.code).toBe(1);
       const original = await owned(id);
       const token = original.agentTriggerDeletionAttemptId;
       expect(token).toMatch(/^[0-9a-f-]{36}$/);
-      const stale = 15 * 60_000 + 1;
+      if (origin === 'tenant') expect(token).toBe(priorToken);
       // A takeover that loses its identity read must retain the adopted identity and owner.
       if (outcome === 'cancel') {
         expect((await runCli(email, time + stale, { failAdopt: true })).code).toBe(1);
@@ -190,15 +217,28 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
       });
       try {
         await restarted.initialize(config.persistence);
-        const add = restarted.methods.addToolFavorite({
-          userId: id.toString(),
-          itemType: 'tool',
-          itemId: 'after-recovery',
-        });
+        const addFavorite = () =>
+          restarted.methods.addToolFavorite({
+            userId: id.toString(),
+            itemType: 'tool',
+            itemId: 'after-recovery',
+          });
+        const add =
+          origin === 'tenant'
+            ? schemas.tenantStorage.run({ tenantId: 'tenant-a' }, addFavorite)
+            : addFavorite();
         if (outcome === 'cancel') {
           expect((await owned(id)).agentTriggerDeletionStartedAt).toBeUndefined();
           expect((await owned(id)).agentTriggerDeletionAttemptId).toBeUndefined();
           await expect(add).resolves.toEqual({ ok: true, added: true });
+          expect(
+            (
+              await db.query(
+                'SELECT scope FROM tool_favorite_erasure WHERE user_id=$1 AND attempt_id=$2',
+                [id.toString(), token],
+              )
+            ).rows,
+          ).toEqual([]);
         } else {
           expect(await owned(id)).toBeNull();
           await expect(add).rejects.toThrow('erasure');

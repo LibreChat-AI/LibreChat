@@ -314,6 +314,13 @@ describe('Delete user CLI', () => {
     expect(await runCli()).toBe(0);
 
     expect(mockGetAppConfig).toHaveBeenCalledWith({ baseOnly: true });
+    expect(mockMethods.deleteUserById).toHaveBeenCalledWith(USER_ID, {
+      startedAt: mockMethods.beginAgentTriggerUserDeletion.mock.calls[0][1],
+      attemptId: mockMethods.beginAgentTriggerUserDeletion.mock.calls[0][2],
+    });
+    expect(mockMethods.deleteUserById.mock.calls[0][1].attemptId).not.toBe(
+      mockMethods.suspendUserSchedulesForDeletion.mock.calls[0][1],
+    );
     expect(mockRevokeUserCodeEnvironmentWorkers).toHaveBeenCalledWith(
       expect.objectContaining({ userId: USER_ID }),
     );

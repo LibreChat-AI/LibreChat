@@ -196,7 +196,10 @@ export function createUserMethods(
   renewSubagentAdmission: (userId: string, token: string, fencedUntil: Date) => Promise<boolean>;
   releaseSubagentAdmission: (userId: string, token: string) => Promise<void>;
   isSubagentOwnerAdmissible: (userId: string) => Promise<boolean>;
-  deleteUserById: (userId: string) => Promise<UserDeleteResult>;
+  deleteUserById: (
+    userId: string,
+    fence?: { startedAt: Date; attemptId: string },
+  ) => Promise<UserDeleteResult>;
   updateUserPlugins: (
     userId: string,
     plugins: string[] | undefined,
@@ -647,11 +650,28 @@ export function createUserMethods(
   /**
    * Delete a user by their unique ID.
    */
-  async function deleteUserById(userId: string): Promise<UserDeleteResult> {
+  async function deleteUserById(
+    userId: string,
+    fence?: { startedAt: Date; attemptId: string },
+  ): Promise<UserDeleteResult> {
+    if (fence !== undefined) {
+      if (!(fence?.startedAt instanceof Date) || !Number.isFinite(fence.startedAt.getTime())) {
+        throw new TypeError('startedAt must be a valid Date');
+      }
+      validateDeletionAttemptId(fence.attemptId);
+    }
     try {
       const User = mongoose.models.User;
       await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
-      const result = await User.deleteOne({ _id: userId });
+      const result = await User.deleteOne({
+        _id: userId,
+        ...(fence === undefined
+          ? {}
+          : {
+              agentTriggerDeletionStartedAt: fence.startedAt,
+              agentTriggerDeletionAttemptId: fence.attemptId,
+            }),
+      });
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
       }

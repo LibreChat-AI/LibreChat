@@ -1177,7 +1177,10 @@ realPostgres('attempt-scoped PostgreSQL account erasure', () => {
       await eraseUserData(params, erasure);
       const committing = attempt.commit(async () => {
         await gate;
-        await methods.deleteUserById(params.userId);
+        await methods.deleteUserById(params.userId, {
+          startedAt: params.startedAt,
+          attemptId: params.deletionAttemptId,
+        });
         throw new Error('delete acknowledgement lost');
       });
       await attempt.cancel(params, cancel);

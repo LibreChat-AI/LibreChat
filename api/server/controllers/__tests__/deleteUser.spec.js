@@ -434,7 +434,10 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(mockBeginAgentTriggerUserDeletion).toHaveBeenCalledTimes(1);
     expect(mockDeleteMessages).toHaveBeenCalled();
-    expect(mockDeleteUserById).toHaveBeenCalledWith(USER_ID);
+    expect(mockDeleteUserById).toHaveBeenCalledWith(USER_ID, {
+      startedAt: mockBeginAgentTriggerUserDeletion.mock.calls[0][1],
+      attemptId: mockBeginAgentTriggerUserDeletion.mock.calls[0][2],
+    });
     expect(mockDeleteUserCodeEnvironments).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserPurge).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserDeletion).not.toHaveBeenCalled();

@@ -464,7 +464,10 @@ describe('createAdminUsersHandlers', () => {
       await handlers.deleteUser(req, res);
 
       expect(status).toHaveBeenCalledWith(200);
-      expect(deps.deleteUserById).toHaveBeenCalledWith(targetId);
+      expect(deps.deleteUserById).toHaveBeenCalledWith(targetId, {
+        startedAt: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][1],
+        attemptId: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][2],
+      });
     });
 
     it('does not check admin count when target is a regular user', async () => {
@@ -713,7 +716,10 @@ describe('createAdminUsersHandlers', () => {
 
       await handlers.deleteUser(req, res);
 
-      expect(deps.deleteUserById).toHaveBeenCalledWith(validUserId);
+      expect(deps.deleteUserById).toHaveBeenCalledWith(validUserId, {
+        startedAt: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][1],
+        attemptId: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][2],
+      });
       expect(deps.deleteUserCodeEnvironments).not.toHaveBeenCalled();
     });
 
@@ -846,7 +852,10 @@ describe('createAdminUsersHandlers', () => {
 
       expect(status).toHaveBeenCalledWith(500);
       expect(json).toHaveBeenCalledWith({ error: 'Failed to delete user' });
-      expect(deps.deleteUserById).toHaveBeenCalledWith(validUserId);
+      expect(deps.deleteUserById).toHaveBeenCalledWith(validUserId, {
+        startedAt: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][1],
+        attemptId: jest.mocked(deps.beginAgentTriggerUserDeletion).mock.calls[0][2],
+      });
       expect(deps.prepareAgentTriggerUserPurge).toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserPurge).not.toHaveBeenCalled();
       expect(deps.cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();

@@ -446,7 +446,12 @@ const deleteUserController = async (req, res) => {
         onSessionsDeleted: () => clearSessionHintCookie(res),
       },
     );
-    const deleteResult = await deletionAttempt.commit(() => db.deleteUserById(user.id));
+    const deleteResult = await deletionAttempt.commit(() =>
+      db.deleteUserById(user.id, {
+        startedAt: triggerDeletionFence,
+        attemptId: deletionAttempt.id,
+      }),
+    );
     if (deleteResult.deletedCount !== 1) {
       throw new Error('User disappeared before account deletion could commit');
     }

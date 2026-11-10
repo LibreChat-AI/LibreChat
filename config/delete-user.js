@@ -289,7 +289,12 @@ async function gracefulExit(code = 0) {
 
     // 6) Finally delete the user document itself
     const deletedUser = await deletionAttempt.commit(() =>
-      runAsSystem(() => methods.deleteUserById(uid)),
+      runAsSystem(() =>
+        methods.deleteUserById(uid, {
+          startedAt: deletionFence,
+          attemptId: deletionAttempt.id,
+        }),
+      ),
     );
     if (deletedUser.deletedCount !== 1) {
       throw new Error('User disappeared before account deletion could commit');

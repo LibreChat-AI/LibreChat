@@ -1554,6 +1554,111 @@ describe('User Methods - Database Tests', () => {
       expect(found).toBeNull();
     });
 
+    test.each(['cancel', 'commit'] as const)(
+      'rejects an old queued delete after an offline handoff and %s',
+      async (outcome) => {
+        const user = await User.create({
+          email: `delayed-${outcome}@example.com`,
+          provider: 'local',
+        });
+        const id = user._id.toString();
+        const attemptId = randomUUID();
+        const startedAt = new Date('2026-01-01');
+        const recoveredAt = new Date(startedAt.getTime() + USER_DELETION_FENCE_STALE_MS + 1);
+        await methods.beginAgentTriggerUserDeletion(id, startedAt, attemptId);
+        let release!: () => void;
+        let entered!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const pendingWrite = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const original = User.collection.deleteOne.bind(User.collection);
+        const write = jest
+          .spyOn(User.collection, 'deleteOne')
+          .mockImplementationOnce(async (filter, options) => {
+            entered();
+            await gate;
+            return original(filter, options);
+          });
+        const pendingDelete = methods.deleteUserById(id, { startedAt, attemptId });
+        try {
+          await pendingWrite;
+          expect(write.mock.calls[0][0]).toMatchObject({
+            agentTriggerDeletionStartedAt: startedAt,
+            agentTriggerDeletionAttemptId: attemptId,
+          });
+          expect(
+            await methods.recoverStaleAgentTriggerUserDeletion(id, recoveredAt, randomUUID()),
+          ).toBe('acquired');
+          expect(await methods.getAgentTriggerUserDeletionAttemptId(id, recoveredAt)).toBe(
+            attemptId,
+          );
+          if (outcome === 'cancel') {
+            expect(await methods.cancelAgentTriggerUserDeletion(id, recoveredAt, attemptId)).toBe(
+              true,
+            );
+          } else {
+            expect(
+              await methods.deleteUserById(id, { startedAt: recoveredAt, attemptId }),
+            ).toMatchObject({ deletedCount: 1 });
+          }
+          release();
+          expect(await pendingDelete).toMatchObject({ deletedCount: 0 });
+          expect(await User.exists({ _id: id })).toEqual(
+            outcome === 'cancel' ? { _id: user._id } : null,
+          );
+        } finally {
+          release();
+          await pendingDelete;
+          write.mockRestore();
+        }
+      },
+    );
+
+    test('rejects the wrong UUID or Date and commits only the current owner', async () => {
+      const user = await User.create({ email: 'fenced-delete@example.com', provider: 'local' });
+      const id = user._id.toString();
+      const attemptId = randomUUID();
+      const startedAt = new Date();
+      await methods.beginAgentTriggerUserDeletion(id, startedAt, attemptId);
+      expect(
+        await methods.deleteUserById(id, { startedAt, attemptId: randomUUID() }),
+      ).toMatchObject({ deletedCount: 0 });
+      expect(
+        await methods.deleteUserById(id, {
+          startedAt: new Date(startedAt.getTime() + 1),
+          attemptId,
+        }),
+      ).toMatchObject({ deletedCount: 0 });
+      expect(await methods.isAgentTriggerUserDeletionOwner(id, startedAt, attemptId)).toBe(true);
+      expect(await methods.deleteUserById(id, { startedAt, attemptId })).toMatchObject({
+        deletedCount: 1,
+      });
+      expect(
+        await methods.recoverStaleAgentTriggerUserDeletion(
+          id,
+          new Date(startedAt.getTime() + USER_DELETION_FENCE_STALE_MS + 1),
+          randomUUID(),
+        ),
+      ).toBe('missing');
+    });
+
+    test('rejects invalid commit fences before any cleanup or delete', async () => {
+      const id = new mongoose.Types.ObjectId().toString();
+      const write = jest.spyOn(User, 'deleteOne');
+      const grants = jest.spyOn(mongoose.models.ToolApprovalGrant, 'deleteMany');
+      await expect(
+        methods.deleteUserById(id, { startedAt: new Date(Number.NaN), attemptId: randomUUID() }),
+      ).rejects.toThrow('startedAt must be a valid Date');
+      await expect(
+        methods.deleteUserById(id, { startedAt: new Date(), attemptId: '' }),
+      ).rejects.toThrow('Invalid user deletion attempt ID');
+      expect(write).not.toHaveBeenCalled();
+      expect(grants).not.toHaveBeenCalled();
+    });
+
     test('should return zero count for non-existent user', async () => {
       const fakeId = new mongoose.Types.ObjectId();
       const result = await methods.deleteUserById(fakeId.toString());

@@ -186,6 +186,54 @@ postgres('real PostgreSQL favorites', () => {
       );
       await expect(methods.deleteUserToolFavorites(users[0], '')).rejects.toThrow('attempt');
     });
+    it('lets system recovery cancel its UUID across scopes without clearing successors or permanent markers', async () => {
+      const methods = createPostgresFavoriteMethods(db);
+      const owned = randomUUID();
+      const successor = randomUUID();
+      for (const tenantId of ['tenant-a', 'tenant-b', SYSTEM_TENANT_ID]) {
+        await tenantStorage.run({ tenantId }, () =>
+          methods.deleteUserToolFavorites(users[0], owned),
+        );
+      }
+      await harness.inTenant('tenant-b', () =>
+        methods.deleteUserToolFavorites(users[0], successor),
+      );
+      await methods.deleteUserToolFavorites(users[1]);
+      await harness.inTenant('tenant-a', () =>
+        methods.cancelUserToolFavoriteDeletion!(users[0], owned),
+      );
+      expect(
+        (
+          await db.query(
+            'SELECT scope FROM tool_favorite_erasure WHERE user_id=$1 AND attempt_id=$2 ORDER BY scope',
+            [users[0], owned],
+          )
+        ).rows,
+      ).toEqual([{ scope: '*' }, { scope: 'tenant:tenant-b' }]);
+      await tenantStorage.run({ tenantId: SYSTEM_TENANT_ID }, () =>
+        methods.cancelUserToolFavoriteDeletion!(users[0], owned),
+      );
+      expect(
+        (
+          await db.query(
+            'SELECT scope,attempt_id FROM tool_favorite_erasure WHERE user_id=$1 ORDER BY scope',
+            [users[0]],
+          )
+        ).rows,
+      ).toEqual([{ scope: 'tenant:tenant-b', attempt_id: successor }]);
+      expect(
+        (
+          await db.query('SELECT attempt_id FROM tool_favorite_erasure WHERE user_id=$1', [
+            users[1],
+          ])
+        ).rows,
+      ).toEqual([{ attempt_id: '' }]);
+      await harness.inTenant('tenant-b', () =>
+        expect(
+          methods.addToolFavorite({ userId: users[0], itemType: 'tool', itemId: 'still-fenced' }),
+        ).rejects.toThrow('erasure'),
+      );
+    });
     it('keeps global markers fenced against tenant cancellation and across fresh adapters', async () => {
       const methods = createPostgresFavoriteMethods(db);
       const attempt = randomUUID();
