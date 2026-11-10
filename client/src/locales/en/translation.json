@@ -608,6 +608,7 @@
   "com_endpoint_preset_delete_confirm": "Are you sure you want to delete this preset?",
   "com_endpoint_preset_delete_error": "There was an error deleting your preset. Please try again.",
   "com_endpoint_preset_delete_success": "Preset deleted successfully",
+  "com_endpoint_preset_export_error": "There was an error exporting your preset. Please try again.",
   "com_endpoint_preset_import": "Preset Imported!",
   "com_endpoint_preset_import_error": "There was an error importing your preset. Please try again.",
   "com_endpoint_preset_name": "Preset Name",
