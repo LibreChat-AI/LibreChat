@@ -33,7 +33,8 @@ function setup(overrides: Partial<Parameters<typeof createProjectHandlers>[0]> =
   const deps = {
     listChatProjects: jest.fn(),
     createChatProject: jest.fn().mockResolvedValue({ _id: projectId }),
-    getChatProject: jest.fn().mockResolvedValue({ _id: projectId, file_ids: [] }),
+    getChatProject: jest.fn().mockResolvedValue({ _id: projectId, user: 'owner', file_ids: [] }),
+    getChatProjectView: jest.fn().mockResolvedValue({ _id: projectId, user: 'owner' }),
     updateChatProject: jest.fn().mockResolvedValue({ _id: projectId }),
     deleteChatProject: jest.fn().mockResolvedValue({ deletedCount: 1, modifiedCount: 1 }),
     assignConversationToProject: jest.fn(),
@@ -148,6 +149,7 @@ describe('ChatProject handlers', () => {
     const { handlers } = setup({
       getChatProject: jest.fn().mockResolvedValue({
         _id: projectId,
+        user: 'owner',
         tenantId: 'tenant-a',
         file_ids: ['gone'],
       }),
@@ -162,7 +164,9 @@ describe('ChatProject handlers', () => {
     '%s treats an empty caller tenant as no tenant for a tenantless project',
     async (handler) => {
       const { handlers } = setup({
-        getChatProject: jest.fn().mockResolvedValue({ _id: projectId, file_ids: [] }),
+        getChatProject: jest
+          .fn()
+          .mockResolvedValue({ _id: projectId, user: 'owner', file_ids: [] }),
       });
       const { res, result } = response();
       await handlers[handler](
@@ -177,6 +181,7 @@ describe('ChatProject handlers', () => {
     const { handlers, deps } = setup({
       getChatProject: jest.fn().mockResolvedValue({
         _id: projectId,
+        user: 'owner',
         tenantId: 'tenant-b',
         file_ids: ['attached'],
       }),
@@ -205,6 +210,7 @@ describe('ChatProject handlers', () => {
     const { handlers } = setup({
       getChatProject: jest.fn().mockResolvedValue({
         _id: projectId,
+        user: 'owner',
         tenantId: 'tenant-a',
         file_ids: ['attached'],
       }),
@@ -253,6 +259,7 @@ describe('ChatProject handlers', () => {
     const { handlers, deps } = setup({
       getChatProject: jest.fn().mockResolvedValue({
         _id: projectId,
+        user: 'owner',
         tenantId: 'tenant-b',
         file_ids: [],
       }),
@@ -261,5 +268,107 @@ describe('ChatProject handlers', () => {
     await handlers.listAvailableProjectFiles(request({ params: { projectId } }), res);
     expect(result.statusCode).toBe(404);
     expect(deps.getAvailableProjectFiles).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChatProject handlers - sharing', () => {
+  it('records the creator as the project owner in the ACL', async () => {
+    const grantPermission = jest.fn().mockResolvedValue(undefined);
+    const { handlers } = setup({ grantPermission });
+    const { res, result } = response();
+    await handlers.createProject(request({ body: { name: 'Team' } }), res);
+    expect(result.statusCode).toBe(201);
+    expect(grantPermission).toHaveBeenCalledWith({
+      principalType: 'user',
+      principalId: 'owner',
+      resourceType: 'chatProject',
+      resourceId: projectId,
+      accessRoleId: 'chatProject_owner',
+      grantedBy: 'owner',
+    });
+  });
+
+  it('still creates the project when the owner grant fails', async () => {
+    const grantPermission = jest.fn().mockRejectedValue(new Error('acl down'));
+    const { handlers } = setup({ grantPermission });
+    const { res, result } = response();
+    await handlers.createProject(request({ body: { name: 'Team' } }), res);
+    expect(result.statusCode).toBe(201);
+  });
+
+  it("lists a shared project's files in its owner's scope", async () => {
+    const getProjectFiles = jest.fn().mockResolvedValue([]);
+    const { handlers } = setup({
+      getProjectFiles,
+      getChatProject: jest.fn().mockResolvedValue({
+        _id: projectId,
+        user: 'owner',
+        tenantId: 'tenant-a',
+        file_ids: ['owner-file'],
+      }),
+    });
+    const { res, result } = response();
+    await handlers.listProjectFiles(
+      request({ user: { id: 'member', tenantId: 'tenant-a' }, params: { projectId } }),
+      res,
+    );
+    expect(result.statusCode).toBe(200);
+    expect(getProjectFiles).toHaveBeenCalledWith(expect.objectContaining({ userId: 'owner' }));
+  });
+
+  it('withholds the file picker from members, who cannot attach files', async () => {
+    const getAvailableProjectFiles = jest.fn();
+    const { handlers } = setup({
+      getAvailableProjectFiles,
+      getChatProject: jest.fn().mockResolvedValue({
+        _id: projectId,
+        user: 'owner',
+        tenantId: 'tenant-a',
+        file_ids: [],
+      }),
+    });
+    const { res, result } = response();
+    await handlers.listAvailableProjectFiles(
+      request({ user: { id: 'member', tenantId: 'tenant-a' }, params: { projectId } }),
+      res,
+    );
+    expect(result.statusCode).toBe(404);
+    expect(getAvailableProjectFiles).not.toHaveBeenCalled();
+  });
+
+  it("returns the member's view of a shared project", async () => {
+    const getChatProjectView = jest
+      .fn()
+      .mockResolvedValue({ _id: projectId, user: 'owner', isShared: true, permissions: 1 });
+    const { handlers } = setup({ getChatProjectView });
+    const { res, result } = response();
+    await handlers.getProject(
+      request({ user: { id: 'member', tenantId: 'tenant-a' }, params: { projectId } }),
+      res,
+    );
+    expect(result.statusCode).toBe(200);
+    expect(getChatProjectView).toHaveBeenCalledWith('member', projectId);
+    expect(result.body).toMatchObject({ isShared: true, permissions: 1 });
+  });
+
+  it("returns an editor's own view after an update, not the owner's document", async () => {
+    const getChatProjectView = jest
+      .fn()
+      .mockResolvedValue({ _id: projectId, user: 'owner', isShared: true, permissions: 3 });
+    const { handlers } = setup({
+      getChatProjectView,
+      updateChatProject: jest
+        .fn()
+        .mockResolvedValue({ _id: projectId, user: 'owner', conversationCount: 9 }),
+    });
+    const { res, result } = response();
+    await handlers.updateProject(
+      request({ user: { id: 'editor' }, params: { projectId }, body: { name: 'Renamed' } }),
+      res,
+    );
+    expect(result.statusCode).toBe(200);
+    expect(getChatProjectView).toHaveBeenCalledWith('editor', projectId);
+    expect(result.body).toMatchObject({ isShared: true, permissions: 3 });
+    expect(result.body).not.toHaveProperty('conversationCount', 9);
   });
 });

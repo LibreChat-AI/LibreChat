@@ -408,6 +408,10 @@ export type TChatProject = {
   hasInstructions?: boolean;
   fileCount?: number;
   user?: string;
+  /** Set when another user shared this project with the requester. */
+  isShared?: boolean;
+  /** The requester's effective `PermissionBits` on a shared project. */
+  permissions?: number;
   conversationCount: number;
   lastConversationAt?: string | null;
   lastConversationId?: string | null;

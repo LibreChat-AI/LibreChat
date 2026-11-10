@@ -111,6 +111,12 @@ const checkResourcePermissionAccess = (requiredPermission) =>
           requiredPermission,
           resourceIdParam: 'resourceId',
         });
+      } else if (resourceType === ResourceType.CHAT_PROJECT) {
+        middleware = canAccessResource({
+          resourceType: ResourceType.CHAT_PROJECT,
+          requiredPermission,
+          resourceIdParam: 'resourceId',
+        });
       } else {
         return res.status(400).json({
           error: 'Bad Request',
@@ -130,22 +136,43 @@ const checkShareAccessUnlessAgentAdmin = (req, res, next) => {
   return checkShareAccess(req, res, next);
 };
 
-const rejectSharedLinkOwnerPermissionChanges = async (req, res, next) => {
-  if (req.params.resourceType !== ResourceType.SHARED_LINK) {
+/**
+ * Resources whose owner is fixed by the resource itself (its `user` field), not by an ACL
+ * grant. Their owner role cannot be granted to anyone else, and the owner's own entry cannot
+ * be changed or removed, so a grantee can never take sharing control away from the owner.
+ */
+const FIXED_OWNER_RESOURCES = {
+  [ResourceType.SHARED_LINK]: {
+    ownerRoleId: AccessRoleIds.SHARED_LINK_OWNER,
+    model: 'SharedLink',
+    message: 'Shared link owner permissions cannot be changed',
+    failure: 'Failed to validate shared link owner permissions',
+  },
+  [ResourceType.CHAT_PROJECT]: {
+    ownerRoleId: AccessRoleIds.CHAT_PROJECT_OWNER,
+    model: 'ChatProject',
+    message: 'Project owner permissions cannot be changed',
+    failure: 'Failed to validate project owner permissions',
+  },
+};
+
+const rejectFixedOwnerPermissionChanges = async (req, res, next) => {
+  const fixedOwner = FIXED_OWNER_RESOURCES[req.params.resourceType];
+  if (!fixedOwner) {
     return next();
   }
 
   const updated = Array.isArray(req.body?.updated) ? req.body.updated : [];
   const removed = Array.isArray(req.body?.removed) ? req.body.removed : [];
   const grantsOwner = updated.some(
-    (principal) => principal?.accessRoleId === AccessRoleIds.SHARED_LINK_OWNER,
+    (principal) => principal?.accessRoleId === fixedOwner.ownerRoleId,
   );
-  const grantsPublicOwner = req.body?.publicAccessRoleId === AccessRoleIds.SHARED_LINK_OWNER;
+  const grantsPublicOwner = req.body?.publicAccessRoleId === fixedOwner.ownerRoleId;
 
   if (grantsOwner || grantsPublicOwner) {
     return res.status(400).json({
       error: 'Bad Request',
-      message: 'Shared link owner permissions cannot be changed',
+      message: fixedOwner.message,
     });
   }
 
@@ -158,9 +185,9 @@ const rejectSharedLinkOwnerPermissionChanges = async (req, res, next) => {
   }
 
   try {
-    const SharedLink = mongoose.models.SharedLink;
-    const link = await SharedLink.findById(req.params.resourceId, 'user').lean();
-    const ownerId = link?.user?.toString();
+    const Model = mongoose.models[fixedOwner.model];
+    const resource = await Model.findById(req.params.resourceId, 'user').lean();
+    const ownerId = resource?.user?.toString();
     const touchesOwner = ownerId
       ? userMutations.some((principal) => principal.id?.toString() === ownerId)
       : false;
@@ -168,13 +195,13 @@ const rejectSharedLinkOwnerPermissionChanges = async (req, res, next) => {
     if (touchesOwner) {
       return res.status(400).json({
         error: 'Bad Request',
-        message: 'Shared link owner permissions cannot be changed',
+        message: fixedOwner.message,
       });
     }
   } catch (_error) {
     return res.status(500).json({
       error: 'Internal Server Error',
-      message: 'Failed to validate shared link owner permissions',
+      message: fixedOwner.failure,
     });
   }
 
@@ -203,7 +230,7 @@ router.put(
   checkResourcePermissionAccess(PermissionBits.SHARE),
   checkShareAccessUnlessAgentAdmin,
   checkSharePublicAccess,
-  rejectSharedLinkOwnerPermissionChanges,
+  rejectFixedOwnerPermissionChanges,
   configMiddleware,
   updateResourcePermissions,
 );

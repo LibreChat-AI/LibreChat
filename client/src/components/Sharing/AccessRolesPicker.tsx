@@ -41,10 +41,12 @@ export default function AccessRolesPicker({
   };
 
   const ownerRoleId = RESOURCE_CONFIGS[resourceType]?.defaultOwnerRoleId;
-  const filteredRoles =
-    resourceType === ResourceType.SHARED_LINK
-      ? (accessRoles || []).filter((role) => role.accessRoleId !== ownerRoleId)
-      : accessRoles || [];
+  /** These resources' owner is fixed by the resource itself, so the role is never granted. */
+  const hidesOwnerRole =
+    resourceType === ResourceType.SHARED_LINK || resourceType === ResourceType.CHAT_PROJECT;
+  const filteredRoles = hidesOwnerRole
+    ? (accessRoles || []).filter((role) => role.accessRoleId !== ownerRoleId)
+    : accessRoles || [];
 
   const selectedRole = accessRoles?.find((role) => role.accessRoleId === selectedRoleId);
   const selectedRoleInfo = selectedRole ? getLocalizedRoleInfo(selectedRole.accessRoleId) : null;

@@ -50,6 +50,8 @@ import { CatalogContent } from '~/components/Chat/Input/Composer/Catalog';
 import { NotificationSeverity, type LocalizeFunction } from '~/common';
 type ProjectResourcesProps = {
   project: { _id: string; fileCount?: number };
+  /** Only the project's owner attaches and removes files; members of a shared project read them. */
+  canManage?: boolean;
 };
 
 type UploadState = {
@@ -92,7 +94,7 @@ const isEligibleFile = (file: TFile) =>
   file.embedded === true &&
   file.context === FileContext.message_attachment &&
   (!file.expiredAt || new Date(file.expiredAt).getTime() > Date.now());
-export default function ProjectResources({ project }: ProjectResourcesProps) {
+export default function ProjectResources({ project, canManage = true }: ProjectResourcesProps) {
   const localize = useLocalize();
   const { agentsConfig } = useGetAgentsConfig();
   const { fileSearchEnabled } = useAgentCapabilities(
@@ -143,7 +145,7 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
   const availableFilesQuery = useProjectAvailableFilesInfiniteQuery(
     project._id,
     { search: deferredPickerSearch || undefined, limit: 20 },
-    { enabled: isPickerOpen },
+    { enabled: canManage && isPickerOpen },
   );
   const {
     data: availableFilesData,
@@ -404,49 +406,51 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
             }
           />
         </div>
-        <FileUpload ref={inputRef} handleFileChange={handleUploadChange}>
-          <DropdownPopup
-            portal={true}
-            focusLoop={true}
-            unmountOnHide={true}
-            menuId={fileMenuId}
-            isOpen={isFileMenuOpen}
-            setIsOpen={setIsFileMenuOpen}
-            trigger={
-              <Ariakit.MenuButton
-                disabled={!hasFileCapacity || uploadFile.isLoading || addFile.isLoading}
-                className="aria-expanded:bg-surface-hover"
-                render={<Button type="button" variant="outline" size="sm" />}
-              >
-                <Plus className="size-4" aria-hidden="true" />
-                {localize('com_ui_project_add_files')}
-                <ChevronDown className="size-3.5" aria-hidden="true" />
-              </Ariakit.MenuButton>
-            }
-            items={[
-              ...(canUploadFromDevice
-                ? [
-                    {
-                      label: localize('com_ui_project_upload_file'),
-                      icon: <Upload className="text-text-secondary size-4" aria-hidden="true" />,
-                      onClick: () => inputRef.current?.click(),
-                    },
-                  ]
-                : []),
-              {
-                label: localize('com_ui_project_choose_file'),
-                icon: <Link2 className="text-text-secondary size-4" aria-hidden="true" />,
-                onClick: () => setIsPickerOpen(true),
-                hideOnClick: false,
-                ref: pickerMenuRef,
-                render: (props) => <button {...props} />,
-              },
-            ]}
-          />
-        </FileUpload>
+        {canManage && (
+          <FileUpload ref={inputRef} handleFileChange={handleUploadChange}>
+            <DropdownPopup
+              portal={true}
+              focusLoop={true}
+              unmountOnHide={true}
+              menuId={fileMenuId}
+              isOpen={isFileMenuOpen}
+              setIsOpen={setIsFileMenuOpen}
+              trigger={
+                <Ariakit.MenuButton
+                  disabled={!hasFileCapacity || uploadFile.isLoading || addFile.isLoading}
+                  className="aria-expanded:bg-surface-hover"
+                  render={<Button type="button" variant="outline" size="sm" />}
+                >
+                  <Plus className="size-4" aria-hidden="true" />
+                  {localize('com_ui_project_add_files')}
+                  <ChevronDown className="size-3.5" aria-hidden="true" />
+                </Ariakit.MenuButton>
+              }
+              items={[
+                ...(canUploadFromDevice
+                  ? [
+                      {
+                        label: localize('com_ui_project_upload_file'),
+                        icon: <Upload className="text-text-secondary size-4" aria-hidden="true" />,
+                        onClick: () => inputRef.current?.click(),
+                      },
+                    ]
+                  : []),
+                {
+                  label: localize('com_ui_project_choose_file'),
+                  icon: <Link2 className="text-text-secondary size-4" aria-hidden="true" />,
+                  onClick: () => setIsPickerOpen(true),
+                  hideOnClick: false,
+                  ref: pickerMenuRef,
+                  render: (props) => <button {...props} />,
+                },
+              ]}
+            />
+          </FileUpload>
+        )}
       </div>
 
-      {!hasFileCapacity && (
+      {canManage && !hasFileCapacity && (
         <p className="text-text-secondary mb-3 text-xs" role="note">
           {localize('com_ui_project_file_limit', { count: projectFileLimit })}
         </p>
@@ -566,19 +570,21 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
                 >
                   {statusLabel(localize, file.availability)}
                 </span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 shrink-0"
-                  aria-label={localize('com_ui_project_remove_file', {
-                    name: file.filename ?? file.file_id,
-                  })}
-                  onClick={() => void remove(file.file_id)}
-                  disabled={removeFile.isLoading}
-                >
-                  <Trash2 className="size-4" aria-hidden="true" />
-                </Button>
+                {canManage && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0"
+                    aria-label={localize('com_ui_project_remove_file', {
+                      name: file.filename ?? file.file_id,
+                    })}
+                    onClick={() => void remove(file.file_id)}
+                    disabled={removeFile.isLoading}
+                  >
+                    <Trash2 className="size-4" aria-hidden="true" />
+                  </Button>
+                )}
               </div>
             ))}
             {!uploading.length && !projectFiles?.length && (

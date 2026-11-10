@@ -54,6 +54,8 @@ function hasExplicitConfig(
       return interfaceConfig?.skills !== undefined;
     case PermissionTypes.SHARED_LINKS:
       return interfaceConfig?.sharedLinks !== undefined;
+    case PermissionTypes.PROJECTS:
+      return interfaceConfig?.projects !== undefined;
     case PermissionTypes.SCHEDULES: {
       // `schedules` is dual-purpose. The BOOLEAN form is the RUNTIME kill switch read
       // by getLimits, NOT a permission config: treating it as explicit would write
@@ -303,6 +305,8 @@ export async function updateInterfacePermissions({
       typeof defaults.sharedLinks === 'object' ? defaults.sharedLinks?.share : undefined;
     const sharedLinksDefaultPublic =
       typeof defaults.sharedLinks === 'object' ? defaults.sharedLinks?.public : undefined;
+    const projectsDefaultShare = defaults.projects?.share;
+    const projectsDefaultPublic = defaults.projects?.public;
 
     const allPermissions: Partial<Record<PermissionTypes, Record<string, boolean | undefined>>> = {
       [PermissionTypes.PROMPTS]: {
@@ -625,6 +629,18 @@ export async function updateInterfacePermissions({
               ),
             }
           : {}),
+      },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.SHARE]: getPermissionValue(
+          loadedInterface.projects?.share,
+          defaultPerms[PermissionTypes.PROJECTS]?.[Permissions.SHARE],
+          projectsDefaultShare,
+        ),
+        [Permissions.SHARE_PUBLIC]: getPermissionValue(
+          loadedInterface.projects?.public,
+          defaultPerms[PermissionTypes.PROJECTS]?.[Permissions.SHARE_PUBLIC],
+          projectsDefaultPublic,
+        ),
       },
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: getPermissionValue(

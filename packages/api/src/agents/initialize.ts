@@ -105,6 +105,11 @@ import {
   isFileAuthoringToolDefinition,
 } from './tools';
 import {
+  formatChatProjectInstructions,
+  getChatProjectFileOwnerId,
+  hydrateChatProjectContextResources,
+} from '../projects/context';
+import {
   normalizeServerName,
   requiresEphemeralUserConnection,
   splitMCPToolKey,
@@ -119,10 +124,6 @@ import {
   restoreAgentInferenceInput,
   retainAgentInferenceInput,
 } from './inference';
-import {
-  formatChatProjectInstructions,
-  hydrateChatProjectContextResources,
-} from '../projects/context';
 import { assertChatProjectInstructions, ChatProjectResourcesChangedError } from '../projects/turn';
 import { extractAgentContent, extractSkillContent } from '../protection/adapters/submissions';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
@@ -320,6 +321,7 @@ function addProjectFilesToFileSearch(
   appConfig: AppConfig | undefined,
   fileSearchAvailable?: boolean,
   provisionState?: ProvisionState,
+  requesterId?: string,
 ): { resources: AgentToolResources | undefined; provisionState?: ProvisionState } {
   if (files == null || files.length === 0) {
     return { resources, provisionState };
@@ -348,7 +350,10 @@ function addProjectFilesToFileSearch(
       file.embedded === true ||
       file.metadata?.searchDestination !== true ||
       !canToolResourceConsume(EToolResources.file_search, file.type) ||
-      queuedIds.has(file.file_id)
+      queuedIds.has(file.file_id) ||
+      /** Embedding runs as the requester; a shared project's owner file would land under
+       *  the wrong owner, so it waits until its owner's own turn embeds it. */
+      (requesterId != null && file.user != null && file.user !== requesterId)
     ) {
       continue;
     }
@@ -387,10 +392,12 @@ async function resolveRuntimeProjectFiles({
   getProjectFiles: GetProjectFiles;
   filters?: AppConfig['filters'];
 }): Promise<TFile[]> {
+  /** Project files belong to the project owner, also when the project is shared. */
+  const fileOwnerId = getChatProjectFileOwnerId(context, scope.userId);
   const files = await resolveChatProjectFiles({
     project: context,
     resources: context.resources,
-    userId: scope.userId,
+    userId: fileOwnerId,
     tenantId: scope.tenantId ?? undefined,
     getProjectFiles,
   });
@@ -399,7 +406,7 @@ async function resolveRuntimeProjectFiles({
   }
   const policyFiles = await resolveChatProjectPolicyFiles({
     project: { file_ids: files.map((file) => file.file_id) },
-    userId: scope.userId,
+    userId: fileOwnerId,
     tenantId: scope.tenantId ?? undefined,
     getProjectFiles,
   });
@@ -2162,6 +2169,7 @@ export async function initializeAgent(
     appConfig,
     params.fileSearchAvailable,
     primedProvisionState,
+    requestFileOwnerScope?.userId,
   );
   runtimeToolResources = projectResources.resources;
   const provisionState = projectResources.provisionState;

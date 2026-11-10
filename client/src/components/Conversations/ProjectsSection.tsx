@@ -39,10 +39,10 @@ import {
   useActiveJobs,
   useConversationsInfiniteQuery,
 } from '~/data-provider';
+import { useLocalize, useLocalStorage, useNewConvo, useProjectPermissions } from '~/hooks';
 import ProjectCreateDialog from '~/components/Projects/ProjectCreateDialog';
 import ProjectDeleteDialog from '~/components/Projects/ProjectDeleteDialog';
 import ProjectEditDialog from '~/components/Projects/ProjectEditDialog';
-import { useLocalize, useLocalStorage, useNewConvo } from '~/hooks';
 import { clearMessagesCache, cn, rowActionClasses } from '~/utils';
 import { Collapse } from '~/components/ui';
 import Convo from './Convo';
@@ -186,6 +186,7 @@ const ProjectItem = memo(
     const { newConversation } = useNewConvo();
     const conversationId = useRecoilValue(store.conversationIdByIndex(0));
     const menuId = useId();
+    const permissions = useProjectPermissions(project);
     const [expanded, setExpanded] = useState(defaultExpanded);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     /** The dialog items keep the menu open so it does not steal focus from the
@@ -278,26 +279,34 @@ const ProjectItem = memo(
           icon: <Folder className="text-text-secondary size-4" aria-hidden="true" />,
           onClick: openProject,
         },
-        {
-          id: `${menuId}-rename`,
-          label: localize('com_ui_edit_project'),
-          icon: <Pencil className="text-text-secondary size-4" aria-hidden="true" />,
-          onClick: () => setIsEditOpen(true),
-          hideOnClick: false,
-          ref: editMenuRef,
-          render: (props) => <button {...props} />,
-        },
-        {
-          id: `${menuId}-delete`,
-          label: localize('com_ui_delete'),
-          icon: <Trash2 className="text-text-secondary size-4" aria-hidden="true" />,
-          onClick: () => setIsDeleteOpen(true),
-          hideOnClick: false,
-          ref: deleteMenuRef,
-          render: (props) => <button {...props} />,
-        },
+        ...(permissions.canEdit
+          ? [
+              {
+                id: `${menuId}-rename`,
+                label: localize('com_ui_edit_project'),
+                icon: <Pencil className="text-text-secondary size-4" aria-hidden="true" />,
+                onClick: () => setIsEditOpen(true),
+                hideOnClick: false,
+                ref: editMenuRef,
+                render: (props) => <button {...props} />,
+              },
+            ]
+          : []),
+        ...(permissions.canManage
+          ? [
+              {
+                id: `${menuId}-delete`,
+                label: localize('com_ui_delete'),
+                icon: <Trash2 className="text-text-secondary size-4" aria-hidden="true" />,
+                onClick: () => setIsDeleteOpen(true),
+                hideOnClick: false,
+                ref: deleteMenuRef,
+                render: (props) => <button {...props} />,
+              },
+            ]
+          : []),
       ],
-      [localize, menuId, openProject],
+      [localize, menuId, openProject, permissions.canEdit, permissions.canManage],
     );
 
     return (
@@ -399,6 +408,8 @@ const ProjectItem = memo(
     prevProps.project._id === nextProps.project._id &&
     prevProps.project.name === nextProps.project.name &&
     prevProps.project.description === nextProps.project.description &&
+    prevProps.project.isShared === nextProps.project.isShared &&
+    prevProps.project.permissions === nextProps.project.permissions &&
     prevProps.project.conversationCount === nextProps.project.conversationCount &&
     prevProps.project.updatedAt === nextProps.project.updatedAt &&
     prevProps.defaultExpanded === nextProps.defaultExpanded &&

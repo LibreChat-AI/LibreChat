@@ -25,6 +25,7 @@ const accessRoleSchema: Schema<IAccessRole> = new Schema<IAccessRole>(
         'remoteAgent',
         'skill',
         'sharedLink',
+        'chatProject',
       ],
       required: true,
       default: 'agent',

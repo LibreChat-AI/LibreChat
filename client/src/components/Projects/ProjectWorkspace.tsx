@@ -33,8 +33,8 @@ import {
   useGetStartupConfig,
   useProjectQuery,
 } from '~/data-provider';
+import { useElementSize, useLocalize, useNewConvo, useProjectPermissions } from '~/hooks';
 import ProjectInstructionsDialog from './ProjectInstructionsDialog';
-import { useElementSize, useLocalize, useNewConvo } from '~/hooks';
 import useDocumentDirection from '~/hooks/useDocumentDirection';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
@@ -43,6 +43,7 @@ import ProjectResources from './ProjectResources';
 import ProjectChatList from './ProjectChatList';
 import { clearMessagesCache } from '~/utils';
 import ProjectEditor from './ProjectEditor';
+import ShareProject from './ShareProject';
 import store from '~/store';
 
 type ChatSortField = 'updatedAt' | 'createdAt';
@@ -75,7 +76,7 @@ export default function ProjectWorkspace() {
   const [sortBy, setSortBy] = useState<ChatSortField>('updatedAt');
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [initialEditField, setInitialEditField] = useState<'name' | 'description'>('name');
-  const isEditOpen = editingProjectId === projectId || searchParams.get('edit') === '1';
+  const isEditRequested = editingProjectId === projectId || searchParams.get('edit') === '1';
   const [isInstructionsOpen, setIsInstructionsOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const projectMenuId = useId();
@@ -88,6 +89,7 @@ export default function ProjectWorkspace() {
   const deleteMenuRef = useRef<HTMLButtonElement>(null);
   const instructionsButtonRef = useRef<HTMLButtonElement>(null);
   const { data: project, isLoading: isProjectLoading } = useProjectQuery(projectId);
+  const permissions = useProjectPermissions(project);
   const { data: startupConfig } = useGetStartupConfig();
   const isRagEnabled = startupConfig?.ragEnabled === true;
   const conversation = useRecoilValue(store.conversationByIndex(0));
@@ -115,6 +117,9 @@ export default function ProjectWorkspace() {
     DETAILS_PANEL_MAX_MIN_SIZE,
     Math.max(0, Math.floor((detailsGroupHeight - DETAILS_PANEL_HANDLE_ALLOWANCE) / 2)),
   )}px`;
+
+  /** A viewer of a shared project cannot rename it, even via a stale `?edit=1` link. */
+  const isEditOpen = isEditRequested && permissions.canEdit;
 
   const startEditing = (field: 'name' | 'description') => {
     setInitialEditField(field);
@@ -220,32 +225,54 @@ export default function ProjectWorkspace() {
           <Folder className="size-5" aria-hidden="true" />
         </span>
         <h1 className="min-w-0 flex-1">
-          <Button
-            ref={titleButtonRef}
-            type="button"
-            variant="inline-edit"
-            onClick={() => startEditing('name')}
-            className="min-h-10 w-full min-w-0"
-          >
-            <span className="line-clamp-2 min-w-0 text-xl font-semibold tracking-tight wrap-anywhere md:line-clamp-1">
-              {project.name}
+          {permissions.canEdit ? (
+            <Button
+              ref={titleButtonRef}
+              type="button"
+              variant="inline-edit"
+              onClick={() => startEditing('name')}
+              className="min-h-10 w-full min-w-0"
+            >
+              <span className="line-clamp-2 min-w-0 text-xl font-semibold tracking-tight wrap-anywhere md:line-clamp-1">
+                {project.name}
+              </span>
+              <span className="sr-only">, {localize('com_ui_project_edit_name')}</span>
+            </Button>
+          ) : (
+            <span className="flex min-h-10 items-center">
+              <span className="line-clamp-2 min-w-0 text-xl font-semibold tracking-tight wrap-anywhere md:line-clamp-1">
+                {project.name}
+              </span>
             </span>
-            <span className="sr-only">, {localize('com_ui_project_edit_name')}</span>
-          </Button>
+          )}
         </h1>
       </div>
-      <Button
-        ref={descriptionButtonRef}
-        type="button"
-        variant="inline-edit"
-        onClick={() => startEditing('description')}
-        className="mt-1 min-h-10 w-full min-w-0"
-      >
-        <span className="text-text-secondary line-clamp-3 min-w-0 text-sm leading-relaxed font-normal wrap-anywhere">
-          {project.description || localize('com_ui_add_description')}
-        </span>
-        <span className="sr-only">, {localize('com_ui_project_edit_description')}</span>
-      </Button>
+      {permissions.isShared && (
+        <p className="text-text-secondary mt-1 text-xs">
+          {permissions.canEdit
+            ? localize('com_ui_project_shared_with_you_edit')
+            : localize('com_ui_project_shared_with_you')}
+        </p>
+      )}
+      {permissions.canEdit && (
+        <Button
+          ref={descriptionButtonRef}
+          type="button"
+          variant="inline-edit"
+          onClick={() => startEditing('description')}
+          className="mt-1 min-h-10 w-full min-w-0"
+        >
+          <span className="text-text-secondary line-clamp-3 min-w-0 text-sm leading-relaxed font-normal wrap-anywhere">
+            {project.description || localize('com_ui_add_description')}
+          </span>
+          <span className="sr-only">, {localize('com_ui_project_edit_description')}</span>
+        </Button>
+      )}
+      {!permissions.canEdit && project.description && (
+        <p className="text-text-secondary mt-1 line-clamp-3 min-w-0 text-sm leading-relaxed wrap-anywhere">
+          {project.description}
+        </p>
+      )}
     </div>
   );
 
@@ -274,17 +301,19 @@ export default function ProjectWorkspace() {
             }
           />
         </div>
-        <Button
-          ref={instructionsButtonRef}
-          type="button"
-          variant="ghost"
-          size="sm"
-          aria-label={localize('com_ui_project_edit_instructions')}
-          onClick={() => setIsInstructionsOpen(true)}
-        >
-          <Pencil className="size-4" aria-hidden="true" />
-          {localize('com_ui_edit')}
-        </Button>
+        {permissions.canEdit && (
+          <Button
+            ref={instructionsButtonRef}
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label={localize('com_ui_project_edit_instructions')}
+            onClick={() => setIsInstructionsOpen(true)}
+          >
+            <Pencil className="size-4" aria-hidden="true" />
+            {localize('com_ui_edit')}
+          </Button>
+        )}
       </div>
       <div
         role="region"
@@ -363,7 +392,7 @@ export default function ProjectWorkspace() {
   );
 
   const filesSection = isRagEnabled ? (
-    <ProjectResources key={project._id} project={project} />
+    <ProjectResources key={project._id} project={project} canManage={permissions.canManageFiles} />
   ) : null;
 
   /** react-resizable-panels reads drag deltas physically, so under RTL the group
@@ -463,33 +492,36 @@ export default function ProjectWorkspace() {
             <Plus className="size-4" aria-hidden="true" />
             <span className="hidden sm:inline">{localize('com_ui_new_chat')}</span>
           </Button>
-          <DropdownPopup
-            portal={true}
-            focusLoop={true}
-            unmountOnHide={true}
-            menuId={projectMenuId}
-            isOpen={isProjectMenuOpen}
-            setIsOpen={setIsProjectMenuOpen}
-            trigger={
-              <Ariakit.MenuButton
-                aria-label={localize('com_ui_project_options')}
-                className="aria-expanded:bg-surface-hover shrink-0"
-                render={<Button type="button" variant="outline" size="icon" />}
-              >
-                <MoreHorizontal className="size-5" aria-hidden="true" />
-              </Ariakit.MenuButton>
-            }
-            items={[
-              {
-                label: localize('com_ui_delete_project_action'),
-                icon: <Trash2 className="text-text-secondary size-4" aria-hidden="true" />,
-                onClick: () => setIsDeleteOpen(true),
-                hideOnClick: false,
-                ref: deleteMenuRef,
-                render: (props) => <button {...props} />,
-              },
-            ]}
-          />
+          {permissions.canManage && <ShareProject project={project} />}
+          {permissions.canManage && (
+            <DropdownPopup
+              portal={true}
+              focusLoop={true}
+              unmountOnHide={true}
+              menuId={projectMenuId}
+              isOpen={isProjectMenuOpen}
+              setIsOpen={setIsProjectMenuOpen}
+              trigger={
+                <Ariakit.MenuButton
+                  aria-label={localize('com_ui_project_options')}
+                  className="aria-expanded:bg-surface-hover shrink-0"
+                  render={<Button type="button" variant="outline" size="icon" />}
+                >
+                  <MoreHorizontal className="size-5" aria-hidden="true" />
+                </Ariakit.MenuButton>
+              }
+              items={[
+                {
+                  label: localize('com_ui_delete_project_action'),
+                  icon: <Trash2 className="text-text-secondary size-4" aria-hidden="true" />,
+                  onClick: () => setIsDeleteOpen(true),
+                  hideOnClick: false,
+                  ref: deleteMenuRef,
+                  render: (props) => <button {...props} />,
+                },
+              ]}
+            />
+          )}
         </div>
       </header>
 

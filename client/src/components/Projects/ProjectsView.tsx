@@ -1,18 +1,18 @@
 import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Ellipsis, Folder, FolderPlus, Pencil, Trash2 } from 'lucide-react';
+import { Ellipsis, Folder, FolderPlus, Pencil, Trash2, Users } from 'lucide-react';
 import { Button, Spinner, Skeleton, DropdownPopup, buttonVariants } from '@librechat/client';
 import type { TChatProject } from 'librechat-data-provider';
 import type { ProjectSort } from './ProjectsSortMenu';
 import type { MenuItemProps } from '~/common';
+import { useLocalize, useProjectPermissions } from '~/hooks';
 import { useProjectsInfiniteQuery } from '~/data-provider';
 import ProjectCreateDialog from './ProjectCreateDialog';
 import ProjectDeleteDialog from './ProjectDeleteDialog';
 import ProjectEditDialog from './ProjectEditDialog';
 import ProjectsSortMenu from './ProjectsSortMenu';
 import ProjectsNavBar from './ProjectsNavBar';
-import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 function formatActivity(project: TChatProject) {
@@ -50,28 +50,37 @@ function ProjectCard({
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const activity = formatActivity(project);
+  const permissions = useProjectPermissions(project);
   const menuItems = useMemo<MenuItemProps[]>(
     () => [
-      {
-        id: `${menuId}-edit`,
-        label: localize('com_ui_edit_project'),
-        icon: <Pencil className="text-text-secondary size-4" aria-hidden="true" />,
-        onClick: () => setIsEditOpen(true),
-        hideOnClick: false,
-        ref: editMenuRef,
-        render: (props) => <button {...props} />,
-      },
-      {
-        id: `${menuId}-delete`,
-        label: localize('com_ui_delete'),
-        icon: <Trash2 className="text-text-secondary size-4" aria-hidden="true" />,
-        onClick: () => setIsDeleteOpen(true),
-        hideOnClick: false,
-        ref: deleteMenuRef,
-        render: (props) => <button {...props} />,
-      },
+      ...(permissions.canEdit
+        ? [
+            {
+              id: `${menuId}-edit`,
+              label: localize('com_ui_edit_project'),
+              icon: <Pencil className="text-text-secondary size-4" aria-hidden="true" />,
+              onClick: () => setIsEditOpen(true),
+              hideOnClick: false,
+              ref: editMenuRef,
+              render: (props) => <button {...props} />,
+            },
+          ]
+        : []),
+      ...(permissions.canManage
+        ? [
+            {
+              id: `${menuId}-delete`,
+              label: localize('com_ui_delete'),
+              icon: <Trash2 className="text-text-secondary size-4" aria-hidden="true" />,
+              onClick: () => setIsDeleteOpen(true),
+              hideOnClick: false,
+              ref: deleteMenuRef,
+              render: (props) => <button {...props} />,
+            },
+          ]
+        : []),
     ],
-    [localize, menuId],
+    [localize, menuId, permissions.canEdit, permissions.canManage],
   );
 
   return (
@@ -101,6 +110,15 @@ function ProjectCard({
           </span>
         ) : null}
         <span className="text-text-secondary mt-auto flex max-w-full min-w-0 items-center gap-2 pt-3 text-xs tabular-nums">
+          {permissions.isShared ? (
+            <>
+              <span className="flex items-center gap-1">
+                <Users className="size-3.5" aria-hidden="true" />
+                {localize('com_ui_project_shared')}
+              </span>
+              <span aria-hidden="true">·</span>
+            </>
+          ) : null}
           <span>
             {project.conversationCount === 1
               ? localize('com_ui_project_chat_count_single')
@@ -118,32 +136,34 @@ function ProjectCard({
           ) : null}
         </span>
       </Button>
-      <div className="absolute inset-e-2 top-2">
-        <DropdownPopup
-          portal={true}
-          focusLoop={true}
-          unmountOnHide={true}
-          menuId={menuId}
-          isOpen={isMenuOpen}
-          setIsOpen={setIsMenuOpen}
-          className="z-[125]"
-          minWidth="11rem"
-          iconClassName="me-2 text-text-secondary"
-          trigger={
-            <Ariakit.MenuButton
-              aria-label={localize('com_ui_more_options')}
-              className={cn(
-                buttonVariants({ variant: 'row-action', size: 'icon-sm' }),
-                'text-text-secondary rounded-lg',
-                isMenuOpen && 'bg-surface-hover-alt text-text-primary',
-              )}
-            >
-              <Ellipsis className="h-4 w-4" aria-hidden="true" />
-            </Ariakit.MenuButton>
-          }
-          items={menuItems}
-        />
-      </div>
+      {menuItems.length > 0 && (
+        <div className="absolute inset-e-2 top-2">
+          <DropdownPopup
+            portal={true}
+            focusLoop={true}
+            unmountOnHide={true}
+            menuId={menuId}
+            isOpen={isMenuOpen}
+            setIsOpen={setIsMenuOpen}
+            className="z-[125]"
+            minWidth="11rem"
+            iconClassName="me-2 text-text-secondary"
+            trigger={
+              <Ariakit.MenuButton
+                aria-label={localize('com_ui_more_options')}
+                className={cn(
+                  buttonVariants({ variant: 'row-action', size: 'icon-sm' }),
+                  'text-text-secondary rounded-lg',
+                  isMenuOpen && 'bg-surface-hover-alt text-text-primary',
+                )}
+              >
+                <Ellipsis className="h-4 w-4" aria-hidden="true" />
+              </Ariakit.MenuButton>
+            }
+            items={menuItems}
+          />
+        </div>
+      )}
       <ProjectEditDialog
         open={isEditOpen}
         onOpenChange={(open) => closeMenuWith(setIsEditOpen, open)}
