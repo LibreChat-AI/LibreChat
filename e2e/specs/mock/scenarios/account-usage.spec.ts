@@ -7,6 +7,8 @@ test.use({ serviceWorkers: 'block' });
 test('opens account credits and manages them in Billing @scenario:account-usage-billing', async ({
   page,
 }, testInfo) => {
+  await page.clock.install();
+  let tokenCredits = 72000;
   await page.route('**/api/config', async (route) => {
     const response = await route.fetch();
     const config = await response.json();
@@ -17,7 +19,7 @@ test('opens account credits and manages them in Billing @scenario:account-usage-
   });
   await page.route('**/api/balance', (route) =>
     route.fulfill({
-      json: { tokenCredits: 72000, autoRefillEnabled: false },
+      json: { tokenCredits, autoRefillEnabled: false },
     }),
   );
   await page.goto('/c/new');
@@ -75,4 +77,12 @@ test('opens account credits and manages them in Billing @scenario:account-usage-
   await trigger.click();
   await expect(usage).toBeVisible();
   await expect(usage).toHaveCSS('animation-name', 'none');
+  await page.keyboard.press('Escape');
+  await expect(usage).toBeHidden();
+  tokenCredits = 41000;
+  // Age the cached reading while keeping the same page focused and mounted.
+  await page.clock.fastForward(30_001);
+  await trigger.click();
+  await expect(usage.getByTestId('balance-value')).toHaveText('41,000 credits');
+  await expect(usage.getByText('41% left')).toBeVisible();
 });

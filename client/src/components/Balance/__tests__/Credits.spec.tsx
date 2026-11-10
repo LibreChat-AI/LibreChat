@@ -15,6 +15,11 @@ const openCard = async () => {
   await interaction.click(await screen.findByRole('button', { name: 'Account usage' }));
   return screen.findByRole('dialog', { name: 'Account usage' });
 };
+const closeCard = async () => {
+  const interaction = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+  await interaction.keyboard('{Escape}');
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+};
 
 describe('sidebar credits', () => {
   beforeEach(() => {
@@ -52,6 +57,43 @@ describe('sidebar credits', () => {
     await interaction.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('refreshes stale balances on reopen while reusing a fresh balance', async () => {
+    renderCredits();
+    let card = await openCard();
+    expect(await within(card).findByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
+    await closeCard();
+    harness.getBalance.mockResolvedValue(response({ ...balance, tokenCredits: 1_500_000 }));
+
+    card = await openCard();
+    expect(within(card).getByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
+    expect(harness.getBalance).toHaveBeenCalledTimes(1);
+    await closeCard();
+    act(() => jest.advanceTimersByTime(30_001));
+
+    card = await openCard();
+    await waitFor(() =>
+      expect(within(card).getByTestId('balance-value')).toHaveTextContent('1,500,000 credits'),
+    );
+    expect(harness.getBalance).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a failed balance request when reopened', async () => {
+    harness.getBalance.mockRejectedValue(new Error('Balance service unavailable'));
+    renderCredits();
+    let card = await openCard();
+    expect(await within(card).findByRole('alert')).toHaveTextContent("Couldn't load your balance");
+    const attempts = harness.getBalance.mock.calls.length;
+    await closeCard();
+    const pending = deferred<TBalanceResponse>();
+    harness.getBalance.mockReturnValue(pending.promise);
+
+    card = await openCard();
+    expect(within(card).getByTestId('balance-summary')).toHaveAttribute('aria-busy', 'true');
+    pending.resolve(balance);
+    expect(await within(card).findByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
+    expect(harness.getBalance).toHaveBeenCalledTimes(attempts + 1);
   });
 
   it.each(['disabled', 'signed out'])('does not request a balance when %s', async (reason) => {
@@ -141,6 +183,13 @@ describe('sidebar credits', () => {
     expect(within(card).getByTestId('balance-value')).toHaveTextContent('0 credits');
     expect(within(card).getByRole('status')).toHaveTextContent('Out of credits');
     expect(within(card).queryByRole('alert')).not.toBeInTheDocument();
+    await closeCard();
+    harness.getBalance.mockResolvedValue(response(balance));
+    const reopened = await openCard();
+    await waitFor(() =>
+      expect(within(reopened).getByTestId('balance-value')).toHaveTextContent('3,100,000 credits'),
+    );
+    expect(harness.getBalance).toHaveBeenCalledTimes(3);
   });
 
   it('shows loading until the balance HTTP response arrives', async () => {
@@ -149,6 +198,7 @@ describe('sidebar credits', () => {
     renderCredits();
     const card = await openCard();
     expect(within(card).getByTestId('balance-summary')).toHaveAttribute('aria-busy', 'true');
+    expect(harness.getBalance).toHaveBeenCalledTimes(1);
     pending.resolve(balance);
     expect(await within(card).findByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
   });
@@ -156,9 +206,12 @@ describe('sidebar credits', () => {
   it('shows an alert when the initial balance request fails', async () => {
     harness.getBalance.mockRejectedValue(new Error('Balance service unavailable'));
     renderCredits();
+    await waitFor(() =>
+      expect(harness.client.getQueryState([QueryKeys.balance])?.status).toBe('error'),
+    );
     const card = await openCard();
     expect(await within(card).findByRole('alert')).toHaveTextContent("Couldn't load your balance");
-    expect(harness.getBalance).toHaveBeenCalledTimes(1);
+    expect(harness.getBalance).toHaveBeenCalledTimes(2);
   });
 
   it.each(['credits', 'currency', 'dollars'])(

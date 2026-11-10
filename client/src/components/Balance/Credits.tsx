@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react';
 import { useSetAtom } from 'jotai';
 import { CircleGauge } from 'lucide-react';
-import { SettingsTabValues } from 'librechat-data-provider';
+import { useQueryClient } from '@tanstack/react-query';
+import { QueryKeys, SettingsTabValues } from 'librechat-data-provider';
 import {
   Button,
   Popover,
@@ -22,18 +23,34 @@ export default function Credits({ mobile = false }: { mobile?: boolean }) {
   const localize = useLocalize();
   const side = inlineSide(useDirection(), 'end');
   const { isAuthenticated } = useAuthContext();
+  const queryClient = useQueryClient();
   const { enabled, state, currency } = useBalanceSummary();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const openingSettings = useRef(false);
   const openSettings = useSetAtom(openSettingsAtom);
+  const onOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (!nextOpen) {
+      return;
+    }
+    void queryClient.refetchQueries(
+      {
+        queryKey: [QueryKeys.balance],
+        exact: true,
+        type: 'active',
+        predicate: (query) => query.isStale() || query.state.status === 'error',
+      },
+      { cancelRefetch: false },
+    );
+  };
   if (!enabled || !isAuthenticated || state.status === 'empty') {
     return null;
   }
 
   const label = localize('com_ui_account_usage');
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={onOpenChange}>
       <TooltipAnchor
         side={side}
         description={label}
