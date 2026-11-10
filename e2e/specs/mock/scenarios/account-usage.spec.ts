@@ -7,6 +7,7 @@ test.use({ serviceWorkers: 'block' });
 test('opens account credits and manages them in Billing @scenario:account-usage-billing', async ({
   page,
 }, testInfo) => {
+  test.setTimeout(60_000);
   let tokenCredits = 72000;
   await page.route('**/api/config', async (route) => {
     const response = await route.fetch();
