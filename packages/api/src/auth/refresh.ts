@@ -194,10 +194,10 @@ export interface AdminRefreshOptions {
    *  refreshed id_token's `sid` claim before the response is returned. */
   boundProviderSession?: ProviderSessionRef | null;
   /**
-   * Identity the bridge lookup resolved (`binding?.userId ?? options.userId`,
-   * `binding?.tenantId ?? options.tenantId` — see {@link resolveAdminRefreshToken}). Used to key
-   * the post-grant bridge store so it lands on the same row a retry's lookup will find, even when
-   * a later step (e.g. the user lookup itself) fails before a user is resolved.
+   * Identity the bridge lookup resolved: `binding?.userId ?? options.userId`, and the request
+   * tenant `options.tenantId` — never `binding?.tenantId` (see {@link resolveAdminRefreshToken}).
+   * Used to key the post-grant bridge store so it lands on the same row a retry's lookup will
+   * find, even when a later step (e.g. the user lookup itself) fails before a user is resolved.
    */
   bridgeIdentity?: { userId?: string; tenantId?: string };
 }
