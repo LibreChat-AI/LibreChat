@@ -5,13 +5,14 @@ import type { ChannelLinkView } from 'librechat-data-provider';
 export async function updateSlackLinkReply(
   url: string,
   view: ChannelLinkView,
+  timeoutMs: number,
   transport: (url: string, init: RequestInit) => Promise<Response> = fetch,
 ): Promise<void> {
   if (!isSlackReplyURL(url)) throw new TypeError('Invalid Slack reply URL');
   const result = await transport(url, {
     method: 'POST',
     redirect: 'error',
-    signal: AbortSignal.timeout(2000),
+    signal: AbortSignal.timeout(timeoutMs),
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...channelLinkMessage(view), replace_original: true }),
   });

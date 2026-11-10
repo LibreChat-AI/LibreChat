@@ -21,7 +21,12 @@ it('replaces the private source card with a short confirmation button, then term
   const transport = jest
     .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
     .mockResolvedValue(new Response('ok'));
-  await updateSlackLinkReply('https://hooks.slack.com/actions/T1/B1/secret', view, transport);
+  await updateSlackLinkReply(
+    'https://hooks.slack.com/actions/T1/B1/secret',
+    view,
+    10000,
+    transport,
+  );
   const init = transport.mock.calls[0][1]!;
   expect(init.redirect).toBe('error');
   const body = JSON.parse(String(init.body));
@@ -42,6 +47,26 @@ it('does not accept an unsuccessful Slack write as delivery', async () => {
     .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
     .mockResolvedValue(new Response('', { status: 503 }));
   await expect(
-    updateSlackLinkReply('https://hooks.slack.com/actions/T1/B1/secret', view, transport),
+    updateSlackLinkReply('https://hooks.slack.com/actions/T1/B1/secret', view, 10000, transport),
   ).rejects.toThrow('unavailable');
+});
+
+it('honors the injected deadline when Slack is slower than the configured budget', async () => {
+  const transport = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(
+    (_url, init) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(new Response('ok')), 100);
+        init?.signal?.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            reject(init.signal?.reason);
+          },
+          { once: true },
+        );
+      }),
+  );
+  await expect(
+    updateSlackLinkReply('https://hooks.slack.com/actions/T1/B1/secret', view, 10, transport),
+  ).rejects.toMatchObject({ name: 'TimeoutError' });
 });

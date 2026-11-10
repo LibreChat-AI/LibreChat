@@ -21,6 +21,7 @@ let app: express.Express;
 let db: ReturnType<typeof createMethods>;
 let identity: ReturnType<typeof createChannelIdentityService>;
 let mode: 'shared' | 'per_user';
+let replyUpdate: jest.Mock<Promise<void>, []>;
 
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({
@@ -62,7 +63,14 @@ beforeEach(async () => {
     verifySlackToken: async () => null,
     logError: () => {},
   });
+  replyUpdate = jest.fn<Promise<void>, []>().mockResolvedValue(undefined);
   identity = createChannelIdentityService({
+    reply: {
+      encrypt: async (url) => Buffer.from(url).toString('base64'),
+      decrypt: async (ciphertext) => Buffer.from(ciphertext, 'base64').toString(),
+      update: replyUpdate,
+      onError: jest.fn(),
+    },
     storage: createChannelIdentityStorage(mongoose),
     channelIsCurrent: async (actor) => {
       const channel = await db.getAgentChannel(actor.channelId);
@@ -102,6 +110,7 @@ beforeEach(async () => {
   app.get('/service/:channelId/identity/:externalUserId', handlers.inspectActor);
   app.post('/service/:channelId/identity/:externalUserId/ticket', handlers.issue);
   app.post('/service/:channelId/identity/:externalUserId/confirm', handlers.confirm);
+  app.post('/service/:channelId/identity/:externalUserId/reply', handlers.reply);
 });
 const svc = (path: string) =>
   request(app)
@@ -117,7 +126,7 @@ async function accepted(user = 'user-a') {
   const accept = await browser('/links/accept', user)
     .send({ ticket, revision: preview.body.value.revision })
     .expect(200);
-  return { ticket, accepted: accept.body.value };
+  return { ticket, accepted: accept.body.value, issued: issued.body.value };
 }
 
 test('HTTP acceptance plus verified actor confirmation activates without exposing credentials or internal user ID', async () => {
@@ -262,4 +271,42 @@ test('lets an owner withdraw existing consent after the channel is disabled', as
       }),
     ).toMatchObject({ ok: false, error: { code: 'revoked' } });
   });
+});
+
+test('acknowledges registered Slack callbacks before a slow outbound message update settles', async () => {
+  const { issued } = await accepted();
+  let release!: () => void;
+  let started!: () => void;
+  let finished!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const settled = new Promise<void>((resolve) => {
+    finished = resolve;
+  });
+  let completed = false;
+  replyUpdate.mockImplementationOnce(async () => {
+    started();
+    await waiting;
+    completed = true;
+    finished();
+  });
+  try {
+    const response = await svc('/service/channel-a/identity/U1/reply')
+      .send({
+        linkId: issued.linkId,
+        attempt: issued.attempt,
+        responseUrl: 'https://hooks.slack.com/actions/T1/B1/secret',
+      })
+      .expect(200);
+    expect(response.body).toEqual({ ok: true, value: null });
+    await entered;
+    expect(completed).toBe(false);
+  } finally {
+    release();
+  }
+  await settled;
 });

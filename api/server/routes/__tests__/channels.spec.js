@@ -57,10 +57,9 @@ jest.mock('~/server/services/Channels', () => {
     ),
     runs: Object.fromEntries(names.map((name) => [name, handler(name)])),
     identityHandlers: Object.fromEntries(
-      ['inspectActor', 'issue', 'confirm', 'preview', 'accept', 'list', 'revoke'].map((name) => [
-        name,
-        handler(`identity.${name}`),
-      ]),
+      ['inspectActor', 'issue', 'confirm', 'reply', 'preview', 'accept', 'list', 'revoke'].map(
+        (name) => [name, handler(`identity.${name}`)],
+      ),
     ),
     feedbackHandlers: { reaction: handler('reaction') },
   };
@@ -108,6 +107,9 @@ it('mounts feedback and service-side actor confirmation separately', async () =>
   await request(app)
     .post('/channels/service/channel/identity/actor/confirm')
     .expect(200, { handler: 'identity.confirm' });
+  await request(app)
+    .post('/channels/service/channel/identity/actor/reply')
+    .expect(200, { handler: 'identity.reply' });
 });
 
 it('requires browser authentication and same-origin checks before link acceptance', async () => {

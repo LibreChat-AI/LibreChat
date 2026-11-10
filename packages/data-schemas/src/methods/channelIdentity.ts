@@ -22,10 +22,10 @@ export interface ChannelIdentityStorage {
     record: ChannelIdentityRecord,
     reply: NonNullable<ChannelIdentityRecord['slackReply']>,
   ): Promise<boolean>;
-  markChannelIdentityReply(
+  claimChannelIdentityReply(
     record: ChannelIdentityRecord,
     reply: NonNullable<ChannelIdentityRecord['slackReply']>,
-  ): Promise<void>;
+  ): Promise<boolean>;
   clearChannelIdentityReply(tenantId: string, linkId: string, attempt: string): Promise<void>;
   /** Full private replacement; every state joins the open channel fence and exact identity CAS. */
   saveChannelIdentity(
@@ -82,24 +82,29 @@ export function createChannelIdentityStorage(
           ticketHash: reply.attempt,
           state: { $in: ['pending', 'accepted'] },
           identity: record.identity,
+          slackReply: { $exists: false },
         },
         { $set: { slackReply: reply } },
         { runValidators: true },
       );
       return result.matchedCount === 1;
     },
-    async markChannelIdentityReply(record, reply) {
+    async claimChannelIdentityReply(record, reply) {
       assertChannelTenant(record.tenantId);
-      await model().updateOne(
+      const result = await model().updateOne(
         {
           tenantId: record.tenantId,
           linkId: record.linkId,
           revision: record.revision,
+          state: 'accepted',
+          ticketHash: reply.attempt,
           'slackReply.encryptedUrl': reply.encryptedUrl,
           'slackReply.attempt': reply.attempt,
+          'slackReply.claimed': { $ne: true },
         },
-        { $set: { 'slackReply.deliveredRevision': record.revision } },
+        { $set: { 'slackReply.claimed': true } },
       );
+      return result.modifiedCount === 1;
     },
     async clearChannelIdentityReply(tenantId, linkId, attempt) {
       assertChannelTenant(tenantId);

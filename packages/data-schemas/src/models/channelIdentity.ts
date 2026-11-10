@@ -18,7 +18,7 @@ export interface ChannelIdentityRecord {
     encryptedUrl: string;
     expiresAtMs: number;
     attempt: string;
-    deliveredRevision?: string;
+    claimed?: boolean;
   };
 }
 
@@ -54,7 +54,7 @@ export function createChannelIdentityModel(
             encryptedUrl: { type: String, required: true },
             expiresAtMs: { type: Number, required: true },
             attempt: { type: String, required: true },
-            deliveredRevision: String,
+            claimed: Boolean,
           },
           { _id: false },
         ),

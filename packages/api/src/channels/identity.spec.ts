@@ -440,12 +440,13 @@ it(
     expect(
       await service.registerReply(identity, issued.linkId, issued.attempt, replyURL),
     ).toMatchObject({ ok: true });
+    await service.notifyReply(identity, issued.linkId, issued.attempt);
     expect(update).toHaveBeenCalledTimes(1);
   }),
 );
 
 it(
-  'retains committed consent through Slack failures and retries safely from browser preview',
+  'retains committed consent without retrying an ambiguously failed Slack write',
   scoped(async () => {
     const { update, onError } = replies();
     const issued = value(await service.issue(identity));
@@ -456,7 +457,7 @@ it(
     expect(value(await service.accept(principal, secret, preview.revision)).state).toBe('accepted');
     expect(onError).toHaveBeenCalledTimes(1);
     expect(value(await service.preview(principal, secret)).state).toBe('accepted');
-    expect(update).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenCalledTimes(1);
   }),
 );
 
@@ -474,6 +475,7 @@ it(
       ),
     ).toMatchObject({ ok: false });
     await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+    await service.notifyReply(identity, issued.linkId, issued.attempt);
     expect(update).toHaveBeenCalledTimes(1);
     await service.revoke(principal, accepted.linkId, accepted.revision);
     expect(
@@ -527,5 +529,72 @@ it(
       await service.registerReply(identity, issued.linkId, issued.attempt, replyURL),
     ).toMatchObject({ ok: false });
     expect(update).not.toHaveBeenCalled();
+  }),
+);
+
+it(
+  'claims one immutable accepted write and reconciles a delayed writer after confirmation',
+  scoped(async () => {
+    const { update, onError } = replies();
+    let release!: () => void;
+    let started!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let card = 'pending';
+    update.mockImplementation(async (_url, snapshot) => {
+      if (snapshot.state === 'accepted') {
+        started();
+        await pending;
+      }
+      card = snapshot.state;
+    });
+    const issued = value(await service.issue(identity));
+    await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+    const secret = new URL(issued.url).hash.slice(1);
+    const preview = value(await service.preview(principal, secret));
+    const accepting = service.accept(principal, secret, preview.revision);
+    await entered;
+    try {
+      await Promise.all([
+        service.preview(principal, secret),
+        service.registerReply(
+          identity,
+          issued.linkId,
+          issued.attempt,
+          'https://hooks.slack.com/actions/T1/B1/other',
+        ),
+      ]);
+      expect(update).toHaveBeenCalledTimes(1);
+      const current = value(await service.inspectActor(identity))!;
+      await service.confirm(identity, current.linkId, current.revision);
+      card = 'active'; // Another private prompt has already displayed terminal success.
+    } finally {
+      release();
+    }
+    expect(value(await accepting).state).toBe('accepted');
+    expect(update.mock.calls.map(([, snapshot]) => snapshot.state)).toEqual(['accepted', 'active']);
+    expect(update.mock.calls.every(([url]) => url === replyURL)).toBe(true);
+    expect(card).toBe('active');
+    expect(onError).not.toHaveBeenCalled();
+  }),
+);
+
+it(
+  'allows one database claim when observers already hold the same accepted snapshot',
+  scoped(async () => {
+    replies();
+    const { issued } = await accept();
+    await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+    const record = (await dependencies.storage.readChannelLink(identity.tenantId, issued.linkId))!;
+    const claims = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        dependencies.storage.claimChannelIdentityReply(record, record.slackReply!),
+      ),
+    );
+    expect(claims.filter(Boolean)).toHaveLength(1);
   }),
 );

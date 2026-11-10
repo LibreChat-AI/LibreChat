@@ -156,14 +156,16 @@ export function createChannelIdentityHandlers(
         res.status(400).json({ ok: false, error: { code: 'forbidden' } });
         return;
       }
-      res.json(
-        await deps.identity.registerReply(
-          identity,
-          parsed.data.linkId,
-          parsed.data.attempt,
-          parsed.data.responseUrl,
-        ),
+      const result = await deps.identity.registerReply(
+        identity,
+        parsed.data.linkId,
+        parsed.data.attempt,
+        parsed.data.responseUrl,
       );
+      res.json(result);
+      // Slack's acknowledgement deadline is shorter than the configured outbound timeout.
+      if (result.ok)
+        await deps.identity.notifyReply(identity, parsed.data.linkId, parsed.data.attempt);
     }),
     confirm: actor(async (req, res, identity) => {
       const parsed = confirmBody.safeParse(req.body);

@@ -104,12 +104,20 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
     if (!/^[A-Za-z0-9_-]{43}$/.test(secret)) return null;
     return deps.storage.readChannelTicket(principal.tenantId, hash(secret));
   }
-  async function updateReply(record: ChannelIdentityRecord): Promise<void> {
+  async function updateReply(
+    record: Pick<ChannelIdentityRecord, 'tenantId' | 'linkId' | 'ticketHash' | 'identity'>,
+  ): Promise<void> {
     if (!deps.reply) return;
     try {
       const current = await deps.storage.readChannelLink(record.tenantId, record.linkId);
       const reply = current?.slackReply;
-      if (!current || !reply || reply.attempt !== record.ticketHash) return;
+      if (
+        !current ||
+        !reply ||
+        reply.attempt !== record.ticketHash ||
+        !sameChannelActor(current.identity, record.identity)
+      )
+        return;
       if (reply.expiresAtMs <= now() || !(await deps.channelIsCurrent(current.identity))) {
         await deps.storage.clearChannelIdentityReply(
           current.tenantId,
@@ -119,22 +127,42 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
         return;
       }
       if (
-        !['accepted', 'active'].includes(current.state) ||
+        current.state !== 'accepted' ||
+        reply.claimed ||
         !current.userId ||
-        !(await permitted(current, current.userId)) ||
-        reply.deliveredRevision === current.revision
+        !(await permitted(current, current.userId))
       )
         return;
       const url = await deps.reply.decrypt(reply.encryptedUrl);
       if (!isSlackReplyURL(url)) throw new TypeError('Invalid Slack reply');
+      // Consume before the write, including ambiguous failures. Retrying an old accepted
+      // write could restore its button after terminal success. Fresh mentions recover.
+      if (!(await deps.storage.claimChannelIdentityReply(current, reply))) return;
       await deps.reply.update(url, view(current, now()));
-      await deps.storage.markChannelIdentityReply(current, reply);
+      const latest = await deps.storage.readChannelLink(current.tenantId, current.linkId);
+      // A different private prompt may have confirmed while this write was paused.
+      if (
+        latest?.ticketHash === current.ticketHash &&
+        latest.state === 'active' &&
+        latest.userId &&
+        reply.expiresAtMs > now() &&
+        (await permitted(latest, latest.userId))
+      )
+        await deps.reply.update(url, view(latest, now()));
     } catch {
       // Consent has committed; a cosmetic Slack failure must not turn it into a failed mutation.
       deps.reply.onError();
     }
   }
   return {
+    /** Best-effort notification after a Slack callback has been acknowledged. */
+    async notifyReply(
+      identity: ChannelExternalIdentity,
+      linkId: string,
+      attempt: string,
+    ): Promise<void> {
+      await updateReply({ tenantId: identity.tenantId, identity, linkId, ticketHash: attempt });
+    },
     async registerReply(
       identity: ChannelExternalIdentity,
       linkId: string,
@@ -158,9 +186,15 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
         attempt,
         expiresAtMs: Math.min(record.ticketExpiresAtMs, now() + SLACK_REPLY_LIFETIME_MS),
       });
-      if (!saved) return failure('changed');
-      // Browser acceptance may have raced ahead of Slack's link-button callback.
-      await updateReply(record);
+      if (!saved) {
+        const existing = await deps.storage.readChannelLink(identity.tenantId, linkId);
+        if (
+          !existing?.slackReply ||
+          existing.ticketHash !== attempt ||
+          !sameChannelActor(existing.identity, identity)
+        )
+          return failure('changed');
+      }
       return { ok: true, value: null };
     },
     async issue(

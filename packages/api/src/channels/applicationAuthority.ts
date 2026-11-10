@@ -1,3 +1,4 @@
+import { channelConfigSchema } from 'librechat-data-provider';
 import type { ChannelRunStorage } from '@librechat/data-schemas';
 import type { ChannelAuthority, ChannelAuthorityDependencies } from './authority';
 import type { ChannelResponseCredentialDependencies } from './credentials';
@@ -42,13 +43,21 @@ export interface ChannelApplicationAuthority {
 export function createChannelApplicationAuthority(
   deps: ChannelApplicationAuthorityDependencies,
 ): ChannelApplicationAuthority {
+  const defaultSlackTimeoutMs = channelConfigSchema.shape.slackApp
+    .unwrap()
+    .parse({}).requestTimeoutMs;
   const authority = createChannelAuthority({
     channels: deps.channels,
     identityStorage: deps.identityStorage,
     reply: deps.reply ?? {
       encrypt: deps.credentials.encrypt,
       decrypt: deps.credentials.decrypt,
-      update: updateSlackLinkReply,
+      update: async (url, view) =>
+        updateSlackLinkReply(
+          url,
+          view,
+          (await deps.policy.config()).slackApp?.requestTimeoutMs ?? defaultSlackTimeoutMs,
+        ),
       onError: deps.onLinkReplyError ?? (() => {}),
     },
     findUser: deps.findUser,
