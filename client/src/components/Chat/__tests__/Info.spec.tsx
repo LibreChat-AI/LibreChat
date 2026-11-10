@@ -15,10 +15,6 @@ import Info from '../Info';
 import '~/locales/i18n';
 
 jest.mock('copy-to-clipboard', () => jest.fn(() => true));
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-  useCopyToClipboard: jest.requireActual('~/hooks/Messages/useCopyToClipboard').default,
-}));
 
 const conversation: TConversation = {
   conversationId: 'info-conversation',
@@ -82,7 +78,7 @@ function setup(props: Partial<InfoProps> = {}, cached = messages) {
 
 async function openInfo() {
   await userEvent.click(screen.getByTestId('info-test-trigger'));
-  return screen.findByRole('dialog', { name: 'com_ui_conversation_info' });
+  return screen.findByRole('dialog', { name: 'Conversation info' });
 }
 
 beforeEach(() => jest.mocked(copy).mockReturnValue(true));
@@ -90,9 +86,9 @@ beforeEach(() => jest.mocked(copy).mockReturnValue(true));
 it.each([false, true])('uses the host clock preference, hour12=%s', async (hour12) => {
   setup({ hour12, conversation: { ...conversation, updatedAt: '2026-11-05T15:00:00' } });
   const dialog = await openInfo();
-  expect(
-    within(dialog).getByText('com_ui_conversation_updated').nextElementSibling,
-  ).toHaveTextContent(hour12 ? '3:00 PM' : '15:00');
+  expect(within(dialog).getByText('Last updated').nextElementSibling).toHaveTextContent(
+    hour12 ? '3:00 PM' : '15:00',
+  );
 });
 
 it('mounts cache observers only while open, shows metadata, and restores focus on Escape', async () => {
@@ -103,21 +99,13 @@ it('mounts cache observers only while open, shows metadata, and restores focus o
   const dialog = await openInfo();
   expect(query.getObserversCount()).toBe(1);
   expect(client.isFetching()).toBe(0);
-  for (const text of [
-    id,
-    'test-model',
-    'openAI',
-    'com_ui_created',
-    'com_ui_conversation_updated',
-  ]) {
+  for (const text of [id, 'test-model', 'openAI', 'Created', 'Last updated']) {
     expect(within(dialog).getByText(text)).toBeVisible();
   }
   expect(
-    within(dialog).getByText('com_ui_conversation_messages').nextElementSibling,
+    within(dialog).getByText('Messages across all branches').nextElementSibling,
   ).toHaveTextContent('3');
-  expect(within(dialog).getByText('com_endpoint_temperature').nextElementSibling).toHaveTextContent(
-    '0',
-  );
+  expect(within(dialog).getByText('Temperature').nextElementSibling).toHaveTextContent('0');
   await userEvent.keyboard('{Escape}');
   await waitFor(() => expect(query.getObserversCount()).toBe(0));
   await waitFor(() => expect(screen.getByTestId('info-test-trigger')).toHaveFocus());
@@ -189,7 +177,7 @@ it('keeps metadata accessible with token display disabled', async () => {
 it('distinguishes absent usage from a recorded zero', async () => {
   const { client } = setup({}, [{ ...message, metadata: undefined }]);
   await openInfo();
-  expect(screen.getByText('com_ui_conversation_usage_unavailable')).toBeVisible();
+  expect(screen.getByText('No usage has been recorded for this conversation.')).toBeVisible();
   expect(screen.queryByTestId('usage-cost')).not.toBeInTheDocument();
   act(() =>
     client.setQueryData(
@@ -204,9 +192,9 @@ it('copies only the conversation ID and reports clipboard failures', async () =>
   setup();
   await openInfo();
   jest.mocked(copy).mockReturnValueOnce(false);
-  await userEvent.click(screen.getByRole('button', { name: 'com_ui_conversation_copy_id' }));
-  expect(screen.getByRole('status')).toHaveTextContent('com_ui_copy_failed');
-  await userEvent.click(screen.getByRole('button', { name: 'com_ui_conversation_copy_id' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Copy conversation ID' }));
+  expect(screen.getByRole('status')).toHaveTextContent('Failed to copy to clipboard');
+  await userEvent.click(screen.getByRole('button', { name: 'Copy conversation ID' }));
   expect(copy).toHaveBeenLastCalledWith(id, expect.any(Object));
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
 });

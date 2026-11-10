@@ -13,7 +13,7 @@ import { startupConfigKey } from '~/data-provider';
 import store from '~/store';
 import Turn from './Turn';
 
-jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
+import '~/locales/i18n';
 
 let client: QueryClient;
 const setConfig = (interfaceConfig: Partial<TInterfaceConfig>) =>
@@ -43,7 +43,7 @@ const renderTurn = (props: Partial<MessageUsageProps> = {}, jotaiStore = createS
   });
 
 const openCard = async () => {
-  await userEvent.click(screen.getByRole('button', { name: 'com_ui_context_turn_usage' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Turn usage' }));
   return screen.findByTestId('message-turn-usage');
 };
 
@@ -84,7 +84,7 @@ describe('Message turn usage', () => {
     await user.tab();
     expect(screen.getByTestId('message-usage-button')).toHaveFocus();
     await user.keyboard('{Enter}');
-    expect(await screen.findByRole('dialog')).toHaveAccessibleName('com_ui_context_turn_usage');
+    expect(await screen.findByRole('dialog')).toHaveAccessibleName('Turn usage');
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByTestId('message-usage-button')).toHaveFocus());
@@ -114,14 +114,14 @@ describe('Message turn usage', () => {
       result.current.usageHandler({ input_tokens: 15, output_tokens: 3, cost: 0.01 }, submission),
     );
     const card = await openCard();
-    expect(card).toHaveTextContent('com_ui_context_current_turn');
+    expect(card).toHaveTextContent('Current turn (so far)');
     expect(within(card).getByText('15')).toBeVisible();
     rerender(<Turn message={{ ...message, messageId: 'older-response' }} />);
     expect(within(card).getByText('120')).toBeVisible();
-    expect(card).not.toHaveTextContent('com_ui_context_current_turn');
+    expect(card).not.toHaveTextContent('Current turn (so far)');
     rerender(<Turn message={liveMessage} />);
     act(() => result.current.finalizeUsage({ responseMessage: message }, submission));
-    expect(card).toHaveTextContent('com_ui_context_turn_usage');
+    expect(card).toHaveTextContent('Turn usage');
     expect(within(card).getByText('120')).toBeVisible();
     expect(within(card).getByText('400')).toBeVisible();
     expect(within(card).queryByText('15')).not.toBeInTheDocument();
@@ -144,7 +144,7 @@ describe('Message turn usage', () => {
     renderTurn({ message: { ...message, metadata: undefined } }, store);
     const card = await openCard();
     expect(within(card).getByText('15')).toBeVisible();
-    expect(card).not.toHaveTextContent('com_ui_context_current_turn');
+    expect(card).not.toHaveTextContent('Current turn (so far)');
     expect(within(card).queryByTestId('usage-cost')).not.toBeInTheDocument();
   });
 
