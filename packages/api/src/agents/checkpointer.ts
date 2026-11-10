@@ -60,6 +60,16 @@ function isEventActorInvocation(config: RunnableConfig): boolean {
   return typeof value === 'string' && value.length > 0;
 }
 
+function retainsEveryCheckpoint(config: RunnableConfig): boolean {
+  // SDK-owned child roots use per-step durability and fork complete checkpoint lineages.
+  // SUBAGENT_THREAD_ID_PREFIX is private to @librechat/agents.
+  const threadId = config.configurable?.thread_id;
+  return (
+    isEventActorInvocation(config) ||
+    (typeof threadId === 'string' && threadId.startsWith('subagent:'))
+  );
+}
+
 /** Prefix every root/subgraph storage namespace with the immutable generation. */
 function toStorageCheckpointConfig(config: RunnableConfig): RunnableConfig {
   const generationNamespace = generationCheckpointNamespace(config);
@@ -239,13 +249,11 @@ function hasResumableWrite(writes: PendingWrite[]): boolean {
  * so this is effectively interrupt-only and the common path writes nothing; the broader
  * real-channel rule just keeps it honest for delta graphs.
  *
- * **Invariant.** Correctness depends on `durability: 'exit'` (which the SDK sets whenever a
- * checkpointer is active): exactly one parentless boundary checkpoint per run, with its
- * `putWrites` ordered before its `put`. Under per-step durability LangGraph instead emits
- * `put`-before-`putWrites` for chained checkpoints — the anchor would arrive too late and a
- * checkpoint could be wrongly discarded. The SDK never runs HITL that way; if that ever changes,
- * this saver must be revisited (a parent-based guard is NOT viable — a resumed turn's clean
- * completion is itself a parented, write-less checkpoint that we correctly discard).
+ * **Invariant.** Lazy retention requires exit durability and `putWrites` before `put`.
+ * SDK-owned `subagent:` threads bypass it: children use per-step durability (`put` before
+ * `putWrites`), fork complete lineages on resume, and recover clean completion heads.
+ * Event-actor invocations also retain every checkpoint. Both use the same size and storage
+ * guards; ordinary chat exits keep the zero-write fast path.
  *
  * **Correctness.** Checkpoints with resumable writes (interrupt + real-channel/delta anchor) and
  * the writes themselves persist exactly as before, so resume is unchanged. The write-less clean
@@ -375,7 +383,7 @@ export class LazyMongoSaver extends OwnedMongoSaver {
     taskId: string,
   ): Promise<void> {
     const storageConfig = toStorageCheckpointConfig(config);
-    if (isEventActorInvocation(config)) {
+    if (retainsEveryCheckpoint(config)) {
       return super.putWrites(storageConfig, writes, taskId);
     }
     const checkpointId = config.configurable?.checkpoint_id as string | undefined;
@@ -433,7 +441,7 @@ export class LazyMongoSaver extends OwnedMongoSaver {
     checkpoint: Checkpoint,
     metadata: CheckpointMetadata,
   ): Promise<RunnableConfig> {
-    if (isEventActorInvocation(config)) {
+    if (retainsEveryCheckpoint(config)) {
       await this.assertCheckpointFitsDocument(config, checkpoint, metadata);
       const persisted = await super.put(toStorageCheckpointConfig(config), checkpoint, metadata);
       logger.debug(
@@ -509,7 +517,7 @@ export class LazyMongoSaver extends OwnedMongoSaver {
    * {@link hardLimitBytes} — BEFORE the write, so an oversize pause fails legibly rather than as a
    * raw `BSONObjectTooLarge`. Serializes with the same `serde` the base `put` uses, so the measured
    * bytes match what would be stored. The extra serialization runs only when a checkpoint is
-   * selected for durable retention: HITL pauses and event-actor invocation heads.
+   * selected for durable retention: HITL pauses, subagents, and event-actor invocation heads.
    */
   private async assertCheckpointFitsDocument(
     config: RunnableConfig,
