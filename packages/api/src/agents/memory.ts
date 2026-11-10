@@ -30,17 +30,20 @@ import type {
   MemoryMethods,
   IUser,
   FormattedMemoriesResult,
+  AppConfig,
 } from '@librechat/data-schemas';
 import type { TAttachment, FiltersConfig, MemoryArtifact } from 'librechat-data-provider';
 import type { BaseMessage, ToolMessage } from '@librechat/agents/langchain/messages';
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { Response as ServerResponse } from 'express';
+import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ServerRequest, RunLLMConfig } from '~/types';
 import { resolveConfigHeaders, createSafeUser, getSafeErrorMetadata, writeGuarded } from '~/utils';
 import { contentFilterModelBoundBlockResponse } from '~/middleware/contentFilter';
 import { extractMemoryContent } from '~/protection/adapters/submissions';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { buildLangfuseConfig } from '~/langfuse/config';
 import { inspectContent } from '~/protection/runtime';
 import { checkAccess } from '~/middleware/access';
 import { countTokens } from '~/utils/tokenizer';
@@ -783,6 +786,9 @@ export async function processMemory({
   jobCreatedAt,
   user,
   tenantId,
+  appConfig,
+  isTemporary,
+  traceContext,
 }: {
   res: ServerResponse;
   setMemory: MemoryMethods['setMemory'];
@@ -814,6 +820,9 @@ export async function processMemory({
   jobCreatedAt?: number;
   user?: IUser;
   tenantId?: string;
+  appConfig?: AppConfig;
+  isTemporary?: boolean;
+  traceContext?: LangfuseTraceContext;
 }): Promise<(TAttachment | null)[] | undefined> {
   try {
     signal?.throwIfAborted();
@@ -1003,6 +1012,23 @@ ${memory ?? 'No existing memories'}`;
       },
       customHandlers,
       returnContent: true,
+      langfuse: {
+        ...buildLangfuseConfig({
+          appConfig,
+          runId: messageId,
+          tenantId: tenantId ?? user?.tenantId,
+          isTemporary,
+          user,
+          traceContext: {
+            ...traceContext,
+            conversationId: traceContext?.conversationId ?? conversationId,
+            provider: traceContext?.provider ?? finalLLMConfig.provider,
+            model: traceContext?.model ?? finalLLMConfig.model,
+          },
+        }),
+        // Share response sampling, but not its feedback trace ID. Keep runId for attachments.
+        deterministicTraceId: false,
+      },
     });
 
     signal?.throwIfAborted();
@@ -1056,6 +1082,9 @@ export async function createMemoryProcessor({
   jobCreatedAt,
   user,
   tenantId,
+  appConfig,
+  isTemporary,
+  traceContext,
 }: {
   res: ServerResponse;
   messageId: string;
@@ -1072,6 +1101,9 @@ export async function createMemoryProcessor({
   jobCreatedAt?: number;
   user?: IUser;
   tenantId?: string;
+  appConfig?: AppConfig;
+  isTemporary?: boolean;
+  traceContext?: LangfuseTraceContext;
 }): Promise<
   | [undefined, undefined]
   | [
@@ -1145,6 +1177,9 @@ export async function createMemoryProcessor({
           deleteMemory: memoryMethods.deleteMemory,
           user,
           tenantId,
+          appConfig,
+          isTemporary,
+          traceContext,
         });
       } catch (error) {
         logger.error('Memory Agent failed to process memory', getSafeErrorMetadata(error));
