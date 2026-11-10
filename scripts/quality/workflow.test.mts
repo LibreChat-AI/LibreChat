@@ -28,6 +28,8 @@ interface Step {
   'working-directory'?: string;
 }
 interface Job {
+  'timeout-minutes'?: string | number;
+  strategy?: { matrix: { task: { check: string; shard: number }[] } };
   defaults?: { run: { 'working-directory': string } };
   steps: Step[];
 }
@@ -55,7 +57,7 @@ test('workflow separates tooling, source, installs and artifacts without changin
     QUALITY_BASE: "${{ github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}",
     QUALITY_HEAD: '${{ github.event.pull_request.head.sha || github.sha }}',
   });
-  for (const name of ['verify', 'select']) {
+  for (const name of ['verify', 'select', 'mutation-summary']) {
     assert.equal(checkouts(workflow.jobs[name]).length, 1);
     assert.equal(checkouts(workflow.jobs[name])[0].with?.ref, '${{ github.sha }}');
   }
@@ -84,13 +86,15 @@ test('workflow separates tooling, source, installs and artifacts without changin
     ],
   );
   assert.equal(runner['working-directory'], undefined);
-  assert.equal(
-    runner.run,
-    'node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK"',
-  );
+  assert.match(runner.run!, /node \.\.\/tooling\/scripts\/quality\/run\.mts/);
+  assert.equal(report['timeout-minutes'], "${{ matrix.task.check == 'mutation' && 240 || 45 }}");
+  assert.deepEqual(report.strategy?.matrix.task, [
+    { check: 'risk', shard: 0 },
+    ...[1, 2, 3, 4].map((shard) => ({ check: 'mutation', shard })),
+  ]);
   assert.equal(
     report.steps.find(({ uses }) => uses === 'actions/upload-artifact@v6')?.with?.path,
-    'source/coverage/changes/${{ matrix.workspace }}/${{ matrix.check }}/',
+    "source/coverage/changes/${{ matrix.workspace }}/${{ matrix.task.check }}${{ matrix.task.check == 'mutation' && format('-{0}', matrix.task.shard) || '' }}/",
   );
 });
 
@@ -113,6 +117,7 @@ for (const olderHead of [true, false]) {
     git(['config', 'user.name', 'Quality Test'], upstream);
     git(['config', 'user.email', 'quality@example.invalid'], upstream);
     write(upstream, 'package.json', '{"name":"quality-fixture","private":true}');
+    write(upstream, 'package-lock.json', '{}');
     write(upstream, '.gitignore', 'node_modules/\ncoverage/\n.stryker-tmp/\n');
     const file = 'packages/data-schemas/src/feature.js';
     write(upstream, file, 'module.exports = (value) => value ? 1 : 0;\n');
@@ -225,14 +230,18 @@ for (const olderHead of [true, false]) {
       assert.match(output, new RegExp(`"head": "${merge}"`));
       assert.match(output, new RegExp(`"base": "${base}"`));
     }
-    for (const check of ['risk', 'mutation']) {
+    for (const { check, shard } of report.strategy!.matrix.task) {
       rmSync(marker, { force: true });
       run(runner.run!, source, {
         QUALITY_BASE: check === 'risk' ? 'origin/dev' : base,
         QUALITY_CHECK: check,
+        QUALITY_SHARD: String(shard),
       });
-      assert.match(readFileSync(marker, 'utf8'), /head Jest/);
-      const output = join(source, 'coverage/changes/data-schemas', check);
+      const output = join(
+        source,
+        'coverage/changes/data-schemas',
+        shard ? `mutation-${shard}` : check,
+      );
       const selection = JSON.parse(readFileSync(join(output, 'selection.json'), 'utf8'));
       assert.equal(selection.head, head);
       assert.equal(selection.base, olderHead ? original : base);
@@ -241,17 +250,41 @@ for (const olderHead of [true, false]) {
         [file],
       );
       if (check === 'risk') {
+        assert.match(readFileSync(marker, 'utf8'), /head Jest/);
         const risk = JSON.parse(readFileSync(join(output, 'risk.json'), 'utf8'));
         assert.equal(risk.functions[0].file, file);
         assert.equal(risk.functions[0].statementCoverage, 1);
         assert.equal(risk.head, head);
       } else {
-        const progress = JSON.parse(readFileSync(join(output, 'progress.json'), 'utf8'));
-        assert.equal(progress.complete, true);
-        assert.ok(progress.completed > 0);
+        const completion = JSON.parse(readFileSync(join(output, 'completion.json'), 'utf8'));
+        assert.equal(completion.complete, true);
+        assert.equal(completion.index, shard);
+        if (completion.total) {
+          assert.match(readFileSync(marker, 'utf8'), /head Jest/);
+          const progress = JSON.parse(readFileSync(join(output, 'progress.json'), 'utf8'));
+          assert.equal(progress.complete, true);
+          assert.equal(progress.completed, completion.total);
+        }
+        cpSync(
+          output,
+          join(tooling, `coverage/shards/change-mutation-data-schemas-${head}-shard-${shard}`),
+          { recursive: true },
+        );
       }
       assert.equal(git(['rev-parse', 'HEAD'], source).trim(), head);
       assert.equal(git(['diff', 'HEAD', '--', file], source), '');
     }
+    const combine = workflow.jobs['mutation-summary'].steps.find(
+      ({ name }) => name === 'Verify and combine mutation results',
+    )!;
+    run(combine.run!, tooling, {});
+    const combined = JSON.parse(
+      readFileSync(join(tooling, 'coverage/changes/data-schemas/mutation/mutation.json'), 'utf8'),
+    );
+    assert.ok(combined.files[file].mutants.length > 0);
+    assert.match(
+      readFileSync(join(tooling, 'coverage/changes/data-schemas/mutation/summary.md'), 'utf8'),
+      /All four shards completed/,
+    );
   });
 }

@@ -2,14 +2,25 @@
 
 Every pull request runs two advisory checks for changed `packages/data-schemas` source.
 Low scores do not fail a check. Failed tests, invalid reports, and tool errors do.
-Each job has a 45-minute limit. A timeout is a failed run, not a quality score.
+Mutation jobs have a 240-minute limit. Change-risk jobs have a 45-minute limit.
+A timeout is a failed run, not a quality score.
 
 1. Mutation testing uses Stryker 10.1.1. It mutates only added or edited functions.
    It selects related Jest tests and uses per-test coverage to reduce repeated work.
    Static mutations remain enabled. These run outside an individual test, such as
    during module loading or a shared test hook. Stryker reruns the related tests
    for each mutated file.
-   The artifact includes an HTML report and a JSON report with mutation locations.
+   Four GitHub jobs run separate mutation ranges, with two Stryker workers per job.
+   The planner counts mutants before testing and assigns the largest ranges first
+   to the shard with the fewest mutants. Each original range stays intact: splitting
+   a block containing nested functions could remove its block-replacement mutation.
+   A large indivisible range can therefore make one shard slower than the others.
+   Sharding reduces waiting time but repeats setup and baseline tests on each runner.
+   It does not split or exclude the tests available to a mutation.
+   Each shard artifact includes an HTML report and a JSON report with mutation locations.
+   A final job combines the JSON reports and calculates one score from mutant counts.
+   It checks the head, plan, source, and every expected mutation. Missing shards,
+   duplicate mutations, runtime errors, or incomplete results prevent a combined score.
    The live Actions log shows progress every 30 seconds. It separates static mutations
    from other mutations and lists each unfinished function. A completion line shows
    the result counts for each finished function. Elapsed time and time since the last
@@ -34,7 +45,9 @@ Each job has a 45-minute limit. A timeout is a failed run, not a quality score.
    It is a separate score and does not replace CC in the CRAP formula.
 
 Reports compare the PR head with its merge base. They do not measure the synthetic
-GitHub merge commit. Both checkouts and commands use the same head SHA. The workflow
+GitHub merge commit. Application source and test dependencies come from the PR head.
+Quality tooling and the combined-report job use the workflow revision, so older PR
+heads do not need to contain the tooling scripts. The workflow
 uses read-only permissions and needs no secrets. Reports appear in the Actions job
 summary and in downloadable artifacts. It does not post PR comments.
 
@@ -58,6 +71,8 @@ From the repository root, after `npm ci` and `npm run build:packages`:
 node scripts/quality/changes.mts --base origin/dev
 node scripts/quality/run.mts --base origin/dev --workspace data-schemas --check risk
 node scripts/quality/run.mts --base origin/dev --workspace data-schemas --check mutation
+# Run one of the four CI shards (indices 1 through 4).
+node scripts/quality/run.mts --base origin/dev --workspace data-schemas --check mutation --shard 1
 node --test scripts/crap.test.mts scripts/quality/*.test.mts
 ```
 

@@ -15,6 +15,7 @@ import {
 import { mutationSelection, riskMarkdown, riskReport } from './risk.mts';
 import { changes, git, WORKSPACES, workspaceFor } from './changes.mts';
 import { coverageArgs } from './jest.mts';
+import { assertMutants, mutantKey, mutationPatterns, planShards } from './shards.mts';
 
 const { values } = parseArgs({
   options: {
@@ -22,6 +23,7 @@ const { values } = parseArgs({
     head: { type: 'string', default: 'HEAD' },
     workspace: { type: 'string' },
     check: { type: 'string' },
+    shard: { type: 'string' },
   },
 });
 const workspace = WORKSPACES.find(({ name }) => name === values.workspace);
@@ -35,7 +37,18 @@ if (selection.head !== git(['rev-parse', 'HEAD']).trim()) {
   throw new Error('Check out the selected head before measuring its source');
 }
 const files = selection.files.filter(({ file }) => workspaceFor(file)?.name === workspace.name);
-const output = resolve('coverage/changes', workspace.name, values.check!);
+const shardIndex = values.shard === undefined ? undefined : Number(values.shard);
+if (
+  shardIndex !== undefined &&
+  (values.check !== 'mutation' || !Number.isInteger(shardIndex) || shardIndex < 1 || shardIndex > 4)
+) {
+  throw new Error('--shard requires a mutation check and an index from 1 to 4');
+}
+const output = resolve(
+  'coverage/changes',
+  workspace.name,
+  shardIndex === undefined ? values.check! : `mutation-${shardIndex}`,
+);
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
 writeFileSync(`${output}/selection.json`, JSON.stringify({ ...selection, files }, null, 2));
@@ -44,7 +57,7 @@ const summary = (markdown: string) => {
   writeFileSync(`${output}/summary.md`, markdown);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
 };
-if (!files.length) {
+if (!files.length && shardIndex === undefined) {
   summary(`## ${workspace.name}: ${values.check}\n\nNo changed source files.\n`);
   process.exit(0);
 }
@@ -106,10 +119,39 @@ if (values.check === 'risk') {
 } else {
   process.env.NODE_ENV = env.NODE_ENV;
   process.env.BABEL_ENV = env.BABEL_ENV;
-  const targets = mutationSelection(files, selection.base);
+  const allTargets = mutationSelection(files, selection.base);
+  const plan =
+    shardIndex === undefined
+      ? undefined
+      : await planShards(allTargets, selection.base, selection.head, workspace.name);
+  const shard = plan?.shards.find(({ index }) => index === shardIndex);
+  const targets = shard?.targets ?? allTargets;
+  if (plan && shard) {
+    writeFileSync(`${output}/plan.json`, JSON.stringify(plan, null, 2));
+    console.log(
+      `Mutation shard ${shard.index}/${plan.shards.length}: ${shard.expected.length} planned mutants; two workers; static mutations included`,
+    );
+  }
   writeFileSync(`${output}/functions.json`, JSON.stringify(targets, null, 2));
-  if (!targets.length) {
-    summary(`## ${workspace.name}: mutation testing\n\nNo added or edited functions.\n`);
+  const completeShard = () => {
+    if (plan && shard)
+      writeFileSync(
+        `${output}/completion.json`,
+        JSON.stringify(
+          {
+            digest: plan.digest,
+            index: shard.index,
+            complete: true,
+            total: shard.expected.length,
+          },
+          null,
+          2,
+        ),
+      );
+  };
+  if (!targets.length || shard?.expected.length === 0) {
+    completeShard();
+    summary(`## ${workspace.name}: mutation testing\n\nNo mutations selected for this run.\n`);
     process.exit(0);
   }
   const started = Date.now();
@@ -136,7 +178,7 @@ if (values.check === 'risk') {
           : {}),
       },
     },
-    mutate: targets.flatMap(({ mutate }) => mutate),
+    mutate: mutationPatterns(targets),
     ignoreStatic: false,
     coverageAnalysis: 'perTest',
     concurrency: 2,
@@ -164,6 +206,13 @@ if (values.check === 'risk') {
   });
   try {
     const results = await stryker.runMutationTest();
+    if (shard)
+      assertMutants(
+        shard.expected,
+        results.map((mutant) =>
+          mutantKey(relative(process.cwd(), mutant.fileName).replaceAll('\\', '/'), mutant),
+        ),
+      );
     const progress = JSON.parse(readFileSync(`${output}/progress.json`, 'utf8'));
     if (!progress.complete || progress.completed !== results.length) {
       throw new Error('Mutation progress report is incomplete');
@@ -196,6 +245,7 @@ if (values.check === 'risk') {
       ].join('\n'),
     );
     if (runtimeErrors) process.exitCode = 1;
+    else completeShard();
   } catch (error) {
     summary(
       `## ${workspace.name}: mutation testing\n\nStryker failed. This is not a mutation score. See the test log.\n`,

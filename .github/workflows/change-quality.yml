@@ -70,12 +70,12 @@ jobs:
         run: node scripts/quality/changes.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" --scope "$QUALITY_SCOPE"
 
   reports:
-    name: ${{ matrix.check == 'risk' && 'Change risk' || 'Mutation testing' }} (${{ matrix.workspace }})
+    name: ${{ matrix.task.check == 'risk' && 'Change risk' || format('Mutation testing {0}/4', matrix.task.shard) }} (${{ matrix.workspace }})
     needs: [select, verify]
     if: needs.select.outputs.hasChanges == 'true'
     runs-on: ubuntu-latest
     # Whole edited database functions can produce thousands of mutation cases.
-    timeout-minutes: ${{ matrix.check == 'mutation' && 240 || 45 }}
+    timeout-minutes: ${{ matrix.task.check == 'mutation' && 240 || 45 }}
     defaults:
       run:
         working-directory: source
@@ -83,7 +83,12 @@ jobs:
       fail-fast: false
       matrix:
         workspace: ${{ fromJSON(needs.select.outputs.workspaces) }}
-        check: [risk, mutation]
+        task:
+          - { check: risk, shard: 0 }
+          - { check: mutation, shard: 1 }
+          - { check: mutation, shard: 2 }
+          - { check: mutation, shard: 3 }
+          - { check: mutation, shard: 4 }
     services:
       redis:
         image: redis:7-alpine
@@ -132,15 +137,60 @@ jobs:
       - name: Generate advisory report
         env:
           QUALITY_WORKSPACE: ${{ matrix.workspace }}
-          QUALITY_CHECK: ${{ matrix.check }}
-        run: >-
-          node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD"
-          --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK"
+          QUALITY_CHECK: ${{ matrix.task.check }}
+          QUALITY_SHARD: ${{ matrix.task.shard }}
+        run: |
+          args=()
+          if [ "$QUALITY_CHECK" = mutation ]; then
+            args+=(--shard "$QUALITY_SHARD")
+          fi
+          node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" \
+            --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK" "${args[@]}"
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: change-${{ matrix.check }}-${{ matrix.workspace }}-${{ github.event.pull_request.head.sha || github.sha }}
-          path: source/coverage/changes/${{ matrix.workspace }}/${{ matrix.check }}/
+          name: change-${{ matrix.task.check }}-${{ matrix.workspace }}-${{ github.event.pull_request.head.sha || github.sha }}${{ matrix.task.check == 'mutation' && format('-shard-{0}', matrix.task.shard) || '' }}
+          path: source/coverage/changes/${{ matrix.workspace }}/${{ matrix.task.check }}${{ matrix.task.check == 'mutation' && format('-{0}', matrix.task.shard) || '' }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+  mutation-summary:
+    name: Mutation report (${{ matrix.workspace }})
+    needs: [select, reports]
+    if: always() && needs.select.outputs.hasChanges == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: ${{ fromJSON(needs.select.outputs.workspaces) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: change-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}-shard-*
+          path: coverage/shards
+      - name: Verify and combine mutation results
+        env:
+          QUALITY_WORKSPACE: ${{ matrix.workspace }}
+        run: >-
+          node scripts/quality/merge.mts --directory coverage/shards
+          --workspace "$QUALITY_WORKSPACE"
+          --head "$QUALITY_HEAD"
+          --prefix "change-mutation-$QUALITY_WORKSPACE-$QUALITY_HEAD-"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: change-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}
+          path: coverage/changes/${{ matrix.workspace }}/mutation/
           if-no-files-found: warn
           retention-days: 14
