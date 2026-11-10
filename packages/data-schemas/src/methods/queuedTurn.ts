@@ -261,6 +261,10 @@ export interface AgentQueuedTurnMethods {
       leaseUntil: Date;
     },
   ) => Promise<ClaimAgentQueuedTurnResult>;
+  /** Whether a queued user turn owns the conversation's next admission. */
+  hasPendingAgentQueuedTurn: (
+    input: AgentQueuedTurnConversationScope & { now: Date },
+  ) => Promise<boolean>;
   releaseAgentQueuedTurn: (
     input: AgentQueuedTurnClaimFence &
       (
@@ -1886,6 +1890,46 @@ export function createAgentQueuedTurnMethods(
       : { outcome: 'replayed', claim: racedClaim };
   }
 
+  /**
+   * True while a claim is admitting a queued turn under an unexpired lease, or
+   * while the lane head is a due `queued` row that `claimNextAgentQueuedTurn`
+   * could acquire. Rows that need recovery or a user decision (a reservation,
+   * an expired claim, an indeterminate admission, a dead head awaiting
+   * dismissal) answer false, so callers never wait on them.
+   */
+  async function hasPendingAgentQueuedTurn(
+    input: AgentQueuedTurnConversationScope & { now: Date },
+  ): Promise<boolean> {
+    if (!(input.now instanceof Date) || !Number.isFinite(input.now.getTime())) {
+      throw new TypeError('Agent queued turn precedence requires a valid time');
+    }
+    const scope = conversationScope(input);
+    const [admitting, fenced, head] = await Promise.all([
+      Turn().exists({ ...scope, status: 'claimed', claimUntil: { $gt: input.now } }),
+      Turn().exists({
+        ...scope,
+        $or: [
+          { status: 'reserving' },
+          { status: 'claimed', claimUntil: { $not: { $gt: input.now } } },
+          { status: 'dead', 'terminalReceipt.failure.code': 'ADMISSION_INDETERMINATE' },
+        ],
+      }),
+      Turn()
+        .findOne({ ...scope, status: { $in: ['queued', 'dead'] } })
+        .sort({ priority: -1, sequence: 1 })
+        .select('status availableAt')
+        .lean<Pick<IAgentQueuedTurn, 'status' | 'availableAt'>>(),
+    ]);
+    if (admitting != null) {
+      return true;
+    }
+    return (
+      fenced == null &&
+      head?.status === 'queued' &&
+      head.availableAt.getTime() <= input.now.getTime()
+    );
+  }
+
   async function releaseAgentQueuedTurn(
     input: AgentQueuedTurnClaimFence &
       (
@@ -2969,6 +3013,7 @@ export function createAgentQueuedTurnMethods(
     markQueuedTurnScheduled,
     cancelAgentQueuedTurn,
     claimNextAgentQueuedTurn,
+    hasPendingAgentQueuedTurn,
     beginAgentQueuedTurnAdmission,
     releaseAgentQueuedTurn,
     markAgentQueuedTurnAdmitted,

@@ -3153,3 +3153,124 @@ describe('agent queued turn methods', () => {
     });
   });
 });
+
+describe('queued turn precedence', () => {
+  const scope = () => ({ user, tenantId: 'tenant-1', conversationId: 'conversation-1' });
+  const pending = (now = START) => methods.hasPendingAgentQueuedTurn({ ...scope(), now });
+
+  it('answers false for a conversation without queued turns', async () => {
+    await expect(pending()).resolves.toBe(false);
+  });
+
+  it('reports a due queued head only inside its exact owner scope', async () => {
+    await methods.enqueueAgentQueuedTurn(enqueueInput());
+
+    await expect(pending()).resolves.toBe(true);
+    await expect(
+      methods.hasPendingAgentQueuedTurn({ ...scope(), tenantId: 'tenant-2', now: START }),
+    ).resolves.toBe(false);
+    await expect(
+      methods.hasPendingAgentQueuedTurn({ ...scope(), tenantId: undefined, now: START }),
+    ).resolves.toBe(false);
+    await expect(
+      methods.hasPendingAgentQueuedTurn({
+        ...scope(),
+        user: new mongoose.Types.ObjectId(),
+        now: START,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      methods.hasPendingAgentQueuedTurn({ ...scope(), conversationId: 'other', now: START }),
+    ).resolves.toBe(false);
+  });
+
+  it('does not report a head that is not yet available', async () => {
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ availableAt: LATER }));
+
+    await expect(pending()).resolves.toBe(false);
+    await expect(pending(LATER)).resolves.toBe(true);
+  });
+
+  it('bounds an admitting claim by its lease and stops at admission', async () => {
+    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ clientRequestId: 'second' }));
+    const claimed = await methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId));
+    expect(claimed.outcome).toBe('acquired');
+
+    await expect(pending()).resolves.toBe(true);
+    /** A lease that outlived its owner fences the lane for recovery, so the
+     * successor behind it cannot be admitted next either. */
+    await expect(pending(new Date(LATER.getTime() + 1))).resolves.toBe(false);
+
+    await Turn.updateOne(
+      { _id: first.turn.queuedTurnId },
+      {
+        $set: { status: 'admitted' },
+        $unset: { claimId: 1, claimBy: 1, claimUntil: 1, admissionSlot: 1, activeSlot: 1 },
+      },
+    );
+    await expect(pending()).resolves.toBe(true);
+    await Turn.updateMany({}, { $set: { status: 'admitted' } });
+    await expect(pending()).resolves.toBe(false);
+  });
+
+  it('does not wait on a dead head awaiting dismissal or on a quarantined admission', async () => {
+    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await methods.enqueueAgentQueuedTurn(enqueueInput({ clientRequestId: 'second' }));
+    await methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId));
+    await methods.releaseAgentQueuedTurn({
+      ...scope(),
+      queuedTurnId: first.turn.queuedTurnId,
+      claimId: 'claim-1',
+      claimBy: 'worker-1',
+      disposition: 'dead',
+      settledAt: START,
+      failure: { code: 'PREDECESSOR_ABORTED', message: 'review this turn' },
+    });
+
+    await expect(pending()).resolves.toBe(false);
+
+    await methods.cancelAgentQueuedTurn({
+      ...scope(),
+      queuedTurnId: first.turn.queuedTurnId,
+      settledAt: START,
+    });
+    await expect(pending()).resolves.toBe(true);
+
+    await Turn.updateOne(
+      { _id: first.turn.queuedTurnId },
+      {
+        $set: {
+          status: 'dead',
+          terminalReceipt: {
+            outcome: 'dead',
+            settledAt: START,
+            failure: { code: 'ADMISSION_INDETERMINATE', message: 'owner disappeared' },
+          },
+        },
+      },
+    );
+    await expect(pending()).resolves.toBe(false);
+  });
+
+  it('does not wait on an unfinished reservation', async () => {
+    const first = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    await Turn.create({
+      ...scope(),
+      agentId: 'agent-1',
+      parentMessageId: 'parent-1',
+      clientRequestId: 'interrupted-reservation',
+      fingerprint: 'x'.repeat(43),
+      laneId: first.turn.laneId,
+      activeSlot: ((first.turn.activeSlot ?? 0) + 1) % 100,
+      status: 'reserving',
+      priority: false,
+      text: 'repair me',
+      attempts: 0,
+      availableAt: START,
+      deliveryState: 'pending',
+    });
+
+    await expect(pending()).resolves.toBe(false);
+  });
+});
