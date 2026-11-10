@@ -21,6 +21,7 @@ import type { FilterQuery, QueryOptions, ProjectionType } from 'mongoose';
 import type { CodeExecutionContext } from './execution';
 import type { ServerRequest } from '~/types';
 
+import { selectCodeFileGenerations } from '~/files/code/destinations';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { TOOL_RESOURCE_KEYS } from './orphans';
 
@@ -327,6 +328,7 @@ const categorizeFileForToolResources = ({
   requestFileSet,
   processedResourceFiles,
   agentScoped = false,
+  codeFileIds,
   agentId,
   userId,
 }: {
@@ -336,12 +338,13 @@ const categorizeFileForToolResources = ({
   processedResourceFiles: Set<string>;
   /** Whether this file's vectors were embedded under the agent's entity_id. */
   agentScoped?: boolean;
+  codeFileIds: ReadonlySet<string>;
   /** The agent whose vector namespace this turn will search, when one is scoped. */
   agentId?: string;
   /** Owner of the unscoped namespace, which is where anything not agent-scoped lands. */
   userId?: string;
 }): void => {
-  if (file.metadata?.codeEnvRef || file.metadata?.codeEnvRefs) {
+  if (codeFileIds.has(file.file_id) && (file.metadata?.codeEnvRef || file.metadata?.codeEnvRefs)) {
     addFileToResource({
       file,
       resourceType: EToolResources.execute_code,
@@ -443,6 +446,7 @@ const withDeferredCandidates = (
 const computeProvisionState = async ({
   req,
   attachments,
+  codeFileIds,
   resourcePrincipal,
   enabledToolResources,
   tool_resources,
@@ -463,6 +467,7 @@ const computeProvisionState = async ({
 }: {
   req?: ServerRequest;
   attachments: Array<TFile>;
+  codeFileIds: ReadonlySet<string>;
   agentId?: string;
   codeRouteKey?: string;
   /** Base URL of the deployment this turn runs on, used to probe its own refs. */
@@ -603,7 +608,9 @@ const computeProvisionState = async ({
   const canProbeRoute = activeCodeRouteKey === 'default' || codeBaseUrl != null;
   const filesWithIdentifiers =
     needsCodeEnv && checkSessionsAlive && canProbeRoute
-      ? provisionable.filter((f) => f?.file_id && codeEnvRefForRoute(f, activeCodeRouteKey))
+      ? provisionable.filter(
+          (f) => codeFileIds.has(f.file_id) && codeEnvRefForRoute(f, activeCodeRouteKey),
+        )
       : [];
 
   /** Code API auth is optional: deployments may use a legacy key, JWT bearer minting,
@@ -680,6 +687,7 @@ const computeProvisionState = async ({
      * the sandbox refuses aborts the tool batch over a file meant for the model. */
     if (
       needsCodeEnv &&
+      codeFileIds.has(file.file_id) &&
       allowsResource(file, EToolResources.execute_code) &&
       canToolResourceConsume(EToolResources.execute_code, file.type ?? '')
     ) {
@@ -995,6 +1003,27 @@ export const primeResources = async ({
       }
     }
 
+    const files = _attachments ? await _attachments : [];
+    const codeCandidates = withDeferredCandidates(
+      persistedResourceFiles,
+      withDeferredCandidates(
+        files.filter((file): file is TFile => file != null),
+        provisionCandidates,
+      ),
+    );
+    const codeFileIds = new Set(
+      selectCodeFileGenerations(codeCandidates, persistedResourceFileIds).files.flatMap((file) =>
+        file ? [file.file_id] : [],
+      ),
+    );
+    const supersededCodeFileIds = new Set(
+      codeCandidates.filter((file) => !codeFileIds.has(file.file_id)).map((file) => file.file_id),
+    );
+    const codeResource = tool_resources[EToolResources.execute_code];
+    if (codeResource?.file_ids) {
+      codeResource.file_ids = codeResource.file_ids.filter((id) => !supersededCodeFileIds.has(id));
+    }
+
     for (const file of persistedResourceFiles) {
       if (!file?.file_id) {
         continue;
@@ -1008,6 +1037,7 @@ export const primeResources = async ({
           tool_resources,
           requestFileSet,
           processedResourceFiles,
+          codeFileIds,
           agentScoped: agentId != null && isAgentScopedFile(file),
           agentId,
           userId: resourcePrincipal?.id,
@@ -1042,6 +1072,7 @@ export const primeResources = async ({
           ...(provisionCandidates ?? []),
           ...resourceProvisionCandidates,
         ]),
+        codeFileIds,
         resourcePrincipal,
         enabledToolResources,
         tool_resources,
@@ -1071,7 +1102,6 @@ export const primeResources = async ({
       };
     }
 
-    const files = await _attachments;
     const requestAttachmentFileIds = new Set<string>();
 
     for (const file of files) {
@@ -1084,6 +1114,7 @@ export const primeResources = async ({
         tool_resources,
         requestFileSet,
         processedResourceFiles,
+        codeFileIds,
         userId: resourcePrincipal?.id,
       });
 
@@ -1111,6 +1142,7 @@ export const primeResources = async ({
         ...(provisionCandidates ?? []),
         ...resourceProvisionCandidates,
       ]),
+      codeFileIds,
       resourcePrincipal,
       enabledToolResources,
       tool_resources,

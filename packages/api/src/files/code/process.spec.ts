@@ -2,28 +2,40 @@ import os from 'node:os';
 import sharp from 'sharp';
 import path from 'node:path';
 import mongoose from 'mongoose';
+import { Readable } from 'node:stream';
+import { createReadStream } from 'node:fs';
 import { mockClient } from 'aws-sdk-client-mock';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { buffer as readStream } from 'node:stream/consumers';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { createMethods, fileSchema } from '@librechat/data-schemas';
 import {
   FileContext,
   FileSources,
+  EToolResources,
   getEndpointFileConfig,
   mergeFileConfig,
 } from 'librechat-data-provider';
-import type { CodeFileCommitData } from '@librechat/data-schemas';
+import type { CodeFileCommitData, IMongoFile } from '@librechat/data-schemas';
+import type { TFile } from 'librechat-data-provider';
 import type { CodeOutputProcessorDeps } from './process';
+import type { TGetFiles } from '~/agents/resources';
+import type { CodeFileAgent } from './queued';
 import type { ServerRequest } from '~/types';
 import { hasOfficeHtmlPath, extractCodeArtifactText, getExtractedTextFormat } from './extract';
 import { createLocalFileDeleter, saveLocalBuffer, writeLocalFile } from '~/storage/local';
 import { createFileProvisionRecovery, withFileProvisioning } from '../operations';
 import { sanitizeArtifactPath, flattenArtifactPath } from '~/utils/files';
+import { createProvisionFilesCallback } from '../provision/callback';
 import { fromLocalUrlPath, stripCacheBust } from '~/storage/path';
 import { createDeleteFileWithSecondaryStorage } from '../storage';
+import { createProvisionService } from '../provision/service';
 import { saveBufferToS3, getS3Key } from '~/storage/s3/crud';
+import { createCodeApiUploadRegistry } from '~/utils/code';
 import { getStorageMetadata } from '~/storage/metadata';
+import { prepareQueuedCodeFileContext } from './queued';
+import { primeResources } from '~/agents/resources';
 import { classifyCodeArtifact } from './classify';
 import { createCodeFileDeleter } from './delete';
 import { processCodeOutput } from './process';
@@ -53,8 +65,9 @@ describe('Generated file snapshots', () => {
     directory = await mkdtemp(path.join(os.tmpdir(), 'generated-snapshots-'));
     req = {
       user: { id: user, tenantId: 'tenant-a' },
+      app: { locals: { codeApiUploadRegistry: createCodeApiUploadRegistry() } },
       config: { fileStrategy: FileSources.local, imageOutputType: 'webp' },
-    } as typeof req;
+    } as unknown as typeof req;
     const saveBuffer: NonNullable<
       ReturnType<CodeOutputProcessorDeps['getStrategyFunctions']>['saveBuffer']
     > = (input) => saveLocalBuffer({ ...input, paths: paths(), basePath: 'uploads' });
@@ -148,6 +161,159 @@ describe('Generated file snapshots', () => {
     );
     return { file, bytes };
   }
+
+  function primingFile(file: IMongoFile): TFile {
+    return {
+      file_id: file.file_id,
+      user: file.user.toString(),
+      tenantId: file.tenantId,
+      filename: file.filename,
+      filepath: file.filepath,
+      type: file.type,
+      bytes: file.bytes,
+      object: 'file',
+      embedded: file.embedded === true,
+      usage: file.usage ?? 1,
+      context: file.context as FileContext,
+      metadata: file.metadata,
+      createdAt: file.createdAt,
+      source: file.source as FileSources,
+    };
+  }
+
+  async function initializeCode(ids: string[], privateIds: string[] = [], deferred = true) {
+    const files = (
+      await methods.getCodeGeneratedFiles('conversation-a', ids, {
+        userId: user,
+        tenantId: req.user.tenantId,
+      })
+    ).map(primingFile);
+    const getFiles = jest.fn<ReturnType<TGetFiles>, Parameters<TGetFiles>>(async (filter) =>
+      ((await methods.getFiles({ ...filter, user, tenantId: req.user.tenantId })) ?? []).map(
+        primingFile,
+      ),
+    );
+    const liveDirectory = path.join(directory, 'sandbox');
+    const upload = jest.fn(async ({ stream, filename, onUploadStart }: Record<string, unknown>) => {
+      if (!(stream instanceof Readable) || typeof filename !== 'string')
+        throw new Error('Invalid upload');
+      if (typeof onUploadStart === 'function') onUploadStart();
+      await writeLocalFile(liveDirectory, filename, await readStream(stream));
+      return {
+        storage_session_id: 'same-live-session',
+        file_id: filename === 'report.txt' ? 'same-live-object' : filename,
+        filename,
+      };
+    });
+    const service = createProvisionService({
+      getStrategyFunctions: (source) =>
+        source === FileSources.execute_code
+          ? { handleFileUpload: upload }
+          : {
+              getDownloadStream: async (_req, filepath) =>
+                createReadStream(path.join(directory, fromLocalUrlPath(stripCacheBust(filepath)))),
+            },
+      uploadVectors: async () => ({ embedded: true }),
+      loadAuthValues: async () => ({}),
+    });
+    const checkSessionsAlive = jest.fn(service.checkSessionsAlive);
+    const primed = await primeResources({
+      req,
+      getFiles,
+      requestFileSet: new Set(),
+      attachments: deferred ? undefined : Promise.resolve(files),
+      provisionCandidates: deferred ? files : undefined,
+      tool_resources: privateIds.length ? { execute_code: { file_ids: privateIds } } : {},
+      agentId: 'agent-a',
+      enabledToolResources: new Set([EToolResources.execute_code]),
+      checkSessionsAlive,
+    });
+    const context: CodeFileAgent = {
+      id: 'agent-a',
+      tool_resources: primed.tool_resources,
+      provisionState: primed.provisionState,
+      fileConsumers: { executeCode: true, fileSearch: false },
+    };
+    // Eager tool loading runs before the lazy callback, as initializeAgent does.
+    const eager = await selectCodeFiles({
+      files: context.tool_resources?.execute_code?.files ?? [],
+      privateFileIds: new Set(privateIds),
+      routeKey: 'default',
+      getFileInfo: async () => ({ lastModified: new Date().toISOString() }),
+    });
+    for (const selected of eager.selected) {
+      if (!selected.isActive)
+        await writeLocalFile(
+          liveDirectory,
+          selected.sandboxName,
+          (await reload(selected.file.file_id)).bytes,
+        );
+    }
+    prepareQueuedCodeFileContext(context, [context], user);
+    const callback = createProvisionFilesCallback({
+      req,
+      fileStorage: deps.fileStorage,
+      agentToolContexts: new Map([['agent-a', context]]),
+      provisionToCodeEnv: service.provisionToCodeEnv,
+      provisionToVectorDB: service.provisionToVectorDB,
+      updateFile: async () => undefined,
+      updateCodeEnvRef: async () => undefined,
+      addEmbeddedEntity: async () => undefined,
+    });
+    const advertised = new Map(context.provisionState?.codeEnvDestinations);
+    const mounted = await callback(['execute_code'], 'agent-a');
+    expect(getFiles).toHaveBeenCalledTimes(privateIds.length ? 1 : 0);
+    expect(checkSessionsAlive.mock.calls.length).toBeLessThanOrEqual(1);
+    return { context, upload, advertised, mounted };
+  }
+
+  it.each([true, false])(
+    'initializes the newest snapshot before eager/lazy partitioning (deferred %s)',
+    async (deferred) => {
+      const first = await emit(Buffer.from('Version 1'), 'message-1', 'report.txt', 100);
+      await initializeCode([first.file_id], [], deferred);
+      expect((await reload(first.file_id)).file.metadata?.codeEnvRef).toBeDefined();
+      const second = await emit(Buffer.from('Version 2'), 'message-2', 'report.txt', 200);
+      const next = await initializeCode([first.file_id, second.file_id], [], deferred);
+      expect((await readFile(path.join(directory, 'sandbox/report.txt'))).toString()).toBe(
+        'Version 2',
+      );
+      expect(next.advertised.get(second.file_id)).toBe('report.txt');
+      expect(next.mounted.map((file) => file.name)).toEqual(['report.txt']);
+      expect(next.context.tool_resources?.execute_code?.files?.map((file) => file.file_id)).toEqual(
+        [second.file_id],
+      );
+      await initializeCode([first.file_id], [], deferred);
+      expect((await readFile(path.join(directory, 'sandbox/report.txt'))).toString()).toBe(
+        'Version 1',
+      );
+      expect((await reload(second.file_id)).bytes.toString()).toBe('Version 2');
+    },
+  );
+
+  it('keeps tenant authorization and private collisions through initialization and lazy setup', async () => {
+    const first = await emit(Buffer.from('Version 1'), 'message-1', 'report.txt', 100);
+    await initializeCode([first.file_id]);
+    const second = await emit(Buffer.from('Version 2'), 'message-2', 'report.txt', 200);
+    req.user.tenantId = 'tenant-b';
+    const foreign = await emit(Buffer.from('Foreign tenant'), 'foreign', 'report.txt', 300);
+    req.user.tenantId = 'tenant-a';
+    const privateFile = await emit(Buffer.from('Private setup'), 'private', 'report.txt', 400);
+    await methods.updateFile({ file_id: privateFile.file_id, context: FileContext.agents });
+    const next = await initializeCode(
+      [first.file_id, second.file_id, foreign.file_id],
+      [privateFile.file_id],
+    );
+    const name = next.advertised.get(second.file_id)!;
+    expect(name).toBe('report.txt');
+    expect((await readFile(path.join(directory, 'sandbox', name))).toString()).toBe('Version 2');
+    const privateName = next.advertised.get(privateFile.file_id)!;
+    expect(privateName).not.toBe(name);
+    expect((await readFile(path.join(directory, 'sandbox', privateName))).toString()).toBe(
+      'Private setup',
+    );
+    expect(next.advertised.has(foreign.file_id)).toBe(false);
+  });
 
   it('retains V1 and V2 bytes and message references after same-path rewrites and reload', async () => {
     const first = await emit(Buffer.from('Version 1'), 'message-1');

@@ -228,3 +228,38 @@ export function sortCodeFilesByDestinationPriority<T extends CodeDestinationCand
     return (a?.file_id ?? '').localeCompare(b?.file_id ?? '');
   });
 }
+
+/** Select generated versions before live refs and queued uploads are partitioned. */
+export function selectCodeFileGenerations<
+  T extends CodeDestinationCandidate & {
+    filename?: string;
+    tenantId?: string;
+    user?: { toString(): string };
+  },
+>(
+  files: Array<T | null | undefined>,
+  privateFileIds?: ReadonlySet<string>,
+): { files: Array<T | null | undefined>; skippedSuperseded: number } {
+  const destinations = new Set<string>();
+  let skippedSuperseded = 0;
+  const selected = sortCodeFilesByDestinationPriority(files, privateFileIds).filter((file) => {
+    if (
+      file?.context !== FileContext.execute_code &&
+      file?.context !== FileContext.execute_code_snapshot
+    )
+      return true;
+    const key = JSON.stringify([
+      privateFileIds?.has(file.file_id ?? '') ?? false,
+      file.tenantId ?? null,
+      file.user?.toString() ?? null,
+      file.filename,
+    ]);
+    if (destinations.has(key)) {
+      skippedSuperseded++;
+      return false;
+    }
+    destinations.add(key);
+    return true;
+  });
+  return { files: selected, skippedSuperseded };
+}

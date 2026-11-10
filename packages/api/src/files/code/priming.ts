@@ -16,7 +16,7 @@ import {
   claimCodeDestination,
   createCodeDestinationSet,
   reserveCodeDestination,
-  sortCodeFilesByDestinationPriority,
+  selectCodeFileGenerations,
 } from './destinations';
 import {
   codeServerHttpAgent,
@@ -118,27 +118,13 @@ export async function selectCodeFiles({
   signal?: AbortSignal;
 }): Promise<{ selected: PrimedCodeFile[]; skippedNoRef: number; skippedSuperseded: number }> {
   let skippedNoRef = 0;
-  let skippedSuperseded = 0;
+  const generations = selectCodeFileGenerations(files, privateFileIds);
+  let skippedSuperseded = generations.skippedSuperseded;
   const candidates = [];
   const registry = createCodeApiUploadRegistry();
-  const generatedDestinations = new Set<string>();
-  for (const file of sortCodeFilesByDestinationPriority(files, privateFileIds)) {
+  for (const file of generations.files) {
     if (!file) {
       continue;
-    }
-    if (
-      file.context === FileContext.execute_code_snapshot ||
-      file.context === FileContext.execute_code
-    ) {
-      const destination = JSON.stringify([
-        privateFileIds?.has(file.file_id) ?? false,
-        file.filename,
-      ]);
-      if (generatedDestinations.has(destination)) {
-        skippedSuperseded++;
-        continue;
-      }
-      generatedDestinations.add(destination);
     }
     // Sandbox refs name mutable paths, including receipts from an earlier prime.
     const ref =
