@@ -68,7 +68,7 @@ class MarkdownErrorBoundary extends React.Component<
         [
           rehypeHighlight,
           {
-            detect: true,
+            detect: false,
             ignoreMissing: true,
             subset: langSubset,
           },

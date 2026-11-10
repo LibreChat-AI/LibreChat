@@ -65,7 +65,7 @@ export const getRemarkPlugins = (latexParsing = true): PluggableList => [
 
 export const getRehypePlugins = (): PluggableList => [
   [rehypeKatex],
-  [rehypeHighlight, { detect: true, ignoreMissing: true, subset: langSubset }],
+  [rehypeHighlight, { detect: false, ignoreMissing: true, subset: langSubset }],
 ];
 
 export const getMarkdownComponents = (): { [nodeType: string]: ElementType } => ({
