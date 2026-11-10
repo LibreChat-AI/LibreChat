@@ -18,6 +18,7 @@ export interface ChannelIdentityHandlers {
   inspectActor: RequestHandler;
   issue: RequestHandler;
   confirm: RequestHandler;
+  reply: RequestHandler;
 }
 
 const token = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
@@ -141,6 +142,28 @@ export function createChannelIdentityHandlers(
         return;
       }
       res.json(await deps.identity.issue(identity));
+    }),
+    reply: actor(async (req, res, identity) => {
+      const parsed = z
+        .object({
+          linkId: revision,
+          attempt: z.string().regex(/^[a-f0-9]{64}$/),
+          responseUrl: z.string().max(2048),
+        })
+        .strict()
+        .safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ ok: false, error: { code: 'forbidden' } });
+        return;
+      }
+      res.json(
+        await deps.identity.registerReply(
+          identity,
+          parsed.data.linkId,
+          parsed.data.attempt,
+          parsed.data.responseUrl,
+        ),
+      );
     }),
     confirm: actor(async (req, res, identity) => {
       const parsed = confirmBody.safeParse(req.body);

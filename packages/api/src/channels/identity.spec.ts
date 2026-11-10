@@ -368,3 +368,164 @@ it.each(['http://192.168.1.50:3080', 'https://example.test/?unsafe=1', 'not-a-ur
       expect(await mongoose.models.ChannelIdentity.countDocuments({})).toBe(0);
     })(),
 );
+
+function replies() {
+  const update = jest
+    .fn<Promise<void>, Parameters<NonNullable<ChannelIdentityDependencies['reply']>['update']>>()
+    .mockResolvedValue();
+  const onError = jest.fn();
+  service = createChannelIdentityService({
+    ...dependencies,
+    reply: {
+      encrypt: async (text) => `encrypted:${Buffer.from(text).toString('base64')}`,
+      decrypt: async (text) => Buffer.from(text.slice(10), 'base64').toString(),
+      update,
+      onError,
+    },
+  });
+  return { update, onError };
+}
+const replyURL = 'https://hooks.slack.com/actions/T1/B1/secret';
+
+it(
+  'updates the original Slack card after browser acceptance and hides the encrypted callback',
+  scoped(async () => {
+    const { update } = replies();
+    const issued = value(await service.issue(identity));
+    expect(await service.registerReply(identity, issued.linkId, issued.attempt, replyURL)).toEqual({
+      ok: true,
+      value: null,
+    });
+    expect(update).not.toHaveBeenCalled();
+    const secret = new URL(issued.url).hash.slice(1);
+    const preview = value(await service.preview(principal, secret));
+    const accepted = value(await service.accept(principal, secret, preview.revision));
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(
+      replyURL,
+      expect.objectContaining({ state: 'accepted', revision: accepted.revision }),
+    );
+    await service.preview(principal, secret);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(await service.list(principal))).not.toContain('slackReply');
+    const privateRecord = await dependencies.storage.readChannelLink(
+      identity.tenantId,
+      issued.linkId,
+    );
+    expect(privateRecord?.slackReply?.encryptedUrl).not.toContain(replyURL);
+    await service.confirm(identity, accepted.linkId, accepted.revision);
+    expect(
+      (await dependencies.storage.readChannelLink(identity.tenantId, issued.linkId))?.slackReply,
+    ).toBeUndefined();
+  }),
+);
+
+it(
+  'handles acceptance before the Slack callback and never attaches another actor or old ticket',
+  scoped(async () => {
+    const { update } = replies();
+    const { issued } = await accept();
+    expect(update).not.toHaveBeenCalled();
+    expect(
+      await service.registerReply(
+        { ...identity, externalUserId: 'U2' },
+        issued.linkId,
+        issued.attempt,
+        replyURL,
+      ),
+    ).toMatchObject({ ok: false });
+    expect(
+      await service.registerReply(identity, issued.linkId, 'a'.repeat(64), replyURL),
+    ).toMatchObject({ ok: false });
+    expect(
+      await service.registerReply(identity, issued.linkId, issued.attempt, replyURL),
+    ).toMatchObject({ ok: true });
+    expect(update).toHaveBeenCalledTimes(1);
+  }),
+);
+
+it(
+  'retains committed consent through Slack failures and retries safely from browser preview',
+  scoped(async () => {
+    const { update, onError } = replies();
+    const issued = value(await service.issue(identity));
+    await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+    update.mockRejectedValueOnce(new Error('remote unavailable'));
+    const secret = new URL(issued.url).hash.slice(1);
+    const preview = value(await service.preview(principal, secret));
+    expect(value(await service.accept(principal, secret, preview.revision)).state).toBe('accepted');
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(value(await service.preview(principal, secret)).state).toBe('accepted');
+    expect(update).toHaveBeenCalledTimes(2);
+  }),
+);
+
+it(
+  'rejects untrusted Slack reply destinations and clears reply capabilities on revocation',
+  scoped(async () => {
+    const { update } = replies();
+    const { issued, accepted } = await accept();
+    expect(
+      await service.registerReply(
+        identity,
+        issued.linkId,
+        issued.attempt,
+        'https://example.com/actions/T1/B1/secret',
+      ),
+    ).toMatchObject({ ok: false });
+    await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+    expect(update).toHaveBeenCalledTimes(1);
+    await service.revoke(principal, accepted.linkId, accepted.revision);
+    expect(
+      (await dependencies.storage.readChannelLink(identity.tenantId, issued.linkId))?.slackReply,
+    ).toBeUndefined();
+  }),
+);
+
+it(
+  'cannot reattach a callback from a replaced ticket or recreate a deleted identity',
+  scoped(async () => {
+    replies();
+    const first = value(await service.issue(identity));
+    await service.registerReply(identity, first.linkId, first.attempt, replyURL);
+    const next = value(await service.issue(identity));
+    expect(
+      (await dependencies.storage.readChannelLink(identity.tenantId, next.linkId))?.slackReply,
+    ).toBeUndefined();
+    expect(
+      await service.registerReply(identity, first.linkId, first.attempt, replyURL),
+    ).toMatchObject({ ok: false });
+    const pending = (await dependencies.storage.readChannelLink(identity.tenantId, next.linkId))!;
+    await mongoose.models.ChannelIdentity.deleteOne({
+      tenantId: identity.tenantId,
+      linkId: next.linkId,
+    });
+    expect(
+      await dependencies.storage.saveChannelIdentityReply(pending, {
+        attempt: next.attempt,
+        encryptedUrl: 'ciphertext',
+        expiresAtMs: clock + 1000,
+      }),
+    ).toBe(false);
+    expect(await dependencies.storage.readChannelLink(identity.tenantId, next.linkId)).toBeNull();
+  }),
+);
+
+it(
+  'does not notify after the ticket expires or permissions are revoked',
+  scoped(async () => {
+    const { update } = replies();
+    const issued = value(await service.issue(identity));
+    await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+    const secret = new URL(issued.url).hash.slice(1);
+    const preview = value(await service.preview(principal, secret));
+    allowed = false;
+    expect(await service.accept(principal, secret, preview.revision)).toMatchObject({ ok: false });
+    expect(update).not.toHaveBeenCalled();
+    clock = issued.expiresAtMs + 1;
+    expect(
+      await service.registerReply(identity, issued.linkId, issued.attempt, replyURL),
+    ).toMatchObject({ ok: false });
+    expect(update).not.toHaveBeenCalled();
+  }),
+);

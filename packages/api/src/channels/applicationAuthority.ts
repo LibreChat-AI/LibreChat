@@ -5,6 +5,7 @@ import type { ChannelApplicationPolicy } from './applicationPolicy';
 import { createChannelResponseCredentials } from './credentials';
 import { checkRemoteAgentAccess } from '~/apiKeys/service';
 import { createChannelAuthority } from './authority';
+import { updateSlackLinkReply } from './linkReply';
 
 export interface ChannelApplicationAuthorityDependencies
   extends Omit<
@@ -14,6 +15,7 @@ export interface ChannelApplicationAuthorityDependencies
   storage: ChannelRunStorage;
   policy: ChannelApplicationPolicy;
   publicBaseUrl?: string;
+  onLinkReplyError?: () => void;
   access: Pick<
     Parameters<typeof checkRemoteAgentAccess>[0],
     'getAgent' | 'getEffectivePermissions'
@@ -43,6 +45,12 @@ export function createChannelApplicationAuthority(
   const authority = createChannelAuthority({
     channels: deps.channels,
     identityStorage: deps.identityStorage,
+    reply: deps.reply ?? {
+      encrypt: deps.credentials.encrypt,
+      decrypt: deps.credentials.decrypt,
+      update: updateSlackLinkReply,
+      onError: deps.onLinkReplyError ?? (() => {}),
+    },
     findUser: deps.findUser,
     getRole: deps.getRole,
     isPrincipalActive: deps.isPrincipalActive,

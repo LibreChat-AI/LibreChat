@@ -34,6 +34,7 @@ export const interactionSchema = z.object({
   user: z.object({ id }),
   channel: z.object({ id }).optional(),
   trigger_id: z.string().optional(),
+  response_url: z.string().max(2048).optional(),
   container: z.object({ channel_id: id.optional(), message_ts: z.string().optional() }).optional(),
   message: z.object({ ts: z.string().optional() }).optional(),
   actions: z
@@ -188,6 +189,13 @@ export class GatewayApp {
             },
             signal,
           );
+        } else if (action.action_id === 'channel_link_open') {
+          await this.identity.open(
+            callback.user.id,
+            action.value ?? '',
+            callback.response_url,
+            signal,
+          );
         } else if (action.action_id === 'channel_link_confirm')
           await this.identity.confirm(
             channelId,
@@ -195,6 +203,7 @@ export class GatewayApp {
             action.value ?? '',
             bundle,
             signal,
+            callback.response_url,
           );
         else if (action.action_id.startsWith('channel_native_choice_'))
           await this.review.choice(action.value ?? '', interaction, bundle, signal);

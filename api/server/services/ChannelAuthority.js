@@ -8,6 +8,7 @@ const {
   createChannelIdentityStorage,
   createChannelRunStorage,
   createResponseStorage,
+  logger,
 } = require('@librechat/data-schemas');
 const mongoose = require('mongoose');
 const { getAppConfig } = require('./Config');
@@ -23,6 +24,7 @@ module.exports = createChannelApplicationAuthority({
   }),
   channels: db,
   identityStorage: createChannelIdentityStorage(mongoose),
+  onLinkReplyError: () => logger.warn('[Channels] Slack account-link message update failed'),
   findUser: (id) => db.findUser({ _id: id }),
   getRole: db.getRoleByName,
   isPrincipalActive: db.isAgentTriggerPrincipalActive,

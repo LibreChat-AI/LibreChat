@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { isSlackReplyURL, SLACK_REPLY_LIFETIME_MS } from 'librechat-data-provider';
 import type {
   ChannelExternalIdentity,
   ChannelLink,
@@ -27,6 +28,12 @@ export interface ChannelIdentityDependencies {
   linkLifetimeMs: number;
   getLifetimes?: () => Promise<{ ticketLifetimeMs: number; linkLifetimeMs: number }>;
   now?: () => number;
+  reply?: {
+    encrypt: (url: string) => Promise<string>;
+    decrypt: (value: string) => Promise<string>;
+    update: (url: string, view: ChannelLinkView) => Promise<void>;
+    onError: () => void;
+  };
 }
 
 const hash = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -97,7 +104,65 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
     if (!/^[A-Za-z0-9_-]{43}$/.test(secret)) return null;
     return deps.storage.readChannelTicket(principal.tenantId, hash(secret));
   }
+  async function updateReply(record: ChannelIdentityRecord): Promise<void> {
+    if (!deps.reply) return;
+    try {
+      const current = await deps.storage.readChannelLink(record.tenantId, record.linkId);
+      const reply = current?.slackReply;
+      if (!current || !reply || reply.attempt !== record.ticketHash) return;
+      if (reply.expiresAtMs <= now() || !(await deps.channelIsCurrent(current.identity))) {
+        await deps.storage.clearChannelIdentityReply(
+          current.tenantId,
+          current.linkId,
+          reply.attempt,
+        );
+        return;
+      }
+      if (
+        !['accepted', 'active'].includes(current.state) ||
+        !current.userId ||
+        !(await permitted(current, current.userId)) ||
+        reply.deliveredRevision === current.revision
+      )
+        return;
+      const url = await deps.reply.decrypt(reply.encryptedUrl);
+      if (!isSlackReplyURL(url)) throw new TypeError('Invalid Slack reply');
+      await deps.reply.update(url, view(current, now()));
+      await deps.storage.markChannelIdentityReply(current, reply);
+    } catch {
+      // Consent has committed; a cosmetic Slack failure must not turn it into a failed mutation.
+      deps.reply.onError();
+    }
+  }
   return {
+    async registerReply(
+      identity: ChannelExternalIdentity,
+      linkId: string,
+      attempt: string,
+      url: string,
+    ): Promise<ChannelIdentityResult<null>> {
+      if (!deps.reply || !isSlackReplyURL(url) || !/^[a-f0-9]{64}$/.test(attempt))
+        return failure('forbidden');
+      const record = await deps.storage.readChannelLink(identity.tenantId, linkId);
+      if (
+        !record ||
+        record.ticketHash !== attempt ||
+        !sameChannelActor(record.identity, identity) ||
+        !['pending', 'accepted'].includes(record.state) ||
+        record.ticketExpiresAtMs <= now() ||
+        !(await deps.channelIsCurrent(identity))
+      )
+        return failure('changed');
+      const saved = await deps.storage.saveChannelIdentityReply(record, {
+        encryptedUrl: await deps.reply.encrypt(url),
+        attempt,
+        expiresAtMs: Math.min(record.ticketExpiresAtMs, now() + SLACK_REPLY_LIFETIME_MS),
+      });
+      if (!saved) return failure('changed');
+      // Browser acceptance may have raced ahead of Slack's link-button callback.
+      await updateReply(record);
+      return { ok: true, value: null };
+    },
     async issue(
       identity: ChannelExternalIdentity,
     ): Promise<ChannelIdentityResult<ChannelLinkTicket>> {
@@ -141,7 +206,15 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
         return failure('changed');
       const url = new URL('channels/link', base.href.endsWith('/') ? base : `${base.href}/`);
       url.hash = secret;
-      return { ok: true, value: { url: url.href, expiresAtMs: expiry } };
+      return {
+        ok: true,
+        value: {
+          url: url.href,
+          expiresAtMs: expiry,
+          linkId: record.linkId,
+          attempt: record.ticketHash,
+        },
+      };
     },
     async preview(
       principal: ChannelLinkPrincipal,
@@ -152,6 +225,7 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
       if (record.ticketExpiresAtMs <= now()) return failure('expired');
       if (record.userId && record.userId !== principal.userId) return failure('forbidden');
       if (!(await permitted(record, principal.userId))) return failure('forbidden');
+      if (record.state === 'accepted' || record.state === 'active') await updateReply(record);
       return { ok: true, value: view(record, now()) };
     },
     async accept(
@@ -174,6 +248,7 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
       };
       if (!(await deps.storage.saveChannelIdentity(accepted, record.revision)))
         return failure('changed');
+      await updateReply(accepted);
       return { ok: true, value: view(accepted, now()) };
     },
     /** Called only after trusted Slack ingress verifies this exact external actor. */
@@ -196,6 +271,11 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
       };
       if (!(await deps.storage.saveChannelIdentity(active, record.revision)))
         return failure('changed');
+      await deps.storage.clearChannelIdentityReply(
+        active.tenantId,
+        active.linkId,
+        active.ticketHash,
+      );
       return {
         ok: true,
         value: {

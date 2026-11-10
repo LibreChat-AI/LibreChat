@@ -33,6 +33,7 @@ export interface ChannelAuthorityDependencies {
   /** Installed by the composition that supplies the link page. */
   publicBaseUrl?: string;
   getLifetimes?: ChannelIdentityDependencies['getLifetimes'];
+  reply?: ChannelIdentityDependencies['reply'];
 }
 
 export function channelExternalIdentity(
@@ -73,6 +74,7 @@ export function createChannelAuthority(deps: ChannelAuthorityDependencies): Chan
   }
   const identity = createChannelIdentityService({
     storage: deps.identityStorage,
+    reply: deps.reply,
     channelIsCurrent: async (actor) => Boolean(await current(actor)),
     canUse: async (actor, userId) => {
       const channel = await current(actor);
