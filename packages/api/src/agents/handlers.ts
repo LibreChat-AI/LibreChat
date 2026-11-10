@@ -56,6 +56,7 @@ import type {
 import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
 import type { InterruptibleToolBatchRequest } from './steering/tools';
+import type { ToolExecutionIdentity } from '~/telemetry/tools';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
 import type { SandboxTextReader } from '~/files/code/text';
@@ -158,6 +159,7 @@ import { toolValidationFeedback } from './validationFeedback';
 import { explainWorkspacePathRejection } from '~/code/paths';
 import { createSkillContentDigest } from './compatibility';
 import { isMissingSandboxPathError } from '~/files/code';
+import { observeToolExecution } from '~/telemetry/tools';
 import { applyHostTextEdits } from './files/processing';
 import { deleteSkillWithRetry } from '~/skills/cleanup';
 import { resolveDownloadPath } from '~/storage/path';
@@ -5891,6 +5893,29 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
               }
             }
             if (mergedConfigurable != null) mergedConfigurable.executionContext = executionContext;
+            const telemetryReq = mergedConfigurable?.req as ServerRequest | undefined;
+            const telemetryAncestry =
+              executionContext?.ancestry[executionContext.ancestry.length - 1];
+            const telemetryConversationId = metadata?.thread_id ?? mergedConfigurable?.thread_id;
+            const toolTelemetryIdentity = (
+              tc: ToolCallRequest,
+              mode: ToolExecutionIdentity['mode'],
+            ): ToolExecutionIdentity => ({
+              toolName: tc.name,
+              toolCallId: tc.id,
+              stepId: tc.stepId,
+              agentId,
+              mode,
+              runId: eventRunId,
+              conversationId:
+                typeof telemetryConversationId === 'string' ? telemetryConversationId : undefined,
+              userId: resolveBackgroundUserId(mergedConfigurable),
+              tenantId: telemetryReq?.user?.tenantId,
+              rootRunId: executionContext?.rootRunId,
+              parentRunId: telemetryAncestry?.parentRunId,
+              subagentRunId: telemetryAncestry?.subagentRunId,
+              parentToolCallId: telemetryAncestry?.parentToolCallId,
+            });
             /* The graph populated each call's code-session context from the sessions that
              * existed at run start, before this batch provisioned anything, and nothing
              * downstream refreshes it. buildToolCallConfig reads `_injected_files` from
@@ -6600,31 +6625,37 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                 noteToolApprovalDispatch(approvalDispatch);
                 let invokePromise: Promise<{ content?: unknown; artifact?: unknown }>;
                 try {
-                  invokePromise = Promise.resolve(
-                    tool.invoke(normalizedArgs, {
-                      /** Full invoke config (not just identity): a detached
-                       *  code call still needs `session_id`/`_injected_files`/
-                       *  `_runtime_session_hint` or it runs fileless on the
-                       *  Code API's default runtime session. */
-                      toolCall: buildToolCallConfig(tc, mergedConfigurable),
+                  invokePromise = observeToolExecution(
+                    { ...toolTelemetryIdentity(tc, 'background'), backgroundTaskId: task.id },
+                    () =>
+                      tool.invoke(normalizedArgs, {
+                        /** Full invoke config (not just identity): a detached
+                         *  code call still needs `session_id`/`_injected_files`/
+                         *  `_runtime_session_hint` or it runs fileless on the
+                         *  Code API's default runtime session. */
+                        toolCall: buildToolCallConfig(tc, mergedConfigurable),
+                        signal: backgroundAbortController.signal,
+                        configurable: {
+                          ...mergedConfigurable,
+                          [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true,
+                          ...(detachedReservation?.status === 'reserved'
+                            ? {
+                                eventActorDetachedAction: {
+                                  taskId: detachedReservation.taskId,
+                                  idempotencyKey: detachedReservation.idempotencyKey,
+                                },
+                              }
+                            : {}),
+                        },
+                        metadata: bindToolApprovalInvocation(
+                          { ...metadata, executingAgentId: agentId },
+                          approvalDispatch,
+                        ),
+                      } as Record<string, unknown>),
+                    {
                       signal: backgroundAbortController.signal,
-                      configurable: {
-                        ...mergedConfigurable,
-                        [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true,
-                        ...(detachedReservation?.status === 'reserved'
-                          ? {
-                              eventActorDetachedAction: {
-                                taskId: detachedReservation.taskId,
-                                idempotencyKey: detachedReservation.idempotencyKey,
-                              },
-                            }
-                          : {}),
-                      },
-                      metadata: bindToolApprovalInvocation(
-                        { ...metadata, executingAgentId: agentId },
-                        approvalDispatch,
-                      ),
-                    } as Record<string, unknown>),
+                      getAbortSource: () => backgroundAbortSource,
+                    },
                   ) as Promise<{ content?: unknown; artifact?: unknown }>;
                 } catch (error) {
                   /** Structured tools are permitted to reject synchronously.
@@ -7065,20 +7096,25 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                     return reportResult(interruptedToolResult(tc.id));
                   }
                   onResultAdmissionStart?.(tc.id);
-                  const pollContent = await runCheckBackgroundTask({
-                    userId: backgroundUserId,
-                    conversationId: backgroundConversationId,
-                    args: tc.args,
-                    toolCallId: tc.id,
-                    agentId,
-                    runId: `${backgroundRunId ?? ''}:${tc.turn ?? ''}`,
-                    generationId: backgroundRunId,
-                    subagentTasks,
-                    claimBackgroundToolResult: backgroundToolCompletion?.claim,
-                    recoverDeadBackgroundToolClaim: backgroundToolCompletion?.recoverDeadClaim,
-                    pendingCompletions: backgroundToolCompletion?.pending,
-                    ordinaryToolCancellation,
-                  });
+                  const pollContent = await observeToolExecution(
+                    toolTelemetryIdentity(tc, 'foreground'),
+                    () =>
+                      runCheckBackgroundTask({
+                        userId: backgroundUserId,
+                        conversationId: backgroundConversationId,
+                        args: tc.args,
+                        toolCallId: tc.id,
+                        agentId,
+                        runId: `${backgroundRunId ?? ''}:${tc.turn ?? ''}`,
+                        generationId: backgroundRunId,
+                        subagentTasks,
+                        claimBackgroundToolResult: backgroundToolCompletion?.claim,
+                        recoverDeadBackgroundToolClaim: backgroundToolCompletion?.recoverDeadClaim,
+                        pendingCompletions: backgroundToolCompletion?.pending,
+                        ordinaryToolCancellation,
+                      }),
+                    { signal: runSignal },
+                  );
                   const taskSnapshot = getBackgroundTaskSnapshot({
                     userId: backgroundUserId,
                     conversationId: backgroundConversationId,
@@ -7359,65 +7395,71 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                     }
                     let handlerResult: ToolExecuteResult;
                     try {
-                      if (tc.name === Constants.SKILL_TOOL) {
-                        handlerResult = await handleSkillToolCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          agentId,
-                          req,
-                          runSignal,
-                          batchCodeApiRateLimitBudget,
-                        );
-                      } else if (tc.name === Constants.READ_FILE) {
-                        handlerResult = await handleReadFileCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          req,
-                          () => {
-                            sandboxReadSucceeded = true;
-                          },
-                          runSignal,
-                        );
-                      } else if (tc.name === SEARCH_WORKSPACE_TOOL_NAME) {
-                        handlerResult = await handleWorkspaceSearchCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          req,
-                          runSignal,
-                        );
-                      } else if (tc.name === LIST_WORKSPACE_FILES_TOOL_NAME) {
-                        handlerResult = await handleWorkspaceListCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          req,
-                          runSignal,
-                        );
-                      } else if (tc.name === CREATE_FILE_TOOL_NAME && isFileAuthoringCall) {
-                        handlerResult = await handleCreateFileCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          req,
-                          sourceConfigurable,
-                          sandboxContext,
-                          runSignal,
-                        );
-                      } else if (tc.name === EDIT_FILE_TOOL_NAME && isFileAuthoringCall) {
-                        handlerResult = await handleEditFileCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          req,
-                          sandboxContext,
-                          runSignal,
-                        );
-                      } else {
-                        handlerResult = errorResult(tc, `Tool ${tc.name} not found`);
-                      }
+                      handlerResult = await observeToolExecution(
+                        toolTelemetryIdentity(tc, 'foreground'),
+                        async () => {
+                          if (tc.name === Constants.SKILL_TOOL) {
+                            return handleSkillToolCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              agentId,
+                              req,
+                              runSignal,
+                              batchCodeApiRateLimitBudget,
+                            );
+                          } else if (tc.name === Constants.READ_FILE) {
+                            return handleReadFileCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              req,
+                              () => {
+                                sandboxReadSucceeded = true;
+                              },
+                              runSignal,
+                            );
+                          } else if (tc.name === SEARCH_WORKSPACE_TOOL_NAME) {
+                            return handleWorkspaceSearchCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              req,
+                              runSignal,
+                            );
+                          } else if (tc.name === LIST_WORKSPACE_FILES_TOOL_NAME) {
+                            return handleWorkspaceListCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              req,
+                              runSignal,
+                            );
+                          } else if (tc.name === CREATE_FILE_TOOL_NAME && isFileAuthoringCall) {
+                            return handleCreateFileCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              req,
+                              sourceConfigurable,
+                              sandboxContext,
+                              runSignal,
+                            );
+                          } else if (tc.name === EDIT_FILE_TOOL_NAME && isFileAuthoringCall) {
+                            return handleEditFileCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              req,
+                              sandboxContext,
+                              runSignal,
+                            );
+                          } else {
+                            return errorResult(tc, `Tool ${tc.name} not found`);
+                          }
+                        },
+                        { signal: runSignal },
+                      );
                     } catch (toolError) {
                       if (toolError instanceof ContentFilterError) {
                         logger.error(`[ON_TOOL_EXECUTE] Tool ${tc.name} error`, {
@@ -7676,29 +7718,27 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                          * must not put their values on the wire. */
                         const ptcReq = mergedConfigurable?.req as ServerRequest | undefined;
                         const ptcArgumentPii = ptcReq?.config?.filters?.toolArguments?.pii;
-                        toolCallConfig.toolMap = emitPtcProgress
-                          ? instrumentPtcToolMap({
-                              toolMap: eligiblePtcToolMap,
-                              toolCallId: tc.id,
-                              runId: (metadata as Record<string, unknown>)?.run_id as
-                                | string
-                                | undefined,
-                              includePreviews: !hasActivePiiFields(ptcArgumentPii, [
-                                'name',
-                                'arguments',
-                                'output',
-                              ]),
-                              traceExclusions: collectFilteredPtcToolNames(
-                                eligiblePtcToolMap.keys(),
-                                ptcReq,
-                              ),
-                              emit: (event) => {
-                                if (!(runSignal?.reason instanceof SteerToolInterrupt)) {
-                                  emitPtcProgress(event);
-                                }
-                              },
-                            })
-                          : eligiblePtcToolMap;
+                        toolCallConfig.toolMap = instrumentPtcToolMap({
+                          toolMap: eligiblePtcToolMap,
+                          toolCallId: tc.id,
+                          telemetry: toolTelemetryIdentity(tc, 'programmatic'),
+                          signal: runSignal,
+                          runId: (metadata as Record<string, unknown>)?.run_id as
+                            | string
+                            | undefined,
+                          includePreviews:
+                            emitPtcProgress != null &&
+                            !hasActivePiiFields(ptcArgumentPii, ['name', 'arguments', 'output']),
+                          traceExclusions: collectFilteredPtcToolNames(
+                            eligiblePtcToolMap.keys(),
+                            ptcReq,
+                          ),
+                          emit: (event) => {
+                            if (!(runSignal?.reason instanceof SteerToolInterrupt)) {
+                              emitPtcProgress?.(event);
+                            }
+                          },
+                        });
                       }
                     }
 
@@ -7725,18 +7765,23 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                     if (filtered != null) {
                       return filtered;
                     }
-                    const result = await tool.invoke(normalizedArgs, {
-                      toolCall: toolCallConfig,
-                      configurable: mergedConfigurable,
-                      metadata: { ...metadata, executingAgentId: agentId },
-                      /** The run's cancellation signal. Without it a foreground
-                       *  tool call keeps running after Stop: an MCP call never
-                       *  sends `notifications/cancelled`, and every other
-                       *  signal-aware tool keeps burning quota on a turn the
-                       *  user already abandoned. Detached background calls
-                       *  intentionally use their own controller instead. */
-                      ...(runSignal != null && { signal: runSignal }),
-                    } as Record<string, unknown>);
+                    const result = await observeToolExecution(
+                      toolTelemetryIdentity(tc, 'foreground'),
+                      () =>
+                        tool.invoke(normalizedArgs, {
+                          toolCall: toolCallConfig,
+                          configurable: mergedConfigurable,
+                          metadata: { ...metadata, executingAgentId: agentId },
+                          /** The run's cancellation signal. Without it a foreground
+                           *  tool call keeps running after Stop: an MCP call never
+                           *  sends `notifications/cancelled`, and every other
+                           *  signal-aware tool keeps burning quota on a turn the
+                           *  user already abandoned. Detached background calls
+                           *  intentionally use their own controller instead. */
+                          ...(runSignal != null && { signal: runSignal }),
+                        } as Record<string, unknown>),
+                      { signal: runSignal },
+                    );
 
                     if (runSignal?.reason instanceof SteerToolInterrupt) {
                       return interruptedToolResult(tc.id);
