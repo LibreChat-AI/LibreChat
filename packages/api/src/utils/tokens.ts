@@ -195,6 +195,7 @@ const anthropicModels = {
   'claude-opus-5': 1000000,
   'claude-fable-5': 1000000,
   'claude-mythos-5': 1000000,
+  'claude-mythos-preview': 1000000,
   'claude-fable-5-1': 1000000,
   'claude-mythos-5-1': 1000000,
 };
@@ -414,6 +415,48 @@ const openAIBedrockModels = {
   'openai.gpt-6-astra': bedrockOpenAIContext,
   'openai.gpt-6-sol': bedrockOpenAIContext,
   'openai.gpt-6-luna': bedrockOpenAIContext,
+  'openai.gpt-5.4': bedrockOpenAIContext,
+  'openai.gpt-5.5': bedrockOpenAIContext,
+  'openai.gpt-6.1-terra': bedrockOpenAIContext,
+  'openai.gpt-oss-safeguard-20b': 128000,
+  'openai.gpt-oss-safeguard-120b': 128000,
+};
+
+/* Bedrock serves these under vendor-prefixed ids that no generic key reaches,
+   so each needs its own entry to avoid the 32K fallback.
+   https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html */
+const vendorBedrockModels = {
+  'ai21.jamba-1-5-large': 256000,
+  'ai21.jamba-1-5-mini': 256000,
+  'google.gemma-3-4b-it': 128000,
+  'google.gemma-3-12b-it': 128000,
+  'google.gemma-3-27b-it': 128000,
+  'minimax.minimax-m2': 1000000,
+  'minimax.minimax-m2.1': 196000,
+  'minimax.minimax-m2.5': 196000,
+  'mistral.devstral-2-123b': 256000,
+  'mistral.magistral-small-2509': 128000,
+  'mistral.ministral-3-3b-instruct': 128000,
+  'mistral.ministral-3-8b-instruct': 128000,
+  'mistral.ministral-3-14b-instruct': 128000,
+  'mistral.voxtral-mini-3b-2507': 32768,
+  'mistral.voxtral-small-24b-2507': 32768,
+  'qwen.qwen3-32b': 32768,
+  'qwen.qwen3-235b-a22b-2507': 262144,
+  'qwen.qwen3-coder-30b-a3b': 262144,
+  'qwen.qwen3-coder-480b-a35b': 262144,
+  'qwen.qwen3-coder-next': 262144,
+  'qwen.qwen3-next-80b-a3b': 256000,
+  'qwen.qwen3-vl-235b-a22b': 256000,
+  'writer.palmyra-vision-7b': 4096,
+  'writer.palmyra-x4': 128000,
+  'writer.palmyra-x5': 128000,
+  'xai.grok-4.6': 500000,
+  'xai.grok-4.7': 524288,
+  'zai.glm-4.7': 203000,
+  'zai.glm-4.7-flash': 203000,
+  'zai.glm-5': 200000,
+  'zai.glm-5.3': 1000000,
 };
 
 // NVIDIA Nemotron models on Bedrock
@@ -435,6 +478,7 @@ const bedrockModels = {
   ...amazonModels,
   ...openAIBedrockModels,
   ...nvidiaBedrockModels,
+  ...vendorBedrockModels,
   ...anthropicModels,
 };
 
