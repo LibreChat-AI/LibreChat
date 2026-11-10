@@ -5027,60 +5027,46 @@ describe('RedisJobStore Integration Tests', () => {
       }
     });
 
-    test('hands a parked leftover to a promoted queued turn exactly once', async () => {
+    test('hands a parked leftover to one promoted queued turn', async () => {
       if (!ioredisClient) {
         return;
       }
       const streamId = `receipt-promote-${Date.now()}`;
       const { store, item, createdAt } = await enqueueReceiptSteer(streamId, 'promote');
+      const promote = (overrides: { userId?: string; createdAt?: number; turnId?: string } = {}) =>
+        store.promoteSteerLeftover(
+          streamId,
+          item.steerId,
+          overrides.userId ?? item.userId,
+          undefined,
+          overrides.createdAt ?? createdAt,
+          overrides.turnId ?? 'queued-turn-1',
+        );
       try {
+        await expect(promote()).resolves.toBe('refused');
         await expect(store.closeAndDrainSteers(streamId, createdAt)).resolves.toEqual([item]);
         await expect(
           store.promoteSteerLeftover(
             streamId,
-            item.clientSteerId!,
-            item.steerId,
-            item.userId,
-            undefined,
-            createdAt + 1,
-          ),
-        ).resolves.toBe(false);
-        await expect(
-          store.promoteSteerLeftover(
-            streamId,
-            item.clientSteerId!,
-            item.steerId,
-            'someone-else',
-            undefined,
-            createdAt,
-          ),
-        ).resolves.toBe(false);
-        await expect(
-          store.promoteSteerLeftover(
-            streamId,
-            item.clientSteerId!,
-            item.steerId,
+            'steer-unknown',
             item.userId,
             undefined,
             createdAt,
+            'x',
           ),
-        ).resolves.toBe(true);
+        ).resolves.toBe('missing');
+        await expect(promote({ createdAt: createdAt + 1 })).resolves.toBe('refused');
+        await expect(promote({ userId: 'someone-else' })).resolves.toBe('refused');
+        await expect(promote()).resolves.toBe('promoted');
         await expect(store.getSteerReceipt(streamId, item.clientSteerId!)).resolves.toMatchObject({
           state: 'recovered',
+          promotedTurnId: 'queued-turn-1',
         });
         await expect(
           store.claimParkedSteersDetailed(streamId, item.userId, undefined, 2),
         ).resolves.toBeUndefined();
-        await expect(
-          store.promoteSteerLeftover(
-            streamId,
-            item.clientSteerId!,
-            item.steerId,
-            item.userId,
-            undefined,
-            createdAt,
-          ),
-        ).resolves.toBe(false);
+        await expect(promote()).resolves.toBe('promoted');
+        await expect(promote({ turnId: 'queued-turn-2' })).resolves.toBe('refused');
         await expect(
           store.discardSteerLeftover(streamId, item.clientSteerId!, item.steerId, item.userId),
         ).resolves.toBe(false);
@@ -5112,13 +5098,13 @@ describe('RedisJobStore Integration Tests', () => {
         await expect(
           store.promoteSteerLeftover(
             streamId,
-            item.clientSteerId!,
             item.steerId,
             item.userId,
             undefined,
             createdAt,
+            'queued-turn-1',
           ),
-        ).resolves.toBe(false);
+        ).resolves.toBe('refused');
         await expect(store.getSteerReceipt(streamId, item.clientSteerId!)).resolves.toMatchObject({
           state: 'leftover',
         });

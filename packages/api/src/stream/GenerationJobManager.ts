@@ -4215,17 +4215,26 @@ class GenerationJobManagerClass {
       this.runtimeState.get(streamId) === claimedRuntime
         ? claimedRuntime
         : undefined;
-    const reconcileEvent = buildTerminalPersistenceReconcile({
-      createdAt,
-      conversationId: claim.conversationId,
-      status: claim.status,
-    });
     /** The caller's event still carries prompt-building inputs, so everything
      * this method stores, publishes or caches uses the projected payload. The
      * projection allocates a new object whenever it excludes anything, so
      * `intendedEvent` — not the caller's reference — is what the success
      * bookkeeping below compares identity against. */
     const intendedEvent = finalEvent == null ? null : projectTerminalEvent(finalEvent);
+    /** Steers promoted to durable queued turns already left every recovery
+     * surface, so a conservative frame keeps that mapping for the client. */
+    const promotedSteers =
+      intendedEvent != null && 'promotedSteers' in intendedEvent
+        ? intendedEvent.promotedSteers
+        : undefined;
+    const reconcileEvent: t.FinalEvent = {
+      ...buildTerminalPersistenceReconcile({
+        createdAt,
+        conversationId: claim.conversationId,
+        status: claim.status,
+      }),
+      ...(promotedSteers != null && promotedSteers.length > 0 && { promotedSteers }),
+    };
     const desiredEvent = intendedEvent ?? reconcileEvent;
     let publicationEvent: t.ServerSentEvent | null = null;
     let durable = false;

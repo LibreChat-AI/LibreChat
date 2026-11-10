@@ -11,6 +11,7 @@ import type {
   SteerQueueItem,
   SteerReceipt,
   SteerReceiptInput,
+  SteerPromotionOutcome,
   TerminalSteerAdmissionPolicy,
   TerminalSteerAdmissionResult,
 } from '~/stream/interfaces/IJobStore';
@@ -230,20 +231,21 @@ export class SteeringLifecycle {
     );
   }
 
-  /** Settle a terminal leftover that now lives on as a durable queued turn. */
+  /** Hand a terminal leftover to the durable queued turn that now carries it. */
   promoteLeftover(
     streamId: string,
-    item: Pick<SteerQueueItem, 'steerId'> & { clientSteerId: string },
+    steerId: string,
     owner: SteerOwner,
     generationCreatedAt: number,
-  ): Promise<boolean> {
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome> {
     return this.store.promoteSteerLeftover(
       streamId,
-      item.clientSteerId,
-      item.steerId,
+      steerId,
       owner.userId,
       owner.tenantId,
       generationCreatedAt,
+      queuedTurnId,
     );
   }
 

@@ -31,6 +31,7 @@ import type {
   TerminalSteerAdmissionResult,
   SteerReceipt,
   SteerReceiptInput,
+  SteerPromotionOutcome,
   ParkedSteerClaim,
   ScheduleCleanupScope,
   ScheduleProviderOwner,
@@ -1610,40 +1611,47 @@ const DISCARD_STEER_LEFTOVER_LUA =
   'return 1';
 
 /**
- * Hand one parked leftover to a durable queued turn. Unlike a discard, the
- * parked copy must still exist (a destructive legacy claim may already own the
- * words) and the receipt settles as `recovered`, which every replica version
- * already reads as "claimed by a recovery surface; do not queue again".
+ * Hand one parked leftover to the durable queued turn ARGV[5]. Unlike a discard,
+ * the parked copy must still exist (a destructive legacy claim may already own
+ * the words), and the receipt settles as `recovered` — which every replica
+ * version reads as "claimed by a recovery surface; do not queue again" — stamped
+ * with the turn so a repeated hand-off for the same turn is idempotent. The
+ * receipt is found by steer id: an admission only knows the steer it carries.
  *
  *   KEYS: [receipts, parkedSteers, job]
- *   ARGV: [clientSteerId, steerId, ownerUserId, ownerTenantId | "", generationCreatedAt]
+ *   ARGV: [steerId, ownerUserId, ownerTenantId | "", generationCreatedAt, queuedTurnId]
+ *   Returns: "promoted" | "refused" | "unparked" | "missing"
  */
 const PROMOTE_STEER_LEFTOVER_LUA =
-  'local raw = redis.call("HGET", KEYS[1], ARGV[1]) if not raw then return 0 end ' +
-  'local ok, receipt = pcall(cjson.decode, raw) if not ok or type(receipt) ~= "table" then return 0 end ' +
-  'if tostring(receipt.generationCreatedAt or "") ~= ARGV[5] then return 0 end ' +
-  'local tenantMatches = not receipt.tenantId or receipt.tenantId == ARGV[4] ' +
-  'if receipt.state ~= "leftover" or receipt.userId ~= ARGV[3] or not tenantMatches ' +
-  'or type(receipt.item) ~= "table" or receipt.item.steerId ~= ARGV[2] then return 0 end ' +
+  'local entries = redis.call("HGETALL", KEYS[1]) local receipt = nil local field = nil ' +
+  'for i = 1, #entries, 2 do local ok, decoded = pcall(cjson.decode, entries[i + 1]) ' +
+  'if ok and type(decoded) == "table" and type(decoded.item) == "table" ' +
+  'and decoded.item.steerId == ARGV[1] then receipt = decoded field = entries[i] break end end ' +
+  'if not receipt then return "missing" end ' +
+  'if tostring(receipt.generationCreatedAt or "") ~= ARGV[4] or receipt.userId ~= ARGV[2] ' +
+  'or (receipt.tenantId and receipt.tenantId ~= ARGV[3]) then return "refused" end ' +
+  'if receipt.state == "recovered" and receipt.promotedTurnId == ARGV[5] then return "promoted" end ' +
+  'if receipt.state ~= "leftover" then return "refused" end ' +
   'local status = redis.call("HGET", KEYS[3], "status") ' +
   'if (status == "running" or status == "requires_action") ' +
-  'and redis.call("HGET", KEYS[3], "recoveredSteerId") == ARGV[2] then return 0 end ' +
-  'local parkedRaw = redis.call("GET", KEYS[2]) if not parkedRaw then return 0 end ' +
+  'and redis.call("HGET", KEYS[3], "recoveredSteerId") == ARGV[1] then return "refused" end ' +
+  'local parkedRaw = redis.call("GET", KEYS[2]) if not parkedRaw then return "unparked" end ' +
   'local parsed, parked = pcall(cjson.decode, parkedRaw) ' +
-  'if not parsed or type(parked) ~= "table" or type(parked.steers) ~= "table" then return 0 end ' +
+  'if not parsed or type(parked) ~= "table" or type(parked.steers) ~= "table" then return "refused" end ' +
   'local count = 0 for key, _ in pairs(parked.steers) do ' +
-  'if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then return 0 end count = count + 1 end ' +
-  'if count == 0 or count ~= #parked.steers then return 0 end ' +
-  'if parked.userId ~= ARGV[3] or (parked.tenantId and parked.tenantId ~= ARGV[4]) then return 0 end ' +
+  'if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then return "refused" end count = count + 1 end ' +
+  'if count == 0 or count ~= #parked.steers then return "refused" end ' +
+  'if parked.userId ~= ARGV[2] or (parked.tenantId and parked.tenantId ~= ARGV[3]) then return "refused" end ' +
   'local kept = {} for i = 1, #parked.steers do local item = parked.steers[i] ' +
-  'if type(item) ~= "table" or type(item.steerId) ~= "string" or item.steerId == "" then return 0 end ' +
-  'if item.steerId ~= ARGV[2] then kept[#kept + 1] = item end end ' +
-  'if #kept == #parked.steers then return 0 end ' +
+  'if type(item) ~= "table" or type(item.steerId) ~= "string" or item.steerId == "" then return "refused" end ' +
+  'if item.steerId ~= ARGV[1] then kept[#kept + 1] = item end end ' +
+  'if #kept == #parked.steers then return "unparked" end ' +
   'if #kept == 0 then redis.call("DEL", KEYS[2]) else parked.steers = kept ' +
   'local ttl = redis.call("PTTL", KEYS[2]) redis.call("SET", KEYS[2], cjson.encode(parked)) ' +
   'if ttl > 0 then redis.call("PEXPIRE", KEYS[2], ttl) end end ' +
-  'receipt.state = "recovered" redis.call("HSET", KEYS[1], ARGV[1], cjson.encode(receipt)) ' +
-  'return 1';
+  'receipt.state = "recovered" receipt.promotedTurnId = ARGV[5] ' +
+  'redis.call("HSET", KEYS[1], field, cjson.encode(receipt)) ' +
+  'return "promoted"';
 
 /**
  * Park leftovers only while the generation that drained them still owns the
@@ -5189,25 +5197,27 @@ export class RedisJobStore implements IJobStoreV2 {
 
   async promoteSteerLeftover(
     streamId: string,
-    clientSteerId: string,
     steerId: string,
     ownerUserId: string,
     ownerTenantId: string | undefined,
     generationCreatedAt: number,
-  ): Promise<boolean> {
-    const promoted = await this.redis.eval(
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome> {
+    const outcome = await this.redis.eval(
       PROMOTE_STEER_LEFTOVER_LUA,
       3,
       KEYS.steerReceipts(streamId),
       KEYS.parkedSteers(streamId),
       KEYS.job(streamId),
-      clientSteerId,
       steerId,
       ownerUserId,
       ownerTenantId ?? '',
       String(generationCreatedAt),
+      queuedTurnId,
     );
-    return promoted === 1;
+    return outcome === 'promoted' || outcome === 'unparked' || outcome === 'missing'
+      ? outcome
+      : 'refused';
   }
 
   /** A malformed entry is dropped (logged) rather than poisoning the drain. */

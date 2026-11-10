@@ -14,6 +14,7 @@ import type {
   SteerQueueItem,
   SteerReceipt,
   SteerReceiptInput,
+  SteerPromotionOutcome,
   UsageMetadata,
   IJobStoreV2,
   JobStatus,
@@ -2608,32 +2609,46 @@ export class InMemoryJobStore implements IJobStoreV2 {
 
   async promoteSteerLeftover(
     streamId: string,
-    clientSteerId: string,
     steerId: string,
     ownerUserId: string,
     ownerTenantId: string | undefined,
     generationCreatedAt: number,
-  ): Promise<boolean> {
-    const receipt = this.steerReceipts.get(streamId)?.get(clientSteerId)?.receipt;
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome> {
+    const now = Date.now();
+    let receipt: SteerReceipt | undefined;
+    for (const entry of this.steerReceipts.get(streamId)?.values() ?? []) {
+      if (entry.expiresAt > now && entry.receipt.item?.steerId === steerId) {
+        receipt = entry.receipt;
+        break;
+      }
+    }
+    if (receipt == null) {
+      return 'missing';
+    }
     if (
-      receipt?.state !== 'leftover' ||
       receipt.generationCreatedAt !== generationCreatedAt ||
-      receipt.item.steerId !== steerId ||
       receipt.userId !== ownerUserId ||
       (receipt.tenantId != null && receipt.tenantId !== ownerTenantId)
     ) {
-      return false;
+      return 'refused';
+    }
+    if (receipt.state === 'recovered' && receipt.promotedTurnId === queuedTurnId) {
+      return 'promoted';
+    }
+    if (receipt.state !== 'leftover') {
+      return 'refused';
     }
     const activeJob = this.jobs.get(streamId);
     if (
       activeJob?.recoveredSteerId === steerId &&
       (activeJob.status === 'running' || activeJob.status === 'requires_action')
     ) {
-      return false;
+      return 'refused';
     }
     const parked = this.parkedSteers.get(streamId);
-    if (parked == null || parked.expiresAt <= Date.now()) {
-      return false;
+    if (parked == null || parked.expiresAt <= now) {
+      return 'unparked';
     }
     try {
       const parsed = JSON.parse(parked.payload) as {
@@ -2647,11 +2662,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
         !Array.isArray(parsed.steers) ||
         !parsed.steers.every(isValidParkedSteer)
       ) {
-        return false;
+        return 'refused';
       }
       const kept = parsed.steers.filter((item) => item.steerId !== steerId);
       if (kept.length === parsed.steers.length) {
-        return false;
+        return 'unparked';
       }
       if (kept.length === 0) {
         this.parkedSteers.delete(streamId);
@@ -2660,10 +2675,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
         parked.payload = JSON.stringify(parsed);
       }
     } catch {
-      return false;
+      return 'refused';
     }
     receipt.state = 'recovered';
-    return true;
+    receipt.promotedTurnId = queuedTurnId;
+    return 'promoted';
   }
 
   private parkLeftovers(

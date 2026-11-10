@@ -19,10 +19,12 @@ import type {
   AgentTriggerExecutionHostDeps,
 } from './triggers/host';
 import type { AgentContinueTriggerEnvelope, AgentTriggerEnvelope } from './triggers/envelope';
+import type { SteerPromotionOutcome } from '~/stream/interfaces/IJobStore';
 import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
 import type { AgentTriggerDeliveryFailure } from './triggers/engine';
 import { getAgentTriggerIdempotencyKey, parseAgentTriggerEnvelope } from './triggers/envelope';
 import { createAgentTriggerEnvelope } from './triggers/envelope';
+import { parsePromotedSteerRequestId } from './steering/refs';
 import { AgentTriggerExecutionError } from './triggers/host';
 import { createIdleRecoveryLoop } from './recovery';
 
@@ -69,9 +71,25 @@ type QueuedTurnResolverMethods = AgentQueuedTurnMethods &
   Pick<ConversationMethods, 'getConvo'> &
   Pick<MessageMethods, 'getMessages'>;
 
+/** A promoted steer's terminal hand-off, repeated by its own admission. */
+export interface PromotedSteerHandoff {
+  conversationId: string;
+  steerId: string;
+  userId: string;
+  tenantId?: string;
+  generationCreatedAt: number;
+  queuedTurnId: string;
+}
+
+export type CompletePromotedSteerHandoff = (
+  input: PromotedSteerHandoff,
+) => Promise<SteerPromotionOutcome>;
+
 export interface AgentQueuedTurnResolverDeps {
   methods: QueuedTurnResolverMethods;
   getGenerationJob: (conversationId: string) => Promise<GenerationState | null>;
+  /** Settles a promoted steer's job-store hand-off before its turn may run. */
+  completeSteerHandoff?: CompletePromotedSteerHandoff;
   now?: () => number;
   claimBy?: string;
 }
@@ -122,6 +140,7 @@ export interface AgentQueuedTurnLifecycle {
 export interface AgentQueuedTurnLifecycleDeps {
   methods: QueuedTurnResolverMethods;
   getGenerationJob: AgentQueuedTurnResolverDeps['getGenerationJob'];
+  completeSteerHandoff?: CompletePromotedSteerHandoff;
   getGenerationAdmissionEvidence: GetGenerationAdmissionEvidence;
   enqueue: EnqueueAgentQueuedTurnDelivery;
   retireDelivery?: (
@@ -462,11 +481,66 @@ function deadClaim(
   });
 }
 
+/**
+ * A turn promoted from an unapplied steer runs only if it owns the steer's
+ * words. Its terminal hand-off is repeated here: it completes a hand-off that
+ * a crash interrupted, and refuses the turn when the parked copy was discarded
+ * or recovered elsewhere in the meantime, so the words never run twice.
+ * Returns `false` once the refused turn is cancelled.
+ */
+async function ownsPromotedSteer(
+  claim: AgentQueuedTurnClaim,
+  envelope: AgentContinueTriggerEnvelope,
+  methods: QueuedTurnResolverMethods,
+  completeSteerHandoff: CompletePromotedSteerHandoff | undefined,
+  now: () => number,
+): Promise<boolean> {
+  const steerId = parsePromotedSteerRequestId(claim.clientRequestId);
+  if (
+    steerId == null ||
+    completeSteerHandoff == null ||
+    claim.expectedPredecessorCreatedAt == null
+  ) {
+    return true;
+  }
+  let outcome: SteerPromotionOutcome;
+  try {
+    outcome = await completeSteerHandoff({
+      conversationId: claim.conversationId,
+      steerId,
+      userId: claim.user.toString(),
+      ...(claim.tenantId != null && { tenantId: claim.tenantId }),
+      generationCreatedAt: claim.expectedPredecessorCreatedAt,
+      queuedTurnId: claim.queuedTurnId,
+    });
+  } catch (error) {
+    await releaseClaim(methods, envelope, claim).catch(() => undefined);
+    throw executionError(
+      `The promoted steer hand-off is temporarily unavailable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { code: 'STEER_HANDOFF_UNAVAILABLE', retryable: true, deferWithoutAttempt: true },
+    );
+  }
+  if (outcome !== 'refused') {
+    return true;
+  }
+  await methods.cancelAgentQueuedTurn({
+    user: claim.user,
+    ...(claim.tenantId != null && { tenantId: claim.tenantId }),
+    conversationId: claim.conversationId,
+    queuedTurnId: claim.queuedTurnId,
+    settledAt: new Date(now()),
+  });
+  return false;
+}
+
 /** Resolves one queued message into a fresh ordinary Agent turn. The durable
  * claim remains owned by the queue record until generation admission is known. */
 function createAgentQueuedTurnResolver({
   methods,
   getGenerationJob,
+  completeSteerHandoff,
   now = Date.now,
   claimBy = PROCESS_CLAIM_OWNER,
 }: AgentQueuedTurnResolverDeps): NonNullable<AgentTriggerExecutionHostDeps['prepareContinue']> {
@@ -547,6 +621,9 @@ function createAgentQueuedTurnResolver({
     }
 
     const claim = claimed.claim;
+    if (!(await ownsPromotedSteer(claim, envelope, methods, completeSteerHandoff, now))) {
+      return { status: 'settled' };
+    }
     let messages: IMessage[];
     try {
       messages = await methods.getMessages(
@@ -1072,6 +1149,7 @@ async function cancelAgentQueuedTurn(
 export function createAgentQueuedTurnLifecycle({
   methods,
   getGenerationJob,
+  completeSteerHandoff,
   getGenerationAdmissionEvidence,
   enqueue,
   retireDelivery,
@@ -1092,6 +1170,7 @@ export function createAgentQueuedTurnLifecycle({
     prepareContinue: createAgentQueuedTurnResolver({
       methods,
       getGenerationJob,
+      ...(completeSteerHandoff != null && { completeSteerHandoff }),
       ...(now != null && { now }),
       ...(claimBy != null && { claimBy }),
     }),

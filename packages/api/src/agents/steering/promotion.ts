@@ -7,14 +7,12 @@ import type {
   TAgentQueuedTurnFileRef,
 } from 'librechat-data-provider';
 import type { AgentQueuedTurnMethods, AgentQueuedTurnRecord } from '@librechat/data-schemas';
+import type { SteerQueueItem, SteerPromotionOutcome } from '~/stream/interfaces/IJobStore';
 import type { SteeringLifecycle, SteerContentView } from '~/stream/SteeringLifecycle';
-import type { SteerQueueItem } from '~/stream/interfaces/IJobStore';
-import type { AgentQueuedTurnLifecycle } from '../queuedTurns';
+import type { AgentQueuedTurnLifecycle, PromotedSteerHandoff } from '../queuedTurns';
+import { getPromotedSteerRequestId, toSteerFileRef } from './refs';
 import { toPendingSteer } from '~/stream/SteeringLifecycle';
 import { toQueuedTurnReceipt } from '../queuedTurnHttp';
-import { toSteerFileRef } from './refs';
-
-const PROMOTED_STEER_REQUEST_PREFIX = 'steer-leftover:';
 
 interface PromotionConversation {
   agent_id?: string;
@@ -61,11 +59,6 @@ type PromotionTarget = {
   agentId: string;
   parentMessageId: string;
 };
-
-/** Deterministic, so a replayed promotion resolves to the same durable row. */
-export function getPromotedSteerRequestId(steerId: string): string {
-  return `${PROMOTED_STEER_REQUEST_PREFIX}${steerId}`;
-}
 
 function appliedSteerIds(content: SteerContentView): Set<string> {
   const ids = new Set<string>();
@@ -132,37 +125,47 @@ async function resolveTarget(
   };
 }
 
-/** Retires a row whose steer the job store refused to hand over (the user
- * discarded it, or another recovery owns it). Nothing was scheduled yet. */
+/** Retires a row whose steer the job store did not hand over. Nothing was
+ * scheduled yet. Returns whether the row is confirmed retired. */
 async function retireUnownedTurn(
   turn: AgentQueuedTurnRecord,
   target: PromotionTarget,
   deps: SteerPromotionDeps,
-): Promise<void> {
+): Promise<boolean> {
   try {
-    await deps.lifecycle.cancel({
+    const cancelled = await deps.lifecycle.cancel({
       user: target.scope.user,
       ...(target.scope.tenantId != null && { tenantId: target.scope.tenantId }),
+      conversationId: turn.conversationId,
       queuedTurnId: turn.queuedTurnId,
       settledAt: new Date(),
     });
+    return cancelled.outcome === 'cancelled' || cancelled.outcome === 'already_cancelled';
   } catch (error) {
     logger.error('[SteerPromotion] Failed to retire an unowned promoted turn', {
       conversationId: turn.conversationId,
       queuedTurnId: turn.queuedTurnId,
       error: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
 }
+
+/** `legacy`: no durable row owns the steer, hand it back as before.
+ * `withheld`: a row exists that could not be retired; its admission repeats
+ * the hand-off and settles it, so the client must not queue the words too. */
+type PromotionAttempt =
+  | { kind: 'promoted'; promoted: TPromotedSteer }
+  | { kind: 'legacy' | 'withheld' };
 
 async function promoteOne(
   item: SteerQueueItem & { clientSteerId: string },
   input: SteerPromotionInput,
   target: PromotionTarget,
   deps: SteerPromotionDeps,
-): Promise<TPromotedSteer | null> {
+): Promise<PromotionAttempt> {
   const files = toFileRefs(item.files);
-  const { turn, replayed } = await deps.methods.enqueueAgentQueuedTurn({
+  const { turn } = await deps.methods.enqueueAgentQueuedTurn({
     ...target.scope,
     agentId: target.agentId,
     parentMessageId: target.parentMessageId,
@@ -174,26 +177,25 @@ async function promoteOne(
     expectedPredecessorCreatedAt: input.claim.createdAt,
   });
   /** The row is the durable copy from here on; the parked copy goes second so
-   * a crash in between can at worst leave both, never neither. */
-  let handedOver = false;
+   * a crash in between can at worst leave both, never neither. The row's own
+   * admission repeats this hand-off, which settles that window. */
+  let outcome: SteerPromotionOutcome | null = null;
   try {
-    handedOver = await deps.steering.promoteLeftover(
+    outcome = await deps.steering.promoteLeftover(
       input.claim.streamId,
-      item,
+      item.steerId,
       { userId: input.user.id, tenantId: input.user.tenantId },
       input.claim.createdAt,
+      turn.queuedTurnId,
     );
   } catch (error) {
-    logger.warn('[SteerPromotion] Job store refused the steer hand-off', {
+    logger.warn('[SteerPromotion] Job store hand-off failed', {
       conversationId: turn.conversationId,
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  /** A replayed row means an earlier attempt already got this far, and the
-   * store refuses a second hand-off once the receipt settled as `recovered`. */
-  if (!handedOver && !replayed) {
-    await retireUnownedTurn(turn, target, deps);
-    return null;
+  if (outcome !== 'promoted') {
+    return { kind: (await retireUnownedTurn(turn, target, deps)) ? 'legacy' : 'withheld' };
   }
   try {
     await deps.lifecycle.schedule(turn);
@@ -206,9 +208,12 @@ async function promoteOne(
     });
   }
   return {
-    steerId: item.steerId,
-    clientSteerId: item.clientSteerId,
-    receipt: toQueuedTurnReceipt(turn),
+    kind: 'promoted',
+    promoted: {
+      steerId: item.steerId,
+      clientSteerId: item.clientSteerId,
+      receipt: toQueuedTurnReceipt(turn),
+    },
   };
 }
 
@@ -225,8 +230,9 @@ function isPromotable(
  * of living only in the browser queue. Promotion is opt-in per steer (the
  * sending client declares it adopts the receipt) and stops at the first steer
  * it cannot promote, so FIFO order between promoted turns and the leftovers
- * still handed back to the client is preserved. Never throws: any failure
- * leaves the remaining steers on the legacy `pendingSteers` path.
+ * still handed back to the client is preserved. Never throws: a failure
+ * before a durable row exists leaves the remaining steers on the legacy
+ * `pendingSteers` path.
  */
 export async function promoteDrainedSteers(
   input: SteerPromotionInput,
@@ -248,6 +254,7 @@ export async function promoteDrainedSteers(
   const pendingSteers: TPendingSteer[] = [];
   const promotedSteers: TPromotedSteer[] = [];
   let target: PromotionTarget | null | undefined;
+  const settled = new Set<string>();
   let halted = false;
   try {
     for (const item of drained) {
@@ -257,28 +264,49 @@ export async function promoteDrainedSteers(
       const candidate = isPromotable(item, input.user.id) ? item : null;
       halted ||= !alreadyApplied && candidate == null;
       if (halted || alreadyApplied || candidate == null) {
+        settled.add(item.steerId);
         pendingSteers.push(toPendingSteer(item));
         continue;
       }
       target ??= await resolveTarget(input, deps);
-      const promoted = target == null ? null : await promoteOne(candidate, input, target, deps);
-      if (promoted == null) {
-        halted = true;
-        pendingSteers.push(toPendingSteer(item));
+      const attempt: PromotionAttempt =
+        target == null ? { kind: 'legacy' } : await promoteOne(candidate, input, target, deps);
+      settled.add(item.steerId);
+      if (attempt.kind === 'promoted') {
+        promotedSteers.push(attempt.promoted);
         continue;
       }
-      promotedSteers.push(promoted);
+      halted = true;
+      if (attempt.kind === 'legacy') {
+        pendingSteers.push(toPendingSteer(item));
+      }
     }
   } catch (error) {
     logger.warn('[SteerPromotion] Leaving unapplied steers on the client path', {
       conversationId: input.conversationId,
       error: error instanceof Error ? error.message : String(error),
     });
-    const promotedIds = new Set(promotedSteers.map((promoted) => promoted.steerId));
     return {
-      pendingSteers: drained.filter((item) => !promotedIds.has(item.steerId)).map(toPendingSteer),
+      pendingSteers: [
+        ...pendingSteers,
+        ...drained.filter((item) => !settled.has(item.steerId)).map(toPendingSteer),
+      ],
       promotedSteers,
     };
   }
   return { pendingSteers, promotedSteers };
+}
+
+/** The job-store side of a promoted turn's admission-time hand-off. */
+export function completePromotedSteerHandoff(
+  steering: Pick<SteeringLifecycle, 'promoteLeftover'>,
+  input: PromotedSteerHandoff,
+): Promise<SteerPromotionOutcome> {
+  return steering.promoteLeftover(
+    input.conversationId,
+    input.steerId,
+    { userId: input.userId, tenantId: input.tenantId },
+    input.generationCreatedAt,
+    input.queuedTurnId,
+  );
 }

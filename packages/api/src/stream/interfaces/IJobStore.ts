@@ -625,9 +625,23 @@ export interface SteerReceipt {
   /** `recovered` means one recovery surface already claimed a leftover. A
    * later retry is settled without re-queuing the same follow-up. */
   state: 'queued' | 'claimed' | 'delivered' | 'leftover' | 'recovered' | 'cancelled';
+  /** Set with `recovered` when the leftover was handed to this durable queued
+   * turn, so that turn's admission can tell its own hand-off from a recovery
+   * that consumed the words elsewhere. */
+  promotedTurnId?: string;
 }
 
-export type SteerReceiptInput = Omit<SteerReceipt, 'item' | 'position' | 'state'>;
+export type SteerReceiptInput = Omit<
+  SteerReceipt,
+  'item' | 'position' | 'state' | 'promotedTurnId'
+>;
+
+/** Outcome of handing a terminal leftover to a durable queued turn:
+ * - `promoted`: this turn owns the words (now, or from an earlier hand-off)
+ * - `refused`: another surface owns them (discarded, recovered, or leased)
+ * - `unparked`: the receipt is a leftover but its parked copy is gone
+ * - `missing`: no receipt for the steer survives */
+export type SteerPromotionOutcome = 'promoted' | 'refused' | 'unparked' | 'missing';
 export type SteerEnqueueReceiptResult = SteerReceipt | SteerEnqueueResult | number;
 
 /** Capability-normalized atomic enqueue result for callers without a stable
@@ -1700,19 +1714,20 @@ export interface IJobStoreV2 extends IJobStore {
     expectedGenerationCreatedAt?: number,
   ): Promise<boolean>;
 
-  /** Owner-gated terminal hand-off of one leftover to a durable queued turn.
-   * Atomically removes it from the parked payload and marks its receipt
-   * `recovered`, so neither status recovery nor a lost-ACK retry can queue the
-   * same words again. Refuses unless the item is still parked by exactly
-   * `generationCreatedAt` and no recovery generation has leased it. */
+  /** Owner-gated hand-off of one terminal leftover to the durable queued turn
+   * `queuedTurnId`. Atomically removes it from the parked payload and marks its
+   * receipt `recovered` (stamped with the turn), so neither status recovery nor
+   * a lost-ACK retry can queue the same words again. Idempotent for the same
+   * turn; refuses a receipt from another generation, owner, or state, and an
+   * item leased by a live recovery generation. */
   promoteSteerLeftover(
     streamId: string,
-    clientSteerId: string,
     steerId: string,
     ownerUserId: string,
     ownerTenantId: string | undefined,
     generationCreatedAt: number,
-  ): Promise<boolean>;
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome>;
 
   /** Drop any queued steers (terminal cleanup backstop). */
   clearSteers(streamId: string): Promise<void>;

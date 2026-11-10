@@ -150,6 +150,29 @@ describe('reconcileGenerationLifecycle', () => {
     expect(run.reconnectAttempt).toBe(0);
   });
 
+  it('keeps promoted steers out of the local sweep when the final payload was lost', async () => {
+    const { ctx, fetchStatus, host } = setup();
+    (host.cache.fetchMessages as jest.Mock).mockResolvedValue([]);
+    fetchStatus.mockResolvedValue({ active: false, generationProtocolVersion: 2 });
+    (host.steers.adoptPromoted as jest.Mock).mockReturnValue(['steer-1', 'client-1']);
+    const promotedSteers = [
+      {
+        steerId: 'steer-1',
+        clientSteerId: 'client-1',
+        receipt: { queuedTurnId: 'queued-turn-1' },
+      },
+    ] as unknown as NonNullable<
+      Parameters<typeof reconcileGenerationLifecycle>[1]['promotedSteers']
+    >;
+    await reconcileGenerationLifecycle(ctx, { terminalStatus: 'error', promotedSteers });
+
+    expect(host.steers.adoptPromoted).toHaveBeenCalledWith('c-1', promotedSteers);
+    expect(host.steers.convertLocalToQueued).toHaveBeenCalledWith(
+      'c-1',
+      expect.objectContaining({ excludeSteerIds: new Set(['steer-1', 'client-1']) }),
+    );
+  });
+
   it('reports an error when history could not be read for a completed run', async () => {
     const { ctx, fetchStatus, host } = setup();
     (host.cache.fetchMessages as jest.Mock).mockRejectedValue(new Error('offline'));

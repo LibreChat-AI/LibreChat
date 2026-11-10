@@ -6,11 +6,12 @@ import type { AgentTriggerContinuePreparation } from '~/agents/triggers/host';
 import type { AgentQueuedTurnLifecycle } from '~/agents/queuedTurns';
 import type { SteerPromotionDeps } from '../promotion';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { promoteDrainedSteers, getPromotedSteerRequestId } from '../promotion';
+import { promoteDrainedSteers, completePromotedSteerHandoff } from '../promotion';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { getAgentTriggerIdempotencyKey } from '~/agents/triggers/envelope';
 import { createAgentQueuedTurnLifecycle } from '~/agents/queuedTurns';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { getPromotedSteerRequestId } from '../refs';
 import { handleSteerRequest } from '../request';
 
 jest.mock('../runtime', () => ({
@@ -69,6 +70,8 @@ beforeEach(async () => {
   lifecycle = createAgentQueuedTurnLifecycle({
     methods,
     getGenerationJob: async (id) => (await GenerationJobManager.getJob(id)) ?? null,
+    completeSteerHandoff: (handoff) =>
+      completePromotedSteerHandoff(GenerationJobManager.steering, handoff),
     getGenerationAdmissionEvidence: async () => null,
     enqueue: async (envelope) => {
       const parsed = envelope as AgentContinueTriggerEnvelope;
@@ -391,5 +394,159 @@ describe('promoteDrainedSteers', () => {
       }),
     ]);
     expect(result.promotedSteers[0]?.receipt.revision).toBeGreaterThan(queued.turn.sequence ?? 0);
+  });
+
+  it('withholds the steer when a refused row cannot be retired, and its admission cancels it', async () => {
+    const { job, steerId, clientSteerId } = await acceptSteer();
+    const claim = await endRunUnapplied(job.createdAt);
+    await GenerationJobManager.steering.discardLeftover(
+      conversationId,
+      clientSteerId,
+      steerId,
+      { userId },
+      job.createdAt,
+    );
+    const cancel = jest.fn(async () => {
+      throw new Error('mongo unavailable');
+    });
+
+    const result = await promoteDrainedSteers(
+      { claim, conversationId, user: { id: userId }, responseMessageId, completed: true },
+      { ...deps, lifecycle: { ...lifecycle, cancel } },
+    );
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ pendingSteers: [], promotedSteers: [] });
+    const [orphan] = await methods.listAgentQueuedTurnReceipts({
+      user: new mongoose.Types.ObjectId(userId),
+      conversationId,
+      clientRequestIds: [getPromotedSteerRequestId(steerId)],
+    });
+    expect(orphan.status).toBe('queued');
+
+    await publishFinal(claim);
+    await lifecycle.schedule(
+      (await methods.getAgentQueuedTurnByClientRequestId({
+        user: new mongoose.Types.ObjectId(userId),
+        conversationId,
+        clientRequestId: getPromotedSteerRequestId(steerId),
+      }))!,
+    );
+    await expect(prepare(envelopes[envelopes.length - 1])).resolves.toEqual({
+      status: 'settled',
+    });
+    const [settled] = await methods.listAgentQueuedTurnReceipts({
+      user: new mongoose.Types.ObjectId(userId),
+      conversationId,
+      clientRequestIds: [getPromotedSteerRequestId(steerId)],
+    });
+    expect(settled.status).toBe('cancelled');
+  });
+
+  it('keeps the promoted mapping on the conservative frame when FINAL cannot be stored', async () => {
+    const { job, steerId, clientSteerId } = await acceptSteer();
+    const claim = await endRunUnapplied(job.createdAt);
+    const { promotedSteers } = await promoteDrainedSteers(
+      { claim, conversationId, user: { id: userId }, responseMessageId, completed: true },
+      deps,
+    );
+    jest
+      .spyOn(GenerationJobManager.getJobStore(), 'finalizeTerminalPersistence')
+      .mockRejectedValueOnce(new Error('store unavailable'));
+
+    const publication = await GenerationJobManager.publishTerminalClaim(claim, {
+      final: true,
+      conversation: { conversationId },
+      responseMessage: { messageId: responseMessageId, conversationId },
+      promotedSteers,
+    });
+
+    expect(publication.persistenceFailed).toBe(true);
+    expect(publication.finalEvent).toMatchObject({
+      reconcile: true,
+      promotedSteers: [expect.objectContaining({ steerId, clientSteerId })],
+    });
+    await GenerationJobManager.finishTerminalJob(claim);
+  });
+
+  describe('a promotion interrupted between its row and its hand-off', () => {
+    async function crashAfterRow() {
+      const { job, steerId, clientSteerId } = await acceptSteer();
+      const claim = await endRunUnapplied(job.createdAt);
+      const { turn } = await methods.enqueueAgentQueuedTurn({
+        user: new mongoose.Types.ObjectId(userId),
+        conversationId,
+        agentId,
+        parentMessageId: responseMessageId,
+        clientRequestId: getPromotedSteerRequestId(steerId),
+        text: 'also cover the error path',
+        priority: false,
+        expectedPredecessorCreatedAt: job.createdAt,
+      });
+      await publishFinal(claim);
+      await lifecycle.schedule(turn);
+      return { job, steerId, clientSteerId, turn };
+    }
+
+    it('completes the hand-off at admission so the parked copy cannot recover too', async () => {
+      const { job, clientSteerId, turn } = await crashAfterRow();
+      await expect(
+        GenerationJobManager.steering.claim(conversationId, { userId }),
+      ).resolves.toHaveLength(1);
+
+      await expect(prepare(envelopes[0])).resolves.toMatchObject({
+        status: 'ready',
+        parentMessageId: responseMessageId,
+        expectedPredecessorCreatedAt: job.createdAt,
+      });
+      await expect(
+        GenerationJobManager.steering.claim(conversationId, { userId }),
+      ).resolves.toEqual([]);
+      await expect(
+        GenerationJobManager.steering.getReceipt(conversationId, clientSteerId),
+      ).resolves.toMatchObject({ state: 'recovered', promotedTurnId: turn.queuedTurnId });
+    });
+
+    it('cancels the turn when a recovery already ran the parked copy', async () => {
+      const { steerId } = await crashAfterRow();
+      const recovery = await GenerationJobManager.createJob(
+        conversationId,
+        userId,
+        conversationId,
+        {
+          recoveredSteerId: steerId,
+          recoveredSteerPayload: { text: 'also cover the error path', fileIds: [], quotes: [] },
+          initialMetadata: { generationProtocolVersion: 2 },
+        },
+      );
+      await expect(
+        GenerationJobManager.steering.consumeRecovered(
+          conversationId,
+          steerId,
+          { userId },
+          recovery.createdAt,
+        ),
+      ).resolves.toBe(true);
+      const recoveryClaim = await GenerationJobManager.claimTerminalJob(
+        conversationId,
+        'complete',
+        undefined,
+        recovery.createdAt,
+        { persistencePending: true },
+      );
+      await GenerationJobManager.publishTerminalClaim(recoveryClaim!, {
+        final: true,
+        conversation: { conversationId },
+      });
+      await GenerationJobManager.finishTerminalJob(recoveryClaim!);
+
+      await expect(prepare(envelopes[0])).resolves.toEqual({ status: 'settled' });
+      const [cancelled] = await methods.listAgentQueuedTurnReceipts({
+        user: new mongoose.Types.ObjectId(userId),
+        conversationId,
+        clientRequestIds: [getPromotedSteerRequestId(steerId)],
+      });
+      expect(cancelled.status).toBe('cancelled');
+    });
   });
 });
