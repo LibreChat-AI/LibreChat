@@ -72,12 +72,18 @@ type SanitizedFile<T extends FilePreviewSource> = Omit<T, (typeof FILE_STRIP_FIE
   Pick<TFile, 'textPreview'>;
 
 /** Fields to strip from messages before client transmission.
- * Both are prompt-building inputs: `fileContext` is text extracted from
- * attachments and `image_urls` holds base64 image inputs. Terminal events are
+ * These are prompt-building inputs: extracted text and provider-encoded
+ * images, documents, videos and audio. Terminal events are
  * additionally projected centrally by `projectTerminalEvent`; this stays as
  * defense in depth for the non-terminal senders (`error.js`,
  * `abortMiddleware.js`). */
-const MESSAGE_STRIP_FIELDS = ['fileContext', 'image_urls'] as const;
+const MESSAGE_STRIP_FIELDS = [
+  'fileContext',
+  'image_urls',
+  'documents',
+  'videos',
+  'audios',
+] as const;
 
 /**
  * Strips large/unnecessary fields from a file object before transmitting to client.
@@ -131,7 +137,7 @@ export function buildMessageFiles<T extends FilePreviewSource>(
 
 /**
  * Sanitizes a message object before transmitting to client.
- * Removes prompt-building fields (`fileContext`, `image_urls`) and strips
+ * Removes extracted text and provider-encoded attachment inputs, and strips
  * `text` from embedded files.
  *
  * @param message - The message object to sanitize
