@@ -125,12 +125,12 @@ test.describe('welcome screen heading and footer', () => {
       await expect(page.getByText(DISCLAIMER)).toHaveCount(0);
       /** No footer beneath it, so the composer keeps only its shadow clearance. */
       await expect.poll(() => composerClearance(page)).toBe(16);
-      /** The header selector still names the agent; the welcome screen does not repeat it. */
-      const inSelector = await page
-        .locator('button, [role="combobox"]')
-        .getByText(name, { exact: true })
-        .count();
-      await expect(main.getByText(name, { exact: true })).toHaveCount(inSelector);
+      /** The header selector follows the conversation on a short delay, so it names the agent a
+       *  beat after the welcome screen paints. Once it does, that label is the only mention. */
+      await expect(main.getByRole('button', { name: 'Select a model', exact: true })).toHaveText(
+        name,
+      );
+      await expect(main.getByText(name, { exact: true })).toHaveCount(1);
     } finally {
       await cleanupAgent(page, agentId);
     }
