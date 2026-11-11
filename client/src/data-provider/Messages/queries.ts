@@ -329,9 +329,9 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
 /**
  * Starts loading a conversation's messages as soon as the route knows its id, instead of when the
  * conversation view mounts after config, roles, endpoints, models and the conversation itself
- * have resolved. Only a conversation the cache has never held is prefetched, so in-app navigation
- * and warm caches keep their existing behavior. A prefetch that failed leaves its error for the
- * view to show (see `retryMessagesOnMount`), so a missing conversation is still requested once.
+ * have resolved. An unstarted query created during render also qualifies; populated caches and
+ * observed queries are left alone, preserving navigation and warm caches. A failed prefetch leaves
+ * its error for the view (see `retryMessagesOnMount`), so a missing conversation is requested once.
  */
 export function usePrefetchConversationMessages(conversationId: string, enabled: boolean) {
   const queryClient = useQueryClient();
@@ -352,7 +352,19 @@ export function usePrefetchConversationMessages(conversationId: string, enabled:
       return;
     }
     const queryKey = [QueryKeys.messages, conversationId];
-    if (queryClient.getQueryState(queryKey) == null) {
+    const query = queryClient.getQueryCache().find(queryKey);
+    const state = query?.state;
+    const unstarted =
+      state?.status === 'loading' &&
+      state.fetchStatus === 'idle' &&
+      state.data === undefined &&
+      state.dataUpdateCount === 0 &&
+      state.errorUpdateCount === 0 &&
+      !state.isInvalidated &&
+      query?.getObserversCount() === 0 &&
+      // Cancellation restores loading/idle, but retains the snapshot taken before fetching.
+      query.revertState == null;
+    if (state == null || unstarted) {
       prefetched.add(conversationId);
       queryClient.prefetchQuery(
         queryKey,

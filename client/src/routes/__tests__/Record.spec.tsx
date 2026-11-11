@@ -1,9 +1,14 @@
 import React from 'react';
 import { atom, RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
-import { dataService } from 'librechat-data-provider';
 import { render, waitFor } from '@testing-library/react';
+import { QueryKeys, dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import {
+  useGetMessagesByConvoId,
+  usePrefetchConversationMessages,
+  refetchMessagesOnMount,
+} from '~/data-provider/Messages/queries';
 import { useGetConvoIdQuery } from '~/data-provider/queries';
 import ChatRecord from '../Record';
 
@@ -11,7 +16,14 @@ const mockCurrentId = atom<string | null>({ key: 'record-test-current-id', defau
 let mockAuthenticated = true;
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
-  return { ...actual, dataService: { ...actual.dataService, getConversationById: jest.fn() } };
+  return {
+    ...actual,
+    dataService: {
+      ...actual.dataService,
+      getConversationById: jest.fn(),
+      getMessagesByConvoId: jest.fn(),
+    },
+  };
 });
 
 jest.mock('~/hooks', () => ({ useAuthContext: () => ({ isAuthenticated: mockAuthenticated }) }));
@@ -19,7 +31,10 @@ jest.mock('~/store', () => ({
   __esModule: true,
   default: { conversationIdByIndex: () => mockCurrentId },
 }));
-jest.mock('~/data-provider', () => jest.requireActual('~/data-provider/queries'));
+jest.mock('~/data-provider', () => ({
+  ...jest.requireActual('~/data-provider/queries'),
+  ...jest.requireActual('~/data-provider/Messages/queries'),
+}));
 
 function setup(path: string, currentId: string | null = null, sibling?: React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -36,7 +51,10 @@ function setup(path: string, currentId: string | null = null, sibling?: React.Re
   return { ...view, client };
 }
 
-beforeEach(() => jest.mocked(dataService.getConversationById).mockReset());
+beforeEach(() => {
+  jest.mocked(dataService.getConversationById).mockReset();
+  jest.mocked(dataService.getMessagesByConvoId).mockReset().mockResolvedValue([]);
+});
 
 afterEach(() => {
   jest.restoreAllMocks();
@@ -78,6 +96,7 @@ it('starts the routed record before sibling discovery and shares it with the rou
     }),
   );
   expect(order).toEqual(['record', 'discovery']);
+  expect(dataService.getMessagesByConvoId).toHaveBeenCalledTimes(1);
   expect(fetch).toHaveBeenCalledTimes(1);
   client.clear();
 });
@@ -89,6 +108,7 @@ it.each(['/c/new', '/c/search', '/projects/saved', '/settings'])(
     const { client } = setup(path);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(fetch).not.toHaveBeenCalled();
+    expect(dataService.getMessagesByConvoId).not.toHaveBeenCalled();
     client.clear();
   },
 );
@@ -98,6 +118,7 @@ it('does not refetch a conversation installed before its new server route arrive
   const { client } = setup('/c/just-created', 'just-created');
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(fetch).not.toHaveBeenCalled();
+  expect(dataService.getMessagesByConvoId).not.toHaveBeenCalled();
   client.clear();
 });
 
@@ -107,5 +128,48 @@ it('does not request a record before authentication', async () => {
   const { client } = setup('/c/saved');
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(fetch).not.toHaveBeenCalled();
+  expect(dataService.getMessagesByConvoId).not.toHaveBeenCalled();
+  client.clear();
+});
+
+it('starts rendered-but-unmounted messages before discovery without waiting for record or config', async () => {
+  const order: string[] = [];
+  const pending = new Promise<never>(() => {});
+  jest.mocked(dataService.getConversationById).mockReturnValue(pending);
+  jest.mocked(dataService.getMessagesByConvoId).mockImplementation(() => {
+    order.push('messages');
+    return pending;
+  });
+  function Discovery() {
+    useQuery(['startup-config'], () => {
+      order.push('config');
+      return pending;
+    });
+    return null;
+  }
+  function Session() {
+    useGetMessagesByConvoId('startup-saved', { refetchOnMount: refetchMessagesOnMount });
+    usePrefetchConversationMessages('startup-saved', true);
+    return null;
+  }
+  const { client, unmount } = setup(
+    '/c/startup-saved',
+    null,
+    <>
+      <Discovery />
+      <Session />
+    </>,
+  );
+  await waitFor(() => expect(dataService.getMessagesByConvoId).toHaveBeenCalledTimes(1));
+  expect(order).toEqual(['messages', 'config']);
+  expect(client.getQueryState([QueryKeys.conversation, 'startup-saved'])?.fetchStatus).toBe(
+    'fetching',
+  );
+  expect(client.getQueryState(['startup-config'])?.fetchStatus).toBe('fetching');
+  expect(client.getQueryState([QueryKeys.messages, 'startup-saved'])?.fetchStatus).toBe('fetching');
+  expect(dataService.getMessagesByConvoId).toHaveBeenCalledWith('startup-saved', {
+    toolPreviews: true,
+  });
+  unmount();
   client.clear();
 });

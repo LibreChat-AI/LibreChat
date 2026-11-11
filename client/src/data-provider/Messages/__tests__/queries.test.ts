@@ -749,6 +749,73 @@ describe('usePrefetchConversationMessages', () => {
     });
   }
 
+  it('prefetches a pristine query created during render before the view subscribes', async () => {
+    const conversationId = 'prefetch-rendered';
+    const queryClient = newClient();
+    const queryKey = [QueryKeys.messages, conversationId];
+    const query = queryClient.getQueryCache().build(queryClient, { queryKey });
+    expect(query.getObserversCount()).toBe(0);
+    expect(query.state).toMatchObject({
+      status: 'loading',
+      fetchStatus: 'idle',
+      data: undefined,
+      errorUpdateCount: 0,
+    });
+    mockGet.mockResolvedValue([message({ conversationId })]);
+    const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+    renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+    await waitFor(() => expect(query.state.status).toBe('success'));
+    renderHook(() => useView(conversationId), { wrapper });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockGet).toHaveBeenCalledTimes(1);
+    queryClient.clear();
+  });
+
+  it.each(['failed', 'fetching', 'observed', 'invalidated', 'cancelled', 'cancelled-view'])(
+    'leaves an existing %s query untouched',
+    async (kind) => {
+      const conversationId = `prefetch-existing-${kind}`;
+      const queryClient = newClient();
+      const queryKey = [QueryKeys.messages, conversationId];
+      const wrapper = createWrapper(queryClient, `/c/${conversationId}`);
+      const pending = deferred<TMessage[]>();
+      mockGet.mockReturnValue(pending.promise);
+      if (kind === 'failed') {
+        await queryClient
+          .fetchQuery(queryKey, () => Promise.reject(new Error('failed')))
+          .catch(() => {});
+      } else if (kind === 'fetching') {
+        void queryClient.fetchQuery(queryKey, () => pending.promise);
+      } else if (kind === 'observed') {
+        renderHook(() => useGetMessagesByConvoId(conversationId, { enabled: false }), { wrapper });
+      } else if (kind === 'invalidated') {
+        queryClient.getQueryCache().build(queryClient, { queryKey });
+        await queryClient.invalidateQueries({ queryKey, refetchType: 'none' });
+      } else if (kind === 'cancelled-view') {
+        void queryClient.fetchQuery(queryKey, () => pending.promise);
+        await queryClient.cancelQueries({ queryKey });
+      } else {
+        const first = renderHook(() => usePrefetchConversationMessages(conversationId, true), {
+          wrapper,
+        });
+        await queryClient.cancelQueries({ queryKey });
+        first.unmount();
+        mockGet.mockClear();
+      }
+      const query = queryClient.getQueryCache().find(queryKey);
+      const state = query?.state;
+      renderHook(() => usePrefetchConversationMessages(conversationId, true), { wrapper });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(query?.state).toBe(state);
+      queryClient.clear();
+    },
+  );
+
   it('loads once when the view mounts after the prefetch settled', async () => {
     const conversationId = 'prefetch-settled';
     const queryClient = newClient();
