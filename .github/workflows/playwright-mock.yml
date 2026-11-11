@@ -7,6 +7,19 @@ on:
       - '!**.md'
       - '!.github/workflows/**'
       - '.github/workflows/playwright-mock.yml'
+  # Post-merge safety net, as backend-review.yml and frontend-review.yml have for jest. A
+  # regression that reaches dev fails this suite on every open pull request, and without a run
+  # on dev itself nothing names the merge that caused it. A push runs the pull request profile
+  # with no lane narrowed, so a red run on dev is what the next pull request would see. The
+  # nightly stays on the default branch, where it covers the full suite on both stores.
+  push:
+    branches:
+      - dev
+    paths:
+      - '**'
+      - '!**.md'
+      - '!.github/workflows/**'
+      - '.github/workflows/playwright-mock.yml'
   schedule:
     - cron: '0 5 * * *'
   workflow_dispatch:
@@ -27,8 +40,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: playwright-mock-${{ github.ref }}
-  cancel-in-progress: true
+  # Pull requests, the nightly and manual runs keep a per-ref group in which a newer run cancels
+  # the older one. Pushes to dev take a group of their own that never cancels, so the run in
+  # progress always finishes; GitHub holds one pending run per group and a newer one replaces
+  # it, so merges that land meanwhile collapse into a single run of the newest commit. A
+  # cancelling group would rarely finish on a busy day (nine merges landed within 89 seconds on
+  # 2026-11-09) and a run per commit, which the jest workflows use, costs about 190
+  # runner-minutes on 15 runners each time. A red run therefore names a range of merges, from
+  # the commit of the last finished run to its own, and the dev tip always gets a run.
+  group: playwright-mock-${{ github.event_name == 'push' && 'post-merge-' || '' }}${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 env:
   NODE_OPTIONS: '--max-old-space-size=${{ secrets.NODE_MAX_OLD_SPACE_SIZE || 6144 }}'
@@ -39,9 +60,9 @@ jobs:
   # two matrix lanes whose relevance is a reachability question: the redis-transport shards (the
   # stream-boundary specs under a real Redis round-trip) and the MCP list_changed lanes. Memory
   # shards always run. Monotone and fail-open: a lane is dropped ONLY on an explicit `false` from
-  # the service; unavailable/unconfigured/non-synchronize events keep the full matrix. Lock
-  # attribution rides along so a backend dependency bump (reaches nothing in the graph) still
-  # earns both lanes. Kill switch: repo variable CODEGRAPH_GATING=off.
+  # the service; unavailable/unconfigured/non-synchronize events (dev pushes among them) keep the
+  # full matrix. Lock attribution rides along so a backend dependency bump (reaches nothing in
+  # the graph) still earns both lanes. Kill switch: repo variable CODEGRAPH_GATING=off.
   codegraph_select:
     name: Codegraph select
     runs-on: ubuntu-latest
@@ -153,7 +174,7 @@ jobs:
           fi
           echo "decided=true" >> "$GITHUB_OUTPUT"
           note ""
-          note "memory shards always run · kill switch: repo variable \`CODEGRAPH_GATING=off\` · full matrix on PR open and nightly"
+          note "memory shards always run · kill switch: repo variable \`CODEGRAPH_GATING=off\` · full matrix on PR open, on every dev push and nightly"
           exit 0
 
   e2e_shards:
@@ -163,6 +184,7 @@ jobs:
       !cancelled() &&
       (github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
@@ -177,7 +199,7 @@ jobs:
         ${{
           (github.event_name == 'pull_request' && needs.codegraph_select.outputs.e2e_include != '' &&
           fromJSON(needs.codegraph_select.outputs.e2e_include)) ||
-          ((github.event_name == 'pull_request' || inputs.coverage == 'pr') &&
+          ((github.event_name == 'pull_request' || github.event_name == 'push' || inputs.coverage == 'pr') &&
           fromJSON('{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}')) ||
           fromJSON('{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis, shard 1/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"1/10","artifact":"redis-1-of-10"},{"name":"redis, shard 2/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"2/10","artifact":"redis-2-of-10"},{"name":"redis, shard 3/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"3/10","artifact":"redis-3-of-10"},{"name":"redis, shard 4/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"4/10","artifact":"redis-4-of-10"},{"name":"redis, shard 5/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"5/10","artifact":"redis-5-of-10"},{"name":"redis, shard 6/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"6/10","artifact":"redis-6-of-10"},{"name":"redis, shard 7/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"7/10","artifact":"redis-7-of-10"},{"name":"redis, shard 8/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"8/10","artifact":"redis-8-of-10"},{"name":"redis, shard 9/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"9/10","artifact":"redis-9-of-10"},{"name":"redis, shard 10/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"10/10","artifact":"redis-10-of-10"}]}')
         }}
@@ -438,6 +460,7 @@ jobs:
       needs.codegraph_select.outputs.mcp_run != 'false' &&
       (github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
@@ -588,11 +611,12 @@ jobs:
 
   mcp_apps:
     name: MCP Apps (browser and server)
-    # Always run the dedicated fixture on eligible PRs, schedule, and manual runs. The regular
-    # mock shards skip it unless E2E_MCP_APPS=true; codegraph gating must not omit this lane.
+    # Always run the dedicated fixture on eligible PRs, dev pushes, schedule, and manual runs. The
+    # regular mock shards skip it unless E2E_MCP_APPS=true; codegraph gating must not omit this lane.
     if: >-
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
@@ -675,6 +699,7 @@ jobs:
       !cancelled() &&
       (github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
