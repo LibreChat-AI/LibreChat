@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo } from 'react';
 import { Switch } from '@librechat/client';
 import { Network, Users } from 'lucide-react';
+import { isSubagentGraphsEnabled } from 'librechat-data-provider';
 import type { ControllerRenderProps } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import { StaticAgentRow, AddAgentSelect, ListMeta, useSelectableAgents } from './AgentList';
@@ -13,6 +14,7 @@ interface AgentSubagentsProps {
   currentAgentId: string;
   maxSubagents: number;
   fileSharingEnabled?: boolean;
+  capabilities?: readonly string[];
 }
 
 const AgentSubagents: React.FC<AgentSubagentsProps> = ({
@@ -20,6 +22,7 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
   currentAgentId,
   maxSubagents,
   fileSharingEnabled = false,
+  capabilities,
 }) => {
   const localize = useLocalize();
 
@@ -28,7 +31,7 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
   const enabled = value.enabled === true;
   const allowSelf = value.allowSelf !== false;
   const agentIds = useMemo(() => value.agent_ids ?? [], [value.agent_ids]);
-  const graphCount = value.graphs?.length ?? 0;
+  const graphCount = isSubagentGraphsEnabled(value, capabilities) ? (value.graphs?.length ?? 0) : 0;
 
   const { options, getAgent } = useSelectableAgents({ currentAgentId, exclude: agentIds });
 

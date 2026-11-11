@@ -53,11 +53,20 @@ export default function useCodeApprovalMode(
   const environments = statefulCodeSessions?.environments;
   const reachable = useMemo(
     () =>
-      collectReachableAgents([primaryAgent, addedAgent], agentsMap, [
-        conversation?.agent_id,
-        addedConversation?.agent_id,
-      ]),
-    [addedAgent, agentsMap, primaryAgent, conversation?.agent_id, addedConversation?.agent_id],
+      collectReachableAgents(
+        [primaryAgent, addedAgent],
+        agentsMap,
+        [conversation?.agent_id, addedConversation?.agent_id],
+        agentsConfig?.capabilities,
+      ),
+    [
+      addedAgent,
+      agentsMap,
+      primaryAgent,
+      conversation?.agent_id,
+      addedConversation?.agent_id,
+      agentsConfig?.capabilities,
+    ],
   );
   const withoutAttached = isWithoutAttachedApproval(conversation, codeEnvironmentMode);
   const approvalEnvironments = useMemo(

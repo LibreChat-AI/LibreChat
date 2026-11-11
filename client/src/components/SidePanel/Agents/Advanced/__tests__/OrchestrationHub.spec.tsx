@@ -18,10 +18,16 @@ jest.mock('~/Providers', () => ({
   useAgentsMapContext: () => ({}),
 }));
 
-function Harness({ tool }: { tool: 'subagents' | 'handoffs' }) {
+function Harness({
+  tool,
+  subagents = { enabled: true, allowSelf: false, agent_ids: [], shareFiles: true },
+}: {
+  tool: 'subagents' | 'handoffs';
+  subagents?: AgentForm['subagents'];
+}) {
   const methods = useForm<AgentForm>({
     defaultValues: {
-      subagents: { enabled: true, allowSelf: false, agent_ids: [], shareFiles: true },
+      subagents,
       edges: [{ from: 'parent', to: 'child' }],
     },
   });
@@ -67,3 +73,55 @@ test('the capability gate suppresses subagents but not handoffs', () => {
   render(<Harness tool="handoffs" />);
   expect(screen.getByRole('region', { name: 'com_ui_agent_handoffs' })).toBeVisible();
 });
+
+const team = {
+  type: 'review',
+  name: 'Review',
+  description: 'Review work',
+  agent_ids: ['child'],
+  edges: [],
+  entry_agent_id: 'child',
+  result_agent_id: 'child',
+};
+
+test.each(
+  [
+    { capabilities: ['subagents'], graphCapability: false, legacyCapability: true },
+    { capabilities: ['subagent_graphs'], graphCapability: true, legacyCapability: false },
+    {
+      capabilities: ['subagents', 'subagent_graphs'],
+      graphCapability: true,
+      legacyCapability: true,
+    },
+    { capabilities: [], graphCapability: false, legacyCapability: false },
+  ].flatMap(({ capabilities, graphCapability, legacyCapability }) =>
+    [undefined, false, true].flatMap((graphsEnabled) =>
+      [false, true].map((enabled) => ({
+        capabilities,
+        graphsEnabled,
+        enabled,
+        visible: legacyCapability,
+        warning:
+          enabled &&
+          !(graphsEnabled == null ? enabled && legacyCapability : graphsEnabled && graphCapability),
+      })),
+    ),
+  ),
+)(
+  'empty warning follows deployed spawn targets without rewriting stored settings: %j',
+  ({ capabilities, graphsEnabled, enabled, visible, warning }) => {
+    mockCapabilities = capabilities;
+    const subagents = {
+      enabled,
+      ...(graphsEnabled == null ? {} : { graphsEnabled }),
+      allowSelf: false,
+      agent_ids: [],
+      graphs: [team],
+      shareFiles: true,
+    };
+    render(<Harness tool="subagents" subagents={subagents} />);
+    expect(screen.queryByRole('region', { name: 'com_ui_agent_subagents' }) != null).toBe(visible);
+    expect(screen.queryByText('com_ui_agent_subagents_empty') != null).toBe(visible && warning);
+    expect(mockGetValues('subagents')).toEqual(subagents);
+  },
+);

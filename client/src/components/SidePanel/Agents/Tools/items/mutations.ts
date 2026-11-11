@@ -5,6 +5,7 @@ export type TogglePatch =
   | { type: 'builtin'; field: AgentCapabilities; value: boolean | string }
   | { type: 'subagents'; enabled: boolean }
   | { type: 'handoffs-remove' }
+  | { type: 'graphs-remove' }
   | { type: 'configure' }
   | { type: 'tool-add'; id: string }
   | { type: 'tool-remove'; id: string }
@@ -16,6 +17,9 @@ export type TogglePatch =
   | { type: 'action-remove'; actionId: string };
 
 function builtinTogglePatch(id: string, selected: boolean): TogglePatch {
+  if (id === 'subagent_graphs') {
+    return selected ? { type: 'graphs-remove' } : { type: 'configure' };
+  }
   if (id === 'subagents') {
     return { type: 'subagents', enabled: !selected };
   }

@@ -192,6 +192,7 @@ endpoints:
       - web_search
       - artifacts
       - subagents
+      - subagent_graphs
       - actions
       - context
       - skills

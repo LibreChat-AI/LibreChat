@@ -158,6 +158,7 @@ export interface CodeWorkspaceSelectionInputs {
   addedAgent?: Agent;
   agentsMap?: TAgentsMap;
   reachableAgents: Agent[];
+  capabilities?: readonly string[];
 }
 
 export interface CodeWorkspaceSubmissionInputs {
@@ -322,6 +323,7 @@ export function resolveCodeWorkspaceMetadata({
   reachableAgents,
   supportsWorkspaceInheritance,
   undecided,
+  capabilities,
 }: {
   /** The root agent ids of the conversation and its added conversation. */
   agentId?: string | null;
@@ -336,6 +338,7 @@ export function resolveCodeWorkspaceMetadata({
   reachableAgents: Agent[];
   supportsWorkspaceInheritance: boolean;
   undecided: boolean;
+  capabilities?: readonly string[];
 }): CodeWorkspaceMetadata {
   const unique = new Map<string, TPublicCodeEnvironment>();
   const defaults = new Map<string, Set<string>>();
@@ -349,6 +352,7 @@ export function resolveCodeWorkspaceMetadata({
         allowEnvironmentSelection,
         selections,
         undecided,
+        capabilities,
       )
     : new Map<string, string>();
   /** A decision may still select the machine an inheriting subagent ran on before it followed
@@ -407,7 +411,12 @@ export function resolveCodeWorkspaceMetadata({
   ];
   for (const [rootAgent, rootAgentId] of roots) {
     if (!rootAgent || !rootAgentId) continue;
-    const rootReachable = collectReachableAgents([rootAgent], agentsMap, [rootAgentId]);
+    const rootReachable = collectReachableAgents(
+      [rootAgent],
+      agentsMap,
+      [rootAgentId],
+      capabilities,
+    );
     for (const agent of rootReachable.agents) {
       if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
         continue;
@@ -637,6 +646,7 @@ export function resolveCodeWorkspaceSelections(
     addedAgent,
     agentsMap,
     reachableAgents,
+    capabilities,
   }: CodeWorkspaceSelectionInputs,
   selections?: CodeWorkspaceSelection[],
 ): CodeWorkspaceSelection[] | undefined {
@@ -696,6 +706,8 @@ export function resolveCodeWorkspaceSelections(
           statefulCodeSessions.environments,
           true,
           resolved,
+          false,
+          capabilities,
         )
       : undefined;
   if (
@@ -920,10 +932,12 @@ export function resolveCodeWorkspace(inputs: CodeWorkspaceInputs): CodeWorkspace
   const { statefulCodeSessions, recoveryPending } = inputs;
   const protocol = resolveCodeWorkspaceProtocol(inputs.startupConfig);
   const { supportsEnvironmentDecisions, supportsWorkspaceInheritance } = protocol;
-  const reachable: ReachableAgents = collectReachableAgents([primaryAgent, addedAgent], agentsMap, [
-    conversation?.agent_id,
-    addedConversation?.agent_id,
-  ]);
+  const reachable: ReachableAgents = collectReachableAgents(
+    [primaryAgent, addedAgent],
+    agentsMap,
+    [conversation?.agent_id, addedConversation?.agent_id],
+    inputs.capabilities,
+  );
   const { isNewChat, locked, undecided } = resolveCodeWorkspaceLock(
     conversation,
     supportsEnvironmentDecisions,
@@ -940,6 +954,7 @@ export function resolveCodeWorkspace(inputs: CodeWorkspaceInputs): CodeWorkspace
     reachableAgents: reachable.agents,
     supportsWorkspaceInheritance,
     undecided,
+    capabilities: inputs.capabilities,
   });
   const requirement = resolveCodeWorkspaceRequirement({
     ...inputs,

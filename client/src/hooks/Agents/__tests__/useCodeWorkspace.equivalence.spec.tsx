@@ -148,7 +148,7 @@ const inheritanceFixture = (): Fixture => {
       allowEnvironmentSelection: true,
       environments: [personal, runtime],
     },
-    capabilities,
+    capabilities: [...capabilities, 'subagents'],
     agents: { agent_primary: lia },
     agentsMap: { reviewer },
     statuses: {
@@ -442,6 +442,36 @@ describe('useCodeWorkspace and resolveCodeWorkspace stay equivalent', () => {
     const { hook } = compare(fixture);
     expect({ state: hook.state, canSubmit: hook.canSubmit }).toEqual(fixture.expected);
   });
+
+  it.each([true, false])(
+    'keeps graph capability projection equivalent at send time: %s',
+    (enabled) => {
+      const fixture = inheritanceFixture();
+      const primary = fixture.agents.agent_primary;
+      primary.subagents = {
+        enabled: false,
+        graphsEnabled: true,
+        graphs: [
+          {
+            type: 'team',
+            name: 'Team',
+            description: 'Work',
+            agent_ids: ['reviewer'],
+            entry_agent_id: 'reviewer',
+            result_agent_id: 'reviewer',
+            edges: [],
+          },
+        ],
+      };
+      fixture.capabilities = [...capabilities, ...(enabled ? ['subagent_graphs'] : [])];
+      const { hook } = compare(fixture);
+      const owners = hook.environments.flatMap(
+        ({ requiredBy }) => requiredBy?.map(({ id }) => id) ?? [],
+      );
+      expect(owners.includes('reviewer')).toBe(enabled);
+      expect(hook.canSubmit).toBe(true);
+    },
+  );
 
   it('inheritance changes the outcome, and both chains follow it', () => {
     const on = compare(inheritanceFixture());
