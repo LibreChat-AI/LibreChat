@@ -27,6 +27,7 @@ export function mergeReports(results: ShardResult[]) {
   const plan = results[0]?.plan;
   if (!plan || plan.shards.length !== 4 || results.length !== 4)
     throw new Error('Expected all four shards');
+  if (typeof plan.staticMutants !== 'boolean') throw new Error('Missing static mutation mode');
   const seen = new Set<number>();
   const merged: MutationReport = {
     schemaVersion: results.find(({ report }) => report)?.report?.schemaVersion ?? '1.0',
@@ -97,7 +98,7 @@ export function mergeReports(results: ShardResult[]) {
   return merged;
 }
 
-export function mutationSummary(report: MutationReport, workspace: string) {
+export function mutationSummary(report: MutationReport, workspace: string, staticMutants = true) {
   const counts = new Map<string, number>();
   for (const file of Object.values(report.files))
     for (const mutant of file.mutants) {
@@ -109,7 +110,11 @@ export function mutationSummary(report: MutationReport, workspace: string) {
   return [
     `## ${workspace}: mutation testing (advisory)`,
     '',
-    'All four shards completed. Every planned mutation appears exactly once. Static mutations are included.',
+    'All four shards completed. Every planned mutation appears exactly once.',
+    staticMutants
+      ? 'Static=on. Static mutations are included.'
+      : 'Static=off. Static-only mutations are ignored. Hybrid mutations use per-test coverage.',
+    'Ignored and invalid mutants are excluded from the score.',
     '',
     `Mutation score: ${score}. Calculated from combined counts, not averaged shard scores.`,
     '',
@@ -152,7 +157,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       throw new Error('Mismatched workspace or head');
     writeFileSync(`${output}/mutation.json`, JSON.stringify(report, null, 2));
     writeFileSync(`${output}/plan.json`, JSON.stringify(results[0].plan, null, 2));
-    const summary = mutationSummary(report, values.workspace);
+    const summary = mutationSummary(report, values.workspace, results[0].plan.staticMutants);
     writeFileSync(`${output}/summary.md`, summary);
     console.log(summary);
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);

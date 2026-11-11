@@ -17,7 +17,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 
+import type { MutationReport } from './merge.mts';
+
 import { git, reportJobs } from './changes.mts';
+import { assertMutants, mutantKey } from './shards.mts';
+import { mutationSummary } from './merge.mts';
 
 interface Step {
   id?: string;
@@ -31,13 +35,21 @@ interface Step {
 interface Job {
   'timeout-minutes'?: string | number;
   if?: string;
+  permissions?: Record<string, string>;
+  needs?: string[];
+  concurrency?: { group: string; 'cancel-in-progress': boolean };
   outputs?: Record<string, string>;
   strategy?: { matrix: { include?: string; workspace?: string } };
   defaults?: { run: { 'working-directory': string } };
   steps: Step[];
 }
 interface Workflow {
-  on: { workflow_dispatch: { inputs: { base: { default: string }; scope: { default: string } } } };
+  'run-name'?: string;
+  on: {
+    pull_request?: null;
+    issue_comment?: { types: string[] };
+    workflow_dispatch: { inputs: { base: { default: string }; scope: { default: string } } };
+  };
   permissions: Record<string, string>;
   env: Record<string, string>;
   jobs: Record<string, Job>;
@@ -94,7 +106,7 @@ test('workflow separates tooling, source, installs and artifacts without changin
   assert.equal(workflow.on.workflow_dispatch.inputs.scope.default, 'all');
   assert.equal(
     workflow.jobs.select.steps.find(({ id }) => id === 'select')?.env?.QUALITY_SCOPE,
-    "${{ inputs.scope || 'all' }}",
+    "${{ needs.request.outputs.scope || inputs.scope || 'all' }}",
   );
   assert.deepEqual(report.strategy?.matrix, {
     include: '${{ fromJSON(needs.select.outputs.reports) }}',
@@ -125,6 +137,81 @@ test('workflow separates tooling, source, installs and artifacts without changin
   );
 });
 
+test('comment publication is trusted and serialized while PR execution stays read-only', (t) => {
+  assert.ok(
+    Object.hasOwn(workflow.on, 'pull_request'),
+    'keep automatic reports until live verification',
+  );
+  assert.deepEqual(workflow.on.issue_comment?.types, ['created']);
+  assert.match(workflow['run-name']!, /Quality PR #\{0\} request \{1\}/);
+  for (const name of ['verify', 'select', 'reports', 'mutation-summary']) {
+    assert.deepEqual(workflow.jobs[name].permissions ?? workflow.permissions, { contents: 'read' });
+  }
+  for (const name of ['reports', 'mutation-summary']) {
+    const upload = workflow.jobs[name].steps.find(
+      ({ uses }) => uses === 'actions/upload-artifact@v6',
+    );
+    assert.equal(upload?.with?.overwrite, true, 'reruns replace failed artifacts');
+  }
+  for (const name of ['request', 'decision', 'progress']) {
+    const job = workflow.jobs[name];
+    assert.equal(checkouts(job)[0].with?.ref, '${{ github.sha }}');
+    assert.ok(job.steps.every(({ run }) => !run?.includes('npm')));
+    assert.equal(job.permissions?.['pull-requests'], 'write');
+    if (name !== 'request') {
+      assert.equal(job.permissions?.statuses, 'write');
+      assert.equal(job.concurrency?.group, 'quality-decision-${{ github.event.issue.number }}');
+      assert.equal(job.concurrency?.['cancel-in-progress'], false);
+    }
+  }
+  const publisher = yaml.load(
+    readFileSync(new URL('../../.github/workflows/quality-decision.yml', import.meta.url), 'utf8'),
+  ) as Workflow;
+  assert.equal(checkouts(publisher.jobs.publish)[0].with?.ref, '${{ github.workflow_sha }}');
+  assert.equal(
+    publisher.jobs.publish.concurrency?.group,
+    'quality-decision-${{ needs.resolve.outputs.pr }}',
+  );
+  assert.equal(publisher.jobs.publish.concurrency?.['cancel-in-progress'], false);
+  assert.ok(
+    publisher.jobs.publish.steps.every(
+      ({ run, uses }) => !run?.includes('npm') && !uses?.startsWith('actions/download-artifact'),
+    ),
+  );
+  const directory = mkdtempSync(join(tmpdir(), 'quality-event-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (const [event, expected] of [
+    [{ pull_request: { number: 12 } }, 'pr=12\n'],
+    [
+      { workflow_run: { event: 'issue_comment', display_title: 'Quality PR #13 request 99' } },
+      'pr=13\n',
+    ],
+    [{ workflow_run: { event: 'pull_request', display_title: 'Quality PR #13 request 99' } }, ''],
+    [
+      {
+        workflow_run: {
+          event: 'issue_comment',
+          display_title: 'Quality PR #13 request $(touch injected)',
+        },
+      },
+      '',
+    ],
+  ] as const) {
+    const path = join(directory, 'event.json');
+    const output = join(directory, 'output');
+    writeFileSync(path, JSON.stringify(event));
+    writeFileSync(output, '');
+    const result = spawnSync('bash', ['-e', '-c', publisher.jobs.resolve.steps[0].run!], {
+      cwd: directory,
+      env: { ...process.env, GITHUB_EVENT_PATH: path, GITHUB_OUTPUT: output },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(output, 'utf8'), expected);
+    assert.equal(existsSync(join(directory, 'injected')), false);
+  }
+});
+
 for (const olderHead of [true, false]) {
   test(`real reports use exact head source and dependencies with ${olderHead ? 'absent' : 'edited'} head tooling`, (t) => {
     const directory = mkdtempSync(join(tmpdir(), 'quality-workflow-'));
@@ -151,8 +238,9 @@ for (const olderHead of [true, false]) {
       { name: 'api', path: 'packages/api', config: 'jest.config.mjs' },
       { name: 'server', path: 'api', config: 'jest.config.js' },
     ];
+    const mode = olderHead ? 'on' : 'off';
     const sourceCode =
-      'module.exports = (value) => value ? 1 : 0;\nmodule.exports.untouched = () => 3;\n';
+      'module.exports = (value) => value ? 1 : 0;\nmodule.exports.untouched = () => 3;\nmodule.exports.staticValue = (() => 1)();\nfunction hybrid(value) { if (value > 0) return 1; return 0; } module.exports.hybrid = hybrid; module.exports.loaded = hybrid(1);\n';
     for (const owner of owners) {
       write(upstream, `${owner.path}/src/feature.js`, sourceCode);
       write(
@@ -163,7 +251,7 @@ for (const olderHead of [true, false]) {
       write(
         upstream,
         `${owner.path}/src/feature.test.js`,
-        "const feature = require('./feature'); test('uses head dependency', () => { expect(feature(true)).toBe(require('head-only')); expect(feature(false)).toBe(0); expect(feature.untouched()).toBe(3); });",
+        "const feature = require('./feature'); test('uses head dependency', () => { expect(feature(true)).toBe(require('head-only')); expect(feature(false)).toBe(0); expect(feature.untouched()).toBe(3); expect(feature.staticValue).toBe(2); expect(feature.hybrid(1)).toBe(2); expect(feature.hybrid(0)).toBe(0); expect(feature.loaded).toBe(2); });",
       );
     }
     const original = commit();
@@ -173,7 +261,14 @@ for (const olderHead of [true, false]) {
     const base = commit();
     git(['checkout', '-qb', 'pr', olderHead ? original : base], upstream);
     for (const owner of owners)
-      write(upstream, `${owner.path}/src/feature.js`, sourceCode.replace('? 1', '? 2'));
+      write(
+        upstream,
+        `${owner.path}/src/feature.js`,
+        sourceCode
+          .replace('? 1', '? 2')
+          .replaceAll('() => 1', '() => 2')
+          .replace('return 1', 'return 2'),
+      );
     if (!olderHead) {
       const selector = readFileSync(join(upstream, 'scripts/quality/changes.mts'), 'utf8');
       write(
@@ -230,6 +325,7 @@ for (const olderHead of [true, false]) {
       ...process.env,
       QUALITY_HEAD: head,
       QUALITY_WORKSPACE: 'data-schemas',
+      QUALITY_STATIC: mode,
       GITHUB_OUTPUT: '',
       GITHUB_STEP_SUMMARY: '',
     };
@@ -293,7 +389,7 @@ for (const olderHead of [true, false]) {
       if (check === 'risk') {
         assert.match(readFileSync(marker, 'utf8'), /head Jest/);
         const risk = JSON.parse(readFileSync(join(output, 'risk.json'), 'utf8'));
-        assert.equal(risk.functions.length, 1, 'unchanged sibling must not be scored');
+        assert.equal(risk.functions.length, 3, 'unchanged sibling must not be scored');
         assert.equal(risk.functions[0].file, file);
         assert.equal(risk.functions[0].statementCoverage, 1);
         assert.equal(risk.head, head);
@@ -305,6 +401,7 @@ for (const olderHead of [true, false]) {
           assert.match(readFileSync(marker, 'utf8'), /head Jest/);
           const progress = JSON.parse(readFileSync(join(output, 'progress.json'), 'utf8'));
           assert.equal(progress.complete, true);
+          assert.equal(progress.staticMutants, mode === 'on');
           assert.equal(progress.completed, completion.total);
         }
         cpSync(
@@ -323,7 +420,51 @@ for (const olderHead of [true, false]) {
     const combined = JSON.parse(
       readFileSync(join(tooling, 'coverage/changes/data-schemas/mutation/mutation.json'), 'utf8'),
     );
-    assert.ok(combined.files['packages/data-schemas/src/feature.js'].mutants.length > 0);
+    const mutants: MutationReport['files'][string]['mutants'] =
+      combined.files['packages/data-schemas/src/feature.js'].mutants;
+    console.log(
+      JSON.stringify({
+        fixture: 'exact-head sharded Stryker',
+        static: mode,
+        planned: mutants.length,
+        ignored: mutants.filter(({ status }) => status === 'Ignored').length,
+        tested: mutants.filter(({ status }) =>
+          ['Killed', 'Timeout', 'Survived', 'NoCoverage'].includes(status),
+        ).length,
+      }),
+    );
+    assert.ok(mutants.length > 0);
+    assert.equal(
+      mutants.some((mutant: { status: string }) => mutant.status === 'Ignored'),
+      mode === 'off',
+    );
+    assert.ok(
+      mutants.some(
+        (mutant) =>
+          mutant.static && mutant.location.start.line === 4 && mutant.status !== 'Ignored',
+      ),
+      `hybrid mutants remain tested: ${JSON.stringify(mutants)}`,
+    );
+    run(
+      'node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" --workspace data-schemas --check mutation --static "$QUALITY_STATIC"',
+      source,
+      { QUALITY_BASE: base },
+    );
+    const unsharded = JSON.parse(
+      readFileSync(join(source, 'coverage/changes/data-schemas/mutation/mutation.json'), 'utf8'),
+    );
+    const keys = (report: MutationReport) =>
+      Object.entries(report.files).flatMap(([file, value]) =>
+        value.mutants.map((mutant) =>
+          mutantKey(file, { ...mutant, replacement: mutant.replacement! }),
+        ),
+      );
+    assertMutants(keys(unsharded), keys(combined));
+    assert.equal(
+      mutationSummary(unsharded, 'data-schemas', mode === 'on'),
+      mutationSummary(combined, 'data-schemas', mode === 'on'),
+    );
+
     assert.match(
       readFileSync(join(tooling, 'coverage/changes/data-schemas/mutation/summary.md'), 'utf8'),
       /All four shards completed/,

@@ -108,6 +108,9 @@ for (const index of [0,1,2,3,4]) {
     const changed = structuredClone(results);
     changed[0].plan = { ...changed[0].plan, head: 'wrong-head' };
     assert.throws(() => mergeReports(changed), /mismatched shard/);
+    const mixedModes = structuredClone(results);
+    mixedModes[0].plan = { ...mixedModes[0].plan, staticMutants: false };
+    assert.throws(() => mergeReports(mixedModes), /mismatched shard/);
     const missing = structuredClone(results);
     missing[0].completion.complete = false;
     assert.throws(() => mergeReports(missing), /incomplete/);
@@ -144,6 +147,14 @@ test('combined scores use mutant counts and reject duplicates', () => {
     },
   };
   assert.match(mutationSummary(report, 'fixture'), /10.00%/);
+  report.files['a.js'].mutants.push({
+    ...result('ignored', 'Killed'),
+    status: 'Ignored',
+    static: true,
+  });
+  assert.match(mutationSummary(report, 'fixture', false), /10.00%/);
+  assert.match(mutationSummary(report, 'fixture', false), /Static=off/);
+  assert.match(mutationSummary(report, 'fixture', false), /Ignored \| 1/);
   assert.throws(() => assertMutants(['a', 'b'], ['a', 'a']), /duplicate/);
   assert.throws(() => assertMutants(['a'], ['b']), /unexpected/);
 });
@@ -176,6 +187,7 @@ test('merging namespaces test references and refuses unfinished or conflicting s
     head: 'head',
     workspace: 'fixture',
     digest: 'digest',
+    staticMutants: true,
     shards: reports.map((report, index) => ({
       index: index + 1,
       targets: [],

@@ -1,7 +1,11 @@
 name: Change Quality
+run-name: >-
+  ${{ github.event_name == 'issue_comment' && format('Quality PR #{0} request {1}', github.event.issue.number, github.event.comment.id) || format('Change Quality {0}', github.ref_name) }}
 
 on:
   pull_request:
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       base:
@@ -9,15 +13,25 @@ on:
         default: origin/dev
         type: string
       scope:
-        description: Report workspace (all, data-schemas, api, or server)
+        description: Report scopes (all or comma-separated data-schemas,api,server)
         default: all
         type: string
+      check:
+        description: Checks to run
+        default: both
+        type: choice
+        options: [risk, mutation, both]
+      static:
+        description: Include static mutants
+        default: 'on'
+        type: choice
+        options: ['on', 'off']
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'issue_comment' && github.run_id || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -25,7 +39,67 @@ env:
   QUALITY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
+  request:
+    name: Accept quality request
+    if: >-
+      github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/quality') && github.event.comment.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      decision: ${{ steps.request.outputs.decision }}
+      accepted: ${{ steps.request.outputs.accepted }}
+      head: ${{ steps.request.outputs.head }}
+      base: ${{ steps.request.outputs.base }}
+      scope: ${{ steps.request.outputs.scope }}
+      check: ${{ steps.request.outputs.check }}
+      static: ${{ steps.request.outputs.static }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/quality
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+      - id: request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/quality/comment.mts request
+
+  decision:
+    name: Record quality decision
+    needs: [request]
+    if: needs.request.outputs.decision == 'true'
+    concurrency:
+      group: quality-decision-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/quality
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/quality/comment.mts decision
+
   verify:
+    needs: [request]
+    if: always() && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')
     name: Verify quality tooling
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -48,6 +122,11 @@ jobs:
         run: node --test scripts/crap.test.mts scripts/quality/*.test.mts
 
   select:
+    needs: [request]
+    if: always() && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')
+    env:
+      QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}
+      QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
     name: Select changed source
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -65,16 +144,21 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24.22.1'
+      - name: Fetch requested commits
+        if: github.event_name == 'issue_comment'
+        run: |
+          git fetch --no-tags origin "$QUALITY_BASE" "$QUALITY_HEAD"
       - name: Select workspaces
         id: select
         env:
-          QUALITY_SCOPE: ${{ inputs.scope || 'all' }}
-        run: node scripts/quality/changes.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" --scope "$QUALITY_SCOPE"
+          QUALITY_SCOPE: ${{ needs.request.outputs.scope || inputs.scope || 'all' }}
+          QUALITY_CHECK: ${{ needs.request.outputs.check || inputs.check || 'both' }}
+        run: node scripts/quality/changes.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" --scope "$QUALITY_SCOPE" --check "${QUALITY_CHECK:-both}"
 
   reports:
     name: ${{ matrix.task.check == 'risk' && 'Change risk' || format('Mutation testing {0}/4', matrix.task.shard) }} (${{ matrix.workspace }})
-    needs: [select, verify]
-    if: needs.select.outputs.hasChanges == 'true'
+    needs: [request, select, verify]
+    if: always() && needs.select.result == 'success' && needs.verify.result == 'success' && needs.select.outputs.hasChanges == 'true'
     runs-on: ubuntu-latest
     # Whole edited database functions can produce thousands of mutation cases.
     timeout-minutes: ${{ matrix.task.check == 'mutation' && 240 || 45 }}
@@ -95,6 +179,9 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}
+      QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
+      QUALITY_STATIC: ${{ needs.request.outputs.static || inputs.static || 'on' }}
       REDIS_URI: redis://127.0.0.1:6379
       NODE_OPTIONS: --max-old-space-size=6144
     steps:
@@ -141,19 +228,22 @@ jobs:
             args+=(--shard "$QUALITY_SHARD")
           fi
           node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" \
-            --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK" "${args[@]}"
+            --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK" --static "${QUALITY_STATIC:-on}" "${args[@]}"
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: change-${{ matrix.task.check }}-${{ matrix.workspace }}-${{ github.event.pull_request.head.sha || github.sha }}${{ matrix.task.check == 'mutation' && format('-shard-{0}', matrix.task.shard) || '' }}
+          name: change-${{ matrix.task.check }}-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}${{ matrix.task.check == 'mutation' && format('-shard-{0}', matrix.task.shard) || '' }}
           path: source/coverage/changes/${{ matrix.workspace }}/${{ matrix.task.check }}${{ matrix.task.check == 'mutation' && format('-{0}', matrix.task.shard) || '' }}/
           if-no-files-found: warn
           retention-days: 14
+          overwrite: true
 
   mutation-summary:
     name: Mutation report (${{ matrix.workspace }})
-    needs: [select, reports]
+    needs: [request, select, reports]
+    env:
+      QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
     if: always() && needs.select.outputs.hasMutations == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -190,3 +280,31 @@ jobs:
           path: coverage/changes/${{ matrix.workspace }}/mutation/
           if-no-files-found: warn
           retention-days: 14
+          overwrite: true
+
+  progress:
+    name: Update quality progress
+    concurrency:
+      group: quality-decision-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    needs: [request, select, verify]
+    if: always() && needs.request.outputs.accepted == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/quality
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/quality/comment.mts progress

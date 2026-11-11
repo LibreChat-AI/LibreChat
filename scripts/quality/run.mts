@@ -24,6 +24,7 @@ const { values } = parseArgs({
     workspace: { type: 'string' },
     check: { type: 'string' },
     shard: { type: 'string' },
+    static: { type: 'string', default: 'on' },
   },
 });
 const workspace = WORKSPACES.find(({ name }) => name === values.workspace);
@@ -32,6 +33,11 @@ if (!workspace || !['risk', 'mutation'].includes(values.check ?? '')) {
     'Usage: node scripts/quality/run.mts --base ref --workspace name --check risk|mutation',
   );
 }
+if (!['on', 'off'].includes(values.static)) throw new Error('--static must be on or off');
+const staticMutants = values.static === 'on';
+const staticDescription = staticMutants
+  ? 'Static mutations are included.'
+  : 'Static-only mutations are ignored and excluded from the score. Hybrid mutations use per-test coverage.';
 const selection = changes(values.base, values.head);
 if (selection.head !== git(['rev-parse', 'HEAD']).trim()) {
   throw new Error('Check out the selected head before measuring its source');
@@ -119,17 +125,25 @@ if (values.check === 'risk') {
 } else {
   process.env.NODE_ENV = env.NODE_ENV;
   process.env.BABEL_ENV = env.BABEL_ENV;
+  console.log(`Mutation run: static=${values.static}. ${staticDescription}`);
   const allTargets = mutationSelection(files, selection.base);
   const plan =
     shardIndex === undefined
       ? undefined
-      : await planShards(allTargets, selection.base, selection.head, workspace.name);
+      : await planShards(
+          allTargets,
+          selection.base,
+          selection.head,
+          workspace.name,
+          4,
+          staticMutants,
+        );
   const shard = plan?.shards.find(({ index }) => index === shardIndex);
   const targets = shard?.targets ?? allTargets;
   if (plan && shard) {
     writeFileSync(`${output}/plan.json`, JSON.stringify(plan, null, 2));
     console.log(
-      `Mutation shard ${shard.index}/${plan.shards.length}: ${shard.expected.length} planned mutants; two workers; static mutations included`,
+      `Mutation shard ${shard.index}/${plan.shards.length}: ${shard.expected.length} planned mutants; two workers; static=${values.static}`,
     );
   }
   writeFileSync(`${output}/functions.json`, JSON.stringify(targets, null, 2));
@@ -151,7 +165,9 @@ if (values.check === 'risk') {
   };
   if (!targets.length || shard?.expected.length === 0) {
     completeShard();
-    summary(`## ${workspace.name}: mutation testing\n\nNo mutations selected for this run.\n`);
+    summary(
+      `## ${workspace.name}: mutation testing\n\nNo mutations selected for this run. Static=${values.static}.\n`,
+    );
     process.exit(0);
   }
   const started = Date.now();
@@ -179,7 +195,7 @@ if (values.check === 'risk') {
       },
     },
     mutate: mutationPatterns(targets),
-    ignoreStatic: false,
+    ignoreStatic: !staticMutants,
     coverageAnalysis: 'perTest',
     concurrency: 2,
     incremental: false,
@@ -227,9 +243,9 @@ if (values.check === 'risk') {
       [
         `## ${workspace.name}: mutation testing (advisory)`,
         '',
-        `Changed functions: ${targets.reduce((total, target) => total + target.functions.length, 0)} in ${targets.length} files. Static mutations are included. Duration: ${((Date.now() - started) / 60000).toFixed(1)} minutes.`,
+        `Changed functions: ${targets.reduce((total, target) => total + target.functions.length, 0)} in ${targets.length} files. Static=${values.static}. ${staticDescription} Duration: ${((Date.now() - started) / 60000).toFixed(1)} minutes.`,
         '',
-        `Mutation score: ${score}. Surviving and uncovered mutants reduce this score. Invalid mutants are excluded.`,
+        `Mutation score: ${score}. Surviving and uncovered mutants reduce this score. Ignored and invalid mutants are excluded.`,
         ...(runtimeErrors
           ? [
               `${runtimeErrors} mutations had runtime errors. The check fails because their results are incomplete.`,

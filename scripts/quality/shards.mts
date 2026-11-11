@@ -28,6 +28,7 @@ export interface ShardPlan {
   head: string;
   workspace: string;
   digest: string;
+  staticMutants: boolean;
   shards: Shard[];
 }
 
@@ -80,6 +81,7 @@ export async function planShards(
   head: string,
   workspace: string,
   count = 4,
+  staticMutants = true,
 ): Promise<ShardPlan> {
   if (!Number.isInteger(count) || count < 1 || count > 4) throw new Error('Expected 1 to 4 shards');
   const sources = targets.map((target) => ({
@@ -159,6 +161,7 @@ export async function planShards(
         base,
         head,
         workspace,
+        staticMutants,
         targets,
         shards,
         sources: sources.map(({ content }) => content),
@@ -166,5 +169,5 @@ export async function planShards(
       }),
     )
     .digest('hex');
-  return { base, head, workspace, digest, shards };
+  return { base, head, workspace, digest, staticMutants, shards };
 }

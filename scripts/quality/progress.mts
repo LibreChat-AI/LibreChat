@@ -24,6 +24,7 @@ export class FunctionProgressReporter implements Reporter {
   static inject = tokens(commonTokens.options);
 
   private readonly output: string;
+  private readonly staticMutants: boolean;
   private readonly functions: FunctionProgress[];
   private readonly planned = new Map<string, { owner: FunctionProgress; static: boolean }>();
   private readonly results = new Map<string, Readonly<MutantResult>>();
@@ -34,7 +35,10 @@ export class FunctionProgressReporter implements Reporter {
   private planReady = false;
   private complete = false;
 
-  constructor(options: Pick<StrykerOptions, 'jsonReporter'>) {
+  constructor(
+    options: Pick<StrykerOptions, 'jsonReporter'> & Partial<Pick<StrykerOptions, 'ignoreStatic'>>,
+  ) {
+    this.staticMutants = !options.ignoreStatic;
     this.output = dirname(options.jsonReporter.fileName);
     const targets: Target[] = JSON.parse(readFileSync(`${this.output}/functions.json`, 'utf8'));
     this.functions = targets.flatMap(({ file, functions }) =>
@@ -129,7 +133,9 @@ export class FunctionProgressReporter implements Reporter {
   }
 
   private log(message: string) {
-    console.log(`[mutation ${duration(Date.now() - this.started)}] ${message}`);
+    console.log(
+      `[mutation ${duration(Date.now() - this.started)} static=${this.staticMutants ? 'on' : 'off'}] ${message}`,
+    );
   }
 
   private render() {
@@ -148,6 +154,7 @@ export class FunctionProgressReporter implements Reporter {
     }));
     const snapshot = {
       phase: this.phase,
+      staticMutants: this.staticMutants,
       complete: this.complete,
       elapsedMs: Date.now() - this.started,
       lastResultAgeMs: this.lastResult === undefined ? null : Date.now() - this.lastResult,

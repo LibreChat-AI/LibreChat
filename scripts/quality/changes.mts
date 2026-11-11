@@ -14,15 +14,30 @@ export const WORKSPACES = [
   { name: 'chat', path: 'packages/chat', config: 'jest.config.js' },
 ];
 
-const REPORT_WORKSPACES = ['data-schemas', 'api', 'server'];
+export const REPORT_WORKSPACES = ['data-schemas', 'api', 'server'];
+
+export function reportSelection(check: string, scope: string) {
+  if (!['risk', 'mutation', 'both'].includes(check))
+    throw new Error('Check must be risk, mutation, or both');
+  const supported = check === 'mutation' ? ['data-schemas'] : REPORT_WORKSPACES;
+  const scopes = scope === 'all' ? supported : scope.split(',');
+  if (
+    !scopes.length ||
+    new Set(scopes).size !== scopes.length ||
+    scopes.some((name) => !supported.includes(name))
+  ) {
+    throw new Error(`Supported scopes for ${check}: ${supported.join(',')}, or all`);
+  }
+  return { check, scopes: REPORT_WORKSPACES.filter((name) => scopes.includes(name)) };
+}
 
 /** Risk reports cover backend workspaces; mutation shards only cover data-schemas. */
-export function reportJobs(workspaces: string[]) {
+export function reportJobs(workspaces: string[], check = 'both') {
   return workspaces
     .filter((name) => REPORT_WORKSPACES.includes(name))
     .flatMap((workspace) => [
-      { workspace, task: { check: 'risk', shard: 0 } },
-      ...(workspace === 'data-schemas'
+      ...(check !== 'mutation' ? [{ workspace, task: { check: 'risk', shard: 0 } }] : []),
+      ...(workspace === 'data-schemas' && check !== 'risk'
         ? [1, 2, 3, 4].map((shard) => ({ workspace, task: { check: 'mutation', shard } }))
         : []),
     ]);
@@ -139,27 +154,34 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       base: { type: 'string', default: 'origin/dev' },
       head: { type: 'string', default: 'HEAD' },
       scope: { type: 'string', default: 'all' },
+      check: { type: 'string', default: 'both' },
     },
   });
-  if (values.scope !== 'all' && !REPORT_WORKSPACES.includes(values.scope)) {
-    throw new Error(`Unsupported report workspace: ${values.scope}`);
-  }
+  const request = reportSelection(values.check, values.scope);
+
   const selection = changes(values.base, values.head);
   const workspaces = WORKSPACES.filter(
     ({ name, path }) =>
       REPORT_WORKSPACES.includes(name) &&
-      (values.scope === 'all' || values.scope === name) &&
+      request.scopes.includes(name) &&
       selection.files.some(({ file }) => workspaceFor(file)?.path === path),
   ).map(({ name }) => name);
-  const reports = reportJobs(workspaces);
-  const mutationWorkspaces = workspaces.filter((name) => name === 'data-schemas');
+  const reports = reportJobs(workspaces, request.check);
+  const mutationWorkspaces = [
+    ...new Set(
+      reports.filter(({ task }) => task.check === 'mutation').map(({ workspace }) => workspace),
+    ),
+  ];
+  const riskWorkspaces = reports
+    .filter(({ task }) => task.check === 'risk')
+    .map(({ workspace }) => workspace);
   console.log(JSON.stringify({ ...selection, workspaces, reports, mutationWorkspaces }, null, 2));
   if (process.env.GITHUB_OUTPUT) {
     appendFileSync(
       process.env.GITHUB_OUTPUT,
       [
         `workspaces=${JSON.stringify(workspaces)}`,
-        `hasChanges=${workspaces.length > 0}`,
+        `hasChanges=${reports.length > 0}`,
         `reports=${JSON.stringify(reports)}`,
         `mutationWorkspaces=${JSON.stringify(mutationWorkspaces)}`,
         `hasMutations=${mutationWorkspaces.length > 0}`,
@@ -175,7 +197,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         '',
         `Base: ${selection.base}. Head: ${selection.head}. Scope: ${values.scope}.`,
         '',
-        `Change-risk workspaces: ${workspaces.join(', ') || 'none'}.`,
+        `Change-risk workspaces: ${riskWorkspaces.join(', ') || 'none'}.`,
         '',
         `Mutation workspaces: ${mutationWorkspaces.join(', ') || 'none'} (four shards each).`,
         '',
