@@ -232,6 +232,11 @@ export function renderRequest(
     `Commit: \`${request.head}\`. Requested by @${request.actor}.`,
     `Checks: **${request.check === 'both' ? 'check-all' : request.check}**. Scopes: **${scopes}**. Static: **${request.staticMutants ? 'on' : 'off'}**${request.check === 'risk' || request.check === 'ignore' ? ' (not used)' : ''}.`,
     `Risk: ${risk}. Mutation: ${mutation}.`,
+    ...(request.check === 'mutation' || request.check === 'both'
+      ? [
+          'Mutation testing is experimental. Only `data-schemas` is supported today. Support for more scopes is planned.',
+        ]
+      : []),
     '',
     request.check === 'ignore'
       ? 'Quality checks explicitly ignored for this commit.'
@@ -249,7 +254,7 @@ export function gateDecision(records: Request[], head: string) {
   if (!latest)
     return {
       state: 'pending',
-      description: 'Run /quality or explicitly use /quality ignore',
+      description: 'Comment /quality check-all to run checks, or /quality ignore if not needed',
       request: undefined,
     };
   if (latest.check === 'ignore')
@@ -261,7 +266,8 @@ export function gateDecision(records: Request[], head: string) {
   if (latest.phase !== 'completed')
     return {
       state: 'pending',
-      description: 'Requested quality checks are waiting or running',
+      description:
+        'Checks queued or running. Wait for results, or comment /quality ignore if not needed',
       request: latest,
     };
   return latest.conclusion === 'success'
@@ -272,7 +278,8 @@ export function gateDecision(records: Request[], head: string) {
       }
     : {
         state: 'failure',
-        description: 'Quality run failed or was cancelled; retry or explicitly ignore',
+        description:
+          'Checks failed or cancelled. Comment /quality check-all to retry, or /quality ignore if not needed',
         request: latest,
       };
 }

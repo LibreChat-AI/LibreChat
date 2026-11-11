@@ -2,7 +2,8 @@
 
 PR commands and manual runs report change risk for added or edited functions in
 `packages/data-schemas`, `packages/api`, and the backend `api` folder.
-Mutation testing runs only for added or edited functions in `packages/data-schemas`.
+Mutation testing is experimental. It runs only for added or edited functions in
+`packages/data-schemas`. Support for more scopes is planned.
 Only workspaces with changed source get report jobs. PR updates do not start source
 reports. Changes to the quality tooling still run its own verification tests automatically.
 Low scores do not fail a check. Failed tests, invalid reports, and tool errors do.
