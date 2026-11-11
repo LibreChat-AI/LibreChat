@@ -375,13 +375,26 @@ function collectToolNames(agents) {
   return new Set(collectToolDefinitions(agents).keys());
 }
 
+/**
+ * A subagent model override hands one graph's model to its children, so a child's stream
+ * arrives holding the parent graph. A foreground child runs under the parent's run id and
+ * ends inside the parent run. A detached child runs under its own id and outlives it: the
+ * parent's agent context is not the child's prompt, and the host drops it once the parent
+ * settles, so a view built from it would change with whichever of the two finished first.
+ */
+function ownsStream(graph, options, runManager) {
+  const runId = runManager?.metadata?.run_id ?? options?.metadata?.run_id;
+  return typeof runId !== 'string' || typeof graph?.runId !== 'string' || runId === graph.runId;
+}
+
 async function getStreamAgentView({ graph, messages, options, runManager }) {
   let agentId = runManager?.metadata?.agentId ?? options?.metadata?.agentId;
   let agentContext;
+  const agentContexts = ownsStream(graph, options, runManager) ? graph?.agentContexts : undefined;
   if (typeof agentId === 'string') {
-    agentContext = graph?.agentContexts?.get(agentId);
-  } else if (graph?.agentContexts?.size === 1) {
-    [agentId, agentContext] = graph.agentContexts.entries().next().value;
+    agentContext = agentContexts?.get(agentId);
+  } else if (agentContexts?.size === 1) {
+    [agentId, agentContext] = agentContexts.entries().next().value;
   }
   /**
    * Graph.attemptInvoke intentionally sends test override models the pruned
