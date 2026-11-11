@@ -1,5 +1,5 @@
 import type { Page, Route } from '@playwright/test';
-import { closeContext, expect, test } from './fixtures';
+import { closeContext, expect, test, unroute } from './fixtures';
 
 const CONFIG_PATH = '/api/config';
 
@@ -14,6 +14,11 @@ async function requestConfig(page: Page) {
  * A handler that has fetched its response and reads the body only once `closed` settles, which is
  * the order a handler racing the end of a test runs in. `failure` settles with what it threw.
  */
+/** Reads the config from the page, as the app would. */
+async function readConfig(page: Page): Promise<Record<string, unknown>> {
+  return page.evaluate(async (path) => (await fetch(path)).json(), CONFIG_PATH);
+}
+
 function readAfterClose(closed: Promise<void>) {
   const fetched = Promise.withResolvers<void>();
   const failure = Promise.withResolvers<unknown>();
@@ -73,5 +78,30 @@ test.describe('route teardown', () => {
     });
     await requestConfig(page);
     await entered.promise;
+  });
+});
+
+test.describe('route removal', () => {
+  test('a handler still running when its route is removed answers its request', async ({
+    page,
+  }) => {
+    await page.goto(CONFIG_PATH);
+    const pattern = `**${CONFIG_PATH}`;
+    const fetched = Promise.withResolvers<void>();
+    const removed = Promise.withResolvers<void>();
+    await page.route(pattern, async (route) => {
+      const response = await route.fetch();
+      fetched.resolve();
+      await removed.promise;
+      await route.fulfill({ response, json: { answeredBy: 'handler' } });
+    });
+    const inFlight = readConfig(page);
+    await fetched.promise;
+
+    await unroute(page, pattern);
+    removed.resolve();
+
+    expect(await inFlight).toEqual({ answeredBy: 'handler' });
+    expect(await readConfig(page)).not.toHaveProperty('answeredBy');
   });
 });

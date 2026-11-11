@@ -17,7 +17,7 @@ import {
 } from '../db';
 import { getAccessToken, requestJson } from '../helpers';
 import { openConversationMenu, openSidebar } from './sidebar';
-import { expect, test } from '../fixtures';
+import { expect, test, unroute } from '../fixtures';
 
 type ReadState = Pick<
   IConversation,
@@ -155,7 +155,7 @@ test('later visible read wins over a delayed unread response, and stale seen can
     await page.screenshot({ path: testInfo.outputPath('read-ordering.png') });
   } finally {
     release.resolve();
-    await page.unroute('**/api/convos/unread');
+    await unroute(page, '**/api/convos/unread');
   }
 
   await page.goto('/c/new');

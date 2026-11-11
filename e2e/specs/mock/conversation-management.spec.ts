@@ -10,8 +10,8 @@ import {
   sendMessage,
   sendMessageAndWaitForCompletion,
 } from './helpers';
+import { expect, test, unroute } from './fixtures';
 import { openSidebar } from './scenarios/sidebar';
-import { expect, test } from './fixtures';
 
 function uniqueLabel(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -203,7 +203,7 @@ test.describe('conversation management', () => {
     );
     release();
     await staleRead;
-    await page.unroute(pattern);
+    await unroute(page, pattern);
     await expect(conversationRow(page)).toContainText(renamedTitle);
     expect(
       (await sendMessageAndWaitForCompletion(page, replyPrompt(`${label}-next`))).ok(),

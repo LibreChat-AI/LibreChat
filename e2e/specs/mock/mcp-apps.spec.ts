@@ -13,7 +13,7 @@ import {
   sendMessage,
   sendMessageAndWaitForCompletion,
 } from './helpers';
-import { expect, test } from './fixtures';
+import { expect, test, unroute } from './fixtures';
 
 const MCP_SERVER_TITLE = 'E2E MCP App';
 const LEGACY_FRAME_TITLE = 'MCP HTML Resource (Embedded Content)';
@@ -649,7 +649,7 @@ test.describe('MCP Apps full integration', () => {
     await expect(retryButton).toBeVisible();
 
     const conversationUrl = page.url();
-    await page.unroute('**/api/mcp/sandbox**', failFirstSandboxRequest);
+    await unroute(page, '**/api/mcp/sandbox**', failFirstSandboxRequest);
     const recoveredSandboxResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === '/api/mcp/sandbox' && response.status() === 200,
@@ -1034,7 +1034,7 @@ test.describe('MCP Apps full integration', () => {
     expect(appRequests).toEqual([]);
     releaseConfig();
     await navigation;
-    await page.unroute('**/api/config');
+    await unroute(page, '**/api/config');
 
     const token = await getAccessToken(page);
     const persistedMessages = await getMessages(page, token, state.conversationId);

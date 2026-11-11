@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { Page, Request } from '@playwright/test';
 import { getAccessToken, requestJson } from '../helpers';
-import { expect, test } from '../fixtures';
+import { expect, test, unroute } from '../fixtures';
 import { openPanel } from './panels';
 
 /**
@@ -148,7 +148,7 @@ test.describe('prompt row permissions', () => {
       await filterPanel(page, name);
       expect(await rowActions(page, name)).toEqual(['Preview']);
     } finally {
-      await page.unroute(`**${BATCH_PATH}`);
+      await unroute(page, `**${BATCH_PATH}`);
       await deleteGroups(page, ids);
     }
   });
