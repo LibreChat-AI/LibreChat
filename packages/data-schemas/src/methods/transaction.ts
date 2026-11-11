@@ -1,5 +1,6 @@
 import { isBalanceRefillDue } from 'librechat-data-provider';
 import type { AnyBulkWriteOperation, FilterQuery, Model, Types } from 'mongoose';
+import type { TCustomConfig } from 'librechat-data-provider';
 import type {
   BalanceReservationRequest,
   BalanceReservationRenewal,
@@ -70,7 +71,7 @@ export interface TxData {
   /** Subset of `writeTokens` written to the 1-hour cache */
   write1hTokens?: number;
   readTokens?: number;
-  balance?: { enabled?: boolean };
+  balance?: Partial<TCustomConfig['balance']>;
   transactions?: { enabled?: boolean };
 }
 
@@ -84,6 +85,24 @@ export interface TransactionResult {
   credits?: number;
 }
 
+function initialDebitBalance(balance: TxData['balance']): IBalanceUpdate | undefined {
+  if (!balance?.enabled || balance.startBalance == null) {
+    return;
+  }
+  const grantedAt = new Date();
+  return {
+    tokenCredits: balance.startBalance,
+    allotment: balance.startBalance,
+    allottedAt: grantedAt,
+    lastRefill: grantedAt,
+    autoRefillEnabled: balance.autoRefillEnabled ?? false,
+    refillAmount: balance.refillAmount,
+    refillMode: balance.refillMode ?? 'add',
+    refillIntervalValue: balance.refillIntervalValue,
+    refillIntervalUnit: balance.refillIntervalUnit,
+  };
+}
+
 export function createTransactionMethods(
   mongoose: typeof import('mongoose'),
   txMethods: {
@@ -95,10 +114,12 @@ export function createTransactionMethods(
     user,
     incrementValue,
     setValues,
+    balanceConfig,
   }: {
     user: string;
     incrementValue: number;
     setValues?: IBalanceUpdate;
+    balanceConfig?: TxData['balance'];
   }) => Promise<IBalance>;
   bulkInsertTransactions: (docs: TransactionData[]) => Promise<void>;
   findBalanceByUser: (
@@ -247,10 +268,12 @@ export function createTransactionMethods(
     user,
     incrementValue,
     setValues,
+    balanceConfig,
   }: {
     user: string;
     incrementValue: number;
     setValues?: IBalanceUpdate;
+    balanceConfig?: TxData['balance'];
   }): Promise<IBalance> {
     const Balance = mongoose.models.Balance as Model<IBalance>;
     const maxRetries = 10;
@@ -285,7 +308,11 @@ export function createTransactionMethods(
           }
           lastError = new Error(`Concurrency conflict for user ${user} on attempt ${attempt}.`);
         } else {
-          await upsertBalanceRecord(user, {}, { tokenCredits: 0 });
+          await upsertBalanceRecord(
+            user,
+            {},
+            initialDebitBalance(balanceConfig) ?? { tokenCredits: 0 },
+          );
           continue;
         }
       } catch (error) {
@@ -650,6 +677,7 @@ export function createTransactionMethods(
     const balanceResponse = await updateBalance({
       user: transaction.user as string,
       incrementValue,
+      balanceConfig: transaction.tokenType === 'credits' ? undefined : balance,
     });
 
     return {
@@ -690,6 +718,7 @@ export function createTransactionMethods(
     const balanceResponse = await updateBalance({
       user: transaction.user as string,
       incrementValue,
+      balanceConfig: transaction.tokenType === 'credits' ? undefined : balance,
     });
 
     return {
