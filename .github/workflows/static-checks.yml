@@ -18,6 +18,7 @@ on:
       - 'eslint-suppressions.json'
       - '**/eslint-suppressions.json'
       - '.github/workflows/static-checks.yml'
+      - '.github/actions/mongodb-binary/**'
       - '.husky/pre-push'
       - '!**.md'
 
@@ -123,6 +124,7 @@ jobs:
               - 'config/**'
               - 'packages/**'
               - '.github/workflows/static-checks.yml'
+              - '.github/actions/mongodb-binary/**'
               - '!**.md'
             i18n:
               - 'scripts/i18n*.mts'
@@ -452,6 +454,12 @@ jobs:
         continue-on-error: true
         run: cp api/test/.env.test.example api/test/.env.test
 
+      - name: Provision MongoDB memory-server binary
+        id: config_mongodb
+        if: always() && steps.paths.outputs.config == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/mongodb-binary
+
       - name: Run config migration tests
         id: config_tests
         if: always() && steps.paths.outputs.config == 'true'
@@ -720,6 +728,7 @@ jobs:
           CONFIG_API_OUTCOME: ${{ steps.config_api.outcome }}
           CONFIG_AUTH_OUTCOME: ${{ steps.config_auth.outcome }}
           CONFIG_ENV_OUTCOME: ${{ steps.config_env.outcome }}
+          CONFIG_MONGODB_OUTCOME: ${{ steps.config_mongodb.outcome }}
           CONFIG_TESTS_OUTCOME: ${{ steps.config_tests.outcome }}
           FIND_I18N_OUTCOME: ${{ steps.find_unused_i18n.outcome }}
           I18N_OUTCOME: ${{ steps.i18n.outcome }}
@@ -761,6 +770,7 @@ jobs:
           record_failure "Config API build" "$CONFIG_API_OUTCOME"
           record_failure "Config auth preparation" "$CONFIG_AUTH_OUTCOME"
           record_failure "Config environment preparation" "$CONFIG_ENV_OUTCOME"
+          record_failure "Config MongoDB binary" "$CONFIG_MONGODB_OUTCOME"
           record_failure "Config migration tests" "$CONFIG_TESTS_OUTCOME"
           record_failure "Unused i18n scan" "$FIND_I18N_OUTCOME"
           record_failure "Unused i18n keys" "$I18N_OUTCOME"

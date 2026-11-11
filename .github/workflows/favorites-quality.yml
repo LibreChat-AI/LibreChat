@@ -28,6 +28,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/favorites-quality.yml'
+      - '.github/actions/mongodb-binary/**'
 
 permissions:
   contents: read
@@ -73,6 +74,8 @@ jobs:
           --strict --types node scripts/crap.mts scripts/crap.test.mts
       - name: Verify the advisory reporter
         run: node --test scripts/crap.test.mts
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
       - name: Contracts, compatibility, and CRAP report
         run: npm run test:quality:${{ matrix.suite }} --workspace packages/data-schemas
       - name: Mutate the real database implementation
