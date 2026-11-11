@@ -205,3 +205,47 @@ describe('TTSService chunked speech deadlines', () => {
     expect(res.destroy).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('TTSService read aloud prefetch', () => {
+  it('requests the next chunks before writing the current one, and writes them in order', async () => {
+    const { pipeSegment } = require('@librechat/api');
+    const { splitTextIntoChunks } = require('./streamAudio');
+    const service = new TTSService();
+    jest.spyOn(service, 'getVoice').mockResolvedValue('alloy');
+    splitTextIntoChunks.mockReturnValue([
+      { text: 'one', isFinished: false },
+      { text: 'two', isFinished: false },
+      { text: 'three', isFinished: true },
+    ]);
+    const events = [];
+    jest.spyOn(service, 'ttsRequest').mockImplementation(async (_p, _s, { input }) => {
+      events.push(`request ${input}`);
+      return { data: input };
+    });
+    pipeSegment.mockImplementation(async (data) => events.push(`write ${data}`));
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      send: jest.fn(),
+      setHeader: jest.fn(),
+      once: jest.fn(),
+      end: jest.fn(),
+    };
+
+    await service.processTextToSpeech(
+      {
+        body: { input: 'a'.repeat(5000) },
+        config: { speech: { tts: { openai: { apiKey: 'sk', model: 'tts-1' } } } },
+      },
+      res,
+    );
+
+    expect(events).toEqual([
+      'request one',
+      'request two',
+      'request three',
+      'write one',
+      'write two',
+      'write three',
+    ]);
+  });
+});
