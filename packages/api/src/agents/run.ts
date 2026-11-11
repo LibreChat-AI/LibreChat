@@ -107,6 +107,11 @@ import {
   createAskUserQuestionTool,
 } from '~/agents/hitl/askUserQuestionTool';
 import {
+  extractDefaultParams,
+  getOpenAILLMConfig,
+  resolveReasoningParams,
+} from '~/endpoints/openai/llm';
+import {
   createRunFileTools,
   eventOnlyRunFileTools,
   isRunFileSharingSupported,
@@ -117,7 +122,6 @@ import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/a
 import { createAgentToolApprovalSession, bindRunToolApprovalSession } from './hitl/modes';
 import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils/headers';
 import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering/tools';
-import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
@@ -1502,6 +1506,50 @@ function shapeSummarizationConfig(
     model,
     parameters: modelKwargs != null ? { modelKwargs, ...mergedParameters } : mergedParameters,
   });
+
+  if (
+    model === 'gpt-6-cyber' &&
+    config?.enabled !== false &&
+    model !== fallbackModel &&
+    provider === Providers.OPENAI &&
+    clientOverrides == null
+  ) {
+    // Reuse the actual transport, not global endpoint defaults, on a model-only switch.
+    const inherited: Record<string, unknown> = { ...agent?.model_parameters, ...parameters };
+    const configuration = isPlainObject(inherited.configuration)
+      ? inherited.configuration
+      : undefined;
+    const baseURL = configuration?.baseURL ?? inherited.baseURL;
+    const { llmConfig } = getOpenAILLMConfig({
+      apiKey: '',
+      streaming: false,
+      endpoint: agentEndpoint ?? provider,
+      baseURL: typeof baseURL === 'string' ? baseURL : undefined,
+      azure: agentEndpoint === EModelEndpoint.azureOpenAI ? agent?.azureOptions : undefined,
+      requestIdentity: {
+        userId: headerContext.user?.id,
+        tenantId: headerContext.tenantId ?? headerContext.user?.tenantId,
+      },
+      modelOptions: {
+        model,
+        useResponsesApi:
+          typeof parameters?.useResponsesApi === 'boolean' ? parameters.useResponsesApi : undefined,
+      },
+      addParams: isPlainObject(inherited.modelKwargs) ? inherited.modelKwargs : undefined,
+    });
+    if (llmConfig.modelKwargs?.safety_identifier != null) {
+      parameters = {
+        ...parameters,
+        useResponsesApi: llmConfig.useResponsesApi,
+        modelKwargs: llmConfig.modelKwargs,
+        user: undefined,
+        safety_identifier: undefined,
+        reasoning: undefined,
+        reasoning_effort: undefined,
+        include_reasoning: undefined,
+      };
+    }
+  }
 
   /** The SDK sets maxTokens for this cap, but LangChain spreads modelKwargs after it. */
   const parameterTokenCap = userParameters?.maxSummaryTokens;
