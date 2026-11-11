@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import type { IBalance } from '~/types';
 import type { ITransaction } from '~/schema/transaction';
+import type { IBalance } from '~/types';
 import { createSpendTokensMethods } from './spendTokens';
 import { createTransactionMethods } from './transaction';
 import transactionSchema from '~/schema/transaction';
