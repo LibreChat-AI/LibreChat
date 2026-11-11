@@ -716,6 +716,12 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
             res.destroy();
           }
         });
+        /** Release the upstream when the client leaves before the body is flushed. */
+        res.once('close', () => {
+          if ('destroy' in stream && typeof stream.destroy === 'function') {
+            stream.destroy();
+          }
+        });
         stream.pipe(res);
         return;
       }

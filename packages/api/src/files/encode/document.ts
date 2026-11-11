@@ -15,17 +15,16 @@ import type {
   DocumentResult,
   ServerRequest,
 } from '~/types';
+import type { ReachableAgent } from '~/agents/traversal';
+import type { MissingAttachmentHandler } from './utils';
 import {
   CONTENT_TRAVERSAL_MAX_DEPTH,
   CONTENT_TRAVERSAL_MAX_NODES,
   ContentTraversalLimitError,
 } from '~/protection/adapters/nested';
-import {
-  getFileStream,
-  getConfiguredFileSizeLimit,
-  isAttachmentObjectNotFoundError,
-} from './utils';
+import { getFileStream, getConfiguredFileSizeLimit, skipMissingAttachment } from './utils';
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
+import { someReachableAgent } from '~/agents/traversal';
 import { runGuardedEncode } from './memoryGuard';
 
 /** The longest document name LibreChat sends to Bedrock. */
@@ -95,6 +94,18 @@ function renameDocumentParts(
   return renamed ?? parts;
 }
 
+interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
+  readonly provider?: string;
+}
+
+function isBedrockRecipient({ provider }: DocumentRecipient): boolean {
+  return provider === Providers.BEDROCK;
+}
+
+function hasBedrockRecipient(recipients: Iterable<DocumentRecipient>): boolean {
+  return someReachableAgent(recipients, isBedrockRecipient);
+}
+
 /**
  * Bedrock rejects a request in which two documents share a name, and every turn resends the
  * documents of earlier turns (and of steers replayed with their attachments), so two uploads with
@@ -102,20 +113,26 @@ function renameDocumentParts(
  * formatted payload in conversation order (`report`, `report (2)`), leaving the first occurrence,
  * every other kind of part, and the parts themselves untouched: a message whose documents change
  * gets a new content array. Names compare case-insensitively, as the restriction is not
- * documented to be case-sensitive. Replay always enforces traversal limits, even without filters.
+ * documented to be case-sensitive. Recipient metadata includes lazy children and graph
+ * members without resolving them. Only runs with a Bedrock recipient need naming;
+ * Structural limits apply per message, not to the lifetime of the conversation.
  */
 export function dedupeDocumentNames(
   messages: Array<{ content?: string | PayloadContentPart[] | null }>,
+  recipients?: Iterable<DocumentRecipient>,
 ): void {
-  const budget = { remaining: CONTENT_TRAVERSAL_MAX_NODES - messages.length };
-  if (budget.remaining < 0) {
-    throw new ContentTraversalLimitError();
+  if (recipients != null && !hasBedrockRecipient(recipients)) {
+    return;
   }
   const nameOf = createDocumentNamer();
   for (const message of messages) {
-    if (!Array.isArray(message?.content)) {
+    if (message == null) {
+      throw new ContentTraversalLimitError();
+    }
+    if (!Array.isArray(message.content)) {
       continue;
     }
+    const budget = { remaining: CONTENT_TRAVERSAL_MAX_NODES - 1 };
     const content = renameDocumentParts(message.content, nameOf, budget);
     if (content !== message.content) {
       message.content = content;
@@ -298,10 +315,16 @@ function getBase64DecodedByteCount(content: string): number {
 export async function encodeAndFormatDocuments(
   req: ServerRequest,
   files: IMongoFile[],
-  params: { provider: Providers; endpoint?: string; useResponsesApi?: boolean; model?: string },
+  params: {
+    provider: Providers;
+    endpoint?: string;
+    useResponsesApi?: boolean;
+    model?: string;
+    onMissingFile?: MissingAttachmentHandler;
+  },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<DocumentResult> {
-  const { provider, endpoint, useResponsesApi, model } = params;
+  const { provider, endpoint, useResponsesApi, model, onMissingFile } = params;
   if (!files?.length) {
     return { documents: [], files: [] };
   }
@@ -332,10 +355,10 @@ export async function encodeAndFormatDocuments(
     ),
   );
 
-  for (const settledResult of results) {
+  for (const [index, settledResult] of results.entries()) {
     if (settledResult.status === 'rejected') {
-      if (isAttachmentObjectNotFoundError(settledResult.reason)) {
-        throw settledResult.reason;
+      if (skipMissingAttachment(settledResult.reason, processableFiles[index], onMissingFile)) {
+        continue;
       }
       console.error('Document processing failed:', settledResult.reason);
       continue;

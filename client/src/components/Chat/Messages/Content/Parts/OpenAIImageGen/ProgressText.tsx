@@ -1,5 +1,5 @@
 import { AGENT_STYLE_TOOLS } from '.';
-import { useToolPreparation } from '../../preparation';
+import { useToolPreparation } from '@librechat/chat/components';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

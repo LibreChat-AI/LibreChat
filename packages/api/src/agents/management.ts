@@ -11,8 +11,8 @@ const DEFAULT_LIST_LIMIT = 20;
 const MAX_CURSOR_LENGTH = 512;
 
 /**
- * `instructionsPrompt` (the Builder's link to a native prompt group) is a Builder-only
- * feature in this slice: the Management API never accepts or returns it, so every
+ * `instructionsPrompt` (the Builder's link to a native or Langfuse prompt group) is a
+ * Builder-only feature in this slice: the Management API never accepts or returns it, so every
  * Management type and schema below omits the field entirely, the same way an unknown
  * top-level field is rejected rather than silently stripped (see the note above
  * `agentManagementCreateSchema`).
@@ -106,7 +106,6 @@ export type AgentManagementError = {
  */
 export const agentManagementCreateSchema: z.ZodType<
   AgentManagementCreate,
-  z.ZodTypeDef,
   AgentManagementCreateInput
 > = agentCreateSchema.omit({ instructionsPrompt: true }).extend({ model: z.string() }).strict();
 export const agentManagementUpdateSchema: z.ZodType<AgentManagementUpdate> = agentUpdateSchema
@@ -143,7 +142,7 @@ const agentManagementCursorSchema = z
     }
   });
 
-export const agentManagementListSchema: z.ZodType<AgentManagementList, z.ZodTypeDef, unknown> = z
+export const agentManagementListSchema: z.ZodType<AgentManagementList, unknown> = z
   .object({
     limit: z.coerce.number().int().min(1).max(MAX_LIST_LIMIT).default(DEFAULT_LIST_LIMIT),
     cursor: agentManagementCursorSchema.optional(),

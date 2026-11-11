@@ -781,6 +781,10 @@ describe('RedisEventTransport', () => {
       isRedis: true,
       cleanupOnComplete: false,
     });
+    mockPublisher.publish.mockImplementation(async (channel: string, payload: string) => {
+      getMessageHandler(mockSubscriber)(channel, payload);
+      return 1;
+    });
     const onDone = jest.fn();
     const subscription = await manager.subscribe(streamId, () => undefined, onDone);
     const channel = `stream:{${streamId}}:events`;
@@ -1936,6 +1940,10 @@ describe('RedisEventTransport', () => {
       data: { delta: { content: [{ type: 'text', text: 'World' }] } },
     };
     const messageHandler = getMessageHandler(attachingSubscriber);
+    mockPublisher.publish.mockImplementation(async (channel: string, payload: string) => {
+      messageHandler(channel, payload);
+      return 1;
+    });
     const originalSync = attachingTransport.syncReorderBuffer.bind(attachingTransport);
     jest
       .spyOn(attachingTransport, 'syncReorderBuffer')
@@ -1958,6 +1966,98 @@ describe('RedisEventTransport', () => {
     subscription?.unsubscribe();
     await generatingManager.destroy();
     await attachingManager.destroy();
+  });
+
+  describe.each(['ready', 'synchronization'] as const)('terminal during %s', (phase) => {
+    it.each([
+      { type: 'done', cancel: 'none', throws: false },
+      { type: 'error', cancel: 'none', throws: false },
+      { type: 'done', cancel: 'before return', throws: false },
+      { type: 'done', cancel: 'after return', throws: false },
+      { type: 'done', cancel: 'none', throws: true },
+      { type: 'error', cancel: 'none', throws: true },
+    ] as const)(
+      'preserves $type delivery with cancellation $cancel (callback throws: $throws)',
+      async ({ type, cancel, throws }) => {
+        const publisher = createMockPublisher();
+        const subscriber = createMockSubscriber();
+        const transport = new RedisEventTransport(
+          publisher as unknown as Redis,
+          subscriber as unknown as Redis,
+        );
+        const store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+        const streamId = 'terminal-during-attachment';
+        const job = await store.createJob(streamId, 'user-1');
+        const final = { final: true as const, responseMessage: { messageId: 'terminal-reply' } };
+        await store.updateJob(streamId, {
+          status: 'complete',
+          completedAt: Date.now(),
+          finalEvent: JSON.stringify(final),
+        });
+        const manager = new GenerationJobManagerClass();
+        manager.configure({ jobStore: store, eventTransport: transport, isRedis: true });
+        const messageHandler = getMessageHandler(subscriber);
+        const controller = new AbortController();
+        const terminal = {
+          type,
+          generationId: job.createdAt,
+          data: final,
+          error: 'remote failure',
+        };
+        publisher.publish.mockImplementation(async (channel: string, payload: string) => {
+          if (phase === 'ready') {
+            messageHandler(channel, JSON.stringify(terminal));
+            if (cancel === 'before return') controller.abort();
+          }
+          messageHandler(channel, payload);
+          return 1;
+        });
+        const sync = transport.syncReorderBuffer.bind(transport);
+        jest.spyOn(transport, 'syncReorderBuffer').mockImplementation(async (...args) => {
+          if (phase === 'synchronization') {
+            deliverSequencedMessage(messageHandler, streamId, { ...terminal, seq: 0 });
+            await sync(...args);
+            if (cancel === 'before return') controller.abort();
+            return;
+          }
+          return sync(...args);
+        });
+        const callbackError = new Error('subscriber callback failed');
+        const warn = jest.spyOn(logger, 'warn');
+        const onDone = jest.fn(() => {
+          if (throws && type === 'done') throw callbackError;
+        });
+        const onError = jest.fn(() => {
+          if (throws && type === 'error') throw callbackError;
+        });
+        try {
+          const subscription = await manager.subscribe(streamId, jest.fn(), onDone, onError, {
+            signal: controller.signal,
+          });
+          if (cancel === 'before return') expect(subscription).toBeNull();
+          else expect(subscription).not.toBeNull();
+          expect(onDone).not.toHaveBeenCalled();
+          expect(onError).not.toHaveBeenCalled();
+          if (cancel === 'after return') controller.abort();
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          const delivered = type === 'done' ? onDone : onError;
+          const other = type === 'done' ? onError : onDone;
+          expect(delivered).toHaveBeenCalledTimes(cancel === 'none' ? 1 : 0);
+          if (cancel === 'none')
+            expect(delivered).toHaveBeenCalledWith(type === 'done' ? final : 'remote failure');
+          expect(other).not.toHaveBeenCalled();
+          if (throws)
+            expect(warn).toHaveBeenCalledWith(expect.stringContaining('terminal'), {
+              type: 'Error',
+            });
+          expect(transport.getSubscriberCount(streamId)).toBe(0);
+          subscription?.unsubscribe();
+          subscription?.unsubscribe();
+        } finally {
+          await manager.destroy();
+        }
+      },
+    );
   });
 
   it('keeps the replay frontier aligned after publication failure and reconnect', async () => {

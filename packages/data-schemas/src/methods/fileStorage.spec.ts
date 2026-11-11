@@ -1,10 +1,12 @@
 import mongoose from 'mongoose';
+import { FileContext } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { FileStorageClaim, IMongoFile } from '~/types/file';
 import type { AllMethods, FileStorageMethods } from './index';
 import { _resetStrictCache } from '~/models/plugins/tenantIsolation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createFileStorageMethods } from './fileStorage';
+import { createMethods } from './index';
 import { createModels } from '~/models';
 
 let File: mongoose.Model<IMongoFile>;
@@ -71,6 +73,179 @@ describe('file storage fence', () => {
     const publicMethods: Pick<AllMethods, keyof FileStorageMethods> = methods;
     expect(Object.keys(publicMethods)).toHaveLength(5);
   });
+  describe('unfinished snapshot releases', () => {
+    async function reserve() {
+      return createMethods(mongoose).claimCodeFile({
+        filename: 'report.txt',
+        conversationId: 'snapshot-conversation',
+        file_id: claim.file_id,
+        user: claim.userId,
+        tenantId: claim.tenantId,
+        sourceDispatchedAt: 100,
+        snapshot: true,
+      });
+    }
+
+    it('gives only a fresh snapshot reservation the existing upload TTL', async () => {
+      const startedAt = Date.now();
+      await reserve();
+      const reservation = await read();
+      expect(reservation?.expiresAt).toBeInstanceOf(Date);
+      expect(reservation!.expiresAt!.getTime()).toBeGreaterThanOrEqual(startedAt + 3_600_000);
+      expect(reservation!.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 3_600_000);
+      expect(reservation?.filepath).toBeUndefined();
+      expect(reservation?.storageOperations?.provisioning).toBeUndefined();
+      await File.init();
+      expect(await File.collection.indexes()).toContainEqual(
+        expect.objectContaining({ key: { expiresAt: 1 }, expireAfterSeconds: 3600 }),
+      );
+    });
+
+    it('retains the deadline when acquisition fails before the database write', async () => {
+      await reserve();
+      const reservation = await read();
+      expect(reservation?.expiresAt).toBeInstanceOf(Date);
+      jest.spyOn(File, 'updateOne').mockRejectedValueOnce(new Error('Database unavailable'));
+      await expect(peer.acquireFileProvision(claim)).rejects.toThrow('Database unavailable');
+      expect(await read()).toEqual(reservation);
+      expect((await read())?.storageOperations?.provisioning).toBeUndefined();
+    });
+
+    it('retains the deadline when another scope cannot acquire the reservation', async () => {
+      await reserve();
+      const reservation = await read();
+      expect(reservation?.expiresAt).toBeInstanceOf(Date);
+      expect(await peer.acquireFileProvision({ ...claim, tenantId: 'tenant-b' })).toBe(false);
+      expect(await read()).toEqual(reservation);
+    });
+
+    it('clears the deadline atomically even when the acquisition acknowledgement is lost', async () => {
+      await reserve();
+      expect((await read())?.expiresAt).toBeInstanceOf(Date);
+      jest.spyOn(peer, 'acquireFileProvision').mockImplementationOnce(async (data) => {
+        expect(await methods.acquireFileProvision(data)).toBe(true);
+        throw new Error('Acquisition acknowledgement lost');
+      });
+      await expect(peer.acquireFileProvision(claim)).rejects.toThrow(
+        'Acquisition acknowledgement lost',
+      );
+      const acquired = await read();
+      expect(acquired?.expiresAt).toBeUndefined();
+      expect(acquired?.storageOperations?.provisioning).toEqual([claim.token]);
+    });
+
+    it('does not extend an existing reservation deadline', async () => {
+      await reserve();
+      const deadline = new Date(Date.now() + 60_000);
+      await File.collection.updateOne(
+        { file_id: claim.file_id },
+        { $set: { expiresAt: deadline } },
+      );
+      const reservation = await read();
+      await reserve();
+      expect(await read()).toEqual(reservation);
+    });
+
+    it('does not add a deadline to an existing committed snapshot', async () => {
+      await reserve();
+      await methods.acquireFileProvision(claim);
+      await File.collection.updateOne(
+        { file_id: claim.file_id },
+        { $set: { filepath: '/uploads/committed', bytes: 100 } },
+      );
+      await methods.releaseFileProvision(claim);
+      const committed = await read();
+      expect(committed?.expiresAt).toBeUndefined();
+      await reserve();
+      expect(await read()).toEqual(committed);
+    });
+
+    it('leaves legacy claims without a provisional deadline', async () => {
+      const legacy = await createMethods(mongoose).claimCodeFile({
+        filename: 'legacy.txt',
+        conversationId: 'legacy-conversation',
+        file_id: 'legacy-file',
+        user: claim.userId,
+        tenantId: claim.tenantId,
+      });
+      expect(legacy.context).toBe(FileContext.execute_code);
+      expect(legacy.expiresAt).toBeUndefined();
+    });
+
+    it('deletes only the unfinished claim and accepts repeated releases', async () => {
+      await reserve();
+      expect((await read())?.object).toBe('file');
+      expect(await methods.acquireFileProvision(claim)).toBe(true);
+      expect(await methods.commitFileProvision({ claim, releaseOnly: true })).toBe(true);
+      expect(await methods.releaseFileProvision(claim)).toBe(true);
+      expect(await read()).toBeNull();
+      expect(await peer.releaseFileProvision(claim)).toBe(true);
+      expect(await methods.acquireFileProvision(claim)).toBe(false);
+      expect(await methods.commitFileProvision({ claim, releaseOnly: true })).toBe(false);
+    });
+
+    it.each([
+      { userId: new mongoose.Types.ObjectId().toString() },
+      { tenantId: 'tenant-b' },
+      { tenantId: null },
+      { token: 'foreign' },
+    ])('does not discard another scope or token: %j', async (overrides) => {
+      await reserve();
+      await methods.acquireFileProvision(claim);
+      const before = await read();
+      expect(await runAsSystem(() => peer.releaseFileProvision({ ...claim, ...overrides }))).toBe(
+        true,
+      );
+      expect(await read()).toEqual(before);
+      expect(await methods.releaseFileProvision(claim)).toBe(true);
+      expect(await read()).toBeNull();
+    });
+
+    it('retains other claimants and deletes on the final concurrent release', async () => {
+      for (let round = 0; round < 4; round++) {
+        await reserve();
+        const claims = Array.from({ length: 16 }, (_, i) => ({ ...claim, token: `token-${i}` }));
+        expect(await Promise.all(claims.map(methods.acquireFileProvision))).toEqual(
+          claims.map(() => true),
+        );
+        expect(await methods.releaseFileProvision(claims[0])).toBe(true);
+        expect((await read())?.storageOperations?.provisioning).toHaveLength(15);
+        expect(await Promise.all(claims.slice(1).map(peer.releaseFileProvision))).toEqual(
+          claims.slice(1).map(() => true),
+        );
+        expect(await read()).toBeNull();
+      }
+    });
+
+    it.each([
+      { filepath: '/uploads/committed' },
+      { bytes: 0 },
+      { storageKey: 'primary-object' },
+      { context: FileContext.execute_code },
+      { context: FileContext.message_attachment },
+      { 'storageOperations.deletionPending': true },
+      { 'storageOperations.deleting': 'deletion-owner' },
+    ])('preserves committed content, other contexts and deletion intent: %j', async (fields) => {
+      await reserve();
+      await methods.acquireFileProvision(claim);
+      await File.collection.updateOne({ file_id: claim.file_id }, { $set: fields });
+      const before = await read();
+      expect(await methods.releaseFileProvision(claim)).toBe(true);
+      expect(await read()).toEqual({
+        ...before,
+        storageOperations: { ...before?.storageOperations, provisioning: [] },
+      });
+    });
+
+    it('retains committed snapshot metadata and primary content', async () => {
+      await seed({ context: FileContext.execute_code_snapshot });
+      const before = await read();
+      await methods.acquireFileProvision(claim);
+      expect(await methods.releaseFileProvision(claim)).toBe(true);
+      expect(await read()).toEqual({ ...before, storageOperations: { provisioning: [] } });
+    });
+  });
+
   it('retains every concurrent provisioning owner until release', async () => {
     await seed();
     const claims = ['code-a', 'code-b', 'search'].map((token) => ({ ...claim, token }));
@@ -232,7 +407,7 @@ describe('file storage fence', () => {
 
   it('never upserts missing files for any claim or release', async () => {
     expect(await methods.acquireFileProvision(claim)).toBe(false);
-    expect(await methods.releaseFileProvision(claim)).toBe(false);
+    expect(await methods.releaseFileProvision(claim)).toBe(true);
     expect(await methods.acquireFileDeletion(deletion)).toBeNull();
     expect(await methods.releaseFileDeletion({ ...claim, retainDeletion: false })).toBe(false);
     expect(await File.collection.countDocuments()).toBe(0);
@@ -250,7 +425,7 @@ describe('file storage fence', () => {
     expect(await runAsSystem(() => peer.acquireFileProvision(other))).toBe(false);
     expect(await runAsSystem(() => peer.acquireFileDeletion({ ...other, updatedAt }))).toBeNull();
     expect(await methods.acquireFileProvision(claim)).toBe(true);
-    expect(await runAsSystem(() => peer.releaseFileProvision(other))).toBe(false);
+    expect(await runAsSystem(() => peer.releaseFileProvision(other))).toBe(true);
     expect(await methods.releaseFileProvision(claim)).toBe(true);
     expect(await methods.acquireFileDeletion(deletion)).toEqual({ resumed: false });
     expect(
@@ -289,7 +464,7 @@ describe('file storage fence', () => {
       await tenantStorage.run(context, () => methods.acquireFileDeletion(deletion)),
     ).toBeNull();
     expect(await methods.acquireFileProvision(claim)).toBe(true);
-    expect(await tenantStorage.run(context, () => methods.releaseFileProvision(claim))).toBe(false);
+    expect(await tenantStorage.run(context, () => methods.releaseFileProvision(claim))).toBe(true);
     expect(await methods.releaseFileProvision(claim)).toBe(true);
     expect(await methods.acquireFileDeletion(deletion)).toEqual({ resumed: false });
     expect(

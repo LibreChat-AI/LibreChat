@@ -19,26 +19,22 @@ jest.mock('~/hooks', () => ({
    * routing tests don't exercise the preview flow itself — stub it
    * to a no-op so it doesn't blow up jsdom rendering. */
   useAttachmentPreviewSync: () => ({ status: 'ready', previewError: undefined, isPolling: false }),
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
-    ref: { current: null },
-  }),
 }));
 
 jest.mock('../LogLink', () => ({
   useAttachmentLink: () => ({ handleDownload: jest.fn() }),
 }));
 
-jest.mock('~/components/Chat/Input/Files/FileContainer', () => ({
-  __esModule: true,
-  default: ({ file, displayName }: { file: { filename?: string }; displayName?: string }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  useExpandCollapse: (isExpanded: boolean) => ({
+    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
+    ref: { current: null },
+  }),
+  FileContainer: ({ file, displayName }: { file: { filename?: string }; displayName?: string }) => (
     <div data-testid="file-container">{displayName ?? file.filename ?? ''}</div>
   ),
-}));
-
-jest.mock('~/components/Chat/Input/Files/FilePreview', () => ({
-  __esModule: true,
-  default: () => <div data-testid="file-preview" />,
+  FilePreview: () => <div data-testid="file-preview" />,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/Image', () => ({

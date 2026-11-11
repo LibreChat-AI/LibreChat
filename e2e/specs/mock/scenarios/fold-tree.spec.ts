@@ -114,6 +114,39 @@ async function openConversation(page: Page, content: Part[]) {
   });
 }
 
+/**
+ * Opening a fold animates its height and can move rows under a pointer that stays put; the
+ * fold then re-hits the pointer and lights whichever row is under it now. A hover only names
+ * a row once nothing in the transcript is moving.
+ */
+async function waitForStillTranscript(page: Page) {
+  const view = messagesView(page);
+  await expect
+    .poll(() =>
+      view.evaluate(
+        (element) =>
+          element
+            .getAnimations({ subtree: true })
+            .filter(
+              (animation) =>
+                animation.playState === 'running' &&
+                animation.effect?.getComputedTiming().iterations !== Infinity,
+            ).length,
+      ),
+    )
+    .toBe(0);
+  let previous = '';
+  await expect
+    .poll(async () => {
+      const box = await view.getByRole('button', { name: /^Ran / }).last().boundingBox();
+      const current = JSON.stringify(box);
+      const still = current === previous;
+      previous = current;
+      return still;
+    })
+    .toBe(true);
+}
+
 /** The panel of the tool group whose header reads `name`, opened if it is folded. */
 async function openGroup(page: Page, name: RegExp): Promise<Locator> {
   const header = messagesView(page).getByRole('button', { name }).first();
@@ -122,10 +155,22 @@ async function openGroup(page: Page, name: RegExp): Promise<Locator> {
     await header.click();
   }
   await expect(header).toHaveAttribute('aria-expanded', 'true');
+  await waitForStillTranscript(page);
   return messagesView(page)
     .getByTestId('tool-call-group-panel')
     .filter({ has: page.getByRole('button', { name: /^Ran / }) })
     .last();
+}
+
+async function waitForTransitions(page: Page) {
+  await page.waitForFunction(
+    () =>
+      !document
+        .getAnimations()
+        .some(
+          (animation) => animation.playState === 'running' && animation instanceof CSSTransition,
+        ),
+  );
 }
 
 const railOf = (panel: Locator) => panel.locator('> div > [data-testid="fold-rail"]');
@@ -267,6 +312,7 @@ test.describe('tool fold tree (pointer)', () => {
     const rail = railOf(panel);
     const rows = rowsOf(panel);
     await rows.nth(2).hover();
+    await expect(rail).toHaveAttribute('data-fold-lit', '2');
     await expectRouteEndsAt(rail, rows.nth(2));
 
     const { samples, centers } = await sampleRoute(rail, () => rows.nth(1).hover());
@@ -377,5 +423,113 @@ test.describe('tool fold tree (touch)', () => {
     await expect(rowsOf(panel).nth(1)).toHaveAttribute('aria-expanded', 'true');
     await expect(rail).not.toHaveAttribute('data-fold-lit');
     await expect(traceOf(rail)).not.toHaveAttribute('data-lit', '');
+  });
+});
+
+test.describe('tool disclosure polish', () => {
+  test.use(DESKTOP);
+  test('a named command with Thoughts retains its command header and precise timer', async ({
+    page,
+  }) => {
+    await openConversation(page, [
+      {
+        type: 'tool_call',
+        tool_call: {
+          id: 'timed',
+          name: 'bash_tool',
+          args: '{"command":"echo hi"}',
+          output: 'hi',
+          progress: 1,
+          type: 'tool_call',
+          runStepStatus: 'completed',
+          runStepDurationMs: 10200,
+        },
+      },
+      { type: 'activity_label', activity_label: 'Checked the command', pending: false },
+      { type: 'think', think: 'Checking whether the output matches' },
+      { type: 'text', text: 'Fold tree fixture done.' },
+    ]);
+    const header = messagesView(page)
+      .getByRole('button', { name: /Checked the command/ })
+      .first();
+    await header.click();
+    await expect(messagesView(page).getByRole('button', { name: /Ran command/ })).toBeVisible();
+    await expect(messagesView(page).getByTestId('command-time').first()).toContainText('10.2s');
+    await expect(
+      messagesView(page)
+        .getByRole('button', { name: /Thoughts/ })
+        .last(),
+    ).toBeVisible();
+  });
+  test('a generated failed-command title opens its error directly and retains focus', async ({
+    page,
+  }) => {
+    await openConversation(page, [
+      {
+        type: 'tool_call',
+        tool_call: {
+          id: 'failed',
+          name: 'bash_tool',
+          args: '{"command":"false"}',
+          output: 'Error: tool call failed: exit code 2',
+          progress: 1,
+          type: 'tool_call',
+          runStepStatus: 'failed',
+          runStepDurationMs: 10200,
+        },
+      },
+      {
+        type: 'activity_label',
+        activity_label: 'Checked the failing command',
+        pending: false,
+        status: 'failed',
+      },
+      {
+        type: 'activity_label',
+        activity_label: 'Checked the failing command',
+        activity_label_type: 'phase',
+        activity_start_index: 0,
+        activity_end_index: 2,
+        activity_count: 1,
+        pending: false,
+        status: 'failed',
+      },
+      { type: 'text', text: 'Fold tree fixture done.' },
+    ]);
+    await messagesView(page).getByTestId('failed-reveal-pill').first().click();
+    await expect(messagesView(page).getByRole('button', { name: /Ran command/ })).toHaveCount(0);
+    await expect(
+      messagesView(page).getByText('Error: tool call failed: exit code 2', { exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.textContent))
+      .toContain('exit code 2');
+  });
+
+  test('collapse passes through intermediate heights instead of snapping', async ({ page }) => {
+    await openConversation(page, GROUP_CONTENT);
+    await openGroup(page, /^Ran 4 actions/);
+    const panel = messagesView(page).getByTestId('tool-call-group-panel').last();
+    await expect(panel).toBeVisible();
+    await waitForTransitions(page);
+    await panel.evaluate((element) => {
+      const values: number[] = [];
+      (window as unknown as { foldHeights: number[] }).foldHeights = values;
+      const until = performance.now() + 600;
+      const sample = () => {
+        values.push(element.getBoundingClientRect().height);
+        if (performance.now() < until) requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    await messagesView(page)
+      .getByRole('button', { name: /^Ran 4 actions/ })
+      .first()
+      .click();
+    await expect.poll(() => panel.evaluate((el) => el.getBoundingClientRect().height)).toBe(0);
+    const heights = await page.evaluate(
+      () => (window as unknown as { foldHeights: number[] }).foldHeights,
+    );
+    expect(new Set(heights.map(Math.round)).size).toBeGreaterThan(3);
   });
 });

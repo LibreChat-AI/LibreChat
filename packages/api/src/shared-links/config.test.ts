@@ -182,6 +182,16 @@ describe('buildSharedLinkStartupPayload', () => {
     });
   });
 
+  it('omits bundler URLs that are set to an empty string', () => {
+    const payload = buildSharedLinkStartupPayload(appConfig({}), {
+      SANDPACK_BUNDLER_URL: '',
+      SANDPACK_STATIC_BUNDLER_URL: '',
+    });
+
+    expect(payload).not.toHaveProperty('bundlerURL');
+    expect(payload).not.toHaveProperty('staticBundlerURL');
+  });
+
   it('never hands an anonymous share viewer a policy link that would run script', () => {
     const payload = buildSharedLinkStartupPayload(
       appConfig({
@@ -240,6 +250,19 @@ describe('buildSharedLinkStartupPayload', () => {
     const config = await resolveSharedLinkConfig(getAppConfig, 'tenant-owner');
 
     expect(buildSharedLinkStartupPayload(config, {}).interface).toEqual({ theme: 'clickhouse' });
+  });
+
+  it('passes a consent-free analytics setting to the share view', () => {
+    const payload = buildSharedLinkStartupPayload(
+      appConfig({ interfaceConfig: { analyticsConsent: false } }),
+      { ANALYTICS_GTM_ID: 'GTM-XYZ' },
+    );
+
+    expect(payload).toEqual({
+      appTitle: 'LibreChat',
+      analyticsGtmId: 'GTM-XYZ',
+      interface: { analyticsConsent: false },
+    });
   });
 
   it('defaults the app title and omits unrelated interface config', () => {

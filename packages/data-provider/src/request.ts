@@ -5,6 +5,7 @@ import type * as t from './types';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from './config';
 import { persistTwoFactorSetupToken } from './twoFactor';
 import { setTokenHeader } from './headers-helpers';
+import { getClientLimit } from './clientLimits';
 import * as endpoints from './api-endpoints';
 
 async function _get<T>(url: string, options?: AxiosRequestConfig): Promise<T> {
@@ -85,8 +86,9 @@ type AuthRecoveryWindow = Window & {
   __librechatAuthRecovery?: AuthRecoveryState;
 };
 
+/** A hung refresh gates every API call through the deduped recovery promise, so it must reject. */
 const refreshToken = (retry?: boolean): Promise<t.TRefreshTokenResponse | undefined> =>
-  _post(endpoints.refreshToken(retry));
+  _post(endpoints.refreshToken(retry), undefined, { timeout: getClientLimit('refreshMs') });
 
 const SHARE_PAGE_PATH_REGEX = /^\/share\/[^/]+\/?$/;
 const SHARED_MESSAGES_PATH_REGEX = /^\/api\/share\/[^/]+$/;
@@ -467,6 +469,11 @@ async function _authenticatedFetch(url: string, options?: RequestInit): Promise<
 }
 
 if (typeof window !== 'undefined') {
+  /** Auth is a bearer token and no route reads an XSRF header. Axios 1.21+ otherwise awaits
+   *  `cookieStore.get` before every same-origin send, and a browser whose cookie store never
+   *  answers then strands every request behind it. */
+  axios.defaults.withXSRFToken = false;
+
   axios.interceptors.request.use(async (config) => {
     const token = await refreshBeforeRequest(config.url);
     if (token) {

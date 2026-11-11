@@ -63,7 +63,7 @@ export default function Create({ onCreated, onCancel }: CreateProps) {
           placeholder={localize('com_ui_api_key_name_placeholder')}
         />
         {nameError && (
-          <p id="api-key-name-error" role="alert" className="text-xs text-text-destructive">
+          <p id="api-key-name-error" role="alert" className="text-text-destructive text-xs">
             {localize('com_ui_api_key_name_required')}
           </p>
         )}
@@ -72,6 +72,7 @@ export default function Create({ onCreated, onCancel }: CreateProps) {
         <Label id="api-key-expiry-label">{localize('com_ui_api_key_expiration')}</Label>
         <Radio
           fullWidth
+          wrap
           value={expiry}
           onChange={setExpiry}
           aria-labelledby="api-key-expiry-label"
@@ -80,7 +81,7 @@ export default function Create({ onCreated, onCancel }: CreateProps) {
             label: localize(labelKey),
           }))}
         />
-        <p className="text-xs text-text-secondary">
+        <p className="text-text-secondary text-xs">
           {expiresAt == null
             ? localize('com_ui_api_key_no_expiration')
             : localize('com_ui_api_key_expires_on', { 0: formatDate(expiresAt) })}

@@ -113,3 +113,13 @@ export function pipeSegment(
     source.pipe(res, { end });
   });
 }
+
+/**
+ * A signal that aborts when the response closes, so an upstream request made for it stops once
+ * the client is gone. A response that already finished is unaffected: nothing is left to cancel.
+ */
+export function abortOnClose(res: Pick<Writable, 'once'>): AbortSignal {
+  const controller = new AbortController();
+  res.once('close', () => controller.abort(new ClientDisconnectedError()));
+  return controller.signal;
+}

@@ -54,12 +54,15 @@ export const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]
 export async function selectMockEndpoint(page: Page, endpoint: MockEndpoint) {
   const trigger = modelSelectorTrigger(page);
   await trigger.click();
-  await page.getByRole('option', { name: endpoint.label }).click();
-  const modelOption = page.getByRole('option', { name: endpoint.model, exact: true });
-  if (await modelOption.isVisible({ timeout: 1000 }).catch(() => false)) {
-    await modelOption.click();
+  const option = page.getByRole('option', { name: endpoint.label });
+  await expect(option).toBeVisible();
+  const expands = (await option.getAttribute('aria-expanded')) != null;
+  await option.click();
+  if (expands) {
+    await page.getByRole('option', { name: endpoint.model, exact: true }).click();
   }
-  await expect(trigger).not.toHaveText('Select a model');
+  await expect(trigger).toContainText(expands ? endpoint.model : endpoint.label);
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
 }
 
 /** Open the model selector and choose a configured model spec by label. */
@@ -407,6 +410,16 @@ export type CodeProvisionRecord = {
   storage_session_id: string;
   fileId: string;
 };
+
+export type CodeExecRecord = { lang: string; code: string; fileNames: string[] };
+
+/** Every `/v1/exec` the fake code server received, with the file names mounted on each. */
+export async function getCodeExecs(page: Page): Promise<CodeExecRecord[]> {
+  const response = await page.request.get(`${CODE_API_BASE}/__debug/uploads`);
+  expect(response.ok(), 'fake code server /__debug/uploads should respond').toBeTruthy();
+  const body = (await response.json()) as { execs: CodeExecRecord[] };
+  return body.execs;
+}
 
 export type RagEmbedRecord = { file_id: string; filename: string; entity_id: string };
 export type RagQueryRecord = { file_id: string; query: string };

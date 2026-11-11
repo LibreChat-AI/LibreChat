@@ -26,7 +26,10 @@ const focusableWithin = (row: HTMLElement): HTMLElement | null => {
   if (row.matches('a[href],button:not([disabled]),[tabindex]:not([tabindex="-1"])')) {
     return row;
   }
-  return row.querySelector<HTMLElement>('a[href],button:not([disabled])');
+  return (
+    row.querySelector<HTMLElement>('[data-conversation-link]') ??
+    row.querySelector<HTMLElement>('a[href],button:not([disabled])')
+  );
 };
 
 /**

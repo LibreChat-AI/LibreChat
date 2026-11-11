@@ -8,6 +8,7 @@ import { RecoilRoot, useRecoilState } from 'recoil';
 import userEvent from '@testing-library/user-event';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { BrowserRouter as Router } from 'react-router-dom';
+import { FileContainer } from '@librechat/chat/components';
 import { pendingQuotesByConvoId } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { QueryKeys, FileSources, EModelEndpoint } from 'librechat-data-provider';
@@ -17,8 +18,8 @@ import type { ChatFormValues, TAskFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import { getDraft, getPendingDraftId, setDraft } from '~/utils';
 import { ChatContext, ChatFormProvider } from '~/Providers';
+import { TargetContext } from '~/Providers/TargetContext';
 import { AuthContextProvider } from '~/hooks/AuthContext';
-import * as FileContainer from '../Files/FileContainer';
 import { SteerHostTestProvider } from 'test/steerHost';
 import ChatForm from '../ChatForm';
 import store from '~/store';
@@ -27,6 +28,11 @@ const mockUpload = jest.fn();
 const mockAsk = jest.fn();
 
 // Production keeps `t` stable between language changes; the global test double does not.
+jest.mock('@librechat/chat/components', () => {
+  const actual = jest.requireActual('@librechat/chat/components');
+  return { ...actual, FileContainer: jest.fn(actual.FileContainer) };
+});
+
 jest.mock('react-i18next', () => {
   const actual = jest.requireActual<typeof import('react-i18next')>('react-i18next');
   const t = (key: TranslationKeys, options?: import('i18next').TOptions) =>
@@ -140,15 +146,19 @@ function Harness() {
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
-        <Profiler id="composer" onRender={() => (commits += 1)}>
-          <ChatForm
-            index={0}
-            isLandingPage={false}
-            speechSettingsInitialized={speechSettingsInitialized}
-            footerBelow={false}
-            centerFormOnLanding={false}
-          />
-        </Profiler>
+        <TargetContext.Provider
+          value={{ ready: true, pending: false, failed: false, retry: () => {} }}
+        >
+          <Profiler id="composer" onRender={() => (commits += 1)}>
+            <ChatForm
+              index={0}
+              isLandingPage={false}
+              speechSettingsInitialized={speechSettingsInitialized}
+              footerBelow={false}
+              centerFormOnLanding={false}
+            />
+          </Profiler>
+        </TargetContext.Provider>
       </ChatContext.Provider>
     </ChatFormProvider>
   );
@@ -473,7 +483,8 @@ describe('ChatForm attachments', () => {
     expect(await screen.findByRole('button', { name: 'report.pdf' })).toBeVisible();
     const textarea = screen.getByTestId('text-input');
     await userEvent.click(textarea);
-    const preview = jest.spyOn(FileContainer, 'default');
+    const preview = jest.mocked(FileContainer);
+    preview.mockClear();
 
     await userEvent.type(textarea, 'read this document');
 

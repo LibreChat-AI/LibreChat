@@ -18,6 +18,7 @@ import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
 import type { ToolExecuteOptions } from '~/agents/handlers';
 import { createToolExecuteHandler } from '~/agents/handlers';
 import { aggregateCollectedUsage } from '../usage';
+import { writeGuarded } from '~/utils/events';
 
 /**
  * Create a chat completion chunk in OpenAI format
@@ -47,11 +48,13 @@ export function createChunk(
 /** One synchronous output frame; HTTP connection and lifecycle stay with the caller. */
 export interface OpenAIWriter {
   write(frame: string): boolean | void;
+  writableEnded?: boolean;
+  destroyed?: boolean;
 }
 
 /** Write one Chat Completions frame through a caller-owned transport. */
 export function writeSSE(writer: OpenAIWriter, data: ChatCompletionChunk | string): void {
-  writer.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`);
+  writeGuarded(writer, `data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`);
 }
 
 /**

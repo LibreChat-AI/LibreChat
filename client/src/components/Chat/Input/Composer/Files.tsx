@@ -1,18 +1,17 @@
 import { memo, useRef, useMemo, useState, useEffect } from 'react';
 import { Eye, Search } from 'lucide-react';
+import { getPreviewKind } from '@librechat/chat';
 import { apiBaseUrl } from 'librechat-data-provider';
 import { Button, IconButton, Spinner, useToastContext } from '@librechat/client';
+import { FilePreview, getFileType, DialogImage } from '@librechat/chat/components';
 import type { TFile } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import FilePreviewDialog, {
   formatBytes,
   getDisplayType,
 } from '~/components/Chat/Messages/Content/FilePreviewDialog';
-import { getPreviewKind } from '~/components/Chat/Messages/Content/preview';
-import { getFileType, toAbsoluteFilePath, triggerDownload } from '~/utils';
-import DialogImage from '~/components/Chat/Messages/Content/DialogImage';
-import FilePreview from '~/components/Chat/Input/Files/FilePreview';
 import { useGetFiles, useFilePreviewBlob } from '~/data-provider';
+import { toAbsoluteFilePath, triggerDownload } from '~/utils';
 import { useLocalize, useAuthContext } from '~/hooks';
 
 export type FileView = 'all' | 'images' | 'documents';

@@ -115,12 +115,12 @@ function Header({
           <PresetsMenu />
         )}
         {hasAccessToBookmarks === true && (
-          <div className={cn('items-center', isSmallScreen ? 'hidden' : 'flex')}>
+          <div className={cn('items-center empty:hidden', isSmallScreen ? 'hidden' : 'flex')}>
             <BookmarkMenu />
           </div>
         )}
         {hasAccessToMultiConvo === true && (
-          <div className={cn('items-center', isSmallScreen ? 'hidden' : 'flex')}>
+          <div className={cn('items-center empty:hidden', isSmallScreen ? 'hidden' : 'flex')}>
             <AddMultiConvo />
           </div>
         )}

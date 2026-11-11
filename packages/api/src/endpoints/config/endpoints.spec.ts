@@ -95,6 +95,60 @@ describe('createEndpointsConfigService', () => {
       );
     });
 
+    it('serves only the declared Azure efforts, not the deployment details', async () => {
+      const deps = createMockDeps({
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.azureOpenAI]: {
+                groupMap: {
+                  first: {
+                    apiKey: 'secret',
+                    models: {
+                      'production-west': {
+                        deploymentName: 'private-deployment',
+                        reasoningEfforts: ['low', 'high'],
+                      },
+                      'production-chat': { deploymentName: 'chat-deployment' },
+                      'boolean-model': true,
+                    },
+                  },
+                  second: { models: { 'production-east': { reasoningEfforts: ['medium'] } } },
+                },
+              },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+      const result = await getEndpointsConfig(fakeReq());
+
+      expect(result?.[EModelEndpoint.azureOpenAI]?.modelReasoningEfforts).toEqual({
+        'production-west': ['low', 'high'],
+        'production-east': ['medium'],
+      });
+      expect(JSON.stringify(result)).not.toContain('private-deployment');
+      expect(JSON.stringify(result)).not.toContain('secret');
+    });
+
+    it('adds no Azure efforts when no deployment declares any', async () => {
+      const deps = createMockDeps({
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.azureOpenAI]: {
+                groupMap: { first: { models: { 'production-chat': true } } },
+              },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+      const result = await getEndpointsConfig(fakeReq());
+
+      expect(result?.[EModelEndpoint.azureOpenAI]).not.toHaveProperty('modelReasoningEfforts');
+    });
+
     it('adds azureAssistants when azure has assistants config', async () => {
       const deps = createMockDeps({
         getAppConfig: jest.fn().mockResolvedValue(
@@ -177,6 +231,45 @@ describe('createEndpointsConfigService', () => {
       expect(result?.[EModelEndpoint.agents]?.maxSubagents).toBe(20);
     });
 
+    it.each([true, false, undefined])(
+      'exposes only channel availability to the agent builder when enabled=%s',
+      async (enabled) => {
+        const channels =
+          enabled == null
+            ? undefined
+            : {
+                enabled,
+                leaseMs: 60_000,
+                cleanup: { batchSize: 25 },
+                nativeSessions: true,
+                lifecycleReactions: true,
+                signatureToleranceSeconds: 60,
+                socketReconnectDelayMs: 100,
+                slackApp: {
+                  enabled: true,
+                  clientSecret: 'private-slack-client-secret',
+                  signingSecret: 'private-slack-signing-secret',
+                },
+              };
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest
+            .fn()
+            .mockResolvedValue(appConfig({ endpoints: { [EModelEndpoint.agents]: { channels } } })),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.agents]).toEqual(
+          expect.objectContaining({ channels: { enabled: enabled === true } }),
+        );
+        expect(JSON.stringify(result)).not.toContain('private-slack');
+      },
+    );
+
     it.each([true, false])(
       'exposes file sharing policy to the agent builder when enabled=%s',
       async (enabled) => {
@@ -202,6 +295,55 @@ describe('createEndpointsConfigService', () => {
         expect(result?.[EModelEndpoint.agents]?.fileSharing).toEqual(fileSharing);
       },
     );
+
+    describe('linkedInstructions.langfuse.enabled', () => {
+      it('defaults to false when omitted from the agents config', async () => {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest
+            .fn()
+            .mockResolvedValue(appConfig({ endpoints: { [EModelEndpoint.agents]: {} } })),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.agents]?.linkedInstructions).toEqual({
+          langfuse: { enabled: false },
+        });
+      });
+
+      it.each([true, false])(
+        'copies the switch through as configured (enabled=%s)',
+        async (enabled) => {
+          const deps = createMockDeps({
+            loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+              [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+            }),
+            getAppConfig: jest.fn().mockResolvedValue(
+              appConfig({
+                endpoints: {
+                  [EModelEndpoint.agents]: {
+                    linkedInstructions: {
+                      timeoutMs: 5_000,
+                      native: { cacheTtlMs: 60_000 },
+                      langfuse: { enabled },
+                    },
+                  },
+                },
+              }),
+            ),
+          });
+          const { getEndpointsConfig } = createEndpointsConfigService(deps);
+          const result = await getEndpointsConfig(fakeReq());
+
+          expect(result?.[EModelEndpoint.agents]?.linkedInstructions).toEqual({
+            langfuse: { enabled },
+          });
+        },
+      );
+    });
 
     it('exposes the deployment stateful environment allowlist', async () => {
       const deps = createMockDeps({

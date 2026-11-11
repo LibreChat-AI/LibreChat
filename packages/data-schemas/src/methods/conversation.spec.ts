@@ -20,6 +20,8 @@ import type {
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChatProjectMethods } from './chatProject';
+import { createResponseStorage } from './response';
+import { waitForPause } from './test-helpers';
 import { createModels } from '../models';
 
 jest.mock('~/config/winston', () => ({
@@ -1141,13 +1143,13 @@ describe('Conversation Operations', () => {
             },
           );
 
+        const archive = saveConvo(
+          { userId: 'user123' },
+          { conversationId, isArchived: true },
+          { preserveUpdatedAt: true, noUpsert: true },
+        );
         try {
-          const archive = saveConvo(
-            { userId: 'user123' },
-            { conversationId, isArchived: true },
-            { preserveUpdatedAt: true, noUpsert: true },
-          );
-          await archiveWriteReached;
+          await waitForPause(archiveWriteReached, archive);
 
           const unarchived = await saveConvo(
             { userId: 'user123' },
@@ -1166,6 +1168,7 @@ describe('Conversation Operations', () => {
         } finally {
           releaseArchiveWrite();
           writeSpy.mockRestore();
+          await Promise.allSettled([archive]);
         }
       });
 
@@ -2604,6 +2607,127 @@ describe('Conversation Operations', () => {
       expect(result?.expiredAt).not.toBeNull();
     });
 
+    /** Archive and unarchive are retention-aware saves: the route passes the stored chat type
+     * and deadline through, so a chat that predates the mode is brought under it like any other. */
+    describe('archiving a conversation that predates the retention mode', () => {
+      const anchor = new Date('2026-03-05T22:17:14.997Z');
+      const HOUR = 3600000;
+
+      const seedLegacyConvo = async (isArchived: boolean) => {
+        const conversationId = uuidv4();
+        await Conversation.collection.insertOne({
+          conversationId,
+          user: 'user123',
+          title: 'chat saved before the retention mode',
+          endpoint: EModelEndpoint.openAI,
+          expiredAt: null,
+          isArchived,
+          createdAt: anchor,
+          updatedAt: anchor,
+        });
+        return conversationId;
+      };
+
+      const setArchived = (
+        conversationId: string,
+        isArchived: boolean,
+        interfaceConfig: AppConfig['interfaceConfig'],
+      ) =>
+        saveConvo(
+          { userId: 'user123', interfaceConfig },
+          { conversationId, isArchived },
+          { preserveUpdatedAt: true, noUpsert: true, appendMessageIds: [] },
+        );
+
+      it.each([true, false])(
+        'gives it the general-chat deadline when isArchived is %s under RetentionMode.ALL',
+        async (isArchived) => {
+          const conversationId = await seedLegacyConvo(!isArchived);
+          const before = Date.now();
+
+          await setArchived(conversationId, isArchived, {
+            retentionMode: RetentionMode.ALL,
+            temporaryChatRetention: 1,
+            generalChatRetention: 2160,
+          });
+
+          const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
+          expect(stored?.isArchived).toBe(isArchived);
+          expect(stored?.isTemporary).toBe(false);
+          expect(stored?.expiredAt?.getTime()).toBeGreaterThanOrEqual(before + 2160 * HOUR);
+          expect(stored?.expiredAt?.getTime()).toBeLessThan(Date.now() + 2160 * HOUR + 5000);
+          expect(stored?.updatedAt?.toISOString()).toBe(anchor.toISOString());
+        },
+      );
+
+      it.each([true, false])(
+        'converts it to a temporary chat when isArchived is %s under RetentionMode.EPHEMERAL',
+        async (isArchived) => {
+          const conversationId = await seedLegacyConvo(!isArchived);
+          const before = Date.now();
+
+          await setArchived(conversationId, isArchived, {
+            retentionMode: RetentionMode.EPHEMERAL,
+            temporaryChatRetention: 24,
+          });
+
+          const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
+          expect(stored?.isArchived).toBe(isArchived);
+          expect(stored?.isTemporary).toBe(true);
+          expect(stored?.expiredAt?.getTime()).toBeGreaterThanOrEqual(before + 24 * HOUR);
+          expect(stored?.expiredAt?.getTime()).toBeLessThan(Date.now() + 24 * HOUR + 5000);
+          expect(stored?.updatedAt?.toISOString()).toBe(anchor.toISOString());
+        },
+      );
+
+      it.each([
+        [
+          'RetentionMode.EPHEMERAL',
+          { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 24 },
+        ],
+        [
+          'RetentionMode.ALL',
+          {
+            retentionMode: RetentionMode.ALL,
+            temporaryChatRetention: 1,
+            generalChatRetention: 2160,
+          },
+        ],
+      ] as Array<[string, AppConfig['interfaceConfig']]>)(
+        'keeps the deadline it already holds under %s',
+        async (_name, interfaceConfig) => {
+          const conversationId = uuidv4();
+          const held = new Date(Date.now() + 2 * HOUR);
+          await Conversation.collection.insertOne({
+            conversationId,
+            user: 'user123',
+            title: 'chat that already holds a deadline',
+            endpoint: EModelEndpoint.openAI,
+            isArchived: false,
+            isTemporary: interfaceConfig?.retentionMode === RetentionMode.EPHEMERAL,
+            expiredAt: held,
+            createdAt: anchor,
+            updatedAt: anchor,
+          });
+
+          await saveConvo(
+            {
+              userId: 'user123',
+              isTemporary: interfaceConfig?.retentionMode === RetentionMode.EPHEMERAL,
+              expiredAt: held,
+              interfaceConfig,
+            },
+            { conversationId, isArchived: true },
+            { preserveUpdatedAt: true, noUpsert: true, appendMessageIds: [] },
+          );
+
+          const stored = await Conversation.findOne({ conversationId }).lean<IConversation>();
+          expect(stored?.isArchived).toBe(true);
+          expect(stored?.expiredAt).toEqual(held);
+        },
+      );
+    });
+
     it('should filter out temporary conversations in getConvosByCursor', async () => {
       // Create some test conversations
       const newNonTemporaryConvo = await Conversation.create({
@@ -3727,6 +3851,183 @@ describe('Conversation Operations', () => {
   });
 
   describe('deleteConvos', () => {
+    describe('stored responses on standalone Mongo', () => {
+      beforeEach(async () => {
+        await runAsSystem(async () => {
+          await mongoose.models.StoredResponse.deleteMany({});
+          await mongoose.models.ResponseScope.deleteMany({});
+        });
+      });
+
+      async function seedResponse(conversationId: string, tenantId?: string) {
+        return runAsSystem(() =>
+          mongoose.models.StoredResponse.create({
+            userId: 'user123',
+            tenantId,
+            conversationId,
+            responseId: uuidv4(),
+            requestKey: uuidv4(),
+            fingerprint: 'request',
+            agentId: 'agent',
+            requestJSON: '{"input":"private"}',
+            responseJSON: '{"output":"private"}',
+            parentMessageId: 'root',
+            status: 'completed',
+          }),
+        );
+      }
+
+      it('rejects background reservation on standalone Mongo before storing private state', async () => {
+        const result = await createResponseStorage(mongoose).reserve({
+          userId: 'user123',
+          responseId: uuidv4(),
+          requestKey: uuidv4(),
+          fingerprint: 'request',
+          agentId: 'agent',
+          requestJSON: '{"input":"private"}',
+          conversationId: uuidv4(),
+          parentMessageId: 'root',
+        });
+        expect(result).toEqual({ ok: false, code: 'response_unavailable' });
+        expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
+        expect(await mongoose.models.ResponseScope.countDocuments({})).toBe(0);
+      });
+
+      it('erases only the selected tenant and keeps ordinary deletion nontransactional', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          tenantId: 'tenant-a',
+          endpoint: EModelEndpoint.agents,
+        });
+        await seedResponse(conversationId, 'tenant-a');
+        await seedResponse(conversationId, 'tenant-b');
+        const session = jest.spyOn(mongoose, 'startSession');
+        await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+          deleteConvos('user123', { conversationId }),
+        );
+        expect(session).not.toHaveBeenCalled();
+        session.mockRestore();
+        await runAsSystem(async () => {
+          expect(
+            await mongoose.models.StoredResponse.countDocuments({ tenantId: 'tenant-a' }),
+          ).toBe(0);
+          expect(
+            await mongoose.models.StoredResponse.countDocuments({ tenantId: 'tenant-b' }),
+          ).toBe(1);
+        });
+      });
+
+      it('retains payloads when an earlier hook fails but keeps deletion intent closed until retry', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          endpoint: EModelEndpoint.agents,
+        });
+        const response = await seedResponse(conversationId);
+        await expect(
+          deleteConvos(
+            'user123',
+            { conversationId },
+            {
+              beforeDelete: async () => {
+                throw new Error('drain failed');
+              },
+            },
+          ),
+        ).rejects.toThrow('drain failed');
+        expect(await Conversation.exists({ conversationId })).not.toBeNull();
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(1);
+        const storage = createResponseStorage(mongoose);
+        expect(await storage.read({ userId: 'user123' }, response.responseId)).toBeNull();
+        const retained = await runAsSystem(() =>
+          mongoose.models.StoredResponse.findOne({
+            userId: 'user123',
+            conversationId,
+            responseId: response.responseId,
+            tenantId: { $exists: false },
+          }).lean(),
+        );
+        expect(retained).toMatchObject({
+          requestJSON: response.requestJSON,
+          responseJSON: response.responseJSON,
+          status: 'completed',
+        });
+        const cleanup = await storage.readCleanupIdentity(
+          { userId: 'user123' },
+          response.responseId,
+        );
+        expect(cleanup).toMatchObject({
+          userId: 'user123',
+          conversationId,
+          responseId: response.responseId,
+          agentId: 'agent',
+          retirement: 'conversation_deleted',
+        });
+        for (const field of [
+          'requestJSON',
+          'responseJSON',
+          'preparedTerminal',
+          'pendingTerminal',
+          'review',
+          'resume',
+        ])
+          expect(cleanup).not.toHaveProperty(field);
+        expect(JSON.stringify(cleanup)).not.toContain('private');
+        await deleteConvos('user123', { conversationId });
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+      });
+
+      it('recovers private response cleanup after the root and its messages are already gone', async () => {
+        const conversationId = uuidv4();
+        await seedResponse(conversationId);
+        const result = await deleteConvos('user123', { conversationId });
+        expect(result.conversationIds).toContain(conversationId);
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+      });
+
+      it('retries irreversible response erasure when the subsequent parent deletion fails', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          endpoint: EModelEndpoint.agents,
+        });
+        await seedResponse(conversationId);
+        const deletion = jest
+          .spyOn(Conversation.collection, 'deleteMany')
+          .mockRejectedValueOnce(new Error('parent delete failed'));
+        await expect(deleteConvos('user123', { conversationId })).rejects.toThrow(
+          'parent delete failed',
+        );
+        deletion.mockRestore();
+        expect(await Conversation.exists({ conversationId })).not.toBeNull();
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+        await deleteConvos('user123', { conversationId });
+        expect(await Conversation.exists({ conversationId })).toBeNull();
+      });
+
+      it('allows concurrent erasers to finish without reopening admission', async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          endpoint: EModelEndpoint.agents,
+        });
+        const response = await seedResponse(conversationId);
+        await Promise.all([
+          deleteConvos('user123', { conversationId }, { allowEmpty: true }),
+          deleteConvos('user123', { conversationId }, { allowEmpty: true }),
+        ]);
+        expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
+        expect(
+          await createResponseStorage(mongoose).read({ userId: 'user123' }, response.responseId),
+        ).toBeNull();
+      });
+    });
+
     it('retires queued-turn work before each conversation deletion wave', async () => {
       const conversationId = uuidv4();
       await Conversation.create({

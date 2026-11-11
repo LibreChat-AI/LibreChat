@@ -21,6 +21,7 @@ const {
   sendEvent,
   getModelEndUsage,
   computeUsageCostUSD,
+  captureResponseAccountingUsage,
   GenerationJobManager,
   waitForGenerationSettled,
   writeAttachmentEvent,
@@ -36,9 +37,11 @@ const {
   captureSubagentIdentity,
   feedSubagentAggregator,
   getAttachmentOwnership,
+  getImageAttachmentContent,
   collectToolCallIds,
   createToolTimingAdapter,
   stampCommandExecutor,
+  writeGuarded,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -849,7 +852,7 @@ function writeAttachment(res, streamId, attachment, expectedCreatedAt) {
       { expectedCreatedAt },
     );
   } else {
-    res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
+    writeGuarded(res, `event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
 }
 
@@ -1024,7 +1027,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
 
     if (output.artifact.content) {
       /** @type {FormattedContent[]} */
-      const content = output.artifact.content;
+      const content = getImageAttachmentContent(output.artifact);
       for (let i = 0; i < content.length; i++) {
         const part = content[i];
         if (!part) {
@@ -1390,7 +1393,7 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
 
     if (output.artifact.content) {
       /** @type {FormattedContent[]} */
-      const content = output.artifact.content;
+      const content = getImageAttachmentContent(output.artifact);
       for (let i = 0; i < content.length; i++) {
         const part = content[i];
         if (!part) {
@@ -1579,7 +1582,7 @@ function markSummarizationUsage(usage, metadata) {
  * not consistently include it, and cache normalization depends on it.
  */
 function contextualizeModelUsage(usage, metadata, agentContext = {}) {
-  const taggedUsage = { ...usage };
+  const taggedUsage = captureResponseAccountingUsage(usage, metadata, agentContext);
   const context = agentContext ?? {};
   const invokedProvider = metadata?.__invoked_provider;
   const invokedModel = metadata?.__invoked_model;

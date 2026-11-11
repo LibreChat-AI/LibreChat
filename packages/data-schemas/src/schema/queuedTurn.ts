@@ -1,5 +1,9 @@
 import { Schema } from 'mongoose';
-import { Constants, CODE_APPROVAL_MODES } from 'librechat-data-provider';
+import {
+  Constants,
+  CODE_APPROVAL_MODES,
+  MAX_FILE_TEXT_PREVIEW_LENGTH,
+} from 'librechat-data-provider';
 import type { IAgentQueuedTurnDocument } from '~/types/queuedTurn';
 
 const fileRefSchema = new Schema(
@@ -8,6 +12,7 @@ const fileRefSchema = new Schema(
     type: { type: String, maxlength: 256 },
     filepath: { type: String, maxlength: 2048 },
     filename: { type: String, maxlength: 1024 },
+    textPreview: { type: String, maxlength: MAX_FILE_TEXT_PREVIEW_LENGTH },
     llmDeliveryPath: { type: String, enum: ['provider', 'text', 'none'] },
     height: { type: Number, min: 0 },
     width: { type: Number, min: 0 },
@@ -52,6 +57,16 @@ const terminalReceiptSchema = new Schema(
     lineagePredecessorId: { type: String, maxlength: 128 },
     rootPredecessor: { type: Boolean, enum: [true] },
     failure: { type: failureSchema },
+  },
+  { _id: false },
+);
+
+const steerSourceSchema = new Schema(
+  {
+    steerId: { type: String, required: true, maxlength: 128 },
+    clientSteerId: { type: String, required: true, maxlength: 128 },
+    generationCreatedAt: { type: Number, required: true, min: 0 },
+    handoffAt: { type: Date },
   },
   { _id: false },
 );
@@ -103,6 +118,7 @@ const queuedTurnSchema: Schema<IAgentQueuedTurnDocument> = new Schema(
       default: 'pending',
     },
     scheduledAt: { type: Date },
+    steerSource: { type: steerSourceSchema },
     claimId: { type: String, maxlength: 128 },
     claimBy: { type: String, maxlength: 256 },
     claimUntil: { type: Date },
@@ -190,6 +206,22 @@ queuedTurnSchema.index(
     sequence: 1,
   },
   { name: 'agent_queued_turn_active' },
+);
+/** Delivery retirement looks turns up by `deliveryKey` alone; most turns never carry one. */
+queuedTurnSchema.index(
+  { deliveryKey: 1 },
+  {
+    name: 'agent_queued_turn_delivery_key',
+    partialFilterExpression: { deliveryKey: { $exists: true } },
+  },
+);
+/** Re-fetches the rows a reconciliation sweep just claimed. */
+queuedTurnSchema.index(
+  { reconciliationClaimId: 1 },
+  {
+    name: 'agent_queued_turn_reconciliation_claim',
+    partialFilterExpression: { reconciliationClaimId: { $exists: true } },
+  },
 );
 queuedTurnSchema.index({ tenantId: 1, user: 1, status: 1, claimUntil: 1 });
 queuedTurnSchema.index({ status: 1, createdAt: 1, _id: 1 });

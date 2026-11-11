@@ -323,6 +323,90 @@ describe('write report', () => {
     await methods.deleteConfig('role' as never, '__base__');
   });
 
+  it.each([
+    ['role', '__base__'],
+    ['role', 'telemetry-role'],
+    ['group', 'telemetry-group'],
+    ['user', 'telemetry-user'],
+  ])(
+    'skips process-wide stack limits in %s %s overrides and tombstones',
+    async (principalType, principalId) => {
+      const params = { principalType, principalId };
+      const handlers = createHandlers();
+      const skipped = ['telemetry.stackTraceLimit:deployment_only_path'];
+      const put = await call(handlers.upsertConfigOverrides, {
+        params,
+        body: { overrides: { telemetry: { stackTraceLimit: 60 }, memory: { disabled: true } } },
+      });
+      expect(put.statusCode).toBe(201);
+      expect(describeAll(put.body?.skipped)).toEqual(skipped);
+      expect((await stored(params))?.overrides).toEqual({ memory: { disabled: true } });
+
+      const patch = await call(handlers.patchConfigField, {
+        params,
+        body: { entries: [{ fieldPath: 'telemetry.stackTraceLimit', value: 60 }] },
+      });
+      expect(patch.statusCode).toBe(200);
+      expect(describeAll(patch.body?.skipped)).toEqual(skipped);
+
+      const tombstone = await call(handlers.tombstoneConfigField, {
+        params,
+        body: { fieldPath: 'telemetry.stackTraceLimit' },
+      });
+      expect(tombstone.statusCode).toBe(200);
+      expect(describeAll(tombstone.body?.skipped)).toEqual(skipped);
+      expect((await stored(params))?.tombstones).toEqual([]);
+      await methods.deleteConfig(principalType as never, principalId);
+    },
+  );
+
+  it.each<[string, unknown]>([
+    ['telemetry.rum', { enabled: true }],
+    ['clientLimits', { refreshMs: 1_000 }],
+    ['conversationList', { maxEndpointFilters: 500 }],
+    ['passwordHashing', { maxWorkers: 1 }],
+    ['interface.colorModeFromUrl', true],
+    ['fileConfig.skills.deletionCleanupConcurrency', 1],
+    ['endpoints.agents.managementApi', { auth: { oidc: { enabled: false }, clients: [] } }],
+  ])(
+    'skips %s, which LibreChat reads from librechat.yaml or at startup, in writes and tombstones',
+    async (fieldPath, value) => {
+      const params = nextParams();
+      const handlers = createHandlers();
+      const skipped = [`${fieldPath}:deployment_only_path`];
+      const written = fieldPath
+        .split('.')
+        .reduceRight<unknown>((inner, key) => ({ [key]: inner }), value) as Record<string, unknown>;
+
+      const put = await call(handlers.upsertConfigOverrides, {
+        params,
+        body: { overrides: { ...written, memory: { disabled: true } } },
+      });
+      expect(put.statusCode).toBe(201);
+      expect(describeAll(put.body?.skipped)).toEqual(skipped);
+      expect((await stored(params))?.overrides).toEqual({ memory: { disabled: true } });
+
+      const patch = await call(handlers.patchConfigField, {
+        params,
+        body: { entries: [{ fieldPath, value }] },
+      });
+      expect(patch.statusCode).toBe(200);
+      expect(patch.body?.applied).toEqual([]);
+      expect(describeAll(patch.body?.skipped)).toEqual(skipped);
+
+      const tombstone = await call(handlers.tombstoneConfigField, {
+        params,
+        body: { fieldPath },
+      });
+      expect(tombstone.statusCode).toBe(200);
+      expect(describeAll(tombstone.body?.skipped)).toEqual(skipped);
+      expect(await stored(params)).toMatchObject({
+        overrides: { memory: { disabled: true } },
+        tombstones: [],
+      });
+    },
+  );
+
   it('a tombstone of a field only librechat.yaml sets is skipped; deleting a stored one is cleanup', async () => {
     const params = nextParams();
     await seed(params, { rateLimits: { fileUploads: { ipMax: 1 } }, memory: { disabled: true } });

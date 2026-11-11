@@ -24,7 +24,7 @@ const ChatDirection = () => {
         options={options}
         onChange={(value: string) => setDirection(value as TChatDirection)}
         testId="chatDirection"
-        sizeClasses="z-50 w-[9.375rem]"
+        sizeClasses="w-[9.375rem]"
         className="z-50"
         aria-labelledby={labelId}
       />

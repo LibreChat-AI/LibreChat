@@ -18,7 +18,10 @@ import type {
 } from '@librechat/data-schemas';
 import type { SummaryContentPart, TMessageContentParts } from 'librechat-data-provider';
 import type { IAgentEventActorSummary } from '@librechat/data-schemas';
+import type { ErrorTurnAnnouncement, ErrorTurnStampStore } from '~/conversations/announce';
+import { getPreliminaryResponseMessageId } from '~/utils/message';
 import { createAgentEventActorSummary } from './compatibility';
+import { announceErrorTurn } from '~/conversations/announce';
 
 /** Text of a summary content part, in any persisted shape — `content` blocks
  *  today, a string `content` or a bare `text` on rows written before them.
@@ -277,16 +280,33 @@ export function markAbortedCompactionContent(
   return marked;
 }
 
+/** Whether a job record's durable final event is a reconciliation frame: the
+ *  conservative substitute published when the terminal row write failed, so
+ *  no message row backs the terminal claim. */
+function hasDurableReconcileFrame(finalEvent: unknown): boolean {
+  if (typeof finalEvent !== 'string' || finalEvent.length === 0) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(finalEvent) as { reconcile?: unknown } | null;
+    return parsed?.reconcile === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Whether a job record has reached a status whose path owns the turn's final
  *  row (completion, error, or abort): the disconnect snapshot must not be
  *  written over it, or the settled row reopens as an unfinished response.
- *  Only a same-epoch record is trusted. */
+ *  Only a same-epoch record is trusted, and only one whose terminal write
+ *  actually landed. */
 export function isSettledJobRecord(
   jobRecord:
     | {
         createdAt?: number;
         status?: string;
         terminalPersistencePending?: boolean;
+        finalEvent?: string;
       }
     | null
     | undefined,
@@ -301,6 +321,12 @@ export function isSettledJobRecord(
      *  that write fails. */
     return false;
   }
+  if (hasDurableReconcileFrame(jobRecord.finalEvent)) {
+    /** The terminal write failed and a reconciliation frame was published in
+     *  its place: nothing was persisted for the turn, so the streamed
+     *  snapshot remains its only row. */
+    return false;
+  }
   return (
     jobRecord.status === 'complete' ||
     jobRecord.status === 'error' ||
@@ -308,31 +334,257 @@ export function isSettledJobRecord(
   );
 }
 
-/** How the last-subscriber disconnect may persist this turn's snapshot. */
+/** How a disconnect may persist this turn's snapshot. */
 export type DisconnectSnapshotMode =
-  /** The run is still live: the snapshot is written as the fallback row. */
+  /** The run is still live: the snapshot keeps the live shape. */
   | 'live'
-  /** A settling path owns the final row: the snapshot is withheld so it
-   *  cannot reopen the settled turn as an unfinished response. */
+  /** The terminal write failed and settled for a reconciliation frame: the
+   *  snapshot is the turn's only row, so it persists with the terminal
+   *  outcome and envelope. */
+  | 'terminal'
+  /** A durable terminal row exists: the snapshot is withheld so it cannot
+   *  reopen the settled turn. */
   | 'skip';
 
+/** The row flags a promoted compaction snapshot settles with, keyed by the
+ *  reconciled claim's status: a stopped compaction is settled like the abort
+ *  route writes it (nothing continues it), a completed run is a finished row,
+ *  and everything else takes the error envelope. */
+export function resolveReconciledSnapshotEnvelope(status: unknown): {
+  unfinished: boolean;
+  error: boolean;
+} {
+  if (status === 'aborted' || status === 'complete') {
+    return { unfinished: false, error: false };
+  }
+  return { unfinished: false, error: true };
+}
+
 /**
- * How the last-subscriber disconnect may persist this turn's snapshot, read
- * from the same-epoch job record the caller already loaded. A compaction
- * whose settling path owns the final row withholds the snapshot; the guard
- * reads the record that path writes, so the remaining window is the path's
- * own commit span. Ordinary turns keep writing their fallback row, settled
- * or not.
+ * How the last-subscriber disconnect may persist this turn's snapshot. An
+ * ordinary turn always keeps its live snapshot as the fallback row: its job
+ * record cannot prove a response row landed. A compaction whose settling path
+ * (completion, error, abort) durably owns the final row withholds the
+ * snapshot, so it cannot reopen the settled turn. A same-epoch compaction
+ * whose terminal claim settled for a reconciliation frame is promoted to the
+ * terminal row, but a reconciliation frame does not prove the row is missing
+ * (an error turn can land before it), so the response row is read first and a
+ * settled one withholds the promotion; the anchor must be persisted too, or
+ * the promotion would recreate the orphan an absent-anchor abort withheld.
  */
-export function resolveDisconnectSnapshotMode(
+export async function resolveDisconnectSnapshotMode(
   isCompaction: boolean,
-  jobRecord: { createdAt?: number; status?: string } | null | undefined,
-  jobCreatedAt?: number,
-): DisconnectSnapshotMode {
+  jobRecord:
+    | {
+        createdAt?: number;
+        status?: string;
+        terminalPersistencePending?: boolean;
+        finalEvent?: string;
+      }
+    | null
+    | undefined,
+  jobCreatedAt: number | undefined,
+  {
+    anchorExists = async () => true,
+    responseRowSettled = async () => false,
+  }: {
+    anchorExists?: () => Promise<boolean>;
+    /** Whether a finished (not `unfinished`) response row already exists. */
+    responseRowSettled?: () => Promise<boolean>;
+  } = {},
+): Promise<DisconnectSnapshotMode> {
   if (!isCompaction) {
     return 'live';
   }
-  return isSettledJobRecord(jobRecord, jobCreatedAt) ? 'skip' : 'live';
+  if (isSettledJobRecord(jobRecord, jobCreatedAt)) {
+    return 'skip';
+  }
+  /** Another epoch's reconciliation frame belongs to a different
+   *  generation and never promotes this one's snapshot. */
+  const sameEpoch = jobCreatedAt == null || jobRecord?.createdAt === jobCreatedAt;
+  if (!sameEpoch || !hasDurableReconcileFrame(jobRecord?.finalEvent)) {
+    return 'live';
+  }
+  /** Both reads are scoped to the turn's user and independent, so they run
+   *  together; a settled row still wins over a persisted anchor. */
+  const [settled, anchored] = await Promise.all([responseRowSettled(), anchorExists()]);
+  return !settled && anchored ? 'terminal' : 'skip';
+}
+
+/**
+ * Every id a compaction's finished row can carry: the response id the stream
+ * preallocated, and the id the failed-turn path writes its error row under,
+ * derived from the anchor exactly as that path derives it. A settled row under
+ * either already ends the turn.
+ */
+function terminalRowIds(anchorMessageId: string, responseMessageId: string): string[] {
+  const errorRowId = getPreliminaryResponseMessageId({
+    compact: true,
+    messageId: anchorMessageId,
+    liveResponseMessageId: responseMessageId,
+  });
+  /** An anchor ending in one underscore derives itself; the failed-turn path
+   *  then redirects its error row to the response id, so the anchor is never a
+   *  terminal identity. */
+  return errorRowId == null || errorRowId === responseMessageId || errorRowId === anchorMessageId
+    ? [responseMessageId]
+    : [responseMessageId, errorRowId];
+}
+
+/** What the last-subscriber disconnect writes for this turn, if anything. */
+export type DisconnectSnapshotPlan =
+  | { write: false }
+  | {
+      write: true;
+      content: TMessageContentParts[];
+      unfinished: boolean;
+      error: boolean;
+    };
+
+/**
+ * Plans the last-subscriber disconnect snapshot through the caller's message
+ * reader: the mode, the marked content, and the row envelope. The caller only
+ * builds and writes the row, inside its own tenant context (the reads here
+ * run in it too). A live snapshot with nothing persistable is skipped; a
+ * promoted terminal snapshot synthesizes its outcome even from empty content.
+ */
+export async function planDisconnectSnapshot(
+  isCompaction: boolean,
+  {
+    content,
+    jobRecord,
+    jobCreatedAt,
+    userId,
+    conversationId,
+    anchorMessageId,
+    responseMessageId,
+    liveSaved = false,
+    getMessages,
+    onReadError,
+  }: {
+    /** The streamed content, already filtered to persistable parts. */
+    content: TMessageContentParts[];
+    jobRecord: Parameters<typeof resolveDisconnectSnapshotMode>[1];
+    jobCreatedAt: number | undefined;
+    userId: string;
+    conversationId: string;
+    anchorMessageId: string;
+    responseMessageId: string;
+    /** This process already wrote a live snapshot of the turn: only a terminal
+     *  promotion writes again. */
+    liveSaved?: boolean;
+    getMessages: (
+      filter: { user: string; messageId: string; conversationId: string },
+      projection?: string,
+    ) => Promise<ReadableMessageRow[]>;
+    /** Receives a row read that failed while planning. */
+    onReadError?: (error: unknown) => void;
+  },
+): Promise<DisconnectSnapshotPlan> {
+  /** A failed row read proves nothing either way: it is reported, nothing is
+   *  written, and the next disconnect plans again. */
+  let mode: DisconnectSnapshotMode;
+  try {
+    mode = await resolveDisconnectSnapshotMode(isCompaction, jobRecord, jobCreatedAt, {
+      anchorExists: async () =>
+        (await getMessages({ user: userId, messageId: anchorMessageId, conversationId }, '_id'))
+          .length > 0,
+      responseRowSettled: async () => {
+        const rows = await Promise.all(
+          terminalRowIds(anchorMessageId, responseMessageId).map((messageId) =>
+            getMessages({ user: userId, messageId, conversationId }, '_id unfinished'),
+          ),
+        );
+        return rows.some(([row]) => row != null && row.unfinished !== true);
+      },
+    });
+  } catch (error) {
+    onReadError?.(error);
+    return { write: false };
+  }
+  if (mode === 'skip' || (mode === 'live' && (liveSaved || content.length === 0))) {
+    return { write: false };
+  }
+  const marked = markAbortedCompactionContent(content, isCompaction, {
+    synthesizeFailure: mode === 'terminal',
+  });
+  if (marked.length === 0) {
+    return { write: false };
+  }
+  return {
+    write: true,
+    content: marked,
+    ...(mode === 'terminal'
+      ? resolveReconciledSnapshotEnvelope(jobRecord?.status)
+      : { unfinished: true, error: false }),
+  };
+}
+
+/**
+ * Stamps a promoted disconnect snapshot on its conversation once it is
+ * written: it is the turn's terminal row, so another device must learn the
+ * turn ended exactly as it would from any persisted terminal turn. A live
+ * snapshot is a fallback, not a reply, and stays unannounced. Never throws.
+ */
+export async function announceDisconnectSnapshot(
+  deps: ErrorTurnStampStore,
+  plan: DisconnectSnapshotPlan,
+  announcement: ErrorTurnAnnouncement,
+): Promise<void> {
+  if (!plan.write || plan.unfinished) {
+    return;
+  }
+  await announceErrorTurn(deps, announcement);
+}
+
+/**
+ * Runs a turn's disconnect snapshots one at a time and plans the snapshot once
+ * more when the turn settles, before its terminal cleanup releases the content
+ * and resume state the plan reads. Once every subscriber has left, no further
+ * disconnect arrives, so a terminal write that failed afterwards would leave a
+ * compaction's live snapshot (or nothing, when it left before any content)
+ * without its terminal outcome. Serializing keeps an earlier live write from
+ * landing over the promoted row.
+ */
+export function createDisconnectSnapshotQueue({
+  isCompaction,
+  persist,
+  readContent,
+  onSettleError,
+}: {
+  isCompaction: boolean;
+  /** Plans and writes one snapshot of the turn's content. */
+  persist: (content: TMessageContentParts[]) => Promise<void>;
+  /** The turn's stored content once it settled. */
+  readContent: () => Promise<TMessageContentParts[]>;
+  onSettleError?: (error: unknown) => void;
+}): {
+  onDisconnect: (content: TMessageContentParts[]) => Promise<void>;
+  settle: () => Promise<void>;
+} {
+  let pending: Promise<void> = Promise.resolve();
+  let disconnected = false;
+  const enqueue = (write: () => Promise<void>): Promise<void> => {
+    const next = pending.then(write);
+    pending = next.catch(() => undefined);
+    return next;
+  };
+  return {
+    onDisconnect: (content) => {
+      disconnected = true;
+      return enqueue(() => persist(content));
+    },
+    settle: async () => {
+      if (!isCompaction || !disconnected) {
+        return;
+      }
+      try {
+        await enqueue(async () => persist(await readContent()));
+      } catch (error) {
+        onSettleError?.(error);
+      }
+    },
+  };
 }
 
 /** How the abort route persists a stopped turn's prerequisite rows. */

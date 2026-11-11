@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
 import { ClassProp } from 'class-variance-authority/types';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { disabledFillClasses } from '~/utils/theme';
+import { disabledFillClasses, revealOnRowHoverClasses } from '~/utils/theme';
 import { cn } from '~/utils';
 
 type ButtonVariantOptions =
@@ -24,9 +24,13 @@ type ButtonVariantOptions =
         | 'ghost'
         | 'quiet'
         | 'message-action'
+        | 'message-hover'
+        | 'message-hover-reveal'
+        | 'popover-option'
         | 'inline-link'
         | 'carousel-nav'
         | 'toolbar'
+        | 'starter'
         | 'nav'
         | 'media'
         | 'row-action'
@@ -34,17 +38,22 @@ type ButtonVariantOptions =
         | 'section-header'
         | 'section-action'
         | 'header-action'
+        | 'panel-back'
         | 'inline-edit'
         | 'card'
         | 'disclosure'
+        | 'disclosure-line'
+        | 'disclosure-panel'
         | 'option'
         | 'text-action'
+        | 'hint'
         | 'row-content'
         | 'chip-toggle'
         | 'pill-toggle'
         | 'composer-pill'
         | 'composer-trigger'
         | 'hit-area'
+        | 'field-import'
         | null
         | undefined;
       size?:
@@ -63,6 +72,7 @@ type ButtonVariantOptions =
         | 'wide'
         | 'snug'
         | 'bare'
+        | 'bare-xs'
         | 'theme'
         | 'row'
         | 'tile'
@@ -71,6 +81,17 @@ type ButtonVariantOptions =
       shape?: 'default' | 'soft' | 'auth-action' | 'theme' | 'round' | null | undefined;
     } & ClassProp)
   | undefined;
+
+/**
+ * A button in the hover toolbar under a message (copy, edit, fork, rate): a small padded square in
+ * the alt secondary ink. `data-hover-active` marks a button whose surface (the editor, the fork
+ * popover, a rating) is open; it lights that button and holds the whole toolbar opaque until the
+ * surface closes, so the pointer can leave the row without the actions vanishing from under it.
+ * The marker is not the legacy `active` class, which other toolbar buttons carry at rest.
+ * `hover-button` is the marker the app's narrow-screen stylesheet keeps visible.
+ */
+const messageHoverClasses =
+  'hover-button size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-text-primary group-has-[[data-hover-active]]:opacity-100 data-[hover-active]:bg-surface-hover data-[hover-active]:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent';
 
 const buttonVariantRecipe = cva(
   [
@@ -96,10 +117,11 @@ const buttonVariantRecipe = cva(
         /**
          * A control floating over scrolling content, such as the scroll-to-bottom chip. A theme that
          * draws no chrome outline gives it an opaque fill and a lift instead, so it never reads as a
-         * bare glyph over the thread.
+         * bare glyph over the thread. Its own enter and exit own its visibility, and it is
+         * disabled only while that runs, so being disabled never dims it on top of the fade.
          */
         floating:
-          'border border-border-chrome bg-surface-chat/90 text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed theme-chrome-quiet:bg-surface-chat theme-chrome-quiet:shadow-md theme-chrome-quiet:hover:bg-surface-hover theme-chrome-quiet:hover:active:bg-surface-pressed',
+          'disabled:opacity-100 border border-border-chrome bg-surface-chat/90 text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed theme-chrome-quiet:bg-surface-chat theme-chrome-quiet:shadow-md theme-chrome-quiet:hover:bg-surface-hover theme-chrome-quiet:hover:active:bg-surface-pressed',
         /** An outlined filter whose pressed state stays visible between activations. */
         'outline-toggle':
           'text-text-primary border border-border-control bg-transparent transition-none hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:border-border-heavy aria-pressed:bg-surface-active-alt aria-pressed:hover:bg-surface-active-alt',
@@ -117,14 +139,24 @@ const buttonVariantRecipe = cva(
           'border border-border-light bg-transparent text-text-primary hover:bg-surface-secondary focus-visible:ring-focus-control focus-visible:ring-offset-0',
         secondary:
           'bg-surface-secondary text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed',
-        ghost: 'hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+        ghost:
+          'hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent',
         /** A ghost that rests in the secondary ink and rises to the primary one under the pointer,
          *  for a control that should not compete with the content it sits beside. */
         quiet:
-          'text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+          'text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent',
         /** An icon action under a message: a small padded square that rests in the alt secondary ink. */
         'message-action':
-          'size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+          'size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent',
+        /** A message toolbar action that stays visible, such as the latest message's. */
+        'message-hover': messageHoverClasses,
+        /** A message toolbar action that fades in with its row; see `revealOnRowHoverClasses`. */
+        'message-hover-reveal': `${messageHoverClasses} ${revealOnRowHoverClasses}`,
+        /** An entry in a small action popover, such as a rating's reasons: it rests in the
+         *  secondary ink, and the chosen entry, marked with `aria-pressed`, keeps the hover fill
+         *  in the primary ink at semibold weight. */
+        'popover-option':
+          'w-full justify-start gap-3 rounded-theme-control text-text-secondary duration-theme-normal hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:bg-surface-hover aria-pressed:font-semibold aria-pressed:text-text-primary',
         /** A text action that reads as a link in a list or footer: no fill at rest or under the pointer,
          *  and a ring flush against the control. */
         'inline-link':
@@ -132,6 +164,9 @@ const buttonVariantRecipe = cva(
         /** A previous or next arrow floating over a carousel's content, on the fixed surface. */
         'carousel-nav':
           'rounded-xl bg-surface-fixed p-2 text-text-fixed shadow-lg hover:bg-surface-fixed-hover hover:shadow-xl',
+        /** A suggested first message on the welcome screen: a filled chip that wraps its text. */
+        starter:
+          'animate-starter-in cursor-pointer whitespace-normal motion-reduce:animate-none rounded-2xl bg-surface-secondary text-center font-normal text-text-secondary duration-200 hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary focus-visible:ring-offset-0',
         /** A compact text action in a toolbar, quiet until hovered. */
         toolbar:
           'rounded-sm bg-transparent px-2 py-1 text-xs font-normal text-text-secondary hover:bg-surface-hover',
@@ -196,8 +231,12 @@ const buttonVariantRecipe = cva(
          * scrolling gradient, where the shared color transition reads as
          * lag rather than polish.
          */
+        /** The back arrow at the head of a side panel's header: a quiet bordered square that takes
+         *  the theme's control corner, so every panel's way out looks the same. */
+        'panel-back':
+          'shrink-0 rounded-theme-control border border-border-light text-text-secondary hover:bg-surface-secondary hover:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent',
         'header-action':
-          'rounded-xl border border-border-chrome bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
+          'rounded-theme-control border border-border-light bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
         /**
          * Text that turns into its own editor when activated, such as a workspace
          * title or description. It reads as the text it stands for, so the caller
@@ -219,7 +258,17 @@ const buttonVariantRecipe = cva(
          * is inset because the row sits flush against the panel it opens.
          */
         disclosure:
-          'w-full justify-start focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
+          'w-full justify-start focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100 theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:text-text-secondary theme-disabled:hover:bg-transparent theme-disabled:hover:text-text-secondary theme-disabled:[&_*]:text-text-secondary',
+        /** A disclosure that reads as one line of body text, such as a compacted summary's
+         *  header: normal weight on an 18px line, its glyph slot spacing itself, and the default
+         *  corner so its focus ring stays rounded. */
+        /** The header row of a bordered panel that folds the panel's body open, such as a turn's
+         *  subagent activity: the quiet ink rising to primary with a hover fill, and the control
+         *  focus ring inset in the row because it sits flush against the panel's edge. */
+        'disclosure-panel':
+          'w-full justify-start text-start text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-focus-control focus-visible:ring-inset focus-visible:ring-offset-0',
+        'disclosure-line':
+          'w-full justify-start gap-0 font-normal leading-4.5 focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
         /**
          * A full-width answer row in an option list, such as the choices of an
          * `ask_user_question`. The fill follows the pointer instantly rather than
@@ -238,6 +287,10 @@ const buttonVariantRecipe = cva(
          *  steer's Retry or a pending one's Cancel; it rises to the primary ink under the pointer. */
         'text-action':
           'rounded-sm text-xs text-text-secondary hover:text-text-primary focus-visible:ring-offset-0',
+        /** A line of guidance that is also a way into the field it names, such as the ask popover's
+         *  "type below" pointing at the composer: it reads as text, with a text cursor and no fill
+         *  under the pointer, rises to the primary ink on hover, and keeps the focus ring. */
+        hint: 'cursor-text rounded-md text-xs font-normal text-text-secondary hover:text-text-primary',
         /** The content of a list row whose row owns the highlight, such as a composer palette
          *  entry: it lays the row out and takes the pointer, and leaves fill and ink to the row. */
         'row-content':
@@ -260,6 +313,11 @@ const buttonVariantRecipe = cva(
          *  it draws only its focus ring, inside its own box. */
         'hit-area':
           'rounded-full bg-transparent focus-visible:ring-inset focus-visible:ring-offset-0',
+        /** A field-height control that fills a value by importing a file, such as a service
+         *  account key: a quiet field in the secondary ink that turns to the success ink under the
+         *  pointer, and reports the import's outcome through `data-status`. */
+        'field-import':
+          'rounded-sm bg-surface-secondary text-xs font-normal text-text-secondary hover:bg-surface-hover hover:text-status-success focus-visible:ring-text-primary data-[status=invalid]:text-text-destructive data-[status=success]:text-status-success',
       },
       size: {
         default: 'h-theme-button px-theme-button-x py-2',
@@ -285,6 +343,9 @@ const buttonVariantRecipe = cva(
         snug: 'h-theme-button p-1',
         /** Sized by its own text with no pad, for an action set inside a sentence. */
         bare: 'h-auto p-0',
+        /** `bare` at the small text size with a tight gap, for an inline toggle beside its glyph
+         *  such as a clipped text's Show more. */
+        'bare-xs': 'h-auto gap-1 p-0 text-xs',
         icon: 'size-theme-button',
         'icon-sm': 'size-theme-icon-button-sm p-0',
         'icon-xs': 'size-theme-button-xs',
@@ -334,9 +395,16 @@ const buttonVariantRecipe = cva(
       },
       /* These carry their own box, which the default size's height and padding would otherwise win. */
       { variant: 'message-action', size: 'default', class: 'size-auto p-1.5' },
+      {
+        variant: ['message-hover', 'message-hover-reveal'],
+        size: 'default',
+        class: 'size-auto p-1.5',
+      },
+      { variant: 'popover-option', size: 'default', class: 'h-auto p-2' },
       { variant: 'inline-link', size: 'default', class: 'h-auto p-0' },
       { variant: 'carousel-nav', size: 'default', class: 'h-auto p-2' },
       { variant: 'toolbar', size: 'default', class: 'h-auto px-2 py-1' },
+      { variant: 'starter', size: 'default', class: 'h-auto px-4 py-2.5' },
       /* Sized by its own label, so a long option wraps instead of clipping. */
       {
         variant: 'option',
@@ -366,16 +434,20 @@ const buttonVariantRecipe = cva(
         variant: 'header-action',
         size: 'sm',
         shape: 'unset',
-        class: 'rounded-xl',
+        class: 'rounded-theme-control',
       },
       /* These carry their own box, which the default size's height and padding would otherwise win. */
       { variant: 'text-action', size: 'default', class: 'h-auto p-0' },
+      { variant: 'hint', size: 'default', class: 'h-auto p-0' },
       { variant: 'row-content', size: 'default', class: 'h-auto px-2 py-0' },
       { variant: 'chip-toggle', size: 'default', class: 'h-auto px-2 py-0.5' },
       { variant: 'pill-toggle', size: 'default', class: 'h-auto px-2 py-0.5' },
       { variant: 'composer-pill', size: 'default', class: 'h-theme-button-compact px-2.5 py-0' },
       { variant: 'composer-trigger', size: 'default', class: 'h-theme-button-compact px-2 py-0' },
       { variant: 'hit-area', size: 'default', class: 'h-auto p-0' },
+      { variant: 'disclosure-line', size: 'default', class: 'h-auto p-0' },
+      { variant: 'disclosure-panel', size: 'default', class: 'h-auto px-3' },
+      { variant: 'field-import', size: 'default', class: 'h-theme-field px-2 py-2' },
     ],
     defaultVariants: {
       variant: 'default',

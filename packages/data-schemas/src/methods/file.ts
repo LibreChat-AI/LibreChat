@@ -11,6 +11,8 @@ import type { FilterQuery, SortOrder, Model } from 'mongoose';
 import type {
   IMongoFile,
   RunArtifactFile,
+  ResponseArtifactFile,
+  ResponseArtifactQuery,
   RunArtifactClaim,
   RunArtifactScope,
   CodeFileCommitData,
@@ -23,6 +25,8 @@ import type {
 } from '~/types/file';
 import type { IChatProjectDocument } from '~/types';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { readResponseArtifactCatalog } from './artifacts';
+import { fileContentUpdate } from './fileContent';
 import { escapeRegExp } from '~/utils/string';
 import logger from '../config/winston';
 
@@ -50,6 +54,7 @@ export type ClearFileEmbeddingsParams = {
   tenantId?: string | null;
   updatedAt?: Date | string;
   embeddedEntities?: string[];
+  ownershipTrackingStart?: string;
 };
 
 export const DEFAULT_AVAILABLE_PROJECT_FILES_LIMIT = 20;
@@ -406,6 +411,10 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
   publishRunArtifactFile: (input: PublishRunArtifactInput) => Promise<RunArtifactFile>;
   findRunArtifactFile: (scope: RunArtifactScope) => Promise<RunArtifactFile | null>;
   listRunArtifacts: (scope: RunArtifactRunScope) => Promise<RunArtifactFile[]>;
+  readResponseArtifacts: (
+    scope: RunArtifactRunScope,
+    query: ResponseArtifactQuery,
+  ) => Promise<ResponseArtifactFile[] | null>;
   findFileById: (file_id: string, options?: Record<string, unknown>) => Promise<IMongoFile | null>;
   getFiles: (
     filter: FilterQuery<IMongoFile>,
@@ -449,6 +458,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     user: string;
     tenantId?: string | null;
     sourceDispatchedAt?: number;
+    snapshot?: boolean;
   }) => Promise<IMongoFile>;
   commitCodeFile: (data: CodeFileCommitData, sourceDispatchedAt?: number) => Promise<boolean>;
   createFile: (data: Partial<IMongoFile>, disableTTL?: boolean) => Promise<IMongoFile | null>;
@@ -599,6 +609,8 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       object: 'file',
       source: file.source ?? FileSources.local,
       embedded: false,
+      embeddingOwnersComplete: true,
+      embeddingOwnersTrackedAt: new Date(),
       usage: 1,
       llmDeliveryPath: file.llmDeliveryPath ?? 'none',
       metadata: {
@@ -904,7 +916,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       const filter = withOwnerScope(
         {
           file_id: { $in: fileIds },
-          context: { $ne: FileContext.execute_code },
+          context: { $nin: [FileContext.execute_code, FileContext.execute_code_snapshot] },
           $or: orConditions,
         },
         ownerScope,
@@ -978,7 +990,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       const filter = withOwnerScope(
         {
           conversationId,
-          context: FileContext.execute_code,
+          context: { $in: [FileContext.execute_code, FileContext.execute_code_snapshot] },
           file_id: { $in: threadFileIds },
           $or: [
             { 'metadata.codeEnvRef': { $exists: true } },
@@ -1109,7 +1121,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       const filter = withOwnerScope(
         {
           file_id: { $in: fileIds },
-          context: { $ne: FileContext.execute_code },
+          context: { $nin: [FileContext.execute_code, FileContext.execute_code_snapshot] },
           ...(hydrateEverything ? {} : { $or: missingConditions }),
         },
         ownerScope,
@@ -1150,7 +1162,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       const filter = withOwnerScope(
         {
           file_id: { $in: fileIds },
-          context: { $ne: FileContext.execute_code },
+          context: { $nin: [FileContext.execute_code, FileContext.execute_code_snapshot] },
           $or: [
             { 'metadata.codeEnvRef': { $exists: true } },
             { 'metadata.codeEnvRefs': { $exists: true } },
@@ -1186,13 +1198,17 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
      *  freshly claimed (not-yet-written) row still carries an ownership
      *  signal for the background harvest's stale-output guard. */
     sourceDispatchedAt?: number;
+    snapshot?: boolean;
   }): Promise<IMongoFile> {
     const File = mongoose.models.File as Model<IMongoFile>;
     const tenantFilter = data.tenantId ? { tenantId: data.tenantId } : { tenantId: null };
     const insertData = {
+      embeddingOwnersComplete: true,
+      embeddingOwnersTrackedAt: new Date(),
       file_id: data.file_id,
       user: data.user,
       ...(data.tenantId ? { tenantId: data.tenantId } : {}),
+      ...(data.snapshot ? { expiresAt: new Date(Date.now() + 3600 * 1000) } : {}),
       ...(data.sourceDispatchedAt != null
         ? { metadata: { sourceDispatchedAt: data.sourceDispatchedAt } }
         : {}),
@@ -1203,7 +1219,8 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
         {
           filename: data.filename,
           conversationId: data.conversationId,
-          context: FileContext.execute_code,
+          context: data.snapshot ? FileContext.execute_code_snapshot : FileContext.execute_code,
+          ...(data.snapshot ? { file_id: data.file_id, user: data.user } : {}),
           ...tenantFilter,
           ...codeFileStorageFilter(),
         },
@@ -1245,7 +1262,9 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       delete fileData.expiresAt;
     }
 
-    const generatedOutput = data.context === FileContext.execute_code;
+    const generatedOutput =
+      data.context === FileContext.execute_code ||
+      data.context === FileContext.execute_code_snapshot;
     try {
       return await File.findOneAndUpdate(
         {
@@ -1258,7 +1277,10 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
               }
             : {}),
         },
-        fileData,
+        {
+          ...fileContentUpdate(fileData),
+          $setOnInsert: { embeddingOwnersComplete: true, embeddingOwnersTrackedAt: new Date() },
+        },
         { new: true, upsert: true },
       ).lean<IMongoFile>();
     } catch (error) {
@@ -1297,7 +1319,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     const File = mongoose.models.File as Model<IMongoFile>;
     const { file_id, ...update } = data;
     const updateOperation = {
-      $set: update,
+      ...fileContentUpdate(update),
       $unset: { expiresAt: '' },
     };
     const query: FilterQuery<IMongoFile> = extraFilter ? { file_id, ...extraFilter } : { file_id };
@@ -1437,15 +1459,26 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
   /** Clears only the embedding snapshot whose vector deletion was confirmed. */
   async function clearFileEmbeddings(data: ClearFileEmbeddingsParams): Promise<boolean> {
     const File = mongoose.models.File as Model<IMongoFile>;
+    const start =
+      data.ownershipTrackingStart == null ? NaN : Date.parse(data.ownershipTrackingStart);
+    const now = new Date();
+    const ownership =
+      Number.isFinite(start) && start <= now.getTime()
+        ? [
+            {
+              embedded: true,
+              embeddingOwnersComplete: true,
+              embeddingOwnersTrackedAt: { $gte: new Date(start), $lte: now },
+              'metadata.embeddedEntities': data.embeddedEntities ?? null,
+            },
+          ]
+        : [];
     const query: FilterQuery<IMongoFile> = {
       file_id: data.file_id,
       user: data.userId,
       $and: [{ tenantId: data.tenantId ?? null }],
       updatedAt: data.updatedAt ?? { $exists: false },
-      $or: [
-        { embedded: true, 'metadata.embeddedEntities': data.embeddedEntities ?? null },
-        { embedded: false, 'metadata.embeddedEntities': { $exists: false } },
-      ],
+      $or: [...ownership, { embedded: false, 'metadata.embeddedEntities': { $exists: false } }],
     };
     const result = await File.updateOne(
       query,
@@ -1983,6 +2016,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     publishRunArtifactFile,
     findRunArtifactFile,
     listRunArtifacts,
+    readResponseArtifacts: (scope, query) => readResponseArtifactCatalog(mongoose, scope, query),
     findFileById,
     getFiles,
     getProjectFiles,

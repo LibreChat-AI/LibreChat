@@ -9,6 +9,7 @@ const os = require('os');
 const path = require('path');
 const yaml = require('js-yaml');
 const { Constants } = require('librechat-data-provider');
+const { loadAndFormatTools } = require('~/server/services/start/tools');
 
 jest.mock('~/server/services/start/tools', () => ({
   loadAndFormatTools: jest.fn(() => ({})),
@@ -16,6 +17,7 @@ jest.mock('~/server/services/start/tools', () => ({
 
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
+  initializeChannelStorageConfig: jest.fn(),
   getApplicableConfigs: jest.fn().mockResolvedValue([]),
   getUserPrincipals: jest.fn().mockResolvedValue([]),
 }));
@@ -120,5 +122,32 @@ describe('admin config writes and librechat.yaml', () => {
     });
     expect(JSON.stringify(report)).not.toContain('42');
     expect((await getAppConfig({ baseOnly: true })).filters).toEqual(lastGood.filters);
+  });
+});
+
+describe('published telemetry settings', () => {
+  const processDefault = Error.stackTraceLimit;
+
+  afterEach(async () => {
+    writeYaml({});
+    await reloadConfigCaches();
+  });
+
+  it('keeps the last good stack limit if tool loading rejects a reload', async () => {
+    writeYaml({ telemetry: { stackTraceLimit: 25 } });
+    await expect(reloadConfigCaches()).resolves.toMatchObject({ loaded: { ok: true } });
+    expect(Error.stackTraceLimit).toBe(25);
+
+    writeYaml({ telemetry: { stackTraceLimit: 60 } });
+    loadAndFormatTools.mockImplementationOnce(() => {
+      throw new Error('tool scan failed');
+    });
+    await expect(reloadConfigCaches()).resolves.toMatchObject({ loaded: { ok: false } });
+    expect(Error.stackTraceLimit).toBe(25);
+    expect((await getAppConfig({ baseOnly: true })).config.telemetry.stackTraceLimit).toBe(25);
+
+    writeYaml({});
+    await expect(reloadConfigCaches()).resolves.toMatchObject({ loaded: { ok: true } });
+    expect(Error.stackTraceLimit).toBe(processDefault);
   });
 });

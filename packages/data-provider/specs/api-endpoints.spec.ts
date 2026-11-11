@@ -10,6 +10,7 @@ import {
   confirmTwoFactorSetup,
   acknowledgeTwoFactorSetup,
   finalizeTwoFactorSetup,
+  cancelTwoFactorSetup,
 } from '../src/api-endpoints';
 
 describe('buildLoginRedirectUrl', () => {
@@ -128,5 +129,6 @@ describe('required two-factor setup endpoints', () => {
     expect(confirmTwoFactorSetup()).toBe('/api/auth/2fa/setup/confirm');
     expect(acknowledgeTwoFactorSetup()).toBe('/api/auth/2fa/setup/acknowledge');
     expect(finalizeTwoFactorSetup()).toBe('/api/auth/2fa/setup/finalize');
+    expect(cancelTwoFactorSetup()).toBe('/api/auth/2fa/setup/cancel');
   });
 });

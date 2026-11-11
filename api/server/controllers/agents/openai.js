@@ -26,6 +26,7 @@ const {
   createAgentExecutionContext,
   createMCPRuntimeRequestBody,
   loadSkillStates,
+  loadSkillAccess,
   sendFinalChunk,
   buildCompletionUsage,
   createSafeUser,
@@ -109,7 +110,7 @@ const { checkSessionsAlive, loadCodeApiKey } = require('~/server/services/Files/
 const {
   getLinkedInstructionsResolver,
 } = require('~/server/services/Endpoints/agents/linkedInstructions');
-const { getModelsConfig } = require('~/server/controllers/ModelController');
+const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { resolveConfigServers } = require('~/server/services/MCP');
 const { getMCPManager } = require('~/config');
@@ -600,27 +601,14 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       const resolveLinkedInstructions = getLinkedInstructionsResolver();
       const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
       const ephemeralSkillsToggle = request.ephemeralAgent?.skills === true;
-      const accessibleSkillIds = skillsCapabilityEnabled
-        ? withDeploymentSkillIds(
-            await findAccessibleResources({
-              userId: principal.userId,
-              role: principal.role,
-              resourceType: ResourceType.SKILL,
-              requiredPermissions: PermissionBits.VIEW,
-            }),
-          )
-        : [];
-      const editableSkillIds = skillsCapabilityEnabled
-        ? await findAccessibleResources({
-            userId: principal.userId,
-            role: principal.role,
-            resourceType: ResourceType.SKILL,
-            requiredPermissions: PermissionBits.EDIT,
-          })
-        : [];
-      const skillCreateAllowed = skillsCapabilityEnabled
-        ? await getSkillToolDeps().canCreateSkill({ req })
-        : false;
+      const { accessibleSkillIds, editableSkillIds, skillCreateAllowed } = await loadSkillAccess(
+        { enabled: skillsCapabilityEnabled, userId: principal.userId, role: principal.role },
+        {
+          findAccessibleResources,
+          withDeploymentSkillIds,
+          canCreateSkill: () => getSkillToolDeps().canCreateSkill({ req }),
+        },
+      );
 
       const { skillStates, defaultActiveOnShare } = await loadSkillStates({
         userId: principal.userId,
@@ -710,7 +698,6 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         primaryConfig.subagents?.enabled === true &&
         (primaryConfig.subagents.graphs?.length ?? 0) > 0;
       if (primaryConfig.edges?.length || primaryHasGraphSubagents) {
-        const modelsConfig = await getModelsConfig(req);
         const discoveryParams = {
           req,
           res,
@@ -718,7 +705,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           primaryConfig,
           endpointOption,
           allowedProviders,
-          modelsConfig,
+          getEndpointModels: (endpoint) => getEndpointModelsConfig(req, endpoint),
           loadTools,
           requestFiles: [],
           conversationId,

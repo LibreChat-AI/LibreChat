@@ -4,6 +4,7 @@ export * from './acl/insightsPermissions';
 export * from './acl/audit';
 export * from './acl/middleware';
 export * from './acl/principals';
+export * from './acl/directory';
 export * from './acl/search';
 export * from './credentials';
 /* Artifacts */
@@ -58,11 +59,13 @@ export * from './utils';
 export { default as Tokenizer, countTokens } from './utils/tokenizer';
 export type { EncodingName } from './utils/tokenizer';
 export * from './db/utils';
+export * from './db/migration';
 /* HTML */
 export * from './html';
 /* OAuth */
 export * from './oauth';
 export * from './mcp/oauth/OAuthReconnectionManager';
+export * from './mcp/oauth/OAuthReconnectionTracker';
 /* Crypto */
 export * from './crypto';
 /* Flow */
@@ -140,6 +143,7 @@ export * from './rum/proxy';
 export * from './rum/policy';
 export * from './rum/config';
 export * from './rum/limiter';
+export * from './clientlimits/client';
 /* OpenAPI */
 export { createOpenApiRouter } from './openapi/router';
 export type { OpenApiRouterDeps } from './openapi/router';
@@ -151,3 +155,30 @@ export type * from './types';
 export * from './tools/approval';
 
 export * from './mcp/approval';
+
+export { createChannelStorageConfigReader } from './channels/config';
+export * from './channels/service';
+export * from './channels/workspaces';
+export * from './channels/workspaceHttp';
+export * from './channels/workspaceRuntime';
+export * from './channels/workspaceBindings';
+export { applySlackWorkspaceEnvironment } from './channels/deployment';
+export * from './channels/slackDispatch';
+export * from './channels/applicationPolicy';
+export * from './channels/applicationAuthority';
+export * from './channels/runs';
+export * from './channels/authority';
+export * from './channels/execution';
+export * from './channels/responses';
+export * from './channels/credentials';
+export * from './channels/identity';
+export * from './channels/identityHttp';
+export * from './channels/feedback';
+export * from './channels/feedbackHost';
+export * from './channels/feedbackHttp';
+export * from './channels/feedbackWorker';
+export * from './channels/feedbackRuntime';
+export * from './channels/artifacts';
+export * from './channels/artifactStorage';
+export * from './channels/cleanup';
+export * from './channels/summary';

@@ -10,7 +10,7 @@
  * only works because selection is marked by a perimeter; and `::placeholder`
  * has no token at all, so it falls through to Tailwind preflight's raw
  * `gray-400`. Both defects reach package primitives — `TimePicker`,
- * `SelectDropDown`, `MultiSelect`, `InputWithDropDown`, `Badge`, `DataTable`,
+ * `MultiSelect`, `Badge`, `DataTable`,
  * `Input`, `Textarea` — so shipping the palette without these rules ships a
  * broken palette.
  *
@@ -94,4 +94,10 @@ html.high-contrast [role='tab'][data-state='active'] {
 html.high-contrast ::placeholder {
   color: rgb(var(--text-secondary));
   opacity: 1;
+}
+
+/** Keep both animated text stops of `.shimmer` at the AAA ratios declared by the palette. */
+html.high-contrast {
+  --shimmer-base-alpha: 1;
+  --shimmer-dip-alpha: 1;
 }

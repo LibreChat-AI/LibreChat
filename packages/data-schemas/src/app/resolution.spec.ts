@@ -2865,6 +2865,23 @@ describe('mergeConfigOverrides: Azure groups an override writes', () => {
       expect(later.endpoints?.azureOpenAI?.assistantModels).toEqual(['gpt-5', 'o3-mini']);
     });
 
+    it('keeps them on for a group whose model entry, not the group, supports them', () => {
+      const modelLevel = {
+        ...plain,
+        models: { 'gpt-5-mini': { deploymentName: 'gpt-5-mini', assistants: true } },
+      };
+      const merged = mergeWithGroups(assistantsBase, [
+        fakeConfig({ endpoints: { azureOpenAI: { groups: [modelLevel] } } }, 10, [
+          'endpoints.azureOpenAI.groups',
+        ]),
+      ]);
+
+      const azure = merged.endpoints?.azureOpenAI;
+      expect(azure?.assistants).toBe(true);
+      expect(azure?.assistantModels).toEqual(['gpt-5-mini']);
+      expect(azure?.assistantGroups).toEqual(['plain']);
+    });
+
     it('turns off a layer that turns them on over models none of which supports them', () => {
       const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
       const merged = mergeWithGroups(base, [
@@ -4423,6 +4440,27 @@ describe('issue params', () => {
     expect(byPath['endpoints.allowedAddresses.0']).toEqual({ reason: 'missing_port' });
   });
 
+  it('keeps record-key diagnostics at their full path inside a union', () => {
+    expect(
+      getConfigOverrideIssues({
+        interface: {
+          theme: {
+            version: 1,
+            name: 'Custom',
+            modes: { light: { colors: { Invalid: '255 255 255' } } },
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        path: 'interface.theme.modes.light.colors.Invalid',
+        segments: ['interface', 'theme', 'modes', 'light', 'colors', 'Invalid'],
+        code: 'invalid_string',
+        params: { validation: 'regex' },
+      },
+    ]);
+  });
+
   it('names the integer expectation of a fractional step limit', () => {
     expect(getConfigOverrideIssues({ endpoints: { agents: { maxRecursionLimit: 2.5 } } })).toEqual([
       {
@@ -4584,6 +4622,41 @@ describe('deployment-only paths in the merge', () => {
     expect(merged.endpoints?.agents).not.toHaveProperty('recursionLimit');
   });
 
+  it('keeps the values readers take from librechat.yaml or at startup, beside the fields that merge', () => {
+    const managementApi = { auth: { oidc: { enabled: false }, clients: [] } };
+    const base = {
+      config: {},
+      conversationList: { maxEndpointFilters: 50, maxEndpointNameLength: 128 },
+      interfaceConfig: { colorModeFromUrl: false, modelSelect: true },
+      fileConfig: { skills: { deletionCleanupConcurrency: 8 } },
+      endpoints: { agents: { managementApi } },
+    } as unknown as AppConfig;
+    const merged = mergeConfigOverrides(base, [
+      fakeConfig(
+        {
+          conversationList: { maxEndpointFilters: 500 },
+          interface: { colorModeFromUrl: true, modelSelect: false },
+          fileConfig: { skills: { deletionCleanupConcurrency: 1, fileSizeLimit: 5 } },
+          endpoints: { agents: { managementApi: { auth: { oidc: { audience: 'override' } } } } },
+          clientLimits: { refreshMs: 1 },
+          telemetry: { rum: { enabled: true } },
+          passwordHashing: { maxWorkers: 1 },
+        },
+        10,
+      ),
+    ]);
+    expect(merged.conversationList).toEqual({ maxEndpointFilters: 50, maxEndpointNameLength: 128 });
+    expect(merged.interfaceConfig).toMatchObject({ colorModeFromUrl: false, modelSelect: false });
+    expect(merged.fileConfig?.skills).toEqual({ deletionCleanupConcurrency: 8, fileSizeLimit: 5 });
+    expect(merged.endpoints?.agents?.managementApi).toEqual(managementApi);
+    for (const path of ['clientLimits', 'telemetry.rum', 'passwordHashing']) {
+      expect([path, at(merged as unknown as Record<string, unknown>, path)]).toEqual([
+        path,
+        undefined,
+      ]);
+    }
+  });
+
   it('keeps the tool filters librechat.yaml sets, so a profile cannot gate tools', () => {
     const base = { config: {}, filteredTools: ['dalle'] } as unknown as AppConfig;
     const merged = mergeConfigOverrides(base, [
@@ -4651,6 +4724,34 @@ describe('getIgnoredConfigOverrides', () => {
         'override:rateLimits:deployment_only_path',
         'tombstone:cloudfront:deployment_only_path',
         'override:githubCompare.timeoutMs:invalid',
+      ].sort(),
+    );
+  });
+
+  it('reports the stored values of settings read from librechat.yaml or at startup', () => {
+    const layer = fakeConfig(
+      {
+        clientLimits: { refreshMs: 1 },
+        telemetry: { rum: { enabled: true } },
+        conversationList: { maxEndpointFilters: 500 },
+        passwordHashing: { maxWorkers: 1 },
+        interface: { colorModeFromUrl: true, modelSelect: false },
+        fileConfig: { skills: { deletionCleanupConcurrency: 1, fileSizeLimit: 5 } },
+        endpoints: { agents: { managementApi: { auth: { oidc: { audience: 'override' } } } } },
+      },
+      10,
+      undefined,
+      'editor',
+    );
+    expect(reasons(getIgnoredConfigOverrides(yaml, layer))).toEqual(
+      [
+        'override:clientLimits:deployment_only_path',
+        'override:telemetry.rum:deployment_only_path',
+        'override:conversationList:deployment_only_path',
+        'override:passwordHashing:deployment_only_path',
+        'override:interface.colorModeFromUrl:deployment_only_path',
+        'override:fileConfig.skills.deletionCleanupConcurrency:deployment_only_path',
+        'override:endpoints.agents.managementApi:deployment_only_path',
       ].sort(),
     );
   });

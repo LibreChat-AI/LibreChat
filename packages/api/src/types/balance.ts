@@ -9,4 +9,7 @@ export interface BalanceUpdateFields {
   refillAmount?: number;
   refillMode?: BalanceRefillMode;
   lastRefill?: Date;
+  /** Written only together with `tokenCredits`: the credits that grant starts the period with */
+  allotment?: number;
+  allottedAt?: Date;
 }

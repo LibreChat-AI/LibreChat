@@ -3,11 +3,14 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   CacheKeys,
   AUTH_USER_DOC_BY_ID_PREFIX,
-  AUTH_USER_DOC_CACHE_TTL_MS,
+  AUTH_USER_DOC_MAX_AGE_MS,
 } from 'librechat-data-provider';
 import type * as t from '~/types';
 import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
 import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
+import { createStoredResponseModel } from '~/models/response';
+import { runAsSystem } from '~/config/tenantContext';
+import { createResponseStorage } from './response';
 import balanceSchema from '~/schema/balance';
 import userSchema from '~/schema/user';
 
@@ -648,6 +651,7 @@ describe('User Methods - Database Tests', () => {
       });
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${user._id?.toString()}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a', 'auth-cache-key-b']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -716,7 +720,7 @@ describe('User Methods - Database Tests', () => {
         await methodsWithCache.awaitAuthUserDocEviction(userId);
 
         expect(delay).toHaveBeenCalledTimes(1);
-        expect(delay.mock.calls[0][0]).toBeGreaterThan(AUTH_USER_DOC_CACHE_TTL_MS);
+        expect(delay.mock.calls[0][0]).toBeGreaterThan(AUTH_USER_DOC_MAX_AGE_MS);
         expect(cache.delete).not.toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`);
         if (!failing.indexRead) {
           expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
@@ -787,6 +791,7 @@ describe('User Methods - Database Tests', () => {
       });
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${user._id?.toString()}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -902,6 +907,7 @@ describe('User Methods - Database Tests', () => {
       const userId = user._id?.toString() ?? '';
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -924,6 +930,7 @@ describe('User Methods - Database Tests', () => {
         samlId: 'original-saml-id',
       });
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn(),
         delete: jest.fn(),
       };
@@ -1212,6 +1219,7 @@ describe('User Methods - Database Tests', () => {
       enableAuthUserDocCache();
       const { id, pendingBackupCodes } = await createEnrollingUser('cached-2fa@example.com');
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['cached-auth-document']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -1233,6 +1241,7 @@ describe('User Methods - Database Tests', () => {
       enableAuthUserDocCache();
       const { id } = await createEnrollingUser('cached-2fa-miss@example.com');
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['cached-auth-document']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -1316,7 +1325,29 @@ describe('User Methods - Database Tests', () => {
       expect(stored?.termsAcceptedAt).toBeNull();
       expect(stored?.termsAcceptedSource).toBeUndefined();
       expect(cache.delete).toHaveBeenCalledWith('cached-accepted');
-      expect(delay).toHaveBeenCalledTimes(1);
+      expect(delay).not.toHaveBeenCalled();
+    });
+
+    it('waits for cached auth documents to expire when an eviction fails', async () => {
+      enableAuthUserDocCache();
+      await User.create({
+        name: 'Unevictable',
+        email: 'unevictable-reset@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: new Date(),
+      });
+      const cache = {
+        get: jest.fn().mockResolvedValue(['cached-accepted']),
+        set: jest.fn().mockResolvedValue(true),
+        delete: jest.fn().mockRejectedValue(new Error('redis unavailable')),
+      };
+      const delay = jest.fn().mockResolvedValue(undefined);
+      const cached = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+      await cached.resetTermsAcceptance();
+
+      expect(delay).toHaveBeenCalledWith(AUTH_USER_DOC_MAX_AGE_MS + 100);
     });
 
     it('does not wait when the auth user cache is off', async () => {
@@ -1492,6 +1523,7 @@ describe('User Methods - Database Tests', () => {
       });
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${user._id?.toString()}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -1735,6 +1767,7 @@ describe('User Methods - Database Tests', () => {
       );
 
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -1939,6 +1972,48 @@ describe('User Methods - Database Tests', () => {
     });
   });
 
+  describe('updateUserPlugins', () => {
+    test('keeps concurrent installs made from the same stale snapshot', async () => {
+      const user = await User.create({
+        name: 'Test User',
+        email: 'test@example.com',
+        provider: 'local',
+        plugins: ['existing'],
+      });
+      const userId = user._id?.toString() ?? '';
+      const staleSnapshot = ['existing'];
+
+      await Promise.all([
+        methods.updateUserPlugins(userId, staleSnapshot, 'alpha', 'install'),
+        methods.updateUserPlugins(userId, staleSnapshot, 'beta', 'install'),
+        methods.updateUserPlugins(userId, staleSnapshot, 'alpha', 'install'),
+      ]);
+
+      const stored = await User.findById(userId).lean();
+      expect([...(stored?.plugins ?? [])].sort()).toEqual(['alpha', 'beta', 'existing']);
+    });
+
+    test('uninstall removes only the target plugin, ignoring the stale snapshot', async () => {
+      const user = await User.create({
+        name: 'Test User',
+        email: 'test@example.com',
+        provider: 'local',
+        plugins: ['alpha', 'beta', 'gamma'],
+      });
+      const userId = user._id?.toString() ?? '';
+
+      const updated = await methods.updateUserPlugins(userId, ['alpha'], 'alpha', 'uninstall');
+
+      expect(updated?.plugins).toEqual(['beta', 'gamma']);
+    });
+
+    test('returns null for an unknown user', async () => {
+      const fakeId = new mongoose.Types.ObjectId().toString();
+      const result = await methods.updateUserPlugins(fakeId, [], 'alpha', 'install');
+      expect(result).toBeNull();
+    });
+  });
+
   describe('toggleUserMemories', () => {
     test('should enable memories for user', async () => {
       const user = await User.create({
@@ -2054,6 +2129,7 @@ describe('User Methods - Database Tests', () => {
       const userId = user._id?.toString() ?? '';
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -2287,5 +2363,115 @@ describe('personal grant cleanup before account deletion', () => {
       cleanup.mockRestore();
       deletion.mockRestore();
     }
+  });
+});
+
+describe('private response cleanup before account deletion', () => {
+  async function createResponses() {
+    const user = await User.create({ email: 'delete-responses@example.com', provider: 'local' });
+    const userId = user._id.toString();
+    const model = createStoredResponseModel(mongoose);
+    await runAsSystem(() =>
+      model.create(
+        [{ userId }, { userId, tenantId: 'another-tenant' }, { userId: 'another-owner' }].map(
+          (scope, index) => ({
+            ...scope,
+            responseId: `response-${index}`,
+            requestKey: `request-${index}`,
+            fingerprint: 'request',
+            agentId: 'agent',
+            requestJSON: '{"input":"private request"}',
+            responseJSON: '{"output":"private reply"}',
+            conversationId: 'conversation',
+            parentMessageId: 'root',
+            status: 'completed',
+          }),
+        ),
+      ),
+    );
+    return { userId, model };
+  }
+
+  it('removes private payloads before committing deletion and preserves other owners and tenants', async () => {
+    const { userId, model } = await createResponses();
+    const cleanup = jest.spyOn(model, 'deleteMany');
+    const deletion = jest.spyOn(User, 'deleteOne');
+    await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+    expect(cleanup).toHaveBeenCalledWith({ userId, tenantId: { $in: [null, ''] } });
+    expect(cleanup.mock.invocationCallOrder[0]).toBeLessThan(deletion.mock.invocationCallOrder[0]);
+    await runAsSystem(async () => {
+      expect(await model.countDocuments({ userId, tenantId: null })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(1);
+      expect(await model.countDocuments({ userId: 'another-owner' })).toBe(1);
+    });
+  });
+
+  it('erases every tenantless spelling when the legacy account stores an empty tenant', async () => {
+    const { userId, model } = await createResponses();
+    await User.updateOne({ _id: userId }, { $set: { tenantId: '' } });
+    const original = (await model.findOne({ userId, responseId: 'response-0' }).lean())!;
+    const { _id: _originalId, ...fields } = original;
+    await runAsSystem(async () => {
+      await model.create([
+        { ...fields, tenantId: '', responseId: 'empty-tenant', requestKey: 'empty-tenant' },
+        { ...fields, tenantId: null, responseId: 'null-tenant', requestKey: 'null-tenant' },
+      ]);
+      await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+      expect(await model.countDocuments({ userId, tenantId: { $in: [null, ''] } })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(1);
+    });
+  });
+
+  it('keeps deletion intent private across cleanup failure, account updates, and retry', async () => {
+    const { userId, model } = await createResponses();
+    jest
+      .spyOn(model.collection, 'deleteMany')
+      .mockRejectedValueOnce(new Error('response-store down'));
+    const deletion = jest.spyOn(User, 'deleteOne');
+    await expect(methods.deleteUserById(userId)).rejects.toThrow('response-store down');
+    expect(deletion).not.toHaveBeenCalled();
+    expect(await User.exists({ _id: userId })).not.toBeNull();
+    const storage = createResponseStorage(mongoose);
+    await runAsSystem(async () => {
+      expect(await model.findOne({ userId, responseId: 'response-0' }).lean()).toMatchObject({
+        requestJSON: '{"input":"private request"}',
+        responseJSON: '{"output":"private reply"}',
+      });
+    });
+    expect(await storage.read({ userId }, 'response-0')).toBeNull();
+    const identity = await storage.readCleanupIdentity({ userId }, 'response-0');
+    expect(identity).toMatchObject({ retirement: 'owner_deleted' });
+    for (const field of [
+      'requestJSON',
+      'responseJSON',
+      'review',
+      'resume',
+      'turnJSON',
+      'preparedTerminal',
+      'pendingTerminal',
+    ]) {
+      expect(identity).not.toHaveProperty(field);
+    }
+    expect(JSON.stringify(identity)).not.toContain('private');
+    await methods.updateUser(userId, { name: 'Still usable' });
+    expect((await User.findById(userId).lean())?.name).toBe('Still usable');
+    expect(await storage.read({ userId }, 'response-0')).toBeNull();
+    await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+    expect(await User.exists({ _id: userId })).toBeNull();
+    await runAsSystem(async () => {
+      expect(await model.countDocuments({ userId, tenantId: { $in: [null, ''] } })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(1);
+      expect(await model.countDocuments({ userId: 'another-owner' })).toBe(1);
+    });
+  });
+
+  it('uses the account tenant when deletion runs under system authority', async () => {
+    const { userId, model } = await createResponses();
+    await User.updateOne({ _id: userId }, { $set: { tenantId: 'another-tenant' } });
+    await runAsSystem(async () => {
+      await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: null })).toBe(1);
+    });
   });
 });

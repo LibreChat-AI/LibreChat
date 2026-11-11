@@ -236,6 +236,24 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.artifactUndocking).toBe(true);
   });
 
+  it('carries a disabled analytics consent prompt to the clients', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { analyticsConsent: false } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.analyticsConsent).toBe(false);
+  });
+
+  it('leaves analytics consent unset so clients keep asking', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig).not.toHaveProperty('analyticsConsent');
+  });
+
   it('preserves enabled build info config', async () => {
     const config: Partial<TCustomConfig> = {
       interface: {
@@ -499,15 +517,23 @@ describe('welcome screen heading and footer', () => {
     });
     expect(interfaceConfig?.landingHeading).toBe('entity');
     expect(interfaceConfig?.landingFooter).toBe(true);
+    expect(interfaceConfig?.messageAuthor).toBe('always');
   });
 
   it('copies the configured settings through', async () => {
     const interfaceConfig = await loadDefaultInterface({
-      config: { interface: { landingHeading: 'greeting', landingFooter: false } },
+      config: {
+        interface: {
+          landingHeading: 'greeting',
+          landingFooter: 'composer',
+          messageAuthor: 'whenDifferent',
+        },
+      },
       configDefaults: getConfigDefaults(),
     });
     expect(interfaceConfig?.landingHeading).toBe('greeting');
-    expect(interfaceConfig?.landingFooter).toBe(false);
+    expect(interfaceConfig?.landingFooter).toBe('composer');
+    expect(interfaceConfig?.messageAuthor).toBe('whenDifferent');
   });
 });
 

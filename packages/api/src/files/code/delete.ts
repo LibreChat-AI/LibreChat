@@ -1,4 +1,4 @@
-import { EModelEndpoint, getCodeEnvRefs } from 'librechat-data-provider';
+import { FileContext, EModelEndpoint, getCodeEnvRefs } from 'librechat-data-provider';
 import type { ClearFileCodeEnvRefsParams } from '@librechat/data-schemas';
 import type { CodeEnvReferenceSet } from 'librechat-data-provider';
 import type { AxiosRequestConfig } from 'axios';
@@ -39,6 +39,7 @@ export function createCodeFileDeleter({
   req: ServerRequest,
   file: {
     file_id?: string;
+    context?: string;
     user?: { toString(): string };
     tenantId?: string;
     metadata?: CodeEnvReferenceSet;
@@ -47,6 +48,21 @@ export function createCodeFileDeleter({
   return async (req, file) => {
     const refs = getCodeEnvRefs(file.metadata);
     if (refs.length === 0) return undefined;
+    // Recovery receipts name shared paths. Reconcile only this record, never the live object.
+    if (file.context === FileContext.execute_code_snapshot) {
+      if (
+        !file.file_id ||
+        !(await clearFileCodeEnvRefs({
+          file_id: file.file_id,
+          userId: file.user?.toString() ?? req.user?.id ?? '',
+          tenantId: file.tenantId,
+          refs: refs.map(([routeKey, ref]) => ({ routeKey, ref })),
+        }))
+      ) {
+        throw new Error('Code storage reconciliation failed');
+      }
+      return { deleted: true };
+    }
     let skipped = false;
     for (const [executionRouteKey, ref] of refs) {
       const executionProfile = ref.executionProfile ?? 'default';
@@ -100,14 +116,22 @@ export function createCodeFileDeleter({
       } catch (error) {
         const response = (error as { response?: { status?: number; data?: { error?: string } } })
           ?.response;
-        if (response?.status !== 404) {
+        // Code API also returns 403 when its user-session ownership record has expired.
+        const unavailableUserSession =
+          response?.status === 403 &&
+          ref.kind === 'user' &&
+          ref.id === (file.user?.toString() ?? req.user?.id);
+        if (response?.status !== 404 && !unavailableUserSession) {
           if (response?.status === 409 && response.data?.error === 'execution_profile_mismatch') {
             skipped = true;
             continue;
           }
           throw error;
         }
-        logger.warn('Code storage copy already absent during delete', getSafeErrorMetadata(error));
+        logger.warn(
+          'Code storage copy unavailable during owner-authorized delete',
+          getSafeErrorMetadata(error),
+        );
       }
       if (file.file_id) {
         try {

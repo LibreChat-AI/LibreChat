@@ -4,6 +4,7 @@ import {
   paramSettings,
   resolveReasoningSetting,
   resolveReasoningSettingForTarget,
+  getReasoningParamDefinitions,
   isReasoningOverrideSupported,
   applyModelAwareDefaults,
   getModelReasoning,
@@ -362,6 +363,70 @@ describe('resolveReasoningSettingForTarget', () => {
       })?.key,
     ).toBe('reasoning_effort');
   });
+  describe('declared Azure deployment efforts', () => {
+    const azureConfig = { modelReasoningEfforts: { 'production-west': ['low', 'high'] } };
+    const resolveAzure = (
+      model: string,
+      options: Partial<Parameters<typeof resolveReasoningSettingForTarget>[0]> = {},
+    ) =>
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.azureOpenAI,
+        model,
+        paramDefinitions: getReasoningParamDefinitions(azureConfig, model),
+        ...options,
+      });
+
+    it('offers the declared efforts and Auto for an arbitrarily named deployment', () => {
+      expect(resolveAzure('production-west')).toMatchObject({
+        key: 'reasoning_effort',
+        options: [ReasoningEffort.unset, ReasoningEffort.low, ReasoningEffort.high],
+        enumMappings: expect.objectContaining({ [ReasoningEffort.high]: 'com_ui_high' }),
+      });
+    });
+
+    it('resolves the declared efforts for an agent on the deployment', () => {
+      expect(resolveAzure('production-west', { isAgent: true })?.options).toEqual([
+        ReasoningEffort.unset,
+        ReasoningEffort.low,
+        ReasoningEffort.high,
+      ]);
+    });
+
+    it('does not offer a control for a deployment without a declaration', () => {
+      expect(resolveAzure('production-chat')).toBeUndefined();
+    });
+
+    it.each(['constructor', 'toString', '__proto__'])(
+      'does not read an inherited property for a model named %s',
+      (model) => {
+        expect(getReasoningParamDefinitions(azureConfig, model)).toBeUndefined();
+        expect(resolveAzure(model)).toBeUndefined();
+      },
+    );
+
+    it('keeps a model spec lock over the declaration', () => {
+      expect(
+        resolveAzure('production-west', { blockedReasoningKeys: new Set(['reasoning_effort']) }),
+      ).toBeUndefined();
+    });
+
+    it('does not add a second Auto when the declaration lists it', () => {
+      expect(
+        getReasoningParamDefinitions(
+          { modelReasoningEfforts: { deployment: ['', 'low'] } },
+          'deployment',
+        ),
+      ).toEqual([{ key: 'reasoning_effort', options: ['', 'low'] }]);
+    });
+
+    it('keeps the endpoint definitions when the model declares nothing', () => {
+      const paramDefinitions = [{ key: 'effort' }];
+      expect(getReasoningParamDefinitions({ customParams: { paramDefinitions } }, 'model')).toBe(
+        paramDefinitions,
+      );
+    });
+  });
+
   it('honors an explicit reasoning format on a custom deployment', () => {
     expect(
       resolveReasoningSettingForTarget({

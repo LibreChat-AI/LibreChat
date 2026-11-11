@@ -4,10 +4,14 @@ import os from 'os';
 import { Keyv } from 'keyv';
 import KeyvRedis from '@keyv/redis';
 import { expect, test } from '@playwright/test';
+import { isAuthUserDocEvictionFenced } from '@librechat/data-schemas';
 import {
   CacheKeys,
   AUTH_USER_DOC_BY_ID_PREFIX,
   AUTH_USER_DOC_CACHE_TTL_MS,
+  AUTH_USER_DOC_MAX_AGE_MS,
+  AUTH_USER_DOC_EVICTED_PREFIX,
+  AUTH_USER_DOC_EVICTION_FENCE_TTL_MS,
 } from 'librechat-data-provider';
 import { spawn } from 'node:child_process';
 import { randomInt, randomUUID } from 'node:crypto';
@@ -251,6 +255,87 @@ test.describe('CLI password reset', () => {
     });
   }
 
+  test('hides pre-reset documents the eviction could not name @scenario:cli-reset-fences-stale-cache-writes', async ({
+    playwright,
+    baseURL,
+  }) => {
+    test.setTimeout(90_000);
+    const request = await playwright.request.newContext({
+      baseURL,
+      extraHTTPHeaders: {
+        'X-Forwarded-For': `127.${randomInt(1, 255)}.${randomInt(1, 255)}.${randomInt(1, 255)}`,
+      },
+    });
+    const email = `cli-fence-${randomUUID().slice(0, 8)}@example.com`;
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-reset-'));
+    const redisUri = process.env.REDIS_URI ?? 'redis://127.0.0.1:6379';
+    const prefix = `cli-fence-${randomUUID()}`;
+    const adapter = new KeyvRedis(redisUri, { throwOnErrors: true, connectionTimeout: 5000 });
+    const cache = new Keyv(adapter, { namespace: CacheKeys.AUTH_USER_DOC });
+    adapter.namespace = prefix;
+    adapter.keyPrefixSeparator = '::';
+    const keys: string[] = [];
+    try {
+      const register = await request.post('/api/auth/register', {
+        data: { email, name: 'CLI Fence', password: PASSWORD, confirm_password: PASSWORD },
+      });
+      expect(register.ok()).toBeTruthy();
+      const login = await request.post('/api/auth/login', { data: { email, password: PASSWORD } });
+      expect(login.ok()).toBeTruthy();
+      const { user } = (await login.json()) as { user: { _id: string } };
+      const otherUserId = randomUUID();
+      const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${user._id}`;
+      const fenceKey = `${AUTH_USER_DOC_EVICTED_PREFIX}:${user._id}`;
+      /** Indexed, so the eviction deletes it; and one a concurrent index write dropped. */
+      const indexedKey = 'auth-user-doc:indexed';
+      const unindexedKey = 'auth-user-doc:unindexed';
+      const stale = { version: 2, cachedAt: Date.now(), user: { _id: user._id, id: user._id } };
+      keys.push(indexKey, fenceKey, indexedKey, unindexedKey);
+      await cache.set(indexKey, [indexedKey], 120_000);
+      await cache.set(indexedKey, stale, 120_000);
+      await cache.set(unindexedKey, stale, 120_000);
+
+      const cli = await runResetCli(email, cwd, {
+        ...process.env,
+        USE_REDIS: 'true',
+        USE_REDIS_CLUSTER: 'false',
+        REDIS_URI: redisUri,
+        REDIS_KEY_PREFIX: prefix,
+        REDIS_KEY_PREFIX_VAR: '',
+        AUTH_USER_CACHE_MODE: 'on',
+        FORCED_IN_MEMORY_CACHE_NAMESPACES: '',
+      });
+      expect(cli.code, cli.stderr.slice(-400)).toBe(0);
+      expect(cli.stdout).toContain('Password successfully reset!');
+      /** The fence proves the eviction, so the CLI no longer waits out the cache TTL. */
+      expect(cli.reportDelayMs).toBeLessThan(AUTH_USER_DOC_CACHE_TTL_MS);
+
+      /** A document written after the eviction by a request that read the user before it. */
+      const lateKey = 'auth-user-doc:late';
+      keys.push(lateKey);
+      await cache.set(lateKey, stale, 120_000);
+
+      expect(await cache.get(indexedKey)).toBeUndefined();
+      expect(await cache.get(unindexedKey)).toEqual(stale);
+      expect(await isAuthUserDocEvictionFenced(cache, user._id)).toBe(true);
+      expect(await isAuthUserDocEvictionFenced(cache, otherUserId)).toBe(false);
+      const client = await adapter.getClient();
+      const fenceTtl = await client.pTTL(`${prefix}::${CacheKeys.AUTH_USER_DOC}:${fenceKey}`);
+      /** Still standing once a document cached before the reset has expired. */
+      expect(fenceTtl).toBeGreaterThan(AUTH_USER_DOC_CACHE_TTL_MS);
+      expect(fenceTtl).toBeLessThanOrEqual(AUTH_USER_DOC_EVICTION_FENCE_TTL_MS);
+    } finally {
+      try {
+        await Promise.all(keys.map((key) => cache.delete(key)));
+      } finally {
+        await cache.disconnect();
+        await request.dispose();
+        fs.rmSync(cwd, { recursive: true, force: true });
+        await deleteUserByEmail(email);
+      }
+    }
+  });
+
   test('reports the reset only after unevictable cached credentials expire @scenario:cli-reset-outlasts-failed-cache-eviction', async ({
     playwright,
     baseURL,
@@ -304,7 +389,7 @@ test.describe('CLI password reset', () => {
       const cli = await runResetCli(email, cwd, env);
       expect(cli.code, cli.stderr.slice(-400)).toBe(0);
       expect(cli.stdout).toContain('Password successfully reset!');
-      expect(cli.reportDelayMs).toBeGreaterThanOrEqual(AUTH_USER_DOC_CACHE_TTL_MS);
+      expect(cli.reportDelayMs).toBeGreaterThanOrEqual(AUTH_USER_DOC_MAX_AGE_MS);
       expect(await cache.get(controlKey)).toEqual({ credentialsChangedAt: null });
       await withMongo(async (db) => {
         const resetUser = await db.collection('users').findOne({ email });

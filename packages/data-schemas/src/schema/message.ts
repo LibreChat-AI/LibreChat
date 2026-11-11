@@ -122,6 +122,7 @@ const messageSchema: Schema<IMessage> = new Schema(
       default: undefined,
       required: false,
     },
+    langfuseCentralTraceExportEnabled: { type: Boolean },
     langfuseSampled: {
       type: Boolean,
     },
@@ -364,6 +365,12 @@ messageSchema.index({
  * the sort back into memory for them.
  */
 messageSchema.index({ conversationId: 1, user: 1, createdAt: 1, _id: 1 });
+
+/**
+ * Serves the cursor-paginated message read when sorted by `updatedAt`, the
+ * default of `GET /api/messages`; the `createdAt` sort uses the index above.
+ */
+messageSchema.index({ conversationId: 1, user: 1, updatedAt: 1, _id: 1 });
 
 /**
  * Serves the batched newest-task read for child threads. `user` is an equality

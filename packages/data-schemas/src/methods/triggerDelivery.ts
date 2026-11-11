@@ -27,6 +27,9 @@ import {
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
+  AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1,
+  AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
 } from '~/types/triggerDelivery';
 import { createIndexesWithRetry } from '~/utils/retry';
 import logger from '~/config/winston';
@@ -610,7 +613,7 @@ function toRecord(delivery: IAgentTriggerDelivery): AgentTriggerDeliveryRecord {
     orderingKey: delivery.orderingKey,
     laneSequence: delivery.laneSequence,
     envelope: delivery.envelope,
-    user: delivery.user,
+    user: String(delivery.user),
     status: projectedStatus,
     attempts: delivery.attempts,
     availableAt: shieldedCapability
@@ -1190,7 +1193,10 @@ export function createAgentTriggerDeliveryMethods(
         AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3 &&
       input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1 &&
       input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1 &&
-      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2
+      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2 &&
+      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3 &&
+      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1 &&
+      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1
     ) {
       throw new TypeError('Agent trigger delivery requires an unsupported worker capability');
     }
@@ -4827,7 +4833,7 @@ export function createAgentTriggerDeliveryMethods(
     const ownsFence = await mongoose.models.User.exists({
       _id: user,
       agentTriggerDeletionStartedAt: fenceStartedAt,
-    });
+    }).read('primary');
     if (ownsFence == null) {
       throw new Error('Cannot prepare trigger purge without owning the user deletion fence');
     }
@@ -4856,7 +4862,7 @@ export function createAgentTriggerDeliveryMethods(
     const ownsLiveFence = await mongoose.models.User.exists({
       _id: user,
       agentTriggerDeletionStartedAt: fenceStartedAt,
-    });
+    }).read('primary');
     if (ownsLiveFence == null) {
       return false;
     }
@@ -4912,6 +4918,7 @@ export function createAgentTriggerDeliveryMethods(
     const users =
       markers.length > 0
         ? await mongoose.models.User.find({ _id: { $in: markers.map((marker) => marker._id) } })
+            .read('primary')
             .select('agentTriggerDeletionStartedAt')
             .lean<Array<{ _id: Types.ObjectId; agentTriggerDeletionStartedAt?: Date }>>()
         : [];

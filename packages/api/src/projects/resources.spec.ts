@@ -248,6 +248,8 @@ describe('ChatProject resource hydration', () => {
     const methods = createMethods(mongoose);
     const stored = await File.create(
       file('repair', owner, {
+        embeddingOwnersComplete: true,
+        embeddingOwnersTrackedAt: new Date('2026-10-20'),
         source: 's3',
         storageKey: 'owner/repair',
         storageRegion: 'region',
@@ -260,6 +262,7 @@ describe('ChatProject resource hydration', () => {
     expect(
       await methods.clearFileEmbeddings({
         file_id: 'repair',
+        ownershipTrackingStart: '2026-10-19T00:00:00.000Z',
         userId: owner,
         updatedAt: stored.updatedAt,
       }),

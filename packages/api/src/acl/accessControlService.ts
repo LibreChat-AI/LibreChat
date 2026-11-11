@@ -19,7 +19,12 @@ import type { TPrincipal } from 'librechat-data-provider';
 import type { PermissionChange, PermissionSnapshot } from './types';
 import type { ResolvedPrincipal } from '~/types/principal';
 import type { PermissionPlan } from './audit';
-import { PERMISSION_AUDIT_UNAVAILABLE, RESOURCE_PERMISSIONS_UNAVAILABLE } from './codes';
+import {
+  PERMISSION_AUDIT_UNAVAILABLE,
+  RESOURCE_PERMISSIONS_UNAVAILABLE,
+  PRINCIPAL_PREPARATION_FAILED,
+  DIRECTORY_VERIFICATION_UNAVAILABLE,
+} from './codes';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { userPrincipalsCache } from '~/cache';
 
@@ -73,6 +78,8 @@ export class ResourcePermissionsBusyError extends Error {
 }
 
 const APPROVED_ERROR_CODES = new Set([
+  PRINCIPAL_PREPARATION_FAILED,
+  DIRECTORY_VERIFICATION_UNAVAILABLE,
   'RESOURCE_PERMISSIONS_BUSY',
   PERMISSION_AUDIT_UNAVAILABLE,
   RESOURCE_PERMISSIONS_UNAVAILABLE,
@@ -566,7 +573,7 @@ export class AccessControlService {
       }
       if (!localSession && supportsTransactions) {
         localSession = await this._mongoose.startSession();
-        localSession.startTransaction();
+        localSession.startTransaction({ readPreference: 'primary' });
         shouldEndSession = true;
       }
       const sessionOptions = localSession ? { session: localSession } : {};
@@ -600,8 +607,8 @@ export class AccessControlService {
           /** An invalid id is reported per principal below. */
         }
       }
-      const [roles, currentEntries] = await Promise.all([
-        this._dbMethods.findRolesByResourceType(resourceType),
+      const loadRoles = () => this._dbMethods.findRolesByResourceType(resourceType, localSession);
+      const loadEntries = () =>
         affectedPrincipals.length > 0
           ? this._dbMethods.findEntriesByPrincipalsAndResource(
               affectedPrincipals,
@@ -610,8 +617,11 @@ export class AccessControlService {
               localSession,
               true,
             )
-          : Promise.resolve([]),
-      ]);
+          : Promise.resolve([]);
+      // A transaction cannot run parallel operations on its session.
+      const [roles, currentEntries] = localSession?.inTransaction()
+        ? ([await loadRoles(), await loadEntries()] as const)
+        : await Promise.all([loadRoles(), loadEntries()]);
       const rolesMap = new Map(roles.map((role) => [role.accessRoleId, role]));
       const results: BulkPermissionUpdateResult = {
         granted: [],

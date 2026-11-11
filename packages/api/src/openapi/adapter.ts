@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { createDocument } from 'zod-openapi';
+import type { CreateDocumentOptions } from 'zod-openapi';
 import type { ZodTypeAny } from 'zod';
 
 /**
@@ -148,6 +149,21 @@ function applyComponentSchemaOverrides(
   }
 }
 
+/**
+ * Zod 4 renders every non-strict object as `additionalProperties: false` in responses only, so
+ * a component nested in another one renders differently per direction and is duplicated as
+ * `<Name>Output`. Only strict objects reject unknown keys, so both directions render alike.
+ */
+const renderObjectsAlike: CreateDocumentOptions['override'] = ({ jsonSchema, zodSchema, io }) => {
+  const def = zodSchema._zod.def;
+  if (io !== 'output' || def.type !== 'object' || def.catchall) {
+    return;
+  }
+  if (jsonSchema.additionalProperties === false) {
+    delete jsonSchema.additionalProperties;
+  }
+};
+
 export function buildOpenApiDocument(input: OpenApiInput): Record<string, unknown> {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const contract of input.contracts) {
@@ -164,7 +180,10 @@ export function buildOpenApiDocument(input: OpenApiInput): Record<string, unknow
     },
     paths,
   } as unknown as Parameters<typeof createDocument>[0];
-  const document = createDocument(spec) as unknown as Record<string, unknown>;
+  const document = createDocument(spec, { override: renderObjectsAlike }) as unknown as Record<
+    string,
+    unknown
+  >;
   applyComponentSchemaOverrides(document, input.componentSchemaOverrides);
   return document;
 }

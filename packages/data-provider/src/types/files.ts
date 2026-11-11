@@ -28,6 +28,7 @@ export enum FileContext {
   agents = 'agents',
   assistants = 'assistants',
   execute_code = 'execute_code',
+  execute_code_snapshot = 'execute_code_snapshot',
   image_generation = 'image_generation',
   assistants_output = 'assistants_output',
   message_attachment = 'message_attachment',
@@ -60,6 +61,9 @@ export type EndpointFileConfig = {
 export type FileConfig = {
   /** Enable after all replicas and rollback targets support retained file destinations. */
   retainedFileCleanup?: boolean;
+  deletionRetryLimit?: number;
+  vectorOwnershipTrackingStart?: string;
+  vectorDeletionConcurrency?: number;
   endpoints: {
     [key: string]: EndpointFileConfig;
   };
@@ -105,6 +109,9 @@ export type FileConfig = {
 export type FileConfigInput = {
   /** Fail closed on embedded-file deletion until marker-aware readers are deployed. */
   retainedFileCleanup?: boolean;
+  deletionRetryLimit?: number;
+  vectorOwnershipTrackingStart?: string;
+  vectorDeletionConcurrency?: number;
   endpoints?: {
     [key: string]: EndpointFileConfig;
   };
@@ -155,6 +162,14 @@ export type RunFileProvenance = {
   inputFileIds: string[];
 };
 
+/** Shared wire bound, not a deployment setting. */
+export const MAX_FILE_TEXT_PREVIEW_LENGTH = 240;
+/** Identifies the bytes of one generated attachment when its file ID is reused. */
+export type CodeOutputProvenance = {
+  messageId: string;
+  sha256: string;
+};
+
 export type TFile = {
   _id?: string;
   __v?: number;
@@ -168,6 +183,10 @@ export type TFile = {
   temp_file_id?: string;
   bytes: number;
   embedded: boolean;
+  /** Every vector namespace has been tracked since this record was inserted. */
+  embeddingOwnersComplete?: boolean;
+  /** Insert-time proof, trusted only after the deployment rollout cutoff. */
+  embeddingOwnersTrackedAt?: string | Date;
   filename: string;
   filepath: string;
   object: 'file';
@@ -182,6 +201,8 @@ export type TFile = {
   expiredAt?: string | Date | null;
   preview?: string;
   text?: string;
+  /** Bounded display-only snippet, never editable source text. */
+  textPreview?: string;
   /**
    * Format of the `text` field. `'html'` means the backend produced
    * a sanitized full-document HTML preview the client may inject as
@@ -207,6 +228,7 @@ export type TFile = {
   previewError?: string;
   metadata?: {
     runFile?: RunFileProvenance;
+    codeOutput?: CodeOutputProvenance;
     fileIdentifier?: string;
     /**
      * Structured form of `fileIdentifier`. Persisted alongside the
@@ -215,6 +237,8 @@ export type TFile = {
      */
     codeEnvRef?: CodeEnvRef;
     codeEnvRefs?: CodeEnvRefMap;
+    /** Non-owning provenance. Never reused or deleted as a stored copy. */
+    codeEnvSource?: CodeEnvRef;
     /** Dispatch-order stamp for the current source artifact generation. */
     sourceDispatchedAt?: number;
     /** Vector namespaces this file has been embedded into. */

@@ -129,6 +129,7 @@ import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
+import { shareDeferredDefinitions } from '~/agents/deferral';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
 import { getAgentCheckpointer } from '~/agents/checkpointer';
 import { getPluginHookSource } from '~/agents/hooks/source';
@@ -137,6 +138,7 @@ import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { buildLangfuseConfig } from '~/langfuse/config';
 import { applyTestRunHook } from '~/agents/testHook';
+import { frameDynamicInstructions } from './tail';
 import { isUserProvided } from '~/utils/common';
 import { createSafeUser } from '~/utils/env';
 
@@ -338,6 +340,28 @@ export function overrideDeferLoadingForDiscoveredTools(
     }
   }
   return overrideCount;
+}
+
+/**
+ * Clones an agent's registry and definitions for a subagent child so later
+ * parent-graph builds cannot mutate what the child holds. A definition that is
+ * the same object as its parent registry entry (every deferred tool) becomes the
+ * same cloned object on the child, so the child keeps the parent's guarantee
+ * that restoring a discovered tool in the registry rebinds its definition.
+ */
+export function cloneSubagentToolSurface(
+  parentRegistry: LCToolRegistry,
+  parentDefinitions: LCTool[],
+): { toolRegistry: LCToolRegistry; toolDefinitions: LCTool[] } {
+  const toolRegistry: LCToolRegistry = new Map();
+  for (const [name, tool] of parentRegistry) {
+    toolRegistry.set(name, { ...tool });
+  }
+  const toolDefinitions = parentDefinitions.map((def) => {
+    const cloned = parentRegistry.get(def.name) === def ? toolRegistry.get(def.name) : undefined;
+    return cloned ?? { ...def };
+  });
+  return { toolRegistry, toolDefinitions };
 }
 
 const customProviders = new Set([
@@ -1876,15 +1900,6 @@ function buildIsolatedAgentInputs(
   toInput: (agent: RunAgent, opts?: { isSubagent?: boolean }) => AgentInputs,
 ): AgentInputs {
   const childInputs = toInput(child, { isSubagent: true });
-  const alwaysApplySkillPrimes = child.alwaysApplySkillPrimes;
-  if (alwaysApplySkillPrimes && alwaysApplySkillPrimes.length > 0) {
-    const skillInstructions = alwaysApplySkillPrimes
-      .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
-      .join('\n\n');
-    childInputs.additional_instructions = [childInputs.additional_instructions, skillInstructions]
-      .filter((value): value is string => typeof value === 'string' && value.length > 0)
-      .join('\n\n');
-  }
   if ((child.backgroundToolNames?.length ?? 0) > 0) {
     childInputs.toolDefinitions = stripBackgroundFromToolDefinitions(
       childInputs.toolDefinitions,
@@ -1905,6 +1920,10 @@ function buildIsolatedAgentInputs(
       child.intentToolNames,
     );
   }
+  childInputs.toolDefinitions = shareDeferredDefinitions(
+    childInputs.toolDefinitions,
+    childInputs.toolRegistry,
+  );
   return childInputs;
 }
 
@@ -1956,12 +1975,15 @@ function buildSubagentConfigs(
         ? {
             agentInputs: {
               ...agentInput,
-              toolDefinitions: stripIntentFromToolDefinitions(
-                stripBackgroundFromToolDefinitions(
-                  agentInput.toolDefinitions,
-                  agent.backgroundToolNames,
+              toolDefinitions: shareDeferredDefinitions(
+                stripIntentFromToolDefinitions(
+                  stripBackgroundFromToolDefinitions(
+                    agentInput.toolDefinitions,
+                    agent.backgroundToolNames,
+                  ),
+                  agent.intentToolNames,
                 ),
-                agent.intentToolNames,
+                sanitizedToolRegistry,
               ),
               /** `registerBackgroundTaskTool` mutates the parent registry after
                * configs are built. Detach its self-child snapshot so the host
@@ -2498,9 +2520,17 @@ export async function createRun({
 
     const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
 
-    const additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
+    let additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
       .join('\n')
       .trim();
+    if (isSubagent && agent.alwaysApplySkillPrimes?.length) {
+      const skillInstructions = agent.alwaysApplySkillPrimes
+        .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
+        .join('\n\n');
+      additionalInstructions = [additionalInstructions, skillInstructions]
+        .filter(Boolean)
+        .join('\n\n');
+    }
 
     /** Resolves issues with new OpenAI usage field */
     if (
@@ -2554,14 +2584,9 @@ export async function createRun({
        * through to the tool object itself, so a shallow Map copy
        * alone wouldn't isolate the flag.
        */
-      toolRegistry = new Map();
-      for (const [name, tool] of agent.toolRegistry.entries()) {
-        toolRegistry.set(name, { ...tool });
-      }
-      /** Child's own `toolDefinitions` list gets the same shallow-
-       *  copied view so any later parent mutation of shared definitions
-       *  is contained to the parent-graph path. */
-      toolDefinitions = toolDefinitions.map((def) => ({ ...def }));
+      const childSurface = cloneSubagentToolSurface(agent.toolRegistry, toolDefinitions);
+      toolRegistry = childSurface.toolRegistry;
+      toolDefinitions = childSurface.toolDefinitions;
     }
 
     /**
@@ -2632,7 +2657,12 @@ export async function createRun({
       tools,
       clientOptions: llmConfig,
       instructions: systemContent,
-      additional_instructions: additionalInstructions || undefined,
+      additional_instructions:
+        frameDynamicInstructions({
+          instructions: additionalInstructions,
+          provider,
+          promptCache: 'promptCache' in llmConfig && llmConfig.promptCache === true,
+        }) || undefined,
       name: agent.name ?? undefined,
       toolRegistry,
       maxContextTokens: effectiveMaxContextTokens,
@@ -2919,7 +2949,10 @@ export async function createRun({
   const asksUserQuestions =
     hitlCapable && !askToolAdminDisabled && agents.some(agentRequestsAskUserQuestion);
   if (hitl || asksUserQuestions || eventActorCheckpointing) {
-    const checkpointer = await getAgentCheckpointer(agentsEndpointConfig?.checkpointer);
+    const checkpointer = await getAgentCheckpointer(
+      agentsEndpointConfig?.checkpointer,
+      conversationId ?? requestBody?.conversationId,
+    );
     graphConfig.compileOptions = { ...graphConfig.compileOptions, checkpointer };
   }
 

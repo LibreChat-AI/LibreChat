@@ -675,6 +675,8 @@ export type ResponsesApiRouting = Record<string, ResponsesApiRoute>;
 
 export type TConfig = {
   responsesApiRouting?: ResponsesApiRouting;
+  /** Azure model name -> the `reasoning_effort` values its deployment declares. */
+  modelReasoningEfforts?: Record<string, string[]>;
   order: number;
   type?: EModelEndpoint;
   azure?: boolean;
@@ -710,6 +712,10 @@ export type TConfig = {
   /** Effective subagents-per-agent cap served from `endpoints.agents.maxSubagents`. */
   maxSubagents?: number;
   fileSharing?: TAgentsEndpoint['fileSharing'];
+  /** Rollout switches served to the Builder from `endpoints.agents.linkedInstructions`. */
+  linkedInstructions?: {
+    langfuse?: { enabled?: boolean };
+  };
   /** Concurrent Code API uploads allowed per route and authenticated principal. */
   codeApiUploadConcurrency?: number;
   /** Milliseconds one operation may spend waiting on Code API rate limits. */
@@ -847,10 +853,24 @@ export type TFinalize2FASetupResponse = {
   user: TUser;
 };
 
+export type TCancel2FASetupRequest = {
+  tempToken: string;
+};
+
+export type TCancel2FASetupResponse = {
+  message: string;
+};
+
 export type TVerify2FARequest = TOTPVerificationPayload;
 
 export type TVerify2FAResponse = {
   message: string;
+};
+
+/** Opt-in confirmation retires every earlier session and hands back the one that replaces them. */
+export type TConfirm2FAResponse = {
+  token: string;
+  user: TUser;
 };
 
 /** For verifying 2FA during login with a temporary token. */
@@ -1247,6 +1267,12 @@ export type TGetRandomPromptsRequest = {
   skip: number;
 };
 
+export type NativePromptSelection = { type: 'production' } | { type: 'exact'; promptId: string };
+
+export type LangfusePromptSelection = { type: 'production' } | { type: 'exact'; version: number };
+
+export type PromptSelection = NativePromptSelection | LangfusePromptSelection;
+
 /** `GET /api/prompts/groups/:groupId/resolve`. Native resolves the group's
  *  production; Langfuse fetches text content live, by label `production` or
  *  an exact `version`, with no cache. */
@@ -1271,6 +1297,18 @@ export type TResolvedLangfusePrompt = {
 };
 
 export type TResolvedPromptResponse = TResolvedNativePrompt | TResolvedLangfusePrompt;
+
+/** One revision choice: metadata only, no prompt content. */
+export type TPromptRevisionChoice =
+  | { source: 'native'; promptId: string; version: number; isProduction: boolean }
+  | { source: 'langfuse'; version: number };
+
+/** Only a native revision marks `isProduction`; Langfuse resolves Production live. */
+export type TPromptRevisionChoicesResponse = {
+  source: TPromptGroupSource;
+  groupId: string;
+  revisions: TPromptRevisionChoice[];
+};
 
 /** `code` values the `/resolve` route returns, including the Langfuse request
  *  failure codes relayed through `toLangfusePromptErrorResponse` (`unauthorized`,
@@ -1324,6 +1362,10 @@ export type TBalanceResponse = {
   lastRefill?: Date | string;
   refillAmount?: number;
   refillMode?: BalanceRefillMode;
+  /** Credits granted at the start of the current period; absent on records not yet granted one. */
+  allotment?: number;
+  /** When `allotment` was granted; a later `lastRefill` means a writer replaced the period without it. */
+  allottedAt?: Date | string;
 };
 
 /* -------------------------------------------------------------------------- */

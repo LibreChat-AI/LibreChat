@@ -115,17 +115,28 @@ describe('deleteFileFromAzure', () => {
     mockDelete.mockRejectedValueOnce(error);
     await expect(deleteFileFromAzure(req, file, undefined, onDelete)).rejects.toBe(error);
     expect(onDelete.mock.calls).toEqual([[]]);
-    expect(deleteRagFile).not.toHaveBeenCalled();
+    expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'owner', file });
   });
 
-  it('confirms deletion before a later RAG denial', async () => {
+  it('retains the blob when RAG cleanup returns false', async () => {
+    const onDelete = jest.fn();
+    deleteRagFile.mockResolvedValueOnce(false);
+    await expect(deleteFileFromAzure(req, file, undefined, onDelete)).rejects.toThrow(
+      'Vector deletion was not confirmed',
+    );
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it('does not dispatch blob deletion when RAG cleanup is denied', async () => {
     const onDelete = jest.fn();
     const error = Object.assign(new Error('RAG denied'), { statusCode: 403 });
     deleteRagFile.mockImplementationOnce(async () => {
-      expect(onDelete.mock.calls).toEqual([[], ['confirmed']]);
+      expect(onDelete).not.toHaveBeenCalled();
       throw error;
     });
     await expect(deleteFileFromAzure(req, file, undefined, onDelete)).rejects.toBe(error);
-    expect(onDelete.mock.calls).toEqual([[], ['confirmed']]);
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
   });
 });

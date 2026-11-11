@@ -137,7 +137,7 @@
     "tailwindcss-animate": "^1.0.5",
     "ts-md5": "^1.3.1",
     "web-vitals": "^3.5.2",
-    "zod": "^3.22.4"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@babel/plugin-transform-runtime": "^7.22.15",

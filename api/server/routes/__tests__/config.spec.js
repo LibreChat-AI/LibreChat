@@ -176,6 +176,17 @@ describe('GET /api/config', () => {
       expect(response.body.turnstile).toEqual({ siteKey: 'yaml-site-key' });
     });
 
+    it('publishes configured client timeouts before login and omits invalid ones', async () => {
+      mockGetTenantId.mockReturnValue(undefined);
+      mockGetAppConfig.mockResolvedValue({ config: { clientLimits: { refreshMs: 90000 } } });
+      const configured = await request(createApp(null)).get('/api/config');
+      expect(configured.body.clientLimits).toEqual({ refreshMs: 90000 });
+
+      mockGetAppConfig.mockResolvedValue({ config: { clientLimits: { refreshMs: -1 } } });
+      const invalid = await request(createApp(null)).get('/api/config');
+      expect(invalid.body).not.toHaveProperty('clientLimits');
+    });
+
     it('should never serve a signed-out visitor a policy link that would run script', async () => {
       mockGetAppConfig.mockResolvedValue({
         ...baseAppConfig,
@@ -702,7 +713,10 @@ describe('GET /api/config', () => {
         model: 'gpt-4o',
         greeting: 'Hello',
       });
-      expect(response.body.modelSpecs.list[0]).not.toHaveProperty('skills');
+      /** Narrowed to the boolean the chat badge seeds from — an absent field is
+       *  indistinguishable from `skills: false` — while the names stay server-side. */
+      expect(response.body.modelSpecs.list[0].skills).toBe(true);
+      expect(JSON.stringify(response.body.modelSpecs.list[0])).not.toContain('private-skill');
     });
 
     it('should include full interface config', async () => {

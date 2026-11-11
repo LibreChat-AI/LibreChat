@@ -25,7 +25,6 @@ const normalizeSavedSpeechEngine = (
 
 // Static atoms without localStorage
 const staticAtoms = {
-  abortScroll: atom<boolean>({ key: 'abortScroll', default: false }),
   optionSettings: atom<TOptionSettings>({ key: 'optionSettings', default: {} }),
   currentSettingsView: atom<SettingsViews>({
     key: 'currentSettingsView',
