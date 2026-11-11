@@ -369,6 +369,11 @@ export async function acceptRequest(api: API, context: Context, pr: number, comm
     conclusion: null,
   };
   if (!SHA.test(request.head) || !SHA.test(request.base)) throw new Error('Invalid PR commit');
+  if (request.check === 'ignore') {
+    for (const prior of active) {
+      if (prior.run.id !== context.run) await cancelRequest(api, context, prior.request, prior.run);
+    }
+  }
   const body = renderRequest(request, context, pull.head.sha);
   const response = await api.request<Comment>(
     existing ? 'PATCH' : 'POST',
@@ -376,10 +381,10 @@ export async function acceptRequest(api: API, context: Context, pr: number, comm
     { body },
   );
   if (request.check !== 'ignore') await updateGate(api, context, pr);
-  for (const prior of active) {
-    if (prior.run.id !== context.run) await cancelRequest(api, context, prior.request, prior.run);
-  }
   if (request.check !== 'ignore') {
+    for (const prior of active) {
+      if (prior.run.id !== context.run) await cancelRequest(api, context, prior.request, prior.run);
+    }
     const current = await api.request<Pull>('GET', `pulls/${pr}`);
     if (current.head.sha !== request.head)
       throw new Error('PR head changed. Post a new /quality command.');
@@ -453,7 +458,16 @@ export async function publishRun(api: API, context: Context, run: Run) {
     return;
   request.attempt = run.run_attempt;
   request.phase = run.status === 'completed' ? 'completed' : 'running';
-  request.conclusion = run.status === 'completed' ? run.conclusion : null;
+  const checksSucceeded =
+    ['Select changed source', 'Verify quality tooling'].every(
+      (name) => latestJobs.get(name)?.conclusion === 'success',
+    ) && reports.every((job) => job.conclusion === 'success');
+  request.conclusion =
+    run.status !== 'completed'
+      ? null
+      : run.conclusion === 'success' && !checksSucceeded
+        ? 'failure'
+        : run.conclusion;
   const details = [
     ...(reports.length
       ? [
@@ -511,7 +525,7 @@ export function client(env: NodeJS.ProcessEnv): API {
   return {
     async request<T>(method: string, path: string, body?: object): Promise<T> {
       const response = await fetch(
-        `${env.GITHUB_API_URL ?? 'https://api.github.com'}/repos/${env.GITHUB_REPOSITORY}/${path}`,
+        `${env.GITHUB_API_URL ?? 'https://api.github.com'}${path === '/graphql' ? path : `/repos/${env.GITHUB_REPOSITORY}/${path}`}`,
         {
           method,
           headers: {

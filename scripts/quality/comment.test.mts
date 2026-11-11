@@ -47,6 +47,11 @@ const bot = (body: string, id = 100): Comment => ({
   body,
   user: { login: 'github-actions[bot]', type: 'Bot' },
 });
+const prerequisiteJobs = [
+  { name: 'Accept quality request', conclusion: 'success', status: 'completed', id: 70 },
+  { name: 'Select changed source', conclusion: 'success', status: 'completed', id: 71 },
+  { name: 'Verify quality tooling', conclusion: 'success', status: 'completed', id: 72 },
+];
 const run = (status = 'completed', conclusion: string | null = 'success') => ({
   id: 55,
   repository: { full_name: context.repository },
@@ -68,6 +73,7 @@ class GitHub implements API {
   statuses: { sha: string; state: string; description: string }[] = [];
   calls: { method: string; path: string; body?: object }[] = [];
   jobs = [
+    ...structuredClone(prerequisiteJobs),
     { name: 'Mutation report (data-schemas)', conclusion: 'success', status: 'completed', id: 90 },
   ];
   artifacts = [{ id: 91, name: `change-mutation-data-schemas-${head}`, expired: false }];
@@ -340,6 +346,61 @@ test('rerunning only failed jobs advances the attempt without reaccepting the co
   assert.equal(api.statuses.at(-1)?.state, 'success');
 });
 
+test('a rejected rerun cannot clear a failed decision with skipped reports', async () => {
+  const api = new GitHub();
+  await accept(api, context, 1, command());
+  await publishRun(api, context, run('completed', 'failure'));
+  api.permission = 'read';
+  assert.equal(await acceptRequest(api, { ...context, attempt: 2 }, 1, command()), undefined);
+  api.jobs = [
+    ...api.jobs,
+    ...prerequisiteJobs.map((job) => ({
+      ...job,
+      id: job.id + 100,
+      conclusion: job.name === 'Accept quality request' ? 'success' : 'skipped',
+    })),
+    { name: 'Mutation report (data-schemas)', conclusion: 'skipped', status: 'completed', id: 190 },
+  ];
+  api.artifacts = [];
+  await publishRun(api, context, { ...run(), run_attempt: 2 });
+  assert.equal(readRequest(api.comments[0])?.conclusion, 'failure');
+  assert.equal(api.statuses.at(-1)?.state, 'failure');
+  await refreshPull(api, context, 1);
+  assert.equal(api.statuses.at(-1)?.state, 'failure');
+});
+
+test('successful workflows still require successful selection, tooling and selected reports', async () => {
+  for (const name of [
+    'Select changed source',
+    'Verify quality tooling',
+    'Mutation report (data-schemas)',
+  ]) {
+    for (const conclusion of ['skipped', 'failure', 'cancelled']) {
+      const api = new GitHub();
+      await accept(api, context, 1, command());
+      api.jobs.find((job) => job.name === name)!.conclusion = conclusion;
+      await publishRun(api, context, run());
+      assert.equal(api.statuses.at(-1)?.state, 'failure', `${name}: ${conclusion}`);
+    }
+    const api = new GitHub();
+    await accept(api, context, 1, command());
+    if (name !== 'Mutation report (data-schemas)') {
+      api.jobs = api.jobs.filter((job) => job.name !== name);
+      await publishRun(api, context, run());
+      assert.equal(api.statuses.at(-1)?.state, 'failure', `Missing ${name}`);
+    }
+  }
+});
+
+test('a verified empty selection needs no report jobs or artifacts', async () => {
+  const api = new GitHub();
+  await accept(api, context, 1, command());
+  api.jobs = structuredClone(prerequisiteJobs);
+  api.artifacts = [];
+  await publishRun(api, context, run());
+  assert.equal(api.statuses.at(-1)?.state, 'success');
+});
+
 test('completion recovers an ignore decision when its status job was cancelled', async () => {
   const api = new GitHub();
   await acceptRequest(api, context, 1, command(10, '/quality ignore'));
@@ -364,6 +425,7 @@ test('failed-job reruns show reused successful jobs and the latest retried outco
   const api = new GitHub();
   await accept(api, context, 1, command());
   api.jobs = [
+    ...structuredClone(prerequisiteJobs),
     { name: 'Mutation report (data-schemas)', status: 'completed', conclusion: 'failure', id: 89 },
     { name: 'Change risk (api)', status: 'completed', conclusion: 'success', id: 88 },
     { name: 'Mutation report (data-schemas)', status: 'completed', conclusion: 'success', id: 90 },
@@ -559,6 +621,30 @@ test('failed cancellation blocks the replacement instead of starting duplicate w
   );
   assert.equal(api.runs.get(55)?.status, 'in_progress');
   assert.equal(api.statuses.at(-1)?.state, 'pending');
+});
+
+test('failed ignore cancellation cannot clear the gate through completion or refresh', async () => {
+  const api = new GitHub();
+  running(api);
+  const call = api.request.bind(api);
+  api.request = async <T,>(method: string, path: string, body?: object): Promise<T> => {
+    if (path.endsWith('/force-cancel')) throw new Error('Cancellation unavailable');
+    return call<T>(method, path, body);
+  };
+  await assert.rejects(
+    acceptRequest(api, { ...context, run: 56 }, 1, command(11, '/quality ignore')),
+    /Cancellation unavailable/,
+  );
+  assert.equal(api.comments.length, 1);
+  assert.equal(api.runs.get(55)?.status, 'in_progress');
+  await publishRun(api, context, {
+    ...run('completed', 'failure'),
+    id: 56,
+    display_title: 'Quality PR #1 request 11',
+  });
+  await refreshPull(api, context, 1);
+  assert.equal(api.statuses.at(-1)?.state, 'pending');
+  assert.ok(api.statuses.every(({ state }) => state !== 'success'));
 });
 
 test('a head change during replacement prevents old-head report jobs from starting', async () => {

@@ -19,6 +19,7 @@ jobs:
     permissions: {}
     outputs:
       pr: ${{ steps.pr.outputs.pr }}
+      queue: ${{ steps.pr.outputs.queue }}
     steps:
       - id: pr
         run: |
@@ -26,6 +27,9 @@ jobs:
           const fs = require('node:fs');
           const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
           const run = event.workflow_run;
+          if (run?.event === 'merge_group' && run.status === 'completed') {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `queue=${run.id}\n`);
+          }
           const match = run?.event === 'issue_comment' && /^Quality PR #(\d+) request \d+$/.exec(run.display_title);
           const pr = event.pull_request?.number ?? (match ? Number(match[1]) : undefined);
           if (Number.isSafeInteger(pr) && pr > 0) fs.appendFileSync(process.env.GITHUB_OUTPUT, `pr=${pr}\n`);
@@ -54,3 +58,30 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/quality/comment.mts publish
+
+  queue:
+    name: Publish queue quality decision
+    needs: [resolve]
+    if: needs.resolve.outputs.queue != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+      statuses: write
+    concurrency:
+      group: quality-queue-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/quality
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/quality/queue.mts

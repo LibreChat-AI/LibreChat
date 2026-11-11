@@ -51,6 +51,7 @@ interface Workflow {
   on: {
     pull_request?: { paths: string[] };
     issue_comment?: { types: string[] };
+    merge_group?: { types: string[] };
     workflow_dispatch: {
       inputs: {
         base: { default: string };
@@ -183,7 +184,7 @@ test('comment publication is trusted and serialized while PR execution stays rea
   assert.ok(workflow.on.pull_request?.paths.includes('scripts/quality/**'));
   assert.equal(
     workflow.jobs.select.if,
-    "always() && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')",
+    "always() && github.event_name != 'merge_group' && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')",
   );
   assert.deepEqual(workflow.on.issue_comment?.types, ['created']);
   assert.equal(workflow.jobs.request.permissions?.issues, 'write');
@@ -219,6 +220,33 @@ test('comment publication is trusted and serialized while PR execution stays rea
   assert.equal(publisher.jobs.publish.concurrency?.['cancel-in-progress'], false);
   assert.equal(publisher.jobs.publish.concurrency?.queue, 'max');
   assert.equal(publisher.permissions.actions, 'write');
+  assert.deepEqual(workflow.on.merge_group, { types: ['checks_requested'] });
+  assert.equal(publisher.on.merge_group, undefined);
+  const bridge = workflow.jobs['queue-request'];
+  assert.equal(bridge.if, "github.event_name == 'merge_group'");
+  assert.deepEqual(bridge.permissions ?? workflow.permissions, { contents: 'read' });
+  assert.equal(checkouts(bridge).length, 0);
+  assert.ok(bridge.steps.every(({ run, uses }) => !uses && run?.startsWith('echo ')));
+  for (const name of ['verify', 'select'])
+    assert.match(workflow.jobs[name].if!, /github.event_name != 'merge_group'/);
+  const queue = publisher.jobs.queue;
+  assert.deepEqual(queue.needs, ['resolve']);
+  assert.equal(queue.if, "needs.resolve.outputs.queue != ''");
+  assert.deepEqual(queue.permissions, {
+    contents: 'read',
+    'pull-requests': 'read',
+    actions: 'read',
+    statuses: 'write',
+  });
+  assert.equal(checkouts(queue)[0].with?.ref, '${{ github.workflow_sha }}');
+  assert.equal(checkouts(queue)[0].with?.['persist-credentials'], false);
+  assert.equal(queue.concurrency?.group, 'quality-queue-${{ github.event.workflow_run.head_sha }}');
+  assert.ok(queue.steps.some(({ run }) => run === 'node scripts/quality/queue.mts'));
+  assert.ok(
+    queue.steps.every(
+      ({ run, uses }) => !run?.includes('npm') && !uses?.startsWith('actions/download-artifact'),
+    ),
+  );
   assert.ok(
     publisher.jobs.publish.steps.every(
       ({ run, uses }) => !run?.includes('npm') && !uses?.startsWith('actions/download-artifact'),
@@ -228,6 +256,8 @@ test('comment publication is trusted and serialized while PR execution stays rea
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const [event, expected] of [
     [{ pull_request: { number: 12 } }, 'pr=12\n'],
+    [{ workflow_run: { event: 'merge_group', status: 'completed', id: 55 } }, 'queue=55\n'],
+    [{ workflow_run: { event: 'merge_group', status: 'in_progress', id: 55 } }, ''],
     [
       { workflow_run: { event: 'issue_comment', display_title: 'Quality PR #13 request 99' } },
       'pr=13\n',

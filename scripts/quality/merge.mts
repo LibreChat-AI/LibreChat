@@ -22,6 +22,15 @@ export interface ShardResult {
   report?: MutationReport;
 }
 
+const terminalStatuses = new Set([
+  'Killed',
+  'Survived',
+  'Timeout',
+  'NoCoverage',
+  'CompileError',
+  'Ignored',
+]);
+
 /** Only publish a score after every shard proves that its assigned mutations finished. */
 export function mergeReports(results: ShardResult[]) {
   const plan = results[0]?.plan;
@@ -64,8 +73,7 @@ export function mergeReports(results: ShardResult[]) {
       const destination = existing ?? { ...value, mutants: [] };
       merged.files[file] = destination;
       for (const mutant of value.mutants) {
-        if (mutant.status === 'Pending' || mutant.status === 'RuntimeError')
-          throw new Error('Incomplete mutation result');
+        if (!terminalStatuses.has(mutant.status)) throw new Error('Incomplete mutation result');
         if (mutant.replacement === undefined) throw new Error('Missing mutation replacement');
         keys.push(mutantKey(file, { ...mutant, replacement: mutant.replacement }));
         destination.mutants.push({

@@ -3,6 +3,8 @@ run-name: >-
   ${{ github.event_name == 'issue_comment' && format('Quality PR #{0} request {1}', github.event.issue.number, github.event.comment.id) || format('Change Quality {0}', github.ref_name) }}
 
 on:
+  merge_group:
+    types: [checks_requested]
   pull_request:
     paths:
       - 'scripts/quality/**'
@@ -60,6 +62,14 @@ env:
   QUALITY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
+  queue-request:
+    name: Request queue quality decision
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Quality Decision publishes this group from trusted default-branch code.'
+
   request:
     name: Accept quality request
     concurrency:
@@ -100,7 +110,7 @@ jobs:
 
   verify:
     needs: [request]
-    if: always() && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')
+    if: always() && github.event_name != 'merge_group' && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')
     name: Verify quality tooling
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -124,7 +134,7 @@ jobs:
 
   select:
     needs: [request]
-    if: always() && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')
+    if: always() && github.event_name != 'merge_group' && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')
     env:
       QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}
       QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}

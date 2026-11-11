@@ -213,10 +213,18 @@ test('merging namespaces test references and refuses unfinished or conflicting s
     [['1:0'], ['2:0'], ['3:0'], ['4:0']],
   );
   assert.equal(reports[0].files['shared.js'].mutants[0].id, '0');
-  for (const status of ['Pending', 'RuntimeError'] as const) {
+  for (const status of ['Pending', 'RuntimeError', 'Unknown', undefined, null, 0, {}]) {
     const unfinished = structuredClone(results);
-    unfinished[0].report!.files['shared.js'].mutants[0].status = status;
+    Reflect.set(unfinished[0].report!.files['shared.js'].mutants[0], 'status', status);
     assert.throws(() => mergeReports(unfinished), /Incomplete/);
+  }
+  const absent = structuredClone(results);
+  Reflect.deleteProperty(absent[0].report!.files['shared.js'].mutants[0], 'status');
+  assert.throws(() => mergeReports(absent), /Incomplete/);
+  for (const status of ['Killed', 'Survived', 'Timeout', 'NoCoverage', 'CompileError', 'Ignored']) {
+    const complete = structuredClone(results);
+    Reflect.set(complete[0].report!.files['shared.js'].mutants[0], 'status', status);
+    assert.equal(mergeReports(complete).files['shared.js'].mutants[0].status, status);
   }
   const changed = structuredClone(results);
   changed[1].report!.files['shared.js'].source = 'other source';
