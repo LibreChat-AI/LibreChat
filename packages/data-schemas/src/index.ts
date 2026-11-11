@@ -32,6 +32,12 @@ export type {
 export {
   createMethods,
   createChannelIdentityStorage,
+  createChannelFeedbackStorage,
+  ChannelFeedbackAuthorityError,
+  CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX,
+  CHANNEL_FEEDBACK_RECEIPT_RETENTION_MS,
+  channelFeedbackReactionIdentity,
+  isLaterChannelFeedbackEvent,
   createChannelRunStorage,
   createChannelSummaryStorage,
   CHANNEL_SUMMARY_MAX_PRIOR_ROWS,

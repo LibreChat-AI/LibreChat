@@ -3,6 +3,7 @@ import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { ResponseOwner } from '~/models/response';
 import { createAgentChannelModel, createAgentChannelThreadModel } from '~/models/channel';
 import { createChannelRunModel, createChannelLaneModel } from '~/models/channelRun';
+import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createAgentApiKeyModel } from '~/models/agentApiKey';
 import { createIndexesWithRetry } from '~/utils/retry';
@@ -62,6 +63,7 @@ export async function eraseChannelPersistenceForUser(
       // Keep redacted deletion metadata while other principals' runs drain. The
       // deleted owner's credentials and thread mappings are erased immediately.
       await retireAgentChannel(mongoose, { ...connection, createdBy: owner.userId }, true);
+      await eraseChannelFeedbackForChannel(mongoose, connection.tenantId, connection.channelId);
       await threads.deleteMany({ channelId: connection.channelId, tenantId: partition });
       if (
         !(await runs.exists({
