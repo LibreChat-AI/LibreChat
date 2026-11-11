@@ -230,6 +230,10 @@ export function disconnectSlackWorkspace(workspaceId: string, revision: string):
   return request.deleteWithOptions(endpoints.slackWorkspaces(workspaceId), { data: { revision } });
 }
 
+export function removeSlackWorkspace(workspaceId: string, revision: string): Promise<void> {
+  return request.post(`${endpoints.slackWorkspaces(workspaceId)}/remove`, { revision });
+}
+
 export function cancelSlackWorkspaceInstall(flowId: string): Promise<void> {
   return request.delete(`${endpoints.slackWorkspaces()}/attempts/${encodeURIComponent(flowId)}`);
 }
