@@ -26,7 +26,7 @@ const harness: FavoriteHarness = {
     return createPostgresFavoriteMethods(db);
   },
   async teardown() {
-    await db.close();
+    await db?.close();
   },
   async reset() {
     jest.restoreAllMocks();

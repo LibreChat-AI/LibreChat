@@ -11,7 +11,7 @@ postgres('PostgreSQL catalog readiness', () => {
   beforeAll(async () => {
     ({ db, schema } = await createPostgresTestDatabase());
   });
-  afterAll(() => db.close());
+  afterAll(() => db?.close());
   beforeEach(async () => {
     await db.query(
       'DROP TABLE IF EXISTS tool_favorites,tool_favorite_erasure,tool_favorite_readiness,librechat_migrations',

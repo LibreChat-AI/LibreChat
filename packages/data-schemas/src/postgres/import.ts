@@ -214,6 +214,7 @@ async function importSnapshot(
   if (count !== snapshot.count || written.digest('hex') !== snapshot.digest) {
     throw new Error('Favorite source changed during import');
   }
+  const current = await fingerprintFavorites(source);
   await db.transaction(async (sql) => {
     await lockFavoriteMigration(sql);
     const state = await sql.query<{ activated: boolean; snapshot: string | null }>(
@@ -222,7 +223,6 @@ async function importSnapshot(
     if (!state.rows[0] || state.rows[0].activated || state.rows[0].snapshot !== snapshot.digest) {
       throw new Error('Favorite import authority changed');
     }
-    const current = await fingerprintFavorites(source);
     const destination = await fingerprintFavorites(readPostgresFavorites(sql, options.batchSize));
     if (
       current.digest !== snapshot.digest ||

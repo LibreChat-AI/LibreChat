@@ -6,15 +6,18 @@ import {
   fingerprintFavorites,
   readPostgresFavorites,
   assertPostgresDataReady,
-  createMongoFavoriteStore,
 } from '@librechat/data-schemas';
-import type { FavoriteSnapshotRow, PostgresDatabase } from '@librechat/data-schemas';
-import type mongoose from 'mongoose';
+import type {
+  FavoriteSnapshotRow,
+  MongoFavoriteStore,
+  PostgresDatabase,
+} from '@librechat/data-schemas';
 import { getPersistenceConfig } from './persistence';
 
 export async function runPostgresCommand(deps: {
-  mongoose: typeof mongoose;
-  connectDb(options: { autoCreate: false; autoIndex: false }): Promise<unknown>;
+  favorites: MongoFavoriteStore;
+  connectDb(): Promise<unknown>;
+  disconnectDb(): Promise<void>;
   loadCustomConfig(
     print: boolean,
     options: { mode: 'reload'; storageSelection: true },
@@ -23,7 +26,7 @@ export async function runPostgresCommand(deps: {
   env: NodeJS.ProcessEnv;
 }): Promise<void> {
   let db: PostgresDatabase | undefined;
-  const close = () => Promise.allSettled([db?.close(), deps.mongoose.disconnect()]);
+  const close = () => Promise.allSettled([db?.close(), deps.disconnectDb()]);
   const execute = async () => {
     const [command, ...flags] = deps.args;
     const commands: Record<string, string[]> = {
@@ -63,8 +66,8 @@ export async function runPostgresCommand(deps: {
       console.info('PostgreSQL schema migrated. Favorites data is not yet verified.');
       return;
     }
-    await deps.connectDb({ autoCreate: false, autoIndex: false });
-    const mongo = createMongoFavoriteStore(deps.mongoose);
+    await deps.connectDb();
+    const mongo = deps.favorites;
     const source = mongo.source;
     if (command === 'import') {
       const result = await importFavorites(db, source, {

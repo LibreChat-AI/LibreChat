@@ -8,13 +8,21 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import {
   createModels,
+  createMongoFavoriteStore,
   createPostgresDatabase,
   fingerprintFavorites,
   readPostgresFavorites,
 } from '@librechat/data-schemas';
+import type { MongoFavoriteStore } from '@librechat/data-schemas';
 import { runPostgresCommand } from './postgres';
 
 describe('PostgreSQL command arguments', () => {
+  const favorites: MongoFavoriteStore = {
+    source: async function* () {},
+    stage: jest.fn(),
+  };
+  const disconnectDb = jest.fn(async () => undefined);
+
   const commands = ['migrate', 'import', 'verify', 'reconcile-mongo'];
   const flags = ['--offline', '--dry-run', '--verified-empty'];
   const combinations = commands.flatMap((command) =>
@@ -34,7 +42,8 @@ describe('PostgreSQL command arguments', () => {
     const connectDb = jest.fn();
     const end = jest.spyOn(pg.Pool.prototype, 'end');
     const operation = runPostgresCommand({
-      mongoose,
+      favorites,
+      disconnectDb,
       connectDb,
       loadCustomConfig,
       args,
@@ -58,7 +67,7 @@ describe('PostgreSQL command arguments', () => {
     const loadCustomConfig = jest.fn();
     const connectDb = jest.fn();
     await expect(
-      runPostgresCommand({ mongoose, connectDb, loadCustomConfig, args, env: {} }),
+      runPostgresCommand({ favorites, disconnectDb, connectDb, loadCustomConfig, args, env: {} }),
     ).rejects.toThrow('Usage:');
     expect(loadCustomConfig).not.toHaveBeenCalled();
     expect(connectDb).not.toHaveBeenCalled();
@@ -86,12 +95,14 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
   const admin = createPostgresDatabase({ ...options, connectionString: baseUrl });
   const db = createPostgresDatabase(options);
   let mongo: MongoMemoryServer;
-  const connectDb = jest.fn(async (options: { autoCreate: false; autoIndex: false }) =>
-    mongoose.connect(mongo.getUri(), options),
+  const connectDb = jest.fn(async () =>
+    mongoose.connect(mongo.getUri(), { autoCreate: false, autoIndex: false }),
   );
+  const disconnectDb = () => mongoose.disconnect();
+  const favorites = createMongoFavoriteStore(mongoose);
   const loadCustomConfig = jest.fn(async () => config);
   const run = (args: string[]) =>
-    runPostgresCommand({ mongoose, connectDb, loadCustomConfig, args, env });
+    runPostgresCommand({ favorites, connectDb, disconnectDb, loadCustomConfig, args, env });
   const collection = () => createModels(mongoose).ToolFavorite.collection;
   const reconnect = () => mongoose.connect(mongo.getUri());
   const uid = new mongoose.Types.ObjectId('0123456789abcdef01234567');
@@ -128,6 +139,46 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
     await db.close();
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
     await admin.close();
+  });
+  it('imports and reconciles through plain snapshot, staging, and lifecycle interfaces', async () => {
+    const snapshot = {
+      id: row(1)._id.toHexString(),
+      userId: uid.toHexString(),
+      tenantId: 'tenant-one',
+      itemType: 'tool',
+      itemId: 'portable-store',
+      createdAt: row(1).createdAt,
+      updatedAt: row(1).updatedAt,
+    } as const;
+    const source = async function* () {
+      yield snapshot;
+    };
+    const insert = jest.fn(async () => undefined);
+    const replace = jest.fn(async () => undefined);
+    const discard = jest.fn(async () => undefined);
+    const store: MongoFavoriteStore = {
+      source,
+      stage: jest.fn(async () => ({ source, insert, replace, discard })),
+    };
+    const connect = jest.fn(async () => undefined);
+    const disconnect = jest.fn(async () => undefined);
+    for (const command of ['import', 'verify', 'reconcile-mongo']) {
+      await runPostgresCommand({
+        favorites: store,
+        connectDb: connect,
+        disconnectDb: disconnect,
+        loadCustomConfig,
+        args: [command, '--offline'],
+        env,
+      });
+    }
+    expect(connect.mock.calls).toEqual([[], [], []]);
+    expect(disconnect).toHaveBeenCalledTimes(3);
+    expect(store.stage).toHaveBeenCalledTimes(1);
+    expect(insert).toHaveBeenCalledWith([snapshot]);
+    expect(replace).toHaveBeenCalledTimes(1);
+    expect(discard).not.toHaveBeenCalled();
+    expect(connectDb).not.toHaveBeenCalled();
   });
   it('runs the actual migrate entrypoint with MONGO_URI unset', () => {
     const scratchRoot = resolve(__dirname, '../../../../node_modules/.cache/pg-lifecycle');
@@ -319,7 +370,8 @@ process.on('beforeExit', () => {
     loadCustomConfig.mockClear();
     try {
       const result = await runPostgresCommand({
-        mongoose,
+        favorites,
+        disconnectDb,
         connectDb,
         loadCustomConfig,
         args: ['migrate', '--dry-run'],

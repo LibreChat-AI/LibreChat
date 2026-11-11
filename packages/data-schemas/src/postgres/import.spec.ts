@@ -28,7 +28,7 @@ postgres('real PostgreSQL snapshot recovery', () => {
     ({ db } = await createPostgresTestDatabase());
     await migratePostgres(db);
   });
-  afterAll(async () => db.close());
+  afterAll(async () => db?.close());
   beforeEach(async () => {
     await db.query('TRUNCATE tool_favorites,tool_favorite_erasure');
     await db.query(
@@ -127,6 +127,75 @@ postgres('real PostgreSQL snapshot recovery', () => {
     );
   });
 
+  it.each([false, true])(
+    'survives a final source scan beyond the idle transaction timeout (changed: %s)',
+    async (changed) => {
+      let pass = 0;
+      const slow: FavoriteSnapshotSource = async function* () {
+        if (++pass === 3) {
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          yield* changed ? rows.map((row) => ({ ...row, tenantId: 'changed' })) : rows;
+          return;
+        }
+        yield* rows;
+      };
+      const shortTimeout: PostgresDatabase = {
+        ...db,
+        session: (operation) =>
+          db.session(async (session) => {
+            await session.query("SET idle_in_transaction_session_timeout = '100ms'");
+            try {
+              return await operation(session);
+            } finally {
+              await session.query('RESET idle_in_transaction_session_timeout');
+            }
+          }),
+      };
+      if (changed) {
+        await expect(importFavorites(shortTimeout, slow, options)).rejects.toThrow(
+          'verification failed',
+        );
+      } else {
+        await expect(importFavorites(shortTimeout, slow, options)).resolves.toEqual(
+          await fingerprintFavorites(source()),
+        );
+      }
+      expect(pass).toBe(3);
+      expect(await state()).toMatchObject({ verified: !changed, imported: changed ? '0' : '5' });
+      expect(await fingerprintFavorites(readPostgresFavorites(db, 2))).toEqual(
+        await fingerprintFavorites(source()),
+      );
+    },
+  );
+
+  it('holds the pinned migration lock without a transaction during every source pass', async () => {
+    let pid = 0;
+    let passes = 0;
+    const pinned: PostgresDatabase = {
+      ...db,
+      session: (operation) =>
+        db.session(async (session) => {
+          pid = (await session.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]
+            .pid;
+          return operation(session);
+        }),
+    };
+    const checking: FavoriteSnapshotSource = async function* () {
+      passes++;
+      expect(
+        (await db.query('SELECT state FROM pg_stat_activity WHERE pid=$1', [pid])).rows,
+      ).toEqual([{ state: 'idle' }]);
+      await expect(importFavorites(db, source(), options)).rejects.toThrow(
+        'Another favorite migration or import is running',
+      );
+      yield* rows;
+    };
+    await importFavorites(pinned, checking, options);
+    expect(passes).toBe(3);
+    expect(await state()).toMatchObject({ verified: true, imported: '5' });
+    await importFavorites(db, source(), options);
+  });
+
   it.each(['activated', 'snapshot'])(
     'refuses %s authority change between batches',
     async (change) => {
@@ -219,6 +288,30 @@ postgres('real PostgreSQL snapshot recovery', () => {
         if (change === 'snapshot')
           await db.query("UPDATE tool_favorite_readiness SET snapshot='changed'");
         if (change === 'missing') await db.query('DELETE FROM tool_favorite_readiness');
+      };
+      try {
+        await expect(importFavorites(db, changing, options)).rejects.toThrow('authority changed');
+        if (change !== 'missing') expect(await state()).toMatchObject({ verified: false });
+      } finally {
+        if (change === 'missing')
+          await db.query('INSERT INTO tool_favorite_readiness(singleton) VALUES(true)');
+      }
+    },
+  );
+
+  it.each(['activated', 'snapshot', 'missing'])(
+    'refuses %s authority change during the final source pass',
+    async (change) => {
+      let pass = 0;
+      const changing: FavoriteSnapshotSource = async function* () {
+        if (++pass === 3) {
+          if (change === 'activated')
+            await db.query('UPDATE tool_favorite_readiness SET activated=true');
+          if (change === 'snapshot')
+            await db.query("UPDATE tool_favorite_readiness SET snapshot='changed'");
+          if (change === 'missing') await db.query('DELETE FROM tool_favorite_readiness');
+        }
+        yield* rows;
       };
       try {
         await expect(importFavorites(db, changing, options)).rejects.toThrow('authority changed');

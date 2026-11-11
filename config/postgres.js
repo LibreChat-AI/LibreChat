@@ -5,10 +5,12 @@ const path = require('node:path');
 require('module-alias').addAlias('~', path.resolve(__dirname, '../api'));
 const { runPostgresCommand } = require('@librechat/api');
 const mongoose = require('mongoose');
+const { createMongoFavoriteStore } = require('@librechat/data-schemas');
 const loadCustomConfig = require('~/server/services/Config/loadCustomConfig');
 runPostgresCommand({
-  mongoose,
-  connectDb: (options) => mongoose.connect(process.env.MONGO_URI, options),
+  favorites: createMongoFavoriteStore(mongoose),
+  connectDb: () => mongoose.connect(process.env.MONGO_URI, { autoCreate: false, autoIndex: false }),
+  disconnectDb: () => mongoose.disconnect(),
   loadCustomConfig,
   args: process.argv.slice(2),
   env: process.env,
