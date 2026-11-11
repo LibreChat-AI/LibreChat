@@ -80,9 +80,8 @@ for (const mode of ['light', 'dark']) {
     await page.getByRole('menuitem', { name: 'Settings', exact: true }).click();
     const settings = page.getByRole('dialog');
     await settings.getByRole('tab', { name: 'Account', exact: true }).click();
-    await expect(
-      settings.getByText('This connection is unavailable. You can still disconnect this account.'),
-    ).toBeVisible();
+    const links = settings.getByRole('region', { name: 'Your channel account links' });
+    await expect(links.getByRole('status')).toHaveText('Unavailable');
     if (process.env.E2E_CHANNEL_VISUAL_PREFIX) {
       await page.screenshot({
         path: `${process.env.E2E_CHANNEL_VISUAL_PREFIX}-settings-${mode}.png`,
@@ -90,10 +89,10 @@ for (const mode of ['light', 'dark']) {
     }
     await settings.getByRole('button', { name: 'Revoke link', exact: true }).click();
     expect(revokes).toBe(0);
-    await settings
-      .getByRole('group')
-      .getByRole('button', { name: 'Revoke link', exact: true })
-      .click();
+    const confirmation = page.getByRole('dialog', { name: 'Revoke link', exact: true });
+    await expect(confirmation.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+    await confirmation.getByRole('button', { name: 'Revoke link', exact: true }).click();
+    await expect(confirmation).not.toBeVisible();
     await expect(settings.getByRole('status')).toHaveText('Revoked');
     expect(revokes).toBe(1);
     await page.keyboard.press('Escape');

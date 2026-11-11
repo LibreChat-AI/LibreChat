@@ -138,33 +138,29 @@ for (const theme of ['light', 'dark']) {
     await page.getByRole('menuitem', { name: 'Settings', exact: true }).click();
     const settings = page.getByRole('dialog');
     await settings.getByRole('tab', { name: 'Account', exact: true }).click();
-    const workspacesPanel = settings.getByRole('region', { name: 'Organization Slack workspaces' });
-    await expect(workspacesPanel.getByText('No Slack workspaces are connected.')).toBeVisible();
+    const slackSection = settings.getByRole('region', { name: 'Slack', exact: true });
+    await slackSection.getByRole('button', { name: 'Set up', exact: true }).click();
+    const workspacesPanel = page.getByRole('dialog', { name: 'Manage Slack', exact: true });
+    await expect(workspacesPanel.getByText('No Slack apps registered yet.')).toBeVisible();
     await workspacesPanel.getByRole('button', { name: 'Add Slack app', exact: true }).click();
-    await workspacesPanel.getByLabel('Slack app ID', { exact: true }).fill('A123');
-    await workspacesPanel.getByLabel('Client ID', { exact: true }).fill('123.456');
-    await workspacesPanel.getByLabel('Client secret', { exact: true }).fill('test-client');
-    await workspacesPanel.getByLabel('Signing secret', { exact: true }).fill('test-signature');
-    await workspacesPanel.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(workspacesPanel.getByLabel('Client secret', { exact: true })).toHaveCount(0);
+    const appForm = page.getByRole('dialog', { name: 'Add Slack app', exact: true });
+    await appForm.getByLabel('Slack app ID', { exact: true }).fill('A123');
+    await appForm.getByLabel('Client ID', { exact: true }).fill('123.456');
+    await appForm.getByLabel('Client secret (Unset)', { exact: true }).fill('test-client');
+    await appForm.getByLabel('Signing secret (Unset)', { exact: true }).fill('test-signature');
+    await appForm.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(appForm).not.toBeVisible();
     const cancelledPopup = context.waitForEvent('page');
-    await workspacesPanel
-      .getByRole('button', { name: 'Connect a Slack workspace', exact: true })
-      .click();
+    await workspacesPanel.getByRole('button', { name: 'Add to workspace', exact: true }).click();
     const first = await cancelledPopup;
     await expect(first).toHaveURL(/slack\.com\/oauth\/v2\/authorize/);
-    await workspacesPanel.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await expect(
-      workspacesPanel.getByText(
-        'Finish connecting in the Slack window. Your workspace list will update when you return.',
-      ),
-    ).toHaveCount(0);
+    const connecting = page.getByRole('dialog', { name: 'Connecting to Slack…', exact: true });
+    await connecting.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(connecting).not.toBeVisible();
     expect(cancelled).toBe(1);
     await first.close();
     const popupPromise = context.waitForEvent('page');
-    await workspacesPanel
-      .getByRole('button', { name: 'Connect a Slack workspace', exact: true })
-      .click();
+    await workspacesPanel.getByRole('button', { name: 'Add to workspace', exact: true }).click();
     const popup = await popupPromise;
     await expect(popup).toHaveURL(/slack\.com\/oauth\/v2\/authorize/);
     workspaces = [
@@ -189,11 +185,14 @@ for (const theme of ['light', 'dark']) {
         path: `${process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX}-${theme}.png`,
       });
     }
-    await workspacesPanel.getByRole('button', { name: 'Manage bot access', exact: true }).click();
+    await workspacesPanel
+      .getByRole('button', {
+        name: 'Manage access for Example engineering (workspace-browser)',
+        exact: true,
+      })
+      .click();
     const access = page.getByRole('dialog', { name: 'Manage bot access', exact: true });
-    await expect(
-      access.getByText('Only administrators can assign agents until you add a bot manager.'),
-    ).toBeVisible();
+    await expect(access.getByRole('combobox', { name: 'Add a bot manager' })).toBeVisible();
     await access.getByRole('combobox', { name: 'Add a bot manager' }).fill('alex');
     await expect(
       access.getByText('Could not search your organization’s users. Try again.'),
@@ -205,7 +204,13 @@ for (const theme of ['light', 'dark']) {
         path: `${process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX}-search-error-${theme}.png`,
       });
     await access.getByRole('button', { name: 'Retry', exact: true }).click();
-    await access.getByRole('option', { name: /Alex Morgan/ }).click();
+    await expect(
+      page.getByRole('listbox').getByRole('option', { name: /Alex Morgan/ }),
+    ).toBeVisible();
+    await page
+      .getByRole('listbox')
+      .getByRole('option', { name: /Alex Morgan/ })
+      .click();
     await expect(access.getByText('Alex Morgan', { exact: true })).toBeVisible();
     if (process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX)
       await page.screenshot({
@@ -217,11 +222,19 @@ for (const theme of ['light', 'dark']) {
     expect(managers).toEqual([manager]);
     expect(legacySearches).toBe(0);
     expect(searches).toBe(2);
-    await workspacesPanel.getByRole('button', { name: 'Manage bot access', exact: true }).click();
+    await workspacesPanel
+      .getByRole('button', {
+        name: 'Manage access for Example engineering (workspace-browser)',
+        exact: true,
+      })
+      .click();
     await expect(access.getByText('Alex Morgan', { exact: true })).toBeVisible();
     await access.getByRole('button', { name: 'Cancel', exact: true }).click();
     await workspacesPanel
-      .getByRole('button', { name: 'Disconnect workspace', exact: true })
+      .getByRole('button', {
+        name: 'Disconnect Example engineering (workspace-browser)',
+        exact: true,
+      })
       .click();
     expect(disconnected).toBe(0);
     await page
@@ -233,15 +246,22 @@ for (const theme of ['light', 'dark']) {
       .click();
     await expect(workspacesPanel.getByText('Disconnected', { exact: true })).toBeVisible();
     expect(disconnected).toBe(1);
-    await workspacesPanel.getByRole('button', { name: 'Remove workspace', exact: true }).click();
+    await workspacesPanel
+      .getByRole('button', { name: 'Remove Example engineering (workspace-browser)', exact: true })
+      .click();
     const removal = page.getByRole('dialog', { name: 'Remove workspace', exact: true });
     await expect(removal.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(removal).not.toBeVisible();
     await expect(
-      workspacesPanel.getByRole('button', { name: 'Remove workspace', exact: true }),
+      workspacesPanel.getByRole('button', {
+        name: 'Remove Example engineering (workspace-browser)',
+        exact: true,
+      }),
     ).toBeFocused();
-    await workspacesPanel.getByRole('button', { name: 'Remove workspace', exact: true }).click();
+    await workspacesPanel
+      .getByRole('button', { name: 'Remove Example engineering (workspace-browser)', exact: true })
+      .click();
     await expect(removal).toContainText('This does not uninstall the app from Slack.');
     await expect(
       removal.getByRole('button', { name: 'Remove workspace', exact: true }),
@@ -255,10 +275,11 @@ for (const theme of ['light', 'dark']) {
     }
     await removal.getByRole('button', { name: 'Remove workspace', exact: true }).click();
     await expect(workspacesPanel.getByText('Example engineering')).toHaveCount(0);
-    await expect(workspacesPanel.getByText('No Slack workspaces are connected.')).toBeVisible();
     await expect(
-      workspacesPanel.getByRole('heading', { name: 'Organization Slack workspaces', exact: true }),
-    ).toBeFocused();
+      workspacesPanel.getByRole('button', { name: 'Add to workspace', exact: true }),
+    ).toBeVisible();
+    await expect(workspacesPanel).toBeFocused();
+    await workspacesPanel.getByRole('button', { name: 'Close', exact: true }).click();
     await page.keyboard.press('Escape');
     await expect(page.locator('#prompt-textarea')).toBeVisible();
   });
@@ -409,13 +430,15 @@ for (const theme of ['light', 'dark']) {
         .scrollIntoViewIfNeeded();
       await form.getByRole('button', { name: 'Add Slack channel', exact: true }).click();
       const picker = page.getByRole('dialog', { name: 'Add Slack channel', exact: true });
-      await expect(picker.getByRole('button', { name: 'Engineering', exact: true })).toBeVisible();
+      const botPicker = picker.getByRole('combobox', { name: 'Slack bot', exact: true });
+      await expect(botPicker).toBeVisible();
       if (process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX)
         await page.screenshot({
           animations: 'disabled',
           path: `${process.env.E2E_SHARED_WORKSPACE_VISUAL_PREFIX}-choose-${theme}.png`,
         });
-      await picker.getByRole('button', { name: 'Engineering', exact: true }).click();
+      await botPicker.click();
+      await page.getByRole('option', { name: /Engineering.*A123/ }).click();
       await picker.getByRole('button', { name: 'Continue', exact: true }).click();
       const setup = page.getByRole('dialog', { name: 'Connect to Slack', exact: true });
       await expect(
@@ -460,9 +483,9 @@ for (const theme of ['light', 'dark']) {
       await expect(
         manage.getByRole('heading', { name: 'Current assignments', exact: true }),
       ).toBeVisible();
-      await expect(
-        manage.getByRole('button', { name: 'Add assignment', exact: true }),
-      ).toBeVisible();
+      await expect(manage.getByRole('button', { name: 'Add assignment', exact: true })).toHaveCount(
+        0,
+      );
       await expect(
         manage.getByRole('group', { name: 'Where this bot uses this agent', exact: true }),
       ).toHaveCount(0);

@@ -36,12 +36,12 @@ describe('workspace routing and live channel authority', () => {
     encryptedSigningSecret: 'encrypted-signing-secret',
   };
 
-  async function install(token = 'encrypted-bot-token', teamId = 'T123') {
+  async function install(token = 'encrypted-bot-token', teamId = 'T123', appId = 'A123') {
     const stateHash = `attempt-${++sequence}`;
     await installations.startInstall({
       stateHash,
       userId: 'admin',
-      appId: 'A123',
+      appId,
       clientId: '123.456',
       expiresAt: new Date(Date.now() + 60_000),
     });
@@ -51,7 +51,7 @@ describe('workspace routing and live channel authority', () => {
       stateHash,
       claim.callbackId,
       {
-        appId: 'A123',
+        appId,
         teamId,
         teamName: 'Workspace',
         botUserId: 'U123',
@@ -414,10 +414,16 @@ describe('workspace routing and live channel authority', () => {
 
   it('filters member pages before pagination and never copies Slack credentials into manager metadata', async () =>
     scoped(async () => {
+      const app = await installations.app('A123');
+      await installations.configureApp(
+        { ...appCredentials, name: 'Permitted bot' },
+        'admin',
+        app!.revision,
+      );
       const first = await install();
       await grantManagers(first);
       expect((await installations.list(undefined, 1, otherId)).workspaces).toEqual([]);
-      const hidden = await install('ungranted-token', 'T999');
+      const hidden = await install('ungranted-token', 'T999', 'A456');
       await db.models.SlackWorkspace.updateOne(
         { workspaceId: hidden },
         { $set: { workspaceId: 'a-hidden' } },
@@ -429,7 +435,11 @@ describe('workspace routing and live channel authority', () => {
       expect((await installations.list(undefined, 1)).workspaces[0].workspaceId).toBe('a-hidden');
       const listed = await installations.list(undefined, 1, managerId);
       expect(listed.workspaces).toHaveLength(1);
-      expect(listed.workspaces[0]).toMatchObject({ workspaceId: 'z-managed', canManageBot: true });
+      expect(listed.workspaces[0]).toMatchObject({
+        workspaceId: 'z-managed',
+        canManageBot: true,
+        appName: 'Permitted bot',
+      });
       expect(JSON.stringify(listed)).not.toMatch(/encrypted|bot-token|client-secret/);
       expect(await scoped(() => installations.list(undefined, 1, managerId), 'org-b')).toEqual({
         workspaces: [],

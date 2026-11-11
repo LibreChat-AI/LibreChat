@@ -1,15 +1,19 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ExternalLink, Plus } from 'lucide-react';
+import { isAxiosError } from 'axios';
+import { Trans } from 'react-i18next';
+import { ExternalLink, Info, Plus } from 'lucide-react';
 import { dataService, QueryKeys, MutationKeys } from 'librechat-data-provider';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
   Button,
   Input,
+  InfoHoverCard,
   Label,
   OGDialog,
   OGDialogTemplate,
   OGDialogFooter,
+  Radio,
   Separator,
   Tag,
 } from '@librechat/client';
@@ -77,8 +81,18 @@ export default function WorkspaceChannel({
     { retry: false },
   );
   const ownsChannel = channel.createdBy === userId;
+  const status = isAxiosError(workspace.error) ? workspace.error.response?.status : undefined;
+  const unavailable =
+    status === 404 ||
+    status === 410 ||
+    (!workspace.isError &&
+      workspace.isSuccess &&
+      (!workspace.data.configured || workspace.data.workspace.status !== 'active'));
+  const accessDenied = status === 401 || status === 403;
   const available = Boolean(
-    workspace.data?.configured && workspace.data.workspace.status === 'active',
+    !workspace.isError &&
+      workspace.data?.configured &&
+      workspace.data.workspace.status === 'active',
   );
   const mayRoute =
     enabled &&
@@ -91,7 +105,7 @@ export default function WorkspaceChannel({
     ({ pageParam }: { pageParam?: string }) =>
       dataService.getAgentChannelWorkspaceRoutes(agentId, channel.channelId, pageParam),
     {
-      enabled: enabled && ownsChannel,
+      enabled: enabled && ownsChannel && available,
       retry: false,
       getNextPageParam: (page) => page.next,
     },
@@ -210,37 +224,62 @@ export default function WorkspaceChannel({
     <>
       <div className="min-h-0 space-y-4 overflow-y-auto px-6 pb-6 text-sm">
         <div className="flex items-center justify-between gap-2">
-          <span className="min-w-0 flex-1 font-medium break-words">
-            {workspace.data?.workspace.teamName ?? localize('com_ui_channels_org_workspace')}
-          </span>
-          <ChannelStatus
-            status={channel.status}
-            pendingLabel="com_ui_channels_workspace_not_assigned"
-          />
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="min-w-0 font-medium break-words">
+              {workspace.data?.workspace.appName ??
+                workspace.data?.workspace.teamName ??
+                localize('com_ui_channels_slack_connection')}
+            </span>
+            {unavailable && (
+              <InfoHoverCard text={localize('com_ui_channels_workspace_reconnect_help')}>
+                <Info className="text-text-tertiary size-4" aria-hidden="true" />
+              </InfoHoverCard>
+            )}
+          </div>
+          {unavailable && (
+            <Tag
+              variant="warning"
+              label={localize('com_ui_channels_workspace_unavailable_status')}
+            />
+          )}
+          {available && (
+            <ChannelStatus
+              status={channel.status}
+              pendingLabel="com_ui_channels_workspace_not_assigned"
+            />
+          )}
         </div>
-        {workspace.data && (
-          <a
-            href={`https://slack.com/app_redirect?app=${encodeURIComponent(workspace.data.workspace.appId)}&team=${encodeURIComponent(workspace.data.workspace.teamId)}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1 underline underline-offset-2"
-          >
-            {localize('com_ui_channels_workspace_open_bot')}
-            <ExternalLink className="size-3" aria-hidden="true" />
-          </a>
+        {available && workspace.data && (
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+            {workspace.data.workspace.appName && (
+              <span className="text-text-secondary">{workspace.data.workspace.teamName}</span>
+            )}
+            <a
+              href={`https://slack.com/app_redirect?app=${encodeURIComponent(workspace.data.workspace.appId)}&team=${encodeURIComponent(workspace.data.workspace.teamId)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1 underline underline-offset-2"
+            >
+              {localize('com_ui_channels_workspace_open_bot')}
+              <ExternalLink className="size-3" aria-hidden="true" />
+            </a>
+          </div>
         )}
 
         {workspace.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
-        {workspace.isError && (
-          <div role="alert">
-            <p>{localize('com_ui_slack_workspaces_error')}</p>
+        {workspace.isError && !unavailable && !accessDenied && (
+          <Alert variant="error">
+            <p>{localize('com_ui_channels_workspace_load_error')}</p>
             <Button type="button" variant="outline" onClick={() => void workspace.refetch()}>
               {localize('com_ui_retry')}
             </Button>
-          </div>
+          </Alert>
         )}
-        {workspace.data && !available && (
-          <p role="status">{localize('com_ui_channels_workspace_unavailable')}</p>
+        {unavailable && (
+          <Alert variant="warning">{localize('com_ui_channels_workspace_unavailable')}</Alert>
+        )}
+        {accessDenied && (
+          <Alert variant="warning">{localize('com_ui_channels_workspace_access_denied')}</Alert>
         )}
         {!ownsChannel && <p>{localize('com_ui_channels_read_only')}</p>}
         {ownsChannel && available && workspace.data?.workspace.canManageBot !== true && (
@@ -251,7 +290,7 @@ export default function WorkspaceChannel({
             {localize(channelErrorLabel(mutation.error, 'com_ui_channels_workspace_route_error'))}
           </p>
         )}
-        {!editing && ownsChannel && (
+        {!editing && ownsChannel && available && (
           <section
             className="space-y-2"
             aria-labelledby={entries.length > 0 ? `${id}-routes` : undefined}
@@ -307,72 +346,76 @@ export default function WorkspaceChannel({
                 {localize('com_ui_channels_workspace_more_routes')}
               </Button>
             )}
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy || !mayRoute || !routes.isSuccess}
-              ref={addRef}
-              onClick={() => {
-                mutation.reset();
-                setSpecific(entries.some((entry) => !entry.externalChannelId));
-                setExternalChannel('');
-                setEditing(true);
-              }}
-            >
-              <Plus className="size-4" aria-hidden="true" />
-              {localize('com_ui_channels_workspace_add_assignment')}
-            </Button>
+            {mayRoute &&
+              (channel.status !== 'active' ||
+                !entries.some((entry) => !entry.externalChannelId)) && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy || !routes.isSuccess}
+                  ref={addRef}
+                  onClick={() => {
+                    mutation.reset();
+                    const target =
+                      channel.status === 'disabled'
+                        ? (entries.find((entry) => !entry.externalChannelId) ?? entries[0])
+                        : undefined;
+                    setSpecific(Boolean(target?.externalChannelId));
+                    setExternalChannel(target?.externalChannelId ?? '');
+                    setEditing(true);
+                  }}
+                >
+                  <Plus className="size-4" aria-hidden="true" />
+                  {localize(
+                    channel.status === 'disabled' && entries.length > 0
+                      ? 'com_ui_channels_activate'
+                      : 'com_ui_channels_workspace_add_assignment',
+                  )}
+                </Button>
+              )}
           </section>
         )}
         {editing && mayRoute && (
           <section className="space-y-3" aria-labelledby={`${id}-target`}>
-            <div className="flex items-center justify-between gap-2">
-              <h4 id={`${id}-target`} className="min-w-0 font-medium">
-                {localize('com_ui_channels_workspace_target')}
-              </h4>
-              {alreadyAssigned && (
-                <Tag
-                  role="status"
-                  className="shrink-0"
-                  variant="success"
-                  label={localize('com_ui_channels_workspace_assigned')}
-                />
-              )}
-            </div>
-            <div
-              role="group"
-              aria-label={localize('com_ui_channels_workspace_target')}
-              className="flex flex-wrap gap-2"
-            >
-              <Button
-                type="button"
-                variant="outline-toggle"
-                aria-pressed={!specific}
-                disabled={busy}
-                onClick={() => {
-                  setSpecific(false);
-                }}
-              >
-                {localize('com_ui_channels_workspace_default')}
-              </Button>
-              <Button
-                type="button"
-                variant="outline-toggle"
-                aria-pressed={specific}
-                disabled={busy}
-                onClick={() => {
-                  setSpecific(true);
-                }}
-              >
-                {localize('com_ui_channels_workspace_specific')}
-              </Button>
-            </div>
+            <span id={`${id}-target`} className="sr-only">
+              {localize('com_ui_channels_workspace_target')}
+            </span>
+            {alreadyAssigned && (
+              <Tag
+                role="status"
+                variant="success"
+                label={localize('com_ui_channels_workspace_assigned')}
+              />
+            )}
+            <Radio
+              fullWidth
+              wrap
+              aria-labelledby={`${id}-target`}
+              value={specific ? 'channel' : 'default'}
+              onChange={(value) => setSpecific(value === 'channel')}
+              disabled={busy}
+              options={[
+                { value: 'default', label: localize('com_ui_channels_workspace_default') },
+                { value: 'channel', label: localize('com_ui_channels_workspace_specific') },
+              ]}
+            />
             <p className="text-text-secondary">
-              {localize(
-                specific
-                  ? 'com_ui_channels_workspace_channel_help'
-                  : 'com_ui_channels_workspace_default_help',
-              )}
+              <Trans
+                i18nKey={
+                  specific
+                    ? 'com_ui_channels_workspace_channel_help'
+                    : 'com_ui_channels_workspace_default_help'
+                }
+                values={{
+                  botName:
+                    workspace.data?.workspace.appName ??
+                    localize('com_ui_channels_slack_app_fallback', {
+                      0: workspace.data?.workspace.appId ?? '',
+                    }),
+                  workspaceName: workspace.data?.workspace.teamName ?? '',
+                }}
+                components={{ strong: <strong className="font-semibold" /> }}
+              />
             </p>
             {specific && (
               <div className="space-y-1">
@@ -415,15 +458,12 @@ export default function WorkspaceChannel({
                   : localize('com_ui_channels_workspace_occupied')}
               </Alert>
             )}
-            <p className="text-text-secondary text-xs">
-              {localize('com_ui_channels_workspace_identity')}
-            </p>
           </section>
         )}
       </div>
       <Separator />
       <OGDialogFooter className="flex-wrap gap-2 px-6 py-4 sm:justify-between">
-        {editing ? (
+        {editing && mayRoute ? (
           <>
             <Button
               type="button"
@@ -460,7 +500,7 @@ export default function WorkspaceChannel({
             <Button
               type="button"
               variant="destructive-soft"
-              disabled={busy}
+              disabled={busy || !ownsChannel}
               onClick={(event) => {
                 actionRef.current = event.currentTarget;
                 setConfirm({ kind: 'delete' });
@@ -468,16 +508,26 @@ export default function WorkspaceChannel({
             >
               {localize('com_ui_channels_workspace_delete_connection')}
             </Button>
-            {channel.status === 'active' && (
+            <div className="flex items-center gap-2">
+              {available && channel.status === 'active' && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => mutation.mutate({ kind: 'disable' })}
+                >
+                  {localize('com_ui_channels_disable')}
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="outline"
-                disabled={busy}
-                onClick={() => mutation.mutate({ kind: 'disable' })}
+                disabled={mutation.isLoading}
+                onClick={onClose}
               >
-                {localize('com_ui_channels_disable')}
+                {localize('com_ui_close')}
               </Button>
-            )}
+            </div>
           </>
         )}
       </OGDialogFooter>

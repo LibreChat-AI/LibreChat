@@ -102,7 +102,7 @@ test('personal revocation requires confirmation and uses exact link revision', a
   renderPage(<Links api={api} principalKey="tenant:user-a" />);
   await user.click(await screen.findByRole('button', { name: 'com_ui_channel_link_revoke' }));
   expect(api.revoke).not.toHaveBeenCalled();
-  const confirmation = screen.getByRole('group', { name: 'com_ui_channel_link_revoke_confirm' });
+  const confirmation = screen.getByRole('dialog', { name: 'com_ui_channel_link_revoke' });
   api.list.mockResolvedValue([{ ...pending, state: 'revoked' }]);
   await user.click(
     within(confirmation).getByRole('button', { name: 'com_ui_channel_link_revoke' }),
@@ -164,15 +164,40 @@ test('an expired successful preview explains how to recover without offering acc
   ).not.toBeInTheDocument();
 });
 
+test('keeps a rejected revocation visible and refreshes its revision before retry', async () => {
+  const user = userEvent.setup();
+  api.revoke.mockResolvedValueOnce({ ok: false, error: { code: 'changed' } });
+  renderPage(<Links api={api} principalKey="tenant:user-a" />);
+  await user.click(await screen.findByRole('button', { name: 'com_ui_channel_link_revoke' }));
+  const dialog = screen.getByRole('dialog', { name: 'com_ui_channel_link_revoke' });
+  api.list.mockResolvedValue([{ ...pending, state: 'active', revision: 'fresh-revision' }]);
+  await user.click(within(dialog).getByRole('button', { name: 'com_ui_channel_link_revoke' }));
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent('com_ui_channel_link_changed');
+  await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+  await waitFor(() =>
+    expect(
+      within(dialog).getByRole('button', { name: 'com_ui_channel_link_revoke' }),
+    ).toBeEnabled(),
+  );
+  api.list.mockResolvedValue([{ ...pending, state: 'revoked' }]);
+  await user.click(within(dialog).getByRole('button', { name: 'com_ui_channel_link_revoke' }));
+  await waitFor(() => expect(api.revoke).toHaveBeenLastCalledWith('link', 'fresh-revision'));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+});
+
 test('an unavailable personal connection remains explicitly revocable', async () => {
   const user = userEvent.setup();
   api.list.mockResolvedValue([{ ...pending, state: 'unavailable' }]);
   renderPage(<Links api={api} principalKey="tenant:user-a" />);
-  expect(await screen.findByRole('status')).toHaveTextContent('com_ui_channel_link_unavailable');
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    'com_ui_channels_workspace_unavailable_status',
+  );
   await user.click(screen.getByRole('button', { name: 'com_ui_channel_link_revoke' }));
   api.list.mockResolvedValue([{ ...pending, state: 'revoked' }]);
   await user.click(
-    within(screen.getByRole('group')).getByRole('button', { name: 'com_ui_channel_link_revoke' }),
+    within(screen.getByRole('dialog', { name: 'com_ui_channel_link_revoke' })).getByRole('button', {
+      name: 'com_ui_channel_link_revoke',
+    }),
   );
   expect(api.revoke).toHaveBeenCalledWith('link', 'revision');
   expect(await screen.findByText('com_ui_channel_link_revoked')).toBeInTheDocument();
@@ -314,4 +339,29 @@ test('accepted consent clearly points back to the verified Slack workspace witho
   );
   expect(screen.getByRole('status')).toHaveTextContent('com_ui_channel_link_confirm_slack');
   expect(screen.queryByText('com_ui_channel_link_active')).not.toBeInTheDocument();
+});
+
+test('hides the linked-account section after a successful empty list', async () => {
+  api.list.mockResolvedValue([]);
+  const { container } = renderPage(<Links api={api} principalKey="tenant:user-a" />);
+  await waitFor(() => expect(container).toBeEmptyDOMElement());
+  expect(
+    screen.queryByRole('heading', { name: 'com_ui_channel_link_personal' }),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByText('com_ui_channel_link_empty')).not.toBeInTheDocument();
+  expect(screen.queryByText('com_ui_channel_link_boundary')).not.toBeInTheDocument();
+});
+
+test('does not present a loading linked-account list as empty', () => {
+  api.list.mockImplementation(() => new Promise(() => {}));
+  renderPage(<Links api={api} principalKey="tenant:user-a" />);
+  expect(screen.queryByText('com_ui_channel_link_empty')).not.toBeInTheDocument();
+});
+
+test('shows a list error with retry instead of an empty linked-account state', async () => {
+  api.list.mockRejectedValue(new Error('synthetic list failure'));
+  renderPage(<Links api={api} principalKey="tenant:user-a" />);
+  await screen.findByRole('alert');
+  expect(screen.getByRole('button', { name: 'com_ui_retry' })).toBeInTheDocument();
+  expect(screen.queryByText('com_ui_channel_link_empty')).not.toBeInTheDocument();
 });
