@@ -10,6 +10,7 @@ import {
 import { MCPAuthenticationRefreshError, MCPAuthenticationRejectedError } from '~/mcp/errors';
 import { ReauthenticationRequiredError } from '~/mcp/oauth/tokens';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
+import { createMCPToolsFailureContext } from '../errors';
 
 const SECRET = 'provider-secret-value';
 
@@ -130,6 +131,23 @@ describe('findMCPAuthenticationFailure', () => {
 });
 
 describe('reportSubagentResolutionFailure', () => {
+  it('returns the host classification while preserving operator logging', () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const pending = createMCPToolsFailureContext('private-agent');
+    pending.recordOAuthResult({ oauthRequired: true });
+    expect(
+      reportSubagentResolutionFailure(diagnostic(), pending.createError(new Error(SECRET))),
+    ).toBe('authentication_required');
+    expect(reportSubagentResolutionFailure(diagnostic(), new MCPAuthenticationRefreshError())).toBe(
+      'tools_unavailable',
+    );
+    expect(
+      reportSubagentResolutionFailure(diagnostic({ aborted: true }), pending.createError()),
+    ).toBeUndefined();
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(SECRET);
+    warn.mockRestore();
+  });
+
   it('logs the underlying cause and the MCP server, and keeps the SDK classification', () => {
     const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
     const error = new Error(`Initialization failed: ${SECRET}`, {
