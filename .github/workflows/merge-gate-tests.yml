@@ -33,10 +33,11 @@ jobs:
           node-version: '24.22.1'
 
       # Same key and path list as the E2E and Static Checks workflows, so the tree they
-      # installed for this lockfile is reused. Restore only: this job never saves it.
+      # installed for this lockfile is reused; ci-setup.spec.ts holds every job that shares
+      # the key to the same list.
       - name: Restore node_modules cache
         id: cache-node-modules
-        uses: actions/cache/restore@v5
+        uses: actions/cache@v5
         with:
           path: |
             node_modules
