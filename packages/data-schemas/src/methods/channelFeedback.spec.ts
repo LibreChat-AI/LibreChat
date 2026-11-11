@@ -10,6 +10,7 @@ import {
 } from './responseScope';
 import { createChannelFeedbackStorage, ChannelFeedbackAuthorityError } from './channelFeedback';
 import { runAsSystem, tenantStorage } from '~/config/tenantContext';
+import { waitForPause } from './test-helpers';
 import { createModels } from '~/models';
 import { createMethods } from './index';
 
@@ -633,12 +634,14 @@ it('serializes accepted projection against erasure and cannot recreate data on a
       await gate;
       await active.admitChannelFeedbackEvent(event());
     });
-    await entered;
+    await waitForPause(entered, write);
     const erase = (async () => {
       await closeResponseScopes(mongoose, { userId, tenantId }, [mapping.conversationId]);
       await eraseResponseRecords(mongoose, { userId, tenantId }, [mapping.conversationId]);
     })();
+    const drained = Promise.allSettled([write, erase]);
     release();
+    await drained;
     await write;
     await erase;
     expect(await storage.isAuthorityCurrent(mapping)).toBe(false);
