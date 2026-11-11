@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { createHash } from 'node:crypto';
 import {
   ResourceType,
   PrincipalType,
@@ -32,6 +33,17 @@ const supersetCache = new Map<number, readonly number[]>();
 
 function isDuplicateKeyError(error: unknown): boolean {
   return typeof error === 'object' && error != null && (error as { code?: unknown }).code === 11000;
+}
+
+/** Names an entry after the grant it records, so two inserts of the same grant collide on `_id`. */
+function grantEntryId(
+  principalType: string,
+  principalId: string | Types.ObjectId | null | undefined,
+  resourceType: string,
+  resourceId: string | Types.ObjectId,
+): Types.ObjectId {
+  const grant = [resourceType, resourceId, principalType, principalId ?? ''].join(':');
+  return new Types.ObjectId(createHash('sha256').update(grant).digest().subarray(0, 12));
 }
 
 /**
@@ -176,7 +188,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     session?: ClientSession,
     roleId?: string | Types.ObjectId,
     expiredAt?: Date,
-    entryId?: Types.ObjectId,
+    uniqueEntry?: boolean,
   ) => Promise<IAclEntry | null>;
   modifyPermissionBits: (
     principalType: string,
@@ -407,10 +419,10 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
    * @param grantedBy - The ID of the user granting the permission
    * @param session - Optional MongoDB session for transactions
    * @param roleId - Optional role ID to associate with this permission
-   * @param entryId - Optional `_id` for the entry when this grant creates it. The upsert matches
-   *   on the principal and resource, which no unique index covers, so two grants that both find
-   *   nothing each insert a row. Callers that can race pass an id derived from what they grant:
-   *   the second insert then collides on `_id` and is replayed as an update of the first.
+   * @param uniqueEntry - Derive the `_id` of a newly created entry from the principal and the
+   *   resource. The upsert matches on those fields, which no unique index covers, so two grants
+   *   that both find nothing each insert a row. Callers that can race set this: the second insert
+   *   then collides on `_id` and is replayed as an update of the first.
    * @returns The created or updated ACL entry
    */
   async function grantPermission(
@@ -423,7 +435,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     session?: ClientSession,
     roleId?: string | Types.ObjectId,
     expiredAt?: Date,
-    entryId?: Types.ObjectId,
+    uniqueEntry?: boolean,
   ): Promise<IAclEntry | null> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
     const query: Record<string, unknown> = {
@@ -454,7 +466,16 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
         ...(roleId && { roleId }),
         ...(expiredAt && { expiredAt }),
       },
-      ...(entryId && { $setOnInsert: { _id: entryId } }),
+      ...(uniqueEntry && {
+        $setOnInsert: {
+          _id: grantEntryId(
+            principalType,
+            query.principalId as string | Types.ObjectId | undefined,
+            resourceType,
+            resourceId,
+          ),
+        },
+      }),
     };
 
     const options = {
@@ -467,7 +488,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
       return await AclEntry.findOneAndUpdate(query, update, options);
     } catch (error) {
       /** A duplicate key aborts a transaction, so only a standalone write can be replayed. */
-      if (!entryId || session?.inTransaction() || !isDuplicateKeyError(error)) {
+      if (!uniqueEntry || session?.inTransaction() || !isDuplicateKeyError(error)) {
         throw error;
       }
       return await AclEntry.findOneAndUpdate(query, update, options);

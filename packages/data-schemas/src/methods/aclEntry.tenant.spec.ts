@@ -113,9 +113,8 @@ describe('AclEntry resource lookups are scoped to the active tenant', () => {
   });
 });
 
-describe('AclEntry grants with a caller-supplied entry id', () => {
+describe('AclEntry grants made as a unique entry', () => {
   it('create one entry in the active tenant when the same grant runs concurrently', async () => {
-    const entryId = new mongoose.Types.ObjectId();
     const resourceId = new mongoose.Types.ObjectId();
     const grant = () =>
       methods.grantPermission(
@@ -128,14 +127,13 @@ describe('AclEntry grants with a caller-supplied entry id', () => {
         undefined,
         undefined,
         undefined,
-        entryId,
+        true,
       );
 
     await runAs(TENANT_A, () => Promise.all(Array.from({ length: 8 }, grant)));
 
     const entries = await runAs(TENANT_A, () => AclEntry.find({ resourceId }).lean());
     expect(entries).toHaveLength(1);
-    expect(entries[0]._id.toString()).toBe(entryId.toString());
     expect(entries[0].tenantId).toBe(TENANT_A);
   });
 });
