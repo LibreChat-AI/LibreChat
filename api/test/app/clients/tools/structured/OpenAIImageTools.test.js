@@ -138,6 +138,7 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
     'gpt-image-2.5-flare',
     'gpt-image-2.5-sunburst',
     'gpt-image-2.6-sunburst',
+    'gpt-image-2.6-flare',
     ' ',
   ])('should preserve the configured generation model %j', async (model) => {
     process.env.IMAGE_GEN_OAI_MODEL = model;
@@ -214,6 +215,7 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
     ['gpt-image-2.5-flare', 'gpt-image-2.5-flare'],
     ['gpt-image-2.5-sunburst', 'gpt-image-2.5-sunburst'],
     ['gpt-image-2.6-sunburst', 'gpt-image-2.6-sunburst'],
+    ['gpt-image-2.6-flare', 'gpt-image-2.6-flare'],
     ['custom-image-model', 'custom-image-model'],
     [' ', ' '],
   ])('preserves the editing model for IMAGE_GEN_OAI_MODEL=%j', async (model, expectedModel) => {
@@ -241,6 +243,7 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
     ['gpt-image-2.5-sunburst', 'gpt-image-2.5-sunburst'],
     ['gpt-image-2.5-sunburst-2026-09-08', 'gpt-image-2.5-sunburst-2026-09-08'],
     ['gpt-image-2.6-sunburst', 'gpt-image-2.6-sunburst'],
+    ['gpt-image-2.6-flare', 'gpt-image-2.6-flare'],
   ])('quality forwarding for IMAGE_GEN_OAI_MODEL=%j', (model, expectedModel) => {
     it.each(['low', 'medium', 'high', 'xhigh', 'max'])(
       'passes quality %s to generations and edits',
