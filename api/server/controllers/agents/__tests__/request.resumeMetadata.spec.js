@@ -292,6 +292,8 @@ jest.mock('@librechat/api', () => ({
   isScheduleFireRequest: (...args) => mockIsScheduleFireRequest(...args),
   exemptFromConcurrencyLimiter: (...args) => mockExemptFromConcurrencyLimiter(...args),
   toPendingSteer: jest.fn((item) => item),
+  promoteDrainedSteers: (...args) =>
+    jest.requireActual('@librechat/api').promoteDrainedSteers(...args),
   /** Recorded onto the job so the steer route can honour the OWNING replica's
    *  seal capability rather than its own probe. */
   isSteerPreemptSupported: jest.fn(() => true),

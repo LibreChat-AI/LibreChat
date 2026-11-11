@@ -80,7 +80,8 @@ function sameTenant(actual: unknown, expected: string | undefined): boolean {
   return expected == null ? actual == null : actual === expected;
 }
 
-function receipt(
+/** Client-visible projection of a durable queued turn. */
+export function toQueuedTurnReceipt(
   turn: AgentQueuedTurnRecord | AgentQueuedTurnActiveRecord,
   position?: number,
 ): TAgentQueuedTurnReceipt {
@@ -108,6 +109,13 @@ function receipt(
       turn.terminalReceipt.rootPredecessor === true && { rootPredecessor: true as const }),
     status: turn.status,
     ...(position != null && { position }),
+    ...(turn.steerSource != null && {
+      steer: {
+        steerId: turn.steerSource.steerId,
+        clientSteerId: turn.steerSource.clientSteerId,
+        ...(turn.steerSource.handoffAt != null && { owned: true as const }),
+      },
+    }),
     revision: turn.sequence,
     createdAt: turn.createdAt.toISOString(),
     updatedAt: updatedAt.toISOString(),
@@ -323,7 +331,7 @@ export async function handleAgentQueuedTurnEnqueue(
     if (existing.status !== 'queued' && existing.status !== 'claimed') {
       return {
         status: 200,
-        body: { receipt: receipt(existing), capability: CAPABILITY },
+        body: { receipt: toQueuedTurnReceipt(existing), capability: CAPABILITY },
       };
     }
     try {
@@ -339,7 +347,7 @@ export async function handleAgentQueuedTurnEnqueue(
     return {
       status: 202,
       body: {
-        receipt: receipt(existing, position >= 0 ? position + 1 : undefined),
+        receipt: toQueuedTurnReceipt(existing, position >= 0 ? position + 1 : undefined),
         capability: CAPABILITY,
       },
     };
@@ -382,7 +390,7 @@ export async function handleAgentQueuedTurnEnqueue(
     if (queued.replayed && queued.turn.status !== 'queued' && queued.turn.status !== 'claimed') {
       return {
         status: 200,
-        body: { receipt: receipt(queued.turn), capability: CAPABILITY },
+        body: { receipt: toQueuedTurnReceipt(queued.turn), capability: CAPABILITY },
       };
     }
     try {
@@ -400,7 +408,7 @@ export async function handleAgentQueuedTurnEnqueue(
     return {
       status: 202,
       body: {
-        receipt: receipt(queued.turn, position >= 0 ? position + 1 : undefined),
+        receipt: toQueuedTurnReceipt(queued.turn, position >= 0 ? position + 1 : undefined),
         capability: CAPABILITY,
       },
     };
@@ -453,10 +461,10 @@ export async function handleAgentQueuedTurnList(
     body: {
       queuedTurns: turns.map((turn) => {
         if (turn.status !== 'queued' && turn.status !== 'claimed') {
-          return receipt(turn);
+          return toQueuedTurnReceipt(turn);
         }
         activePosition += 1;
-        return receipt(turn, activePosition);
+        return toQueuedTurnReceipt(turn, activePosition);
       }),
       capability: CAPABILITY,
       revision: turns.reduce((latest, turn) => Math.max(latest, turn.sequence), 0),
@@ -487,7 +495,7 @@ export async function handleAgentQueuedTurnCancel(
   if (cancelled.outcome === 'not_cancellable') {
     return { status: 409, body: { code: 'QUEUED_TURN_ALREADY_ADMITTING' } };
   }
-  return { status: 200, body: { receipt: receipt(cancelled.turn) } };
+  return { status: 200, body: { receipt: toQueuedTurnReceipt(cancelled.turn) } };
 }
 
 /** Keep protocol selection and error handling in the TypeScript backend. */

@@ -3454,3 +3454,151 @@ describe('queued turn precedence', () => {
     expect(exists).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('turns promoted from an unapplied steer', () => {
+  const scope = () => ({ user, tenantId: 'tenant-1', conversationId: 'conversation-1' });
+  const steerSource = { steerId: 'steer-1', clientSteerId: 'local-1', generationCreatedAt: 7_000 };
+  const promotedInput = (overrides: Parameters<typeof enqueueInput>[0] = {}) =>
+    enqueueInput({
+      steerSource,
+      deliveryReservation: {
+        queuedTurnId: new mongoose.Types.ObjectId().toString(),
+        deliveryKey: `reserved-${counter}`,
+      },
+      ...overrides,
+    });
+
+  it('writes the steer source with the row and marks ownership once, while the row can still run', async () => {
+    const { turn } = await methods.enqueueAgentQueuedTurn(promotedInput());
+    expect(turn.steerSource).toEqual(steerSource);
+    const target = { ...scope(), queuedTurnId: turn.queuedTurnId };
+
+    await expect(
+      methods.confirmAgentQueuedTurnSourceHandoff({ ...target, at: START }),
+    ).resolves.toBe(true);
+    await expect(
+      methods.confirmAgentQueuedTurnSourceHandoff({ ...target, at: LATER }),
+    ).resolves.toBe(true);
+    await expect(Turn.findById(turn.queuedTurnId).lean()).resolves.toMatchObject({
+      steerSource: { ...steerSource, handoffAt: START },
+    });
+    await expect(
+      methods.confirmAgentQueuedTurnSourceHandoff({ ...target, tenantId: 'tenant-2' }),
+    ).resolves.toBe(false);
+  });
+
+  it('never marks ownership on an ordinary row or on one that already settled', async () => {
+    const ordinary = await methods.enqueueAgentQueuedTurn(enqueueInput());
+    const promoted = await methods.enqueueAgentQueuedTurn(
+      promotedInput({ clientRequestId: 'promoted' }),
+    );
+    await methods.cancelAgentQueuedTurn({
+      ...scope(),
+      queuedTurnId: promoted.turn.queuedTurnId,
+      settledAt: START,
+    });
+
+    for (const { turn } of [ordinary, promoted]) {
+      await expect(
+        methods.confirmAgentQueuedTurnSourceHandoff({
+          ...scope(),
+          queuedTurnId: turn.queuedTurnId,
+        }),
+      ).resolves.toBe(false);
+    }
+    await expect(Turn.findById(ordinary.turn.queuedTurnId).lean()).resolves.not.toHaveProperty(
+      'steerSource',
+    );
+  });
+
+  it('rejects a steer source without the generation that accepted it', async () => {
+    await expect(
+      methods.enqueueAgentQueuedTurn(
+        promotedInput({ steerSource: { steerId: 'steer-1', clientSteerId: 'local-1' } as never }),
+      ),
+    ).rejects.toThrow('steer source requires its generation');
+  });
+
+  it('refuses a promoted row that no versioned delivery was reserved for', async () => {
+    await expect(methods.enqueueAgentQueuedTurn(enqueueInput({ steerSource }))).rejects.toThrow(
+      'Promoted steers require a versioned delivery reservation',
+    );
+    await expect(Turn.countDocuments({})).resolves.toBe(0);
+  });
+
+  describe('generation lineage', () => {
+    const lineage = (generationCreatedAt: number) =>
+      methods.getAgentQueuedTurnGenerationLineage({ ...scope(), generationCreatedAt });
+
+    it('answers null for a generation no queued turn is tied to', async () => {
+      await methods.enqueueAgentQueuedTurn(enqueueInput({ expectedPredecessorCreatedAt: 1_000 }));
+
+      await expect(lineage(2_000)).resolves.toBeNull();
+    });
+
+    it('answers the lineage of turns queued directly against the generation', async () => {
+      await methods.enqueueAgentQueuedTurn(enqueueInput({ expectedPredecessorCreatedAt: 1_000 }));
+
+      await expect(lineage(1_000)).resolves.toEqual({
+        parentMessageId: 'parent-1',
+        expectedPredecessorCreatedAt: 1_000,
+      });
+      await expect(
+        methods.getAgentQueuedTurnGenerationLineage({
+          ...scope(),
+          conversationId: 'other',
+          generationCreatedAt: 1_000,
+        }),
+      ).resolves.toBeNull();
+    });
+
+    it('answers a root admission lineage, which has a parent and no epoch', async () => {
+      const ran = await methods.enqueueAgentQueuedTurn(enqueueInput());
+      await Turn.updateOne(
+        { _id: ran.turn.queuedTurnId },
+        {
+          $set: {
+            status: 'admitted',
+            terminalReceipt: {
+              outcome: 'admitted',
+              settledAt: START,
+              generationCreatedAt: 2_000,
+              rootPredecessor: true,
+            },
+          },
+          $unset: { activeSlot: 1 },
+        },
+      );
+
+      await expect(lineage(2_000)).resolves.toEqual({ parentMessageId: 'parent-1' });
+    });
+
+    it('prefers the lineage the generation was admitted from', async () => {
+      const ran = await methods.enqueueAgentQueuedTurn(
+        enqueueInput({ expectedPredecessorCreatedAt: 1_000 }),
+      );
+      await methods.enqueueAgentQueuedTurn(
+        enqueueInput({
+          clientRequestId: 'queued-against-the-run',
+          parentMessageId: 'parent-2',
+          expectedPredecessorCreatedAt: 2_000,
+        }),
+      );
+      await Turn.updateOne(
+        { _id: ran.turn.queuedTurnId },
+        {
+          $set: {
+            status: 'admitted',
+            terminalReceipt: { outcome: 'admitted', settledAt: START, generationCreatedAt: 2_000 },
+          },
+          $unset: { activeSlot: 1 },
+        },
+      );
+
+      await expect(lineage(2_000)).resolves.toEqual({
+        parentMessageId: 'parent-1',
+        expectedPredecessorCreatedAt: 1_000,
+      });
+    });
+  });
+});

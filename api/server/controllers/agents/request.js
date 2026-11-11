@@ -8,7 +8,6 @@ const {
   isEphemeralAgentId,
 } = require('librechat-data-provider');
 const {
-  toPendingSteer,
   persistedReasoningOverrideFields,
   getViolationInfo,
   applyForcedTemporaryRequest,
@@ -116,6 +115,7 @@ const {
   negotiateNewGenerationProtocol,
   negotiateExistingGenerationProtocol,
 } = require('./protocol');
+const { promoteUnappliedSteers } = require('./promotion');
 
 function sendGenerationJson(res, status, body, generationProtocolVersion) {
   if (typeof res.set === 'function') {
@@ -3249,7 +3249,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
         let terminalPublicationStarted = false;
         try {
-          const pendingSteers = terminalClaim.drainedSteers.map(toPendingSteer);
+          const { pendingSteers, promotedSteers } = await promoteUnappliedSteers(req, {
+            claim: terminalClaim,
+            conversationId,
+            responseMessageId: savedResponseMessage.messageId,
+            responseContent: response.content,
+            completed: !responseIsUnfinished,
+          });
           const finalEvent = {
             final: true,
             conversation,
@@ -3263,6 +3269,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
               }),
             },
             ...(pendingSteers.length > 0 && { pendingSteers }),
+            ...(promotedSteers.length > 0 && { promotedSteers }),
           };
 
           logger.debug(

@@ -14,6 +14,7 @@ import type {
   SteerQueueItem,
   SteerReceipt,
   SteerReceiptInput,
+  SteerPromotionOutcome,
   UsageMetadata,
   IJobStoreV2,
   JobStatus,
@@ -2604,6 +2605,81 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
     entry.receipt.state = 'cancelled';
     return true;
+  }
+
+  async promoteSteerLeftover(
+    streamId: string,
+    steerId: string,
+    ownerUserId: string,
+    ownerTenantId: string | undefined,
+    generationCreatedAt: number,
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome> {
+    const now = Date.now();
+    let receipt: SteerReceipt | undefined;
+    for (const entry of this.steerReceipts.get(streamId)?.values() ?? []) {
+      if (entry.expiresAt > now && entry.receipt.item?.steerId === steerId) {
+        receipt = entry.receipt;
+        break;
+      }
+    }
+    if (receipt == null) {
+      return 'missing';
+    }
+    if (
+      receipt.generationCreatedAt !== generationCreatedAt ||
+      receipt.userId !== ownerUserId ||
+      (receipt.tenantId != null && receipt.tenantId !== ownerTenantId)
+    ) {
+      return 'refused';
+    }
+    if (receipt.state === 'recovered' && receipt.promotedTurnId === queuedTurnId) {
+      return 'promoted';
+    }
+    if (receipt.state !== 'leftover') {
+      return 'refused';
+    }
+    const activeJob = this.jobs.get(streamId);
+    if (
+      activeJob?.recoveredSteerId === steerId &&
+      (activeJob.status === 'running' || activeJob.status === 'requires_action')
+    ) {
+      return 'refused';
+    }
+    const parked = this.parkedSteers.get(streamId);
+    if (parked == null || parked.expiresAt <= now) {
+      return 'unparked';
+    }
+    try {
+      const parsed = JSON.parse(parked.payload) as {
+        userId?: string;
+        tenantId?: string;
+        steers?: Array<{ steerId?: string }>;
+      };
+      if (
+        parsed.userId !== ownerUserId ||
+        (parsed.tenantId != null && parsed.tenantId !== ownerTenantId) ||
+        !Array.isArray(parsed.steers) ||
+        !parsed.steers.every(isValidParkedSteer)
+      ) {
+        return 'refused';
+      }
+      const kept = parsed.steers.filter((item) => item.steerId !== steerId);
+      if (kept.length === parsed.steers.length) {
+        return 'unparked';
+      }
+      if (kept.length === 0) {
+        this.parkedSteers.delete(streamId);
+      } else {
+        parsed.steers = kept;
+        parked.payload = JSON.stringify(parsed);
+      }
+    } catch {
+      return 'refused';
+    }
+    receipt.state = 'recovered';
+    receipt.promotedTurnId = queuedTurnId;
+    return 'promoted';
   }
 
   private parkLeftovers(

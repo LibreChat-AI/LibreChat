@@ -8,7 +8,11 @@ import type {
   TPendingSteer,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
-import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
+import type {
+  CodeApprovalMode,
+  ScheduleMCPOutcome,
+  ScheduledMCPIdentity,
+} from 'librechat-data-provider';
 import type { RunStep, StandardGraph } from '@librechat/agents';
 import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
@@ -586,6 +590,14 @@ export interface SteerQueueItem {
    * so an older cross-replica arm cannot resurrect after the disarm, while a
    * later explicit arm with a newer revision remains valid. */
   preemptRevision?: number;
+  /** The sending client adopts a server-promoted queued turn in place of its
+   *  chip, so a run that ends without applying this steer may promote it to a
+   *  durable queued turn instead of handing it back for a tab-local queue. */
+  promoteLeftover?: true;
+  /** The sender's code approval mode, kept for a promoted turn only: a durable
+   *  queued turn must start under the mode the sender's own queue row would
+   *  have carried, not the deployment default. */
+  codeApprovalMode?: CodeApprovalMode;
 }
 
 /** Durable acknowledgement keyed by `clientSteerId`. It outlives the queue
@@ -621,9 +633,23 @@ export interface SteerReceipt {
   /** `recovered` means one recovery surface already claimed a leftover. A
    * later retry is settled without re-queuing the same follow-up. */
   state: 'queued' | 'claimed' | 'delivered' | 'leftover' | 'recovered' | 'cancelled';
+  /** Set with `recovered` when the leftover was handed to this durable queued
+   * turn, so that turn's admission can tell its own hand-off from a recovery
+   * that consumed the words elsewhere. */
+  promotedTurnId?: string;
 }
 
-export type SteerReceiptInput = Omit<SteerReceipt, 'item' | 'position' | 'state'>;
+export type SteerReceiptInput = Omit<
+  SteerReceipt,
+  'item' | 'position' | 'state' | 'promotedTurnId'
+>;
+
+/** Outcome of handing a terminal leftover to a durable queued turn:
+ * - `promoted`: this turn owns the words (now, or from an earlier hand-off)
+ * - `refused`: another surface owns them (discarded, recovered, or leased)
+ * - `unparked`: the receipt is a leftover but its parked copy is gone
+ * - `missing`: no receipt for the steer survives */
+export type SteerPromotionOutcome = 'promoted' | 'refused' | 'unparked' | 'missing';
 export type SteerEnqueueReceiptResult = SteerReceipt | SteerEnqueueResult | number;
 
 /** Capability-normalized atomic enqueue result for callers without a stable
@@ -1695,6 +1721,21 @@ export interface IJobStoreV2 extends IJobStore {
     ownerTenantId?: string,
     expectedGenerationCreatedAt?: number,
   ): Promise<boolean>;
+
+  /** Owner-gated hand-off of one terminal leftover to the durable queued turn
+   * `queuedTurnId`. Atomically removes it from the parked payload and marks its
+   * receipt `recovered` (stamped with the turn), so neither status recovery nor
+   * a lost-ACK retry can queue the same words again. Idempotent for the same
+   * turn; refuses a receipt from another generation, owner, or state, and an
+   * item leased by a live recovery generation. */
+  promoteSteerLeftover(
+    streamId: string,
+    steerId: string,
+    ownerUserId: string,
+    ownerTenantId: string | undefined,
+    generationCreatedAt: number,
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome>;
 
   /** Drop any queued steers (terminal cleanup backstop). */
   clearSteers(streamId: string): Promise<void>;

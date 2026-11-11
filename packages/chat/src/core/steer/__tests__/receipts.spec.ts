@@ -2,6 +2,8 @@ import type { TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueuedMessage, SettledQueuedTurnReceipt } from '../types';
 import {
   toQueuedTurnFileRefs,
+  queuedTurnLookupIds,
+  ownedPromotedSteerIds,
   reconcileServerQueuedTurns,
   mergeSettledQueuedTurnEvidence,
 } from '../receipts';
@@ -26,6 +28,84 @@ const settled = (
   entries: SettledQueuedTurnReceipt[],
 ): ReadonlyMap<string, SettledQueuedTurnReceipt> =>
   new Map(entries.map((entry) => [entry.clientRequestId, entry]));
+
+describe('queuedTurnLookupIds', () => {
+  const serverRow = (index: number): QueuedMessage => ({
+    id: `row-${index}`,
+    text: 'x',
+    createdAt: index,
+    clientRequestId: `request-${index}`,
+    server: { status: 'queued', id: `turn-${index}` },
+  });
+  const held: QueuedMessage = {
+    id: 'steer-1',
+    text: 'y',
+    createdAt: 0,
+    clientRequestId: 'legacy-request',
+    recoverySteerId: 'steer-1',
+    recoveryClientSteerId: 'local-1',
+  };
+
+  it('asks about server rows and about every steer the pane still holds', () => {
+    expect(
+      queuedTurnLookupIds([], [serverRow(1), held, { id: 'plain', text: 'z', createdAt: 2 }]),
+    ).toEqual(['steer-leftover:local-1', 'request-1']);
+  });
+
+  it('keeps a held steer inside the lookup limit behind a full server queue', () => {
+    const queue = [...Array.from({ length: 100 }, (_, index) => serverRow(index)), held];
+    const ids = queuedTurnLookupIds([], queue);
+
+    expect(ids).toHaveLength(100);
+    expect(ids[0]).toBe('steer-leftover:local-1');
+  });
+});
+
+describe('ownedPromotedSteerIds', () => {
+  const promoted = (id: string, extra: Partial<TAgentQueuedTurnReceipt> = {}) =>
+    receipt(`steer-leftover:${id}`, {
+      steer: { steerId: id, clientSteerId: `local-${id}` },
+      ...extra,
+    });
+
+  it('maps live or admitted promoted turns back to both ids of their steers', () => {
+    expect(
+      ownedPromotedSteerIds([
+        promoted('steer-1'),
+        promoted('steer-2', { status: 'claimed' }),
+        promoted('steer-3', { status: 'admitted' }),
+        receipt('ordinary-request'),
+        /** Only the server's own record names a steer, never the request id. */
+        receipt('steer-leftover:forged'),
+      ]),
+    ).toEqual(['steer-1', 'local-steer-1', 'steer-2', 'local-steer-2', 'steer-3', 'local-steer-3']);
+  });
+
+  it('keeps answering for the words of a dead turn that held them', () => {
+    expect(
+      ownedPromotedSteerIds([
+        /** Held for review after it became the words' sole owner. */
+        promoted('steer-1', {
+          status: 'dead',
+          steer: { steerId: 'steer-1', clientSteerId: 'local-steer-1', owned: true },
+          failure: { code: 'PREDECESSOR_ABORTED' },
+        }),
+        /** May still settle as admitted once its admission is reconciled. */
+        promoted('steer-2', { status: 'dead', failure: { code: 'ADMISSION_INDETERMINATE' } }),
+      ]),
+    ).toEqual(['steer-1', 'local-steer-1', 'steer-2', 'local-steer-2']);
+  });
+
+  it('leaves the words to the client when the turn handed them back or never owned them', () => {
+    expect(
+      ownedPromotedSteerIds([
+        promoted('steer-1', { status: 'cancelled' }),
+        promoted('steer-2', { status: 'dead', failure: { code: 'STEER_HANDOFF_UNCONFIRMED' } }),
+        promoted('steer-3', { status: 'dead' }),
+      ]),
+    ).toEqual([]);
+  });
+});
 
 describe('mergeSettledQueuedTurnEvidence', () => {
   it('derives evidence from a terminal receipt when nothing is known yet', () => {

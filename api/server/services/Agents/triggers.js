@@ -9,6 +9,7 @@ const {
   createBackgroundToolDeadClaimRecovery,
   BACKGROUND_TOOL_COMPLETION_SOURCE,
   createAgentQueuedTurnLifecycle,
+  completePromotedSteerHandoff,
   AGENT_QUEUED_TURN_SOURCE,
   GenerationJobManager,
 } = require('@librechat/api');
@@ -59,6 +60,8 @@ let service;
 const queuedTurnLifecycle = createAgentQueuedTurnLifecycle({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+  completeSteerHandoff: (handoff) =>
+    completePromotedSteerHandoff(GenerationJobManager.steering, handoff),
   getGenerationAdmissionEvidence,
   enqueue: (...args) => service.enqueue(...args),
   retireDelivery: (...args) => service.retire(...args),

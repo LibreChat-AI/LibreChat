@@ -1,4 +1,4 @@
-import type { TPendingSteer } from 'librechat-data-provider';
+import type { TPendingSteer, TPromotedSteer } from 'librechat-data-provider';
 
 /** SSE streaming event (on_run_step, on_message_delta, etc.) */
 export type StreamEvent = {
@@ -58,6 +58,9 @@ export type FinalEvent = {
   /** Steers that never reached an injection boundary; the client converts
    *  them to queued follow-up messages instead of dropping them. */
   pendingSteers?: TPendingSteer[];
+  /** Unapplied steers already promoted to durable queued turns; the client
+   *  adopts these receipts instead of re-queuing the steers locally. */
+  promotedSteers?: TPromotedSteer[];
   /** Top-level event error (abort-during-completion edge case) */
   error?: { message: string };
 };
