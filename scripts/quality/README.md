@@ -99,8 +99,11 @@ workspace's existing worker count and memory recycling. API Redis integration
 suites run separately with Redis enabled, using the same groups and serial lanes
 as cache CI. The API report runner provides both the single Redis instance and the
 repository's three-node Redis cluster. Istanbul merges the groups' coverage before
-function scores are calculated. Raw Jest results remain in each group's directory. They can exercise unchanged
-code, but only added or edited functions appear in the risk report.
+function scores are calculated. All groups use the same Jest coverage directory so
+they can reuse compiled code. After each group, its raw reports move into its own
+directory, including when tests fail. Every group still runs its tests with the
+workspace's existing timeouts. Tests can exercise unchanged code, but only added
+or edited functions appear in the risk report.
 
 ## PR commands and merge decision
 

@@ -4,7 +4,14 @@ import { resolve, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { strict as assert } from 'node:assert';
 import { Instrumenter } from '@stryker-mutator/instrumenter';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 
 import {
   cognitiveFunctions,
@@ -211,7 +218,7 @@ function factory() {
   );
 });
 
-test('real Jest groups isolate Redis settings and merge coverage for every selected source', (t) => {
+test('real Jest groups reuse compiled code, isolate Redis settings and preserve reports', (t) => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'quality-jest-')));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const require = createRequire(import.meta.url);
@@ -219,9 +226,24 @@ test('real Jest groups isolate Redis settings and merge coverage for every selec
   for (const file of [...files, 'untouched.js', 'secondp.js']) {
     writeFileSync(join(directory, file), 'module.exports = () => 1;');
   }
+  const transforms = join(directory, 'transforms.jsonl');
+  writeFileSync(
+    join(directory, 'transform.cjs'),
+    `const fs = require('node:fs');
+module.exports = { process(code, filename, options) {
+  fs.appendFileSync(${JSON.stringify(transforms)}, JSON.stringify({ filename, instrument: options.instrument }) + '\\n');
+  return { code };
+} };`,
+  );
   writeFileSync(
     join(directory, 'jest.config.json'),
-    JSON.stringify({ rootDir: directory, maxWorkers: 2, workerIdleMemoryLimit: '1GB' }),
+    JSON.stringify({
+      rootDir: directory,
+      maxWorkers: 2,
+      workerIdleMemoryLimit: '1GB',
+      cacheDirectory: join(directory, 'cache'),
+      transform: { '^.+\\.js$': join(directory, 'transform.cjs') },
+    }),
   );
   writeFileSync(
     join(directory, 'sample.test.js'),
@@ -232,7 +254,7 @@ test('real Jest groups isolate Redis settings and merge coverage for every selec
     "test('Redis source', () => { expect(process.env.USE_REDIS).toBe('true'); expect(process.env.USE_REDIS_CLUSTER).toBe('false'); expect(require('./second[part]')()).toBe(1); });",
   );
   const output = join(directory, 'coverage');
-  runCoverage({
+  const options = {
     workspace: 'api',
     config: 'jest.config.json',
     cwd: directory,
@@ -241,7 +263,8 @@ test('real Jest groups isolate Redis settings and merge coverage for every selec
     tests: ['sample.test.js', 'sample.cache_integration.spec.js'],
     output,
     env: { ...process.env, NODE_ENV: 'test', USE_REDIS: 'false' },
-  });
+  };
+  runCoverage(options);
   const coverage = JSON.parse(readFileSync(join(output, 'coverage-final.json'), 'utf8'));
   assert.deepEqual(
     Object.keys(coverage).sort(),
@@ -249,6 +272,44 @@ test('real Jest groups isolate Redis settings and merge coverage for every selec
   );
   for (const file of files)
     assert.ok(Object.values(coverage[join(directory, file)].f).every((hits) => Number(hits) > 0));
+  const compiled: { filename: string; instrument: boolean }[] = readFileSync(transforms, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  for (const file of files) {
+    assert.equal(
+      compiled.filter((entry) => entry.filename === join(directory, file) && entry.instrument)
+        .length,
+      1,
+      `${file} should be compiled once across coverage groups`,
+    );
+  }
+  for (const group of ['unit', 'cache-core']) {
+    const results = JSON.parse(readFileSync(join(output, group, 'tests.json'), 'utf8'));
+    assert.equal(results.numPassedTests, 1);
+    assert.ok(existsSync(join(output, group, 'coverage-final.json')));
+  }
+  writeFileSync(
+    join(directory, 'sample.cache_integration.spec.js'),
+    "test('failure is preserved', () => expect(1).toBe(2));",
+  );
+  writeFileSync(join(directory, 'sample.stream_integration.spec.js'), "test('later', () => {});");
+  const failedOutput = join(directory, 'failed');
+  assert.throws(
+    () =>
+      runCoverage({
+        ...options,
+        output: failedOutput,
+        tests: [...options.tests, 'sample.stream_integration.spec.js'],
+      }),
+    /Jest cache-core exited with 1/u,
+  );
+  const failed = JSON.parse(readFileSync(join(failedOutput, 'cache-core', 'tests.json'), 'utf8'));
+  assert.equal(failed.numFailedTests, 1);
+  assert.ok(existsSync(join(failedOutput, 'unit', 'coverage-final.json')));
+  assert.ok(existsSync(join(failedOutput, 'cache-core', 'coverage-final.json')));
+  assert.equal(existsSync(join(failedOutput, 'coverage-final.json')), false);
+  assert.equal(existsSync(join(failedOutput, 'cache-stream')), false);
 });
 
 test('risk report keeps only changed functions, joins real coverage, and preserves missing coverage', (t) => {

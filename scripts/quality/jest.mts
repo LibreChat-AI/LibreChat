@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 
 import { literalGlob } from './changes.mts';
 
@@ -80,16 +80,25 @@ export function runCoverage(options: {
   for (const group of groups) {
     const directory = groups.length === 1 ? output : `${output}/${group.name}`;
     mkdirSync(directory, { recursive: true });
+    const reports = ['coverage-final.json', 'tests.json'];
+    for (const name of reports) rmSync(`${output}/${name}`, { force: true });
     console.log(`Coverage group: ${group.name}; ${group.tests.length} test files`);
     const result = spawnSync(
       process.execPath,
-      [jestBin, ...coverageArgs(config, files, directory, group.tests, group.serial)],
+      // Jest includes coverageDirectory in its transform-cache key. Keep it stable across groups.
+      [jestBin, ...coverageArgs(config, files, output, group.tests, group.serial)],
       {
         cwd,
         stdio: 'inherit',
         env: { ...env, ...(group.redis ? { USE_REDIS: 'true', USE_REDIS_CLUSTER: 'false' } : {}) },
       },
     );
+    if (directory !== output) {
+      for (const name of reports) {
+        if (existsSync(`${output}/${name}`))
+          renameSync(`${output}/${name}`, `${directory}/${name}`);
+      }
+    }
     if (result.error || result.status !== 0) {
       throw (
         result.error ??
