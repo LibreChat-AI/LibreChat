@@ -53,7 +53,7 @@ html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus-v
 
 .webkit-dark-styles,
 .webkit-dark-styles:focus {
-  background-clip: content-box;
+  background-clip: padding-box;
   box-shadow:
     var(--lc-autofill-mask), var(--tw-ring-offset-shadow, 0 0 transparent),
     var(--tw-ring-shadow, 0 0 transparent), var(--tw-shadow, 0 0 transparent);

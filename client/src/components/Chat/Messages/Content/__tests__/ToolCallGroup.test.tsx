@@ -23,6 +23,7 @@ jest.mock('@librechat/client', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
+  scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
   useLocalize: () => (key: string, values?: Record<string | number, string>) => {
     if (key === 'com_ui_ran_n_actions') {
       return `Ran ${values?.[0]} actions`;
@@ -98,8 +99,6 @@ jest.mock('~/hooks', () => ({
     }
     return key;
   },
-  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
-  scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
 }));
 
 jest.mock('~/hooks/MCP', () => {
@@ -180,10 +179,6 @@ jest.mock('@librechat/chat', () => ({
 jest.mock('~/utils', () => ({
   getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-  /** Real implementations: the group header resolves its text through these,
-   *  so stubbing them out would hide the header logic under test. */
-  getBatchActivityLabelPart: jest.requireActual('~/utils/activityLabels').getBatchActivityLabelPart,
-  getActivityLabelText: jest.requireActual('~/utils/activityLabels').getActivityLabelText,
   hasPendingApprovalInPart: jest.requireActual('~/utils/groupToolCalls').hasPendingApprovalInPart,
   hasPendingAuthInPart: jest.requireActual('~/utils/groupToolCalls').hasPendingAuthInPart,
 }));
@@ -1921,12 +1916,12 @@ describe('ToolCallGroup failure fast path', () => {
     expect(header).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('sets an open header in the primary colour over railed rows', () => {
+  it('keeps an open header in its resting colour over railed rows', () => {
     renderGroup(props(jest.fn()));
     const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
     expect(header).not.toHaveClass('text-text-primary');
     fireEvent.click(header);
-    expect(header).toHaveClass('text-text-primary');
+    expect(header).not.toHaveClass('text-text-primary');
     expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('ps-6');
   });
 

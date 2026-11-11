@@ -22,6 +22,14 @@ import {
   MAX_PII_PATTERN_LENGTH,
 } from './filters';
 import {
+  EModelEndpoint,
+  eModelEndpointSchema,
+  isAgentsEndpoint,
+  eReasoningEffortSchema,
+  eReasoningParameterFormatSchema,
+  eReasoningResponseKeySchema,
+} from './schemas';
+import {
   REFILL_INTERVAL_UNITS,
   BALANCE_DISPLAY_MODES,
   BALANCE_REFILL_MODES,
@@ -29,17 +37,17 @@ import {
   DEFAULT_BALANCE_RESERVATION_TTL_MS,
 } from './balance';
 import {
-  EModelEndpoint,
-  eModelEndpointSchema,
-  isAgentsEndpoint,
-  eReasoningParameterFormatSchema,
-  eReasoningResponseKeySchema,
-} from './schemas';
-import {
   scheduledMCPResourceBindingSchema,
   scheduledMCPReadOnlyPolicySchema,
 } from './types/scheduleConsent';
 import { partialWithoutDefaults } from './zod';
+
+export const tenantIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[-a-zA-Z0-9_.]+$/, 'must be a valid tenant id without whitespace')
+  .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed');
 
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
@@ -189,6 +197,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'registration.oauthStateTtlMs': 'startup',
   'endpoints.agents.subagentActivity': 'startup',
   'endpoints.agents.eventDriven': 'startup',
+  'endpoints.agents.channels.slackApp': 'operator',
   'endpoints.agents.backgroundTasks.shutdownInterruptGraceMs': 'startup',
   'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
   'endpoints.agents.backgroundTasks.completionReceiptBatching': 'startup',
@@ -339,6 +348,14 @@ function hasPrivateEmbeddedIPv4Literal(value: string): boolean {
 
 function isPrivateIPv6Literal(value: string): boolean {
   if (!value.includes(':')) return false;
+  // Keep canonicalization aligned with the runtime IP classifier.
+  try {
+    const zoneIndex = value.indexOf('%');
+    const address = zoneIndex === -1 ? value : value.slice(0, zoneIndex);
+    value = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  } catch {
+    return false;
+  }
   if (value === '::1' || value === '::') return true;
   if (value.startsWith('fc') || value.startsWith('fd')) return true; // fc00::/7
   // fe80::/10 — first hextet 0xfe80–0xfebf
@@ -347,9 +364,15 @@ function isPrivateIPv6Literal(value: string): boolean {
     const hextet = parseInt(firstHextet, 16);
     if ((hextet & 0xffc0) === 0xfe80) return true;
   }
-  // 4-in-6: ::ffff:A.B.C.D
-  const mappedMatch = value.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (mappedMatch) return isPrivateIPv4Literal(mappedMatch[1]);
+  // IPv4-compatible, mapped, and RFC 2765 translated forms.
+  const mappedMatch = value.match(/^(?:::ffff:(?:0:)?|::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedMatch) {
+    const hi = parseInt(mappedMatch[1], 16);
+    const lo = parseInt(mappedMatch[2], 16);
+    return isPrivateIPv4Literal(
+      [(hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff, lo & 0xff].join('.'),
+    );
+  }
   return hasPrivateEmbeddedIPv4Literal(value);
 }
 
@@ -758,6 +781,11 @@ export const modelConfigSchema = z
     deploymentName: z.string().optional(),
     version: z.string().optional(),
     assistants: z.boolean().optional(),
+    /**
+     * The `reasoning_effort` values this deployment accepts. A deployment name does not identify
+     * its model, so the composer offers an effort control only for a deployment declaring these.
+     */
+    reasoningEfforts: z.array(eReasoningEffortSchema).min(1).optional(),
   })
   .or(z.boolean());
 
@@ -1120,6 +1148,12 @@ const remoteApiAuthSchema = z.object({
 
 const remoteApiSchema = z.object({
   auth: remoteApiAuthSchema.optional(),
+  background: z
+    .object({
+      enabled: z.boolean().default(false),
+      acknowledgementTimeoutMs: z.number().int().min(100).max(60_000).default(10_000),
+    })
+    .optional(),
 });
 
 const managementClientBindingSchema = z
@@ -1202,6 +1236,171 @@ const managementApiAuthSchema = z
       clientIds.add(client.clientId);
     }
   });
+
+export const CHANNEL_DELIVERY_PARTS_HARD_MAX = 100;
+export const CHANNEL_ARTIFACT_FILES_HARD_MAX = 20;
+export const CHANNEL_ARTIFACT_READ_TIMEOUT_HARD_MAX_MS = 60_000;
+
+/** One policy controls installation, ingress and optional Slack effects across gateway replicas. */
+const SOCKET_RECONNECT_DELAY_DEFAULT_MS = 5000;
+export const channelGatewayPolicySchema = z.object({
+  transport: z.enum(['socket_mode', 'webhook']),
+  nativeSessions: z.boolean(),
+  lifecycleReactions: z.boolean(),
+  signatureToleranceSeconds: z.number().int().min(1).max(300),
+  socketReconnectDelayMs: z
+    .number()
+    .int()
+    .min(100)
+    .max(60_000)
+    .default(SOCKET_RECONNECT_DELAY_DEFAULT_MS),
+});
+export type ChannelGatewayPolicy = z.infer<typeof channelGatewayPolicySchema>;
+export const DEFAULT_CHANNEL_GATEWAY_POLICY: ChannelGatewayPolicy = {
+  transport: 'socket_mode',
+  nativeSessions: false,
+  lifecycleReactions: false,
+  signatureToleranceSeconds: 300,
+  socketReconnectDelayMs: SOCKET_RECONNECT_DELAY_DEFAULT_MS,
+};
+export const CHANNEL_GATEWAY_POLICY_VERSION = 1;
+export const channelGatewayWirePolicySchema = channelGatewayPolicySchema.extend({
+  version: z.literal(CHANNEL_GATEWAY_POLICY_VERSION),
+  socketReconnectDelayMs: channelGatewayPolicySchema.shape.socketReconnectDelayMs.removeDefault(),
+});
+export type ChannelGatewayWirePolicy = z.infer<typeof channelGatewayWirePolicySchema>;
+
+/** Storage work per claim transaction; shared by configuration and injected storage defaults. */
+export const channelStorageConfigSchema = z.object({
+  erasureBatchSize: z.number().int().min(1).max(1000).default(250),
+  claimBatchSize: z.number().int().min(1).max(100).default(25),
+  maxDeliveryParts: z
+    .number()
+    .int()
+    .min(1)
+    .max(CHANNEL_DELIVERY_PARTS_HARD_MAX)
+    .default(CHANNEL_DELIVERY_PARTS_HARD_MAX),
+  maxMetadataPageSize: z.number().int().min(1).max(100).default(100),
+  maxBotManagers: z.number().int().min(1).max(1000).default(50),
+  projectionYieldMs: z.number().int().min(100).max(60_000).default(1000),
+  maxPriorSummaryRows: z.number().int().min(1).max(10_000).default(1000),
+});
+
+export type ChannelStorageConfig = z.infer<typeof channelStorageConfigSchema>;
+
+/** One bounded shared ingress and worker pool, independent of installation count. */
+export const sharedSlackGatewayPolicySchema = z.object({
+  ingressConcurrency: z.number().int().min(1).max(128).default(32),
+  workerConcurrency: z.number().int().min(1).max(32).default(4),
+  discoveryBatchSize: z.number().int().min(1).max(100).default(32),
+  pollIntervalMs: z.number().int().min(100).max(60_000).default(1000),
+});
+export type SharedSlackGatewayPolicy = z.infer<typeof sharedSlackGatewayPolicySchema>;
+export const sharedSlackGatewayWirePolicySchema = sharedSlackGatewayPolicySchema.extend({
+  ingressConcurrency: sharedSlackGatewayPolicySchema.shape.ingressConcurrency.removeDefault(),
+  workerConcurrency: sharedSlackGatewayPolicySchema.shape.workerConcurrency.removeDefault(),
+  discoveryBatchSize: sharedSlackGatewayPolicySchema.shape.discoveryBatchSize.removeDefault(),
+  pollIntervalMs: sharedSlackGatewayPolicySchema.shape.pollIntervalMs.removeDefault(),
+});
+
+/** Channel runtime and operator policy; execution remains disabled by default. */
+export const channelConfigSchema = channelStorageConfigSchema.extend({
+  enabled: z.boolean().default(false),
+  transport: channelGatewayPolicySchema.shape.transport.default(
+    DEFAULT_CHANNEL_GATEWAY_POLICY.transport,
+  ),
+  nativeSessions: channelGatewayPolicySchema.shape.nativeSessions.default(
+    DEFAULT_CHANNEL_GATEWAY_POLICY.nativeSessions,
+  ),
+  lifecycleReactions: channelGatewayPolicySchema.shape.lifecycleReactions.default(
+    DEFAULT_CHANNEL_GATEWAY_POLICY.lifecycleReactions,
+  ),
+  signatureToleranceSeconds: channelGatewayPolicySchema.shape.signatureToleranceSeconds.default(
+    DEFAULT_CHANNEL_GATEWAY_POLICY.signatureToleranceSeconds,
+  ),
+  socketReconnectDelayMs: channelGatewayPolicySchema.shape.socketReconnectDelayMs,
+  gatewayUrl: z.string().url().optional(),
+  /** Operator enablement and OAuth limits; app credentials are managed by organization admins. */
+  slackApp: z
+    .object({
+      enabled: z.boolean().default(false),
+      gateway: sharedSlackGatewayPolicySchema.prefault({}),
+      flowLifetimeMs: z
+        .number()
+        .int()
+        .min(60_000)
+        .max(60 * 60_000)
+        .default(10 * 60_000),
+      requestTimeoutMs: z.number().int().min(1000).max(30_000).default(10_000),
+      maxResponseBytes: z
+        .number()
+        .int()
+        .min(1024)
+        .max(256 * 1024)
+        .default(64 * 1024),
+    })
+    .strict()
+    .optional(),
+  ticketLifetimeMs: z
+    .number()
+    .int()
+    .min(60_000)
+    .max(60 * 60_000)
+    .default(10 * 60_000),
+  linkLifetimeMs: z
+    .number()
+    .int()
+    .min(60_000)
+    .max(90 * 24 * 60 * 60_000)
+    .default(30 * 24 * 60 * 60_000),
+  leaseMs: z.number().int().min(10_000).max(300_000).default(60_000),
+  responseCredentialLifetimeMs: z
+    .number()
+    .int()
+    .min(60_000)
+    .max(7 * 24 * 60 * 60_000)
+    .default(24 * 60 * 60_000),
+  artifactMaxBytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(50 * 1024 * 1024)
+    .default(10 * 1024 * 1024),
+  artifactMaxFiles: z.number().int().min(1).max(CHANNEL_ARTIFACT_FILES_HARD_MAX).default(5),
+  /** Whole artifact operation budget, including catalog and authorization reads. */
+  artifactReadTimeoutMs: z
+    .number()
+    .int()
+    .min(1000)
+    .max(CHANNEL_ARTIFACT_READ_TIMEOUT_HARD_MAX_MS)
+    .default(30_000),
+  /** New plain-text answer files require more than this many UTF-8 bytes; fenced answers still qualify. */
+  artifactAnswerFileThresholdBytes: z
+    .number()
+    .int()
+    .min(0)
+    .max(50 * 1024 * 1024)
+    .default(6000),
+  cleanup: z
+    .object({
+      batchSize: z.number().int().min(1).max(100).default(25),
+      intervalMs: z.number().int().min(1000).max(60_000).default(1000),
+      maxIdleIntervalMs: z.number().int().min(1000).max(300_000).default(30_000),
+    })
+    .prefault({}),
+  feedback: z
+    .object({
+      maxConflictRetries: z.number().int().min(1).max(20).default(5),
+      exportTimeoutMs: z.number().int().min(1000).max(60_000).default(10_000),
+      exportLeaseMs: z.number().int().min(60_000).max(300_000).default(60_000),
+      exportRetryMs: z.number().int().min(1000).max(300_000).default(5000),
+      batchSize: z.number().int().min(1).max(100).default(25),
+      intervalMs: z.number().int().min(1000).max(60_000).default(1000),
+      maxIdleIntervalMs: z.number().int().min(1000).max(300_000).default(30_000),
+    })
+    .prefault({}),
+});
+export type ChannelConfig = z.infer<typeof channelConfigSchema>;
 
 const managementApiSchema = z.object({ auth: managementApiAuthSchema.optional() }).strict();
 
@@ -1621,6 +1820,16 @@ export const DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS = 300_000;
  * stream that is silent while a tool runs is not closed underneath the client. */
 export const DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS = 25_000;
 export const DEFAULT_CACHE_CLEAR_TIMEOUT_MS = 1000;
+
+/** Deployment tuning cannot remove the parser's deadline or process admission ceiling. */
+export const spreadsheetParsingSchema = z
+  .object({
+    timeoutMs: z.number().int().min(100).max(60_000).default(5000),
+    maxConcurrent: z.number().int().min(1).max(8).default(2),
+  })
+  .strict();
+
+export type SpreadsheetParsing = z.infer<typeof spreadsheetParsingSchema>;
 
 export const HOST_FILE_EDIT_HARD_MAX_COUNT = 100;
 
@@ -2224,6 +2433,7 @@ export const agentsEndpointSchema = baseEndpointSchema
         .optional(),
       managementApi: managementApiSchema.optional(),
       remoteApi: remoteApiSchema.optional(),
+      channels: channelConfigSchema.strict().optional(),
       /** Human-in-the-loop tool approval policy. Off by default. */
       toolApproval: toolApprovalPolicySchema,
       /** Ask User question behavior; see {@link askUserQuestionConfigSchema}. */
@@ -2297,13 +2507,7 @@ export const endpointSchema = baseEndpointSchema.merge(
       ).join(', ')}`,
     }),
     /** Limit this YAML custom endpoint to one tenant. Omit for deployment-wide endpoints. */
-    tenantId: z
-      .string()
-      .min(1)
-      .max(128)
-      .regex(/^[-a-zA-Z0-9_.]+$/, 'must be a valid tenant id without whitespace')
-      .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed')
-      .optional(),
+    tenantId: tenantIdSchema.optional(),
     apiKey: z.string(),
     /** Masked preview of the API key, stored at write time so admin
      * reads can show which key is configured without returning the secret. */
@@ -2723,6 +2927,8 @@ export type TMCPAppRateLimits = z.infer<typeof mcpAppRateLimitSchema>;
 const outboundTimeoutMs = z.number().int().positive().max(2_147_483_647).optional();
 
 export const outboundTimeoutsSchema = z.object({
+  /** Entire directory verification phase for a permission update, including token exchange and pages. */
+  directoryMs: outboundTimeoutMs,
   /** RAG API queries for file search and message context. */
   ragMs: outboundTimeoutMs,
   /** Each OCR provider call (upload, signed URL, OCR, delete). */
@@ -2731,7 +2937,7 @@ export const outboundTimeoutsSchema = z.object({
   actionsMs: outboundTimeoutMs,
   /** The OpenAI moderation check that runs before a chat turn. */
   moderationMs: outboundTimeoutMs,
-  /** Fetching a stored image by URL to encode it for a provider. */
+  /** Reading a stored image, by URL or from blob storage, to encode it for a provider. */
   imageFetchMs: outboundTimeoutMs,
   /** Each call a built-in tool makes to its API (weather, Wolfram, web search). */
   toolsMs: outboundTimeoutMs,
@@ -2754,9 +2960,11 @@ const lookupConcurrency = z.number().int().min(1).max(32).optional();
 /** Upper bounds on independent lookups a request runs at once. Omitted keys use the server
  *  defaults (`DEFAULT_LOOKUP_CONCURRENCY` in `@librechat/api`); `1` restores serial lookups. */
 export const lookupConcurrencySchema = z.object({
+  /** Principal verification and provisioning during permission updates. */
+  permissionPrincipalLookups: lookupConcurrency,
   /** Connected agents initialized together per level while discovering a handoff graph. */
   connectedAgentLoads: lookupConcurrency,
-  /** MCP tool catalog reads when assembling an ephemeral or added agent. */
+  /** MCP tool catalog reads when assembling an agent's tools. */
   mcpCatalogLookups: lookupConcurrency,
   /** Model spec skill name resolutions. */
   skillNameLookups: lookupConcurrency,
@@ -3138,9 +3346,14 @@ export const interfaceSchema = z
      *  selected: its name (`entity`), or the time-of-day greeting with the user's
      *  name (`greeting`) for deployments whose header selector already names it. */
     landingHeading: z.enum(['entity', 'greeting']).optional(),
-    /** Shows the generic disclaimer and policy links beneath the welcome screen's
-     *  composer. A configured `customFooter` still renders when this is false. */
-    landingFooter: z.boolean().optional(),
+    /** Shows the generic disclaimer and policy links on the welcome screen: at the bottom of the
+     *  page (`true`), directly under the composer (`composer`), or not at all (`false`). A
+     *  configured `customFooter` still renders when this is false. */
+    landingFooter: z.union([z.boolean(), z.literal('composer')]).optional(),
+    /** Who a response names above its content: every author (`always`), or only an agent other
+     *  than the one the header's model selector already shows (`whenDifferent`), which drops the
+     *  avatar and name row from that agent's responses. */
+    messageAuthor: z.enum(['always', 'whenDifferent']).optional(),
     mcpServers: mcpServersSchema.optional(),
     modelSelect: z.boolean().optional(),
     /** Set to false during a rolling upgrade, until every API replica supports title ownership and old title jobs drain. */
@@ -3464,6 +3677,7 @@ export const interfaceSchema = z
     mascot: true,
     landingHeading: 'entity',
     landingFooter: true,
+    messageAuthor: 'always',
     remoteAgents: {
       use: false,
       create: false,
@@ -4728,6 +4942,7 @@ export const configSchema = z.object({
     })
     .optional(),
   concurrency: lookupConcurrencySchema.optional(),
+  spreadsheetParsing: spreadsheetParsingSchema.optional(),
   fileConfig: fileConfigSchema.optional(),
   modelSpecs: specsConfigSchema.optional(),
   filters: filtersConfigSchema.optional(),
@@ -4882,9 +5097,9 @@ export const alternateName = {
  * catalogs consume.
  */
 const responsesOnlyOpenAIModels = ['gpt-6-astra'];
-/** Tool calls with Sol/Luna's default reasoning require Responses. Do not offer
+/** Tool calls with Sol/Luna/Terra require Responses. Do not offer
  * these on Assistants, which cannot use the native request-routing path. */
-const responsesReasoningOpenAIModels = ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna'];
+const responsesReasoningOpenAIModels = ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6.1-terra', 'gpt-6-luna'];
 /** Catalog models whose native execution defaults to the Responses API. */
 export const responsesPreferredOpenAIModels: readonly string[] = [
   ...responsesOnlyOpenAIModels,
@@ -4919,6 +5134,7 @@ const sharedOpenAIModels = [
 ];
 
 const sharedAnthropicModels = [
+  'claude-fable-5-2',
   'claude-fable-5-1',
   'claude-fable-5',
   'claude-opus-5-5',

@@ -4,6 +4,7 @@ import type {
   TSubmission,
   TConversation,
   TPendingSteer,
+  TPromotedSteer,
   TAttachment,
   ChatTransport,
   ChatTransportRequest,
@@ -151,6 +152,9 @@ export interface ResumableSteers {
     steers: TPendingSteer[],
     options?: SteerQueueOptions,
   ) => void;
+  /** Retires the chips of steers the server promoted to durable queued turns and shows
+   *  those turns in the queue; returns every id the promoted steers are known by. */
+  adoptPromoted: (conversationId: string, promoted: TPromotedSteer[]) => string[];
   /** Sweeps the pane's local chips into queued follow-ups. */
   convertLocalToQueued: (
     conversationId: string,

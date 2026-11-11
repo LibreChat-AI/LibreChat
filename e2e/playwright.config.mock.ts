@@ -109,6 +109,8 @@ if (modelFixtureRecording) {
 }
 const assistantsServerPath = path.resolve(rootPath, 'e2e/setup/fake-assistants-server.js');
 const ASSISTANTS_PORT = process.env.E2E_ASSISTANTS_PORT || '8890';
+const fluxServerPath = path.resolve(rootPath, 'e2e/setup/fake-flux-server.js');
+const FLUX_PORT = process.env.E2E_FLUX_PORT || '8794';
 const configTemplatePath = path.resolve(rootPath, 'e2e/config/librechat.e2e.yaml');
 const configPath = path.resolve(rootPath, 'e2e/.generated/librechat.e2e.yaml');
 const reportPath = path.resolve(rootPath, 'e2e/playwright-report');
@@ -218,6 +220,12 @@ const baseEnv = {
   ASSISTANTS_API_KEY: 'e2e-mock-assistants-key',
   ASSISTANTS_BASE_URL: `http://127.0.0.1:${ASSISTANTS_PORT}/v1`,
   ASSISTANTS_MODELS: 'gpt-4o-mini',
+  /** The Flux tool talks to the fake BFL endpoint started below. */
+  FLUX_API_KEY: 'e2e-flux-key',
+  FLUX_API_BASE_URL: `http://127.0.0.1:${FLUX_PORT}`,
+  /** Enables the native Google provider for agents. The run hook replaces the model, so the
+   *  key never reaches Google; it only lets attachments take the Google encoding path. */
+  GOOGLE_KEY: 'e2e-mock-google-key',
   ...(process.env.E2E_CODE_BRIDGE_ADMIN_TOKEN
     ? { E2E_CODE_BRIDGE_ADMIN_TOKEN: process.env.E2E_CODE_BRIDGE_ADMIN_TOKEN }
     : {}),
@@ -228,6 +236,8 @@ const baseEnv = {
   RAG_API_URL: `http://127.0.0.1:${RAG_API_PORT}`,
   /** Pull request lookups go to the fake git host, which trusts any bearer token. */
   E2E_GIT_HOST_TOKEN: 'e2e-git-host-token',
+  /** Resolved into the `e2e-memory` MCP server's env reference. */
+  E2E_MCP_DEPLOYMENT: 'e2e-deployment',
   NODE_EXTRA_CA_CERTS: gitHostCertPath,
   ...vanillaOverrides,
 };
@@ -262,8 +272,7 @@ function writeRuntimeMockConfig() {
     ? {
         allowedDomain: '- http://127.0.0.1:8766',
         stdioEnv: [
-          'env:',
-          '      E2E_MCP_LIST_CHANGED: "true"',
+          'E2E_MCP_LIST_CHANGED: "true"',
           `      E2E_MCP_STATE_PATH: ${JSON.stringify(MCP_STATE_PATH)}`,
         ].join('\n'),
         networkServers: [
@@ -615,6 +624,16 @@ export default defineConfig({
       cwd: rootPath,
       env: { ...process.env, E2E_ASSISTANTS_PORT: ASSISTANTS_PORT },
       url: `http://127.0.0.1:${ASSISTANTS_PORT}/`,
+      stdout: 'pipe',
+      timeout: 60_000,
+      reuseExistingServer: false,
+    },
+    {
+      // Fake BFL endpoint for the Flux tool (FLUX_API_BASE_URL).
+      command: `node ${fluxServerPath}`,
+      cwd: rootPath,
+      env: { ...process.env, E2E_FLUX_PORT: FLUX_PORT },
+      url: `http://127.0.0.1:${FLUX_PORT}/`,
       stdout: 'pipe',
       timeout: 60_000,
       reuseExistingServer: false,

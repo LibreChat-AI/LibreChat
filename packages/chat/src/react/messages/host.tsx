@@ -12,17 +12,34 @@ import type {
   TUpdateFeedbackResponse,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, MouseEvent, RefObject, SetStateAction } from 'react';
+import type { WakeupDisplay } from '../../core/parts/wakeup';
+import type { TAskFunction } from '../../core';
 
-/** What the message slot renders one visible row of the thread from. */
-export type MessageRowSlotProps = {
+/** What a row's text body renders from. */
+export type MessageBodySlotProps = {
+  ask: TAskFunction;
+  edit: boolean;
+  isLast: boolean;
+  text: string;
   message: TMessage;
-  /** Position of the message among its siblings, oldest first. */
+  enterEdit: (cancel: boolean) => void;
+  error: boolean;
+  isSubmitting: boolean;
+  unfinished: boolean;
+  isCreatedByUser: boolean;
   siblingIdx: number;
-  siblingCount: number;
-  /** Shows the sibling at the given position, oldest first. */
   setSiblingIdx: (value: number) => void;
-  currentEditId: string | number | null;
-  setCurrentEditId: Dispatch<SetStateAction<string | number | null>>;
+};
+
+/** What the wake-up card renders from. */
+export type WakeupSlotProps = {
+  display: WakeupDisplay;
+  conversationId?: string | null;
+};
+
+/** The message a row hands a slot that draws one piece of it. */
+export type MessageSlotProps = {
+  message: TMessage;
 };
 
 /** What the activity slot renders the background activity of a row from. */
@@ -213,8 +230,19 @@ export interface MessagesHost {
 
   /** Renders a message author's icon with the app's endpoint and avatar icons. */
   renderMessageIcon: (props: MessageIconProps) => ReactNode;
-  /** Renders one message of the thread: its header, body and controls. */
-  renderMessageRow: (props: MessageRowSlotProps) => ReactNode;
+  /** Whether rows drop the reading-width cap and fill the pane. */
+  useMaximizeChatSpace: () => boolean;
+  /** Whether a response by the agent the header's model selector shows drops its avatar and name
+   *  (`interface.messageAuthor: whenDifferent`). */
+  useHideSelectedAuthor: () => boolean;
+  /** The agents the viewer can see by id, or `undefined` until they load. */
+  useAgentsMap: () => Record<string, Agent | undefined> | undefined;
+  /** Renders a row's text body when it has no content parts. */
+  renderMessageBody: (props: MessageBodySlotProps) => ReactNode;
+  /** Renders the card of a wake-up turn a background task posted. */
+  renderWakeup: (props: WakeupSlotProps) => ReactNode;
+  /** Renders the owner's original text of a message stored with a privacy revision. */
+  renderPrivateText: (props: MessageSlotProps) => ReactNode;
   /** Renders the background activity (subagent runs) launched from a row. */
   renderActivity: (props: ActivitySlotProps) => ReactNode;
   /** The conversation's files by id, which hydrate the files of a thread row. */
@@ -268,7 +296,12 @@ const fallbackHost: MessagesHost = {
   useStreamedAttachments: () => undefined,
   useMessageFeedback: () => noFeedback,
   renderMessageIcon: () => null,
-  renderMessageRow: () => null,
+  useMaximizeChatSpace: () => false,
+  useHideSelectedAuthor: () => false,
+  useAgentsMap: () => undefined,
+  renderMessageBody: () => null,
+  renderWakeup: () => null,
+  renderPrivateText: () => null,
   renderActivity: () => null,
   useFileMap: () => undefined,
 };

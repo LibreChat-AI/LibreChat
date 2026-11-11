@@ -8,7 +8,6 @@ const {
   isEphemeralAgentId,
 } = require('librechat-data-provider');
 const {
-  toPendingSteer,
   persistedReasoningOverrideFields,
   getViolationInfo,
   applyForcedTemporaryRequest,
@@ -17,6 +16,8 @@ const {
   getReferencedQuotes,
   resolveTitleTiming,
   GenerationJobManager,
+  getTrustedNewConversationId,
+  buildGenerationStartedResponse,
   createConvoPersistenceSignal,
   recoverTurnMessageReference,
   filterPersistableAbortContent,
@@ -116,6 +117,7 @@ const {
   negotiateNewGenerationProtocol,
   negotiateExistingGenerationProtocol,
 } = require('./protocol');
+const { promoteUnappliedSteers } = require('./promotion');
 
 function sendGenerationJson(res, status, body, generationProtocolVersion) {
   if (typeof res.set === 'function') {
@@ -931,10 +933,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     req.body.overrideUserMessageId = `${recoveredSteerId}${Constants.COMMON_DIVIDER}0`;
   }
   const isNewConvo = !reqConversationId || reqConversationId === 'new';
-  const scheduledNewConversationId =
-    isScheduledFire && typeof req.body?.newConversationId === 'string'
-      ? req.body.newConversationId
-      : null;
+  const scheduledNewConversationId = getTrustedNewConversationId({
+    isScheduledFire,
+    isAgentTrigger: req._isAgentTrigger === true,
+    newConversationId: req.body?.newConversationId,
+  });
   let conversationId = reqConversationId;
   if (isNewConvo) {
     conversationId =
@@ -1687,6 +1690,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       }),
       initialMetadata: {
         conversationId,
+        isNewConversation: isNewConvo,
         generationProtocolVersion,
         endpoint: endpointOption.endpoint,
         iconURL: endpointIconURL,
@@ -1872,7 +1876,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       sendGenerationJson(
         res,
         200,
-        { streamId, conversationId, generationCreatedAt: jobCreatedAt, status: 'started' },
+        buildGenerationStartedResponse({
+          streamId,
+          conversationId,
+          generationCreatedAt: jobCreatedAt,
+          responseMessageId: preallocatedResponseMessageId,
+        }),
         generationProtocolVersion,
       );
     };
@@ -3249,7 +3258,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
         let terminalPublicationStarted = false;
         try {
-          const pendingSteers = terminalClaim.drainedSteers.map(toPendingSteer);
+          const { pendingSteers, promotedSteers } = await promoteUnappliedSteers(req, {
+            claim: terminalClaim,
+            conversationId,
+            responseMessageId: savedResponseMessage.messageId,
+            responseContent: response.content,
+            completed: !responseIsUnfinished,
+          });
           const finalEvent = {
             final: true,
             conversation,
@@ -3263,6 +3278,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
               }),
             },
             ...(pendingSteers.length > 0 && { pendingSteers }),
+            ...(promotedSteers.length > 0 && { promotedSteers }),
           };
 
           logger.debug(

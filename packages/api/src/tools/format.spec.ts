@@ -5,6 +5,7 @@ import {
   ToolInputError,
   getToolkitKey,
   checkPluginAuth,
+  runToolRequest,
   formatToolError,
   getToolErrorText,
   filterUniquePlugins,
@@ -445,6 +446,98 @@ describe('format.ts helper functions', () => {
       expect(formatToolHttpError('Service', 501, { 501: 'Rephrase the input.' })).toBe(
         'Error: Rephrase the input.',
       );
+    });
+  });
+
+  describe('runToolRequest', () => {
+    const service = 'Search';
+    const ok = { ok: true, status: 200 };
+
+    it('returns what read produces for a successful response', async () => {
+      const read = jest.fn().mockResolvedValue('results');
+
+      await expect(runToolRequest({ service, request: async () => ok, read })).resolves.toBe(
+        'results',
+      );
+      expect(read).toHaveBeenCalledWith(ok);
+    });
+
+    it('words a failing status from the status alone and cancels the unread body', async () => {
+      const cancel = jest.fn().mockResolvedValue(undefined);
+      const read = jest.fn();
+
+      const text = await runToolRequest({
+        service,
+        request: async () => ({ ok: false, status: 429, body: { cancel } }),
+        read,
+      });
+
+      expect(text).toBe('Error: Search is rate limiting requests; try again later (status 429).');
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(read).not.toHaveBeenCalled();
+    });
+
+    it('words the status even when the body cannot be cancelled', async () => {
+      const cancel = jest.fn().mockRejectedValue(new Error('PRIVATE-DETAIL'));
+
+      const text = await runToolRequest({
+        service,
+        request: async () => ({ ok: false, status: 503, body: { cancel } }),
+        read: jest.fn(),
+      });
+
+      expect(text).toBe('Error: Search is unavailable; try again later (status 503).');
+    });
+
+    it('applies the wording a service documents for a status', async () => {
+      const text = await runToolRequest({
+        service,
+        request: async () => ({ ok: false, status: 501, body: null }),
+        read: jest.fn(),
+        statusOverrides: { 501: 'Rephrase the query.' },
+      });
+
+      expect(text).toBe('Error: Rephrase the query.');
+    });
+
+    it('returns the fallback for a rejected request and logs only its type', async () => {
+      const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+
+      const text = await runToolRequest({
+        service,
+        request: async () => {
+          throw new Error('connect ECONNREFUSED 10.0.0.5:443 PRIVATE-DETAIL');
+        },
+        read: jest.fn(),
+      });
+
+      expect(text).toBe(`Error: ${TOOL_ERROR_FALLBACK}`);
+      expect(warn).toHaveBeenCalledWith('[Search] Tool request failed', { type: 'Error' });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('PRIVATE-DETAIL');
+      warn.mockRestore();
+    });
+
+    it('keeps the guidance of a tool input error thrown while reading, and hides other errors', async () => {
+      const request = async () => ok;
+
+      await expect(
+        runToolRequest({
+          service,
+          request,
+          read: () => {
+            throw new ToolInputError('Could not parse the answer. Please try again.');
+          },
+        }),
+      ).resolves.toBe('Error: Could not parse the answer. Please try again.');
+      await expect(
+        runToolRequest({
+          service,
+          request,
+          read: () => {
+            throw new SyntaxError('Unexpected token < PRIVATE-DETAIL');
+          },
+        }),
+      ).resolves.toBe(`Error: ${TOOL_ERROR_FALLBACK}`);
     });
   });
 });

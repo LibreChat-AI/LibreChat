@@ -46,7 +46,7 @@ describe('GraphApiService', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   afterEach(() => {
@@ -155,6 +155,56 @@ describe('GraphApiService', () => {
         authProvider: expect.any(Function),
       });
       expect(result).toBe(mockGraphClient);
+    });
+
+    it('does not exchange or cache a token after a cancelled cache read resolves late', async () => {
+      const controller = new AbortController();
+      let complete;
+      mockTokensCache.get.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            complete = resolve;
+          }),
+      );
+      const work = GraphApiService.createGraphClient(
+        'test-token',
+        'test-subject',
+        controller.signal,
+      );
+      const rejected = work.catch((error) => error);
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort(new Error('Directory deadline'));
+      expect(await rejected).toMatchObject({ message: 'Directory deadline' });
+      complete(null);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(client.genericGrantRequest).not.toHaveBeenCalled();
+      expect(mockTokensCache.set).not.toHaveBeenCalled();
+      expect(Client.init).not.toHaveBeenCalled();
+    });
+
+    it('does not cache a late token after exchange cancellation', async () => {
+      const controller = new AbortController();
+      mockTokensCache.get.mockResolvedValueOnce(null);
+      let complete;
+      client.genericGrantRequest.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            complete = resolve;
+          }),
+      );
+      const work = GraphApiService.createGraphClient(
+        'test-token',
+        'test-subject',
+        controller.signal,
+      );
+      const rejected = work.catch((error) => error);
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort(new Error('Directory deadline'));
+      expect(await rejected).toMatchObject({ message: 'Directory deadline' });
+      complete({ access_token: 'late-test-token', expires_in: 3600 });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockTokensCache.set).not.toHaveBeenCalled();
+      expect(Client.init).not.toHaveBeenCalled();
     });
 
     it('should handle token exchange errors gracefully', async () => {

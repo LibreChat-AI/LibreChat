@@ -171,7 +171,7 @@ const {
   hasYouTubeVideoParts,
   appendYouTubeVideoParts,
   resolveGoogleVideoError,
-  resolveLangChainError,
+  resolveClassifiedProviderError,
   resolveYouTubeInjectionConfig,
   decrementPendingRequest,
   maybePrewarmCodeSandbox,
@@ -379,7 +379,7 @@ function getUserFacingRequestError(baseMessage, error, appConfig) {
   if (protectionEnabled || !error?.message) {
     return baseMessage;
   }
-  const typedError = resolveLangChainError(error);
+  const typedError = resolveClassifiedProviderError(error, appConfig);
   if (typedError != null) {
     return typedError;
   }
@@ -414,7 +414,7 @@ class AgentClient extends BaseClient {
     );
   }
 
-  async addDocuments(message, attachments) {
+  async addDocuments(message, attachments, onMissingFile) {
     const memoryContext = {
       req: this.options.req,
       conversationId: this.conversationId,
@@ -423,13 +423,13 @@ class AgentClient extends BaseClient {
     };
     logAgentMemorySnapshot('before_encode_documents', memoryContext);
     try {
-      return await super.addDocuments(message, attachments);
+      return await super.addDocuments(message, attachments, onMissingFile);
     } finally {
       logAgentMemorySnapshot('after_encode_documents', memoryContext);
     }
   }
 
-  async processAttachments(message, attachments, fileConsumers) {
+  async processAttachments(message, attachments, fileConsumers, onMissingFile) {
     const modelBoundAttachments = this.getModelBoundAttachmentsForEndpoint(attachments);
     const processableAttachments = this.getProcessableAttachmentsForEndpoint(
       attachments,
@@ -450,7 +450,12 @@ class AgentClient extends BaseClient {
     };
     logAgentMemorySnapshot('before_process_attachments', memoryContext);
     try {
-      return await super.processAttachments(message, processableAttachments, fileConsumers);
+      return await super.processAttachments(
+        message,
+        processableAttachments,
+        fileConsumers,
+        onMissingFile,
+      );
     } finally {
       logAgentMemorySnapshot('after_process_attachments', memoryContext);
     }
@@ -2139,7 +2144,7 @@ class AgentClient extends BaseClient {
    * @param {Array<MongoFile>} attachments
    * @returns {Promise<Array<Partial<MongoFile>>>}
    */
-  async addImageURLs(message, attachments) {
+  async addImageURLs(message, attachments, onMissingFile) {
     const { files, image_urls } = await encodeAndFormat(
       this.options.req,
       attachments,
@@ -2147,6 +2152,7 @@ class AgentClient extends BaseClient {
         provider: this.options.agent.provider,
         endpoint: this.options.endpoint,
         imageDetail: this.options.imageDetail,
+        onMissingFile,
       },
       VisionModes.agents,
     );
@@ -3475,6 +3481,9 @@ class AgentClient extends BaseClient {
       userId,
       agentId: memoryAgentId,
       config,
+      appConfig: this.options.req.config,
+      isTemporary: isTemporaryTurn(this.options.req),
+      traceContext: buildTraceContext(this.options),
       filters: this.options.req.config?.filters,
       messageId,
       streamId,

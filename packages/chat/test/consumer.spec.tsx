@@ -13,9 +13,11 @@ import {
   MessageRow,
   MentionPopover,
   ChatScreen,
+  RemoveFile,
+  ElapsedTimer,
+  SystemEventHeader,
   HoverButtons,
   MessagesView,
-  SiblingSwitch,
   ComposerField,
   ComposerFrame,
   ComposerActions,
@@ -243,7 +245,12 @@ const messagesHost: MessagesHost = {
     consumeFocusSuppression: () => false,
   }),
   renderMessageIcon: () => null,
-  renderMessageRow: () => null,
+  useMaximizeChatSpace: () => false,
+  useHideSelectedAuthor: () => false,
+  useAgentsMap: () => undefined,
+  renderMessageBody: () => null,
+  renderWakeup: () => null,
+  renderPrivateText: () => null,
   renderActivity: () => null,
   useFileMap: () => undefined,
 };
@@ -651,27 +658,7 @@ describe('a consumer rendering subagent activity', () => {
     ];
     const threadHost: MessagesHost = {
       ...messagesHost,
-      renderMessageRow: ({ message, siblingIdx, siblingCount, setSiblingIdx }) => {
-        const label = message.isCreatedByUser ? 'You' : 'Assistant';
-        return (
-          <MessageRow
-            message={message}
-            label={label}
-            ariaLabel={label}
-            icon={null}
-            footer={
-              <SiblingSwitch
-                siblingIdx={siblingIdx}
-                siblingCount={siblingCount}
-                setSiblingIdx={setSiblingIdx}
-              />
-            }
-            isCreatedByUser={message.isCreatedByUser}
-          >
-            <p>{message.text}</p>
-          </MessageRow>
-        );
-      },
+      renderMessageBody: ({ text }) => <p>{text}</p>,
     };
     const contract = {
       index: 0,
@@ -698,19 +685,22 @@ describe('a consumer rendering subagent activity', () => {
       </I18nextProvider>,
     );
 
-    const reply = screen.getByRole('group', { name: 'Assistant' });
-    expect(screen.getByRole('group', { name: 'You' })).toHaveTextContent('Question');
+    const [prompt, reply] = screen.getAllByRole('group', { name: /^com_endpoint_message/ });
+    expect(prompt).toHaveTextContent('Question');
     expect(reply).toHaveTextContent('Second');
     expect(within(reply).getByRole('status')).toHaveTextContent('2 / 2');
 
     fireEvent.click(within(reply).getByRole('button', { name: 'com_ui_previous_sibling' }));
-    const older = screen.getByRole('group', { name: 'Assistant' });
+    const older = screen.getAllByRole('group', { name: /^com_endpoint_message/ })[1];
     expect(older).toHaveTextContent('First');
     expect(within(older).getByRole('status')).toHaveTextContent('1 / 2');
   });
 });
 
 describe('a consumer styled by the published stylesheet alone', () => {
+  const i18n = createInstance();
+  void i18n.use(initReactI18next).init({ lng: 'en', resources: { en: { translation: {} } } });
+
   /** What `@librechat/client/style.css` declares for an element's own classes. jsdom cannot load
    *  the whole file (`@layer`, `:dir()`), so the rendered class list is matched by hand. */
   const stylesheet = readFileSync(require.resolve('@librechat/client/style.css'), 'utf8');
@@ -735,5 +725,32 @@ describe('a consumer styled by the published stylesheet alone', () => {
     );
     /** Neither custom property is defined by the published theme, so each chain ends in a length. */
     expect(rule.match(/var\(--font-size-base, 1rem\)/g)).toHaveLength(2);
+  });
+
+  it('sizes icons, sets the status row type and sweeps in-flight labels', () => {
+    render(
+      <I18nextProvider i18n={i18n}>
+        <SystemEventHeader icon={null} label="Woke up" />
+        <ElapsedTimer start={Date.now()} />
+        <RemoveFile onRemove={() => undefined} label="Remove report.pdf" />
+      </I18nextProvider>,
+    );
+
+    expect(declaredFor(screen.getByText('Woke up'))).toMatch(
+      /font-size:[^;]*--markdown-font-size[^;]*;\s*line-height:[^;]*--markdown-font-size/,
+    );
+    /** Neither custom property is defined by the published theme, so each chain ends in a length. */
+    const statusRule = declaredFor(screen.getByText('Woke up'));
+    expect(statusRule.match(/var\(--font-size-base, 1rem\)/g)).toHaveLength(2);
+
+    expect(declaredFor(screen.getByTestId('stream-elapsed'))).toMatch(/animation:[^;]*\bshimmer\b/);
+    expect(stylesheet).toMatch(/@keyframes shimmer\s*\{/);
+    expect(stylesheet).toMatch(/@keyframes shimmer-rtl\s*\{/);
+    expect(stylesheet).toMatch(/html\.high-contrast\s*\{[^}]*--shimmer-dip-alpha: 1/);
+
+    const icon = screen.getByRole('button', { name: 'Remove report.pdf' }).querySelector('svg');
+    const iconRule = declaredFor(icon as SVGElement);
+    expect(iconRule).toContain('width: 1rem');
+    expect(iconRule).toContain('height: 1rem');
   });
 });

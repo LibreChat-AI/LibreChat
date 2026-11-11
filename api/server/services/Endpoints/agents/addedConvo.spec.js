@@ -97,7 +97,7 @@ describe('processAddedConvo', () => {
     req: makeReq(),
     res: {},
     endpointOption: { addedConvo: { model: 'gpt-4o', agent_id: 'added-agent' } },
-    modelsConfig: { openai: ['gpt-4o'] },
+    getEndpointModels: jest.fn().mockResolvedValue({ openai: ['gpt-4o'] }),
     logViolation: jest.fn(),
     loadTools: jest.fn(),
     requestFiles: [],
@@ -109,6 +109,21 @@ describe('processAddedConvo', () => {
     primaryAgent: { id: 'primary-id' },
     userMCPAuthMap: undefined,
     ...overrides,
+  });
+
+  it('validates the added agent through the endpoint model loader', async () => {
+    const params = baseParams();
+
+    await processAddedConvo(params);
+
+    expect(mockValidateAgentModel).toHaveBeenCalledTimes(1);
+    expect(mockValidateAgentModel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: { id: 'added-agent', provider: 'openai' },
+        getEndpointModels: params.getEndpointModels,
+      }),
+    );
+    expect(mockValidateAgentModel.mock.calls[0][0]).not.toHaveProperty('modelsConfig');
   });
 
   it('forwards codeEnvAvailable=true to the added-convo initializeAgent call', async () => {
@@ -361,5 +376,54 @@ describe('processAddedConvo', () => {
       }),
     );
     expect(mockGetSkillDbMethods).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['honors the shared skills opt-out for an ordinary added spec', undefined, false],
+    ['ignores it when the added spec hides its badge row', true, true],
+  ])('%s', async (_label, hideBadgeRow, expectedEnabled) => {
+    mockResolveAgentScopedSkillIds.mockReturnValue([]);
+    mockCanAuthorSkillFiles.mockReturnValue(false);
+
+    /** The added pane has no badge row of its own; when its spec hides one,
+     *  the other pane's toggle must not strip what that spec configured. */
+    await processAddedConvo(
+      baseParams({
+        req: {
+          user: { id: 'u1', role: 'USER' },
+          body: { ephemeralAgent: { skills: false } },
+          config: {
+            modelSpecs: {
+              list: [
+                {
+                  name: 'added-spec',
+                  skills: true,
+                  ...(hideBadgeRow ? { hideBadgeRow } : {}),
+                },
+              ],
+            },
+          },
+        },
+        endpointOption: {
+          spec: 'primary-spec',
+          addedConvo: {
+            endpoint: 'openai',
+            model: 'gpt-4o',
+            spec: 'added-spec',
+          },
+        },
+        accessibleSkillIds: [],
+        editableSkillIds: [],
+        skillsCapabilityEnabled: true,
+        ephemeralSkillsToggle: false,
+        skillCreateAllowed: false,
+      }),
+    );
+
+    expect(mockResolveAgentScopedSkillIds).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: expect.objectContaining({ skills_enabled: expectedEnabled }),
+      }),
+    );
   });
 });

@@ -16,6 +16,7 @@ import { useComposerReasoning } from '../Reasoning';
 
 type MockEndpointConfig = {
   type?: string;
+  modelReasoningEfforts?: Record<string, string[]>;
   customParams?: {
     defaultParamsEndpoint?: string;
     paramDefinitions?: SettingDefinition[];
@@ -855,6 +856,39 @@ describe('useComposerReasoning', () => {
       key: 'effort',
       options: expect.arrayContaining(['low', 'high']),
     });
+  });
+
+  it.each([
+    ['production-west', ['', 'low', 'high']],
+    ['production-chat', undefined],
+  ])('offers the efforts the Azure deployment %s declares', (model, options) => {
+    mockEndpointsConfig = {
+      azureOpenAI: { modelReasoningEfforts: { 'production-west': ['low', 'high'] } },
+    };
+    const reasoningStore = createStore();
+    const conversation = {
+      conversationId: 'azure-conversation',
+      endpoint: 'azureOpenAI',
+      model,
+    } as unknown as TConversation;
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+
+    const rendered = renderHook(
+      () =>
+        useComposerReasoning({
+          conversation,
+          index: 0,
+          hasAddedConversation: false,
+          enabled: true,
+        }),
+      { wrapper },
+    );
+
+    expect(rendered.result.current?.setting.options).toEqual(options);
   });
 
   it('preserves restored reasoning while custom endpoint capabilities are loading', async () => {

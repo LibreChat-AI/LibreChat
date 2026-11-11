@@ -32,6 +32,7 @@ let releaseBalanceReservation: ReturnType<
 >['releaseBalanceReservation'];
 let findBalanceByUser: ReturnType<typeof createTransactionMethods>['findBalanceByUser'];
 let upsertBalanceFields: ReturnType<typeof createTransactionMethods>['upsertBalanceFields'];
+let initializeNullBalance: ReturnType<typeof createTransactionMethods>['initializeNullBalance'];
 let updateBalance: ReturnType<typeof createTransactionMethods>['updateBalance'];
 let getMultiplier: ReturnType<typeof createTxMethods>['getMultiplier'];
 let getCacheMultiplier: ReturnType<typeof createTxMethods>['getCacheMultiplier'];
@@ -64,6 +65,7 @@ beforeAll(async () => {
   findBalanceByUser = transactionMethods.findBalanceByUser;
   upsertBalanceFields = transactionMethods.upsertBalanceFields;
   updateBalance = transactionMethods.updateBalance;
+  initializeNullBalance = transactionMethods.initializeNullBalance;
 
   const spendMethods = createSpendTokensMethods(mongoose, {
     createTransaction: transactionMethods.createTransaction,
@@ -1680,6 +1682,21 @@ describe('Balance Reservations', () => {
         expect(resets[0].rawAmount).toBe(1500);
       });
 
+      test('stores the granted allowance and keeps it until the next reset', async () => {
+        const user = new mongoose.Types.ObjectId();
+        await Balance.create({ user, ...resettable, tokenCredits: 500 });
+
+        const granted = await findBalanceByUser(user.toString());
+        expect(granted?.allotment).toBe(1000);
+        expect(granted?.allottedAt).toEqual(granted?.lastRefill);
+        await reserve(user.toString(), 100);
+        const changed = await upsertBalanceFields(user.toString(), { refillAmount: 3000 });
+
+        expect(changed?.tokenCredits).toBe(1000);
+        expect(changed?.allotment).toBe(1000);
+        expect((await readState(user))?.allotment).toBe(1000);
+      });
+
       test('uses current settings if reset mode changes during its fenced write', async () => {
         const user = new mongoose.Types.ObjectId();
         await Balance.create({ user, ...resettable, tokenCredits: 500 });
@@ -1846,5 +1863,43 @@ describe('Balance Reservations', () => {
       expect((await readState(user))?.pendingRefill).toBeUndefined();
       expect(await Transaction.countDocuments({ user, context: 'autoRefill' })).toBe(1);
     });
+  });
+});
+
+describe('initializeNullBalance admission CAS', () => {
+  it.each([null, undefined])(
+    'initializes legacy credit %s only once without upsert',
+    async (credit) => {
+      const user = new mongoose.Types.ObjectId().toString();
+      await Balance.collection.insertOne({
+        user: new mongoose.Types.ObjectId(user),
+        ...(credit === undefined ? {} : { tokenCredits: credit }),
+      });
+      const initialized = await initializeNullBalance(user, {
+        tokenCredits: 100,
+        sync: { autoRefillEnabled: true },
+      });
+      expect(initialized?.tokenCredits).toBe(100);
+      expect(initialized?.autoRefillEnabled).toBe(true);
+      await Balance.updateOne({ user }, { $set: { tokenCredits: 7 } });
+      expect(await initializeNullBalance(user, { tokenCredits: 100 })).toBeNull();
+      expect((await findBalanceByUser(user))?.tokenCredits).toBe(7);
+      expect(await Balance.countDocuments({ user })).toBe(1);
+    },
+  );
+
+  it('chooses the oldest eligible row and never creates a missing balance', async () => {
+    const user = new mongoose.Types.ObjectId().toString();
+    expect(await initializeNullBalance(user, { tokenCredits: 100 })).toBeNull();
+    const first = new mongoose.Types.ObjectId('000000000000000000000001');
+    const second = new mongoose.Types.ObjectId('000000000000000000000002');
+    await Balance.collection.insertMany([
+      { _id: second, user: new mongoose.Types.ObjectId(user), tokenCredits: null },
+      { _id: first, user: new mongoose.Types.ObjectId(user), tokenCredits: null },
+    ]);
+    expect((await initializeNullBalance(user, { tokenCredits: 100 }))?._id.toString()).toBe(
+      first.toString(),
+    );
+    expect((await Balance.findById(second).lean())?.tokenCredits).toBeNull();
   });
 });

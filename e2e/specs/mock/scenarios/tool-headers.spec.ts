@@ -91,6 +91,60 @@ async function openConversation(page: Page, content: Part[], attachments?: Part[
   await expect(messagesView(page).getByText(DONE)).toBeVisible({ timeout: 20000 });
 }
 
+/** A reader opening a published link: the conversation's messages, served under a share id. */
+async function openSharedConversation(page: Page, content: Part[]) {
+  const shareId = unique('e2e-shared-tool-headers');
+  const conversationId = `${shareId}-convo`;
+  const now = new Date(0).toISOString();
+  const userMessage = {
+    messageId: `${shareId}-user`,
+    conversationId,
+    parentMessageId: NO_PARENT,
+    isCreatedByUser: true,
+    sender: 'User',
+    text: 'Draft the release notes.',
+    createdAt: now,
+    updatedAt: now,
+  };
+  const reply = {
+    messageId: `${shareId}-msg`,
+    conversationId,
+    parentMessageId: userMessage.messageId,
+    isCreatedByUser: false,
+    sender: 'Assistant',
+    endpoint: 'Mock Provider A',
+    model: 'mock-model-a',
+    text: '',
+    content: [...content, { type: 'text', text: DONE }],
+    createdAt: now,
+    updatedAt: now,
+  };
+  const shareIdRe = escapeRe(shareId);
+  await page.route(new RegExp(`/api/share/${shareIdRe}/config(?:\\?.*)?$`), (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ appTitle: 'LibreChat' }),
+    }),
+  );
+  await page.route(new RegExp(`/api/share/${shareIdRe}(?:\\?.*)?$`), (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        shareId,
+        conversationId,
+        title: 'Shared tool headers',
+        createdAt: now,
+        updatedAt: now,
+        messages: [userMessage, reply],
+      }),
+    }),
+  );
+  await page.goto(`/share/${shareId}`, { timeout: 30000 });
+  await expect(messagesView(page).getByText(DONE)).toBeVisible({ timeout: 20000 });
+}
+
 /** Opens the disclosure named `name` if it is folded, and returns it. */
 async function expand(page: Page, name: RegExp) {
   const button = messagesView(page).getByRole('button', { name }).first();
@@ -216,6 +270,26 @@ test.describe('tool activity headers', () => {
     await expect(messagesView(page).getByText(/matched 0 locations/)).toBeVisible();
   });
 
+  test('a file card keeps a warning that follows its success summary @scenario:file-card-keeps-warning-after-summary', async ({
+    page,
+  }) => {
+    await openConversation(page, [
+      call(
+        'w1',
+        'create_file',
+        { file_path: 'skills/demo/SKILL.md', content: '# Demo\n\nUse this skill for testing.' },
+        [
+          'Created skills/demo/SKILL.md (35 chars).',
+          '',
+          'Warnings:',
+          '- frontmatter.owner [UNKNOWN_KEY]: "owner" is not a recognized frontmatter key and is stored as-is',
+        ].join('\n'),
+      ),
+    ]);
+    await expand(page, /SKILL\.md/);
+    await expect(messagesView(page).getByText(/not a recognized frontmatter key/)).toBeVisible();
+  });
+
   test('a titled failed command opens on its error with the time on the command line @scenario:titled-failed-command-shows-error-and-time', async ({
     page,
   }) => {
@@ -330,6 +404,58 @@ test.describe('tool activity headers', () => {
     const view = messagesView(page);
     await expand(page, /deployment-only/);
     await expect(view.getByText('Skill "deployment-only" loaded.')).toBeVisible();
+    await expect(view.getByRole('button', { name: 'Open skill' })).toHaveCount(0);
+  });
+
+  test("a shared skill call keeps its output instead of the viewer's same-named skill @scenario:shared-skill-call-keeps-output", async ({
+    page,
+  }) => {
+    const viewerSkill = {
+      _id: 'e2e-skill-viewer-release-notes',
+      name: 'release-notes',
+      description: "The viewer's own release notes skill.",
+      body: 'The viewer wrote these instructions.',
+    };
+    await page.route(/\/api\/skills(?:\?.*)?$/, (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ skills: [viewerSkill], has_more: false, after: null }),
+      }),
+    );
+    await page.route(new RegExp(`/api/skills/${viewerSkill._id}$`), (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(viewerSkill),
+      }),
+    );
+    await openSharedConversation(page, [
+      call(
+        'k3',
+        'skill',
+        { skillName: 'release-notes' },
+        'Skill "release-notes" loaded. Follow the instructions below.',
+      ),
+    ]);
+    const view = messagesView(page);
+    /** A lookup would start as the row opens, and the viewer's library answers at once, so
+     *  waiting out a short window for the request is what lets the absence checks below fail
+     *  against the old behavior instead of passing before its fetch lands. */
+    const lookup = page
+      .waitForRequest((request) => new URL(request.url()).pathname.startsWith('/api/skills'), {
+        timeout: 2000,
+      })
+      .then(
+        () => true,
+        () => false,
+      );
+    await expand(page, /release-notes/);
+    await expect(
+      view.getByText('Skill "release-notes" loaded. Follow the instructions below.'),
+    ).toBeVisible();
+    expect(await lookup).toBe(false);
+    await expect(view.getByText('The viewer wrote these instructions.')).toHaveCount(0);
     await expect(view.getByRole('button', { name: 'Open skill' })).toHaveCount(0);
   });
 

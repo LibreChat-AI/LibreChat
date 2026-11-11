@@ -199,6 +199,9 @@ async function handleExec(req, res) {
     lang: body.lang || '',
     codeLength: typeof body.code === 'string' ? body.code.length : 0,
     fileCount: Array.isArray(body.files) ? body.files.length : 0,
+    /** Which mounted files each exec received, so a spec can tell a read from a later call. */
+    fileNames: Array.isArray(body.files) ? body.files.map((file) => file?.name) : [],
+    code: typeof body.code === 'string' ? body.code.slice(0, 200) : '',
   });
   const versionMarker = body.code?.match(
     /E2E_RUN_FILE_VERSION:([A-Za-z0-9-]+):(write-v1|inspect|write-v2)/,

@@ -1,3 +1,5 @@
+import { useQueryClient } from '@tanstack/react-query';
+import { QueryKeys, defaultOrderQuery } from 'librechat-data-provider';
 import {
   Label,
   Button,
@@ -7,11 +9,16 @@ import {
   useToastContext,
   OGDialogTemplate,
 } from '@librechat/client';
-import type { Assistant, AssistantCreateParams, AssistantsEndpoint } from 'librechat-data-provider';
+import type {
+  Assistant,
+  AssistantListResponse,
+  AssistantCreateParams,
+  AssistantsEndpoint,
+} from 'librechat-data-provider';
 import type { UseMutationResult } from '@tanstack/react-query';
 import { useDeleteAssistantMutation } from '~/data-provider';
-import { useLocalize, useSetIndexOptions } from '~/hooks';
 import { useChatContext } from '~/Providers';
+import { useLocalize } from '~/hooks';
 
 export default function ContextButton({
   activeModel,
@@ -23,20 +30,25 @@ export default function ContextButton({
   activeModel?: string;
   assistant_id: string;
   setCurrentAssistantId: React.Dispatch<React.SetStateAction<string | undefined>>;
-  createMutation: UseMutationResult<Assistant, Error, AssistantCreateParams>;
+  createMutation: Pick<
+    UseMutationResult<Assistant, Error, AssistantCreateParams>,
+    'data' | 'reset'
+  >;
   endpoint: AssistantsEndpoint;
 }) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
-  const { conversation } = useChatContext();
-  const { setOption } = useSetIndexOptions();
+  const { setConversation } = useChatContext();
+  const queryClient = useQueryClient();
 
   const deleteAssistant = useDeleteAssistantMutation({
-    onSuccess: (_, vars, context) => {
-      const updatedList = context as Assistant[] | undefined;
-      if (!updatedList) {
-        return;
-      }
+    onSuccess: (_, vars) => {
+      const updatedList =
+        queryClient.getQueryData<AssistantListResponse>([
+          QueryKeys.assistants,
+          vars.endpoint,
+          defaultOrderQuery,
+        ])?.data ?? [];
 
       showToast({
         message: localize('com_ui_assistant_deleted'),
@@ -48,24 +60,22 @@ export default function ContextButton({
         createMutation.reset();
       }
 
-      const firstAssistant = updatedList[0] as Assistant | undefined;
-      if (!firstAssistant) {
-        return setOption('assistant_id')('');
-      }
-
-      if (vars.assistant_id === conversation?.assistant_id) {
-        return setOption('assistant_id')(firstAssistant.id);
-      }
-
-      const currentAssistant = updatedList.find(
-        (assistant) => assistant.id === conversation?.assistant_id,
+      const firstAssistant = updatedList[0];
+      setConversation((current) => {
+        if (
+          !current ||
+          current.endpoint !== vars.endpoint ||
+          current.assistant_id !== vars.assistant_id
+        ) {
+          return current;
+        }
+        return { ...current, assistant_id: firstAssistant?.id ?? '', model: firstAssistant?.model };
+      });
+      setCurrentAssistantId((current) =>
+        current === vars.assistant_id || !updatedList.some((assistant) => assistant.id === current)
+          ? firstAssistant?.id
+          : current,
       );
-
-      if (currentAssistant) {
-        setCurrentAssistantId(currentAssistant.id);
-      }
-
-      setCurrentAssistantId(firstAssistant.id);
     },
     onError: (error) => {
       console.error(error);

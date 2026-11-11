@@ -11,6 +11,7 @@ const {
   openCheckpointDeletion,
   waitForGenerationPersistence,
   createArchiveAllHandler,
+  createArchiveHandler,
   createSubagentActivityStreamHandler,
   createSubagentTaskContentHandler,
   createSubagentControlHandler,
@@ -36,6 +37,7 @@ const {
   createRenameConversationHandler,
   createMarkConvoSeenHandler,
   createMarkConvoUnreadHandler,
+  createGetConversationHandler,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
   deleteAllSharedLinksWithCleanup,
@@ -79,6 +81,10 @@ const assistantClients = {
 
 const router = express.Router();
 const archiveAllHandler = createArchiveAllHandler({ archiveAllConvos: db.archiveAllConvos });
+const archiveHandler = createArchiveHandler({
+  saveConvo: db.saveConvo,
+  getConvoRetention: db.getConvoRetention,
+});
 const subagentThreadViewHandler = createSubagentThreadViewHandler({
   getConvoOwnership: db.getConvoOwnership,
   getSubagentThreadForParent: db.getSubagentThreadForParent,
@@ -308,16 +314,10 @@ router.post(
 );
 router.get('/:parentConversationId/subagents/:threadId', subagentThreadViewHandler);
 
-router.get('/:conversationId', async (req, res) => {
-  const { conversationId } = req.params;
-  const convo = await db.getConvo(req.user.id, conversationId);
-
-  if (convo && convo.subagentThread == null) {
-    res.status(200).json(convo);
-  } else {
-    res.status(404).end();
-  }
-});
+router.get(
+  '/:conversationId',
+  createGetConversationHandler({ getConvo: db.getConvo, jobs: GenerationJobManager, logger }),
+);
 
 router.get(
   '/gen_title/:conversationId',
@@ -670,54 +670,14 @@ router.delete('/all', configMiddleware, async (req, res) => {
 
 /**
  * Archives or unarchives a conversation.
+ * The config loads before the access check because that check reads the retention mode
+ * from it, and `saveConvo` applies the same mode to the chat it archives.
  * @route POST /archive
  * @param {string} req.body.arg.conversationId - The conversation ID to archive/unarchive.
  * @param {boolean} req.body.arg.isArchived - Whether to archive (true) or unarchive (false).
  * @returns {object} 200 - The updated conversation object.
  */
-router.post('/archive', validateConvoAccess, async (req, res) => {
-  const { conversationId, isArchived } = req.body?.arg ?? {};
-
-  if (!conversationId) {
-    return res.status(400).json({ error: 'conversationId is required' });
-  }
-
-  if (typeof isArchived !== 'boolean') {
-    return res.status(400).json({ error: 'isArchived must be a boolean' });
-  }
-
-  try {
-    const dbResponse = await db.saveConvo(
-      {
-        userId: req?.user?.id,
-        isTemporary: req?.resolvedConversation?.isTemporary,
-        expiredAt: req?.resolvedConversation?.expiredAt,
-        interfaceConfig: req?.config?.interfaceConfig,
-      },
-      { conversationId, isArchived },
-      {
-        context: `POST /api/convos/archive ${conversationId}`,
-        /** Filing a chat away is not activity: `updatedAt` stays the chat's own last
-         * activity so unarchiving restores it to its real place in the date groups.
-         * When it was archived is recorded separately, on `archivedAt`. */
-        preserveUpdatedAt: true,
-        /** Without timestamps, an upsert would insert a conversation that has none. */
-        noUpsert: true,
-        /** Metadata-only: skip rebuilding `messages` so a concurrent append is not erased. */
-        appendMessageIds: [],
-      },
-    );
-
-    if (!dbResponse) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    res.status(200).json(dbResponse);
-  } catch (error) {
-    logger.error('Error archiving conversation', error);
-    res.status(500).send('Error archiving conversation');
-  }
-});
+router.post('/archive', configMiddleware, validateConvoAccess, archiveHandler);
 
 /**
  * Archives every conversation currently visible to the user.

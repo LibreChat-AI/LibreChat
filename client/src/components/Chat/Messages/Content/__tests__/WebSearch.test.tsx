@@ -30,8 +30,10 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
-  useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
-  useProgress: (progress: number) => progress,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   useExpandCollapse: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
@@ -40,6 +42,11 @@ jest.mock('~/hooks', () => ({
     },
     ref: { current: null },
   }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useProgress: (progress: number) => progress,
 }));
 
 jest.mock('~/hooks/MCP', () => ({
@@ -531,8 +538,7 @@ describe('WebSearch', () => {
       renderWebSearch({ searchResults });
 
       const button = screen.getByRole('button', { name: /Searched the web/ });
-      expect(button.parentElement).toHaveClass('h-5');
-      expect(button.parentElement?.parentElement).toHaveClass('my-1');
+      expect(button.parentElement).toHaveClass('my-1.5', 'h-5');
       expect(button).not.toHaveClass('py-1');
       expect(button).not.toHaveClass('transition-colors');
       const chevron = screen.getByTestId('chevron-icon');

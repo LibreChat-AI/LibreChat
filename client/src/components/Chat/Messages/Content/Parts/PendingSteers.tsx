@@ -14,8 +14,8 @@ import {
 } from '@librechat/chat/react';
 import type { SteerReceiptState } from '@librechat/chat/components';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { useGetMessagesByConvoId } from '~/data-provider';
 import { cn, isLegacyDeliveryUncertain } from '~/utils';
+import { useCachedMessages } from '~/data-provider';
 import { useLatestMessage } from '~/hooks/Messages';
 import { useLocalize } from '~/hooks';
 
@@ -55,9 +55,7 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
     queryClient.getQueryData<TMessage[]>([QueryKeys.messages, conversationId]) ?? [];
   const latestMessage = useLatestMessage(index, conversationId);
   const paneConversationId = usePaneConversationId(index);
-  const { data: fallbackPaused } = useGetMessagesByConvoId<boolean>(conversationId, {
-    select: hasLiveRunPause,
-  });
+  const { data: fallbackPaused } = useCachedMessages(conversationId, hasLiveRunPause);
   /* A one-message cache is necessarily the active branch. Until the
      conversation atom reaches useLatestMessage, retain the query's established
      single-branch result so a live question cannot re-enable escalation. The

@@ -105,6 +105,10 @@ export function createTransactionMethods(
     user: string,
     options?: { includeReservedCredits?: boolean; applyReset?: boolean },
   ) => Promise<IBalance | null>;
+  initializeNullBalance: (
+    user: string,
+    input: { tokenCredits: number; sync?: IBalanceUpdate },
+  ) => Promise<IBalance | null>;
   upsertBalanceFields: (
     user: string,
     fields: IBalanceUpdate,
@@ -384,6 +388,8 @@ export function createTransactionMethods(
         $set: {
           tokenCredits: credits,
           lastRefill: now,
+          allotment: record.refillAmount,
+          allottedAt: now,
           pendingRefill,
         },
       },
@@ -793,7 +799,21 @@ export function createTransactionMethods(
     }
   }
 
+  /** Null also matches legacy missing credit; a miss must never upsert or restore spent credit. */
+  async function initializeNullBalance(
+    user: string,
+    { tokenCredits, sync }: { tokenCredits: number; sync?: IBalanceUpdate },
+  ): Promise<IBalance | null> {
+    const Balance = mongoose.models.Balance as Model<IBalance>;
+    return Balance.findOneAndUpdate(
+      { user, tokenCredits: null },
+      { $set: { tokenCredits, ...(sync && Object.keys(sync).length > 0 ? sync : {}) } },
+      { new: true, sort: oldestFirst },
+    ).lean<IBalance>();
+  }
+
   return {
+    initializeNullBalance,
     updateBalance,
     bulkInsertTransactions,
     findBalanceByUser,

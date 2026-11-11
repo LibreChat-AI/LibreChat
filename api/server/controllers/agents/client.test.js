@@ -6964,6 +6964,55 @@ describe('AgentClient - titleConvo', () => {
       },
     );
 
+    it('replays history without a file storage deleted, and tells the model it is gone', async () => {
+      client.options.resendFiles = true;
+      client.options.attachments = [];
+      const gone = makeUploadedFile('history-gone', 'expired.pdf', 'application/pdf');
+      const kept = makeUploadedFile('history-kept', 'kept.pdf', 'application/pdf');
+      require('~/models').getFiles.mockResolvedValue([gone, kept]);
+      client.addDocuments = jest.fn(async (targetMessage, attachments, onMissingFile) => {
+        onMissingFile(gone);
+        targetMessage.documents = [{ type: 'input_file', filename: kept.filename }];
+        return [kept];
+      });
+
+      const [replayed] = await client.addPreviousAttachments([
+        {
+          messageId: 'history-message',
+          isCreatedByUser: true,
+          text: 'Summarize these.',
+          files: [{ file_id: gone.file_id }, { file_id: kept.file_id }],
+        },
+      ]);
+
+      expect(client.addDocuments).toHaveBeenCalledWith(
+        replayed,
+        [gone, kept],
+        expect.any(Function),
+      );
+      expect(replayed.fileContext).toContain('"expired.pdf"');
+      expect(replayed.fileContext).toContain('deleted from storage');
+      expect(replayed.fileContext).not.toContain('kept.pdf');
+      expect(client.message_file_map['history-message'].map((file) => file.file_id)).toEqual([
+        kept.file_id,
+      ]);
+    });
+
+    it('keeps a storage miss on a current attachment fatal', async () => {
+      const current = makeUploadedFile('current-gone', 'current.pdf', 'application/pdf');
+      const missing = new (require('@librechat/api').AttachmentObjectNotFoundError)(
+        current.file_id,
+      );
+      client.addDocuments = jest.fn(async (_message, _attachments, onMissingFile) => {
+        expect(onMissingFile).toBeUndefined();
+        throw missing;
+      });
+
+      await expect(
+        client.processAttachments({ messageId: 'current-message' }, [current]),
+      ).rejects.toBe(missing);
+    });
+
     it('rejects combined historical and current bytes before either batch is encoded', async () => {
       mockAgent.endpoint = 'Moonshot';
       client.options.endpointType = EModelEndpoint.custom;
@@ -7601,7 +7650,7 @@ describe('AgentClient - titleConvo', () => {
 
         const files = await client.processAttachments(message, [currentFile]);
 
-        expect(client.addDocuments).toHaveBeenCalledWith(message, [currentFile]);
+        expect(client.addDocuments).toHaveBeenCalledWith(message, [currentFile], undefined);
         expect(message.documents).toEqual([
           expect.objectContaining({
             type: 'input_file',
@@ -9418,6 +9467,106 @@ describe('AgentClient - titleConvo', () => {
         expect.any(Object),
       );
     });
+
+    it.each([
+      ['temporary request', { body: { isTemporary: true } }, true],
+      ['stored temporary conversation', { resolvedConversation: { isTemporary: true } }, true],
+      ['ordinary conversation', { body: {} }, false],
+    ])(
+      'forwards the request tracing policy for a %s',
+      async (_name, requestFields, isTemporary) => {
+        Object.assign(mockReq, requestFields);
+        mockReq.config.langfuse = { trace: { userIdField: 'email' } };
+        mockCheckAccess.mockResolvedValue(true);
+        mockInitializeAgent.mockResolvedValue({ ...mockAgent, provider: EModelEndpoint.openAI });
+        mockCreateMemoryProcessor.mockResolvedValue(['', jest.fn()]);
+        client = new AgentClient({
+          ...mockOptions,
+          endpoint: EModelEndpoint.agents,
+          endpointType: EModelEndpoint.agents,
+          traceContext: { modelLabel: 'Chat Model' },
+          spec: 'spec-1',
+        });
+        client.conversationId = 'convo-123';
+        client.responseMessageId = 'response-123';
+
+        await client.useMemory();
+
+        expect(mockCreateMemoryProcessor).toHaveBeenCalledWith(
+          expect.objectContaining({
+            appConfig: mockReq.config,
+            isTemporary,
+            traceContext: {
+              endpoint: EModelEndpoint.agents,
+              endpointType: EModelEndpoint.agents,
+              modelLabel: 'Chat Model',
+              spec: 'spec-1',
+            },
+          }),
+        );
+      },
+    );
+
+    it.each([false, true])(
+      'applies policy through useMemory, the real processor, and Run.create (temporary=%s)',
+      async (isTemporary) => {
+        const { Run } = require('@librechat/agents');
+        const { HumanMessage } = require('@librechat/agents/langchain/messages');
+        const originalEnv = process.env;
+        process.env = {
+          ...originalEnv,
+          LANGFUSE_PUBLIC_KEY: 'pk-synthetic',
+          LANGFUSE_SECRET_KEY: 'sk-synthetic',
+          LANGFUSE_BASE_URL: 'https://central.example.com',
+          LANGFUSE_TRACING_ENABLED: 'true',
+          LANGFUSE_SAMPLE_RATE: '1',
+          LANGFUSE_FANOUT_ENABLED: 'false',
+          TENANT_ISOLATION_STRICT: 'false',
+        };
+        const create = jest.spyOn(Run, 'create').mockResolvedValue({
+          processStream: jest.fn().mockResolvedValue('done'),
+        });
+        try {
+          mockReq.body = { isTemporary };
+          mockReq.user.email = 'memory@example.com';
+          mockReq.config.langfuse = {
+            trace: {
+              userIdField: 'email',
+              conversationMetadataFields: ['conversationId', 'endpoint', 'model', 'provider'],
+            },
+          };
+          mockCheckAccess.mockResolvedValue(true);
+          mockInitializeAgent.mockResolvedValue({ ...mockAgent });
+          mockCreateMemoryProcessor.mockImplementation(
+            jest.requireActual('@librechat/api').createMemoryProcessor,
+          );
+          client = new AgentClient({ ...mockOptions, endpoint: EModelEndpoint.agents });
+          client.conversationId = 'convo-123';
+          client.responseMessageId = 'response-123';
+
+          await client.useMemory();
+          await client.processMemory([new HumanMessage('Synthetic memory input')]);
+
+          expect(create).toHaveBeenCalledTimes(1);
+          const run = create.mock.calls[0][0];
+          expect(run.langfuse).toMatchObject({
+            userId: 'memory@example.com',
+            deterministicTraceId: false,
+            metadata: {
+              'librechat.conversation.id': 'convo-123',
+              'librechat.endpoint': EModelEndpoint.agents,
+              'librechat.model': 'gpt-4',
+              'librechat.provider': EModelEndpoint.openAI,
+            },
+          });
+          expect(run.langfuse.enabled === false).toBe(isTemporary);
+        } finally {
+          process.env = originalEnv;
+          create.mockRestore();
+          mockCreateMemoryProcessor.mockReset();
+        }
+      },
+    );
 
     it('should bind memory processing to the current generation epoch', async () => {
       mockReq._resumableStreamId = 'convo-123';
@@ -11376,6 +11525,48 @@ describe('AgentClient - resumeCompletion content protection', () => {
       });
     },
   );
+
+  /** A gateway answering 429 for a spent budget says where to ask for more; the localized rate
+   *  limit copy cannot, so the provider's words ride along as the detail. */
+  it('keeps a gateway explanation on a classified rate limit unless protection is on', async () => {
+    const explanation = 'Budget exhausted. It does not reset by waiting; ask the service desk.';
+    const trackRateLimit = () => {
+      const providerError = Object.assign(new Error(`429 ${explanation}`), {
+        status: 429,
+        lc_error_code: 'MODEL_RATE_LIMIT',
+      });
+      mockCreateRun.mockImplementation(async (options) => {
+        const tracker = options.modelCallbacks.find(
+          (callback) => callback.name === 'librechat-upstream-model-error-tracker',
+        );
+        return {
+          resume: jest.fn(async () => {
+            tracker.handleLLMError(providerError, 'resumed-model-run');
+            throw providerError;
+          }),
+          getCalibrationRatio: jest.fn(() => 0),
+        };
+      });
+    };
+
+    trackRateLimit();
+    const context = makeContext(undefined);
+    await AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} });
+    expect(context.contentParts).toContainEqual({
+      type: ContentTypes.ERROR,
+      [ContentTypes.ERROR]: JSON.stringify({ type: 'model_rate_limit', info: explanation }),
+    });
+
+    trackRateLimit();
+    const protectedContext = makeContext({
+      messages: { pii: { fields: ['text'], starterPatterns: ['email'] } },
+    });
+    await AgentClient.prototype.resumeCompletion.call(protectedContext, { resumeValue: {} });
+    expect(protectedContext.contentParts).toContainEqual({
+      type: ContentTypes.ERROR,
+      [ContentTypes.ERROR]: JSON.stringify({ type: 'model_rate_limit' }),
+    });
+  });
 
   it('preserves provider error detail when content protection is disabled', async () => {
     const providerMessage = 'Legacy provider detail';

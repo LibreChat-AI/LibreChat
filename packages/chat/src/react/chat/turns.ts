@@ -6,18 +6,21 @@ import type { TMessage } from 'librechat-data-provider';
 import type { TAskFunction, TRegenerateFunction } from '../../core';
 import type { ChatTurnsParams, TurnServices } from './host';
 import {
+  buildTurn,
+  resolveSender,
+  resolveTurnCode,
+  createRegenerate,
+  isSubmittableMessage,
+  isInlineablePastedText,
+  markComposerFilesTaken,
+  hasPendingAssistantParent,
+} from '../../core';
+import {
   getReasoningStateKey,
   pendingQuotesByConvoId,
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
 } from '../composer';
-import {
-  buildTurn,
-  resolveSender,
-  createRegenerate,
-  isSubmittableMessage,
-  hasPendingAssistantParent,
-} from '../../core';
 import {
   submissionStartFamily,
   showStopButtonByIndex,
@@ -153,9 +156,20 @@ export function useTurns(
       return false;
     }
 
+    if (!regenerateShaped && overrideFiles == null && files != null) {
+      for (const file of files.values()) {
+        if (file.progress < 1 && !isInlineablePastedText(file)) {
+          return false;
+        }
+      }
+    }
+
     /** The builder resolves `promptPrefix` on its copy; the pane's conversation stays as is. */
     const conversation = immutableConversation == null ? null : { ...immutableConversation };
-    const codeDecision = services.resolveCode(conversation);
+    if (services.canSubmit?.(conversation) === false) {
+      return false;
+    }
+    const codeDecision = resolveTurnCode(services.readCodeInputs(), conversation);
     if (codeDecision == null) {
       logger.warn('[useTurns] Refusing to send without an available code workspace');
       return false;
@@ -301,7 +315,17 @@ export function useTurns(
       services.openNewChat(turn.newChatPath);
     }
     if (fileEffects != null && setFiles) {
+      markComposerFilesTaken([
+        ...(fileEffects.canceledUploadIds ?? []),
+        ...(fileEffects.replacedFileIds ?? []),
+      ]);
       services.releaseFiles(fileEffects.submittedFileIds);
+      if (fileEffects.canceledUploadIds?.length) {
+        services.cancelUploads?.(fileEffects.canceledUploadIds);
+      }
+      if (fileEffects.replacedFileIds?.length) {
+        services.discardFiles?.(fileEffects.replacedFileIds);
+      }
       if (fileEffects.clearComposer) {
         setFiles(new Map());
         services.clearFilesToDelete();

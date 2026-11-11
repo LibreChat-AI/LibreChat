@@ -18,7 +18,6 @@ async function balanceController(req, res) {
   if (!result.autoRefillEnabled) {
     delete result.refillIntervalValue;
     delete result.refillIntervalUnit;
-    delete result.lastRefill;
     delete result.refillAmount;
   }
 

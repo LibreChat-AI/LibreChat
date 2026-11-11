@@ -71,6 +71,16 @@ function identity(config: RunnableConfig): {
 
 /** Isolate physical storage by owner while preserving logical SDK references. */
 export class OwnedMongoSaver extends MongoDBSaver {
+  private readonly conversationId?: string;
+
+  constructor(
+    options: ConstructorParameters<typeof MongoDBSaver>[0] & { conversationId?: string },
+  ) {
+    const { conversationId, ...mongoOptions } = options;
+    super(mongoOptions);
+    this.conversationId = conversationId;
+  }
+
   private async recordStorage(config: RunnableConfig): Promise<void> {
     const namespace = config.configurable?.checkpoint_ns;
     const candidate =
@@ -232,8 +242,9 @@ export class OwnedMongoSaver extends MongoDBSaver {
   ): Promise<RunnableConfig> {
     await this.recordStorage(config);
     const owner = ownerOf(config);
-    if (owner == null) return super.put(config, checkpoint, metadata);
     const key = identity(config);
+    const parent = key.thread_id === this.conversationId ? undefined : this.conversationId;
+    if (owner == null && parent == null) return super.put(config, checkpoint, metadata);
     const [[type, serializedCheckpoint], [metadataType, serializedMetadata]] = await Promise.all([
       this.serde.dumpsTyped(checkpoint),
       this.serde.dumpsTyped(metadata),
@@ -247,12 +258,17 @@ export class OwnedMongoSaver extends MongoDBSaver {
     await this.db.collection(this.checkpointCollectionName).updateOne(
       {
         ...stored,
-        thread_id: `${owner}${key.thread_id}`,
-        checkpoint_ns: `${owner}${key.checkpoint_ns}`,
-        lc_owner: owner,
+        ...(owner == null
+          ? {}
+          : {
+              thread_id: `${owner}${key.thread_id}`,
+              checkpoint_ns: `${owner}${key.checkpoint_ns}`,
+              lc_owner: owner,
+            }),
       },
       {
         $set: {
+          ...(parent == null ? {} : { lc_parent_thread: parent }),
           parent_checkpoint_id: key.checkpoint_id,
           type,
           checkpoint: serializedCheckpoint,
@@ -263,7 +279,12 @@ export class OwnedMongoSaver extends MongoDBSaver {
       },
       { upsert: true },
     );
-    return { configurable: { ...stored, [LIBRECHAT_CHECKPOINT_OWNER_KEY]: owner } };
+    return {
+      configurable: {
+        ...stored,
+        ...(owner == null ? {} : { [LIBRECHAT_CHECKPOINT_OWNER_KEY]: owner }),
+      },
+    };
   }
 
   override async putWrites(
@@ -273,11 +294,13 @@ export class OwnedMongoSaver extends MongoDBSaver {
   ): Promise<void> {
     await this.recordStorage(config);
     const owner = ownerOf(config);
-    if (owner == null) return super.putWrites(config, writes, taskId);
     const key = identity(config);
+    const parent = key.thread_id === this.conversationId ? undefined : this.conversationId;
+    if (owner == null && parent == null) return super.putWrites(config, writes, taskId);
     if (key.checkpoint_id == null) throw new Error('Owned writes require a checkpoint id');
     const allSpecial = writes.every(([channel]) => channel in WRITES_IDX_MAP);
-    const legacy = key.checkpoint_id === config.configurable?.[LIBRECHAT_LEGACY_CHECKPOINT_KEY];
+    const legacy =
+      owner != null && key.checkpoint_id === config.configurable?.[LIBRECHAT_LEGACY_CHECKPOINT_KEY];
     const existing =
       !allSpecial && legacy
         ? await this.db
@@ -293,16 +316,26 @@ export class OwnedMongoSaver extends MongoDBSaver {
       writes.map(async ([channel, value], idx) => {
         if (legacySlots.has(WRITES_IDX_MAP[channel] ?? idx)) return null;
         const [type, serializedValue] = await this.serde.dumpsTyped(value);
-        const fields = { channel, type, value: serializedValue, lc_owner: owner };
+        const fields = {
+          channel,
+          type,
+          value: serializedValue,
+          ...(owner == null ? {} : { lc_owner: owner }),
+          ...(parent == null ? {} : { lc_parent_thread: parent }),
+        };
         return {
           updateOne: {
             filter: {
               ...key,
-              thread_id: `${owner}${key.thread_id}`,
-              checkpoint_ns: `${owner}${key.checkpoint_ns}`,
+              ...(owner == null
+                ? {}
+                : {
+                    thread_id: `${owner}${key.thread_id}`,
+                    checkpoint_ns: `${owner}${key.checkpoint_ns}`,
+                    lc_owner: owner,
+                  }),
               task_id: taskId,
               idx: WRITES_IDX_MAP[channel] ?? idx,
-              lc_owner: owner,
             },
             update: allSpecial
               ? {

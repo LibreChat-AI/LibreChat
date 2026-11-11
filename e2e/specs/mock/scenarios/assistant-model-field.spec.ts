@@ -16,7 +16,7 @@ const SECOND_MODEL = 'e2e-assistants-second-model';
 
 /** The mock lists one assistants model; a second one gives the keyboard somewhere to move. */
 async function offerSecondModel(page: Page) {
-  await page.route('**/api/models', async (route) => {
+  await page.route('**/api/models?endpoint=assistants', async (route) => {
     const response = await route.fetch();
     const models = (await response.json()) as Record<string, string[]>;
     models.assistants = [...new Set([...(models.assistants ?? []), SECOND_MODEL])];

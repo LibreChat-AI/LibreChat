@@ -3,6 +3,7 @@ import type { TMessage, TConversation } from 'librechat-data-provider';
 import type { BuildTurnInput } from '../turns';
 import type { ExtendedFile } from '../files';
 import { buildTurn, createRegenerate } from '../turns';
+import { formatPastedText } from '../files';
 
 const conversationId = 'conversation-1';
 
@@ -167,6 +168,105 @@ describe('buildTurn', () => {
     });
   });
 
+  it('inlines the exact pending paste synchronously and never submits its upload identities', () => {
+    const pastedText = '  exact\r\npaste with ``` and `````\n ';
+    const files = new Map<string, ExtendedFile>([
+      [
+        'upload-key',
+        { file_id: 'pending-id', temp_file_id: 'temp-id', progress: 0, size: 1, pastedText },
+      ],
+    ]);
+    const turn = buildTurn(input({ text: '', files }));
+
+    expect(turn.currentMsg.text).toBe(formatPastedText(pastedText));
+    expect(turn.submission.userMessage.text).toBe(turn.currentMsg.text);
+    expect(turn.currentMsg.files).toEqual([]);
+    expect(turn.fileEffects).toEqual({
+      submittedFileIds: [],
+      canceledUploadIds: ['upload-key', 'pending-id', 'temp-id'],
+      clearComposer: true,
+    });
+    expect(files.size).toBe(1);
+  });
+
+  it('keeps completed pastes and ordinary files as refs beside the pending inline paste', () => {
+    const files = new Map<string, ExtendedFile>([
+      ['pending', { file_id: 'pending', progress: 0.9, size: 1, pastedText: 'local' }],
+      [
+        'done-key',
+        { file_id: 'done', temp_file_id: 'done-key', progress: 1, size: 1, pastedText: 'uploaded' },
+      ],
+      [
+        'ordinary',
+        {
+          file_id: 'ordinary',
+          progress: 1,
+          size: 1,
+          filename: 'pasted-text.txt',
+          text: 'server preview',
+        },
+      ],
+    ]);
+    const turn = buildTurn(input({ files }));
+
+    expect(turn.currentMsg.text).toBe(`Next question\n\n${formatPastedText('local')}`);
+    expect(turn.currentMsg.files?.map((file) => file.file_id)).toEqual(['done', 'ordinary']);
+    expect(turn.fileEffects).toEqual({
+      submittedFileIds: ['done-key', 'done', 'done-key', 'ordinary', 'ordinary', undefined],
+      canceledUploadIds: ['pending'],
+      clearComposer: true,
+    });
+  });
+
+  it.each([
+    { compact: true },
+    { isContinued: true },
+    { isEdited: true },
+    { overrideFiles: [] },
+    { overrideFiles: user.files },
+    { isRegenerate: true, targetResponseMessageId: response.messageId },
+  ])('does not inline staged pastes when replaying or overriding files: %p', (options) => {
+    const files = new Map<string, ExtendedFile>([
+      ['pending', { file_id: 'pending', progress: 0, size: 1, pastedText: 'next draft only' }],
+    ]);
+    const turn = buildTurn(
+      input({
+        files,
+        params: { text: user.text, messageId: user.messageId },
+        options,
+      }),
+    );
+    expect(turn.currentMsg.text).toBe('Next question');
+    expect(turn.fileEffects?.canceledUploadIds).toBeUndefined();
+    expect(turn.currentMsg.files?.map((file) => file.file_id) ?? []).not.toContain('pending');
+    expect(files.size).toBe(1);
+  });
+
+  it('names a superseded source for discard without releasing or canceling its server file', () => {
+    const files = new Map<string, ExtendedFile>([
+      ['source-key', { file_id: 'source-id', temp_file_id: 'source-temp', progress: 1, size: 1 }],
+      [
+        'replacement',
+        {
+          file_id: 'replacement',
+          progress: 0,
+          size: 1,
+          pastedText: 'corrected',
+          replacesFileId: 'source-temp',
+        },
+      ],
+    ]);
+    const turn = buildTurn(input({ files }));
+    expect(turn.currentMsg.text).toBe(`Next question\n\n${formatPastedText('corrected')}`);
+    expect(turn.currentMsg.files).toEqual([]);
+    expect(turn.fileEffects).toEqual({
+      submittedFileIds: [],
+      canceledUploadIds: ['replacement'],
+      replacedFileIds: ['source-key', 'source-id', 'source-temp'],
+      clearComposer: true,
+    });
+  });
+
   it('leaves composer files alone when the caller supplies the attachments', () => {
     const files = new Map<string, ExtendedFile>([
       ['temp-1', { file_id: 'file-2', temp_file_id: 'temp-1', progress: 1, size: 1 }],
@@ -196,8 +296,38 @@ describe('buildTurn', () => {
     expect(turn.submission.userMessage.overrideParentMessageId).toBe('user-1');
     expect(turn.submissionMessages.map((message) => message.messageId)).toEqual(['user-1']);
     expect(turn.currentMsg.files).toEqual(user.files);
-    expect(turn.fileEffects?.clearComposer).toBe(true);
+    expect(turn.fileEffects?.clearComposer).toBe(false);
   });
+
+  it.each([undefined, []])(
+    'keeps pending drafts out of regenerations with original files %p',
+    (files) => {
+      const original = { ...user, files };
+      const staged = new Map<string, ExtendedFile>([
+        ['pending', { file_id: 'pending', progress: 0, size: 1, pastedText: 'unrelated draft' }],
+      ]);
+      let turn: ReturnType<typeof buildTurn> | undefined;
+      const regenerate = createRegenerate(
+        (params, options) => {
+          turn = buildTurn(
+            input({
+              text: params.text,
+              params,
+              options: options ?? {},
+              files: staged,
+              cachedMessages: [original, response],
+            }),
+          );
+        },
+        () => [original, response],
+      );
+      regenerate(response);
+      expect(turn?.currentMsg.text).toBe(original.text);
+      expect(turn?.currentMsg.files ?? []).toEqual([]);
+      expect(turn?.fileEffects).toBeUndefined();
+      expect(staged.get('pending')?.pastedText).toBe('unrelated draft');
+    },
+  );
 
   it('edits a content part on a copy, leaving the cached response untouched', () => {
     const turn = buildTurn(

@@ -94,6 +94,20 @@ describe('commitPasswordReset', () => {
     );
   });
 
+  it('leaves enrolled two-factor credentials untouched', async () => {
+    const deps = createDeps({
+      findResetToken: jest.fn().mockResolvedValue(typedToken()),
+      getUserById: jest.fn().mockResolvedValue(account()),
+    });
+
+    await expect(commitPasswordReset(deps, input)).resolves.toMatchObject({ ok: true });
+
+    const update = deps.updateUser.mock.calls[0][1];
+    for (const field of ['twoFactorEnabled', 'totpSecret', 'backupCodes']) {
+      expect(update).not.toHaveProperty(field);
+    }
+  });
+
   it('accepts a typed token issued before addresses were bound', async () => {
     const deps = createDeps({
       findResetToken: jest.fn().mockResolvedValue(typedToken({ email: undefined })),

@@ -394,6 +394,23 @@ function compare(fixture: Fixture) {
   expect(hook.machineChoiceOwners).toEqual(derived.machineChoiceOwners);
   expect(hook.fixedMachineIds).toEqual(derived.fixedMachineIds);
 
+  /** The snapshot the hook exposes for a send resolves to what the hook itself reports. */
+  const exposed = resolveCodeWorkspace(hook.readInputs());
+  expect(exposed.state).toBe(hook.state);
+  expect(exposed.canSubmit).toBe(hook.canSubmit);
+  expect(exposed.required).toBe(hook.required);
+  expect(exposed.locked).toBe(hook.locked);
+  expect(exposed.visible).toBe(hook.visible);
+  expect(exposed.supportsEnvironmentDecisions).toBe(hook.supportsEnvironmentDecisions);
+  expect(exposed.mode).toBe(hook.mode);
+  expect(exposed.transition).toEqual(hook.transition);
+  expect(exposed.selections).toEqual(hook.selections);
+  expect(exposed.environments).toEqual(hook.environments);
+  expect(exposed.machineOptions).toEqual(hook.machineOptions);
+  expect(exposed.machineOptionGroups).toEqual(hook.machineOptionGroups);
+  expect(exposed.machineChoiceOwners).toEqual(hook.machineChoiceOwners);
+  expect(exposed.fixedMachineIds).toEqual(hook.fixedMachineIds);
+
   const explicit: CodeWorkspaceSelection[] = [stored];
   const candidates: Array<[CodeWorkspaceSelection[] | undefined, CodeEnvironmentMode?]> = [
     [fixture.conversation.codeWorkspaces, fixture.conversation.codeEnvironmentMode],

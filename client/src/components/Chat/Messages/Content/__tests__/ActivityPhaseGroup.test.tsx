@@ -26,19 +26,12 @@ jest.mock('@librechat/client', () => ({
   useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
 }));
 
-jest.mock('~/hooks', () => {
-  const expandCollapse = jest.requireActual('~/hooks/Messages/useExpandCollapse');
-  const lazyCollapseBody = jest.requireActual('~/hooks/Messages/useLazyCollapseBody');
-  return {
-    useLocalize: () => (key: string, values?: Record<string | number, string>) =>
-      key === 'com_ui_n_of_n_actions_failed' ? `${values?.[0]}/${values?.[1]} failed` : key,
-    useExpandCollapse: expandCollapse.default,
-    useLazyCollapseBody: lazyCollapseBody.default,
-    EXPAND_TRANSITION: expandCollapse.EXPAND_TRANSITION,
-    scheduleMessageContentLayoutReconcile: (target: HTMLElement | null) =>
-      mockScheduleLayoutReconcile(target),
-  };
-});
+jest.mock('~/hooks', () => ({
+  useLocalize: () => (key: string, values?: Record<string | number, string>) =>
+    key === 'com_ui_n_of_n_actions_failed' ? `${values?.[0]}/${values?.[1]} failed` : key,
+  scheduleMessageContentLayoutReconcile: (target: HTMLElement | null) =>
+    mockScheduleLayoutReconcile(target),
+}));
 
 jest.mock('~/components/MCPUIResource', () => ({
   MCPAppViews: ({ attachments }: { attachments?: TAttachment[] }) => (
@@ -669,7 +662,8 @@ describe('ActivityPhaseGroup open header', () => {
 
     const open = screen.getByRole('button', { name: LABEL });
     expect(open).not.toHaveAttribute('aria-labelledby');
-    expect(open).toHaveClass('font-semibold', 'text-text-primary');
+    expect(open).toHaveClass('font-semibold');
+    expect(open).not.toHaveClass('text-text-primary');
     expect(open).not.toHaveTextContent('Checking the rollback path');
   });
 

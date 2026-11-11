@@ -172,14 +172,14 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       ref={containerRef}
       className={`relative ${fullWidth ? 'flex' : 'inline-flex'} ${
         wrap ? 'flex-wrap' : ''
-      } bg-surface-tertiary items-center rounded-lg px-1 ${className}`}
+      } bg-surface-tertiary items-center rounded-lg px-0.75 ${className}`}
       role="radiogroup"
       aria-labelledby={ariaLabelledBy}
     >
       {selectedIndex >= 0 && isMounted && (
         <div
-          className={`border-border-light bg-surface-primary pointer-events-none absolute left-0 rounded-md border shadow-xs transition-all duration-300 ease-out ${
-            wrap ? 'top-0' : 'inset-y-1'
+          className={`bg-surface-primary pointer-events-none absolute left-0 rounded-md shadow-xs transition-all duration-300 ease-out ${
+            wrap ? 'top-0' : 'inset-y-0.75'
           }`}
           style={backgroundStyle}
         />

@@ -1,6 +1,7 @@
 import mongoose, { FilterQuery } from 'mongoose';
 import { AUTH_USER_DOC_MAX_AGE_MS } from 'librechat-data-provider';
 import type {
+  ChannelStorageConfig,
   BalanceRefillMode,
   RefillIntervalUnit,
   StatefulCodeEnvironment,
@@ -16,6 +17,11 @@ import type {
 } from '~/types';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
+import {
+  eraseChannelPersistenceForUser,
+  resolveChannelErasureConfig,
+} from '~/methods/channelErasure';
+import { closeResponseScopes, eraseResponseRecords } from './responseScope';
 import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocsForUsers } from '~/utils/eviction';
 import { signPayload } from '~/crypto';
@@ -34,6 +40,7 @@ const TWO_FACTOR_ENROLLMENT_PROJECTION =
   '+totpSecret +backupCodes +pendingTotpSecret +pendingBackupCodes +twoFactorAcknowledgementNonceHash +twoFactorFinalizationNonceHash';
 
 interface UserMethodDeps {
+  getChannelStorageConfig?: () => Promise<Partial<ChannelStorageConfig>>;
   getCache?: (key: string) => CacheStore | undefined;
   /** Resolves after the given milliseconds; tests pass one that need not wait out the cache TTL. */
   delay?: (ms: number) => Promise<void>;
@@ -52,6 +59,9 @@ export function createUserMethods(
   mongoose: typeof import('mongoose'),
   deps: UserMethodDeps = {},
 ): {
+  findScheduleOwner: (
+    userId: string,
+  ) => Promise<{ _id: string; tenantId?: string; role?: string; termsAccepted?: boolean } | null>;
   findUser: (
     searchCriteria: FilterQuery<IUser>,
     fieldsToSelect?: string | string[] | null,
@@ -291,6 +301,7 @@ export function createUserMethods(
     }
 
     const Balance = mongoose.models.Balance;
+    const grantedAt = new Date();
     const initial: {
       tokenCredits: number;
       autoRefillEnabled?: boolean;
@@ -298,7 +309,15 @@ export function createUserMethods(
       refillIntervalUnit?: RefillIntervalUnit;
       refillAmount?: number;
       refillMode?: BalanceRefillMode;
-    } = { tokenCredits: balanceConfig.startBalance };
+      allotment: number;
+      allottedAt: Date;
+      lastRefill: Date;
+    } = {
+      tokenCredits: balanceConfig.startBalance,
+      allotment: balanceConfig.startBalance,
+      allottedAt: grantedAt,
+      lastRefill: grantedAt,
+    };
 
     if (
       balanceConfig.autoRefillEnabled &&
@@ -629,6 +648,21 @@ export function createUserMethods(
   async function deleteUserById(userId: string): Promise<UserDeleteResult> {
     try {
       const User = mongoose.models.User;
+      const owner = await User.findById(userId).select('tenantId').lean<Pick<IUser, 'tenantId'>>();
+      if (owner) {
+        const channelConfig = resolveChannelErasureConfig(
+          (await deps.getChannelStorageConfig?.()) ?? {},
+        );
+        await closeResponseScopes(mongoose, { userId, tenantId: owner.tenantId });
+        await eraseResponseRecords(mongoose, { userId, tenantId: owner.tenantId });
+        // Admission writes the same owner anchor in its insertion transaction.
+        // Closing it therefore precedes both this sweep and every delayed retry.
+        await eraseChannelPersistenceForUser(
+          mongoose,
+          { userId, tenantId: owner.tenantId },
+          channelConfig,
+        );
+      }
       await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       const result = await User.deleteOne({ _id: userId });
       if (result.deletedCount === 0) {
@@ -1018,7 +1052,24 @@ export function createUserMethods(
     return updated;
   }
 
+  async function findScheduleOwner(
+    userId: string,
+  ): Promise<{ _id: string; tenantId?: string; role?: string; termsAccepted?: boolean } | null> {
+    const user = await mongoose.models.User.findById(userId)
+      .select('_id tenantId role termsAccepted')
+      .lean<IUser>();
+    return user
+      ? {
+          _id: user._id.toString(),
+          tenantId: user.tenantId,
+          role: user.role,
+          termsAccepted: user.termsAccepted,
+        }
+      : null;
+  }
+
   return {
+    findScheduleOwner,
     findUser,
     findUsers,
     findOwnerContactUsers,

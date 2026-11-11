@@ -1,27 +1,10 @@
 import { ResourceType, PermissionBits } from 'librechat-data-provider';
-import {
-  getTenantId,
-  runAsSystem,
-  tenantStorage,
-  activeExpirationFilter,
-} from '@librechat/data-schemas';
+import { getTenantId, runAsSystem, tenantStorage, createMethods } from '@librechat/data-schemas';
+import type { IUser, ShareMethods } from '@librechat/data-schemas';
 import type { Request, Response, NextFunction } from 'express';
-import type { IUser } from '@librechat/data-schemas';
-import type { Types, Model } from 'mongoose';
 import { AccessControlService } from '~/acl/accessControlService';
 import { autoMigrateLegacyLink } from './service';
 import { isEnabled } from '~/utils';
-
-interface RawSharedLink {
-  _id?: Types.ObjectId;
-  conversationId: string;
-  title?: string;
-  user?: string;
-  shareId?: string;
-  tenantId?: string;
-  isPublic?: boolean;
-  expiredAt?: Date;
-}
 
 interface SharedLinkAccessRequest extends Request {
   shareResourceId?: string;
@@ -33,6 +16,7 @@ interface SharedLinkAccessRequest extends Request {
 export interface SharedLinkAccessDeps {
   mongoose: typeof import('mongoose');
   aclService?: AccessControlService;
+  findActiveSharedLink?: ShareMethods['findActiveSharedLink'];
 }
 
 function isAutoMigrateEnabled(): boolean {
@@ -44,6 +28,7 @@ function isAutoMigrateEnabled(): boolean {
 export function createSharedLinkAccessMiddleware(deps: SharedLinkAccessDeps) {
   const { mongoose: mg } = deps;
   const aclService = deps.aclService ?? new AccessControlService(mg);
+  const findActiveSharedLink = deps.findActiveSharedLink ?? createMethods(mg).findActiveSharedLink;
 
   async function hasPublicViewPermission(resourceId: string): Promise<boolean> {
     return aclService.hasPublicAccess({
@@ -64,12 +49,7 @@ export function createSharedLinkAccessMiddleware(deps: SharedLinkAccessDeps) {
     }
 
     const viewerTenantId = getTenantId();
-    const SharedLink = mg.models.SharedLink as Model<RawSharedLink>;
-    const findShare = async () =>
-      (await SharedLink.findOne({
-        shareId,
-        ...activeExpirationFilter<RawSharedLink>(),
-      }).lean()) as RawSharedLink | null;
+    const findShare = () => findActiveSharedLink(shareId);
     // Resolve by the (globally unique, secret) shareId under the viewer's tenant
     // first, then fall back to a system-wide lookup so a share owned by another
     // tenant — e.g. a public link opened by an authenticated user from a

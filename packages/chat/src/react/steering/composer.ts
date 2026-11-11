@@ -1,5 +1,9 @@
 import { useCallback, useMemo } from 'react';
 import { useStore } from 'jotai';
+import {
+  DEFAULT_STEER_MAX_LENGTH,
+  MAX_AGENT_QUEUED_TURN_TEXT_LENGTH,
+} from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ComposerFile, ComposerFileSetter } from './types';
 import type { QueuedMessageContext } from '../../core';
@@ -8,13 +12,17 @@ import {
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
 } from '../composer';
-import { markComposerFilesTaken } from '../../core';
+import { markComposerFilesTaken, partitionComposerFiles } from '../../core';
 import { useSteerHost } from '../steer/host';
 
 export interface ComposerTake {
-  takeComposerFiles: () => TMessage['files'];
+  takeComposerFiles: (
+    text: string,
+    submit: (text: string, files: TMessage['files']) => boolean,
+  ) => boolean;
   takeComposerContext: () => QueuedMessageContext;
   takeComposerQuotes: () => QueuedMessageContext;
+  restoreComposerQuotes: (context: QueuedMessageContext) => void;
 }
 
 /** Drains what the composer has staged so it travels with one during-run
@@ -24,59 +32,66 @@ export default function useComposerTake<File extends ComposerFile>({
   reasoningStateKey,
   files,
   setFiles,
+  discardFiles,
 }: {
   conversationId: string;
   reasoningStateKey: string;
   files?: Map<string, File>;
   setFiles?: ComposerFileSetter<File>;
+  discardFiles?: (fileIds: string[]) => void;
 }): ComposerTake {
   const reasoningStore = useStore();
-  const clearFilesToDelete = useSteerHost().useClearFilesToDelete();
+  const host = useSteerHost();
+  const clearFilesToDelete = host.useClearFilesToDelete();
+  const localize = host.useLocalize();
+  const notify = host.useNotify();
 
-  /** Consumes completed composer attachments into message file refs (clearing
-   *  the composer) so they pair with THIS queued message instead of gluing
-   *  onto whatever `ask` vacuums up next.
-   *
-   *  Cleared by id through a FUNCTIONAL update, never by assigning an empty
-   *  map: uploads dispatch their own functional updates, so a flat overwrite
-   *  drops an attachment the user started after this read, and the upload's
-   *  next callback puts it back on top of the emptied map. Removing exactly
-   *  the ids taken leaves any newer upload alone, and marking them consumed
-   *  stops a late callback for one of THESE files resurrecting it. */
-  const takeComposerFiles = useCallback((): TMessage['files'] => {
-    if (files == null || files.size === 0 || setFiles == null) {
-      return undefined;
-    }
-    const staged = Array.from(files.values());
-    // Completed uploads keep their temporary map key after receiving a server id.
-    const takenIds = Array.from(files.entries()).flatMap(([key, file]) => [
-      key,
-      file.file_id,
-      ...(file.temp_file_id ? [file.temp_file_id] : []),
-    ]);
-    const taken = staged.map((file) => ({
-      file_id: file.file_id,
-      filepath: file.filepath,
-      type: file.type ?? '',
-      height: file.height,
-      width: file.width,
-      // Retained beyond the submission shape so "Edit message" can restore
-      // the attachment into the composer with its real name and size.
-      filename: file.filename,
-      bytes: file.size,
-      llmDeliveryPath: file.llmDeliveryPath,
-    }));
-    markComposerFilesTaken(takenIds);
-    setFiles((previous) => {
-      const remaining = new Map(previous);
-      for (const id of takenIds) {
-        remaining.delete(id);
+  /** Prepares refs and inline text without side effects; consumes only after
+   * the submission accepts them. Removal by identity preserves newer uploads. */
+  const takeComposerFiles = useCallback(
+    (text: string, submit: (text: string, files: TMessage['files']) => boolean): boolean => {
+      if (files == null || files.size === 0 || setFiles == null) {
+        return text.length > 0 && submit(text, undefined);
       }
-      return remaining;
-    });
-    clearFilesToDelete();
-    return taken;
-  }, [files, setFiles, clearFilesToDelete]);
+      const prepared = partitionComposerFiles(text, files);
+      if (prepared.hasIncompleteFiles || prepared.text.length === 0) {
+        return false;
+      }
+      if (
+        prepared.canceledUploadIds.length > 0 &&
+        prepared.text.length > Math.min(DEFAULT_STEER_MAX_LENGTH, MAX_AGENT_QUEUED_TURN_TEXT_LENGTH)
+      ) {
+        notify({ message: localize('com_ui_pasted_text_wait_upload'), status: 'warning' });
+        return false;
+      }
+      if (!submit(prepared.text, prepared.files)) {
+        return false;
+      }
+      const submittedIds = prepared.submittedFileIds.filter((id): id is string => id != null);
+      const takenIds = [
+        ...submittedIds,
+        ...prepared.canceledUploadIds,
+        ...prepared.replacedFileIds,
+      ];
+      markComposerFilesTaken(takenIds);
+      if (prepared.canceledUploadIds.length > 0) {
+        host.cancelUploads?.(prepared.canceledUploadIds);
+      }
+      if (prepared.replacedFileIds.length > 0) {
+        discardFiles?.(prepared.replacedFileIds);
+      }
+      setFiles((previous) => {
+        const remaining = new Map(previous);
+        for (const id of takenIds) {
+          remaining.delete(id);
+        }
+        return remaining;
+      });
+      clearFilesToDelete();
+      return true;
+    },
+    [files, setFiles, discardFiles, clearFilesToDelete, host, localize, notify],
+  );
 
   /** Consumes staged quote chips + manual skill picks (mirroring `ask()`'s
    *  fresh-submit drain of the same atoms) so they pair with THIS queued
@@ -101,6 +116,15 @@ export default function useComposerTake<File extends ComposerFile>({
     };
   }, [conversationId, reasoningStateKey, reasoningStore]);
 
+  const restoreComposerQuotes = useCallback(
+    (context: QueuedMessageContext) => {
+      if (!context.quotes?.length) return;
+      const atom = pendingQuotesByConvoId(conversationId);
+      reasoningStore.set(atom, [...context.quotes, ...reasoningStore.get(atom)]);
+    },
+    [conversationId, reasoningStore],
+  );
+
   /** Quotes-only drain for composer-origin steers: the excerpts ride the steer
    *  POST into the live run, while manual skill picks stay staged: a skill
    *  pick configures a NEW turn's agent run and cannot apply to a mid-run
@@ -115,7 +139,7 @@ export default function useComposerTake<File extends ComposerFile>({
   }, [conversationId, reasoningStore]);
 
   return useMemo(
-    () => ({ takeComposerFiles, takeComposerContext, takeComposerQuotes }),
-    [takeComposerFiles, takeComposerContext, takeComposerQuotes],
+    () => ({ takeComposerFiles, takeComposerContext, takeComposerQuotes, restoreComposerQuotes }),
+    [takeComposerFiles, takeComposerContext, takeComposerQuotes, restoreComposerQuotes],
   );
 }

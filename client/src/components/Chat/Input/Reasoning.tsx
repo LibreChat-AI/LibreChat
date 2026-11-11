@@ -11,6 +11,7 @@ import {
   reasoningOverrideSchema,
   isReasoningOverrideSupported,
   resolveReasoningSettingForTarget,
+  getReasoningParamDefinitions,
 } from 'librechat-data-provider';
 import type {
   Agent,
@@ -135,7 +136,7 @@ export function useComposerReasoning({
       isAgent,
       defaultParamsEndpoint: customParams.defaultParamsEndpoint,
       reasoningFormat: customParams.reasoningFormat,
-      paramDefinitions: customParams.paramDefinitions,
+      paramDefinitions: getReasoningParamDefinitions(endpointsConfig[provider], model),
       blockedReasoningKeys,
       modelReasoning,
     });

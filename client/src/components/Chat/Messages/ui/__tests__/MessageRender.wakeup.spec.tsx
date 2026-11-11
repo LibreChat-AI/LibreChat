@@ -1,5 +1,7 @@
 import { RecoilRoot } from 'recoil';
+import { MemoryRouter } from 'react-router-dom';
 import { render, screen } from '@testing-library/react';
+import { MessageRender } from '@librechat/chat/components';
 import { ContentTypes, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ParentSubagentsProvider, StreamHostProvider } from '@librechat/chat/react';
@@ -7,7 +9,6 @@ import type { ParentSubagentSummary, TMessage } from 'librechat-data-provider';
 import type { TMessageChatContext } from '~/common';
 import { ShareMessagesProvider } from '~/components/Share/ShareMessagesProvider';
 import { ShareContext } from '~/Providers/ShareContext';
-import MessageRender from '../MessageRender';
 import '~/Providers/MessagePartsHostContext';
 import '~/Providers/MessagesHostContext';
 import { appStreamHost } from '~/Providers/StreamHostContext';
@@ -19,30 +20,15 @@ const mockAgentsMap = {
 
 let mockChildren = new Map<string, ParentSubagentSummary>();
 
-jest.mock('~/Providers', () => ({
-  ...jest.requireActual('~/Providers'),
+jest.mock('~/Providers/AgentsMapContext', () => ({
+  ...jest.requireActual('~/Providers/AgentsMapContext'),
   useAgentsMapContext: () => mockAgentsMap,
 }));
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-  useContentMetadata: () => ({ hasParallelContent: false }),
-  useMessageActions: ({ message }: { message: TMessage }) => ({
-    ask: jest.fn(),
-    edit: false,
-    index: 0,
-    agent: mockAgentsMap.agent_lia,
-    assistant: undefined,
-    enterEdit: jest.fn(),
-    conversation: { conversationId: 'conversation-1', endpoint: 'agents' },
-    messageLabel: message.isCreatedByUser ? 'Danny' : 'Lia',
-    handleFeedback: jest.fn(),
-    handleContinue: jest.fn(),
-    copyToClipboard: jest.fn(),
-    getCanCopy: () => true,
-    regenerateMessage: jest.fn(),
-    hasConfiguredSender: false,
-  }),
+/** Keys echo back, except the generic subagent name, which the spec asserts as the English word. */
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => (key === 'com_ui_subagent_actor' ? 'Agent' : key),
 }));
 
 /** The author glyph reduced to whose face it is. */
@@ -65,7 +51,10 @@ jest.mock('@librechat/chat/components', () => ({
   HoverButtons: () => null,
 }));
 
-const chatContext = { latestMessageId: 'wake' } as unknown as TMessageChatContext;
+const chatContext = {
+  latestMessageId: 'wake',
+  conversation: { conversationId: 'conversation-1', endpoint: 'agents', agent_id: 'agent_lia' },
+} as unknown as TMessageChatContext;
 
 const subagentWakeup = (subagentType: string) =>
   [
@@ -154,19 +143,21 @@ function renderMessage(
   return render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
-        {shared ? (
-          <ShareContext.Provider value={{ isSharedConvo: true, shareId: 'share-1' }}>
-            <ShareMessagesProvider messages={[message, sharedReply]}>{row}</ShareMessagesProvider>
-          </ShareContext.Provider>
-        ) : (
-          <ShareMessagesProvider
-            messages={
-              queryClient.getQueryData<TMessage[]>([QueryKeys.messages, 'conversation-1']) ?? []
-            }
-          >
-            {row}
-          </ShareMessagesProvider>
-        )}
+        <MemoryRouter>
+          {shared ? (
+            <ShareContext.Provider value={{ isSharedConvo: true, shareId: 'share-1' }}>
+              <ShareMessagesProvider messages={[message, sharedReply]}>{row}</ShareMessagesProvider>
+            </ShareContext.Provider>
+          ) : (
+            <ShareMessagesProvider
+              messages={
+                queryClient.getQueryData<TMessage[]>([QueryKeys.messages, 'conversation-1']) ?? []
+              }
+            >
+              {row}
+            </ShareMessagesProvider>
+          )}
+        </MemoryRouter>
       </RecoilRoot>
     </QueryClientProvider>,
   );

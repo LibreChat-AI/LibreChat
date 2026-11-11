@@ -78,7 +78,10 @@ jest.mock('~/components/Chat/Messages/SearchMessage', () => ({
   ),
 }));
 jest.mock('~/utils', () => ({ cn: (...a: unknown[]) => a.filter(Boolean).join(' ') }));
-jest.mock('jotai', () => ({ useAtomValue: () => 'text-base' }));
+jest.mock('jotai', () => ({
+  ...jest.requireActual<typeof import('jotai')>('jotai'),
+  useAtomValue: () => 'text-base',
+}));
 jest.mock('~/store/fontSize', () => ({ fontSizeAtom: {} }));
 
 const mockUseRecoilValue = useRecoilValue as jest.Mock;
@@ -117,8 +120,8 @@ describe('Search route', () => {
       'focus-visible:ring-2',
       'focus-visible:ring-ring-primary',
     );
-    expect(container.firstElementChild).toHaveClass('bg-surface-primary-alt');
-    expect(container.querySelector('.bg-gradient-to-t')).toHaveClass('from-surface-primary-alt');
+    expect(container.firstElementChild).toHaveClass('bg-surface-canvas');
+    expect(container.querySelector('.bg-gradient-to-t')).toHaveClass('from-surface-canvas');
   });
 
   it('keeps results mounted while typing (does NOT flash the full spinner)', () => {

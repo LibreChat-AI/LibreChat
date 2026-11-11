@@ -239,7 +239,7 @@ export default function EditContentParts({
             conversationId: editedMessage.conversationId,
           },
           {
-            overrideFiles: editedMessage.files,
+            overrideFiles: editedMessage.files ?? [],
             overrideManualSkills: editedMessage.manualSkills,
             overrideQuotes: editedMessage.quotes,
             overrideReasoning: editedMessage.reasoningOverride ?? null,

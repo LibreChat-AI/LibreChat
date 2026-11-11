@@ -5,6 +5,7 @@ import type { InputItem, ResponseContext } from '../types';
 import {
   buildAggregatedResponse,
   convertInputToMessages,
+  extractResponseInputFileContent,
   createAggregatorEventHandlers,
   createResponseAggregator,
   createResponsesEventHandlers,
@@ -15,6 +16,7 @@ import {
 import { clientToolDeferralContent, createClientToolExecuteHandler } from '../clientTools';
 import { extractMessageContent } from '~/protection/adapters/messages';
 import { buildResponse, createResponseTracker } from '../handlers';
+import { createResponseAccountingCollector } from '../accounting';
 import { buildRunToolSet } from '~/agents/tools';
 
 describe('response usage aggregation', () => {
@@ -103,6 +105,31 @@ describe('response usage aggregation', () => {
 
     const completed = writes.find((chunk) => chunk.startsWith('data: {'));
     expect(JSON.parse(completed?.slice(6) ?? '{}').response.usage).toEqual(usage);
+  });
+
+  it('uses the same separate accounting metadata for terminal JSON and SSE only', () => {
+    const writes: string[] = [];
+    const res = { write: (chunk: string) => writes.push(chunk) } as unknown as ServerResponse;
+    const tracker = createResponseTracker();
+    const collector = createResponseAccountingCollector();
+    collector.record({ input_tokens: 5, output_tokens: 2, model: 'actual-model' });
+    const accounting = collector.snapshot();
+    expect(
+      buildResponse(context, tracker, 'in_progress', undefined, accounting),
+    ).not.toHaveProperty('accounting');
+    const response = buildAggregatedResponse(
+      context,
+      createResponseAggregator(),
+      undefined,
+      accounting,
+    );
+    createResponsesEventHandlers({ res, context, tracker }).finalizeStream(undefined, accounting);
+    const completed = writes.find((chunk) => chunk.startsWith('data: {'));
+    expect(JSON.parse(completed?.slice(6) ?? '{}').response.accounting).toEqual(
+      response.accounting,
+    );
+    expect(response.accounting?.calls[0].model).toBe('actual-model');
+    expect(response.model).toBe('agent_test');
   });
 });
 
@@ -999,6 +1026,119 @@ describe('tool call arguments from the completed model message', () => {
  * pair survives it — which leaves replaying both items in `input` as the only
  * supported shape. See the `clientTools` module docstring.
  */
+describe('content-array function_call_output', () => {
+  const call = {
+    type: 'function_call' as const,
+    id: 'fc_compat_probe',
+    call_id: 'call_compat_probe',
+    name: 'probe_tool',
+    arguments: '{}',
+  };
+  const inputFor = (output: unknown) =>
+    [call, { type: 'function_call_output', call_id: call.call_id, output }] as InputItem[];
+  const parts = [
+    { type: 'input_text', text: 'Compatibility probe only.' },
+    { type: 'input_image', image_url: 'https://example.com/chart.png', detail: 'high' },
+    { type: 'input_file', filename: 'report.pdf', file_data: 'data:application/pdf;base64,AA==' },
+  ];
+
+  it.each([[[{ type: 'input_text', text: 'Compatibility probe only.' }]], [parts], [[]]])(
+    'accepts a spec-valid content array %#',
+    (output) => {
+      expect(validateResponseRequest({ model: 'agent_test', input: inputFor(output) })).toEqual(
+        expect.objectContaining({ valid: true }),
+      );
+    },
+  );
+
+  it.each([
+    [undefined, 'requires output as a string or an array'],
+    [42, 'requires output as a string or an array'],
+    [{ type: 'input_text', text: 'x' }, 'requires output as a string or an array'],
+    [[null], 'output[0] must be a content part object'],
+    [['text'], 'output[0] must be a content part object'],
+    [[{ type: 'input_text', text: 42 }], 'output[0] input_text requires text as a string'],
+    [[{ type: 'input_image' }], 'output[0] input_image requires a non-empty image_url'],
+    [[{ type: 'output_text', text: 'x' }], 'output[0] has unsupported type'],
+  ])('rejects malformed output %#', (output, message) => {
+    expect(validateResponseRequest({ model: 'agent_test', input: inputFor(output) })).toEqual({
+      valid: false,
+      error: expect.stringContaining(`function_call_output call_compat_probe ${message}`),
+    });
+  });
+
+  it('carries the parts on the replayed tool_call in their original order', () => {
+    expect(convertInputToMessages(inputFor(parts))).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_call',
+            tool_call: {
+              id: call.call_id,
+              name: call.name,
+              args: '{}',
+              output: [
+                { type: 'text', text: 'Compatibility probe only.' },
+                {
+                  type: 'image_url',
+                  image_url: { url: 'https://example.com/chart.png', detail: 'high' },
+                },
+                { type: 'text', text: '[File: report.pdf]' },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('formats one tool result whose content keeps the text and image', () => {
+    const { messages } = formatAgentMessages(
+      convertInputToMessages(inputFor(parts)) as never,
+      {},
+      new Set([call.name]),
+      undefined,
+      { provider: Providers.OPENAI },
+    );
+    expect(messages.map((message) => message._getType())).toEqual(['ai', 'tool']);
+    expect(messages[1].content).toEqual([
+      { type: 'text', text: 'Compatibility probe only.' },
+      { type: 'image_url', image_url: { url: 'https://example.com/chart.png', detail: 'high' } },
+      { type: 'text', text: '[File: report.pdf]' },
+    ]);
+  });
+
+  it('exposes tool-output image URLs and file names to file policies, like message parts', () => {
+    const fileFragments = (input: InputItem[]) =>
+      extractResponseInputFileContent(input).map(({ source, field, text }) => ({
+        source,
+        field,
+        text,
+      }));
+    const toolOutput = fileFragments(inputFor(parts));
+    expect(toolOutput).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'file', text: 'https://example.com/chart.png' }),
+        expect.objectContaining({ source: 'file', field: 'name', text: 'report.pdf' }),
+      ]),
+    );
+    expect(fileFragments([{ type: 'message', role: 'user', content: parts } as InputItem])).toEqual(
+      toolOutput,
+    );
+    expect(
+      extractResponseInputFileContent(
+        inputFor([{ type: 'input_image', image_url: 'data:image/png;base64,AA==' }]),
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps array text reachable by the protection traversal', () => {
+    const fragments = [...extractMessageContent(convertInputToMessages(inputFor(parts)) as never)];
+    expect(fragments.map((fragment) => fragment.text)).toContain('Compatibility probe only.');
+  });
+});
+
 describe('client tool continuation replay', () => {
   const CALL_ID = 'call_submit_1';
   const TOOL_NAME = 'submit_sql';

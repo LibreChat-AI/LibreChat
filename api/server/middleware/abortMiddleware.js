@@ -14,8 +14,12 @@ const {
 const { truncateText, smartTruncateText } = require('~/app/clients/prompts');
 const clearPendingReq = require('~/cache/clearPendingReq');
 const { sendError } = require('~/server/middleware/error');
+const enrollAssistantRun = require('~/server/middleware/assistants/run');
 const { abortRun } = require('./abortRun');
 const db = require('~/models');
+
+/** The stop request writes usage and messages, so the account drain waits for it too. */
+const abortAssistantRun = enrollAssistantRun(abortRun);
 
 /**
  * Abort an active message generation.
@@ -26,7 +30,7 @@ async function abortMessage(req, res) {
   const { abortKey, endpoint } = req.body;
 
   if (isAssistantsEndpoint(endpoint)) {
-    return await abortRun(req, res);
+    return await abortAssistantRun(req, res);
   }
 
   const conversationId = abortKey?.split(':')?.[0] ?? req.user.id;

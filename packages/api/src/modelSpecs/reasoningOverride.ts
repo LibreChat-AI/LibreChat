@@ -3,6 +3,7 @@ import {
   Providers,
   getModelReasoning,
   effectiveModelReasoning,
+  getReasoningParamDefinitions,
   hasExplicitReasoningEffort,
   ReasoningEffort,
   isReasoningOverrideSupported,
@@ -14,7 +15,9 @@ import {
   type TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { AgentContinuationAdmissionSource } from '~/agents/triggers/host';
+import type { BranchLinkRow, BranchLinks } from '~/messages/history';
 import type { ReasoningCapabilityResult } from '~/types';
+import { walkBranch } from '~/messages/history';
 
 /** Override keys whose level also turns thinking on. */
 const THINKING_LEVEL_KEYS: ReadonlySet<string> = new Set([
@@ -149,7 +152,10 @@ export async function resolveReasoningOverride({
     model: effectiveModel,
     isAgent,
     defaultParamsEndpoint: customParams?.defaultParamsEndpoint ?? defaultParamsEndpoint,
-    paramDefinitions: customParams?.paramDefinitions,
+    paramDefinitions: getReasoningParamDefinitions(
+      endpointsConfig?.[customEndpointKey],
+      effectiveModel,
+    ),
     reasoningFormat: customParams?.reasoningFormat,
     blockedReasoningKeys: new Set([...appliedModelSpecPrivateFields, ...enforcedModelSpecFields]),
     modelReasoning,
@@ -233,16 +239,20 @@ export type RequestReasoningOverrideInput = Omit<
   loadReasoningCapabilities?: (endpoint: string) => Promise<ReasoningCapabilityResult>;
   /** The raw request field; validated here, so the caller passes it unparsed. */
   reasoningOverride?: unknown;
-  /** Reads the level the branch a fresh turn extends last ran at, for a request that picks none. */
-  getBranchReasoningOverride?: (params: {
+  /**
+   * Reads the conversation's link rows, for a request that picks no level: the level the branch a
+   * fresh turn extends last ran at is found in them. They stay on the request, so the turn's
+   * history read can fetch that branch alone instead of reading the conversation again.
+   */
+  getBranchLinks?: (params: {
     user: string;
     conversationId: string;
-    parentMessageId: string;
-  }) => Promise<unknown>;
+  }) => Promise<readonly BranchLinkRow[]>;
 };
 
 type BranchReasoningRequest = {
   resumeReplayed?: boolean;
+  branchLinks?: BranchLinks;
   user?: { id?: string };
   body: {
     conversationId?: unknown;
@@ -262,12 +272,12 @@ type BranchReasoningRequest = {
  */
 async function loadBranchReasoningOverride(
   req: BranchReasoningRequest,
-  getBranchReasoningOverride: RequestReasoningOverrideInput['getBranchReasoningOverride'],
+  getBranchLinks: RequestReasoningOverrideInput['getBranchLinks'],
 ): Promise<TReasoningOverride | undefined> {
   const { conversationId, parentMessageId, isEdited, editedContent, isRegenerate, isContinued } =
     req.body;
   if (
-    getBranchReasoningOverride == null ||
+    getBranchLinks == null ||
     req.resumeReplayed === true ||
     isEdited === true ||
     editedContent != null ||
@@ -282,12 +292,13 @@ async function loadBranchReasoningOverride(
   ) {
     return undefined;
   }
-  const stored = await getBranchReasoningOverride({
-    user: req.user.id,
-    conversationId,
-    parentMessageId,
-  });
-  const parsed = reasoningOverrideSchema.safeParse(stored);
+  const user = req.user.id;
+  const rows = await getBranchLinks({ user, conversationId });
+  req.branchLinks = { user, conversationId, parentMessageId, rows };
+  const nearest = walkBranch(rows, parentMessageId).find(
+    (row) => row.isCreatedByUser === true && row.reasoningOverride != null,
+  );
+  const parsed = reasoningOverrideSchema.safeParse(nearest?.reasoningOverride);
   return parsed.success ? parsed.data : undefined;
 }
 
@@ -307,6 +318,7 @@ async function loadBranchReasoningOverride(
 export async function applyRequestReasoningOverride<T extends EndpointOption>(
   req: {
     reasoningOverrideBase?: ReasoningOverrideBase;
+    branchLinks?: BranchLinks;
     resumeReplayed?: boolean;
     _isAgentTrigger?: boolean;
     user?: { id?: string };
@@ -319,7 +331,7 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
   {
     reasoningOverride: raw,
     loadReasoningCapabilities,
-    getBranchReasoningOverride,
+    getBranchLinks,
     ...input
   }: RequestReasoningOverrideInput,
 ): Promise<boolean> {
@@ -364,8 +376,7 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
   }
   const inherited = request.reasoningOverride == null;
   const reasoningOverride =
-    request.reasoningOverride ??
-    (await loadBranchReasoningOverride(req, getBranchReasoningOverride));
+    request.reasoningOverride ?? (await loadBranchReasoningOverride(req, getBranchLinks));
   if (reasoningOverride == null) {
     return true;
   }

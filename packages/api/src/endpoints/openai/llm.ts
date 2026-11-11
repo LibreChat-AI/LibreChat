@@ -989,7 +989,8 @@ export function getOpenAILLMConfig({
   if (responsesApiExplicitlyOptedOut) llmConfig.useResponsesApi = false;
 
   const tier = gpt6Tier(llmConfig.model);
-  const solLunaRulesApply = firstPartyEndpoint && (tier === 'sol' || tier === 'luna');
+  const solLunaRulesApply =
+    firstPartyEndpoint && (tier === 'sol' || tier === 'terra' || tier === 'luna');
   if (!useOpenRouter) {
     hasModelKwargs =
       applyReasoningConfig({
@@ -1086,7 +1087,7 @@ export function getOpenAILLMConfig({
     }
   }
 
-  /** Sol/Luna reject sampling controls when Responses uses reasoning. The
+  /** Sol/Luna/Terra reject sampling controls when Responses uses reasoning. The
    * provider default is medium, so an unset effort is reasoning-enabled too.
    * Strip only the request copy; saved settings remain available when the user
    * switches models or explicitly selects `none`. */

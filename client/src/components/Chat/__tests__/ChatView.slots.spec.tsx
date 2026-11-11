@@ -3,7 +3,6 @@ import '@testing-library/jest-dom';
 import type { ChatScreenMessagesSlots, ChatScreenProps } from '@librechat/chat/components';
 import type { ReactElement, ReactNode } from 'react';
 import PendingSteers from '../Messages/Content/Parts/PendingSteers';
-import ScrollButton from '../Messages/ScrollButton';
 import PendingTurn from '../Messages/PendingTurn';
 import { FLAT_THREAD } from '../Messages/Thread';
 import { render } from 'test/layout-test-utils';
@@ -19,6 +18,11 @@ jest.mock('react-router-dom', () => ({
 jest.mock('~/hooks/AuthContext', () => ({
   AuthContextProvider: ({ children }: { children: React.ReactNode }) => children,
   useAuthContext: () => ({ isAuthenticated: false, user: null, roles: {} }),
+}));
+
+jest.mock('~/hooks/Chat/target', () => ({
+  __esModule: true,
+  default: () => ({ ready: true, pending: false, failed: false, retry: jest.fn() }),
 }));
 
 jest.mock('~/data-provider', () => ({
@@ -88,30 +92,22 @@ describe('ChatView message list slots', () => {
     expect(screenSlots().flatThread).toBe(FLAT_THREAD);
   });
 
-  test('renders the app pending turn, steers and scroll control with what the list passes', () => {
+  test('leaves the scroll control to the package list', () => {
+    expect(screenSlots().renderScrollButton).toBeUndefined();
+  });
+
+  test('renders the app pending turn and steers with what the list passes', () => {
     const slots = screenSlots();
     const turn = { scrollableRef, messages: null, maximizeChatSpace: true };
     const steers = { conversationId: 'convo-1', index: 0, fullWidth: false };
-    const scroll = {
-      conversationId: 'convo-1',
-      enabled: true,
-      maximizeChatSpace: false,
-      scrollableRef,
-      messagesEndRef: createRef<HTMLDivElement>(),
-      scrollHandler: () => undefined,
-      onNearBottomChange: () => undefined,
-    };
 
     const turnElement = element(slots.renderPendingTurn?.(turn));
     const steersElement = element(slots.renderPendingSteers?.(steers));
-    const scrollElement = element(slots.renderScrollButton?.(scroll));
 
     expect(turnElement.type).toBe(PendingTurn);
     expect(turnElement.props).toEqual(turn);
     expect(steersElement.type).toBe(PendingSteers);
     expect(steersElement.props).toEqual(steers);
-    expect(scrollElement.type).toBe(ScrollButton);
-    expect(scrollElement.props).toEqual(scroll);
   });
 
   test('leaves the navigation rail to the package list', () => {

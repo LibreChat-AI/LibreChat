@@ -1,3 +1,4 @@
+import { FileContext } from 'librechat-data-provider';
 import type { FilterQuery, Model } from 'mongoose';
 import type {
   FileStorageClaim,
@@ -50,15 +51,32 @@ export function createFileStorageMethods(mongoose: typeof import('mongoose')): {
     return result.matchedCount === 1;
   }
 
-  /** An already-applied release is successful; only the supplied token is removed. */
+  /** Safe releases also discard unfinished snapshots when the last claimant leaves. */
   async function releaseFileProvision(data: FileStorageClaim): Promise<boolean> {
     const File = mongoose.models.File as Model<IMongoFile>;
-    const result = await File.updateOne(
-      claimFilter(data),
-      { $pull: { 'storageOperations.provisioning': data.token } },
-      { timestamps: false },
-    );
-    return result.matchedCount === 1;
+    const scope = claimFilter(data);
+    const disposable: FilterQuery<IMongoFile> = {
+      context: FileContext.execute_code_snapshot,
+      filepath: { $exists: false },
+      bytes: { $exists: false },
+      storageKey: { $exists: false },
+      'storageOperations.provisioning': [data.token],
+      'storageOperations.deletionPending': { $ne: true },
+      'storageOperations.deleting': { $exists: false },
+    };
+    for (;;) {
+      const deleted = await File.deleteOne({ ...scope, ...disposable });
+      if (deleted.deletedCount === 1) return true;
+      const result = await File.updateOne(
+        // A concurrent release can leave us as the last claimant after the delete missed.
+        { ...scope, $nor: [disposable] },
+        { $pull: { 'storageOperations.provisioning': data.token } },
+        { timestamps: false },
+      );
+      if (result.matchedCount === 1) return true;
+      // A lost delete acknowledgement must be safe to retry without recreating the row.
+      if ((await File.exists(scope)) == null) return true;
+    }
   }
 
   async function commitFileProvision(data: FileProvisionCommit): Promise<boolean> {

@@ -5900,6 +5900,7 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
               for (const tc of allowedToolCalls) {
                 if (
                   !isCodeSessionAwareToolCall(tc.name, mergedConfigurable) &&
+                  tc.name !== Constants.READ_FILE &&
                   !(runFileSharingActive && isCodeFileToolName(tc.name))
                 ) {
                   continue;

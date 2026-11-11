@@ -721,37 +721,37 @@ describe('findMatchingPattern - bestLength selection', () => {
 });
 
 describe('findMatchingPattern - iteration performance', () => {
-  let includesSpy;
+  let indexOfSpy;
 
   beforeEach(() => {
-    includesSpy = jest.spyOn(String.prototype, 'includes');
+    indexOfSpy = jest.spyOn(String.prototype, 'indexOf');
   });
 
   afterEach(() => {
-    includesSpy.mockRestore();
+    indexOfSpy.mockRestore();
   });
 
-  test('exact match early-exits with minimal includes() checks', () => {
+  test('exact match early-exits with minimal indexOf() checks', () => {
     const openAIMap = maxTokensMap[EModelEndpoint.openAI];
     const keys = Object.keys(openAIMap);
     const lastKey = keys[keys.length - 1];
-    includesSpy.mockClear();
+    indexOfSpy.mockClear();
     const result = findMatchingPattern(lastKey, openAIMap);
-    const exactCalls = includesSpy.mock.calls.length;
+    const exactCalls = indexOfSpy.mock.calls.length;
 
     expect(result).toBe(lastKey);
     expect(exactCalls).toBe(1);
   });
 
-  test('bestLength check skips includes() for shorter keys after a long match', () => {
+  test('bestLength check skips indexOf() for shorter keys after a long match', () => {
     const openAIMap = maxTokensMap[EModelEndpoint.openAI];
-    includesSpy.mockClear();
+    indexOfSpy.mockClear();
     findMatchingPattern('gpt-3.5-turbo-0301-test', openAIMap);
-    const longKeyCalls = includesSpy.mock.calls.length;
+    const longKeyCalls = indexOfSpy.mock.calls.length;
 
-    includesSpy.mockClear();
+    indexOfSpy.mockClear();
     findMatchingPattern('gpt-5.3-chat-latest', openAIMap);
-    const shortKeyCalls = includesSpy.mock.calls.length;
+    const shortKeyCalls = indexOfSpy.mock.calls.length;
 
     // gpt-3.5-turbo-0301 (20 chars) matches early, then bestLength prunes most keys
     // gpt-5.3 (7 chars) is short, so fewer keys are pruned by the length check
@@ -760,9 +760,9 @@ describe('findMatchingPattern - iteration performance', () => {
 
   test('last-defined keys are checked first in reverse iteration', () => {
     const tokensMap = { first: 100, second: 200, third: 300 };
-    includesSpy.mockClear();
+    indexOfSpy.mockClear();
     const result = findMatchingPattern('third', tokensMap);
-    const calls = includesSpy.mock.calls.length;
+    const calls = indexOfSpy.mock.calls.length;
 
     // 'third' is last key, found on first reverse check, exact match exits immediately
     expect(result).toBe('third');

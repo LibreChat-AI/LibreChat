@@ -2,10 +2,14 @@ import { memo, useMemo, useState, useEffect, useCallback, useRef, useId } from '
 import { useAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
 import { Lightbulb, ChevronDown } from 'lucide-react';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { Button, disclosureChevronVariants } from '@librechat/client';
 import { ContentTypes, readableReasoning } from 'librechat-data-provider';
-import { toolPanelSpacingClassName, useReasoningDisclosure } from '@librechat/chat/react';
+import { ROW_GLYPH_SLOT, useExpandCollapse, CopyButton } from '@librechat/chat/components';
+import {
+  toolPanelSpacingClassName,
+  useReasoningDisclosure,
+  useLazyCollapseBody,
+} from '@librechat/chat/react';
 import type { MouseEvent, FocusEvent } from 'react';
 import {
   ThinkingContent,
@@ -14,9 +18,8 @@ import {
   FloatingThinkingBar,
   useInViewport,
 } from './Thinking';
-import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import CopyButton from '~/components/Messages/Content/CopyButton';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 const stripThinkTags = (reasoning: string): string =>
@@ -244,7 +247,7 @@ const Reasoning = memo((props: ReasoningProps) => {
       onBlur={handleBlur}
     >
       <div className="group/thinking-container">
-        <div className="mb-2 pt-2 pb-2" ref={headerRef}>
+        <div className="my-1.5" ref={headerRef}>
           <ThinkingButton
             isExpanded={isExpanded}
             onClick={handleClick}
