@@ -26,6 +26,11 @@ export const responseReview = (responseId: string): string =>
 export const responseCancel = (responseId: string): string =>
   `${BASE_URL}/api/agents/responses/${encodeURIComponent(responseId)}/cancel`;
 
+export const agentChannels = (agentId: string, channelId?: string): string =>
+  `${BASE_URL}/api/agents/${encodeURIComponent(agentId)}/channels${
+    channelId ? `/${encodeURIComponent(channelId)}` : ''
+  }`;
+
 // Testing this buildQuery function
 const buildQuery = (params: Record<string, unknown>): string => {
   const query = Object.entries(params)
