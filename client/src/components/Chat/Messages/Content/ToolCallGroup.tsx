@@ -785,7 +785,11 @@ export default function ToolCallGroup({
                                   handleToolExpand,
                                 );
                               }
-                              const streaming = isSubmitting && idx === lastContentIdx;
+                              /** `lastContentIdx` is the tail of this body, and every
+                               *  settled phase body has one. Only the group that holds
+                               *  the message's cursor has a thought still being written,
+                               *  the rule `PartWithContext` applies to a lone thought. */
+                              const streaming = isSubmitting && isLast && idx === lastContentIdx;
                               /** Mirrors the standalone `Reasoning` path: the authored
                                *  label wins, generic text is only a fallback. */
                               const generatedLabel = part.reasoning_label?.trim();
