@@ -77,7 +77,16 @@ jobs:
             api/node_modules
           key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
       - name: Install lockfile-pinned Chromium
-        run: npx playwright install --with-deps --no-shell chromium
+        run: npx playwright install --no-shell chromium
+      # The audit keeps the lockfile-pinned Chromium build, so its download above stays fatal.
+      # Its system packages do not: the runner's own Chrome already brings every library
+      # Chromium links, and what `--with-deps` installed on top were nine optional font packages
+      # (22MB from the Ubuntu mirror) that no budget reads. With the mirror unreachable, apt
+      # failed the combined command before any audit ran.
+      - name: Install optional Chromium system packages (best effort)
+        timeout-minutes: 4
+        continue-on-error: true
+        run: .github/scripts/install-playwright-fonts.sh chromium
       - name: Select Lighthouse browser
         run: |
           chrome=$(node -p "require('@playwright/test').chromium.executablePath()")
