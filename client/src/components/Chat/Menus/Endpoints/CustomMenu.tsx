@@ -63,7 +63,7 @@ export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(func
         {...props}
         className={cn(
           !parent &&
-            'border-border-light text-text-primary rounded-theme-control flex h-10 w-full items-center justify-center gap-2 border px-3 py-2 text-sm',
+            'border-border-light text-text-primary rounded-theme-control flex h-9 w-full items-center justify-center gap-2 border px-3 py-2 text-sm',
           parent ? nestedMenuStateClass : rootMenuStateClass,
           props.className,
         )}

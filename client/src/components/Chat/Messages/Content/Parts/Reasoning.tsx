@@ -247,7 +247,7 @@ const Reasoning = memo((props: ReasoningProps) => {
       onBlur={handleBlur}
     >
       <div className="group/thinking-container">
-        <div className="mb-2 pt-2 pb-2" ref={headerRef}>
+        <div className="my-1.5" ref={headerRef}>
           <ThinkingButton
             isExpanded={isExpanded}
             onClick={handleClick}

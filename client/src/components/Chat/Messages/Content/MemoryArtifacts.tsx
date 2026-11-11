@@ -60,7 +60,7 @@ export default function MemoryArtifacts({ attachments }: { attachments?: TAttach
 
   return (
     <>
-      <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5">
+      <div className="relative my-1.5 flex h-5 shrink-0 items-center gap-2.5">
         <Button
           variant="ghost"
           className={cn(

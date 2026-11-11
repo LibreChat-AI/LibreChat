@@ -8,14 +8,7 @@ import {
 import ReactTextareaAutosize from 'react-textarea-autosize';
 import type { TextareaAutosizeProps } from 'react-textarea-autosize';
 import type { FocusOutline } from './Focus';
-import {
-  fieldBase,
-  fieldFlush,
-  fieldInvalid,
-  fieldEmbedded,
-  FIELD_OWN_FOCUS,
-  fieldFillTransparent,
-} from './Field';
+import { fieldBase, fieldFlush, fieldInvalid, fieldEmbedded, FIELD_OWN_FOCUS } from './Field';
 import { focusOutlineVariants } from './Focus';
 import { cn } from '~/utils';
 import './Field.css';
@@ -38,7 +31,7 @@ const AUTOSIZE_VARIANTS: Record<
   string
 > = {
   default: '',
-  field: `${fieldBase} ${fieldFillTransparent}`,
+  field: fieldBase,
   framed,
   flush: `${FIELD_OWN_FOCUS} ${fieldFlush}`,
   embedded: fieldEmbedded,

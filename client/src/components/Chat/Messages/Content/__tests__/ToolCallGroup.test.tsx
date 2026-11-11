@@ -1916,12 +1916,12 @@ describe('ToolCallGroup failure fast path', () => {
     expect(header).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('sets an open header in the primary colour over railed rows', () => {
+  it('keeps an open header in its resting colour over railed rows', () => {
     renderGroup(props(jest.fn()));
     const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
     expect(header).not.toHaveClass('text-text-primary');
     fireEvent.click(header);
-    expect(header).toHaveClass('text-text-primary');
+    expect(header).not.toHaveClass('text-text-primary');
     expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('ps-6');
   });
 

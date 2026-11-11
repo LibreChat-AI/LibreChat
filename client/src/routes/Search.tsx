@@ -291,7 +291,7 @@ export default function Search() {
   }, [resultsCount, hasNextPage, localize]);
 
   const loadingSpinner = (
-    <div className="absolute inset-0 flex items-center justify-center">
+    <div className="bg-surface-canvas absolute inset-0 flex items-center justify-center">
       <Spinner tone="primary" />
     </div>
   );
@@ -306,7 +306,7 @@ export default function Search() {
      *  field, or arrived here directly. A blank page reads as a failure, so the
      *  route says what it is waiting for instead. */
     return (
-      <div className="absolute inset-0 flex items-center justify-center">
+      <div className="bg-surface-canvas absolute inset-0 flex items-center justify-center">
         <EmptyState
           icon={SearchIcon}
           title={localize('com_nav_search_placeholder')}
@@ -332,7 +332,7 @@ export default function Search() {
         <div className="sr-only" role="alert" aria-atomic="true">
           {resultsAnnouncement}
         </div>
-        <div className="absolute inset-0 flex items-center justify-center">
+        <div className="bg-surface-canvas absolute inset-0 flex items-center justify-center">
           <EmptyState icon={SearchX} description={localize('com_ui_nothing_found')} />
         </div>
       </>
@@ -340,7 +340,7 @@ export default function Search() {
   }
 
   return (
-    <div className="bg-surface-primary-alt relative flex h-full w-full flex-col pt-4">
+    <div className="bg-surface-canvas relative flex h-full w-full flex-col pt-4">
       {/* The count is the page's one heading, and the live region at the same time:
           announced to a screen reader and read by everyone else, rather than said
           twice out of two nodes. Aligned to the column the results sit in. */}
@@ -372,7 +372,7 @@ export default function Search() {
           <Spinner tone="primary" />
         </div>
       )}
-      <div className="from-surface-primary-alt pointer-events-none absolute right-0 bottom-0 left-0 h-[5%] bg-gradient-to-t to-transparent" />
+      <div className="from-surface-canvas pointer-events-none absolute right-0 bottom-0 left-0 h-[5%] bg-gradient-to-t to-transparent" />
     </div>
   );
 }

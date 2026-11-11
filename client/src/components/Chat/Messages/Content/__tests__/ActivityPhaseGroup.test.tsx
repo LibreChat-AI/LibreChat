@@ -662,7 +662,8 @@ describe('ActivityPhaseGroup open header', () => {
 
     const open = screen.getByRole('button', { name: LABEL });
     expect(open).not.toHaveAttribute('aria-labelledby');
-    expect(open).toHaveClass('font-semibold', 'text-text-primary');
+    expect(open).toHaveClass('font-semibold');
+    expect(open).not.toHaveClass('text-text-primary');
     expect(open).not.toHaveTextContent('Checking the rollback path');
   });
 

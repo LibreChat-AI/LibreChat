@@ -38,6 +38,7 @@ type ButtonVariantOptions =
         | 'section-header'
         | 'section-action'
         | 'header-action'
+        | 'panel-back'
         | 'inline-edit'
         | 'card'
         | 'disclosure'
@@ -90,7 +91,7 @@ type ButtonVariantOptions =
  * `hover-button` is the marker the app's narrow-screen stylesheet keeps visible.
  */
 const messageHoverClasses =
-  'hover-button size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-text-primary group-has-[[data-hover-active]]:opacity-100 data-[hover-active]:bg-surface-hover data-[hover-active]:text-text-primary';
+  'hover-button size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-text-primary group-has-[[data-hover-active]]:opacity-100 data-[hover-active]:bg-surface-hover data-[hover-active]:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent';
 
 const buttonVariantRecipe = cva(
   [
@@ -138,14 +139,15 @@ const buttonVariantRecipe = cva(
           'border border-border-light bg-transparent text-text-primary hover:bg-surface-secondary focus-visible:ring-focus-control focus-visible:ring-offset-0',
         secondary:
           'bg-surface-secondary text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed',
-        ghost: 'hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+        ghost:
+          'hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent',
         /** A ghost that rests in the secondary ink and rises to the primary one under the pointer,
          *  for a control that should not compete with the content it sits beside. */
         quiet:
-          'text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+          'text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent',
         /** An icon action under a message: a small padded square that rests in the alt secondary ink. */
         'message-action':
-          'size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+          'size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:hover:bg-transparent',
         /** A message toolbar action that stays visible, such as the latest message's. */
         'message-hover': messageHoverClasses,
         /** A message toolbar action that fades in with its row; see `revealOnRowHoverClasses`. */
@@ -154,7 +156,7 @@ const buttonVariantRecipe = cva(
          *  secondary ink, and the chosen entry, marked with `aria-pressed`, keeps the hover fill
          *  in the primary ink at semibold weight. */
         'popover-option':
-          'w-full justify-start gap-3 rounded-xl text-text-secondary duration-theme-normal hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:bg-surface-hover aria-pressed:font-semibold aria-pressed:text-text-primary',
+          'w-full justify-start gap-3 rounded-theme-control text-text-secondary duration-theme-normal hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:bg-surface-hover aria-pressed:font-semibold aria-pressed:text-text-primary',
         /** A text action that reads as a link in a list or footer: no fill at rest or under the pointer,
          *  and a ring flush against the control. */
         'inline-link':
@@ -229,8 +231,12 @@ const buttonVariantRecipe = cva(
          * scrolling gradient, where the shared color transition reads as
          * lag rather than polish.
          */
+        /** The back arrow at the head of a side panel's header: a quiet bordered square that takes
+         *  the theme's control corner, so every panel's way out looks the same. */
+        'panel-back':
+          'shrink-0 rounded-theme-control border border-border-light text-text-secondary hover:bg-surface-secondary hover:text-text-primary theme-disabled:border-transparent theme-disabled:bg-transparent',
         'header-action':
-          'rounded-xl border border-border-chrome bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
+          'rounded-theme-control border border-border-light bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
         /**
          * Text that turns into its own editor when activated, such as a workspace
          * title or description. It reads as the text it stands for, so the caller
@@ -252,7 +258,7 @@ const buttonVariantRecipe = cva(
          * is inset because the row sits flush against the panel it opens.
          */
         disclosure:
-          'w-full justify-start focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
+          'w-full justify-start focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100 theme-disabled:border-transparent theme-disabled:bg-transparent theme-disabled:text-text-secondary theme-disabled:hover:bg-transparent theme-disabled:hover:text-text-secondary theme-disabled:[&_*]:text-text-secondary',
         /** A disclosure that reads as one line of body text, such as a compacted summary's
          *  header: normal weight on an 18px line, its glyph slot spacing itself, and the default
          *  corner so its focus ring stays rounded. */
@@ -428,7 +434,7 @@ const buttonVariantRecipe = cva(
         variant: 'header-action',
         size: 'sm',
         shape: 'unset',
-        class: 'rounded-xl',
+        class: 'rounded-theme-control',
       },
       /* These carry their own box, which the default size's height and padding would otherwise win. */
       { variant: 'text-action', size: 'default', class: 'h-auto p-0' },
