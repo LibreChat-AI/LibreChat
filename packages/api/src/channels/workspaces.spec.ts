@@ -3,9 +3,16 @@ import express from 'express';
 import mongoose from 'mongoose';
 import supertest from 'supertest';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { createSlackWorkspaceStorage, tenantStorage, runAsSystem } from '@librechat/data-schemas';
+import {
+  createModels,
+  createSlackWorkspaceStorage,
+  tenantStorage,
+  runAsSystem,
+} from '@librechat/data-schemas';
 import {
   FileSources,
+  Permissions,
+  PermissionTypes,
   PrincipalType,
   channelConfigSchema,
   SLACK_CHANNEL_BOT_SCOPES,
@@ -18,6 +25,7 @@ import { encryptCredential, decryptCredential } from '~/crypto/credentials';
 import { createSlackWorkspaceRuntime } from './workspaceRuntime';
 import { createSlackWorkspaceHandlers } from './workspaceHttp';
 import { createSlackWorkspaceService } from './workspaces';
+import { createPeoplePickerAccess } from '~/acl/search';
 import { setOAuthSession } from '~/oauth/csrf';
 
 describe('Slack workspace installation', () => {
@@ -62,6 +70,7 @@ describe('Slack workspace installation', () => {
   beforeAll(async () => {
     mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
     await db.connect(mongo.getUri());
+    createModels(db);
     storage = createSlackWorkspaceStorage(db);
   }, 60000);
   afterAll(async () => {
@@ -72,7 +81,15 @@ describe('Slack workspace installation', () => {
   });
   beforeEach(async () => {
     await runAsSystem(async () => {
-      for (const model of Object.values(db.models)) await model.deleteMany({});
+      for (const name of [
+        'SlackWorkspace',
+        'SlackInstall',
+        'SlackInstallGeneration',
+        'AclEntry',
+        'User',
+        'ResponseScope',
+      ])
+        await db.models[name]?.deleteMany({});
     });
     app = {
       appId: 'A123',
@@ -272,7 +289,11 @@ describe('Slack workspace installation', () => {
     server.use((req, _res, next) => {
       if (req.header('x-test-user'))
         Object.assign(req, {
-          user: { id: principal.id, tenantId: req.header('x-test-user-tenant') || 'org-a' },
+          user: {
+            id: principal.id,
+            role: 'WORKSPACE_ADMIN',
+            tenantId: req.header('x-test-user-tenant') || 'org-a',
+          },
         });
       tenantStorage.run({ tenantId: req.header('x-test-tenant') }, async () => next());
     });
@@ -283,13 +304,35 @@ describe('Slack workspace installation', () => {
         storage,
         canManage,
         clientBaseUrl: 'https://client.example/librechat',
-        settings: async () => ({ configured: Boolean(app), appId: app?.appId, pageSize: 50 }),
+        settings: async () => ({
+          configured: Boolean(app),
+          appId: app?.appId,
+          pageSize: 50,
+          maxBotManagers: 50,
+        }),
         logError: jest.fn(),
       });
     server.get('/workspaces', handlers.list);
     server.get('/workspaces/apps', handlers.apps);
     server.put('/workspaces/apps', handlers.configureApp);
     server.post('/workspaces/apps/:appId/remove', handlers.removeApp);
+    server.get('/workspaces/:workspaceId/managers', handlers.managers);
+    server.get('/workspaces/:workspaceId/managers/search', handlers.searchManagers);
+    const legacyPeople = createPeoplePickerAccess({
+      getRoleByName: async () => ({
+        permissions: { [PermissionTypes.PEOPLE_PICKER]: { [Permissions.VIEW_USERS]: false } },
+      }),
+    });
+    server.get(
+      '/legacy/people',
+      async (req, res, next) => {
+        await legacyPeople(req, res, next);
+      },
+      (_req, res) => {
+        res.json({ results: [] });
+      },
+    );
+    server.put('/workspaces/:workspaceId/managers', handlers.updateManagers);
     server.get('/workspaces/:workspaceId', handlers.get);
     server.delete('/workspaces/:workspaceId', handlers.disconnect);
     server.post('/workspaces/:workspaceId/remove', handlers.remove);
@@ -298,6 +341,128 @@ describe('Slack workspace installation', () => {
     server.get('/api/channels/workspaces/oauth/callback', handlers.callback);
     return supertest(server);
   }
+
+  it('lets a capability-authorized workspace admin find and grant managers without legacy people-picker access', async () => {
+    const { flow } = await start();
+    const installed = await scoped(() => service.finish(flow, 'code'));
+    if (!installed.ok) throw new Error(installed.error.code);
+    const workspaceId = installed.value.workspaceId;
+    const bob = '000000000000000000000002';
+    await runAsSystem(() =>
+      db.models.User.create([
+        {
+          _id: principal.id,
+          email: 'admin@example.com',
+          role: 'WORKSPACE_ADMIN',
+          tenantId: 'org-a',
+        },
+        {
+          _id: '000000000000000000000003',
+          email: 'foreign@example.com',
+          name: 'Bob foreign',
+          tenantId: 'org-b',
+        },
+        {
+          _id: '000000000000000000000000',
+          email: 'erasing@example.com',
+          name: 'Bob erasing',
+          tenantId: 'org-a',
+          agentTriggerDeletionStartedAt: new Date(),
+        },
+        { _id: bob, email: 'bob@example.com', name: 'Bob', tenantId: 'org-a' },
+      ]),
+    );
+    let allowed = true;
+    const runtime = createSlackWorkspaceRuntime({
+      storage,
+      publicBaseUrl: 'https://api.example',
+      clientBaseUrl: 'https://chat.example',
+      readAppConfig: async () => ({
+        config: {},
+        fileStrategy: FileSources.local,
+        imageOutputType: 'png',
+        endpoints: {
+          agents: {
+            channels: channelConfigSchema.parse({
+              enabled: true,
+              transport: 'webhook',
+              maxMetadataPageSize: 1,
+              slackApp: { enabled: true },
+            }),
+          },
+        },
+      }),
+      findUser: async () => ({ ...principal, role: 'WORKSPACE_ADMIN' }),
+      isPrincipalActive: async () => true,
+      hasCapability: async () => allowed,
+      fetch: request,
+      logError: jest.fn(),
+    });
+    const get = (path: string) =>
+      http(runtime).get(path).set('x-test-user', 'yes').set('x-test-tenant', 'org-a');
+    await get('/legacy/people?types=user&q=bo').expect(403);
+    const found = await get(`/workspaces/${workspaceId}/managers/search?q=bo`).expect(200);
+    expect(found.body).toEqual([{ id: bob, name: 'Bob', email: 'bob@example.com' }]);
+    expect(JSON.stringify(found.body)).not.toMatch(/tenantId|password|encrypted|role/);
+    await get(`/workspaces/${workspaceId}/managers/search?q=b`).expect(400);
+    await get(`/workspaces/${workspaceId}/managers/search?q=bo&types=role`).expect(400);
+    await get('/workspaces/missing/managers/search?q=bo').expect(404);
+    const metadata = await scoped(() => storage.metadata(workspaceId));
+    await http(runtime)
+      .put(`/workspaces/${workspaceId}/managers`)
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-a')
+      .send({ revision: metadata!.revision, userIds: [bob] })
+      .expect(200);
+    allowed = false;
+    await get(`/workspaces/${workspaceId}/managers/search?q=bo`).expect(403);
+    await get(`/workspaces/${workspaceId}/managers`).expect(403);
+  });
+
+  it('keeps manager grants admin-only, tenant-local, bounded and revision checked', async () => {
+    const { flow } = await start();
+    const installed = await scoped(() => service.finish(flow, 'code'));
+    if (!installed.ok) throw new Error(installed.error.code);
+    const id = installed.value.workspaceId;
+    const userId = '000000000000000000000002';
+    await scoped(async () => {
+      await db.models.User.create([
+        { _id: principal.id, email: 'admin@example.com' },
+        { _id: userId, email: 'member@example.com', name: 'Member' },
+      ]);
+    });
+    const get = () =>
+      http()
+        .get(`/workspaces/${id}/managers`)
+        .set('x-test-user', 'yes')
+        .set('x-test-tenant', 'org-a');
+    const put = (body: object) =>
+      http()
+        .put(`/workspaces/${id}/managers`)
+        .set('x-test-user', 'yes')
+        .set('x-test-tenant', 'org-a')
+        .send(body);
+    await http().get(`/workspaces/${id}/managers`).expect(401);
+    const initial = (await get().expect(200)).body;
+    expect(initial).toMatchObject({ managers: [], maxManagers: 50 });
+    canManage.mockResolvedValue(false);
+    await get().expect(403);
+    await put({ revision: initial.revision, userIds: [userId] }).expect(403);
+    canManage.mockResolvedValue(true);
+    await put({ revision: initial.revision, userIds: [userId], role: 'admin' }).expect(400);
+    await put({ revision: initial.revision, userIds: ['000000000000000000000099'] }).expect(409);
+    const saved = (await put({ revision: initial.revision, userIds: [userId] }).expect(200)).body;
+    expect(saved.revision).not.toBe(initial.revision);
+    await put({ revision: initial.revision, userIds: [] }).expect(409);
+    const listed = (await get().expect(200)).body;
+    expect(listed.managers).toEqual([{ id: userId, name: 'Member', email: 'member@example.com' }]);
+    expect(JSON.stringify(listed)).not.toMatch(/xoxb|encrypted|secret/);
+    await http()
+      .get(`/workspaces/${id}/managers`)
+      .set('x-test-user', 'yes')
+      .set('x-test-tenant', 'org-b')
+      .expect(403);
+  });
 
   it('requires fresh same-tenant admin authority to register an app and never echoes secrets', async () => {
     const input = {

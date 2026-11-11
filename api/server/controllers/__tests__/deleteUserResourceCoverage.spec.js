@@ -12,6 +12,8 @@ const { ResourceType } = require('librechat-data-provider');
  */
 const HANDLED_RESOURCE_TYPES = {
   [ResourceType.AGENT]: 'deleteUserAgents',
+  // Installations are organization-owned; the existing principal cleanup removes bot grants.
+  [ResourceType.SLACK_BOT]: 'deleteAclEntries',
   [ResourceType.CODE_ENVIRONMENT]: 'deleteUserCodeEnvironments',
   [ResourceType.REMOTE_AGENT]: 'deleteUserAgents',
   [ResourceType.PROMPTGROUP]: 'deleteUserPrompts',

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { ResourceType } from 'librechat-data-provider';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { SlackWorkspaceStorage } from './slackWorkspace';
 import type { SlackDispatchStorage } from './slackDispatch';
@@ -15,6 +16,7 @@ import { touchChannelAuthority } from './channelScope';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
 import { closeResponseScopes } from './responseScope';
+import { waitForPause } from './test-helpers';
 import { createModels } from '~/models';
 
 describe('workspace routing and live channel authority', () => {
@@ -34,7 +36,7 @@ describe('workspace routing and live channel authority', () => {
     encryptedSigningSecret: 'encrypted-signing-secret',
   };
 
-  async function install(token = 'encrypted-bot-token') {
+  async function install(token = 'encrypted-bot-token', teamId = 'T123') {
     const stateHash = `attempt-${++sequence}`;
     await installations.startInstall({
       stateHash,
@@ -50,7 +52,7 @@ describe('workspace routing and live channel authority', () => {
       claim.callbackId,
       {
         appId: 'A123',
-        teamId: 'T123',
+        teamId,
         teamName: 'Workspace',
         botUserId: 'U123',
         scopes: [],
@@ -83,7 +85,7 @@ describe('workspace routing and live channel authority', () => {
     const channel = await channels.getAgentChannel(channelId);
     return routes.assign({
       userId: 'admin',
-      allowReplaceOthers: true,
+      isBotAdmin: true,
       workspaceId,
       channelId,
       externalChannelId,
@@ -105,6 +107,8 @@ describe('workspace routing and live channel authority', () => {
   beforeEach(async () => {
     await runAsSystem(async () => {
       for (const name of [
+        'AclEntry',
+        'User',
         'AgentChannel',
         'SlackWorkspace',
         'SlackInstall',
@@ -239,23 +243,213 @@ describe('workspace routing and live channel authority', () => {
       expect((await channels.getAgentChannelMetadata('binding-a'))?.status).toBe('active');
     }));
 
-  it('enforces creator ownership inside replacement transactions even with a valid observed revision', async () =>
+  const adminId = '000000000000000000000001';
+  const managerId = '000000000000000000000002';
+  const otherId = '000000000000000000000003';
+  async function grantManagers(workspaceId: string, userIds = [managerId]) {
+    for (const id of [adminId, managerId, otherId]) {
+      await db.models.User.updateOne(
+        { _id: id },
+        { $setOnInsert: { email: `${id}@example.com`, name: id } },
+        { upsert: true },
+      );
+    }
+    const workspace = await installations.metadata(workspaceId);
+    if (!workspace) throw new Error('Missing workspace');
+    const result = await installations.setBotManagers({
+      workspaceId,
+      revision: workspace.revision,
+      actorId: adminId,
+      userIds,
+      maxManagers: 50,
+    });
+    if (!result.ok) throw new Error(result.code);
+    return result.revision;
+  }
+
+  it('requires explicit management even for an unclaimed destination and permits co-manager replacements', async () =>
     scoped(async () => {
       const workspaceId = await install();
       await binding(workspaceId);
       await binding(workspaceId, 'binding-b');
-      const initial = await assign(workspaceId, 'binding-a');
-      if (!initial.ok || !initial.route) throw new Error('Missing route');
       const change = {
-        userId: 'member',
+        userId: managerId,
         workspaceId,
-        channelId: 'binding-b',
-        channelRevision: 'consent-binding-b',
-        expectedRevision: initial.route.revision,
+        channelId: 'binding-a',
+        channelRevision: 'consent-binding-a',
       };
-      expect(await routes.assign(change)).toEqual({ ok: false, code: 'route_in_use' });
-      expect((await routes.read(workspaceId))?.channelId).toBe('binding-a');
-      expect((await routes.assign({ ...change, userId: 'agent-manager' })).ok).toBe(true);
+      expect(await routes.assign(change)).toEqual({ ok: false, code: 'bot_access_required' });
+      await grantManagers(workspaceId, [managerId, otherId]);
+      const first = await routes.assign(change);
+      if (!first.ok || !first.route) throw new Error('Missing managed route');
+      expect(
+        (
+          await routes.assign({
+            ...change,
+            userId: otherId,
+            channelId: 'binding-b',
+            channelRevision: 'consent-binding-b',
+            expectedRevision: first.route.revision,
+          })
+        ).ok,
+      ).toBe(true);
+      expect(await installations.metadata(workspaceId, managerId)).toMatchObject({
+        canManageBot: true,
+      });
+      expect(await installations.metadata(workspaceId, '000000000000000000000004')).toMatchObject({
+        canManageBot: false,
+      });
+    }));
+
+  it('revokes future assignments while preserving existing authority and permitting removal', async () =>
+    scoped(async () => {
+      const workspaceId = await install();
+      await binding(workspaceId);
+      await grantManagers(workspaceId);
+      const assigned = await routes.assign({
+        workspaceId,
+        channelId: 'binding-a',
+        channelRevision: 'consent-binding-a',
+        userId: managerId,
+      });
+      if (!assigned.ok || !assigned.route) throw new Error('Missing route');
+      await grantManagers(workspaceId, []);
+      expect(await channels.getActiveAgentChannel('binding-a')).not.toBeNull();
+      expect((await routes.resolve(workspaceId, 'C123'))?.channelId).toBe('binding-a');
+      expect(
+        await routes.assign({
+          workspaceId,
+          channelId: 'binding-a',
+          channelRevision: 'consent-binding-a',
+          userId: managerId,
+          externalChannelId: 'C123',
+        }),
+      ).toEqual({ ok: false, code: 'bot_access_required' });
+      expect(
+        (
+          await routes.remove({
+            workspaceId,
+            channelId: 'binding-a',
+            userId: managerId,
+            expectedRevision: assigned.route.revision,
+          })
+        ).ok,
+      ).toBe(true);
+    }));
+
+  it('rejects an assignment paused before a concurrently committed revocation', async () =>
+    scoped(async () => {
+      const workspaceId = await install();
+      await binding(workspaceId);
+      await grantManagers(workspaceId);
+      let release!: () => void;
+      let paused!: () => void;
+      const resumed = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const reached = new Promise<void>((resolve) => {
+        paused = resolve;
+      });
+      const model = db.models.SlackWorkspace;
+      const update = model.updateOne.bind(model);
+      const spy = jest.spyOn(model, 'updateOne').mockImplementationOnce((...args) => {
+        paused();
+        return resumed.then(() => update(...args)) as ReturnType<typeof model.updateOne>;
+      });
+      const assignment = routes.assign({
+        workspaceId,
+        channelId: 'binding-a',
+        channelRevision: 'consent-binding-a',
+        userId: managerId,
+      });
+      try {
+        await waitForPause(reached, assignment);
+        await grantManagers(workspaceId, []);
+        release();
+        expect(await assignment).toEqual({ ok: false, code: 'bot_access_required' });
+        expect(await routes.read(workspaceId)).toBeNull();
+      } finally {
+        release();
+        spy.mockRestore();
+        await Promise.allSettled([assignment]);
+      }
+    }));
+
+  it('uses revision-checked tenant-local grants and rejects erased, foreign and nonexistent users atomically', async () =>
+    scoped(async () => {
+      const workspaceId = await install();
+      const revision = await grantManagers(workspaceId);
+      const change = (userIds: string[], expected = revision) =>
+        installations.setBotManagers({
+          workspaceId,
+          revision: expected,
+          userIds,
+          actorId: adminId,
+          maxManagers: 2,
+        });
+      for (const userIds of [
+        ['not-an-id'],
+        [otherId, '000000000000000000000099'],
+        [adminId, managerId, otherId],
+      ]) {
+        expect((await change(userIds)).ok).toBe(false);
+      }
+      await db.models.User.updateOne(
+        { _id: otherId },
+        { $set: { agentTriggerDeletionStartedAt: new Date() } },
+      );
+      expect((await change([otherId])).ok).toBe(false);
+      expect(await installations.botManagers(workspaceId)).toMatchObject({
+        revision,
+        managers: [{ id: managerId }],
+      });
+      await scoped(async () => {
+        expect(await installations.botManagers(workspaceId)).toBeNull();
+        expect((await change([managerId])).ok).toBe(false);
+      }, 'org-b');
+      const result = await change([]);
+      expect(result.ok).toBe(true);
+      expect(await change([managerId])).toEqual({ ok: false, code: 'workspace_changed' });
+    }));
+
+  it('filters member pages before pagination and never copies Slack credentials into manager metadata', async () =>
+    scoped(async () => {
+      const first = await install();
+      await grantManagers(first);
+      expect((await installations.list(undefined, 1, otherId)).workspaces).toEqual([]);
+      const hidden = await install('ungranted-token', 'T999');
+      await db.models.SlackWorkspace.updateOne(
+        { workspaceId: hidden },
+        { $set: { workspaceId: 'a-hidden' } },
+      );
+      await db.models.SlackWorkspace.updateOne(
+        { workspaceId: first },
+        { $set: { workspaceId: 'z-managed' } },
+      );
+      expect((await installations.list(undefined, 1)).workspaces[0].workspaceId).toBe('a-hidden');
+      const listed = await installations.list(undefined, 1, managerId);
+      expect(listed.workspaces).toHaveLength(1);
+      expect(listed.workspaces[0]).toMatchObject({ workspaceId: 'z-managed', canManageBot: true });
+      expect(JSON.stringify(listed)).not.toMatch(/encrypted|bot-token|client-secret/);
+      expect(await scoped(() => installations.list(undefined, 1, managerId), 'org-b')).toEqual({
+        workspaces: [],
+      });
+    }));
+
+  it('preserves grants on token refresh and clears them before disconnect or a fresh installation', async () =>
+    scoped(async () => {
+      const workspaceId = await install();
+      await grantManagers(workspaceId);
+      expect(await install('refreshed-token')).toBe(workspaceId);
+      expect((await installations.metadata(workspaceId, managerId))?.canManageBot).toBe(true);
+      await installations.disconnect(workspaceId);
+      expect(
+        await db.models.AclEntry.countDocuments({ resourceType: ResourceType.SLACK_BOT }),
+      ).toBe(0);
+      const replacement = await install();
+      expect(replacement).not.toBe(workspaceId);
+      expect((await installations.metadata(replacement, managerId))?.canManageBot).toBe(false);
+      expect((await installations.botManagers(replacement))?.managers).toEqual([]);
     }));
 
   it('serializes competing initial assignments rather than letting two agents own a default', async () =>

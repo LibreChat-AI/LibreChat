@@ -121,7 +121,7 @@ describe('shared Slack service routing', () => {
       workspaceId,
       channelId,
       userId: 'admin',
-      allowReplaceOthers: true,
+      isBotAdmin: true,
       channelRevision: 'consent',
     });
     if (!result.ok) throw new Error(result.code);
@@ -210,6 +210,7 @@ describe('shared Slack service routing', () => {
       );
     await runAsSystem(async () => {
       for (const name of [
+        'User',
         'Agent',
         'AclEntry',
         'AgentChannel',
@@ -298,10 +299,34 @@ describe('shared Slack service routing', () => {
     }).expect(400);
   });
 
-  it('lets an ordinary member connect, route and remove their own agent without installation credentials', async () => {
+  const managerId = '000000000000000000000002';
+  async function managers(workspaceId: string, userIds = [managerId]) {
+    return scoped(async () => {
+      const adminId = '000000000000000000000001';
+      for (const id of [adminId, managerId])
+        await db.models.User.updateOne(
+          { _id: id },
+          { $setOnInsert: { email: `${id}@example.com` } },
+          { upsert: true },
+        );
+      const workspace = await storage.metadata(workspaceId);
+      if (!workspace) throw new Error('Missing workspace');
+      const result = await storage.setBotManagers({
+        workspaceId,
+        revision: workspace.revision,
+        actorId: adminId,
+        userIds,
+        maxManagers: 50,
+      });
+      if (!result.ok) throw new Error(result.code);
+    });
+  }
+
+  it('lets an explicitly granted manager route without credentials and remove assignments after revocation', async () => {
     const workspace = await scoped(() => install());
+    await managers(workspace.workspaceId);
     manageAllowed = false;
-    const member = 'member';
+    const member = managerId;
     const channel = (
       await request
         .post('/ui/member-agent/connections')
@@ -326,6 +351,12 @@ describe('shared Slack service routing', () => {
     ).body;
     expect(target).toMatchObject({ assignedToThisChannel: true, canReplace: true });
     expect(readAgentName).not.toHaveBeenCalled();
+    await managers(workspace.workspaceId, []);
+    await request
+      .post(`/ui/member-agent/${channel.channelId}/routes`)
+      .set('x-test-user', member)
+      .send({ channelRevision: active.revision, externalChannelId: 'COTHER' })
+      .expect(403, { error: 'bot_access_required' });
     await request
       .delete(`/ui/member-agent/${channel.channelId}/routes`)
       .set('x-test-user', member)
@@ -383,54 +414,72 @@ describe('shared Slack service routing', () => {
     expect((await read()).body).not.toHaveProperty('assignedAgentName');
   });
 
-  it('prevents a member from replacing another creator while permitting a current administrator override', async () => {
+  it('requires an admin-granted bot permission and rejects browser attempts to forge it', async () => {
     const workspace = await scoped(() => install());
     const original = await pending(workspace.workspaceId);
     await browserPost(`agent/${original.channelId}/routes`, {
       channelRevision: original.revision,
     }).expect(200);
     manageAllowed = false;
-    const member = 'member';
-    const channel = (
-      await request
+    const create = () =>
+      request
         .post('/ui/member-agent/connections')
-        .set('x-test-user', member)
-        .send({ workspaceId: workspace.workspaceId })
-        .expect(201)
-    ).body;
+        .set('x-test-user', managerId)
+        .send({ workspaceId: workspace.workspaceId });
+    await create().expect(403, { error: 'bot_access_required' });
+    await managers(workspace.workspaceId);
+    const channel = (await create().expect(201)).body;
     const target = (
       await request
         .get(`/ui/member-agent/${channel.channelId}/routes?target=default`)
-        .set('x-test-user', member)
+        .set('x-test-user', managerId)
         .expect(200)
     ).body;
-    expect(target).toMatchObject({ occupied: true, canReplace: false });
-    const change = () =>
-      request
-        .post(`/ui/member-agent/${channel.channelId}/routes`)
-        .set('x-test-user', member)
-        .send({ channelRevision: channel.revision, expectedRevision: target.revision });
-    await change().expect(409, { error: 'route_in_use' });
-    expect((await scoped(() => channels.getAgentChannel(channel.channelId)))?.status).toBe(
-      'pending_install',
-    );
-    expect((await scoped(() => routes.read(workspace.workspaceId)))?.channelId).toBe(
-      original.channelId,
-    );
+    expect(target).toMatchObject({ occupied: true, canReplace: true });
+    const body = { channelRevision: channel.revision, expectedRevision: target.revision };
     await request
       .post(`/ui/member-agent/${channel.channelId}/routes`)
-      .set('x-test-user', member)
-      .send({
-        channelRevision: channel.revision,
-        expectedRevision: target.revision,
-        allowReplaceOthers: true,
-      })
+      .set('x-test-user', managerId)
+      .send({ ...body, isBotAdmin: true })
       .expect(400);
-    manageAllowed = true;
-    await change().expect(200);
+    const assigned = await request
+      .post(`/ui/member-agent/${channel.channelId}/routes`)
+      .set('x-test-user', managerId)
+      .send(body);
+    expect({ status: assigned.status, body: assigned.body }).toMatchObject({
+      status: 200,
+      body: { status: 'active' },
+    });
     expect((await scoped(() => routes.read(workspace.workspaceId)))?.channelId).toBe(
       channel.channelId,
     );
+  });
+
+  it('preserves administrator authority when a direct manager grant is revoked after preflight', async () => {
+    const workspace = await scoped(() => install());
+    await managers(workspace.workspaceId);
+    const channel = (
+      await request
+        .post('/ui/admin-agent/connections')
+        .set('x-test-user', managerId)
+        .send({ workspaceId: workspace.workspaceId })
+        .expect(201)
+    ).body;
+    const assign = routes.assign.bind(routes);
+    const write = jest.spyOn(routes, 'assign').mockImplementationOnce(async (input) => {
+      await managers(workspace.workspaceId, []);
+      return assign(input);
+    });
+    try {
+      await request
+        .post(`/ui/admin-agent/${channel.channelId}/routes`)
+        .set('x-test-user', managerId)
+        .send({ channelRevision: channel.revision })
+        .expect(200);
+      expect(write).toHaveBeenCalledWith(expect.objectContaining({ isBotAdmin: true }));
+    } finally {
+      write.mockRestore();
+    }
   });
 
   it('leaves a conflicting connection pending until an explicit route revision is supplied', async () => {

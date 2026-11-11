@@ -11,6 +11,7 @@ import { createSlackRouteModel } from '~/models/slackRoute';
 import { touchSlackWorkspace } from './slackWorkspaceScope';
 import { createAgentChannelModel } from '~/models/channel';
 import { createChannelIndexGate } from './channelIndexes';
+import { createSlackBotAccess } from './slackBotAccess';
 import { touchChannelScope } from './channelScope';
 
 type RouteResult =
@@ -22,7 +23,7 @@ type RouteResult =
         | 'workspace_unavailable'
         | 'channel_unavailable'
         | 'route_changed'
-        | 'route_in_use';
+        | 'bot_access_required';
     };
 
 export interface SlackRouteStorage {
@@ -44,7 +45,7 @@ export interface SlackRouteStorage {
     channelRevision: string;
     expectedRevision?: string;
     /** Trusted current administrator authority; never supplied by a browser. */
-    allowReplaceOthers?: boolean;
+    isBotAdmin?: boolean;
     /** Activate an existing pending/disabled binding in the same route transaction. */
     activate?: boolean;
   }): Promise<RouteResult>;
@@ -62,6 +63,7 @@ export function createSlackRouteStorage(
   getLimits: () => Promise<Partial<ChannelStorageConfig>> = async () => ({}),
 ): SlackRouteStorage {
   const routes = createSlackRouteModel(mongoose);
+  const botAccess = createSlackBotAccess(mongoose);
   const workspaces = createSlackWorkspaceModel(mongoose);
   const channels = createAgentChannelModel(mongoose);
   const ensureIndexes = createChannelIndexGate(() => [routes, workspaces, channels]);
@@ -148,14 +150,8 @@ export function createSlackRouteStorage(
         const previous = await routes.findOne(filter).session(session).lean();
         if ((previous?.revision ?? undefined) !== input.expectedRevision)
           return { ok: false, code: 'route_changed' };
-        if (previous && previous.channelId !== input.channelId && !input.allowReplaceOthers) {
-          const previousChannel = await channels
-            .findOne({ channelId: previous.channelId, tenantId: tenantId ?? null })
-            .session(session)
-            .lean();
-          if (previousChannel?.createdBy !== input.userId)
-            return { ok: false, code: 'route_in_use' };
-        }
+        if (!input.isBotAdmin && !(await botAccess.allows(workspace, input.userId, session)))
+          return { ok: false, code: 'bot_access_required' };
         const channel = await channels
           .findOne({
             channelId: input.channelId,

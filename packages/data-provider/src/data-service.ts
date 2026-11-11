@@ -8,6 +8,8 @@ import type {
   SlackAppRegistration,
   ConfigureSlackApp,
   SlackWorkspaceStatus,
+  SlackBotManagers,
+  SlackBotManager,
   SlackWorkspaceConnect,
   SlackWorkspaceDetail,
   SlackWorkspaceRoutePage,
@@ -197,6 +199,30 @@ export function getSlackWorkspaces(cursor?: string): Promise<SlackWorkspaceStatu
   return request.get(
     `${endpoints.slackWorkspaces()}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
   );
+}
+
+export function getSlackBotManagers(workspaceId: string): Promise<SlackBotManagers> {
+  return request.get(`${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers`);
+}
+
+export function searchSlackBotManagers(
+  workspaceId: string,
+  query: string,
+): Promise<SlackBotManager[]> {
+  return request.get(
+    `${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers/search?q=${encodeURIComponent(query)}`,
+  );
+}
+
+export function setSlackBotManagers(
+  workspaceId: string,
+  revision: string,
+  userIds: string[],
+): Promise<{ revision: string }> {
+  return request.put(`${endpoints.slackWorkspaces()}/${encodeURIComponent(workspaceId)}/managers`, {
+    revision,
+    userIds,
+  });
 }
 
 export function getSlackWorkspace(workspaceId: string): Promise<SlackWorkspaceDetail> {

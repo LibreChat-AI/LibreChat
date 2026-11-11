@@ -14,6 +14,6 @@ export function channelErrorLabel(
   const unavailable =
     code === 'transactions_unavailable' ||
     (error instanceof Error && 'code' in error && error.code === 'transactions_unavailable');
-  if (code === 'route_in_use') return 'com_ui_channels_workspace_route_owned';
+  if (code === 'bot_access_required') return 'com_ui_channels_bot_access_required';
   return unavailable ? 'com_ui_channels_transaction_required' : fallback;
 }

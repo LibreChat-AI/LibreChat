@@ -25,6 +25,18 @@ for (const theme of ['light', 'dark']) {
     let attempt = 0;
     let cancelled = 0;
     let disconnected = 0;
+    let searches = 0;
+    let legacySearches = 0;
+    await page.route('**/api/permissions/search-principals**', (route) => {
+      legacySearches++;
+      return route.fulfill({ status: 403, json: { error: 'forbidden' } });
+    });
+    let managers: Array<{ id: string; name: string; email: string }> = [];
+    const manager = {
+      id: '000000000000000000000002',
+      name: 'Alex Morgan',
+      email: 'alex@example.com',
+    };
     await page.addInitScript((mode) => localStorage.setItem('color-theme', mode), theme);
     if (theme === 'light')
       await context.addInitScript(() =>
@@ -35,6 +47,33 @@ for (const theme of ['light', 'dark']) {
     );
     await page.route('**/api/channels/workspaces**', async (route) => {
       const url = new URL(route.request().url());
+      if (url.pathname.endsWith('/managers/search')) {
+        expect(url.searchParams.get('q')).toBe('alex');
+        if (searches++ === 0) {
+          await route.fulfill({ status: 503, json: { error: 'unavailable' } });
+          return;
+        }
+        await route.fulfill({ json: [manager] });
+        return;
+      }
+      if (url.pathname.endsWith('/managers')) {
+        if (route.request().method() === 'PUT') {
+          expect(route.request().postDataJSON()).toEqual({
+            revision: 'installed',
+            userIds: [manager.id],
+          });
+          managers = [manager];
+          workspaces = workspaces.map((workspace) => ({
+            ...workspace,
+            revision: 'managers-updated',
+          }));
+          await route.fulfill({ json: { revision: 'managers-updated' } });
+        } else
+          await route.fulfill({
+            json: { revision: workspaces[0].revision, managers, maxManagers: 50 },
+          });
+        return;
+      }
       if (url.pathname.endsWith('/apps')) {
         if (route.request().method() === 'PUT') {
           expect(route.request().postDataJSON()).toMatchObject({
@@ -62,7 +101,7 @@ for (const theme of ['light', 'dark']) {
       }
       if (url.pathname.endsWith('/workspace-browser/remove')) {
         expect(route.request().method()).toBe('POST');
-        expect(route.request().postDataJSON()).toEqual({ revision: 'installed' });
+        expect(route.request().postDataJSON()).toEqual({ revision: 'managers-updated' });
         workspaces = [];
         await route.fulfill({ status: 204 });
         return;
@@ -82,7 +121,7 @@ for (const theme of ['light', 'dark']) {
       if (route.request().method() === 'DELETE') {
         if (url.pathname.includes('/attempts/')) cancelled++;
         else {
-          expect(route.request().postDataJSON()).toEqual({ revision: 'installed' });
+          expect(route.request().postDataJSON()).toEqual({ revision: 'managers-updated' });
           disconnected++;
           workspaces = workspaces.map((workspace) => ({ ...workspace, status: 'disconnected' }));
         }
@@ -150,6 +189,37 @@ for (const theme of ['light', 'dark']) {
         path: `${process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX}-${theme}.png`,
       });
     }
+    await workspacesPanel.getByRole('button', { name: 'Manage bot access', exact: true }).click();
+    const access = page.getByRole('dialog', { name: 'Manage bot access', exact: true });
+    await expect(
+      access.getByText('Only administrators can assign agents until you add a bot manager.'),
+    ).toBeVisible();
+    await access.getByRole('combobox', { name: 'Add a bot manager' }).fill('alex');
+    await expect(
+      access.getByText('Could not search your organization’s users. Try again.'),
+    ).toBeVisible();
+    await expect(access.getByText('No results found', { exact: true })).toHaveCount(0);
+    if (process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX)
+      await page.screenshot({
+        animations: 'disabled',
+        path: `${process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX}-search-error-${theme}.png`,
+      });
+    await access.getByRole('button', { name: 'Retry', exact: true }).click();
+    await access.getByRole('option', { name: /Alex Morgan/ }).click();
+    await expect(access.getByText('Alex Morgan', { exact: true })).toBeVisible();
+    if (process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX)
+      await page.screenshot({
+        animations: 'disabled',
+        path: `${process.env.E2E_SLACK_WORKSPACES_VISUAL_PREFIX}-managers-${theme}.png`,
+      });
+    await access.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(access).not.toBeVisible();
+    expect(managers).toEqual([manager]);
+    expect(legacySearches).toBe(0);
+    expect(searches).toBe(2);
+    await workspacesPanel.getByRole('button', { name: 'Manage bot access', exact: true }).click();
+    await expect(access.getByText('Alex Morgan', { exact: true })).toBeVisible();
+    await access.getByRole('button', { name: 'Cancel', exact: true }).click();
     await workspacesPanel
       .getByRole('button', { name: 'Disconnect workspace', exact: true })
       .click();
@@ -210,6 +280,7 @@ for (const theme of ['light', 'dark']) {
       await route.fulfill({ response, json: config });
     });
     const workspace: SlackWorkspace = {
+      canManageBot: true,
       workspaceId: 'workspace-browser',
       appId: 'A123',
       teamId: 'T123',

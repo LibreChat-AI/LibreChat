@@ -137,6 +137,7 @@ export function createSlackWorkspaceRuntime(
           ),
         },
         pageSize: channels.maxMetadataPageSize,
+        maxBotManagers: channels.maxBotManagers,
       };
     },
   });
