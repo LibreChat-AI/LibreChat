@@ -3813,6 +3813,83 @@ describe('BaseClient', () => {
     });
   });
 
+  describe('sendMessage skill metadata', () => {
+    test.each([
+      [
+        'manual',
+        { manualSkills: ['manual-skill', '', 42] },
+        {},
+        { manualSkills: ['manual-skill'] },
+      ],
+      [
+        'always-applied',
+        { alwaysAppliedSkills: ['untrusted-skill'] },
+        { alwaysApplySkillPrimes: [{ name: 'always-skill' }, { name: '' }, {}] },
+        { alwaysAppliedSkills: ['always-skill'] },
+      ],
+      [
+        'combined',
+        { manualSkills: ['manual-skill'] },
+        { alwaysApplySkillPrimes: [{ name: 'always-skill' }] },
+        { manualSkills: ['manual-skill'], alwaysAppliedSkills: ['always-skill'] },
+      ],
+    ])(
+      'attaches %s skills before start callbacks and preserves them on save',
+      async (_label, body, agent, expected) => {
+        TestClient.options = { ...TestClient.options, req: { body }, agent };
+        TestClient.saveMessageToDatabase = jest.fn().mockResolvedValue({ message: {} });
+        const starts = [];
+        const capture = (message) =>
+          starts.push({
+            manualSkills: message.manualSkills,
+            alwaysAppliedSkills: message.alwaysAppliedSkills,
+          });
+
+        await TestClient.sendMessage('Hello with skills', {
+          getReqData: ({ userMessage: message }) => {
+            if (message) capture(message);
+          },
+          onStart: capture,
+        });
+
+        expect(starts.length).toBeGreaterThanOrEqual(2);
+        for (const start of starts) {
+          expect(start).toMatchObject(expected);
+        }
+        const userSave = TestClient.saveMessageToDatabase.mock.calls.find(
+          ([message]) => message.isCreatedByUser,
+        );
+        expect(userSave[0]).toMatchObject(expected);
+      },
+    );
+
+    test('preserves historical skill metadata on a rerun', async () => {
+      const historical = [
+        ...messageHistory.map((message) => ({ ...message })),
+        { role: 'assistant', messageId: 'response-0', parentMessageId: '3', text: 'Previous' },
+      ];
+      historical[2].manualSkills = ['original-manual'];
+      historical[2].alwaysAppliedSkills = ['original-always'];
+      const client = initializeFakeClient(apiKey, options, historical);
+      client.options = {
+        ...client.options,
+        req: { body: { manualSkills: ['new-manual'] } },
+        agent: { alwaysApplySkillPrimes: [{ name: 'new-always' }] },
+      };
+
+      const result = await client.handleStartMethods('Rerun', {
+        conversationId: 'conversation-1',
+        parentMessageId: '3',
+        responseMessageId: 'response-0',
+        isEdited: true,
+        isContinued: true,
+      });
+
+      expect(result.userMessage.manualSkills).toEqual(['original-manual']);
+      expect(result.userMessage.alwaysAppliedSkills).toEqual(['original-always']);
+    });
+  });
+
   describe('sendMessage quote references', () => {
     // The blockquote merge itself lives in AgentClient.buildMessages / prependQuotes
     // (covered by packages/api specs). BaseClient's job is to attach the normalized
