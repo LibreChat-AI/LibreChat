@@ -9,6 +9,8 @@ import { render, act, waitFor } from '@testing-library/react';
 import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   FileSources,
+  roleDefaults,
+  SystemRoles,
   QueryKeys,
   dataService,
   readTwoFactorSetupToken,
@@ -965,7 +967,10 @@ describe('AuthContextProvider — custom role detection and fetching', () => {
   const mockUseGetRole = jest.requireMock('~/data-provider').useGetRole;
   const staffPermissions = {
     name: 'STAFF',
-    permissions: { PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false } },
+    permissions: {
+      ...roleDefaults[SystemRoles.USER].permissions,
+      PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false },
+    },
   };
 
   beforeEach(() => {
