@@ -43,6 +43,7 @@ export class SlackWriteError extends Error {
 
 const updates = new Set([
   'chat.update',
+  'chat.delete',
   'reactions.add',
   'reactions.remove',
   'agents.sessions.setStatus',
@@ -81,6 +82,7 @@ const diagnosticCodes = new Set([
 ]);
 /** Only explicit method/authorization rejections prove that Slack did not execute a write. */
 const permanentRejections = new Set([
+  'cant_delete_message',
   'invalid_arguments',
   'invalid_arg_name',
   'invalid_post_type',
@@ -225,7 +227,9 @@ export class SlackClient {
       } catch (error) {
         if (
           error instanceof WebAPIPlatformError &&
-          ((method === 'reactions.add' && error.data.error === 'already_reacted') ||
+          validEnvelope &&
+          ((method === 'chat.delete' && error.data.error === 'message_not_found') ||
+            (method === 'reactions.add' && error.data.error === 'already_reacted') ||
             (method === 'reactions.remove' && error.data.error === 'no_reaction'))
         )
           return { ok: true };
@@ -313,6 +317,15 @@ export class SlackClient {
         throw error;
       return this.postMessage(token, { ...message, blocks: [] }, signal);
     }
+  }
+
+  /** Deleting the same bot-owned message is idempotent, including an already absent message. */
+  async deleteMessage(
+    token: string,
+    message: SlackMessageReceipt,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.call(token, 'chat.delete', { ...message }, signal);
   }
 
   async updateMessage(

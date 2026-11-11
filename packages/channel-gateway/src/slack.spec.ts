@@ -10,6 +10,65 @@ const success = (body: object) =>
 const receipt = () => success({ channel: 'C123', ts: '123.789' });
 
 describe('SlackClient', () => {
+  test('retries an uncertain delete at the same address and accepts already absent', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockRejectedValueOnce(new Error('connection lost'))
+      .mockResolvedValue(
+        new Response(JSON.stringify({ ok: false, error: 'message_not_found' }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    await expect(
+      new SlackClient(config, undefined, transport).deleteMessage(token, {
+        channel: 'C123',
+        ts: '123.789',
+      }),
+    ).resolves.toBeUndefined();
+    expect(transport).toHaveBeenCalledTimes(2);
+    for (const [url, init] of transport.mock.calls) {
+      expect(url).toBe(`${config.SLACK_API_BASE_URL}chat.delete`);
+      expect(new URLSearchParams(String(init?.body)).get('ts')).toBe('123.789');
+      expect(String(init?.body)).not.toContain(token);
+    }
+  });
+
+  test('does not turn a missing message into success for message updates', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ ok: false, error: 'message_not_found' }), {
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      );
+    await expect(
+      new SlackClient(config, undefined, transport).updateMessageOnce(token, {
+        ...message,
+        ts: '123.789',
+      }),
+    ).rejects.toBeInstanceOf(SlackWriteError);
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not retry a permanent deletion rejection', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ ok: false, error: 'cant_delete_message' }), {
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      );
+    await expect(
+      new SlackClient(config, undefined, transport).deleteMessage(token, {
+        channel: 'C123',
+        ts: '123.789',
+      }),
+    ).rejects.toMatchObject({ outcome: 'permanent' });
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
   test.each([
     'service_unavailable',
     'request_timeout',

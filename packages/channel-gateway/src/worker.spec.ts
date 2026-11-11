@@ -113,6 +113,7 @@ function fixture() {
     prepare?: () => ResponsePreparation;
     checkpoint?: () => Promise<Response>;
     begin?: (body: MutationBody) => Response | undefined;
+    commit?: () => Response | undefined;
   } = {};
   const snapshot = () => structuredClone(state);
   const backend = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(
@@ -218,8 +219,11 @@ function fixture() {
         );
         if (!receipt || !body.receipt) throw new Error('Missing settle fixture');
         Object.assign(receipt, body.receipt);
-      } else if (path.endsWith('/commit')) state.state = 'delivered';
-      else throw new Error('Unexpected backend fixture path');
+      } else if (path.endsWith('/commit')) {
+        const intercepted = hooks.commit?.();
+        if (intercepted) return intercepted;
+        state.state = 'delivered';
+      } else throw new Error('Unexpected backend fixture path');
       return json(snapshot());
     },
   );
@@ -234,7 +238,13 @@ function fixture() {
       if (method === 'upload') return new Response('ok');
       if (method === 'files.completeUploadExternal') return slackOK({ files: [{ id: 'F1' }] });
       if (method === 'agents.sessions.setStatus') return slackOK();
-      return slackOK({ channel: 'C1', ts: method === 'chat.update' ? body.get('ts') : '123.789' });
+      return slackOK({
+        channel: 'C1',
+        ts:
+          method === 'chat.update'
+            ? body.get('ts')
+            : `123.${789 + slackRequests.filter((request) => request.method === 'chat.postMessage').length}`,
+      });
     },
   );
   const client = new ChannelClient(config, backend);
@@ -265,6 +275,16 @@ function fixture() {
       attempts: 0,
     }));
   };
+  const savedProgress = (key = 'C1:123.700') => {
+    state.progress = {
+      revision: 1,
+      rendererVersion: 'slack-progress-v1',
+      text: 'Completed.',
+      outcome: 'confirmed',
+      attempts: 1,
+      externalMessageKey: key,
+    };
+  };
   const execute = () => worker.process({ ...lease, run: snapshot() }, controller.signal);
   const paths = () => requests.map((request) => request.path);
   return {
@@ -283,6 +303,7 @@ function fixture() {
     slackTransport,
     worker,
     savedPlan,
+    savedProgress,
     execute,
     paths,
   };
@@ -374,6 +395,135 @@ describe('durable Channels worker', () => {
     expect(f.paths().filter((path) => path.endsWith('/progress/begin'))).toHaveLength(2);
     expect(f.paths().filter((path) => path.endsWith('/progress/settle'))).toHaveLength(2);
     expect(f.state.state).toBe('delivered');
+  });
+
+  test('removes successful progress only after answer receipts settle and before commit', async () => {
+    const f = fixture();
+    f.hooks.slack = async (method, body) => {
+      if (method === 'chat.delete') {
+        expect(
+          f.state.receipts
+            .filter((receipt) => receipt.operationId.includes(':reply:'))
+            .every((receipt) => receipt.outcome === 'confirmed'),
+        ).toBe(true);
+        expect(f.paths().some((path) => path.endsWith('/commit'))).toBe(false);
+        expect(body.get('channel')).toBe('C1');
+        expect(body.get('ts')).toBe('123.700');
+      }
+      return slackOK({ channel: 'C1', ts: method === 'chat.update' ? body.get('ts') : '123.789' });
+    };
+    f.savedPlan();
+    f.savedProgress();
+    await f.execute();
+    expect(f.slackRequests.map((request) => request.method)).toEqual([
+      'chat.postMessage',
+      'chat.delete',
+    ]);
+    expect(f.state.state).toBe('delivered');
+  });
+
+  test.each(['failed', 'cancelled'] as const)('retains %s progress', async (status) => {
+    const f = fixture();
+    f.savedPlan();
+    f.state.snapshot!.status = status;
+    f.savedProgress();
+    await f.execute();
+    expect(f.slackRequests.some((request) => request.method === 'chat.delete')).toBe(false);
+  });
+
+  test.each(['network', 'permanent'] as const)(
+    'cleanup failure (%s) does not fail or replay the answer',
+    async (failure) => {
+      const f = fixture();
+      f.savedPlan();
+      f.savedProgress();
+      f.hooks.slack = async (method) => {
+        if (method === 'chat.delete') {
+          if (failure === 'network') throw new Error('connection lost');
+          return json({ ok: false, error: 'cant_delete_message' });
+        }
+        return slackOK({ channel: 'C1', ts: '123.789' });
+      };
+      await f.execute();
+      expect(f.state.state).toBe('delivered');
+      expect(f.log.warn).toHaveBeenCalledWith('optional_progress_cleanup_unavailable');
+      expect(
+        f.slackRequests.filter((request) => request.method === 'chat.postMessage'),
+      ).toHaveLength(1);
+      expect(f.slackRequests.filter((request) => request.method === 'chat.delete')).toHaveLength(
+        failure === 'network' ? 3 : 1,
+      );
+    },
+  );
+
+  test('recovery cleans known progress without replaying confirmed answer delivery', async () => {
+    const f = fixture();
+    f.savedPlan();
+    f.savedProgress();
+    f.state.receipts.forEach((receipt) =>
+      Object.assign(receipt, { outcome: 'confirmed', externalMessageKey: 'C1:123.789' }),
+    );
+    await f.execute();
+    expect(f.slackRequests.map((request) => request.method)).toEqual(['chat.delete']);
+    expect(f.state.state).toBe('delivered');
+  });
+
+  test('a failed commit retries cleanup without posting the answer again', async () => {
+    const f = fixture();
+    f.savedPlan();
+    f.savedProgress();
+    let commits = 0;
+    f.hooks.commit = () => (commits++ === 0 ? json({ error: 'unavailable' }, 503) : undefined);
+    await expect(f.execute()).rejects.toThrow();
+    await f.execute();
+    expect(f.slackRequests.filter((request) => request.method === 'chat.postMessage')).toHaveLength(
+      1,
+    );
+    expect(f.slackRequests.filter((request) => request.method === 'chat.delete')).toHaveLength(2);
+    expect(f.state.state).toBe('delivered');
+  });
+
+  test('does not commit after the lease signal is aborted during cleanup', async () => {
+    const f = fixture();
+    f.savedPlan();
+    f.savedProgress();
+    f.hooks.slack = async (method) => {
+      if (method === 'chat.delete') f.controller.abort();
+      return slackOK({ channel: 'C1', ts: '123.789' });
+    };
+    await expect(f.execute()).rejects.toThrow('Durable lease lost');
+    expect(f.paths().some((path) => path.endsWith('/commit'))).toBe(false);
+    expect(
+      f.state.receipts
+        .filter((receipt) => receipt.operationId.includes(':reply:'))
+        .every((receipt) => receipt.outcome === 'confirmed'),
+    ).toBe(true);
+  });
+
+  test.each(['C2:123.700', 'C1:123.789'])(
+    'does not delete an invalid or answer address: %s',
+    async (key) => {
+      const f = fixture();
+      f.savedPlan();
+      f.savedProgress(key);
+      f.hooks.slack = async () => slackOK({ channel: 'C1', ts: '123.789' });
+      await f.execute();
+      expect(f.slackRequests.some((request) => request.method === 'chat.delete')).toBe(false);
+      expect(f.log.warn).toHaveBeenCalledWith('optional_progress_cleanup_unavailable');
+      expect(f.state.state).toBe('delivered');
+    },
+  );
+
+  test('retains progress when required answer delivery is uncertain', async () => {
+    const f = fixture();
+    f.savedPlan();
+    f.savedProgress();
+    f.hooks.slack = async () => {
+      throw new Error('connection lost');
+    };
+    await expect(f.execute()).rejects.toThrow('Delivery not confirmed');
+    expect(f.slackRequests.some((request) => request.method === 'chat.delete')).toBe(false);
+    expect(f.paths().some((path) => path.endsWith('/commit'))).toBe(false);
   });
 
   test('reuses a saved immutable plan without preparing or reexecuting Responses', async () => {

@@ -87,6 +87,16 @@ function address(run: ChannelRunView): { channel: string; thread_ts: string } {
   return { channel, thread_ts: thread };
 }
 
+function progressAddress(run: ChannelRunView): { channel: string; ts: string } {
+  const channel = run.admission.externalChannelId;
+  const prefix = channel + ':';
+  const key = run.progress?.externalMessageKey ?? '';
+  const ts = key.slice(prefix.length);
+  if (!key.startsWith(prefix) || !ts || /[:\s]/.test(ts))
+    throw new Error('Invalid progress address');
+  return { channel, ts };
+}
+
 function assertView(run: ChannelRunView, fence: ChannelRunFence, channelId: string): void {
   if (run.runId !== fence.runId || run.channelId !== channelId || !run.revision)
     throw new Error('Durable identity changed');
@@ -452,6 +462,25 @@ export class ChannelWorker {
       }
     }
     check();
+    // The answer receipts are settled. Cosmetic cleanup must never cause answer replay.
+    if (run.snapshot?.status === 'completed' && run.progress?.externalMessageKey) {
+      try {
+        if (
+          run.receipts.some(
+            (receipt) => receipt.externalMessageKey === run.progress?.externalMessageKey,
+          )
+        )
+          throw new Error('Progress address overlaps answer');
+        await this.slack.deleteMessage(
+          token,
+          progressAddress(run),
+          AbortSignal.any([signal, AbortSignal.timeout(2000)]),
+        );
+      } catch {
+        this.log.warn('optional_progress_cleanup_unavailable');
+      }
+    }
+    check();
     run = await this.client.mutate(fence, 'commit', {}, signal);
     if (!terminalStates.has(run.state)) throw new Error('Commit not confirmed');
     await this.lifecycle(run, bundle, run.state === 'delivered' ? 'completed' : 'failed', signal);
@@ -566,13 +595,9 @@ export class ChannelWorker {
       if (progress.attempts > 5) throw new SlackWriteError('permanent');
       let posted: { channel: string; ts: string };
       if (progress.externalMessageKey) {
-        const prefix = target.channel + ':';
-        const ts = progress.externalMessageKey.slice(prefix.length);
-        if (!progress.externalMessageKey.startsWith(prefix) || !ts || /[:\s]/.test(ts))
-          throw new Error('Invalid progress address');
         posted = await this.slack.updateMessageOnce(
           bundle.credentials.botToken,
-          { channel: target.channel, ts, text: progress.text, blocks },
+          { ...progressAddress(run), text: progress.text, blocks },
           signal,
         );
       } else
