@@ -36,6 +36,12 @@ import { checkAppConfigTheme } from './theme';
 
 const BASE_CONFIG_KEY = '_BASE_';
 
+/**
+ * Sentinel stored in the override cache when a principal has no DB overrides.
+ * Avoids storing duplicate serialized copies of the full base config per user.
+ */
+export const BASE_OVERRIDE_SENTINEL = '__BASE_OVERRIDE__';
+
 /** A base-config load: the config it serves, and why it failed when that is the last good one. */
 interface BaseConfigLoad {
   config: AppConfig;
@@ -1078,9 +1084,12 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
      */
     let cacheable = bypassOverrideCache !== true && (resolvedPrincipals == null || !!userId);
     if (cacheable && !refresh) {
-      let cachedMerged: AppConfig | undefined;
+      let cachedMerged: AppConfig | typeof BASE_OVERRIDE_SENTINEL | undefined;
       try {
-        cachedMerged = (await cache.get(cacheKey)) as AppConfig | undefined;
+        cachedMerged = (await cache.get(cacheKey)) as
+          | AppConfig
+          | typeof BASE_OVERRIDE_SENTINEL
+          | undefined;
       } catch (error) {
         cacheable = false;
         logger.warn(
@@ -1089,14 +1098,19 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
         );
       }
       if (cachedMerged) {
+        if (cachedMerged === BASE_OVERRIDE_SENTINEL) {
+          return await augment(withRuntimeSecrets(scopedBaseConfig));
+        }
         return await augment(withRuntimeSecrets(cachedMerged));
       }
     }
 
     let merged = scopedBaseConfig;
+    let hasOverrides = false;
     try {
       const configs = await getApplicableConfigs(principals);
       if (configs.length > 0) {
+        hasOverrides = true;
         const { appConfig: layered, raw } = mergeOverrideLayersWithSource(
           scopedBaseConfig,
           configs,
@@ -1133,7 +1147,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
 
     if (cacheable && getOverrideGeneration(cacheTenantId) === generation) {
       try {
-        await cache.set(cacheKey, merged, overrideCacheTtl);
+        await cache.set(cacheKey, hasOverrides ? merged : BASE_OVERRIDE_SENTINEL, overrideCacheTtl);
         if (getOverrideGeneration(cacheTenantId) !== generation) {
           await cache.delete(cacheKey);
         }
