@@ -72,7 +72,7 @@ async function getSDKUsage(
         handleLLMEnd(result) {
           for (const generations of result.generations) {
             for (const generation of generations) {
-              if ('message' in generation && AIMessage.isInstance(generation.message)) {
+              if ('message' in generation && generation.message instanceof AIMessage) {
                 const usage = getModelEndUsage(
                   generation.message as Parameters<typeof getModelEndUsage>[0],
                 );
