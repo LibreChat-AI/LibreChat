@@ -1,6 +1,11 @@
 import pg from 'pg';
 import { randomBytes } from 'node:crypto';
-import { createPostgresDatabase, migratePostgres, importFavorites } from '@librechat/data-schemas';
+import {
+  createPostgresFavoriteBackend,
+  createPostgresDatabase,
+  migratePostgres,
+  importFavorites,
+} from '@librechat/data-schemas';
 import type { ToolFavoriteMethods } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
@@ -17,7 +22,7 @@ const mongo: ToolFavoriteMethods = {
 
 describe('favorites process lifecycle', () => {
   it('retains a captured method across initialization and erases through the selected domain', async () => {
-    const runtime = createFavoriteRuntime(mongo, {});
+    const runtime = createFavoriteRuntime(mongo, {}, createPostgresFavoriteBackend);
     const captured = runtime.methods.deleteUserToolFavorites;
     await expect(captured('user')).rejects.toThrow('not initialized');
     await runtime.initialize(undefined);
@@ -27,7 +32,7 @@ describe('favorites process lifecycle', () => {
     await expect(runtime.initialize(undefined)).rejects.toThrow('closed');
   });
   it('keeps the optional Mongo cancellation hook a no-op without changing captured references', async () => {
-    const runtime = createFavoriteRuntime(mongo, {});
+    const runtime = createFavoriteRuntime(mongo, {}, createPostgresFavoriteBackend);
     const cancel = runtime.methods.cancelUserToolFavoriteDeletion!;
     await expect(cancel('user', 'attempt')).rejects.toThrow('not initialized');
     await runtime.initialize(undefined);
@@ -37,21 +42,117 @@ describe('favorites process lifecycle', () => {
   });
   it('fails closed on invalid explicit storage config and missing DSN', async () => {
     await expect(
-      createFavoriteRuntime(mongo, {}).initialize({ favorites: 'invalid' }),
+      createFavoriteRuntime(mongo, {}, createPostgresFavoriteBackend).initialize({
+        favorites: 'invalid',
+      }),
     ).rejects.toThrow('Invalid');
     await expect(
-      createFavoriteRuntime(mongo, {}).initialize({
+      createFavoriteRuntime(mongo, {}, createPostgresFavoriteBackend).initialize({
         favorites: 'postgres',
         postgres: { connectionStringEnv: 'PG_DSN' },
       }),
     ).rejects.toThrow('missing');
   });
   it('selects once for a process lifetime, never a request or config reload', async () => {
-    const runtime = createFavoriteRuntime(mongo, {});
+    const runtime = createFavoriteRuntime(mongo, {}, createPostgresFavoriteBackend);
     await runtime.initialize(undefined);
     await runtime.initialize({ favorites: 'postgres' });
     expect(await runtime.methods.getToolFavorites('user')).toEqual([]);
     await runtime.close();
+  });
+  it('constructs only the selected injected backend and retains captured method references', async () => {
+    const backend = {
+      methods: {
+        ...mongo,
+        getToolFavorites: jest.fn(async () => [{ itemType: 'tool' as const, itemId: 'injected' }]),
+      },
+      initialize: jest.fn(async () => undefined),
+      close: jest.fn(async () => undefined),
+    };
+    const factory = jest.fn(() => backend);
+    const runtime = createFavoriteRuntime(mongo, { INJECTED_PG: 'owned-connection' }, factory);
+    const captured = runtime.methods.getToolFavorites;
+    expect(factory).not.toHaveBeenCalled();
+    await expect(captured('user')).rejects.toThrow('not initialized');
+    await runtime.initialize({
+      favorites: 'postgres',
+      postgres: { connectionStringEnv: 'INJECTED_PG' },
+    });
+    await runtime.initialize(undefined);
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(factory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionString: 'owned-connection',
+        max: 10,
+        queryTimeoutMs: 15000,
+      }),
+    );
+    expect(backend.initialize).toHaveBeenCalledTimes(1);
+    expect(runtime.methods.getToolFavorites).toBe(captured);
+    expect(await captured('user')).toEqual([{ itemType: 'tool', itemId: 'injected' }]);
+    await runtime.close();
+    await runtime.close();
+    expect(backend.close).toHaveBeenCalledTimes(1);
+    await expect(captured('user')).rejects.toThrow('not initialized');
+    const unused = jest.fn(() => backend);
+    const defaultRuntime = createFavoriteRuntime(mongo, {}, unused);
+    await defaultRuntime.initialize(undefined);
+    expect(unused).not.toHaveBeenCalled();
+    await defaultRuntime.close();
+  });
+  it.each(['construct', 'initialize'] as const)(
+    'sanitizes an injected %s failure without publishing methods or falling back',
+    async (stage) => {
+      const privateError = new Error('private backend detail');
+      const backend = {
+        methods: mongo,
+        initialize: jest.fn().mockRejectedValue(privateError),
+        close: jest.fn(async () => undefined),
+      };
+      const factory = jest.fn(() => {
+        if (stage === 'construct') throw privateError;
+        return backend;
+      });
+      const runtime = createFavoriteRuntime(mongo, { INJECTED_PG: 'owned-connection' }, factory);
+      await expect(
+        runtime.initialize({
+          favorites: 'postgres',
+          postgres: { connectionStringEnv: 'INJECTED_PG' },
+        }),
+      ).rejects.toThrow('PostgreSQL favorites initialization failed');
+      await expect(runtime.methods.getToolFavorites('user')).rejects.toThrow('not initialized');
+      await runtime.close();
+      expect(factory).toHaveBeenCalledTimes(1);
+      expect(backend.close).toHaveBeenCalledTimes(stage === 'initialize' ? 1 : 0);
+    },
+  );
+  it('waits for the injected initializer during shutdown and never publishes its methods', async () => {
+    let ready!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const backend = {
+      methods: mongo,
+      initialize: jest.fn(() => gate),
+      close: jest.fn(async () => undefined),
+    };
+    const runtime = createFavoriteRuntime(
+      mongo,
+      { INJECTED_PG: 'owned-connection' },
+      () => backend,
+    );
+    const initialization = runtime.initialize({
+      favorites: 'postgres',
+      postgres: { connectionStringEnv: 'INJECTED_PG' },
+    });
+    const result = initialization.catch((error: Error) => error);
+    const closing = runtime.close();
+    expect(backend.close).not.toHaveBeenCalled();
+    ready();
+    expect(await result).toEqual(new Error('PostgreSQL favorites initialization failed'));
+    await closing;
+    expect(backend.close).toHaveBeenCalledTimes(1);
+    await expect(runtime.methods.getToolFavorites('user')).rejects.toThrow('not initialized');
   });
   it('extracts only deployment persistence and rejects malformed deployment data', () => {
     expect(getPersistenceConfig(null)).toBeUndefined();
@@ -149,7 +250,7 @@ realPostgres('selected PostgreSQL lifecycle and HTTP boundary', () => {
         'UPDATE tool_favorite_readiness SET verified=false, activated=false, checkpoint=NULL, snapshot=NULL',
       );
       const end = jest.spyOn(pg.Pool.prototype, 'end');
-      const failed = createFavoriteRuntime(mongo, env);
+      const failed = createFavoriteRuntime(mongo, env, createPostgresFavoriteBackend);
       await expect(failed.initialize(config)).rejects.toThrow('initialization failed');
       expect(end).toHaveBeenCalled();
       await failed.close();
@@ -158,7 +259,7 @@ realPostgres('selected PostgreSQL lifecycle and HTTP boundary', () => {
         batchSize: 10,
         verifiedEmpty: true,
       });
-      const runtime = createFavoriteRuntime(mongo, env);
+      const runtime = createFavoriteRuntime(mongo, env, createPostgresFavoriteBackend);
       const handlers = createToolFavoritesHandlers(runtime.methods);
       await runtime.initialize(config);
       const uid = '0123456789abcdef01234567';
@@ -194,16 +295,20 @@ realPostgres('selected PostgreSQL lifecycle and HTTP boundary', () => {
   });
   it('fails startup on a selected PostgreSQL outage without using Mongo', async () => {
     const end = jest.spyOn(pg.Pool.prototype, 'end');
-    const runtime = createFavoriteRuntime(mongo, {
-      PG_TEST_URL: 'postgresql://postgres@127.0.0.1:1/postgres',
-    });
+    const runtime = createFavoriteRuntime(
+      mongo,
+      {
+        PG_TEST_URL: 'postgresql://postgres@127.0.0.1:1/postgres',
+      },
+      createPostgresFavoriteBackend,
+    );
     await expect(runtime.initialize(config)).rejects.toThrow('initialization failed');
     expect(end).toHaveBeenCalled();
     await expect(runtime.methods.getToolFavorites('user')).rejects.toThrow('not initialized');
     await runtime.close();
   });
   it('does not publish methods when shutdown races initialization', async () => {
-    const runtime = createFavoriteRuntime(mongo, env);
+    const runtime = createFavoriteRuntime(mongo, env, createPostgresFavoriteBackend);
     const initializing = runtime.initialize(config);
     const stopping = runtime.close();
     await expect(initializing).rejects.toThrow('initialization failed');

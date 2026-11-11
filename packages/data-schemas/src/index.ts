@@ -134,6 +134,7 @@ export { createBrowserSetupStore, createBrowserSetupBackend } from './methods/br
 export type * from './types/browserSetup';
 export type * from './types/codeEnvironmentSetup';
 
+export * from './postgres/backend';
 export * from './postgres/pool';
 export * from './postgres/migrations';
 export * from './postgres/favorite';

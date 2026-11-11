@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { ResourceType, PrincipalType } from 'librechat-data-provider';
 import {
+  createPostgresFavoriteBackend,
   createPostgresDatabase,
   migratePostgres,
   importFavorites,
@@ -957,7 +958,11 @@ realPostgres('attempt-scoped PostgreSQL account erasure', () => {
       agentTriggerDeletionStartedAt: startedAt,
       agentTriggerDeletionAttemptId: deletionAttemptId,
     });
-    const runtime = createFavoriteRuntime(methods, { PG_TEST_URL: options.connectionString });
+    const runtime = createFavoriteRuntime(
+      methods,
+      { PG_TEST_URL: options.connectionString },
+      createPostgresFavoriteBackend,
+    );
     await runtime.initialize(config);
     const { deps } = createDeps();
     const erasure = { ...deps, ...runtime.methods };
@@ -976,7 +981,11 @@ realPostgres('attempt-scoped PostgreSQL account erasure', () => {
       await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
       await cancelUserDataDeletion(params, cancel);
       await runtime.close();
-      const restarted = createFavoriteRuntime(methods, { PG_TEST_URL: options.connectionString });
+      const restarted = createFavoriteRuntime(
+        methods,
+        { PG_TEST_URL: options.connectionString },
+        createPostgresFavoriteBackend,
+      );
       try {
         await restarted.initialize(config);
         await expect(restarted.methods.addToolFavorite(favorite)).resolves.toEqual({
@@ -1018,7 +1027,11 @@ realPostgres('attempt-scoped PostgreSQL account erasure', () => {
           ).toBe(true);
         await expect(runtime.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
         await runtime.close();
-        const restarted = createFavoriteRuntime(methods, { PG_TEST_URL: options.connectionString });
+        const restarted = createFavoriteRuntime(
+          methods,
+          { PG_TEST_URL: options.connectionString },
+          createPostgresFavoriteBackend,
+        );
         try {
           await restarted.initialize(config);
           await expect(restarted.methods.addToolFavorite(favorite)).rejects.toThrow('erasure');
@@ -1051,7 +1064,11 @@ realPostgres('attempt-scoped PostgreSQL account erasure', () => {
         true,
       );
       await runtime.close();
-      const restarted = createFavoriteRuntime(methods, { PG_TEST_URL: options.connectionString });
+      const restarted = createFavoriteRuntime(
+        methods,
+        { PG_TEST_URL: options.connectionString },
+        createPostgresFavoriteBackend,
+      );
       try {
         await restarted.initialize(config);
         await cancelUserDataDeletion(params, { ...methods, ...restarted.methods });

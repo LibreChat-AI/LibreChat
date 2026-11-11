@@ -1,10 +1,9 @@
 import { persistenceConfigSchema } from 'librechat-data-provider';
-import {
-  createPostgresDatabase,
-  createPostgresFavoriteMethods,
-  assertPostgresReady,
+import type {
+  ToolFavoriteMethods,
+  PostgresOptions,
+  PostgresFavoriteBackend,
 } from '@librechat/data-schemas';
-import type { ToolFavoriteMethods, PostgresDatabase } from '@librechat/data-schemas';
 
 export interface FavoriteRuntime {
   methods: ToolFavoriteMethods;
@@ -16,9 +15,12 @@ export interface FavoriteRuntime {
 export function createFavoriteRuntime(
   mongo: ToolFavoriteMethods,
   env: NodeJS.ProcessEnv,
+  createPostgres: (options: PostgresOptions) => PostgresFavoriteBackend,
 ): FavoriteRuntime {
   let selected: ToolFavoriteMethods | undefined;
-  let db: PostgresDatabase | undefined;
+  let backend: PostgresFavoriteBackend | undefined;
+  let backendShutdown: Promise<void> | undefined;
+  const closeBackend = () => (backendShutdown ??= backend?.close() ?? Promise.resolve());
   let initialization: Promise<void> | undefined;
   let closed = false;
   let shutdown: Promise<void> | undefined;
@@ -61,15 +63,15 @@ export function createFavoriteRuntime(
         if (!options || !connectionString) {
           throw new Error('PostgreSQL connection environment variable is missing');
         }
-        db = createPostgresDatabase({ ...options, connectionString });
         try {
-          await assertPostgresReady(db);
+          backend = createPostgres({ ...options, connectionString });
+          await backend.initialize();
           if (closed) {
             throw new Error('Favorites persistence is closed');
           }
-          selected = createPostgresFavoriteMethods(db);
+          selected = backend.methods;
         } catch {
-          await db.close().catch(() => undefined);
+          await closeBackend().catch(() => undefined);
           throw new Error('PostgreSQL favorites initialization failed');
         }
       })();
@@ -79,7 +81,7 @@ export function createFavoriteRuntime(
       closed = true;
       shutdown ??= (async () => {
         await initialization?.catch(() => undefined);
-        await db?.close();
+        await closeBackend();
       })();
       return shutdown;
     },

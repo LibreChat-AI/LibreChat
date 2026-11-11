@@ -1,6 +1,5 @@
 import { persistenceConfigSchema } from 'librechat-data-provider';
 import {
-  createPostgresDatabase,
   migratePostgres,
   importFavorites,
   fingerprintFavorites,
@@ -11,11 +10,13 @@ import type {
   FavoriteSnapshotRow,
   MongoFavoriteStore,
   PostgresDatabase,
+  PostgresOptions,
 } from '@librechat/data-schemas';
 import { getPersistenceConfig } from './persistence';
 
 export async function runPostgresCommand(deps: {
   favorites: MongoFavoriteStore;
+  createDatabase(options: PostgresOptions): PostgresDatabase;
   connectDb(): Promise<unknown>;
   disconnectDb(): Promise<void>;
   loadCustomConfig(
@@ -60,7 +61,7 @@ export async function runPostgresCommand(deps: {
     if (!options || !connectionString) {
       throw new Error('Missing PostgreSQL connection environment variable');
     }
-    db = createPostgresDatabase({ ...options, connectionString });
+    db = deps.createDatabase({ ...options, connectionString });
     if (command === 'migrate') {
       await migratePostgres(db);
       console.info('PostgreSQL schema migrated. Favorites data is not yet verified.');

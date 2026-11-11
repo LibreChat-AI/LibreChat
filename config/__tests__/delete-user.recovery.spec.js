@@ -64,9 +64,13 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
     now,
     { failCascade = true, failAdopt = false, failCancel = false } = {},
   ) {
-    const runtime = api.createFavoriteRuntime(schemas.createToolFavoriteMethods(mongoose), {
-      PG_TEST_URL: options.connectionString,
-    });
+    const runtime = api.createFavoriteRuntime(
+      schemas.createToolFavoriteMethods(mongoose),
+      {
+        PG_TEST_URL: options.connectionString,
+      },
+      schemas.createPostgresFavoriteBackend,
+    );
     const methods = schemas.createMethods(mongoose, { toolFavorites: runtime.methods });
     const suspend = jest.spyOn(methods, 'suspendUserSchedulesForDeletion');
     if (failAdopt)
@@ -212,9 +216,13 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
           token,
         ),
       ).toBe(false);
-      const restarted = api.createFavoriteRuntime(methods, {
-        PG_TEST_URL: options.connectionString,
-      });
+      const restarted = api.createFavoriteRuntime(
+        methods,
+        {
+          PG_TEST_URL: options.connectionString,
+        },
+        schemas.createPostgresFavoriteBackend,
+      );
       try {
         await restarted.initialize(config.persistence);
         const addFavorite = () =>

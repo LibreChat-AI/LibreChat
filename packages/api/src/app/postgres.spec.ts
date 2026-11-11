@@ -42,6 +42,7 @@ describe('PostgreSQL command arguments', () => {
     const connectDb = jest.fn();
     const end = jest.spyOn(pg.Pool.prototype, 'end');
     const operation = runPostgresCommand({
+      createDatabase: createPostgresDatabase,
       favorites,
       disconnectDb,
       connectDb,
@@ -67,7 +68,15 @@ describe('PostgreSQL command arguments', () => {
     const loadCustomConfig = jest.fn();
     const connectDb = jest.fn();
     await expect(
-      runPostgresCommand({ favorites, disconnectDb, connectDb, loadCustomConfig, args, env: {} }),
+      runPostgresCommand({
+        createDatabase: createPostgresDatabase,
+        favorites,
+        disconnectDb,
+        connectDb,
+        loadCustomConfig,
+        args,
+        env: {},
+      }),
     ).rejects.toThrow('Usage:');
     expect(loadCustomConfig).not.toHaveBeenCalled();
     expect(connectDb).not.toHaveBeenCalled();
@@ -102,7 +111,15 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
   const favorites = createMongoFavoriteStore(mongoose);
   const loadCustomConfig = jest.fn(async () => config);
   const run = (args: string[]) =>
-    runPostgresCommand({ favorites, connectDb, disconnectDb, loadCustomConfig, args, env });
+    runPostgresCommand({
+      createDatabase: createPostgresDatabase,
+      favorites,
+      connectDb,
+      disconnectDb,
+      loadCustomConfig,
+      args,
+      env,
+    });
   const collection = () => createModels(mongoose).ToolFavorite.collection;
   const reconnect = () => mongoose.connect(mongo.getUri());
   const uid = new mongoose.Types.ObjectId('0123456789abcdef01234567');
@@ -162,8 +179,10 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
     };
     const connect = jest.fn(async () => undefined);
     const disconnect = jest.fn(async () => undefined);
+    const createDatabase = jest.fn(createPostgresDatabase);
     for (const command of ['import', 'verify', 'reconcile-mongo']) {
       await runPostgresCommand({
+        createDatabase,
         favorites: store,
         connectDb: connect,
         disconnectDb: disconnect,
@@ -172,6 +191,10 @@ realPostgres('PostgreSQL CLI with real Mongo and PostgreSQL', () => {
         env,
       });
     }
+    expect(createDatabase).toHaveBeenCalledTimes(3);
+    expect(createDatabase).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionString: env.PG_TEST_URL }),
+    );
     expect(connect.mock.calls).toEqual([[], [], []]);
     expect(disconnect).toHaveBeenCalledTimes(3);
     expect(store.stage).toHaveBeenCalledTimes(1);
@@ -370,6 +393,7 @@ process.on('beforeExit', () => {
     loadCustomConfig.mockClear();
     try {
       const result = await runPostgresCommand({
+        createDatabase: createPostgresDatabase,
         favorites,
         disconnectDb,
         connectDb,

@@ -1,5 +1,9 @@
 const mongoose = require('mongoose');
-const { createMethods, createToolFavoriteMethods } = require('@librechat/data-schemas');
+const {
+  createMethods,
+  createToolFavoriteMethods,
+  createPostgresFavoriteBackend,
+} = require('@librechat/data-schemas');
 const {
   matchModelName,
   findMatchingPattern,
@@ -12,7 +16,11 @@ const getLogStores = require('~/cache/getLogStores');
 
 const messageBudget = createMessageBudgetReader();
 
-const favorites = createFavoriteRuntime(createToolFavoriteMethods(mongoose), process.env);
+const favorites = createFavoriteRuntime(
+  createToolFavoriteMethods(mongoose),
+  process.env,
+  createPostgresFavoriteBackend,
+);
 
 const methods = createMethods(mongoose, {
   toolFavorites: favorites.methods,
