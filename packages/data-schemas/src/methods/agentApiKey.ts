@@ -7,6 +7,7 @@ import type {
   IAgentApiKey,
   AgentApiKeyBinding,
 } from '~/types';
+import { startRequiredTransactionSession } from '~/utils/transactions';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
@@ -89,7 +90,7 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
           userId: String(data.userId),
           tenantId,
         });
-        const session = await mongoose.startSession();
+        const session = await startRequiredTransactionSession(mongoose);
         try {
           const created = await session.withTransaction(async () => {
             if (!(await admit(session))) throw new Error('Bound-key owner unavailable');

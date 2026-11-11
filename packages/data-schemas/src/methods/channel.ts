@@ -4,6 +4,7 @@ import type { ClientSession } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
 import { retireAgentChannel, initializeChannelScope, touchChannelScope } from './channelScope';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
+import { startRequiredTransactionSession } from '~/utils/transactions';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
@@ -72,7 +73,7 @@ export function createAgentChannelMethods(
     write: (session: ClientSession) => Promise<T>,
   ): Promise<T> {
     const admit = await prepareChannelOwnerAdmission(mongoose, { userId: createdBy, tenantId });
-    const session = await mongoose.startSession();
+    const session = await startRequiredTransactionSession(mongoose);
     try {
       let result: T | undefined;
       await session.withTransaction(async () => {

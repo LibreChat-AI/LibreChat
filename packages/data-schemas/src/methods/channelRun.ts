@@ -30,6 +30,7 @@ import {
   ChannelRunConflict,
 } from './channelProtocol';
 import { initializeChannelScope, touchChannelAuthority, touchChannelScope } from './channelScope';
+import { startRequiredTransactionSession } from '~/utils/transactions';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseOwnerFilter } from './responseScope';
@@ -215,7 +216,7 @@ export function createChannelRunStorage(
   const ensureIndexes = createChannelIndexGate(() => [runs(), lanes()]);
   async function transaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
     await ensureIndexes();
-    const session = await mongoose.startSession();
+    const session = await startRequiredTransactionSession(mongoose);
     try {
       let result: T | undefined;
       await session.withTransaction(async () => {

@@ -7,6 +7,7 @@ import {
   touchChannelAuthority,
   lockChannelScope,
 } from './channelScope';
+import { startRequiredTransactionSession } from '~/utils/transactions';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 export type { ChannelIdentityRecord } from '~/models/channelIdentity';
@@ -119,7 +120,7 @@ export function createChannelIdentityStorage(
               tenantId: record.tenantId === '_' ? undefined : record.tenantId,
             })
           : undefined;
-        const session = await mongoose.startSession();
+        const session = await startRequiredTransactionSession(mongoose);
         try {
           let saved = false;
           await session.withTransaction(async () => {
@@ -172,7 +173,7 @@ export function createChannelIdentityStorage(
       const record = await model().findOne(filter).select('identity.channelId').lean();
       if (!record) return false;
       await initializeChannelScope(mongoose, owner.tenantId, record.identity.channelId);
-      const session = await mongoose.startSession();
+      const session = await startRequiredTransactionSession(mongoose);
       try {
         let matched = false;
         await session.withTransaction(async () => {
@@ -193,7 +194,7 @@ export function createChannelIdentityStorage(
     async revokeChannelIdentities(tenantId, channelId, revision) {
       assertChannelTenant(tenantId);
       await initializeChannelScope(mongoose, tenantId, channelId);
-      const session = await mongoose.startSession();
+      const session = await startRequiredTransactionSession(mongoose);
       try {
         await session.withTransaction(async () => {
           await lockChannelScope(mongoose, tenantId, channelId, session);
