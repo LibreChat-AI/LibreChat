@@ -87,7 +87,9 @@ test.describe('Google native media in the context budget', () => {
     });
     expect(upload.ok()).toBeTruthy();
     expect(((await upload.json()) as UploadedFile).llmDeliveryPath).toBe('provider');
-    await expect(page.getByRole('button', { name: fileName })).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.getByTestId('composer-tray').getByRole('button', { name: fileName, exact: true }),
+    ).toBeVisible({ timeout: 15000 });
 
     const report = await reportContextTokens(page);
     expect(report.provider).toBe('google');
@@ -107,7 +109,9 @@ test.describe('Google native media in the context budget', () => {
       content: syntheticPdf(),
     });
     expect(upload.ok()).toBeTruthy();
-    await expect(page.getByRole('button', { name: fileName })).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.getByTestId('composer-tray').getByRole('button', { name: fileName, exact: true }),
+    ).toBeVisible({ timeout: 15000 });
 
     const first = await reportContextTokens(page);
     expect(first.latest).toBeGreaterThan(ONE_PAGE_TOKENS);
