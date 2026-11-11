@@ -46,7 +46,7 @@ describe('GraphApiService', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   afterEach(() => {
