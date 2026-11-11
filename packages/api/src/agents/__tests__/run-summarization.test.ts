@@ -1149,6 +1149,11 @@ describe('Cyber summary target shaping', () => {
       access_programs: { cyber: 'standard' },
       safety_identifier: 'shared-spoof',
     };
+    const summaryParameters: TestSummarizationParameters = {
+      streaming: false,
+      useResponsesApi: false,
+      modelKwargs: summaryKwargs,
+    };
     const agents = await callAndCapture({
       agents: [
         makeReasoningAgent({
@@ -1164,11 +1169,7 @@ describe('Cyber summary target shaping', () => {
       summarizeOnly: true,
       summarizationConfig: {
         model: 'gpt-6-cyber',
-        parameters: {
-          streaming: false,
-          useResponsesApi: false,
-          modelKwargs: summaryKwargs,
-        } as SummarizationConfig['parameters'],
+        parameters: summaryParameters as SummarizationConfig['parameters'],
       },
     });
     const expected = getOpenAIConfig(
@@ -1223,6 +1224,12 @@ describe('Cyber summary target shaping', () => {
         },
         endpoint,
       );
+      const summaryParameters: TestSummarizationParameters = {
+        streaming: false,
+        ...(endpoint === EModelEndpoint.openAI && {
+          configuration: { baseURL: 'https://gateway.example/v1' },
+        }),
+      };
       const agents = await callAndCapture({
         agents: [
           makeReasoningAgent({
@@ -1237,12 +1244,7 @@ describe('Cyber summary target shaping', () => {
         summarizationConfig: {
           provider: endpoint,
           model: 'gpt-6-cyber',
-          parameters: {
-            streaming: false,
-            ...(endpoint === EModelEndpoint.openAI && {
-              configuration: { baseURL: 'https://gateway.example/v1' },
-            }),
-          } as SummarizationConfig['parameters'],
+          parameters: summaryParameters as SummarizationConfig['parameters'],
         },
       });
       const { requests } = await compactSummary(agents);
