@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { channelLinkMessage, isSlackReplyURL } from 'librechat-data-provider';
 import type { ChannelLinkView, ChannelLinkTicket } from 'librechat-data-provider';
 import type { SlackClient, SlackBlocks } from './slack';
 import type { ChannelClient } from './client';
@@ -25,7 +26,10 @@ export function safePrivateURL(raw: string): boolean {
   }
 }
 
-export function safeIdentityTicket(ticket: ChannelLinkTicket, now = Date.now()): boolean {
+export function safeIdentityTicket(
+  ticket: Pick<ChannelLinkTicket, 'url' | 'expiresAtMs'>,
+  now = Date.now(),
+): boolean {
   try {
     const url = new URL(ticket.url);
     if (
@@ -73,6 +77,45 @@ export class IdentityFlow {
     private readonly client: ChannelClient,
     private readonly slack: SlackClient,
   ) {}
+
+  async open(
+    actorId: string,
+    value: string,
+    responseUrl: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!responseUrl) return;
+    if (!isSlackReplyURL(responseUrl)) throw new TypeError('Invalid Slack reply');
+    const reference = z
+      .object({ linkId: z.string().min(1).max(256), attempt: z.string().regex(/^[a-f0-9]{64}$/) })
+      .strict()
+      .parse(JSON.parse(value));
+    await this.client.identity(actorId, '/reply', { ...reference, responseUrl }, signal);
+  }
+
+  private async replace(
+    url: string | undefined,
+    text: string,
+    bundle: ChannelBundle,
+    channelId: string,
+    actorId: string,
+    signal?: AbortSignal,
+    blocks?: SlackBlocks,
+  ) {
+    if (url && isSlackReplyURL(url)) {
+      try {
+        await this.slack.replacePrivateReply(
+          url,
+          { text, blocks: blocks ?? [{ type: 'section', text: { type: 'plain_text', text } }] },
+          signal,
+        );
+        return;
+      } catch {
+        /* Consent is authoritative; use a fresh private notice when replacement fails. */
+      }
+    }
+    await this.notify(channelId, actorId, text, bundle, undefined, signal);
+  }
 
   async notify(
     channelId: string,
@@ -160,19 +203,13 @@ export class IdentityFlow {
           !safeAccountLabel(view.accountLabel)
         )
           throw new Error('Accepted account identity cannot be safely confirmed');
-        const label = `Confirm linking ${view.accountLabel} to you`;
-        return this.notify(
-          channelId,
-          actorId,
-          `${label}. Confirm only if this is the account you intended to use. Then retry your mention.`,
-          bundle,
-          {
-            label: [...label].length <= 75 ? label : 'Confirm the account shown above',
-            action: 'channel_link_confirm',
-            value: JSON.stringify({ linkId: view.linkId, revision: view.revision }),
-          },
+        const message = channelLinkMessage(view);
+        await this.slack.ephemeral(
+          bundle.credentials.botToken,
+          { channel: channelId, user: actorId, ...message },
           signal,
         );
+        return;
       }
       if (view?.state === 'active') {
         if (!validActorView(view, this.client.config.CHANNEL_TENANT_ID, actorId, bundle))
@@ -193,9 +230,14 @@ export class IdentityFlow {
       await this.notify(
         channelId,
         actorId,
-        'Link your account in the browser, then mention me again to confirm the exact account here in Slack. Your original request will not run automatically.',
+        'Connect your LibreChat account to use this bot.',
         bundle,
-        { label: 'Link your account', action: 'channel_link_open', url: ticket.url },
+        {
+          label: 'Link account',
+          action: 'channel_link_open',
+          url: ticket.url,
+          value: JSON.stringify({ linkId: ticket.linkId, attempt: ticket.attempt }),
+        },
         signal,
       );
     });
@@ -207,6 +249,7 @@ export class IdentityFlow {
     value: string,
     bundle: ChannelBundle,
     signal?: AbortSignal,
+    responseUrl?: string,
   ): Promise<void> {
     if (value.length > 1024) throw new Error('Invalid account confirmation reference');
     const confirmation = confirmationSchema.parse(JSON.parse(value));
@@ -220,17 +263,34 @@ export class IdentityFlow {
       if (!current.ok) return this.unavailable(channelId, actorId, bundle, signal);
       const view = current.value;
       if (
+        view?.state === 'active' &&
+        view.linkId === confirmation.linkId &&
+        validActorView(view, this.client.config.CHANNEL_TENANT_ID, actorId, bundle)
+      ) {
+        const message = channelLinkMessage(view);
+        await this.replace(
+          responseUrl,
+          message.text,
+          bundle,
+          channelId,
+          actorId,
+          signal,
+          message.blocks,
+        );
+        return;
+      }
+      if (
         !validActorView(view, this.client.config.CHANNEL_TENANT_ID, actorId, bundle) ||
         view.linkId !== confirmation.linkId ||
         view.revision !== confirmation.revision ||
         view.state !== 'accepted'
       ) {
-        return this.notify(
+        return this.replace(
+          responseUrl,
+          'This confirmation is stale or unavailable. Mention the bot again to check your account link.',
+          bundle,
           channelId,
           actorId,
-          'This confirmation is stale or does not belong to you. Please retry your mention to check your own account link.',
-          bundle,
-          undefined,
           signal,
         );
       }
@@ -248,13 +308,15 @@ export class IdentityFlow {
         confirmed.state !== 'active'
       )
         throw new Error('Account confirmation not committed');
-      await this.notify(
+      const message = channelLinkMessage(confirmed);
+      await this.replace(
+        responseUrl,
+        message.text,
+        bundle,
         channelId,
         actorId,
-        'Your account link is confirmed. Please retry your mention; the earlier request was not run.',
-        bundle,
-        undefined,
         signal,
+        message.blocks,
       );
     });
   }

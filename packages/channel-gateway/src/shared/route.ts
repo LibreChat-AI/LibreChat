@@ -60,7 +60,6 @@ export function slackRouteLookup(
   if (!action) throw new Error('Missing Slack action');
   if (
     [
-      'channel_link_open',
       'channel_run_open',
       'channel_presentation_link_0',
       'channel_presentation_link_1',
@@ -79,7 +78,7 @@ export function slackRouteLookup(
       },
     };
   }
-  if (action.action_id === 'channel_link_confirm') {
+  if (['channel_link_confirm', 'channel_link_open'].includes(action.action_id)) {
     const data = linkReference.parse(JSON.parse(action.value ?? ''));
     return { ...root, target: { kind: 'link', linkId: data.linkId } };
   }

@@ -94,7 +94,7 @@ describe('private identity linking', () => {
     const texts = slack.mock.calls.map(
       ([, init]) => new URLSearchParams(String(init?.body)).get('text')!,
     );
-    expect(texts.filter((text) => text.includes('link is confirmed'))).toHaveLength(1);
+    expect(texts.filter((text) => text.includes('Account connected'))).toHaveLength(1);
     expect(texts.filter((text) => text.includes('stale'))).toHaveLength(1);
     expect(backend.mock.calls.every(([url]) => String(url).includes('/identity/U1'))).toBe(true);
     expect(
@@ -134,7 +134,7 @@ describe('private identity linking', () => {
           );
         else await flow.prompt('C1', 'U1', bundle);
         expect(posted(slack).get('text')).toContain('stale or unavailable');
-        expect(posted(slack).get('text')).not.toContain('link is confirmed');
+        expect(posted(slack).get('text')).not.toContain('Account connected');
         expect(slack).toHaveBeenCalledTimes(1);
       }
     },
@@ -184,7 +184,7 @@ describe('private identity linking', () => {
       .mockResolvedValueOnce(json({ ok: true, value: null }))
       .mockResolvedValueOnce(json({ ok: true, value: ticket }));
     await flow.prompt('C1', 'U1', bundle);
-    expect(posted(slack).get('text')).toContain('will not run automatically');
+    expect(posted(slack).get('text')).toContain('Connect your LibreChat account');
     expect(backend.mock.calls.map(([url]) => String(url))).toEqual([
       `${config.LIBRECHAT_INTERNAL_URL}/api/channels/service/binding/identity/U1`,
       `${config.LIBRECHAT_INTERNAL_URL}/api/channels/service/binding/identity/U1/ticket`,
@@ -234,7 +234,7 @@ describe('private identity linking', () => {
       .mockResolvedValueOnce(json({ ok: true, value: { ...view(), state: 'active' } }));
     await flow.confirm('C1', 'U1', JSON.stringify({ linkId: 'link', revision: 'l1' }), bundle);
     expect(String(backend.mock.calls[1][0])).toContain('/identity/U1/confirm');
-    expect(posted(slack).get('text')).toContain('earlier request was not run');
+    expect(posted(slack).get('text')).toContain('Mention the bot again');
     expect(backend).toHaveBeenCalledTimes(2);
   });
 
@@ -295,6 +295,74 @@ test('an unavailable prior identity issues a fresh private ticket without replay
     'U1',
     'ticket',
   ]);
-  expect(posted(slack).get('text')).toContain('will not run automatically');
+  expect(posted(slack).get('text')).toContain('Connect your LibreChat account');
   expect(posted(slack).get('user')).toBe('U1');
+});
+
+test('a signed link-button callback attaches only an opaque attempt to its clicking actor', async () => {
+  const { backend, slack, flow } = setup();
+  backend.mockResolvedValue(json({ ok: true, value: null }));
+  const reference = { linkId: 'link', attempt: 'a'.repeat(64) };
+  await flow.open('U1', JSON.stringify(reference), 'https://hooks.slack.com/actions/T1/B1/secret');
+  expect(backend.mock.calls[0][0]).toContain('/identity/U1/reply');
+  expect(JSON.parse(String(backend.mock.calls[0][1]?.body))).toEqual({
+    ...reference,
+    responseUrl: 'https://hooks.slack.com/actions/T1/B1/secret',
+  });
+  expect(slack).not.toHaveBeenCalled();
+});
+
+test('confirmation replaces the clicked private card and removes its buttons', async () => {
+  const { backend, slack, flow } = setup();
+  backend
+    .mockResolvedValueOnce(json({ ok: true, value: view() }))
+    .mockResolvedValueOnce(json({ ok: true, value: { ...view(), state: 'active' } }));
+  await flow.confirm(
+    'C1',
+    'U1',
+    JSON.stringify({ linkId: 'link', revision: 'l1' }),
+    bundle,
+    undefined,
+    'https://hooks.slack.com/actions/T1/B1/secret',
+  );
+  expect(slack.mock.calls[0][0]).toBe('https://hooks.slack.com/actions/T1/B1/secret');
+  const body = JSON.parse(String(slack.mock.calls[0][1]?.body));
+  expect(body.replace_original).toBe(true);
+  expect(body.blocks).toHaveLength(1);
+  expect(body.text).toContain('Account connected');
+});
+
+test('failed Slack replacement retains confirmed consent and sends a private success fallback', async () => {
+  const { backend, slack, flow } = setup();
+  backend
+    .mockResolvedValueOnce(json({ ok: true, value: view() }))
+    .mockResolvedValueOnce(json({ ok: true, value: { ...view(), state: 'active' } }));
+  slack.mockRejectedValueOnce(new Error('remote unavailable'));
+  await flow.confirm(
+    'C1',
+    'U1',
+    JSON.stringify({ linkId: 'link', revision: 'l1' }),
+    bundle,
+    undefined,
+    'https://hooks.slack.com/actions/T1/B1/secret',
+  );
+  expect(String(slack.mock.calls[1][0])).toContain('chat.postEphemeral');
+  expect(new URLSearchParams(String(slack.mock.calls[1][1]?.body)).get('user')).toBe('U1');
+});
+
+test('repeated confirmation recognizes the active link without mutating it again', async () => {
+  const { backend, slack, flow } = setup();
+  backend.mockResolvedValueOnce(
+    json({ ok: true, value: { ...view(), state: 'active', revision: 'confirmed' } }),
+  );
+  await flow.confirm(
+    'C1',
+    'U1',
+    JSON.stringify({ linkId: 'link', revision: 'l1' }),
+    bundle,
+    undefined,
+    'https://hooks.slack.com/actions/T1/B1/secret',
+  );
+  expect(backend).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(String(slack.mock.calls[0][1]?.body)).text).toContain('Account connected');
 });

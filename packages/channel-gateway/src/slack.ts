@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { isSlackReplyURL } from 'librechat-data-provider';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebClient, LogLevel, WebAPIPlatformError, WebAPIRateLimitedError } from '@slack/web-api';
 import type { Block, KnownBlock, View } from '@slack/types';
@@ -138,6 +139,26 @@ export class SlackClient {
     private readonly logger?: Logger,
     private readonly transport: typeof fetch = fetch,
   ) {}
+
+  async replacePrivateReply(
+    url: string,
+    message: Pick<SlackMessage, 'text' | 'blocks'>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!isSlackReplyURL(url)) throw new TypeError('Invalid Slack reply URL');
+    const result = await this.transport(url, {
+      method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.any([
+        AbortSignal.timeout(this.config.API_CALL_TIMEOUT_MS),
+        ...(signal ? [signal] : []),
+      ]),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...message, replace_original: true }),
+    });
+    await result.body?.cancel();
+    if (!result.ok) throw new Error('Slack link update unavailable');
+  }
 
   private async call(
     token: string,

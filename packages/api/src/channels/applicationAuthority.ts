@@ -1,3 +1,4 @@
+import { channelConfigSchema } from 'librechat-data-provider';
 import type { ChannelRunStorage } from '@librechat/data-schemas';
 import type { ChannelAuthority, ChannelAuthorityDependencies } from './authority';
 import type { ChannelResponseCredentialDependencies } from './credentials';
@@ -5,6 +6,7 @@ import type { ChannelApplicationPolicy } from './applicationPolicy';
 import { createChannelResponseCredentials } from './credentials';
 import { checkRemoteAgentAccess } from '~/apiKeys/service';
 import { createChannelAuthority } from './authority';
+import { updateSlackLinkReply } from './linkReply';
 
 export interface ChannelApplicationAuthorityDependencies
   extends Omit<
@@ -14,6 +16,7 @@ export interface ChannelApplicationAuthorityDependencies
   storage: ChannelRunStorage;
   policy: ChannelApplicationPolicy;
   publicBaseUrl?: string;
+  onLinkReplyError?: () => void;
   access: Pick<
     Parameters<typeof checkRemoteAgentAccess>[0],
     'getAgent' | 'getEffectivePermissions'
@@ -40,9 +43,23 @@ export interface ChannelApplicationAuthority {
 export function createChannelApplicationAuthority(
   deps: ChannelApplicationAuthorityDependencies,
 ): ChannelApplicationAuthority {
+  const defaultSlackTimeoutMs = channelConfigSchema.shape.slackApp
+    .unwrap()
+    .parse({}).requestTimeoutMs;
   const authority = createChannelAuthority({
     channels: deps.channels,
     identityStorage: deps.identityStorage,
+    reply: deps.reply ?? {
+      encrypt: deps.credentials.encrypt,
+      decrypt: deps.credentials.decrypt,
+      update: async (url, view) =>
+        updateSlackLinkReply(
+          url,
+          view,
+          (await deps.policy.config()).slackApp?.requestTimeoutMs ?? defaultSlackTimeoutMs,
+        ),
+      onError: deps.onLinkReplyError ?? (() => {}),
+    },
     findUser: deps.findUser,
     getRole: deps.getRole,
     isPrincipalActive: deps.isPrincipalActive,

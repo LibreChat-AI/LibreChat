@@ -14,6 +14,12 @@ export interface ChannelIdentityRecord {
   expiresAtMs: number;
   userId?: string;
   accountLabel?: string;
+  slackReply?: {
+    encryptedUrl: string;
+    expiresAtMs: number;
+    attempt: string;
+    claimed?: boolean;
+  };
 }
 
 export function createChannelIdentityModel(
@@ -42,6 +48,18 @@ export function createChannelIdentityModel(
       expiresAtMs: { type: Number, required: true },
       userId: String,
       accountLabel: String,
+      slackReply: {
+        type: new Schema(
+          {
+            encryptedUrl: { type: String, required: true },
+            expiresAtMs: { type: Number, required: true },
+            attempt: { type: String, required: true },
+            claimed: Boolean,
+          },
+          { _id: false },
+        ),
+        select: false,
+      },
     },
     { timestamps: true },
   );

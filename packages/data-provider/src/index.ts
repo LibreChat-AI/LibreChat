@@ -115,6 +115,7 @@ export * from './approval';
 export * from './types/channels';
 export * from './types/responseReview';
 export * from './types/channelIdentity';
+export * from './channelLink';
 export * from './types/channelFeedback';
 export * from './types/channelRuns';
 

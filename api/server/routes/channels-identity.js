@@ -7,6 +7,7 @@ const router = express.Router();
 router.get('/service/:channelId/identity/:externalUserId', handlers.inspectActor);
 router.post('/service/:channelId/identity/:externalUserId/ticket', handlers.issue);
 router.post('/service/:channelId/identity/:externalUserId/confirm', handlers.confirm);
+router.post('/service/:channelId/identity/:externalUserId/reply', handlers.reply);
 router.post('/links/preview', requireJwtAuth, requireSameOrigin, handlers.preview);
 router.post('/links/accept', requireJwtAuth, requireSameOrigin, handlers.accept);
 router.get('/links', requireJwtAuth, handlers.list);

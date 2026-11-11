@@ -17,6 +17,16 @@ export interface ChannelIdentityStorage {
   readChannelTicket(tenantId: string, ticketHash: string): Promise<ChannelIdentityRecord | null>;
   readChannelLink(tenantId: string, linkId: string): Promise<ChannelIdentityRecord | null>;
   listChannelLinks(tenantId: string, userId: string): Promise<ChannelIdentityRecord[]>;
+  /** Attach only to the exact live ticket; no upserts or identity-state changes. */
+  saveChannelIdentityReply(
+    record: ChannelIdentityRecord,
+    reply: NonNullable<ChannelIdentityRecord['slackReply']>,
+  ): Promise<boolean>;
+  claimChannelIdentityReply(
+    record: ChannelIdentityRecord,
+    reply: NonNullable<ChannelIdentityRecord['slackReply']>,
+  ): Promise<boolean>;
+  clearChannelIdentityReply(tenantId: string, linkId: string, attempt: string): Promise<void>;
   /** Full private replacement; every state joins the open channel fence and exact identity CAS. */
   saveChannelIdentity(
     record: ChannelIdentityRecord,
@@ -46,20 +56,62 @@ export function createChannelIdentityStorage(
           'identity.teamId': identity.teamId,
           'identity.externalUserId': identity.externalUserId,
         })
-        .select('+ticketHash')
+        .select('+ticketHash +slackReply')
         .lean();
     },
     async readChannelTicket(tenantId, ticketHash) {
       assertChannelTenant(tenantId);
-      return model().findOne({ tenantId, ticketHash }).select('+ticketHash').lean();
+      return model().findOne({ tenantId, ticketHash }).select('+ticketHash +slackReply').lean();
     },
     async readChannelLink(tenantId, linkId) {
       assertChannelTenant(tenantId);
-      return model().findOne({ tenantId, linkId }).select('+ticketHash').lean();
+      return model().findOne({ tenantId, linkId }).select('+ticketHash +slackReply').lean();
     },
     async listChannelLinks(tenantId, userId) {
       assertChannelTenant(tenantId);
       return model().find({ tenantId, userId }).sort({ createdAt: -1 }).lean();
+    },
+    async saveChannelIdentityReply(record, reply) {
+      assertChannelTenant(record.tenantId);
+      if (reply.attempt !== record.ticketHash) throw new TypeError('Reply ticket mismatch');
+      // Existing-row only: deletion cannot be followed by a callback upsert.
+      const result = await model().updateOne(
+        {
+          tenantId: record.tenantId,
+          linkId: record.linkId,
+          ticketHash: reply.attempt,
+          state: { $in: ['pending', 'accepted'] },
+          identity: record.identity,
+          slackReply: { $exists: false },
+        },
+        { $set: { slackReply: reply } },
+        { runValidators: true },
+      );
+      return result.matchedCount === 1;
+    },
+    async claimChannelIdentityReply(record, reply) {
+      assertChannelTenant(record.tenantId);
+      const result = await model().updateOne(
+        {
+          tenantId: record.tenantId,
+          linkId: record.linkId,
+          revision: record.revision,
+          state: 'accepted',
+          ticketHash: reply.attempt,
+          'slackReply.encryptedUrl': reply.encryptedUrl,
+          'slackReply.attempt': reply.attempt,
+          'slackReply.claimed': { $ne: true },
+        },
+        { $set: { 'slackReply.claimed': true } },
+      );
+      return result.modifiedCount === 1;
+    },
+    async clearChannelIdentityReply(tenantId, linkId, attempt) {
+      assertChannelTenant(tenantId);
+      await model().updateOne(
+        { tenantId, linkId, 'slackReply.attempt': attempt },
+        { $unset: { slackReply: '' } },
+      );
     },
     async saveChannelIdentity(record, expectedRevision) {
       assertChannelTenant(record.tenantId);
@@ -85,6 +137,7 @@ export function createChannelIdentityStorage(
         ...(record.accountLabel != null ? { accountLabel: record.accountLabel } : {}),
       };
       const absent = {
+        ...(['pending', 'revoked'].includes(record.state) ? { slackReply: '' } : {}),
         ...(!record.userId ? { userId: '' } : {}),
         ...(record.accountLabel == null ? { accountLabel: '' } : {}),
       };
@@ -180,7 +233,7 @@ export function createChannelIdentityStorage(
           await lockChannelScope(mongoose, owner.tenantId, record.identity.channelId, session);
           const result = await model().updateOne(
             filter,
-            { $set: { state: 'revoked', revision } },
+            { $set: { state: 'revoked', revision }, $unset: { slackReply: '' } },
             { session, runValidators: true },
           );
           matched = result.matchedCount === 1;
@@ -200,7 +253,7 @@ export function createChannelIdentityStorage(
           await lockChannelScope(mongoose, tenantId, channelId, session);
           await model().updateMany(
             { tenantId, 'identity.channelId': channelId, state: { $ne: 'revoked' } },
-            { $set: { state: 'revoked', revision } },
+            { $set: { state: 'revoked', revision }, $unset: { slackReply: '' } },
             { session, runValidators: true },
           );
         });

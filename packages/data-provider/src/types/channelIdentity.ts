@@ -28,6 +28,9 @@ export interface ChannelLinkView {
 }
 
 export interface ChannelLinkTicket {
+  linkId: string;
+  /** Digest of the random ticket, used only to bind a signed Slack reply. */
+  attempt: string;
   url: string;
   expiresAtMs: number;
 }
