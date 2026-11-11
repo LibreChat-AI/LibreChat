@@ -524,15 +524,21 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
+  /** In CI a test that fails and then passes on a retry fails the run. The retries stay for
+   *  what they show: a trace of each failed attempt, video of the first retry, and whether the
+   *  failure is deterministic. Derived profiles inherit this with the rest of the config. */
+  failOnFlakyTests: !!process.env.CI,
   workers: 1,
   /** In CI the JSON results land beside the HTML report (reporters end in order, after the HTML
    *  reporter has replaced its folder), so the report artifact also carries the per-file
-   *  timings `.github/scripts/playwright-shards.mjs record` rebuilds the shard plan from. */
+   *  timings `.github/scripts/playwright-shards.mjs record` rebuilds the shard plan from.
+   *  The last reporter names each retried pass in the job log and the job summary. */
   reporter: process.env.CI
     ? [
         ['html', { outputFolder: reportPath, open: 'never' }],
         ['line'],
         ['json', { outputFile: path.join(reportPath, 'results.json') }],
+        ['./reporters/retried.mjs'],
       ]
     : [['html', { outputFolder: reportPath }], ['list']],
   use: {

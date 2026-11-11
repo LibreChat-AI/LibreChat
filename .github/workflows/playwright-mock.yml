@@ -245,8 +245,8 @@ jobs:
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
-      - name: Test Playwright matrix selection and the vote gate
-        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs
+      - name: Test Playwright matrix selection, the vote gate and the retried-pass reporter
+        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs e2e/reporters/retried.test.mjs
 
       - name: Restore data-provider build cache
         id: cache-data-provider
@@ -440,7 +440,8 @@ jobs:
           E2E_TITLE_CONVO: 'true'
         run: >-
           npx playwright test --config=e2e/playwright.config.mock.ts
-          conversation-management.spec.ts --grep 'first-turn|final-title polling' --reporter=line
+          conversation-management.spec.ts --grep 'first-turn|final-title polling'
+          --reporter=line,e2e/reporters/retried.mjs
           --output=e2e/specs/.test-results/title-ownership
 
       - name: Upload title ownership diagnostics

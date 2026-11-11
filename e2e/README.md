@@ -101,6 +101,11 @@ The nightly schedule and manual workflow dispatch run the complete mock suite in
 modes across ten shards per mode. Every shard keeps one worker so tests do not contend for its
 authenticated user and database.
 
+CI retries a failed test, twice on the memory shards and three times on the Redis transport
+suite, so the report carries a trace of each failed attempt and shows whether the failure
+repeats. A test that passes only on a retry still fails the run (`failOnFlakyTests`), and the
+job log and the job summary name it (`e2e/reporters/retried.mjs`). Local runs do not retry.
+
 CI splits the complete suite by recorded duration rather than test count: each shard lists the
 suite, and `.github/scripts/playwright-shards.mjs plan` hands out whole spec files longest-first
 to the least-loaded shard using `e2e/timings.mock.json`. A spec with no recorded time is
