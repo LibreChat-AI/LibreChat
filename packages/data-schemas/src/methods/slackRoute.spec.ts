@@ -16,6 +16,7 @@ import { touchChannelAuthority } from './channelScope';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
 import { closeResponseScopes } from './responseScope';
+import { waitForPause } from './test-helpers';
 import { createModels } from '~/models';
 
 describe('workspace routing and live channel authority', () => {
@@ -355,14 +356,14 @@ describe('workspace routing and live channel authority', () => {
         paused();
         return resumed.then(() => update(...args)) as ReturnType<typeof model.updateOne>;
       });
+      const assignment = routes.assign({
+        workspaceId,
+        channelId: 'binding-a',
+        channelRevision: 'consent-binding-a',
+        userId: managerId,
+      });
       try {
-        const assignment = routes.assign({
-          workspaceId,
-          channelId: 'binding-a',
-          channelRevision: 'consent-binding-a',
-          userId: managerId,
-        });
-        await reached;
+        await waitForPause(reached, assignment);
         await grantManagers(workspaceId, []);
         release();
         expect(await assignment).toEqual({ ok: false, code: 'bot_access_required' });
@@ -370,6 +371,7 @@ describe('workspace routing and live channel authority', () => {
       } finally {
         release();
         spy.mockRestore();
+        await Promise.allSettled([assignment]);
       }
     }));
 
