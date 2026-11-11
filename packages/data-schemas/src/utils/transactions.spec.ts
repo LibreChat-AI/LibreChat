@@ -5,6 +5,7 @@ import {
   supportsTransactions,
   startRequiredTransactionSession,
   TransactionUnavailableError,
+  withRequiredTransaction,
 } from './transactions';
 
 jest.mock('~/config/winston', () => ({ debug: jest.fn() }));
@@ -140,7 +141,7 @@ describe('transaction capability against real MongoDB', () => {
   it('reuses a required-session verdict instead of probing every subsequent transition', async () => {
     const db = new mongoose.Mongoose();
     await db.connect(repl.getUri(), { readPreference: 'secondaryPreferred' });
-    const starts = jest.spyOn(db, 'startSession');
+    const starts = jest.spyOn(db.connection.getClient(), 'startSession');
     try {
       const first = await startRequiredTransactionSession(db);
       await first.endSession();
@@ -164,7 +165,7 @@ describe('transaction capability against real MongoDB', () => {
       await expect(startRequiredTransactionSession(db)).rejects.toBe(failure);
       const session = await startRequiredTransactionSession(db);
       await session.endSession();
-      expect(starts).toHaveBeenCalledTimes(3);
+      expect(starts).toHaveBeenCalledTimes(2); // Failed probe, then successful probe.
     } finally {
       await db.disconnect();
     }
@@ -195,5 +196,67 @@ describe('transaction capability against real MongoDB', () => {
       TransactionUnavailableError,
     );
     expect(starts).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an old pending verdict and probes the replacement client before private effects', async () => {
+    const db = new mongoose.Mongoose();
+    await db.connect(repl.getUri());
+    const probeSession = await db.startSession();
+    const commit = probeSession.commitTransaction.bind(probeSession);
+    let release!: () => void;
+    let entered!: () => void;
+    const paused = new Promise<void>((resolve) => (release = resolve));
+    const committed = new Promise<void>((resolve) => (entered = resolve));
+    jest.spyOn(probeSession, 'commitTransaction').mockImplementationOnce(async () => {
+      await commit();
+      entered();
+      await paused;
+    });
+    const starts = jest.spyOn(db, 'startSession').mockResolvedValueOnce(probeSession);
+    const prepare = jest.fn(async () => undefined);
+    const write = jest.fn(async () => 'private-effect');
+    try {
+      const stale = withRequiredTransaction(db, write, prepare);
+      await committed;
+      await db.disconnect();
+      await db.connect(mongo.getUri());
+      const current = withRequiredTransaction(db, write, prepare);
+      const outcomes = Promise.allSettled([stale, current]);
+      release();
+      expect(await outcomes).toEqual([
+        { status: 'rejected', reason: expect.any(db.mongo.MongoNetworkError) },
+        { status: 'rejected', reason: expect.any(TransactionUnavailableError) },
+      ]);
+      await expect(startRequiredTransactionSession(db)).rejects.toBeInstanceOf(
+        TransactionUnavailableError,
+      );
+      expect(starts).toHaveBeenCalledTimes(2); // The old probe and a fresh standalone probe.
+      expect(prepare).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await db.disconnect();
+    }
+  });
+
+  it('rechecks the client after awaiting a cached capability verdict', async () => {
+    const db = new mongoose.Mongoose();
+    await db.connect(repl.getUri());
+    try {
+      const session = await startRequiredTransactionSession(db);
+      await session.endSession();
+      const client = db.connection.getClient();
+      jest
+        .spyOn(db.connection, 'getClient')
+        .mockReturnValueOnce(client)
+        .mockReturnValueOnce(standalone.connection.getClient());
+      const starts = jest.spyOn(db, 'startSession');
+      await expect(startRequiredTransactionSession(db)).rejects.toBeInstanceOf(
+        db.mongo.MongoNetworkError,
+      );
+      expect(starts).not.toHaveBeenCalled();
+    } finally {
+      await db.disconnect();
+    }
   });
 });

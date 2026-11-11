@@ -62,21 +62,41 @@ export const supportsTransactions = async (
   }
 };
 
-const inflightProbes = new WeakMap<import('mongoose').Connection, Promise<boolean>>();
+type TransactionClient = ReturnType<Connection['getClient']>;
+const inflightProbes = new WeakMap<Connection, WeakMap<TransactionClient, Promise<boolean>>>();
 
-/** Share first probes per connection. Callers cache only a successful capability verdict. */
+function assertTransactionClient(
+  mongoose: typeof import('mongoose'),
+  connection: Connection,
+  client: TransactionClient,
+): void {
+  if (mongoose.connection !== connection || connection.getClient() !== client) {
+    throw new mongoose.mongo.MongoNetworkError('MongoDB client changed during transaction setup');
+  }
+}
+
+/** Share first probes only for the same connection and client. */
 export const getTransactionSupport = async (
   mongoose: typeof import('mongoose'),
   transactionSupportCache: boolean | null,
 ): Promise<boolean> => {
   if (transactionSupportCache !== null) return transactionSupportCache;
   const connection = mongoose.connection;
-  let probe = inflightProbes.get(connection);
-  if (!probe) {
-    probe = supportsTransactions(mongoose).finally(() => inflightProbes.delete(connection));
-    inflightProbes.set(connection, probe);
+  const client = connection.getClient();
+  let probes = inflightProbes.get(connection);
+  if (!probes) {
+    probes = new WeakMap();
+    inflightProbes.set(connection, probes);
   }
-  return probe;
+  let probe = probes.get(client);
+  if (!probe) {
+    const pending = probes;
+    probe = supportsTransactions(mongoose).finally(() => pending.delete(client));
+    probes.set(client, probe);
+  }
+  const supported = await probe;
+  assertTransactionClient(mongoose, connection, client);
+  return supported;
 };
 
 export class TransactionUnavailableError extends Error {
@@ -90,7 +110,7 @@ export class TransactionUnavailableError extends Error {
 const requiredTransactionSupport = new WeakMap<
   Connection,
   {
-    client: ReturnType<Connection['getClient']>;
+    client: TransactionClient;
     supported: boolean | null;
   }
 >();
@@ -108,8 +128,12 @@ export async function startRequiredTransactionSession(
   }
   // Assignment happens only on a confirmed verdict; operational failures remain retryable.
   state.supported = await getTransactionSupport(mongoose, state.supported);
+  assertTransactionClient(mongoose, connection, client);
   if (!state.supported) throw new TransactionUnavailableError();
-  return mongoose.startSession({ defaultTransactionOptions: { readPreference: 'primary' } });
+  // The driver's synchronous call binds the session to the client we just checked.
+  return client.startSession({
+    defaultTransactionOptions: { readPreference: 'primary' },
+  });
 }
 
 /** Prepare indexes outside the transaction, after confirming storage capability. */

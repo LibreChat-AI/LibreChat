@@ -59,6 +59,9 @@ const {
   cacheConfig,
   createClusteredFileSweep,
   createRequestSanitizer,
+  createStartupReadiness,
+  keyvRedisClient,
+  ioredisClient,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
@@ -379,6 +382,11 @@ if (cluster.isMaster) {
    * Each worker runs a full Express server instance
    */
   const app = express();
+  const readiness = createStartupReadiness({
+    useRedis: cacheConfig.USE_REDIS,
+    ioredis: ioredisClient,
+    keyv: keyvRedisClient,
+  });
   app.locals.codeApiUploadRegistry = createCodeApiUploadRegistry();
   // The clustered entrypoint deliberately does not arm the v1 schedule engine,
   // but an already-fired scheduled generation can still reach HITL here. Settle
@@ -607,6 +615,8 @@ if (cluster.isMaster) {
 
     /** Health check endpoint */
     app.get('/health', (_req, res) => res.status(200).send('OK'));
+    app.get('/readyz', readiness.handler);
+    app.use('/api', readiness.gate);
 
     /** Middleware */
     app.use(requestContextMiddleware);
@@ -764,6 +774,7 @@ if (cluster.isMaster) {
         registerShutdownTask('channel feedback export', stopChannelFeedback, { priority: 100 });
         registerShutdownTask('channel authority cleanup', stopChannelCleanup, { priority: 100 });
         await initializeChannelCleanup();
+        readiness.markReady();
       } catch (initErr) {
         logger.error(`Worker ${process.pid} post-listen initialization failed:`, initErr);
         process.exit(1);

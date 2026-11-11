@@ -8,6 +8,10 @@ import yaml from 'js-yaml';
 const readWorkflow = (file) =>
   yaml.load(readFileSync(new URL(`../workflows/${file}`, import.meta.url), 'utf8'));
 const manual = readWorkflow('main-image-workflow.yml');
+assert.ok(
+  readWorkflow('retry-docker-builds.yml').on.workflow_run.workflows.includes(manual.name),
+  'the retry workflow must subscribe to the manual release publisher by its current name',
+);
 for (const workflow of [readWorkflow('tag-images.yml')]) {
   const images = JSON.parse(workflow.jobs.publish.with.images);
   const gateway = images.find((image) => image.image_name === 'librechat-channel-gateway');
