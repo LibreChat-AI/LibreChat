@@ -40,6 +40,10 @@ on:
       - '.github/guard-specs.json'
       - '.github/scripts/guard-specs*.mjs'
       - 'eslint-suppressions.json'
+  # The merge queue tests the commit about to land on dev. It has no path filter and no
+  # selection: every job below runs in full.
+  merge_group:
+    types: [checks_requested]
   # Promotion requires full CI at the exact dev SHA, including path-filtered commits.
   workflow_dispatch:
 
@@ -649,3 +653,35 @@ jobs:
 
       - name: Build client
         run: cd client && npm run build:ci
+
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. A skip passes only where ALLOW_SKIPPED names it.
+  gate:
+    name: frontend
+    needs:
+      - client-build-regression
+      - codegraph_select
+      - build
+      - typecheck
+      - test-packages-chat
+      - test-packages-client
+      - test-ubuntu
+      - build-verify
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every frontend job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          ALLOW_SKIPPED: >-
+            codegraph_select
+            ${{ needs.codegraph_select.outputs.clientpkg_run == 'false' && 'test-packages-client' || '' }}
+            ${{ needs.codegraph_select.outputs.client_run == 'false' && 'test-ubuntu' || '' }}
+        run: node .github/scripts/merge-gate.mjs verify

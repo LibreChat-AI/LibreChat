@@ -44,6 +44,10 @@ on:
       - 'e2e/setup/fake-model.js'
       - 'vendor/code/**'
       - '!**.md'
+  # The merge queue tests the commit about to land on dev. It has no path filter and no
+  # selection: every job below runs in full.
+  merge_group:
+    types: [checks_requested]
   # Promotion requires full CI at the exact dev SHA, including path-filtered commits.
   workflow_dispatch:
 
@@ -783,3 +787,37 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
           overwrite: true
+
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. A skip passes only where ALLOW_SKIPPED names it.
+  gate:
+    name: backend
+    needs:
+      - build
+      - codegraph_select
+      - typecheck
+      - circular-deps
+      - test-api
+      - test-data-provider
+      - test-data-schemas
+      - test-packages-api
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every backend job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          ALLOW_SKIPPED: >-
+            codegraph_select
+            ${{ needs.codegraph_select.outputs.api_run == 'false' && 'test-api' || '' }}
+            ${{ needs.codegraph_select.outputs.dataprovider_run == 'false' && 'test-data-provider' || '' }}
+            ${{ needs.codegraph_select.outputs.dataschemas_run == 'false' && 'test-data-schemas' || '' }}
+            ${{ needs.codegraph_select.outputs.pkgapi_run == 'false' && 'test-packages-api' || '' }}
+        run: node .github/scripts/merge-gate.mjs verify

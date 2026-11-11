@@ -22,6 +22,10 @@ on:
       - '.github/workflows/cache-integration-tests.yml'
       - '.github/actions/redis-binaries/**'
       - '!**.md'
+  # The merge queue tests the commit about to land on dev. It has no path filter and no
+  # selection: every job below runs in full.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -149,3 +153,23 @@ jobs:
       - name: Stop Single Redis Instance
         if: always()
         run: redis-cli -p 6379 shutdown || true
+
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. No job here may be skipped.
+  gate:
+    name: cache-integration
+    needs: [cache_integration_tests]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every cache integration job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/merge-gate.mjs verify

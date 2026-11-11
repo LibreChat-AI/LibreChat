@@ -21,6 +21,10 @@ on:
       - '.github/actions/mongodb-binary/**'
       - '.husky/pre-push'
       - '!**.md'
+  # The merge queue tests the commit about to land on dev. It has no path filter; the checks
+  # below stay scoped to what the queued change touches, read against the merge group base.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -231,8 +235,8 @@ jobs:
         if: always() && steps.paths.outputs.eslint == 'true'
         continue-on-error: true
         run: |
-          # Extract the base commit SHA from the pull_request event payload.
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          # Extract the base commit SHA from the pull_request or merge_group event payload.
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           echo "Base commit SHA: $BASE_SHA"
 
           # Get changed files (only JS/TS files in api/, client/, or packages/)
@@ -277,7 +281,7 @@ jobs:
         if: always() && steps.paths.outputs.eslint == 'true'
         continue-on-error: true
         run: |
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           mapfile -d '' -t CHANGED_FILES < <(
             git diff -z --name-only --diff-filter=ACMRTUXB "$BASE_SHA" HEAD |
               grep -zE '^(api|client|packages)/.*\.(js|jsx|ts|tsx)$' || true
@@ -310,7 +314,7 @@ jobs:
         if: always() && steps.paths.outputs.eslint == 'true'
         continue-on-error: true
         run: |
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           mapfile -d '' -t CHANGED_FILES < <(
             git diff -z --name-only --diff-filter=ACMRTUXB "$BASE_SHA" HEAD |
               grep -zE '^(api|client|packages)/.*\.(js|jsx|ts|tsx)$' || true
@@ -355,7 +359,7 @@ jobs:
         if: always() && steps.paths.outputs.runner == 'true'
         continue-on-error: true
         run: |
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           node scripts/static-checks.mts --against "$BASE_SHA" --list
           # An explicit target, because --list never executes a check and a
           # script-only PR activates no group — so neither would exercise the
@@ -384,7 +388,7 @@ jobs:
           # --against the PR base, not just the baseline path: the check also asks
           # whether the changed files still owe what they record, and that needs
           # the diff rather than one file name.
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           node scripts/static-checks.mts --against "$BASE_SHA" --only suppressions
 
       - name: Check CSS colour literals
@@ -392,7 +396,7 @@ jobs:
         if: always() && steps.paths.outputs.css_colors == 'true'
         continue-on-error: true
         run: |
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           node scripts/static-checks.mts --against "$BASE_SHA" --only css-colors
 
       - name: Restore data-provider build cache
@@ -906,7 +910,7 @@ jobs:
             exit 1
           fi
 
-          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          BASE_SHA=$(jq --raw-output '.pull_request.base.sha // .merge_group.base_sha' "$GITHUB_EVENT_PATH")
           if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
             echo "::error title=ESLint sweep::Base commit is unavailable — this gate requires the checkout above to keep fetch-depth: 0."
             exit 1
@@ -969,3 +973,25 @@ jobs:
             exit 1
           fi
           echo "No coverage loss and no new diagnostics versus the base config."
+
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. No job here may be skipped.
+  gate:
+    name: static
+    needs:
+      - static-checks
+      - eslint-sweep
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every static check job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/merge-gate.mjs verify
