@@ -204,8 +204,11 @@ jobs:
           if [ -n "$QUALITY_SHARD" ]; then args+=(--shard "$QUALITY_SHARD"); fi
           node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" \
             --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK" "${args[@]}"
+      # The mutation job downloads the mutation shards, so a shard that is not uploaded has to
+      # fail here. Nothing downloads the risk report, so losing it must not fail the job.
       - name: Upload reports
         if: always()
+        continue-on-error: ${{ matrix.report.check == 'risk' }}
         uses: actions/upload-artifact@v6
         with:
           name: change-${{ matrix.report.check }}-${{ matrix.workspace }}${{ matrix.report.shard && format('-shard-{0}', matrix.report.shard) || '' }}-${{ env.QUALITY_HEAD }}
@@ -246,8 +249,12 @@ jobs:
         env:
           REPORT_RESULT: ${{ needs.reports.result }}
         run: test "$REPORT_RESULT" = success
+      # The aggregate is a debugging aid that no job downloads: see the note on the e2e_shards
+      # uploads in playwright-mock.yml.
       - uses: actions/upload-artifact@v6
         if: always()
+        timeout-minutes: 3
+        continue-on-error: true
         with:
           name: change-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}
           path: coverage/changes/${{ matrix.workspace }}/mutation/
