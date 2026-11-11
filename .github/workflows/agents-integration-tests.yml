@@ -110,6 +110,9 @@ jobs:
         if: steps.cache-api.outputs.cache-hit != 'true'
         run: npm run build:api
 
+      - name: Test MongoDB binary provisioning
+        run: node --test .github/actions/mongodb-binary/prewarm.test.mjs
+
       # Every suite here runs in one Jest process with 15s hooks. A cold download of the
       # ~122MB mongod inside the first hook timed it out on a slow mirror day, and the suites
       # after it then spawned the half-written file (`spawn ETXTBSY`).
