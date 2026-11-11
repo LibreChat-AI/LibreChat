@@ -319,10 +319,15 @@ test('a system binary is checked where it is and never copied or deleted', posix
   assert.ok(good.output.includes(`mongod ready: ${working}`), good.output);
   assert.match(good.output, /\(MONGOMS_SYSTEM_BINARY\)/);
 
-  const failing = place(path.join(root, 'broken-system'), BROKEN, 'mongod');
-  const bad = await run({ MONGOMS_SYSTEM_BINARY: failing });
-  assert.equal(bad.status, 1, bad.output);
-  assert.ok(existsSync(failing), 'a file the job named is not ours to delete');
+  /** Rejected by the library's own version probe, then by this script's exit-status check. */
+  const failures = { silent: BROKEN, 'exits-non-zero': GOOD.replace('exit 0', 'exit 3') };
+  for (const [label, content] of Object.entries(failures)) {
+    const failing = place(path.join(root, label), content, 'mongod');
+    const bad = await run({ MONGOMS_SYSTEM_BINARY: failing });
+    assert.equal(bad.status, 1, bad.output);
+    assert.match(bad.output, /::error title=MongoDB binary::/);
+    assert.ok(existsSync(failing), `${label}: a file the job named is not ours to delete`);
+  }
   assert.equal(downloads.length, 0);
   assert.deepEqual(cached(), []);
 });
