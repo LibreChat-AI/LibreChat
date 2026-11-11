@@ -190,6 +190,7 @@ function createToolLoader({
   definitionsOnly = true,
   streamId = null,
   jobCreatedAt,
+  unattended,
 }) {
   return async function loadTools({
     tools,
@@ -219,6 +220,7 @@ function createToolLoader({
         accessibleMcpServerNames,
         streamId,
         jobCreatedAt,
+        unattended,
       });
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {

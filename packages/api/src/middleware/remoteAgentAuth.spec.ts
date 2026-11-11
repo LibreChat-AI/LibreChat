@@ -58,7 +58,6 @@ import { clearRemoteAgentAuthCache, createRemoteAgentAuth } from './remoteAgentA
 import { findOpenIDUser, getOpenIdEmail } from '../auth/openid';
 import { isEnabled, math } from '~/utils';
 import { getEnvProxyDispatcher, getHttpsProxyAgent } from '~/utils/proxy';
-import { isRemoteAgentResponse } from '~/agents/remote/source';
 
 const mockFetch = undiciFetch as jest.Mock;
 const mockMath = math as jest.Mock;
@@ -294,22 +293,6 @@ describe('createRemoteAgentAuth', () => {
       expect(deps.apiKeyMiddleware).toHaveBeenCalled();
     });
 
-    it('marks the response as a remote agent response once the API key is admitted', async () => {
-      const deps = makeDeps(makeConfig({ enabled: false }));
-      const { res } = makeRes();
-      await createRemoteAgentAuth(asDeps(deps))(makeReq() as Request, res, mockNext);
-      expect(mockNext).toHaveBeenCalledWith();
-      expect(isRemoteAgentResponse(res)).toBe(true);
-    });
-
-    it('leaves a rejected request unmarked', async () => {
-      const deps = makeDeps(makeConfig({ enabled: false }, { enabled: false }));
-      const { res, status } = makeRes();
-      await createRemoteAgentAuth(asDeps(deps))(makeReq() as Request, res, mockNext);
-      expect(status).toHaveBeenCalledWith(401);
-      expect(isRemoteAgentResponse(res)).toBe(false);
-    });
-
     it('loads base config before authentication when tenant context is absent', async () => {
       const deps = makeDeps(makeConfig({ enabled: false }));
 
@@ -501,7 +484,6 @@ describe('createRemoteAgentAuth', () => {
       );
       expect(mockNext).toHaveBeenCalledWith();
       expect(deps.apiKeyMiddleware).not.toHaveBeenCalled();
-      expect(isRemoteAgentResponse(res)).toBe(true);
     });
 
     it('rejects an OIDC principal while account deletion is fenced', async () => {

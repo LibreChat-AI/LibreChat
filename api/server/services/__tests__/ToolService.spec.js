@@ -193,12 +193,7 @@ const {
 } = require('../ToolService');
 const { createOnSearchResults } = require('~/server/services/Tools/search');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
-const {
-  ContentFilterError,
-  PENDING_STALE_MS,
-  ToolInputError,
-  markRemoteAgentResponse,
-} = require('@librechat/api');
+const { ContentFilterError, PENDING_STALE_MS, ToolInputError } = require('@librechat/api');
 
 /** Role document shape `checkAccess` reads; all three role-gated tools granted. */
 function buildRole(overrides = {}) {
@@ -2105,7 +2100,7 @@ describe('ToolService - Action Capability Gating', () => {
       it.each([
         ['a sign-in URL was issued', 'https://auth.example.com/sheets'],
         ['the server only reported that sign-in is needed', undefined],
-      ])('neither prompts nor waits for a remote agent API client when %s', async (_label, url) => {
+      ])('neither prompts nor waits on an unattended run when %s', async (_label, url) => {
         setUp({ oauthToolCatalog: undefined });
         reinitMCPServer.mockImplementation(async ({ returnOnOAuth, oauthStart }) => {
           if (returnOnOAuth === false) {
@@ -2114,20 +2109,20 @@ describe('ToolService - Action Capability Gating', () => {
           await oauthStart(url);
           return { availableTools: null };
         });
-        const res = { writableEnded: false };
-        markRemoteAgentResponse(res);
 
         /** With its only MCP server unusable the run fails at once, as it did after the wait. */
         await expect(
           loadAgentTools({
             req: createMockReq(capabilities),
-            res,
+            res: { writableEnded: false },
             agent: deferredAgent,
             definitionsOnly: true,
+            unattended: true,
           }),
         ).rejects.toMatchObject({ code: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE' });
 
         expect(reinitMCPServer).toHaveBeenCalledTimes(1);
+        expect(reinitMCPServer).toHaveBeenCalledWith(expect.objectContaining({ unattended: true }));
         expect(reinitMCPServer).not.toHaveBeenCalledWith(
           expect.objectContaining({ returnOnOAuth: false }),
         );

@@ -751,6 +751,7 @@ async function reconnectServer({
   oboIdentityContext,
   streamId = null,
   jobCreatedAt,
+  unattended,
   recoveryPolicy,
   mcpApps,
 }) {
@@ -784,6 +785,7 @@ async function reconnectServer({
     jobs: GenerationJobManager,
     streamId,
     jobCreatedAt,
+    unattended,
     logger,
   }).forServer(serverName, index);
   const oauthStart = createOAuthStart({
@@ -811,6 +813,7 @@ async function reconnectServer({
       oboIdentityContext,
       streamId,
       jobCreatedAt,
+      unattended,
       forceNew: true,
       returnOnOAuth: false,
       connectionTimeout: Time.THIRTY_SECONDS,
@@ -865,6 +868,7 @@ async function createMCPTools({
   mcpApps,
   streamId = null,
   jobCreatedAt,
+  unattended,
 }) {
   let recoveryPolicy;
   const serverConfig =
@@ -919,6 +923,7 @@ async function createMCPTools({
     oboIdentityContext,
     streamId,
     jobCreatedAt,
+    unattended,
     recoveryPolicy,
     mcpApps,
   });
@@ -948,6 +953,7 @@ async function createMCPTools({
       configServers,
       streamId,
       jobCreatedAt,
+      unattended,
       recoveryPolicy,
       availableTools: result.availableTools,
       serverName,
@@ -1019,6 +1025,7 @@ async function createMCPTool({
   onAvailableTools,
   streamId = null,
   jobCreatedAt,
+  unattended,
   recoveryPolicy,
 }) {
   const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
@@ -1162,6 +1169,7 @@ async function createMCPTool({
       oboIdentityContext,
       streamId,
       jobCreatedAt,
+      unattended,
       ...(recoveryPolicy && { recoveryPolicy }),
       mcpApps,
     });
@@ -1217,6 +1225,7 @@ async function createMCPTool({
     mcpApps,
     streamId,
     jobCreatedAt,
+    unattended,
     recoveryPolicy,
   });
 }
@@ -1243,6 +1252,7 @@ function createToolInstance({
   mcpApps: capturedMCPApps,
   streamId = null,
   jobCreatedAt,
+  unattended,
   recoveryPolicy,
 }) {
   /** @type {LCTool} */
@@ -1315,15 +1325,17 @@ function createToolInstance({
               ...step,
               streamId,
               jobCreatedAt,
+              unattended,
             }),
             runStepDeltaEmitter: createRunStepDeltaEmitter({
               res,
               ...step,
               streamId,
               jobCreatedAt,
+              unattended,
             }),
           }),
-        createEnd: (step) => createOAuthEnd({ res, ...step, streamId, jobCreatedAt }),
+        createEnd: (step) => createOAuthEnd({ res, ...step, streamId, jobCreatedAt, unattended }),
       });
       const oauthStart = createOAuthStart({
         flowId,
@@ -1383,6 +1395,7 @@ function createToolInstance({
             }),
           oauthStart,
           oauthEnd: oauthPrompt.end,
+          unattended,
           graphTokenResolver: getGraphApiToken,
           oboTokenResolver: exchangeOboToken,
           oboTrustChecker: createOboTrustChecker(),

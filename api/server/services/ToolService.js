@@ -849,6 +849,7 @@ async function loadToolDefinitionsWrapper({
   agentResourceType,
   streamId = null,
   jobCreatedAt,
+  unattended,
   tool_resources,
   codeExecutionContext,
   attachedEnvironmentOptOut,
@@ -1051,6 +1052,7 @@ async function loadToolDefinitionsWrapper({
     jobs: GenerationJobManager,
     streamId,
     jobCreatedAt,
+    unattended,
     logger,
   });
   /** @type {Record<string, import('@librechat/api').LCAvailableTools>} */
@@ -1203,6 +1205,7 @@ async function loadToolDefinitionsWrapper({
       user: req.user,
       streamId,
       jobCreatedAt,
+      unattended,
       oauthStart,
       flowManager,
       serverName,
@@ -1237,6 +1240,7 @@ async function loadToolDefinitionsWrapper({
       user: req.user,
       streamId,
       jobCreatedAt,
+      unattended,
       forceNew: true,
       oauthStart,
       flowManager,
@@ -1371,7 +1375,15 @@ async function loadToolDefinitionsWrapper({
     pendingOAuthStarts.set(serverName, pendingOAuthStart);
   }
 
-  if (shouldAwaitOAuthSignIn({ res, streamId, pending: pendingOAuthServers.size, logger })) {
+  if (
+    shouldAwaitOAuthSignIn({
+      res,
+      streamId,
+      unattended,
+      pending: pendingOAuthServers.size,
+      logger,
+    })
+  ) {
     const serverNames = orderMCPServerNames(pendingOAuthServers, mcpServerLookupOrder);
     logger.info(
       `[Tool Definitions] MCP OAuth required for ${serverNames.length} server(s); emitting events and waiting`,
@@ -1634,6 +1646,7 @@ async function loadAgentTools({
   openAIApiKey,
   streamId = null,
   jobCreatedAt,
+  unattended,
   definitionsOnly = true,
   codeExecutionContext: providedCodeExecutionContext,
   attachedEnvironmentOptOut,
@@ -1651,6 +1664,7 @@ async function loadAgentTools({
         agentResourceType,
         streamId,
         jobCreatedAt,
+        unattended,
         tool_resources,
         codeExecutionContext: providedCodeExecutionContext,
         attachedEnvironmentOptOut,
@@ -2126,6 +2140,7 @@ async function loadToolsForExecution({
   tool_resources,
   streamId = null,
   jobCreatedAt,
+  unattended,
   conversationId,
   actionsEnabled,
   accessibleMcpServerNames,
@@ -2453,6 +2468,7 @@ async function loadToolsForExecution({
         requestBody: runtimeRequestBody,
         agentResourceType,
         jobCreatedAt,
+        unattended,
         tool_resources,
         processFileURL,
         uploadImageBuffer,

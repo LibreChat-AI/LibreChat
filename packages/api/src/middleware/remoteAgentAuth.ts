@@ -17,7 +17,6 @@ import {
 } from '../auth/openidRoleSync';
 import { clearOidcAccessTokenCache, extractBearerToken, verifyOidcAccessToken } from '../auth/oidc';
 import { findOpenIDUser, getOpenIdEmail, normalizeOpenIdIssuer } from '../auth/openid';
-import { markRemoteAgentResponse } from '~/agents/remote/source';
 import { tenantContextMiddleware } from './tenant';
 
 export interface RemoteAgentAuthDeps {
@@ -150,7 +149,6 @@ function continueWithAuthenticatedTenantContext(
   if (requestTenantId) {
     contextRequest.tenantId = requestTenantId;
   }
-  markRemoteAgentResponse(res);
   tenantContextMiddleware(req as ServerRequest, res, next);
 }
 

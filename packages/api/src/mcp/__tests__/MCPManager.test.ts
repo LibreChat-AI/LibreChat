@@ -36,6 +36,7 @@ import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { attachScheduledMCPBearer } from '~/schedules/bearer';
 import { MCPAuthenticationRejectedError } from '~/mcp/errors';
 import { getMCPToolApprovalAuthKind } from '~/mcp/approval';
+import { OAuthLifecycleRelay } from '~/mcp/oauth/pending';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 import { isMCPDomainAllowed } from '~/auth/domain';
 import * as toolsChanged from '~/mcp/toolsChanged';
@@ -2847,6 +2848,152 @@ describe('MCPManager', () => {
       expect(request).toHaveBeenCalledTimes(3);
     });
 
+    describe('a caller nobody can sign in for', () => {
+      const pendingFlows = {
+        acquireLease: jest
+          .fn()
+          .mockResolvedValue({ release: jest.fn().mockResolvedValue(undefined) }),
+        getFlowState: jest.fn(async () => ({
+          status: 'PENDING',
+          createdAt: Date.now(),
+          metadata: { authorizationUrl: 'https://auth.example.com/pending' },
+        })),
+      } as unknown as typeof mockFlowManager;
+      const reauthRequired = {
+        name: 'OAuthPromptUnattendedError',
+        code: 'mcp_reauth_required',
+      };
+
+      /** The browser owner's sign-in: publishes the URL when told to, then waits for the person. */
+      function attachInteractiveSignIn() {
+        let publish!: () => void;
+        let complete!: () => void;
+        const publishGate = new Promise<void>((resolve) => {
+          publish = resolve;
+        });
+        const completionGate = new Promise<void>((resolve) => {
+          complete = resolve;
+        });
+        (MCPConnectionFactory.attachRequestOAuthHandler as jest.Mock).mockImplementation(
+          (_basic, oauth: { oauthStart?: t.OAuthStartHandler }, connection: MCPConnection) => {
+            const listener = async () => {
+              try {
+                await publishGate;
+                await oauth.oauthStart?.('https://auth.example.com/pending');
+                await completionGate;
+                connection.emit('oauthHandled');
+              } catch (error) {
+                connection.emit('oauthFailed', error);
+              }
+            };
+            connection.on('oauthReauthenticationRequired', listener);
+            return () => connection.off('oauthReauthenticationRequired', listener);
+          },
+        );
+        return { publish, complete };
+      }
+
+      function callUnattended(manager: MCPManager, flowManager = mockFlowManager) {
+        return manager.callTool({
+          user: mockUser,
+          serverName,
+          toolName: 'oauth_tool',
+          provider: 'openai',
+          oauthStart: jest.fn(),
+          flowManager,
+          unattended: true,
+        });
+      }
+
+      const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+      it('leaves a sign-in the owner already has open, without cancelling it', async () => {
+        const authError = new Error('Non-200 status code (401)');
+        const request = jest.fn().mockRejectedValueOnce(authError).mockResolvedValue(toolResult);
+        const connection = createConnection(request);
+        const signIn = attachInteractiveSignIn();
+        const manager = await createManager(connection);
+        const ownerOAuthStart = jest.fn().mockResolvedValue(undefined);
+
+        const ownerCall = callTool(
+          manager,
+          undefined,
+          ownerOAuthStart,
+          undefined,
+          undefined,
+          pendingFlows,
+        );
+        await settle();
+        signIn.publish();
+        await settle();
+        expect(ownerOAuthStart).toHaveBeenCalledTimes(1);
+
+        await expect(callUnattended(manager, pendingFlows)).rejects.toMatchObject(reauthRequired);
+        expect(connection.listenerCount('oauthReauthenticationRequired')).toBe(1);
+
+        signIn.complete();
+        await expect(ownerCall).resolves.toBeDefined();
+        expect(connection.connect).toHaveBeenCalledTimes(1);
+      });
+
+      it('leaves a shared recovery the moment it asks a person to sign in', async () => {
+        const authError = new Error('Non-200 status code (401)');
+        const request = jest.fn().mockRejectedValueOnce(authError).mockResolvedValue(toolResult);
+        const connection = createConnection(request);
+        const signIn = attachInteractiveSignIn();
+        const manager = await createManager(connection);
+
+        const ownerCall = callTool(manager);
+        await settle();
+        let outcome: unknown;
+        const unattendedCall = callUnattended(manager).then(
+          () => (outcome = 'resolved'),
+          (error) => (outcome = error),
+        );
+        await settle();
+        expect(outcome).toBeUndefined();
+
+        signIn.publish();
+        await unattendedCall;
+        expect(outcome).toMatchObject(reauthRequired);
+        expect(connection.listenerCount('oauthReauthenticationRequired')).toBe(1);
+
+        signIn.complete();
+        await expect(ownerCall).resolves.toBeDefined();
+      });
+
+      it('fails its own recovery when only a person could finish it', async () => {
+        const authError = new Error('Non-200 status code (401)');
+        const request = jest.fn().mockRejectedValue(authError);
+        const connection = createConnection(request);
+        const signIn = attachInteractiveSignIn();
+        const manager = await createManager(connection);
+
+        const unattendedCall = callUnattended(manager);
+        await settle();
+        signIn.publish();
+
+        await expect(unattendedCall).rejects.toMatchObject(reauthRequired);
+        expect(connection.connect).not.toHaveBeenCalled();
+        expect(request).toHaveBeenCalledTimes(1);
+      });
+
+      it('still completes a recovery that needs no person', async () => {
+        const authError = new Error('Non-200 status code (401)');
+        const request = jest
+          .fn()
+          .mockRejectedValueOnce(authError)
+          .mockResolvedValueOnce(toolResult);
+        const connection = createConnection(request);
+        attachOAuthHandler();
+        const manager = await createManager(connection);
+
+        await expect(callUnattended(manager)).resolves.toBeDefined();
+        expect(connection.connect).toHaveBeenCalledTimes(1);
+        expect(request).toHaveBeenCalledTimes(2);
+      });
+    });
+
     it('defers request-context cleanup until shared recovery settles', async () => {
       const authError = new Error('Non-200 status code (401)');
       const request = jest.fn().mockRejectedValueOnce(authError).mockResolvedValueOnce(toolResult);
@@ -3266,6 +3413,75 @@ describe('MCPManager', () => {
       expect(connection.isConnected).toHaveBeenCalledTimes(1);
       expect(MCPConnectionFactory.create).not.toHaveBeenCalled();
     });
+
+    it.each([
+      ['has already asked the owner to sign in', true],
+      ['asks the owner to sign in while it waits', false],
+    ])(
+      'releases a caller nobody can sign in for from a recovery that %s',
+      async (_label, asked) => {
+        mockAppConnections({
+          has: jest.fn().mockResolvedValue(false),
+        });
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        const connection = {
+          isConnected: jest.fn().mockResolvedValue(true),
+        } as unknown as MCPConnection;
+        let resolveRecovery: (() => void) | undefined;
+        const recovery = new Promise<void>((resolve) => {
+          resolveRecovery = resolve;
+        });
+        const internals = manager as unknown as {
+          oauthRecoveries: WeakMap<
+            MCPConnection,
+            { promise: Promise<void>; allowsTakeover: boolean; callbacks: OAuthLifecycleRelay }
+          >;
+          recoveryPrompts: WeakMap<Promise<void>, OAuthLifecycleRelay>;
+          userConnections: Map<string, Map<string, MCPConnection>>;
+        };
+        internals.userConnections.set(
+          mockUser.id,
+          new Map([
+            [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), connection],
+          ]),
+        );
+        const ownerOAuthStart = jest.fn().mockResolvedValue(undefined);
+        const relay = new OAuthLifecycleRelay({ oauthStart: ownerOAuthStart, logPrefix: '[test]' });
+        internals.oauthRecoveries.set(connection, {
+          promise: recovery,
+          allowsTakeover: true,
+          callbacks: relay,
+        });
+        internals.recoveryPrompts.set(recovery, relay);
+        const askOwner = () => relay.start('https://auth.example.com/pending');
+        if (asked) await askOwner();
+
+        /** This checkout waits on the recovery promise alone and registers no prompt handler. */
+        let outcome: unknown;
+        const unattended = manager
+          .getUserConnection({ serverName, user: mockUser, serverConfig, unattended: true })
+          .then(
+            () => (outcome = 'resolved'),
+            (error) => (outcome = error),
+          );
+        await new Promise((resolve) => setImmediate(resolve));
+        if (!asked) {
+          expect(outcome).toBeUndefined();
+          await askOwner();
+        }
+        await unattended;
+        expect(outcome).toMatchObject({ code: 'mcp_reauth_required' });
+        expect(ownerOAuthStart).toHaveBeenCalledTimes(1);
+        expect(connection.isConnected).not.toHaveBeenCalled();
+
+        /** The owner's recovery is untouched: an attended caller still waits for it and reuses it. */
+        const attended = manager.getUserConnection({ serverName, user: mockUser, serverConfig });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(connection.isConnected).not.toHaveBeenCalled();
+        resolveRecovery?.();
+        await expect(attended).resolves.toBe(connection);
+      },
+    );
 
     it('rechecks recovery after yielding to load connection configuration', async () => {
       mockAppConnections({

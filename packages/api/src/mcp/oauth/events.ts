@@ -5,7 +5,7 @@ import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { OAuthStartHandler } from '../types';
 import type * as t from '~/types';
 import { buildOAuthToolCallName, splitMCPToolKey } from '~/mcp/utils';
-import { isRemoteAgentResponse } from '~/agents/remote/source';
+import { OAuthPromptUnattendedError } from './unattended';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { createOAuthCallback } from './publication';
 
@@ -21,28 +21,22 @@ function warnSafely(logger: Diagnostics | undefined, message: string, error: unk
   }
 }
 
-/**
- * Expected on the remote agent API: a server needs sign-in and the caller is not a browser that
- * can follow the prompt. Shares its code with the schedule outcome for the same condition.
- */
-export class OAuthPromptUnattendedError extends Error {
-  readonly code = 'mcp_reauth_required';
-  constructor() {
-    super('MCP sign-in is required and cannot be completed from an API request.');
-    this.name = 'OAuthPromptUnattendedError';
-  }
-}
-
-/**
- * Whether anyone can read a sign-in prompt sent over this transport: a generation stream the
- * owner follows in LibreChat, or a browser response. A remote API response has no such reader.
- */
-export function canPublishOAuthPrompt(transport: {
+/** Where a sign-in prompt would be published, and whether a person is there to read it. */
+export interface OAuthPromptReader {
   res?: object | null;
   streamId?: string | null;
-}): boolean {
-  if (transport.streamId) return true;
-  return transport.res != null && !isRemoteAgentResponse(transport.res);
+  /**
+   * Supplied by the execution boundary when nobody can follow a prompt: a remote agent API run
+   * whose response answers an API client and that has no generation stream for its owner to
+   * follow in LibreChat.
+   */
+  unattended?: boolean;
+}
+
+/** Whether anyone can read a sign-in prompt sent this way. */
+export function canPublishOAuthPrompt({ res, streamId, unattended }: OAuthPromptReader): boolean {
+  if (unattended) return false;
+  return Boolean(streamId) || res != null;
 }
 
 /**
@@ -52,17 +46,16 @@ export function canPublishOAuthPrompt(transport: {
 export function shouldAwaitOAuthSignIn({
   res,
   streamId,
+  unattended,
   pending,
   logger,
-}: {
-  res?: object | null;
-  streamId?: string | null;
+}: OAuthPromptReader & {
   pending: number;
   logger?: { warn: (message: string) => void };
 }): boolean {
   if (pending === 0) return false;
-  if (canPublishOAuthPrompt({ res, streamId })) return true;
-  if (res != null) {
+  if (canPublishOAuthPrompt({ res, streamId, unattended })) return true;
+  if (unattended) {
     logger?.warn(
       `[MCP OAuth] Sign-in required for ${pending} server(s) on a request with no prompt reader; their tools are left out`,
     );
@@ -317,6 +310,8 @@ interface OAuthEventTransport {
   jobs: Pick<GenerationJobManagerClass, 'emitChunk'>;
   streamId?: string | null;
   jobCreatedAt?: number;
+  /** See {@link OAuthPromptReader.unattended}. */
+  unattended?: boolean;
 }
 
 /** One initialization owner per server, shared by reconnect and pending-flow discovery. */
@@ -373,9 +368,7 @@ export function createMCPInitializationOAuthPrompts(
 
 function createOAuthEventEmitter(transport: OAuthEventTransport) {
   return async (event: t.ServerSentEvent): Promise<void> => {
-    if (!transport.streamId && isRemoteAgentResponse(transport.res)) {
-      throw new OAuthPromptUnattendedError();
-    }
+    if (transport.unattended) throw new OAuthPromptUnattendedError();
     try {
       if (!transport.streamId) {
         transport.sendEvent(transport.res, event);
