@@ -36,6 +36,7 @@ const environment = z.object({
 export type GatewayConfig = z.infer<typeof environment>;
 export type GatewayRuntimeConfig = GatewayConfig & {
   SLACK_TRANSPORT: ChannelGatewayPolicy['transport'];
+  socketReconnectDelayMs: number;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
@@ -85,7 +86,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
 /** Bootstrap settings cannot override the server's current installation/ingress policy. */
 export function resolveGatewayConfig(
   config: GatewayConfig,
-  value: ChannelGatewayPolicy,
+  value: z.input<typeof channelGatewayPolicySchema>,
 ): GatewayRuntimeConfig {
   const parsed = channelGatewayPolicySchema.safeParse(value);
   if (!parsed.success) throw new Error('Invalid channel gateway policy');
@@ -94,5 +95,9 @@ export function resolveGatewayConfig(
     throw new Error('Gateway transport does not match channel policy');
   if (policy.transport === 'socket_mode' && !config.SLACK_APP_TOKEN)
     throw new Error('SLACK_APP_TOKEN is required for Socket Mode');
-  return { ...config, SLACK_TRANSPORT: policy.transport };
+  return {
+    ...config,
+    SLACK_TRANSPORT: policy.transport,
+    socketReconnectDelayMs: policy.socketReconnectDelayMs,
+  };
 }
