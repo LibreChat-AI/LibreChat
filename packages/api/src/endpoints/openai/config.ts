@@ -97,6 +97,7 @@ export function getOpenAIConfig(
 ): t.OpenAIConfigResult {
   const {
     proxy,
+    vision,
     addParams,
     dropParams,
     defaultQuery,
@@ -209,6 +210,7 @@ export function getOpenAIConfig(
       inferenceParameters,
       modelOptions,
       useOpenRouter,
+      vision,
       reasoningFormat: getReasoningFormat({
         customFormat: options.customParams?.reasoningFormat,
         isVercel: Boolean(isVercel),
