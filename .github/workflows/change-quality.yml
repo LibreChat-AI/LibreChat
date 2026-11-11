@@ -114,7 +114,7 @@ jobs:
       - run: npx --no-install jest --config config/jest.config.js --runTestsByPath config/__tests__/delete-user.recovery.spec.js --coverage=false --runInBand
 
   reports:
-    name: ${{ matrix.check == 'risk' && 'Change risk' || 'Mutation testing' }} (${{ matrix.workspace }})
+    name: ${{ matrix.report.check == 'risk' && format('Change risk ({0})', matrix.workspace) || format('Mutation shard {0}/3 ({1})', matrix.report.shard, matrix.workspace) }}
     needs: [select, verify]
     if: needs.select.outputs.hasChanges == 'true'
     runs-on: ubuntu-latest
@@ -126,7 +126,11 @@ jobs:
       fail-fast: false
       matrix:
         workspace: ${{ fromJSON(needs.select.outputs.workspaces) }}
-        check: [risk, mutation]
+        report:
+          - { check: risk, shard: 0 }
+          - { check: mutation, shard: 1 }
+          - { check: mutation, shard: 2 }
+          - { check: mutation, shard: 3 }
     services:
       redis:
         image: redis:7-alpine
@@ -186,15 +190,59 @@ jobs:
       - name: Generate advisory report
         env:
           QUALITY_WORKSPACE: ${{ matrix.workspace }}
-          QUALITY_CHECK: ${{ matrix.check }}
-        run: >-
-          node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD"
-          --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK"
+          QUALITY_CHECK: ${{ matrix.report.check }}
+          QUALITY_SHARD: ${{ matrix.report.shard && format('{0}/3', matrix.report.shard) || '' }}
+        run: |
+          args=()
+          if [ -n "$QUALITY_SHARD" ]; then args+=(--shard "$QUALITY_SHARD"); fi
+          node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" \
+            --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK" "${args[@]}"
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: change-${{ matrix.check }}-${{ matrix.workspace }}-${{ github.event.pull_request.head.sha || github.sha }}
-          path: source/coverage/changes/${{ matrix.workspace }}/${{ matrix.check }}/
+          name: change-${{ matrix.report.check }}-${{ matrix.workspace }}${{ matrix.report.shard && format('-shard-{0}', matrix.report.shard) || '' }}-${{ env.QUALITY_HEAD }}
+          path: source/coverage/changes/${{ matrix.workspace }}/${{ matrix.report.check }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+  mutation:
+    name: Mutation testing (${{ matrix.workspace }})
+    needs: [select, reports]
+    if: always() && needs.select.result == 'success' && needs.select.outputs.hasChanges == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: ${{ fromJSON(needs.select.outputs.workspaces) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: change-mutation-${{ matrix.workspace }}-shard-*-${{ env.QUALITY_HEAD }}
+          path: mutation-reports
+      - name: Verify all mutation shards
+        env:
+          QUALITY_WORKSPACE: ${{ matrix.workspace }}
+        run: >-
+          node scripts/quality/aggregate.mts --directory mutation-reports --head "$QUALITY_HEAD"
+          --workspace "$QUALITY_WORKSPACE" --count 3
+          --output "coverage/changes/$QUALITY_WORKSPACE/mutation"
+      - name: Require successful report jobs
+        env:
+          REPORT_RESULT: ${{ needs.reports.result }}
+        run: test "$REPORT_RESULT" = success
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: change-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}
+          path: coverage/changes/${{ matrix.workspace }}/mutation/
           if-no-files-found: warn
           retention-days: 14
