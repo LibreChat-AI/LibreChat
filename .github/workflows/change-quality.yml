@@ -78,6 +78,7 @@ jobs:
     concurrency:
       group: quality-decision-${{ github.event.issue.number }}
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -287,6 +288,7 @@ jobs:
     concurrency:
       group: quality-decision-${{ github.event.issue.number }}
       cancel-in-progress: false
+      queue: max
     needs: [request, select, verify]
     if: always() && needs.request.outputs.accepted == 'true'
     runs-on: ubuntu-latest

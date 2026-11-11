@@ -37,6 +37,7 @@ jobs:
     concurrency:
       group: quality-decision-${{ needs.resolve.outputs.pr }}
       cancel-in-progress: false
+      queue: max
     name: Publish quality decision
     runs-on: ubuntu-latest
     timeout-minutes: 5
