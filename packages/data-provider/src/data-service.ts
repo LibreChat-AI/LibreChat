@@ -1,3 +1,4 @@
+import { isAxiosError } from 'axios';
 import type { AxiosResponse } from 'axios';
 import type {
   ResponseReviewView,
@@ -98,10 +99,18 @@ export function activateAgentChannel(
   channelId: string,
   input: ActivateAgentChannel,
 ): Promise<AgentChannel> {
-  return request.patch(endpoints.agentChannels(agentId, channelId), input).catch(() => {
-    // Axios failures carry serialized credentials in config/request; never retain them in query state.
-    throw new Error('Channel activation failed');
-  });
+  return request
+    .patch(endpoints.agentChannels(agentId, channelId), input)
+    .catch((error: unknown) => {
+      // Axios failures carry serialized credentials; copy only the approved setup code.
+      const unavailable =
+        isAxiosError<{ error?: unknown }>(error) &&
+        error.response?.data?.error === 'transactions_unavailable';
+      throw Object.assign(
+        new Error('Channel activation failed'),
+        unavailable ? { code: 'transactions_unavailable' } : {},
+      );
+    });
 }
 
 export function disableAgentChannel(agentId: string, channelId: string): Promise<AgentChannel> {
