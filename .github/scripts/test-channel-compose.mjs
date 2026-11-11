@@ -10,6 +10,7 @@ const fixture = mkdtempSync(join(tmpdir(), 'channel-compose-'));
 for (const file of [
   'docker-compose.yml',
   'docker-compose.channels.yml',
+  'docker-compose.slack-workspaces.yml',
   'docker-compose.channels-build.yml',
   'docker-compose.mongo-replica.yml',
   '.env.example',
@@ -19,8 +20,9 @@ for (const file of [
 copyFileSync(join(root, '.env.example'), join(fixture, '.env'));
 process.on('exit', () => rmSync(fixture, { recursive: true, force: true }));
 
-function configuration(tag, source = false) {
+function configuration(tag, source = false, shared = false, gatewayPort) {
   const files = ['docker-compose.yml', 'docker-compose.channels.yml'];
+  if (shared) files.push('docker-compose.slack-workspaces.yml');
   if (source) {
     files.push('docker-compose.channels-build.yml');
   }
@@ -42,7 +44,21 @@ function configuration(tag, source = false) {
       {
         cwd: fixture,
         encoding: 'utf8',
-        env: { ...process.env, UID: '1000', GID: '1000', LIBRECHAT_IMAGE_TAG: tag },
+        env: {
+          ...process.env,
+          UID: '1000',
+          GID: '1000',
+          LIBRECHAT_IMAGE_TAG: tag,
+          SLACK_APP_ID: 'A123',
+          SLACK_CLIENT_ID: '123.456',
+          SLACK_CLIENT_SECRET: 'fixture-client-secret',
+          SLACK_SIGNING_SECRET: 'fixture-signature',
+          SLACK_GATEWAY_URL: 'https://slack.example.test',
+          CHANNEL_ID: 'legacy-connection',
+          CHANNEL_TENANT_ID: 'org.a',
+          SLACK_APP_TOKEN: 'xapp-fixture',
+          CHANNEL_GATEWAY_PORT: gatewayPort ?? '',
+        },
       },
     ),
   ).services;
@@ -71,3 +87,37 @@ assert.equal(source['channel-gateway'].build.dockerfile, 'packages/channel-gatew
 assert.equal(source.api.pull_policy, 'build');
 assert.equal(source['channel-gateway'].pull_policy, 'build');
 console.log('PASS: release tags match, releases need no build, source builds remain explicit');
+
+for (const source of [false, true]) {
+  const shared = configuration('v1.2.3-rc1', source, true);
+  assert.equal(shared.api.environment.SLACK_WORKSPACES_ENABLED, 'true');
+  assert.equal(shared.api.environment.SLACK_GATEWAY_URL, 'https://slack.example.test');
+  const gateway = shared['channel-gateway'];
+  for (const name of [
+    'SLACK_APP_ID',
+    'SLACK_CLIENT_ID',
+    'SLACK_CLIENT_SECRET',
+    'SLACK_SIGNING_SECRET',
+  ]) {
+    assert.equal(shared.api.environment[name], undefined, `${name} is configured in the UI`);
+    assert.equal(gateway.environment[name], undefined, `${name} is configured in the UI`);
+  }
+  assert.equal(gateway.environment.CHANNEL_ID, '');
+  assert.equal(gateway.environment.CHANNEL_TENANT_ID, '_');
+  assert.equal(gateway.environment.SLACK_APP_TOKEN, '');
+  assert.equal(gateway.depends_on.api.condition, 'service_healthy');
+  assert.deepEqual(gateway.ports, [
+    {
+      mode: 'ingress',
+      host_ip: '127.0.0.1',
+      target: 8080,
+      published: '3081',
+      protocol: 'tcp',
+    },
+  ]);
+}
+assert.equal(
+  configuration('v1.2.3', false, true, '3999')['channel-gateway'].ports[0].published,
+  '3999',
+);
+console.log('PASS: shared Compose needs no app credentials and clears all bound-gateway settings');
