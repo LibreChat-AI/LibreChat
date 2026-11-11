@@ -16,9 +16,13 @@ import { cleanupAgent, uniqueAgentName } from '../agents.helpers';
  * The chat chrome a deployment review asked for: what a response repeats from the header, what the
  * streaming dot says it is, and how the sidebar sits. The sidebar's rail and the hover tooltip are
  * desktop surfaces, so this runs on the desktop viewport it describes.
+ *
+ * The streaming dot is read while a route holds its turn open, and that route goes in after the
+ * page has loaded, which is also when the PWA service worker takes control of the page. A route
+ * installed in the same few milliseconds is never consulted, so the turn would simply finish.
  */
 
-test.use({ viewport: { width: 1280, height: 800 } });
+test.use({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' });
 
 async function createAgent(page: Page, name: string) {
   await page.goto(NEW_CHAT_PATH, { timeout: 15000 });

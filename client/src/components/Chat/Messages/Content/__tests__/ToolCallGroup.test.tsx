@@ -187,7 +187,9 @@ jest.mock('../Parts', () => ({
   AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="attachment-group" data-count={attachments?.length ?? 0} />
   ),
-  ReasoningCompact: () => <div data-testid="compact-reasoning" />,
+  ReasoningCompact: ({ isStreaming = false }: { isStreaming?: boolean }) => (
+    <div data-testid="compact-reasoning" data-streaming={String(isStreaming)} />
+  ),
 }));
 
 const makePart = (
@@ -290,6 +292,32 @@ const renderGroup = (props: React.ComponentProps<typeof ToolCallGroup>) =>
 
 const mockScheduleMessageContentLayoutReconcile =
   scheduleMessageContentLayoutReconcile as jest.Mock;
+
+describe('ToolCallGroup folded-in thought', () => {
+  const baseProps = {
+    parts: [
+      { part: makePart('t1'), idx: 0 },
+      {
+        part: { type: ContentTypes.THINK, think: 'Weighing the result' } as TMessageContentParts,
+        idx: 1,
+      },
+    ],
+    isSubmitting: true,
+    showThinking: false,
+    lastContentIdx: 1,
+    renderPart: (_p: TMessageContentParts, idx: number) => <div key={idx} />,
+  } satisfies Omit<React.ComponentProps<typeof ToolCallGroup>, 'isLast'>;
+
+  it('streams the thought at the tail of the group that holds the message cursor', () => {
+    renderGroup({ ...baseProps, isLast: true });
+    expect(screen.getByTestId('compact-reasoning')).toHaveAttribute('data-streaming', 'true');
+  });
+
+  it('settles the thought at the tail of a body the run has moved past', () => {
+    renderGroup({ ...baseProps, isLast: false });
+    expect(screen.getByTestId('compact-reasoning')).toHaveAttribute('data-streaming', 'false');
+  });
+});
 
 describe('ToolCallGroup image hoisting', () => {
   const parts = [

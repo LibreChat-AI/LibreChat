@@ -10,6 +10,7 @@ import { openPanel } from './panels';
  * sees in the row menu and how many permission requests the panel issues.
  */
 
+const GROUPS_PATH = '/api/prompts/groups';
 const BATCH_PATH = '/api/permissions/promptGroup/effective/all';
 const PER_ROW_PATH = /^\/api\/permissions\/promptGroup\/[^/]+\/effective$/;
 
@@ -79,9 +80,22 @@ async function rowActions(page: Page, name: string): Promise<string[]> {
   return items.map((item) => item.trim());
 }
 
+/**
+ * Types the filter and waits for the list it produces. The panel applies a filter half a second
+ * after the typing stops, by replacing the rows with the filtered request's answer: a row found
+ * before then is about to unmount, and takes the menu opened on it along.
+ */
 async function filterPanel(page: Page, name: string) {
   const search = page.locator('#prompts-panel').getByRole('search').getByRole('textbox');
+  const filtered = page.waitForResponse(
+    (response) => {
+      const url = new URL(response.url());
+      return url.pathname === GROUPS_PATH && url.searchParams.get('name') === name;
+    },
+    { timeout: 15000 },
+  );
   await search.fill(name);
+  await (await filtered).finished();
 }
 
 test.describe('prompt row permissions', () => {
