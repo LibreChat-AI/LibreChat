@@ -559,7 +559,7 @@ describe('clickhouse theme definition', () => {
       controlRadius: '0.25rem',
       surfaceRadius: '0.5rem',
       largeSurfaceRadius: '0.75rem',
-      roundControlRadius: '9999px',
+      roundControlRadius: '0.25rem',
     });
     expect(resolved.appearance.fontFamily).toMatch(/^"Inter", "SF Pro Display"/);
     expect(resolved.appearance.monoFontFamily).toBe(

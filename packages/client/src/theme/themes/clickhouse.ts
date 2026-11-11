@@ -457,7 +457,7 @@ const clickHouseShape = {
   controlRadius: '0.25rem',
   surfaceRadius: '0.5rem',
   largeSurfaceRadius: '0.75rem',
-  roundControlRadius: '9999px',
+  roundControlRadius: '0.25rem', // button.radii.all, Click UI draws no pill controls; the default theme keeps its circles
   menuRadius: '0.25rem', // genericMenu.panel.radii.all
   popoverRadius: '0.25rem', // genericMenu.panel.radii.all, the panel the composer popovers are
   menuPanelRadius: '0.25rem', // genericMenu.panel.radii.all

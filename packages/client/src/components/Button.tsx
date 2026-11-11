@@ -304,7 +304,7 @@ const buttonVariantRecipe = cva(
         /** A composer pill that opens a popover with its value, such as Thinking: primary ink,
          *  and kept lit while the popover it controls is expanded. */
         'composer-pill':
-          'gap-1 rounded-theme-control font-normal text-text-primary hover:bg-surface-hover focus-visible:ring-offset-0 aria-expanded:bg-surface-hover',
+          'gap-1 rounded-theme-control-round font-normal text-text-primary hover:bg-surface-hover focus-visible:ring-offset-0 aria-expanded:bg-surface-hover',
         /** A composer control that opens a popover from an icon, such as the reasoning menu: it
          *  rests in the secondary ink and takes the primary one while hovered or expanded. */
         'composer-trigger':

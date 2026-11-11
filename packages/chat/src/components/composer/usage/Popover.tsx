@@ -150,7 +150,7 @@ export default function UsagePopover({
           popover.show();
         }}
         className={cn(
-          'size-theme-control rounded-theme-control flex items-center justify-center transition-colors',
+          'size-theme-control rounded-theme-control-round flex items-center justify-center transition-colors',
           'hover:bg-surface-hover focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
           'animate-in fade-in zoom-in-95 duration-300',
         )}

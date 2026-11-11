@@ -770,7 +770,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   radius2xl: 'border.radii.2',
   largeSurfaceRadius: 'border.radii.3',
   radius3xl: 'border.radii.3',
-  roundControlRadius: 'border.radii.full',
+  roundControlRadius: 'click.button.radii.all',
   spaceCompact: 'spaces.2',
   spaceNormal: 'spaces.3',
   menuRadius: 'click.genericMenu.panel.radii.all',

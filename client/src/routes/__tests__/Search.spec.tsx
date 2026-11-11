@@ -120,8 +120,8 @@ describe('Search route', () => {
       'focus-visible:ring-2',
       'focus-visible:ring-ring-primary',
     );
-    expect(container.firstElementChild).toHaveClass('bg-presentation');
-    expect(container.querySelector('.bg-gradient-to-t')).toHaveClass('from-presentation');
+    expect(container.firstElementChild).toHaveClass('bg-surface-canvas');
+    expect(container.querySelector('.bg-gradient-to-t')).toHaveClass('from-surface-canvas');
   });
 
   it('keeps results mounted while typing (does NOT flash the full spinner)', () => {
