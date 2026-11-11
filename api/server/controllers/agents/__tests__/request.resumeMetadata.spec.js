@@ -640,6 +640,7 @@ describe('ResumableAgentController resume metadata', () => {
         }),
       );
       expect(options.initialMetadata.responseMessageId).toEqual(expect.any(String));
+      expect(options.initialMetadata.isNewConversation).toBe(true);
       expect(options.initialMetadata).not.toHaveProperty('channelExecution');
       expect(options.initialMetadata).not.toHaveProperty('terminalPersistenceOwner');
     },
@@ -1010,6 +1011,7 @@ describe('ResumableAgentController resume metadata', () => {
       user: { id: 'user-123' },
       body: {
         text: 'Check Google Workspace availability.',
+        isNewConversation: true,
         messageId: 'follow-up-user',
         parentMessageId: 'original-response',
         conversationId,
@@ -1040,6 +1042,7 @@ describe('ResumableAgentController resume metadata', () => {
         startupTelemetry: mockStartupTelemetry,
         initialMetadata: {
           conversationId,
+          isNewConversation: false,
           generationProtocolVersion: 1,
           endpoint: 'agents',
           iconURL: 'https://example.com/spec-icon.png',
