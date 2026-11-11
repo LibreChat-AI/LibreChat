@@ -4,6 +4,7 @@ import type { TConversation, TPreset, Agent } from 'librechat-data-provider';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useDefaultConvo from '~/hooks/Conversations/useDefaultConvo';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { activateCatalog } from '~/hooks/useCatalogWarmup';
 import { logger, specDisplayFieldReset } from '~/utils';
 import useNewConvo from '~/hooks/useNewConvo';
 
@@ -48,23 +49,27 @@ export default function useSelectAgent() {
     [getConversation, getDefaultConversation, newConversation],
   );
 
+  /**
+   * The agents map is a deferred catalog, so `undefined` means it has not loaded, not that the
+   * agent is gone. The caller already holds the agent it offers; only a loaded map may refuse it.
+   */
   const onSelect = useCallback(
     async (value: string) => {
-      const agent = agentsMap?.[value];
-      if (!agent) {
+      if (agentsMap != null && agentsMap[value] == null) {
         return;
       }
+      activateCatalog('agents');
 
       const template: Partial<TPreset | TConversation> = {
         endpoint: EModelEndpoint.agents,
-        agent_id: agent.id,
+        agent_id: value,
         conversationId: Constants.NEW_CONVO as string,
         codeEnvironmentMode: undefined,
         codeWorkspaces: undefined,
         ...specDisplayFieldReset,
       };
 
-      await updateConversation({ id: agent.id }, template);
+      await updateConversation({ id: value }, template);
     },
     [agentsMap, updateConversation],
   );

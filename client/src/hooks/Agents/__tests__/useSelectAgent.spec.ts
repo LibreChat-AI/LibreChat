@@ -1,11 +1,14 @@
 import { renderHook, act } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
-import type { TConversation } from 'librechat-data-provider';
+import type { Agent, TAgentsMap, TConversation } from 'librechat-data-provider';
 
 const mockNewConversation = jest.fn();
 const mockFetchQuery = jest.fn();
 const mockGetConversation = jest.fn();
 const mockGetDefaultConversation = jest.fn();
+const listedAgent = { id: 'agent-1', name: 'Agent' } as Agent;
+const loadedAgentsMap: TAgentsMap = { [listedAgent.id]: listedAgent };
+let mockAgentsMap: TAgentsMap | undefined = loadedAgentsMap;
 
 jest.mock('@tanstack/react-query', () => ({
   useQueryClient: jest.fn(() => ({ fetchQuery: mockFetchQuery })),
@@ -27,7 +30,7 @@ jest.mock('~/hooks/Conversations/useDefaultConvo', () => ({
 }));
 
 jest.mock('~/Providers/AgentsMapContext', () => ({
-  useAgentsMapContext: jest.fn(() => ({ 'agent-1': { id: 'agent-1', name: 'Agent' } })),
+  useAgentsMapContext: jest.fn(() => mockAgentsMap),
 }));
 
 jest.mock('~/utils', () => ({
@@ -40,11 +43,14 @@ jest.mock('~/utils', () => ({
   },
 }));
 
+import { resetCatalogWarmup, useCatalogReady } from '~/hooks/useCatalogWarmup';
 import useSelectAgent from '../useSelectAgent';
 
 describe('useSelectAgent', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    resetCatalogWarmup();
+    mockAgentsMap = loadedAgentsMap;
     mockGetConversation.mockResolvedValue({ endpoint: EModelEndpoint.agents } as TConversation);
     mockGetDefaultConversation.mockImplementation(
       ({
@@ -167,5 +173,41 @@ describe('useSelectAgent', () => {
 
     expect(mockNewConversation.mock.calls[0][0].template.codeWorkspaces).toBeUndefined();
     expect(mockFetchQuery).not.toHaveBeenCalled();
+  });
+
+  describe('agents catalog readiness', () => {
+    const renderSelection = () =>
+      renderHook(() => ({
+        selection: useSelectAgent(),
+        catalogReady: useCatalogReady('agents'),
+      }));
+
+    it('selects an agent before the deferred catalog has loaded, and releases the catalog', async () => {
+      mockAgentsMap = undefined;
+      const { result } = renderSelection();
+      expect(result.current.catalogReady).toBe(false);
+
+      await act(async () => {
+        await result.current.selection.onSelect('agent-new');
+      });
+
+      expect(mockNewConversation).toHaveBeenCalledTimes(1);
+      expect(mockNewConversation.mock.calls[0][0].template).toMatchObject({
+        endpoint: EModelEndpoint.agents,
+        agent_id: 'agent-new',
+      });
+      expect(result.current.catalogReady).toBe(true);
+    });
+
+    it('refuses an agent that a loaded catalog does not list', async () => {
+      const { result } = renderSelection();
+
+      await act(async () => {
+        await result.current.selection.onSelect('agent-missing');
+      });
+
+      expect(mockNewConversation).not.toHaveBeenCalled();
+      expect(result.current.catalogReady).toBe(false);
+    });
   });
 });
