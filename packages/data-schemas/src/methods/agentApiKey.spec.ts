@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createAgentApiKeyMethods } from './agentApiKey';
 import { runAsSystem } from '~/config/tenantContext';
+import { waitForPause } from './test-helpers';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 import { hashToken } from '~/crypto';
@@ -185,7 +186,7 @@ it('serializes bound-key creation with final account erasure', async () => {
     name: 'in-flight',
     binding: { kind: 'grant', id: 'one' },
   });
-  await started;
+  await waitForPause(started, creating);
   let deleted = false;
   const deleting = createUserMethods(mongoose)
     .deleteUserById(ownerId)
