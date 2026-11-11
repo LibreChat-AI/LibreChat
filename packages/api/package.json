@@ -113,7 +113,7 @@
     "@azure/identity": "^4.14.0",
     "@azure/storage-blob": "^12.30.0",
     "@keyv/redis": "5.1.6",
-    "@librechat/agents": "^4.2.1",
+    "@librechat/agents": "^4.2.2",
     "@librechat/data-schemas": "*",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@opentelemetry/api": "^1.9.0",
@@ -166,7 +166,7 @@
     "re2js": "^2.9.1",
     "sanitize-html": "^2.18.1",
     "sharp": "^0.35.5",
-    "undici": "^7.30.1",
+    "undici": "^7.30.2",
     "yauzl": "^3.2.1",
     "zod": "^4.6.7",
     "zod-to-json-schema": "^3.25.1"

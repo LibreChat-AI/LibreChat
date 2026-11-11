@@ -157,6 +157,7 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
         definitionsOnly,
         accessibleMcpServerNames,
         streamId: null, // No resumable stream for OpenAI compat
+        unattended: true,
       });
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
@@ -892,6 +893,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           const result = await loadToolsForExecution({
             req,
             res,
+            unattended: true,
             agentResourceType: ResourceType.REMOTE_AGENT,
             conversationId,
             requestBody: mcpRequestBody,

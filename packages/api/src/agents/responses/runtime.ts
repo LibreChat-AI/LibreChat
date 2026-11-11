@@ -130,6 +130,8 @@ export interface ResponseExecutionRuntime {
   toolContext: (execution: { createdAt: number }) => {
     streamId: string | null;
     jobCreatedAt?: number;
+    /** A foreground run answers an API client and has no stream its owner can follow. */
+    unattended?: boolean;
   };
   connection?: AgentExecutionConnection;
   hooks: Pick<
@@ -816,7 +818,7 @@ export function createResponseExecutionRuntime(
     toolContext: (execution) =>
       admission
         ? { streamId: admission.record.responseId, jobCreatedAt: execution.createdAt }
-        : { streamId: null },
+        : { streamId: null, unattended: true },
     responseId:
       admission?.record.responseId ?? (continuation.generateResponseId ?? generateResponseId)(),
     connection: admission

@@ -69,6 +69,8 @@ export interface IUser extends Document {
   termsAcceptedSource?: 'migration';
   /** Internal fence that prevents agent-trigger admission during account deletion. */
   agentTriggerDeletionStartedAt?: Date;
+  /** Durable identity shared by every offline recovery of this erasure attempt. */
+  agentTriggerDeletionAttemptId?: string;
   /** Expiring fences closing subagent admission while bulk deletions drain. */
   subagentAdmissionFences?: Array<{
     token: string;

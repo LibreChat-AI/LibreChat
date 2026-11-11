@@ -24,6 +24,7 @@ import { assertMutants, mutantKey } from './shards.mts';
 import { mutationSummary } from './merge.mts';
 
 interface Step {
+  if?: string;
   id?: string;
   name?: string;
   uses?: string;
@@ -34,6 +35,7 @@ interface Step {
 }
 interface Job {
   env?: Record<string, string>;
+  services?: Record<string, { image: string }>;
   'timeout-minutes'?: string | number;
   if?: string;
   permissions?: Record<string, string>;
@@ -147,11 +149,41 @@ test('workflow separates tooling, source, installs and artifacts without changin
   );
 });
 
+test('PR updates retain PostgreSQL contracts without starting source quality reports', () => {
+  const select = workflow.jobs.select;
+  assert.equal(
+    select.steps.find(({ id }) => id === 'select')?.if,
+    "github.event_name != 'pull_request'",
+  );
+  const postgresSelection = select.steps.find(({ id }) => id === 'postgres')!;
+  assert.equal(postgresSelection.if, "github.event_name != 'issue_comment'");
+  assert.match(postgresSelection.run!, /git diff --name-only/);
+  assert.ok(workflow.on.pull_request?.paths.includes('packages/data-schemas/src/postgres/**'));
+  assert.ok(workflow.on.pull_request?.paths.includes('packages/api/src/app/persistence*'));
+  const postgres = workflow.jobs.postgres;
+  assert.equal(
+    postgres.if,
+    "always() && needs.select.result == 'success' && needs.select.outputs.postgresChanged == 'true'",
+  );
+  assert.deepEqual(postgres.needs, ['select']);
+  assert.equal(checkouts(postgres)[0].with?.ref, '${{ env.QUALITY_HEAD }}');
+  assert.equal(postgres.services?.postgres.image, 'postgres:16-alpine');
+  assert.equal(report.services?.postgres.image, 'postgres:16-alpine');
+  assert.ok(postgres.steps.some(({ run }) => run?.includes('npm run test:postgres')));
+  assert.ok(postgres.steps.some(({ run }) => run?.includes('delete-user.recovery.spec.js')));
+  assert.equal(report.env?.PG_TEST_URL, 'postgresql://postgres@127.0.0.1:5432/postgres');
+  const prewarm = report.steps.findIndex(
+    ({ uses }) => uses === './tooling/.github/actions/mongodb-binary',
+  );
+  assert.ok(prewarm > 0 && prewarm < report.steps.indexOf(runner));
+  assert.equal(report.steps[prewarm].with?.['working-directory'], 'source');
+});
+
 test('comment publication is trusted and serialized while PR execution stays read-only', (t) => {
   assert.ok(workflow.on.pull_request?.paths.includes('scripts/quality/**'));
   assert.equal(
     workflow.jobs.select.if,
-    "always() && (github.event_name == 'workflow_dispatch' || needs.request.outputs.accepted == 'true')",
+    "always() && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')",
   );
   assert.deepEqual(workflow.on.issue_comment?.types, ['created']);
   assert.equal(workflow.jobs.request.permissions?.issues, 'write');

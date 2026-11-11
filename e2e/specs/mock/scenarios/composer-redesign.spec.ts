@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { openAgentBuilder } from '../agents.helpers';
 import {
@@ -11,6 +10,7 @@ import {
   sendMessage,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
+import { expect, test } from '../fixtures';
 
 const messageInput = (page: Page) => page.getByRole('textbox', { name: 'Message input' });
 const slowRun = (label: string) => `E2E_SLOW_REPLY:${label}`;

@@ -499,3 +499,8 @@ describe('Claude Mythos version boundaries', () => {
     },
   );
 });
+describe('GPT-6 Cyber', () => {
+  it('resolves the published context window for configured models', () => {
+    expect(getModelMaxTokens('gpt-6-cyber', EModelEndpoint.openAI)).toBe(1050000);
+  });
+});

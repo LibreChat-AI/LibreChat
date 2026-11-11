@@ -660,9 +660,6 @@ export default function ToolCallGroup({
             type="button"
             className={cn(
               'text-text-secondary hover:text-text-secondary focus-visible:ring-focus-subtle inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
-              /** An open header is the title of the rows under it, so it is the
-               *  one line in the fold set in the primary colour. */
-              isExpanded && 'text-text-primary hover:text-text-primary',
             )}
             onClick={handleToggle}
             aria-expanded={isExpanded}
@@ -788,7 +785,11 @@ export default function ToolCallGroup({
                                   handleToolExpand,
                                 );
                               }
-                              const streaming = isSubmitting && idx === lastContentIdx;
+                              /** `lastContentIdx` is the tail of this body, and every
+                               *  settled phase body has one. Only the group that holds
+                               *  the message's cursor has a thought still being written,
+                               *  the rule `PartWithContext` applies to a lone thought. */
+                              const streaming = isSubmitting && isLast && idx === lastContentIdx;
                               /** Mirrors the standalone `Reasoning` path: the authored
                                *  label wins, generic text is only a fallback. */
                               const generatedLabel = part.reasoning_label?.trim();

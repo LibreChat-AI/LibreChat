@@ -128,7 +128,7 @@ export default function WorkspaceChanges({
       </Button>
       <div id={panelId} style={style} inert={!isExpanded ? '' : undefined}>
         <div className="overflow-hidden" ref={ref} aria-hidden={!isExpanded}>
-          <div className="flex flex-col gap-2 pt-2">
+          <div className="flex flex-col gap-2 pt-1">
             {attachments.map((attachment) => (
               <WorkspaceChange
                 key={`${attachment.filepath}:${attachment.workspaceChange.path}`}

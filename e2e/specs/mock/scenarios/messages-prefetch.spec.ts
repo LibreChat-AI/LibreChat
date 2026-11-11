@@ -10,6 +10,7 @@ import {
 } from '../db';
 import { ensureSidebarOnScreen } from './pinned.helpers';
 import { messagesView } from '../helpers';
+import { unroute } from '../fixtures';
 
 const ROOT_PARENT = '00000000-0000-0000-0000-000000000000';
 /** Holds the conversation record long enough that a messages load gated on it would start late. */
@@ -86,7 +87,7 @@ test.describe('conversation messages load with the route', () => {
       expect(recordReleasedAt).toBeGreaterThan(0);
       expect(startedAt[0]).toBeLessThan(recordReleasedAt);
     } finally {
-      await page.unroute(`**/api/convos/${conversationId}`);
+      await unroute(page, `**/api/convos/${conversationId}`);
       await deleteMessagesByConversation([conversationId]);
       await deleteConversations([conversationId]);
     }

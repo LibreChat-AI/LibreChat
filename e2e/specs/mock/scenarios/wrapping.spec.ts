@@ -1,6 +1,8 @@
-import { expect, test } from '@playwright/test';
-import type { TConversationTag } from 'librechat-data-provider';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import type { TStartupConfig, TConversationTag } from 'librechat-data-provider';
 import type { Locator, Page } from '@playwright/test';
+import { expect, test } from '../fixtures';
 import { uniqueName } from '../helpers';
 import { openPanel } from './panels';
 
@@ -14,24 +16,32 @@ const LONG_URL = `https://example.com/${'privacy-'.repeat(4)}${UNBROKEN}`;
 /** Phone through desktop: a line that breaks inside a word at any of these is the bug. */
 const WIDTHS = [360, 414, 600, 1024];
 
-/** Serves the startup config with a deployment's own trust checkbox sub-label. */
+/** Reuses this test's fixed deployment config across viewport reloads, without mixing login states. */
 async function serveSubLabel(page: Page, subLabel: string): Promise<void> {
+  const configs = new Map<boolean, Promise<string>>();
   await page.route('**/api/config', async (route) => {
-    const response = await route.fetch();
-    const config = await response.json();
-    await route.fulfill({
-      response,
-      json: {
-        ...config,
-        interface: {
-          ...config.interface,
-          mcpServers: {
-            ...config.interface?.mcpServers,
-            trustCheckbox: { ...config.interface?.mcpServers?.trustCheckbox, subLabel },
+    const authenticated = Boolean(route.request().headers()['authorization']);
+    let config = configs.get(authenticated);
+    if (!config) {
+      // Cache the promise too: startup can issue concurrent requests for the same login state.
+      config = (async () => {
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        const body = (await response.json()) as TStartupConfig;
+        return JSON.stringify({
+          ...body,
+          interface: {
+            ...body.interface,
+            mcpServers: {
+              ...body.interface?.mcpServers,
+              trustCheckbox: { ...body.interface?.mcpServers?.trustCheckbox, subLabel },
+            },
           },
-        },
-      },
-    });
+        });
+      })();
+      configs.set(authenticated, config);
+    }
+    await route.fulfill({ contentType: 'application/json', body: await config });
   });
 }
 
@@ -101,6 +111,93 @@ async function textStaysInside(scope: Locator, text: string, container: Locator)
 }
 
 test.describe('prose wraps between words', () => {
+  test('@scenario:wrapping-config-reuses-deployment-snapshot coalesces config reads by login state across viewport reloads', async ({
+    page,
+  }) => {
+    const reads = { anonymous: 0, authenticated: 0 };
+    let resetConfigRequests = false;
+    const server = createServer((req, res) => {
+      if (req.url !== '/api/config') {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<!doctype html><title>Wrapping config regression</title>');
+        return;
+      }
+      const authenticated = Boolean(req.headers.authorization);
+      reads[authenticated ? 'authenticated' : 'anonymous']++;
+      if (resetConfigRequests) {
+        req.socket.resetAndDestroy();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          appTitle: 'Wrapping fixture',
+          interface: {
+            modelSelect: authenticated,
+            ...(authenticated
+              ? { mcpServers: { use: true, trustCheckbox: { label: 'Trust this server' } } }
+              : {}),
+          },
+        }),
+      );
+    });
+    server.listen(0, '127.0.0.1');
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Wrapping config fixture did not bind a TCP port');
+      }
+      await page.goto(`http://127.0.0.1:${address.port}`);
+      await serveSubLabel(page, DISCLOSURE);
+      const readConfigs = () =>
+        page.evaluate(async () => {
+          const read = async (authenticated: boolean) => {
+            const response = await fetch('/api/config', {
+              headers: authenticated ? { Authorization: 'Bearer wrapping-fixture' } : {},
+            });
+            return response.json();
+          };
+          return Promise.all([read(false), read(false), read(true), read(true)]);
+        });
+      const [anonymous, duplicateAnonymous, authenticated, duplicateAuthenticated] =
+        await readConfigs();
+      expect(reads).toEqual({ anonymous: 1, authenticated: 1 });
+      expect(anonymous).toEqual({
+        appTitle: 'Wrapping fixture',
+        interface: {
+          modelSelect: false,
+          mcpServers: { trustCheckbox: { subLabel: DISCLOSURE } },
+        },
+      });
+      expect(authenticated).toEqual({
+        appTitle: 'Wrapping fixture',
+        interface: {
+          modelSelect: true,
+          mcpServers: {
+            use: true,
+            trustCheckbox: { label: 'Trust this server', subLabel: DISCLOSURE },
+          },
+        },
+      });
+      expect(duplicateAnonymous).toEqual(anonymous);
+      expect(duplicateAuthenticated).toEqual(authenticated);
+
+      // Any redundant upstream config request now resets instead of returning a fixture.
+      resetConfigRequests = true;
+      server.closeAllConnections();
+      for (const width of WIDTHS) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.reload();
+        expect(await readConfigs()).toEqual([anonymous, anonymous, authenticated, authenticated]);
+      }
+      expect(reads).toEqual({ anonymous: 1, authenticated: 1 });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   test('@scenario:mcp-trust-disclosure-wraps-between-words a long trust disclosure in the Add MCP Server dialog never breaks inside a word', async ({
     page,
   }) => {

@@ -1,9 +1,9 @@
 import { randomUUID } from 'crypto';
 import { ObjectId } from 'mongodb';
 import type { APIRequestContext, Locator, Page, Response, Route } from '@playwright/test';
-import { expect, test } from '@playwright/test';
 import { FileContext } from 'librechat-data-provider';
 import { getE2EUser } from '../../../setup/user';
+import { expect, test, unroute } from '../fixtures';
 import { withMongo } from '../db';
 import { escapeRegExp, getAccessToken, uniqueName } from '../helpers';
 import { loginAdmin } from '../content-filters.helpers';
@@ -429,7 +429,7 @@ test.describe('project file workspace UI', () => {
       );
       await expect(row.getByText(failureBody.error)).toHaveCount(0);
       await expect(row.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
-      await page.unroute(associationMatcher, failAssociation);
+      await unroute(page, associationMatcher, failAssociation);
 
       await row.getByRole('button', { name: 'Retry', exact: true }).click();
       await expect(row.getByRole('alert')).toHaveCount(0);

@@ -47,6 +47,7 @@ export type {
 } from './methods/response';
 export {
   createMethods,
+  createToolFavoriteMethods,
   createChannelIdentityStorage,
   createChannelFeedbackStorage,
   ChannelFeedbackAuthorityError,
@@ -182,3 +183,30 @@ export type { SearchTokenBackfillResult } from './migrations';
 export { createBrowserSetupStore, createBrowserSetupBackend } from './methods/browserSetup';
 export type * from './types/browserSetup';
 export type * from './types/codeEnvironmentSetup';
+
+export * from './checkpoints/types';
+export * from './checkpoints/identity';
+export { createMongoCheckpointRepository } from './checkpoints/mongo';
+export type { MongoCheckpointRepositoryOptions } from './checkpoints/mongo';
+export {
+  createCheckpointCatalog,
+  checkpointStorageKey,
+  CHECKPOINT_STORAGE_COLLECTION,
+} from './checkpoints/catalog';
+export type { CheckpointStorageRecord } from './checkpoints/catalog';
+export { createCheckpointDeletionJournal, checkpointDeletionTarget } from './checkpoints/journal';
+export { createActorCheckpointPruning } from './checkpoints/pruning';
+export { isCheckpointDatabaseAvailable } from './checkpoints/database';
+
+export { setupCheckpointIndexes } from './checkpoints/indexes';
+export {
+  CheckpointTooLargeError,
+  CHECKPOINT_HARD_LIMIT_BYTES,
+  CHECKPOINT_WARN_BYTES,
+} from './checkpoints/limits';
+export * from './postgres/backend';
+export * from './postgres/pool';
+export * from './postgres/migrations';
+export * from './postgres/favorite';
+export * from './postgres/import';
+export * from './postgres/mongo';

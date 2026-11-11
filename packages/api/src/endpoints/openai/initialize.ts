@@ -195,6 +195,7 @@ export async function initializeOpenAI(
 
   const finalClientOptions: OpenAIConfigOptions = {
     ...clientOptions,
+    requestIdentity: { userId: user?.id, tenantId: user?.tenantId },
     modelOptions,
   };
 

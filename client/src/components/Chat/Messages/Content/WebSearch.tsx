@@ -319,11 +319,11 @@ export default function WebSearch({
     );
 
     return (
-      <div className="group/websearch my-1">
+      <div className={cn('group/websearch', bare && 'my-1.5')}>
         <span className="sr-only" aria-live="polite" aria-atomic="true">
           {completedText}
         </span>
-        <div className={cn('relative flex items-center gap-1.5', bare ? 'h-0' : 'h-5')}>
+        <div className={cn('relative flex items-center gap-1.5', bare ? 'h-0' : 'my-1.5 h-5')}>
           {!bare && (
             <Button
               ref={rowRef}
@@ -428,7 +428,7 @@ export default function WebSearch({
   }
 
   return (
-    <div className="relative my-1 flex h-5 shrink-0 items-center gap-2">
+    <div className="relative my-1.5 flex h-5 shrink-0 items-center gap-2">
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {genericProgressText}
       </span>

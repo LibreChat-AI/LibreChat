@@ -2098,6 +2098,39 @@ describe('ToolService - Action Capability Gating', () => {
       });
 
       it.each([
+        ['a sign-in URL was issued', 'https://auth.example.com/sheets'],
+        ['the server only reported that sign-in is needed', undefined],
+      ])('neither prompts nor waits on an unattended run when %s', async (_label, url) => {
+        setUp({ oauthToolCatalog: undefined });
+        reinitMCPServer.mockImplementation(async ({ returnOnOAuth, oauthStart }) => {
+          if (returnOnOAuth === false) {
+            return { availableTools: ownCatalog };
+          }
+          await oauthStart(url);
+          return { availableTools: null };
+        });
+
+        /** With its only MCP server unusable the run fails at once, as it did after the wait. */
+        await expect(
+          loadAgentTools({
+            req: createMockReq(capabilities),
+            res: { writableEnded: false },
+            agent: deferredAgent,
+            definitionsOnly: true,
+            unattended: true,
+          }),
+        ).rejects.toMatchObject({ code: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE' });
+
+        expect(reinitMCPServer).toHaveBeenCalledTimes(1);
+        expect(reinitMCPServer).toHaveBeenCalledWith(expect.objectContaining({ unattended: true }));
+        expect(reinitMCPServer).not.toHaveBeenCalledWith(
+          expect.objectContaining({ returnOnOAuth: false }),
+        );
+        expect(oauthEvents()).toHaveLength(0);
+        expect(mockSendEvent).not.toHaveBeenCalled();
+      });
+
+      it.each([
         ['the server keeps the default prompt', { oauthPrompt: undefined }, deferredAgent],
         [
           'a selected tool is not deferred',

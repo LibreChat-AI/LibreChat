@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto';
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
 import { deleteConversations, deleteMessagesByConversation, seedConversations } from '../db';
+import { expect, test } from '../fixtures';
 
 /**
  * Whether a conversation carries a footer decides where its composer sits, and

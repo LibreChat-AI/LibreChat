@@ -97,6 +97,8 @@ const {
   getRoleByName,
   updateAccessPermissions,
   seedDatabase,
+  initializeFavorites,
+  closeFavorites,
   recordAuditEntry,
   sweepOrphanedPreviews,
 } = require('~/models');
@@ -104,7 +106,7 @@ const { checkMigrations } = require('./services/start/migration');
 const initializeMCPs = require('./services/initializeMCPs');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
-const { getAppConfig } = require('./services/Config');
+const { getAppConfig, loadCustomConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
 const noIndex = require('./middleware/noIndex');
@@ -524,6 +526,8 @@ if (cluster.isMaster) {
      * deletion, the expired-file sweep, tool-approval hooks and the other worker-wide settings
      * below are fixed for the process lifetime, so DB `__base__` overrides must not decide them.
      */
+    await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
+    registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
     const appConfig = await getAppConfig({ baseOnly: true });
     initializeFileStorage(appConfig);
     initializeGitHubSkillSync(appConfig);
@@ -791,7 +795,8 @@ if (cluster.isMaster) {
     setupGracefulShutdown(server);
   };
 
-  startServer().catch((err) => {
+  startServer().catch(async (err) => {
+    await closeFavorites().catch(() => undefined);
     logger.error(`Failed to start worker ${process.pid}:`, err);
     process.exit(1);
   });

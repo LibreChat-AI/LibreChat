@@ -154,23 +154,28 @@ export const isAnimatedImage = async (file: File): Promise<boolean> => {
   return false;
 };
 
-/**
- * Checks if the browser supports canvas-based image resizing
- */
+const resizeSupportedDocuments = new WeakSet<Document>();
+
+/** Reuse successful capability probes without retaining canvases or caching transient failures. */
 export function supportsClientResize(): boolean {
   try {
     // Check for required APIs
+    if (typeof document === 'undefined') return false;
     if (typeof HTMLCanvasElement === 'undefined') return false;
     if (typeof FileReader === 'undefined') return false;
     if (typeof Image === 'undefined') return false;
+    if (resizeSupportedDocuments.has(document)) return true;
 
     // Test canvas creation
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
 
-    return (
-      ctx != null && typeof ctx.drawImage === 'function' && typeof canvas.toBlob === 'function'
-    );
+    const supported =
+      ctx != null && typeof ctx.drawImage === 'function' && typeof canvas.toBlob === 'function';
+    if (supported) {
+      resizeSupportedDocuments.add(document);
+    }
+    return supported;
   } catch {
     return false;
   }

@@ -36,6 +36,7 @@ import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { attachScheduledMCPBearer } from '~/schedules/bearer';
 import { MCPAuthenticationRejectedError } from '~/mcp/errors';
 import { getMCPToolApprovalAuthKind } from '~/mcp/approval';
+import { OAuthLifecycleRelay } from '~/mcp/oauth/pending';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 import { isMCPDomainAllowed } from '~/auth/domain';
 import * as toolsChanged from '~/mcp/toolsChanged';
@@ -3266,6 +3267,75 @@ describe('MCPManager', () => {
       expect(connection.isConnected).toHaveBeenCalledTimes(1);
       expect(MCPConnectionFactory.create).not.toHaveBeenCalled();
     });
+
+    it.each([
+      ['has already asked the owner to sign in', true],
+      ['asks the owner to sign in while it waits', false],
+    ])(
+      'releases a caller nobody can sign in for from a recovery that %s',
+      async (_label, asked) => {
+        mockAppConnections({
+          has: jest.fn().mockResolvedValue(false),
+        });
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        const connection = {
+          isConnected: jest.fn().mockResolvedValue(true),
+        } as unknown as MCPConnection;
+        let resolveRecovery: (() => void) | undefined;
+        const recovery = new Promise<void>((resolve) => {
+          resolveRecovery = resolve;
+        });
+        const internals = manager as unknown as {
+          oauthRecoveries: WeakMap<
+            MCPConnection,
+            { promise: Promise<void>; allowsTakeover: boolean; callbacks: OAuthLifecycleRelay }
+          >;
+          recoveryPrompts: WeakMap<Promise<void>, OAuthLifecycleRelay>;
+          userConnections: Map<string, Map<string, MCPConnection>>;
+        };
+        internals.userConnections.set(
+          mockUser.id,
+          new Map([
+            [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), connection],
+          ]),
+        );
+        const ownerOAuthStart = jest.fn().mockResolvedValue(undefined);
+        const relay = new OAuthLifecycleRelay({ oauthStart: ownerOAuthStart, logPrefix: '[test]' });
+        internals.oauthRecoveries.set(connection, {
+          promise: recovery,
+          allowsTakeover: true,
+          callbacks: relay,
+        });
+        internals.recoveryPrompts.set(recovery, relay);
+        const askOwner = () => relay.start('https://auth.example.com/pending');
+        if (asked) await askOwner();
+
+        /** This checkout waits on the recovery promise alone and registers no prompt handler. */
+        let outcome: unknown;
+        const unattended = manager
+          .getUserConnection({ serverName, user: mockUser, serverConfig, unattended: true })
+          .then(
+            () => (outcome = 'resolved'),
+            (error) => (outcome = error),
+          );
+        await new Promise((resolve) => setImmediate(resolve));
+        if (!asked) {
+          expect(outcome).toBeUndefined();
+          await askOwner();
+        }
+        await unattended;
+        expect(outcome).toMatchObject({ code: 'mcp_reauth_required' });
+        expect(ownerOAuthStart).toHaveBeenCalledTimes(1);
+        expect(connection.isConnected).not.toHaveBeenCalled();
+
+        /** The owner's recovery is untouched: an attended caller still waits for it and reuses it. */
+        const attended = manager.getUserConnection({ serverName, user: mockUser, serverConfig });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(connection.isConnected).not.toHaveBeenCalled();
+        resolveRecovery?.();
+        await expect(attended).resolves.toBe(connection);
+      },
+    );
 
     it('rechecks recovery after yielding to load connection configuration', async () => {
       mockAppConnections({

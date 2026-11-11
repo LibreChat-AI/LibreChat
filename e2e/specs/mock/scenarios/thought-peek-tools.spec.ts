@@ -18,22 +18,46 @@ async function enableMemoryServer(page: Page) {
   await expect(page.getByRole('listitem', { name: MCP_SERVER_TITLE, exact: true })).toBeVisible();
 }
 
-/** Sample the peek until the final text lands; report whether it was ever visible. */
-async function peekSamples(page: Page, finalText: string) {
-  const peek = messagesView(page).getByTestId('streaming-thought-peek');
+/**
+ * Counts every time the peek comes on screen in the conversation from now on, read back through
+ * the handle. The page counts them itself because a peek can come and go between two looks from
+ * here: a summary card folding in keeps its rows on screen for about a tenth of a second.
+ */
+async function countPeeks(page: Page) {
+  return page.evaluateHandle(() => {
+    const seen = { shown: 0 };
+    let showing = false;
+    new MutationObserver(() => {
+      const peek = document.querySelector(
+        '[data-testid="messages-view"] [data-testid="streaming-thought-peek"]',
+      );
+      const visible = peek != null && peek.getClientRects().length > 0;
+      if (visible && !showing) {
+        seen.shown += 1;
+      }
+      showing = visible;
+    }).observe(document.body, { childList: true, subtree: true });
+    return seen;
+  });
+}
+
+/** How many looks, a tenth of a second apart, it took for the final text to land. */
+async function looksUntilReply(page: Page, finalText: string) {
   const final = messagesView(page).getByText(finalText);
-  const samples = { total: 0, visible: 0 };
-  for (let index = 0; index < 300; index += 1) {
-    if (await final.isVisible().catch(() => false)) {
-      break;
-    }
-    samples.total += 1;
-    if (await peek.isVisible().catch(() => false)) {
-      samples.visible += 1;
-    }
+  let looks = 0;
+  while (looks < 300 && !(await final.isVisible().catch(() => false))) {
+    looks += 1;
     await page.waitForTimeout(100);
   }
-  return samples;
+  return looks;
+}
+
+/** A settled card folds in over the thought on the run's last commits, so counts are read after. */
+async function runEnds(page: Page, finalText: string) {
+  await expect(messagesView(page).getByText(finalText)).toBeVisible({ timeout: 60000 });
+  await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+    timeout: 30000,
+  });
 }
 
 test.describe('streaming thought peek', () => {
@@ -46,13 +70,11 @@ test.describe('streaming thought peek', () => {
     const reasoning = uniqueLabel();
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, ENDPOINT);
+    const pure = await countPeeks(page);
     const first = await sendMessage(page, `E2E_SLOW_THINK_REPLY:${reasoning}`);
     expect(first.ok()).toBeTruthy();
-    const pure = await peekSamples(page, `E2E slow think reply done ${reasoning}`);
-    expect(pure.visible, 'no peek under a collapsed phase').toBe(0);
-    await expect(
-      messagesView(page).getByText(`E2E slow think reply done ${reasoning}`),
-    ).toBeVisible({ timeout: 60000 });
+    await runEnds(page, `E2E slow think reply done ${reasoning}`);
+    expect(await pure.evaluate((seen) => seen.shown), 'no peek under a collapsed phase').toBe(0);
 
     /** A thought that streams after a tool call never shows the peek. */
     const afterTool = uniqueLabel();
@@ -66,13 +88,13 @@ test.describe('streaming thought peek', () => {
       await selectMockEndpoint(page, ENDPOINT);
     }
     await enableMemoryServer(page);
+    const toolRun = await countPeeks(page);
     const second = await sendMessage(page, `E2E_TOOL_THEN_THINK_REPLY:${afterTool}`);
     expect(second.ok()).toBeTruthy();
     const finalText = `E2E tool then think reply done ${afterTool}`;
-    const toolRun = await peekSamples(page, finalText);
-    expect(toolRun.total, 'sampled while streaming').toBeGreaterThan(5);
-    expect(toolRun.visible, 'peek after a tool call').toBe(0);
-    await expect(messagesView(page).getByText(finalText)).toBeVisible({ timeout: 60000 });
+    expect(await looksUntilReply(page, finalText), 'watched while streaming').toBeGreaterThan(5);
+    await runEnds(page, finalText);
+    expect(await toolRun.evaluate((seen) => seen.shown), 'peek after a tool call').toBe(0);
     /** The run really was a tool call followed by a thought, not a bare reply. */
     await expect(
       messagesView(page)

@@ -323,8 +323,8 @@ function ControlCombobox({
                   {...item}
                   className={cn(
                     'flex w-full cursor-pointer items-center px-3 text-sm',
-                    'text-text-primary hover:bg-surface-tertiary',
-                    'data-[active-item]:bg-surface-tertiary',
+                    'text-text-primary hover:bg-surface-hover',
+                    'data-[active-item]:bg-surface-hover',
                   )}
                   render={<Ariakit.SelectItem value={value} />}
                 >

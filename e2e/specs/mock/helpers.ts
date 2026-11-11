@@ -141,6 +141,8 @@ export async function sendMessage(page: Page, text: string): Promise<Response> {
   const input = page.getByRole('textbox', { name: 'Message input' });
   await input.click();
   await input.fill(text);
+  // A restored chat can accept a draft before its workspace and target reads permit sending.
+  await expect(page.getByTestId('send-button')).toBeEnabled({ timeout: 30000 });
   const [response] = await Promise.all([
     page.waitForResponse(isAgentsStream, { timeout: 30000 }),
     input.press('Enter'),

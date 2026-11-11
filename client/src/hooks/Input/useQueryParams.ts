@@ -137,7 +137,17 @@ export default function useQueryParams({
   submitMessageRef.current = submitMessage;
 
   const queryClient = useQueryClient();
-  const { conversation, newConversation, index = 0 } = useChatContext();
+  const { conversation, newConversation, isSubmitting, index = 0 } = useChatContext();
+  /**
+   * A new chat has no run of its own, so a busy composer there is still releasing the run of the
+   * conversation it just left (a queued message started in a new chat navigates mid-run). `ask`
+   * refuses until a commit without that run has flushed its effects, so the auto-submit waits for
+   * an effect of this hook to observe one instead of spending its only attempt on that refusal.
+   */
+  const composerReleasedRef = useRef(!isSubmitting);
+  if (isSubmitting) {
+    composerReleasedRef.current = false;
+  }
 
   const urlAgentId = searchParams.get('agent_id') || '';
   const { data: urlAgent } = useGetAgentByIdQuery(urlAgentId);
@@ -165,6 +175,14 @@ export default function useQueryParams({
     );
     setSearchParamsRef.current(params, { replace: true });
   }, [index, getPreservedSearchParams]);
+
+  const awaitsComposerRelease = useCallback(() => {
+    const conversationId = conversationRef.current?.conversationId;
+    return (
+      !composerReleasedRef.current &&
+      (conversationId == null || conversationId === Constants.NEW_CONVO)
+    );
+  }, []);
 
   const ownsComposer = useCallback(() => {
     const currentId = conversationRef.current?.conversationId;
@@ -465,6 +483,7 @@ export default function useQueryParams({
     if (
       routePendingRef.current ||
       !targetReadyRef.current ||
+      awaitsComposerRelease() ||
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
       !promptTextRef.current ||
@@ -531,6 +550,7 @@ export default function useQueryParams({
     ownsRequest,
     isHistoryPending,
     areSettingsApplied,
+    awaitsComposerRelease,
     clearConsumedSearchParams,
     restoreUrlPrompt,
     settlePrompt,
@@ -714,6 +734,13 @@ export default function useQueryParams({
     cancelRequest,
   ]);
 
+  /** Declared ahead of the retry below, so that effect already sees the release it reacts to. */
+  useEffect(() => {
+    if (!isSubmitting) {
+      composerReleasedRef.current = true;
+    }
+  }, [isSubmitting]);
+
   useEffect(() => {
     if (routePending || !targetReady) {
       if (settingsTimeoutRef.current) clearTimeout(settingsTimeoutRef.current);
@@ -742,6 +769,7 @@ export default function useQueryParams({
     conversation,
     routePending,
     targetReady,
+    isSubmitting,
     processSubmission,
     armSettingsTimeout,
     areSettingsApplied,

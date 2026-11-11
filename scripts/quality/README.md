@@ -5,7 +5,9 @@ PR commands and manual runs report change risk for added or edited functions in
 Mutation testing is experimental. It runs only for added or edited functions in
 `packages/data-schemas`. Support for more scopes is planned.
 Only workspaces with changed source get report jobs. PR updates do not start source
-reports. Changes to the quality tooling still run its own verification tests automatically.
+reports. PostgreSQL contract and readiness tests still run automatically for changes
+to their schema and lifecycle paths. Report jobs also provide PostgreSQL and provision
+the MongoDB test binary before tests start. Changes to the quality tooling still run its own verification tests automatically.
 Low scores do not fail a check. Failed tests, invalid reports, and tool errors do.
 Mutation jobs have a 240-minute limit. Change-risk jobs have a 45-minute limit.
 A workflow timeout is a failed run, not a quality score. A Stryker `Timeout` result

@@ -2429,15 +2429,8 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                 // paused turn's files.
                 ...(Array.isArray(req.body?.files) &&
                   req.body.files.length > 0 && { files: req.body.files }),
-                // Skill selections aren't on `userMsg` yet at onStart (BaseClient adds them
-                // later), so source them from the request — otherwise this update overwrites
-                // the preliminary metadata and a HITL-resumed turn loses its skill pills.
-                ...(Array.isArray(req.body?.manualSkills) &&
-                  req.body.manualSkills.length > 0 && { manualSkills: req.body.manualSkills }),
-                ...(Array.isArray(req.body?.alwaysAppliedSkills) &&
-                  req.body.alwaysAppliedSkills.length > 0 && {
-                    alwaysAppliedSkills: req.body.alwaysAppliedSkills,
-                  }),
+                manualSkills: userMsg.manualSkills,
+                alwaysAppliedSkills: userMsg.alwaysAppliedSkills,
               },
             },
             jobCreatedAt,
@@ -2449,22 +2442,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             streamId,
             {
               created: true,
-              // Skill selections aren't on `userMessage` yet at onStart (BaseClient adds
-              // them later), so attach them from the request — this is the message
-              // `trackUserMessage` persists as the authoritative job.metadata.userMessage,
-              // and it's what the live client renders the user bubble from.
               message: {
                 ...userMessage,
                 // Carry files so trackUserMessage (the authoritative writer) persists them on
                 // job.metadata.userMessage for a HITL resume (see the updateMetadata above).
                 ...(Array.isArray(req.body?.files) &&
                   req.body.files.length > 0 && { files: req.body.files }),
-                ...(Array.isArray(req.body?.manualSkills) &&
-                  req.body.manualSkills.length > 0 && { manualSkills: req.body.manualSkills }),
-                ...(Array.isArray(req.body?.alwaysAppliedSkills) &&
-                  req.body.alwaysAppliedSkills.length > 0 && {
-                    alwaysAppliedSkills: req.body.alwaysAppliedSkills,
-                  }),
               },
               streamId,
             },

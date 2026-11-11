@@ -1,7 +1,7 @@
-import { expect, test } from '@playwright/test';
 import type { ChannelLinkView } from 'librechat-data-provider';
 import { appURL } from '../../../setup/authenticate';
 import { openAgentBuilder } from '../agents.helpers';
+import { expect, test } from '../fixtures';
 import { openSidebar } from './sidebar';
 
 test.use({ viewport: { width: 1280, height: 860 }, hasTouch: false, isMobile: false });

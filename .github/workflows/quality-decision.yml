@@ -50,7 +50,7 @@ jobs:
           sparse-checkout: scripts/quality
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
       - env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/quality/comment.mts publish

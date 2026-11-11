@@ -22,6 +22,7 @@ import {
 } from './approvals.helpers';
 import { NEW_CHAT_PATH, getAccessToken, messagesView, requestJson } from './helpers';
 import { cleanupAgent } from './agents.helpers';
+import { unroute } from './fixtures';
 
 test.describe('tool approvals', () => {
   test('approves a paused tool with its original arguments', async ({ page }) => {
@@ -515,7 +516,7 @@ test.describe('tool approvals', () => {
     } finally {
       releaseResume();
       if (resumeHandler) {
-        await page.unroute('**/api/agents/chat/resume', resumeHandler);
+        await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       }
       clearApprovalInvocations(originalValue);
       await cleanupAgent(page, agentId);
@@ -583,7 +584,7 @@ test.describe('tool approvals', () => {
       await expect(approvalCards(page)).toHaveCount(0);
     } finally {
       if (resumeHandler) {
-        await page.unroute('**/api/agents/chat/resume', resumeHandler);
+        await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       }
       clearApprovalInvocations(originalValue);
       await cleanupAgent(page, agentId);
@@ -634,7 +635,7 @@ test.describe('tool approvals', () => {
       await expect(submit).toBeDisabled();
       expect(capturedResumeBody).toBeDefined();
 
-      await page.unroute('**/api/agents/chat/resume', resumeHandler);
+      await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       routeInstalled = false;
       const token = await getAccessToken(page);
       await requestJson(page, {
@@ -649,7 +650,7 @@ test.describe('tool approvals', () => {
       await expect(approvalCards(page)).toHaveCount(0);
     } finally {
       if (routeInstalled) {
-        await page.unroute('**/api/agents/chat/resume', resumeHandler);
+        await unroute(page, '**/api/agents/chat/resume', resumeHandler);
       }
       if (!backendResolved && capturedResumeBody) {
         const token = await getAccessToken(page);

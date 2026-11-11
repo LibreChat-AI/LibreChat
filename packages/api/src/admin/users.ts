@@ -7,7 +7,7 @@ import type {
   ConfigRecord,
   AdminUserListItem,
   AdminUserSearchResult,
-  UserDeleteResult,
+  AllMethods,
 } from '@librechat/data-schemas';
 import type { TCheckpointerConfig } from 'librechat-data-provider';
 import type { FilterQuery } from 'mongoose';
@@ -15,10 +15,10 @@ import type { Response } from 'express';
 import type { UserGenerationControl } from '~/user/generations';
 import type { UserErasureDeps } from '~/user/erasure';
 import type { ServerRequest } from '~/types/http';
+import { eraseUserData, createUserDeletionAttempt } from '~/user/erasure';
 import { stopUserGenerations } from '~/user/generations';
 import { invalidatingConfigStore } from './cascade';
 import { parsePagination } from './pagination';
-import { eraseUserData } from '~/user/erasure';
 
 const MAX_SEARCH_LENGTH = 200;
 
@@ -75,8 +75,18 @@ export interface AdminUsersDeps {
   beginAgentTriggerUserDeletion: (
     userId: string,
     startedAt: Date,
+    attemptId?: string,
   ) => Promise<'acquired' | 'in_progress' | 'missing'>;
-  cancelAgentTriggerUserDeletion: (userId: string, startedAt: Date) => Promise<boolean>;
+  isAgentTriggerUserDeletionOwner: (
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ) => Promise<boolean>;
+  cancelAgentTriggerUserDeletion: (
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ) => Promise<boolean>;
   drainAgentTriggerDeliveriesForUser: (userId: string) => Promise<void>;
   prepareAgentTriggerUserPurge: (
     userId: string,
@@ -102,7 +112,7 @@ export interface AdminUsersDeps {
    */
   resolveErasure: (target: AdminErasureTarget) => Promise<AdminErasureContext>;
   /** Thin data-layer delete: removes the User document after the erasure cascade has run. */
-  deleteUserById: (userId: string) => Promise<UserDeleteResult>;
+  deleteUserById: AllMethods['deleteUserById'];
   deleteUserCodeEnvironments: (userId: string | Types.ObjectId) => Promise<number>;
   invalidateCodeEnvironmentConfigCache: (tenantId?: string) => Promise<void>;
   deleteConfig: (
@@ -132,6 +142,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
     findUsers,
     countUsers,
     beginAgentTriggerUserDeletion,
+    isAgentTriggerUserDeletionOwner,
     cancelAgentTriggerUserDeletion,
     drainAgentTriggerDeliveriesForUser,
     prepareAgentTriggerUserPurge,
@@ -232,6 +243,8 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
     let triggerDeletionFence: Date | undefined;
     let scheduleSuspensionToken: string | undefined;
     let userDeleted = false;
+    const deletionAttempt = createUserDeletionAttempt();
+    let erasureDeps: UserErasureDeps | undefined;
 
     try {
       const { id } = req.params as { id: string };
@@ -255,7 +268,11 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
       }
 
       triggerDeletionFence = new Date();
-      const fenceState = await beginAgentTriggerUserDeletion(id, triggerDeletionFence);
+      const fenceState = await beginAgentTriggerUserDeletion(
+        id,
+        triggerDeletionFence,
+        deletionAttempt.id,
+      );
       if (fenceState === 'in_progress') {
         triggerDeletionFence = undefined;
         return res.status(409).json({ error: 'User deletion is already in progress' });
@@ -274,22 +291,40 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
       }
       await stopUserGenerations(id, targetUser?.tenantId, generationJobs);
 
-      const { deps: erasureDeps, checkpointer } = await resolveErasure({
+      const erasure = await resolveErasure({
         id,
         role: targetUser?.role,
         tenantId: targetUser?.tenantId,
         idOnTheSource: targetUser?.idOnTheSource ?? null,
         profile: targetUser,
       });
+      erasureDeps = erasure.deps;
       await eraseUserData(
-        { userId: id, tenantId: targetUser?.tenantId, checkpointer },
+        {
+          userId: id,
+          tenantId: targetUser?.tenantId,
+          checkpointer: erasure.checkpointer,
+          deletionAttemptId: deletionAttempt.id,
+        },
         erasureDeps,
       );
-      const result = await deleteUserById(id);
+      const deletionFence = { startedAt: triggerDeletionFence, attemptId: deletionAttempt.id };
+      const result = await deletionAttempt.commit(() => deleteUserById(id, deletionFence));
 
       if (result.deletedCount === 0) {
         await cancelAgentTriggerUserPurge(id, triggerDeletionFence);
-        await cancelAgentTriggerUserDeletion(id, triggerDeletionFence);
+        await deletionAttempt.cancel(
+          {
+            userId: id,
+            startedAt: triggerDeletionFence,
+            deletionAttemptId: deletionAttempt.id,
+          },
+          {
+            isAgentTriggerUserDeletionOwner,
+            cancelAgentTriggerUserDeletion,
+            cancelUserToolFavoriteDeletion: erasureDeps?.cancelUserToolFavoriteDeletion,
+          },
+        );
         triggerDeletionFence = undefined;
         return res.status(404).json({ error: 'User not found' });
       }
@@ -353,7 +388,18 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
           logger.error('[adminUsers] failed to disarm trigger purge recovery:', purgeFenceError);
         }
         try {
-          await cancelAgentTriggerUserDeletion(targetUserId, triggerDeletionFence);
+          await deletionAttempt.cancel(
+            {
+              userId: targetUserId,
+              startedAt: triggerDeletionFence,
+              deletionAttemptId: deletionAttempt.id,
+            },
+            {
+              isAgentTriggerUserDeletionOwner,
+              cancelAgentTriggerUserDeletion,
+              cancelUserToolFavoriteDeletion: erasureDeps?.cancelUserToolFavoriteDeletion,
+            },
+          );
         } catch (fenceError) {
           logger.error('[adminUsers] failed to release trigger deletion fence:', fenceError);
         }

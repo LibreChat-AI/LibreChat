@@ -183,18 +183,33 @@ export function createUserMethods(
   beginAgentTriggerUserDeletion: (
     userId: string,
     startedAt: Date,
+    attemptId?: string,
   ) => Promise<'acquired' | 'in_progress' | 'missing'>;
   recoverStaleAgentTriggerUserDeletion: (
     userId: string,
     recoveredAt: Date,
+    legacyAttemptId?: string,
   ) => Promise<'acquired' | 'in_progress' | 'missing'>;
-  cancelAgentTriggerUserDeletion: (userId: string, startedAt: Date) => Promise<boolean>;
+  getAgentTriggerUserDeletionAttemptId: (userId: string, startedAt: Date) => Promise<string | null>;
+  isAgentTriggerUserDeletionOwner: (
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ) => Promise<boolean>;
+  cancelAgentTriggerUserDeletion: (
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ) => Promise<boolean>;
   isAgentTriggerPrincipalActive: (userId: string) => Promise<boolean>;
   fenceSubagentAdmission: (userId: string, token: string, fencedUntil: Date) => Promise<void>;
   renewSubagentAdmission: (userId: string, token: string, fencedUntil: Date) => Promise<boolean>;
   releaseSubagentAdmission: (userId: string, token: string) => Promise<void>;
   isSubagentOwnerAdmissible: (userId: string) => Promise<boolean>;
-  deleteUserById: (userId: string) => Promise<UserDeleteResult>;
+  deleteUserById: (
+    userId: string,
+    fence?: { startedAt: Date; attemptId: string },
+  ) => Promise<UserDeleteResult>;
   updateUserPlugins: (
     userId: string,
     plugins: string[] | undefined,
@@ -645,7 +660,16 @@ export function createUserMethods(
   /**
    * Delete a user by their unique ID.
    */
-  async function deleteUserById(userId: string): Promise<UserDeleteResult> {
+  async function deleteUserById(
+    userId: string,
+    fence?: { startedAt: Date; attemptId: string },
+  ): Promise<UserDeleteResult> {
+    if (fence !== undefined) {
+      if (!(fence?.startedAt instanceof Date) || !Number.isFinite(fence.startedAt.getTime())) {
+        throw new TypeError('startedAt must be a valid Date');
+      }
+      validateDeletionAttemptId(fence.attemptId);
+    }
     try {
       const User = mongoose.models.User;
       const owner = await User.findById(userId).select('tenantId').lean<Pick<IUser, 'tenantId'>>();
@@ -664,7 +688,15 @@ export function createUserMethods(
         );
       }
       await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
-      const result = await User.deleteOne({ _id: userId });
+      const result = await User.deleteOne({
+        _id: userId,
+        ...(fence === undefined
+          ? {}
+          : {
+              agentTriggerDeletionStartedAt: fence.startedAt,
+              agentTriggerDeletionAttemptId: fence.attemptId,
+            }),
+      });
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
       }
@@ -676,18 +708,32 @@ export function createUserMethods(
     }
   }
 
+  function validateDeletionAttemptId(attemptId: string): void {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(attemptId)) {
+      throw new TypeError('Invalid user deletion attempt ID');
+    }
+  }
+
   /** Establishes the durable admission fence used while account deletion drains triggers. */
   async function beginAgentTriggerUserDeletion(
     userId: string,
     startedAt: Date,
+    attemptId?: string,
   ): Promise<'acquired' | 'in_progress' | 'missing'> {
     if (!(startedAt instanceof Date) || !Number.isFinite(startedAt.getTime())) {
       throw new TypeError('startedAt must be a valid Date');
     }
+    if (attemptId !== undefined) validateDeletionAttemptId(attemptId);
     const User = mongoose.models.User;
     const result = await User.updateOne(
       { _id: userId, agentTriggerDeletionStartedAt: { $exists: false } },
-      { $set: { agentTriggerDeletionStartedAt: startedAt } },
+      {
+        $set: {
+          agentTriggerDeletionStartedAt: startedAt,
+          ...(attemptId === undefined ? {} : { agentTriggerDeletionAttemptId: attemptId }),
+        },
+        ...(attemptId === undefined ? { $unset: { agentTriggerDeletionAttemptId: 1 } } : {}),
+      },
     );
     if (result.modifiedCount === 1) {
       await invalidateAuthUserDocCache(userId);
@@ -701,12 +747,34 @@ export function createUserMethods(
   async function recoverStaleAgentTriggerUserDeletion(
     userId: string,
     recoveredAt: Date,
+    legacyAttemptId?: string,
   ): Promise<'acquired' | 'in_progress' | 'missing'> {
     if (!(recoveredAt instanceof Date) || !Number.isFinite(recoveredAt.getTime())) {
       throw new TypeError('recoveredAt must be a valid Date');
     }
     const User = mongoose.models.User;
+    if (legacyAttemptId !== undefined) validateDeletionAttemptId(legacyAttemptId);
     const staleBefore = new Date(recoveredAt.getTime() - USER_DELETION_FENCE_STALE_MS);
+    // Two ordinary CAS updates keep DocumentDB compatibility and never overwrite a stored UUID.
+    if (legacyAttemptId !== undefined) {
+      const legacy = await User.updateOne(
+        {
+          _id: userId,
+          agentTriggerDeletionStartedAt: { $lte: staleBefore },
+          agentTriggerDeletionAttemptId: { $exists: false },
+        },
+        {
+          $set: {
+            agentTriggerDeletionStartedAt: recoveredAt,
+            agentTriggerDeletionAttemptId: legacyAttemptId,
+          },
+        },
+      );
+      if (legacy.modifiedCount === 1) {
+        await invalidateAuthUserDocCache(userId);
+        return 'acquired';
+      }
+    }
     const result = await User.updateOne(
       { _id: userId, agentTriggerDeletionStartedAt: { $lte: staleBefore } },
       { $set: { agentTriggerDeletionStartedAt: recoveredAt } },
@@ -718,12 +786,55 @@ export function createUserMethods(
     return (await User.exists({ _id: userId })) == null ? 'missing' : 'in_progress';
   }
 
+  async function getAgentTriggerUserDeletionAttemptId(
+    userId: string,
+    startedAt: Date,
+  ): Promise<string | null> {
+    const user = await mongoose.models.User.findOne({
+      _id: userId,
+      agentTriggerDeletionStartedAt: startedAt,
+    })
+      .select({ agentTriggerDeletionAttemptId: 1, _id: 0 })
+      .read('primary')
+      .lean<Pick<IUser, 'agentTriggerDeletionAttemptId'>>();
+    const attemptId = user?.agentTriggerDeletionAttemptId;
+    if (attemptId == null) return null;
+    validateDeletionAttemptId(attemptId);
+    return attemptId;
+  }
+
+  /** Reads current ownership without releasing the durable retry anchor. */
+  async function isAgentTriggerUserDeletionOwner(
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ): Promise<boolean> {
+    if (attemptId !== undefined) validateDeletionAttemptId(attemptId);
+    const User = mongoose.models.User;
+    return (
+      (await User.exists({
+        _id: userId,
+        agentTriggerDeletionStartedAt: startedAt,
+        ...(attemptId === undefined ? {} : { agentTriggerDeletionAttemptId: attemptId }),
+      }).read('primary')) != null
+    );
+  }
+
   /** Releases only the account-deletion attempt that owns this exact fence. */
-  async function cancelAgentTriggerUserDeletion(userId: string, startedAt: Date): Promise<boolean> {
+  async function cancelAgentTriggerUserDeletion(
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ): Promise<boolean> {
+    if (attemptId !== undefined) validateDeletionAttemptId(attemptId);
     const User = mongoose.models.User;
     const result = await User.updateOne(
-      { _id: userId, agentTriggerDeletionStartedAt: startedAt },
-      { $unset: { agentTriggerDeletionStartedAt: 1 } },
+      {
+        _id: userId,
+        agentTriggerDeletionStartedAt: startedAt,
+        ...(attemptId === undefined ? {} : { agentTriggerDeletionAttemptId: attemptId }),
+      },
+      { $unset: { agentTriggerDeletionStartedAt: 1, agentTriggerDeletionAttemptId: 1 } },
     );
     if (result.modifiedCount === 1) {
       await invalidateAuthUserDocCache(userId);
@@ -1088,6 +1199,8 @@ export function createUserMethods(
     generateToken,
     beginAgentTriggerUserDeletion,
     recoverStaleAgentTriggerUserDeletion,
+    getAgentTriggerUserDeletionAttemptId,
+    isAgentTriggerUserDeletionOwner,
     cancelAgentTriggerUserDeletion,
     isAgentTriggerPrincipalActive,
     fenceSubagentAdmission,

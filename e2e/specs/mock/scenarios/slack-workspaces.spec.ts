@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type {
   SlackWorkspace,
   AgentChannel,
@@ -8,6 +7,7 @@ import type { AgentDetail } from '../agents.helpers';
 import { openAgentBuilder, cleanupAgent } from '../agents.helpers';
 import { MOCK_ENDPOINTS, getAccessToken, requestJson } from '../helpers';
 import { appURL } from '../../../setup/authenticate';
+import { expect, test } from '../fixtures';
 import { openSidebar } from './sidebar';
 
 test.use({ viewport: { width: 1280, height: 960 }, hasTouch: false, isMobile: false });

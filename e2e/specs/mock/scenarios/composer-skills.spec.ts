@@ -10,6 +10,7 @@ import {
   getAccessToken,
   selectMockEndpoint,
 } from '../helpers';
+import { unroute } from '../fixtures';
 
 /**
  * The `$` skills popover, drawn by the chat package's command popover: a combobox over the
@@ -204,7 +205,7 @@ test.describe('staged skill row', () => {
       await expect(
         page.getByTestId('messages-view').getByText(replyText(name), { exact: true }),
       ).toBeVisible({ timeout: 30_000 });
-      await page.unroute(isGenerationStart);
+      await unroute(page, isGenerationStart);
     });
   });
 });

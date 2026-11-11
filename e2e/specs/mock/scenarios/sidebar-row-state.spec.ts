@@ -5,8 +5,17 @@ import { deleteConversations, seedConversations, withMongo } from '../db';
 import { openConversationMenu, openSidebar } from './sidebar';
 import { getE2EUser } from '../../../setup/user';
 import { NEW_CHAT_PATH } from '../helpers';
+import { unroute } from '../fixtures';
 
 const userEmail = getE2EUser().email;
+
+/**
+ * `archiveHeld` installs its route on a page that has already loaded, which is also when the PWA
+ * service worker finishes installing and takes control of that page. A route installed in the
+ * same few milliseconds is never consulted: the archive goes straight to the server and nothing
+ * the page requests afterwards reaches Playwright either.
+ */
+test.use({ serviceWorkers: 'block' });
 
 const row = (page: Page, title: string) =>
   page.getByTestId('convo-item').filter({ hasText: title }).filter({ visible: true }).first();
@@ -55,22 +64,21 @@ async function readChats(ids: string[]) {
 /** Archives `chat` with its reply held, so the rows move only when `release` is called. */
 async function archiveHeld(page: Page, chat: Chat) {
   let held: Route | undefined;
-  let arrived!: () => void;
-  const reached = new Promise<void>((resolve) => (arrived = resolve));
   await page.route('**/api/convos/archive', (route) => {
     held = route;
-    arrived();
   });
   await openConversationMenu(row(page, chat.title));
   await menuItem(page, 'Archive').click();
-  await reached;
+  await expect
+    .poll(() => held !== undefined, { message: 'the archive request is held by its route' })
+    .toBe(true);
   if (await menuItem(page, 'Archive').isVisible()) {
     await page.keyboard.press('Escape');
   }
   await expect(menuItem(page, 'Archive')).toHaveCount(0);
   return async () => {
     await held?.continue();
-    await page.unroute('**/api/convos/archive');
+    await unroute(page, '**/api/convos/archive');
     await expect(page.getByTestId('convo-item').filter({ hasText: chat.title })).toHaveCount(0);
   };
 }
@@ -123,7 +131,7 @@ test.describe('sidebar row state follows its chat', () => {
         [archived.id, below.id].sort(),
       );
     } finally {
-      await page.unroute('**/api/convos/archive').catch(() => undefined);
+      await unroute(page, '**/api/convos/archive').catch(() => undefined);
       await deleteConversations(ids);
     }
   });
@@ -165,7 +173,7 @@ test.describe('sidebar row state follows its chat', () => {
           [below.id]: below.title,
         });
     } finally {
-      await page.unroute('**/api/convos/archive').catch(() => undefined);
+      await unroute(page, '**/api/convos/archive').catch(() => undefined);
       await deleteConversations(ids);
     }
   });

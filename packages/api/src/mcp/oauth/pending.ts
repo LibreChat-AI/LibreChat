@@ -107,6 +107,8 @@ export class OAuthLifecycleRelay {
   private readonly oauthEnds = new Set<OAuthEndHandler>();
   private readonly emittedAuthUrls = new WeakMap<t.OAuthStartHandler, string>();
   private readonly emittedOAuthEnds = new WeakSet<OAuthEndHandler>();
+  private readonly signInListeners = new Set<() => void>();
+  private signInRequested = false;
   private oauthEnded = false;
 
   constructor({
@@ -129,7 +131,25 @@ export class OAuthLifecycleRelay {
 
   private readonly logPrefix: string;
 
+  /**
+   * Runs `listener` once this lifecycle asks, or has already asked, a person to sign in. A
+   * waiter that registered no prompt handler learns here that the wait now depends on a person.
+   */
+  public onSignInRequested(listener: () => void): () => void {
+    if (this.signInRequested) {
+      listener();
+      return () => undefined;
+    }
+    this.signInListeners.add(listener);
+    return () => {
+      this.signInListeners.delete(listener);
+    };
+  }
+
   public readonly start: t.OAuthStartHandler = async (authURL, options) => {
+    this.signInRequested = true;
+    for (const listener of Array.from(this.signInListeners)) listener();
+    this.signInListeners.clear();
     const publications = Array.from(this.oauthStarts, (handler) =>
       this.emit(handler, authURL, options),
     );

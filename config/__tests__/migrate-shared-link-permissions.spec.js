@@ -1,5 +1,6 @@
 jest.mock('../connect', () => jest.fn().mockResolvedValue(true));
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
   ensureRequiredCollectionsExist: jest.fn().mockResolvedValue(undefined),
   createChannelStorageConfigReader: jest.fn(() => ({
     initialize: jest.fn(),
@@ -40,7 +41,7 @@ describe('migrate-shared-link-permissions', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {

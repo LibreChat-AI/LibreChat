@@ -5,6 +5,8 @@ import {
   createMCPReauthenticationPrompt,
   createMCPAuthStepEmitter,
   createMCPInitializationOAuthPrompts,
+  canPublishOAuthPrompt,
+  shouldAwaitOAuthSignIn,
 } from './events';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
@@ -241,4 +243,105 @@ it('clears startup deduplication before a publication acknowledgement can reente
     'on_run_step_delta',
     'on_run_step_completed',
   ]);
+});
+
+describe('sign-in prompts when nobody can sign in', () => {
+  const step = {
+    runId: 'response',
+    stepId: 'oauth-step',
+    index: 0,
+    toolCall: { id: 'oauth:call', name: 'oauth_mcp_clock', type: 'tool_call_chunk' as const },
+  };
+
+  function response() {
+    const socket = new Socket();
+    return { socket, res: new ServerResponse(new IncomingMessage(socket)) };
+  }
+
+  it('refuses the prompt and writes nothing to the API response', async () => {
+    const { socket, res } = response();
+    const write = jest.spyOn(res, 'write');
+    const sendEvent = jest.fn();
+    const emitChunk = jest.fn();
+    const url = jest.fn().mockResolvedValue(undefined);
+    try {
+      const start = createOAuthCallback({
+        runStepEmitter: createMCPAuthStepEmitter({
+          res,
+          sendEvent,
+          jobs: { emitChunk },
+          streamId: null,
+          unattended: true,
+          ...step,
+        }),
+        runStepDeltaEmitter: url,
+      });
+      const publication = invokeOAuthStart(start, 'https://auth.example/authorize');
+      const expected = {
+        code: 'mcp_reauth_required',
+        message: 'MCP sign-in is required and cannot be completed from an API request.',
+      };
+      await expect(publication.published).rejects.toMatchObject(expected);
+      await expect(publication.completed).rejects.toMatchObject(expected);
+      expect(url).not.toHaveBeenCalled();
+      expect(sendEvent).not.toHaveBeenCalled();
+      expect(emitChunk).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
+      expect(res.headersSent).toBe(false);
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it('keeps writing the prompt to a browser response', async () => {
+    const { socket, res } = response();
+    const sendEvent = jest.fn();
+    try {
+      await createMCPAuthStepEmitter({
+        res,
+        sendEvent,
+        jobs: { emitChunk: jest.fn() },
+        streamId: null,
+        ...step,
+      })();
+      expect(sendEvent).toHaveBeenCalledTimes(1);
+      expect(sendEvent.mock.calls[0][0]).toBe(res);
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it('keeps publishing to a generation stream', async () => {
+    const emitChunk = jest.fn().mockResolvedValue(undefined);
+    const sendEvent = jest.fn();
+    await createMCPAuthStepEmitter({
+      res: {} as ServerResponse,
+      sendEvent,
+      jobs: { emitChunk },
+      streamId: 'resp_background',
+      jobCreatedAt: 1,
+      ...step,
+    })();
+    expect(emitChunk).toHaveBeenCalledWith('resp_background', expect.anything(), {
+      expectedCreatedAt: 1,
+      durable: true,
+    });
+    expect(sendEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a browser response', { res: {}, streamId: null }, 2, true, 0],
+    ['a generation stream', { res: null, streamId: 'resp_background' }, 2, true, 0],
+    ['an unattended run', { res: {}, streamId: null, unattended: true }, 2, false, 1],
+    ['an unattended run with nothing pending', { res: {}, unattended: true }, 0, false, 0],
+    ['neither a response nor a stream', { res: null, streamId: null }, 1, false, 0],
+  ])(
+    'decides whether a turn waits for sign-in on %s',
+    (_name, reader, pending, waits, warnings) => {
+      const logger = { warn: jest.fn() };
+      expect(shouldAwaitOAuthSignIn({ ...reader, pending, logger })).toBe(waits);
+      expect(canPublishOAuthPrompt(reader)).toBe(pending > 0 ? waits : false);
+      expect(logger.warn).toHaveBeenCalledTimes(warnings);
+    },
+  );
 });
