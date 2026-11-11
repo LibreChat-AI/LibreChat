@@ -21,6 +21,7 @@ import {
 } from './types';
 import {
   hasAlwaysOnThinking,
+  hasAdaptiveHaikuThinking,
   hasBetweenToolsThinkingFloor,
   supportsPromptCache,
   supportsAdaptiveThinking,
@@ -1440,6 +1441,37 @@ const toSubmittableReasoningSetting = (
   return options.length === 0 ? undefined : { ...setting, options };
 };
 
+/**
+ * The definitions `resolveReasoningSettingForTarget` should see for one model: the endpoint's own,
+ * plus the efforts the model's Azure deployment declares. `model` comes from the request, so the
+ * lookup only trusts an array, never a property inherited by a model named `constructor`.
+ */
+export function getReasoningParamDefinitions(
+  endpointConfig:
+    | {
+        customParams?: { paramDefinitions?: Partial<SettingDefinition>[] | null } | null;
+        modelReasoningEfforts?: Record<string, string[]>;
+      }
+    | null
+    | undefined
+    | false,
+  model?: string | null,
+): Partial<SettingDefinition>[] | null | undefined {
+  if (!endpointConfig) {
+    return undefined;
+  }
+  const paramDefinitions = endpointConfig.customParams?.paramDefinitions;
+  const efforts = model == null ? undefined : endpointConfig.modelReasoningEfforts?.[model];
+  if (!Array.isArray(efforts)) {
+    return paramDefinitions;
+  }
+  const options = [
+    ReasoningEffort.unset,
+    ...efforts.filter((effort) => effort !== ReasoningEffort.unset),
+  ];
+  return [...(paramDefinitions ?? []), { key: 'reasoning_effort', options }];
+}
+
 /** Builds the effective reasoning definition shared by the composer and the server.
  * A model-spec lock is part of capability resolution, not a caller-only UI check:
  * both surfaces must see the same unavailable result before an override is staged. */
@@ -1733,7 +1765,7 @@ function applyModelFamilyDefaults(
     );
   }
   const tier = gpt6Tier(model);
-  if (tier === 'sol' || tier === 'luna') {
+  if (tier === 'sol' || tier === 'terra' || tier === 'luna') {
     return settings.map((setting) => {
       if (setting.key === 'reasoning_effort') {
         return {
@@ -1772,6 +1804,12 @@ function applyModelFamilyDefaults(
       .filter(
         (setting) => !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
       );
+  }
+  /** Haiku 5.5+ keeps the toggle ("off" sends `disabled`) but rejects budgets and sampling. */
+  if (hasAdaptiveHaikuThinking(model)) {
+    return settings.filter(
+      (setting) => !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
+    );
   }
   const modelAwareSettings =
     endpoint === EModelEndpoint.google

@@ -10,6 +10,7 @@ import {
   TooltipAnchor,
 } from '@librechat/client';
 import type { VersionRecord } from './types';
+import useDirection, { inlineSide } from '~/hooks/Nav/useDirection';
 import { useLocalize, useClockFormat } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -45,6 +46,7 @@ export default function VersionItem({
   onRestore,
 }: VersionItemProps) {
   const localize = useLocalize();
+  const direction = useDirection();
   const hour12 = useClockFormat();
   const [open, setOpen] = useState(false);
 
@@ -119,7 +121,7 @@ export default function VersionItem({
       {/* Card */}
       <div
         className={cn(
-          'group relative mb-2 ml-2 flex flex-1 flex-col rounded-xl border p-3 transition-colors',
+          'group relative ms-2 mb-2 flex flex-1 flex-col rounded-xl border p-3 transition-colors',
           isActive
             ? 'border-status-success-border bg-status-success-subtle'
             : 'border-border-light hover:border-border-medium hover:bg-surface-secondary bg-transparent',
@@ -162,7 +164,7 @@ export default function VersionItem({
               <OGDialogTrigger asChild>
                 <TooltipAnchor
                   description={localize('com_ui_agent_version_restore')}
-                  side="left"
+                  side={inlineSide(direction, 'start')}
                   render={
                     <Button
                       variant="quiet"
@@ -180,7 +182,7 @@ export default function VersionItem({
                 className="max-w-[28.125rem]"
                 main={
                   <div className="flex w-full flex-col gap-3 text-sm">
-                    <Label className="text-left font-medium">
+                    <Label className="text-start font-medium">
                       {localize('com_ui_agent_version_restore_description')}
                     </Label>
                     <div className="border-border-light bg-surface-secondary rounded-lg border px-3 py-2">

@@ -16,7 +16,7 @@ export interface CssColorFinding {
   literal: string;
 }
 
-export const CSS_ROOTS = ['client/src', 'packages/client/src'];
+export const CSS_ROOTS = ['client/src', 'packages/client/src', 'packages/chat/src'];
 
 /** Theme token sources (allowlist.md entry 1): their custom property declarations may hold a literal or a channel triplet. */
 export const CSS_COLOR_ALLOWED_FILES = [
@@ -44,13 +44,35 @@ const NAMED_COLORS =
   );
 
 const HEX = /#[0-9a-fA-F]{3,8}(?![\w-])/g;
-const FUNCTION =
-  /(?<![\w-])(?:(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*var\(\s*--[\w-]+\s*,\s*[\d.+-]|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*(?:[\d.+-]|none\b|(?:calc|min|max|clamp|abs|sign|round|mod|rem|sin|cos|tan|asin|acos|atan2?|pow|sqrt|hypot|log|exp)\(|(?:var\([^)]*\)\s*,?\s*)+[\d.+-])|color\(\s*(?!from\b)[a-z0-9-]+\s+(?:(?:var\([^)]*\)\s*,?\s*)*[\d.+-]|none\b))/gi;
+const MATH_FUNCTIONS =
+  'calc|min|max|clamp|abs|sign|round|mod|rem|sin|cos|tan|asin|acos|atan2?|pow|sqrt|hypot|log|exp';
+const FUNCTION = new RegExp(
+  String.raw`(?<![\w-])(?:(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*var\(\s*--[\w-]+\s*,\s*[\d.+-]|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*(?:[\d.+-]|none\b|(?:${MATH_FUNCTIONS})\(|(?:var\([^)]*\)\s*,?\s*)+[\d.+-])|color\(\s*(?!from\b)[a-z0-9-]+\s+(?:(?:var\([^)]*\)\s*,?\s*)*[\d.+-]|none\b))`,
+  'gi',
+);
 const RELATIVE_COLOR = /(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(\s*from\s+/gi;
 const CHANNEL_KEYWORD = /(?<![\w-])(?:[rgbhslwcaxyz]|alpha)(?![\w-])/i;
-const CHANNEL = '[+-]?(?:\\d+\\.?\\d*|\\.\\d+)%?';
+const CHANNEL = '[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:e[+-]?\\d+)?%?';
+const ANGLE_UNIT = '(?:deg|grad|rad|turn)';
+/** An angle is a number with a unit; it is a hue when it leads a triplet. */
+const ANGLE = `[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:e[+-]?\\d+)?${ANGLE_UNIT}`;
+/** An innermost function or grouping parenthesis: a body with no nested call. */
+const INNERMOST = /(?<![\w-])([a-z][\w-]*)?\(([^()]*)\)/gi;
+const MATH = new Set(
+  MATH_FUNCTIONS.split('|').flatMap((name) => (name === 'atan2?' ? ['atan', 'atan2'] : [name])),
+);
+/** Functions whose result kind does not follow their arguments. */
+const FIXED_RESULT = new Map([
+  ...['sin', 'cos', 'tan', 'sign'].map((name) => [name, 'number'] as const),
+  ...['asin', 'acos', 'atan', 'atan2'].map((name) => [name, 'angle'] as const),
+]);
+/** A math body token: a number with its unit, an identifier (a constant such as `pi` or a
+ *  rounding strategy such as `to-zero`), or an operator or separator. */
+const MATH_TOKEN =
+  /\s*(?:([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(%|[a-z]+)?|(-?[a-z][\w-]*)|([+*/,-]))/iy;
+const ANGLE_UNITS = new Set(['deg', 'grad', 'rad', 'turn']);
 const SEPARATOR = '(?:\\s*,\\s*|\\s+)';
-const BARE_TRIPLET = `${CHANNEL}${SEPARATOR}${CHANNEL}${SEPARATOR}${CHANNEL}(?:\\s*/\\s*(?:${CHANNEL}|var\\([^)]*\\)))?`;
+const BARE_TRIPLET = `(?:${CHANNEL}|${ANGLE})${SEPARATOR}${CHANNEL}${SEPARATOR}${CHANNEL}(?:\\s*/\\s*(?:${CHANNEL}|var\\([^)]*\\)))?`;
 /** The whole value is three bare channels, or one is the fallback of a `var()`. */
 const TRIPLET = new RegExp(
   `^\\s*${BARE_TRIPLET}\\s*$|var\\(\\s*--[\\w-]+\\s*,\\s*${BARE_TRIPLET}\\s*\\)`,
@@ -63,6 +85,43 @@ const NON_COLOR_PROPERTY =
   /^(?:font|animation|transition|grid|counter|content|will-change|view-transition|container|src|list-style|quotes|cursor|appearance|mask-(?:mode|type|composite|repeat|clip|origin|position|size)|clip|anchor|position-anchor|scroll-timeline|view-timeline|timeline-scope)/i;
 
 const blank = (match: string): string => match.replace(/[^\n]/g, ' ');
+
+/** What a math body yields: a number, an angle, a length or other dimension, or `undefined` when
+ *  it is not math. Any identifier is a keyword, so a new rounding strategy or constant still reads
+ *  as a channel and is reported rather than skipped. */
+function mathKind(body: string): 'number' | 'angle' | 'dimension' | undefined {
+  let kind: 'number' | 'angle' | 'dimension' = 'number';
+  MATH_TOKEN.lastIndex = 0;
+  while (MATH_TOKEN.lastIndex < body.trimEnd().length) {
+    const token = MATH_TOKEN.exec(body);
+    if (!token) return undefined;
+    const unit = token[2]?.toLowerCase();
+    if (!unit || unit === '%' || kind === 'dimension') continue;
+    kind = ANGLE_UNITS.has(unit) ? 'angle' : 'dimension';
+  }
+  return kind;
+}
+
+/** A math function over numbers (`calc(255)`, `round(to-zero, 255, 1)`) is a fixed channel, and one
+ *  over an angle is an angle (`0deg`), which a triplet reads only as its leading hue. Trigonometric
+ *  functions and `sign` return a number and inverse trigonometric ones an angle whatever they are
+ *  given; any other function over a length is a length (`0px`), which an enclosing trigonometric
+ *  function still reads and a triplet does not. */
+function collapseMath(text: string): string {
+  const collapsed = text.replace(
+    INNERMOST,
+    (match: string, name: string | undefined, body: string) => {
+      const fn = name?.toLowerCase();
+      if (fn !== undefined && !MATH.has(fn)) return match;
+      const kind = mathKind(body);
+      if (kind === undefined) return match;
+      const result = (fn === undefined ? undefined : FIXED_RESULT.get(fn)) ?? kind;
+      if (result === 'dimension') return '0px';
+      return result === 'angle' ? '0deg' : '0';
+    },
+  );
+  return collapsed === text ? text : collapseMath(collapsed);
+}
 
 const URL_FUNCTION = /url\(\s*(?:"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*'|[^)]*)\)/gi;
 const STRING = /"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'/g;
@@ -151,7 +210,7 @@ function relativeLiterals(text: string): Array<{ literal: string; offset: number
     const bodyStart = offset + match[0].length;
     const isColorFunction = /^color\(/i.test(match[0]);
     const [origin, ...rest] = relativeTokens(text, bodyStart);
-    if (origin && TRIPLET_FALLBACK.test(origin.text)) {
+    if (origin && TRIPLET_FALLBACK.test(collapseMath(origin.text))) {
       return [{ literal: text.slice(offset, origin.end), offset }];
     }
     const channels = rest.slice(isColorFunction ? 1 : 0, isColorFunction ? 4 : 3);
@@ -198,7 +257,7 @@ export function findCssColorLiterals(
     const selector = parent?.type === 'rule' ? parent.selector : '';
     if (isAllowed(allowedRules, selector, declaration.prop)) return;
     const line = declaration.source?.start?.line ?? 1;
-    if (isCustomProperty && TRIPLET.test(colourText(declaration.value))) {
+    if (isCustomProperty && TRIPLET.test(collapseMath(colourText(declaration.value)))) {
       findings.push({ line, literal: declaration.value.trim() });
       return;
     }

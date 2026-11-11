@@ -124,11 +124,6 @@ const getAvatarRefreshCoverage = (
   );
 };
 
-export const getAvatarRefreshCoveredIds = (entry: unknown, now: number = Date.now()): string[] =>
-  Object.keys(getAvatarRefreshCoverage(entry, now, 0)).filter(
-    (id) => getCachedAvatarFilepath(entry, id) != null,
-  );
-
 const getAvatarRefreshCacheTtl = (
   entry: AvatarRefreshCacheEntry,
   now: number,

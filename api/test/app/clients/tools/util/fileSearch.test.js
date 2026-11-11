@@ -177,6 +177,9 @@ describe('fileSearch.js - tuple return validation', () => {
             Authorization: 'Bearer mock-jwt-token',
             'Content-Type': 'application/json',
           },
+          timeout: 30_000,
+          signal: expect.any(AbortSignal),
+          timeoutErrorMessage: expect.any(String),
         },
       );
     });

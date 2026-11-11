@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { useLocalize, useExpandCollapse } from '~/hooks';
+import { hasToolParams } from '@librechat/chat';
+import { useExpandCollapse } from '@librechat/chat/components';
 import { OutputRenderer } from './ToolOutput';
-import { hasToolParams } from './params';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 function isSimpleObject(obj: unknown): obj is Record<string, string | number | boolean | null> {
@@ -78,13 +79,17 @@ function InputRenderer({ input }: { input: string }) {
     }
     // Valid JSON but not a plain object (array, string, number, boolean) — render formatted
     return (
-      <pre className="text-text-primary text-xs whitespace-pre-wrap">
+      <pre dir="ltr" className="text-text-primary text-xs whitespace-pre-wrap">
         {typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2)}
       </pre>
     );
   } catch {
     // Not JSON — render as plain text
-    return <pre className="text-text-primary text-xs whitespace-pre-wrap">{input}</pre>;
+    return (
+      <pre dir="ltr" className="text-text-primary text-xs whitespace-pre-wrap">
+        {input}
+      </pre>
+    );
   }
 }
 
@@ -96,7 +101,7 @@ export default function ToolCallInfo({ input, output }: { input: string; output?
   const hasParams = useMemo(() => hasToolParams(input), [input]);
 
   return (
-    <div className="w-full px-3 py-3.5">
+    <div className="w-full p-3">
       {output && <OutputRenderer text={output} />}
       {output && hasParams && <div className="border-border-inset my-2 border-t" />}
       {hasParams && (

@@ -333,6 +333,101 @@ describe('balance initialization', () => {
   });
 });
 
+describe('terms acceptance at fire', () => {
+  const termsConfig = (modalAcceptance: boolean) =>
+    ({ interfaceConfig: { termsOfService: { modalAcceptance } } }) as unknown as Awaited<
+      ReturnType<SchedulesServiceDeps['getAppConfig']>
+    >;
+
+  function serviceWithOwner(
+    owner: Record<string, unknown> | null,
+    getAppConfig: jest.Mock = jest.fn(async () => termsConfig(true)),
+  ) {
+    const service = createSchedulesService({
+      methods: {} as unknown as SchedulesServiceDeps['methods'],
+      getAppConfig: getAppConfig as unknown as SchedulesServiceDeps['getAppConfig'],
+      findUserById: jest.fn(async () => owner),
+      findBalance: jest.fn(async () => null),
+      upsertBalance: jest.fn(async () => null),
+      initializeNullBalance: jest.fn(async () => null),
+      preflightMCP: jest.fn().mockResolvedValue([]),
+      resolveAgentFireAccess: jest.fn(async () => 'ok' as const),
+      getChatProject: jest.fn(async () => ({ _id: 'proj-1' })),
+      isUserDeleting: jest.fn(async () => false),
+      enqueueAgentTrigger: jest.fn(async () => undefined),
+      getTriggerDelivery: jest.fn(async () => null),
+    } as unknown as SchedulesServiceDeps);
+    return { service, getAppConfig };
+  }
+
+  const owner = (termsAccepted?: boolean) => ({
+    _id: 'user-1',
+    tenantId: 't1',
+    role: 'USER',
+    ...(termsAccepted === undefined ? {} : { termsAccepted }),
+  });
+
+  /** The reads the fire path makes: the owner row first, then the check on its context. */
+  async function isBlocked(service: ReturnType<typeof createSchedulesService>) {
+    const context = await service.engineDeps.getUserContext('user-1');
+    return service.engineDeps.isTermsBlocked(context as NonNullable<typeof context>);
+  }
+
+  it('carries the owner acceptance flag into the user context', async () => {
+    const { service } = serviceWithOwner(owner(false));
+
+    await expect(service.engineDeps.getUserContext('user-1')).resolves.toEqual({
+      id: 'user-1',
+      tenantId: 't1',
+      role: 'USER',
+      termsAccepted: false,
+    });
+  });
+
+  it('blocks an owner who has not accepted when the effective config requires acceptance', async () => {
+    const { service, getAppConfig } = serviceWithOwner(owner(false));
+
+    await expect(isBlocked(service)).resolves.toBe(true);
+    // The owner's own role and tenant select the config, as the HTTP gate resolves it.
+    expect(getAppConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1', role: 'USER', tenantId: 't1', failClosed: true }),
+    );
+  });
+
+  it('treats an owner row that has no acceptance flag as not accepted', async () => {
+    const { service } = serviceWithOwner(owner());
+
+    await expect(isBlocked(service)).resolves.toBe(true);
+  });
+
+  it('lets an owner who accepted through without reading the config', async () => {
+    const { service, getAppConfig } = serviceWithOwner(owner(true));
+
+    await expect(isBlocked(service)).resolves.toBe(false);
+    expect(getAppConfig).not.toHaveBeenCalled();
+  });
+
+  it('does not block when the effective config does not require acceptance', async () => {
+    const { service } = serviceWithOwner(
+      owner(false),
+      jest.fn(async () => termsConfig(false)),
+    );
+
+    await expect(isBlocked(service)).resolves.toBe(false);
+  });
+
+  it('fails closed when the effective config cannot be resolved', async () => {
+    const { service } = serviceWithOwner(
+      owner(false),
+      jest.fn(async () => {
+        throw new Error('override lookup failed');
+      }),
+    );
+
+    await expect(isBlocked(service)).rejects.toThrow('override lookup failed');
+  });
+});
+
 describe('deleteScheduleForOwner', () => {
   beforeEach(() => {
     // Module-level mock: without this it accumulates calls across tests and the

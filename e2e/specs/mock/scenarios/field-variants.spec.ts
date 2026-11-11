@@ -4,7 +4,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { NEW_CHAT_PATH } from '../helpers';
-import { probeStyle } from './style.helpers';
+import { normalizeColor, probeStyle } from './style.helpers';
 
 /**
  * The field and nav variants are rendered from the built primitives (server-side markup, the
@@ -291,8 +291,8 @@ for (const theme of THEMES) {
 
       const secondary = await probeStyle(page, 'text-text-secondary', 'color');
       const primary = await probeStyle(page, 'text-text-primary', 'color');
-      const navHover = await probeStyle(page, 'bg-surface-nav-hover', 'background-color');
-      const navSelected = await probeStyle(page, 'bg-surface-nav-selected', 'background-color');
+      const navHover = await normalizeColor(page, 'rgb(var(--surface-nav-hover))');
+      const navSelected = await normalizeColor(page, 'rgb(var(--surface-nav-selected))');
 
       const rest = await styleOf(page, '#rest', ['color', 'background-color']);
       expect(rest['color']).toBe(secondary);
@@ -333,12 +333,19 @@ for (const theme of THEMES) {
         render(h(SecretInput, { id: 'secret', variant: 'floating', label: 'Password', value: '' })),
       );
 
-      const chip = await page.evaluate(
-        () => getComputedStyle(document.querySelector('label[for="secret"]')!).backgroundColor,
-      );
-      const expectedRole =
-        theme === 'clickhouse' ? 'theme-field-fill:bg-field-fill' : 'bg-surface-primary';
-      expect(chip).toBe(await probeStyle(page, expectedRole, 'background-color'));
+      const chip = await page.evaluate(() => {
+        const style = getComputedStyle(document.querySelector('label[for="secret"]')!);
+        return { color: style.backgroundColor, image: style.backgroundImage };
+      });
+      if (theme !== 'clickhouse') {
+        expect(chip.color).toBe(await probeStyle(page, 'bg-surface-primary', 'background-color'));
+        return;
+      }
+      /* A filled field's chip is clear above the field's top edge and the field fill below it. */
+      const fill = await probeStyle(page, 'theme-field-fill:bg-field-fill', 'background-color');
+      expect(chip.color).toBe('rgba(0, 0, 0, 0)');
+      expect(chip.image).toContain('linear-gradient');
+      expect(chip.image).toContain(fill);
     });
 
     test(`every field primitive and variant resolves its fill, edge, ring and outline the same way in each state @scenario:field-variant-matrix`, async ({

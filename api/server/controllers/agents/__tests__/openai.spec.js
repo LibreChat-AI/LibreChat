@@ -175,8 +175,12 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createFileProvisionRecovery: () =>
+    jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
+  loadSkillAccess: (...args) => jest.requireActual('@librechat/api').loadSkillAccess(...args),
+  isTemporaryTurn: (...args) => jest.requireActual('@librechat/api').isTemporaryTurn(...args),
   /* Provisioning moved into this package; the controllers build the callback from it. */
   createProvisionFilesCallback: () => async () => {},
   createAgentExecutionContext: (context) => context,
@@ -385,7 +389,7 @@ jest.mock('@librechat/api', () => ({
 }));
 
 jest.mock('~/server/controllers/ModelController', () => ({
-  getModelsConfig: jest.fn().mockResolvedValue({}),
+  getEndpointModelsConfig: jest.fn().mockResolvedValue({}),
 }));
 
 jest.mock('~/server/services/MCP', () => ({
@@ -405,8 +409,6 @@ jest.mock('~/server/services/Endpoints/agents/skillDeps', () => ({
   getSkillDbMethods: jest.fn(() => ({})),
   canAuthorSkillFiles: mockCanAuthorSkillFiles,
   withDeploymentSkillIds: jest.fn((ids = []) => ids),
-  enrichWithSkillConfigurable: mockEnrichWithSkillConfigurable,
-  buildSkillPrimedIdsByName: mockBuildSkillPrimedIdsByName,
   buildAgentToolContext: mockBuildAgentToolContext,
   resolveMemoryAvailability: mockResolveMemoryAvailability,
   enrichLoadedToolsWithAgentContext: mockEnrichLoadedToolsWithAgentContext,
@@ -912,6 +914,15 @@ describe('OpenAIChatCompletionController', () => {
     expect(createSubagentUsageSink).toHaveBeenCalledWith(expect.any(Array));
   });
 
+  it('runs a temporary conversation as temporary for Langfuse', async () => {
+    const { createRun } = require('@librechat/api');
+    req.resolvedConversation = { isTemporary: true };
+
+    await OpenAIChatCompletionController(req, res);
+
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({ isTemporary: true }));
+  });
+
   it('uses collected usage for the non-streaming response', async () => {
     const { buildNonStreamingResponse } = require('@librechat/api');
 
@@ -943,6 +954,27 @@ describe('OpenAIChatCompletionController', () => {
       mockCompletionUsage,
       true,
     );
+  });
+
+  it('validates handoff agents through a loader that reads only their own provider models', async () => {
+    const api = require('@librechat/api');
+    const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
+    api.initializeAgent.mockResolvedValueOnce({
+      id: 'agent-123',
+      model: 'gpt-4',
+      model_parameters: {},
+      toolRegistry: {},
+      edges: [{ source: 'agent-123', target: 'agent-handoff' }],
+    });
+
+    await OpenAIChatCompletionController(req, res);
+
+    const [params] = api.discoverConnectedAgents.mock.calls.at(-1);
+    expect(params).not.toHaveProperty('modelsConfig');
+    expect(getEndpointModelsConfig).not.toHaveBeenCalled();
+    await params.getEndpointModels('anthropic');
+    expect(getEndpointModelsConfig).toHaveBeenCalledTimes(1);
+    expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, 'anthropic');
   });
 
   describe('content filtering', () => {

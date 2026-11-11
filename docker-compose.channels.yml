@@ -1,0 +1,39 @@
+# Optional release-matched application and stateless gateway.
+# Setup: https://www.librechat.ai/docs/features/agent_channels#docker-compose
+services:
+  api:
+    image: ghcr.io/librechat-ai/librechat:${LIBRECHAT_IMAGE_TAG:-latest}
+    volumes:
+      - ./librechat.yaml:/app/librechat.yaml:ro
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:${PORT:-3080}/readyz',{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)process.exitCode=1}).catch(()=>{process.exitCode=1})",
+        ]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 12
+  channel-gateway:
+    profiles: [channels]
+    image: ghcr.io/librechat-ai/librechat-channel-gateway:${LIBRECHAT_IMAGE_TAG:-latest}
+    depends_on:
+      api:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LIBRECHAT_INTERNAL_URL: http://api:${PORT:-3080}
+      CHANNEL_SERVICE_TOKEN: ${CHANNEL_SERVICE_TOKEN:-}
+      CHANNEL_TENANT_ID: ${CHANNEL_TENANT_ID:-_}
+      CHANNEL_ID: ${CHANNEL_ID:-}
+      APP_TITLE: ${APP_TITLE:-LibreChat}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+    stop_grace_period: 10s

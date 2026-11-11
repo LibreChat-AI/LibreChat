@@ -24,10 +24,6 @@ export interface VertexAIClientOptions {
   projectId?: string;
 }
 
-export interface ThinkingConfigDisabled {
-  type: 'disabled';
-}
-
 export interface ThinkingConfigEnabled {
   /**
    * Determines how many tokens Claude can use for its internal reasoning process.
@@ -50,22 +46,6 @@ export interface ThinkingConfigAdaptive {
   display?: ThinkingDisplayWireValue;
 }
 
-/**
- * Configuration for enabling Claude's extended thinking.
- *
- * When enabled, responses include `thinking` content blocks showing Claude's
- * thinking process before the final answer. Requires a minimum budget of 1,024
- * tokens and counts towards your `max_tokens` limit.
- *
- * See
- * [extended thinking](https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking)
- * for details.
- */
-export type ThinkingConfigParam =
-  | ThinkingConfigEnabled
-  | ThinkingConfigDisabled
-  | ThinkingConfigAdaptive;
-
 export type AnthropicModelOptions = Partial<Omit<AnthropicParameters, 'thinking'>> & {
   thinking?: AnthropicParameters['thinking'] | null;
   user?: string;
@@ -75,6 +55,8 @@ export type AnthropicModelOptions = Partial<Omit<AnthropicParameters, 'thinking'
  * Configuration options for the getLLMConfig function
  */
 export interface AnthropicConfigOptions {
+  /** Validated extra inference wire fields. */
+  inferenceParameters?: Record<string, unknown>;
   modelOptions?: AnthropicModelOptions;
   /** Proxy server URL */
   proxy?: string | null;

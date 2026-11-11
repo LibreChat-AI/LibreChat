@@ -8,7 +8,6 @@ import {
   getMCPToolsChangedGeneration,
   renewMCPToolsChangedGeneration,
   reserveMCPToolsChangedRevision,
-  hasMCPToolsChangedHandler,
   cancelMCPToolsChanged,
   notifyMCPToolsChanged,
   getMCPAppToolsPublicationGeneration,
@@ -28,14 +27,6 @@ describe('MCP tools-changed dispatch', () => {
     setMCPToolsChangedGenerationRenewalHandler(null);
     setMCPToolsChangedRevisionHandler(null);
     jest.useRealTimers();
-  });
-
-  it('reports whether a handler is registered', () => {
-    expect(hasMCPToolsChangedHandler()).toBe(false);
-    setMCPToolsChangedHandler(jest.fn());
-    expect(hasMCPToolsChangedHandler()).toBe(true);
-    setMCPToolsChangedHandler(null);
-    expect(hasMCPToolsChangedHandler()).toBe(false);
   });
 
   it('derives stable app publication generations from connection-relevant config', () => {

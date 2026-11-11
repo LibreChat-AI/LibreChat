@@ -4,14 +4,19 @@
  */
 export const ALL_REPOSITORIES: readonly string[] = ['*/*'];
 
-/** `owner/name` or `owner/*`, compared without case as GitHub does. Nothing else matches. */
+/**
+ * `owner/name`, `owner/*`, or a nested GitLab path such as `group/sub/name` or `group/sub/*`,
+ * compared without case. `*` stands for exactly one segment, so `group/*` does not reach into
+ * `group/sub/name`. Only the opt-in to every repository matches any path.
+ */
 export function isAllowedRepository(repo: string, allowed: readonly string[] | undefined): boolean {
-  const [owner, name] = repo.toLowerCase().split('/');
+  const segments = repo.toLowerCase().split('/');
   return (allowed ?? []).some((entry) => {
-    const [allowedOwner, allowedName] = entry.toLowerCase().split('/');
+    if (entry === ALL_REPOSITORIES[0]) return true;
+    const pattern = entry.toLowerCase().split('/');
     return (
-      (allowedOwner === '*' || allowedOwner === owner) &&
-      (allowedName === '*' || allowedName === name)
+      pattern.length === segments.length &&
+      pattern.every((part, index) => part === '*' || part === segments[index])
     );
   });
 }

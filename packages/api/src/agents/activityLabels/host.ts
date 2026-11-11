@@ -176,13 +176,9 @@ export interface ResolvedReasoningLabelConfig {
 }
 
 /**
- * Reads the per-endpoint `activity*` settings, mirroring how titles resolve
- * theirs: an `endpoints.all` block wins over the named endpoint, which wins
- * over a custom endpoint's own config.
- */
-/**
  * Reads ONE endpoint setting, global-then-named, rather than picking a whole
- * config object.
+ * config object — the same per-field resolution titles use
+ * (`resolveTitleConfig`).
  *
  * Selecting wholesale means any `endpoints.all` block — even one carrying
  * nothing but `headers` — shadows the named/custom endpoint entirely, so a

@@ -11,8 +11,15 @@ import type { IMongoFile } from '@librechat/data-schemas';
 import type { Agents } from 'librechat-data-provider';
 import type { AxiosInstance } from 'axios';
 import type { ServerRequest, StrategyFunctions } from '~/types';
-import { getFileStream, isAttachmentObjectNotFoundError } from './utils';
+import type { MissingAttachmentHandler } from './utils';
+import {
+  getOutboundTimeoutMs,
+  outboundRequestBudget,
+  configuredRequestBudget,
+} from '~/utils/timeouts';
+import { getFileStream, skipMissingAttachment } from './utils';
 import { validateImage } from '~/files/validation';
+import { sniffImageMimeType } from '~/files/mime';
 import { runGuardedEncode } from './memoryGuard';
 import { logAxiosError } from '~/utils/axios';
 
@@ -87,19 +94,31 @@ export class AttachmentStorageError extends Error {
 export async function encodeAndFormatImages(
   req: ServerRequest,
   files: ImageEncodingFile[] | null | undefined,
-  params: { provider?: string; endpoint?: string; imageDetail?: Agents.ImageDetail },
+  params: {
+    provider?: string;
+    endpoint?: string;
+    imageDetail?: Agents.ImageDetail;
+    onMissingFile?: MissingAttachmentHandler;
+  },
   { getStrategyFunctions, httpClient }: ImageEncodingDependencies,
   mode?: string,
 ): Promise<ImageResult> {
-  const { provider, endpoint } = params;
+  const { provider, endpoint, onMissingFile } = params;
   const effectiveEndpoint = endpoint ?? provider;
   const promises: Array<ImageEntry | Promise<ImageEntry>> = [];
   const encodingMethods: Record<string, ImageStrategy> = {};
   const result: ImageResult = { files: [], image_urls: [] };
+  const missingFiles = new Set<ImageEncodingFile>();
 
   if (!files?.length) {
     return result;
   }
+
+  /** A later synchronous throw abandons earlier in-flight reads; keep their rejections handled. */
+  const track = (entry: Promise<ImageEntry>): Promise<ImageEntry> => {
+    entry.catch(() => undefined);
+    return entry;
+  };
 
   for (const file of files) {
     const source = file.source ?? FileSources.local;
@@ -109,20 +128,31 @@ export async function encodeAndFormatImages(
     }
 
     if (blobStorageSources.has(source)) {
-      try {
-        const processedFile = await runGuardedEncode(file.bytes ?? 0, () =>
-          getFileStream(req, file, encodingMethods, getStrategyFunctions),
-        );
-        promises.push([file, processedFile?.content ?? null]);
-      } catch (error) {
-        if (isAttachmentObjectNotFoundError(error)) {
-          throw error;
-        }
-        if (typeof error === 'object' && error != null && 'bufferedData' in error) {
-          delete (error as { bufferedData?: unknown }).bufferedData;
-        }
-        throw new AttachmentStorageError();
-      }
+      promises.push(
+        track(
+          runGuardedEncode(file.bytes ?? 0, () =>
+            getFileStream(
+              req,
+              file,
+              encodingMethods,
+              getStrategyFunctions,
+              configuredRequestBudget(req.config, 'imageFetchMs'),
+            ),
+          ).then(
+            (processedFile): ImageEntry => [file, processedFile?.content ?? null],
+            (error: unknown): ImageEntry => {
+              if (skipMissingAttachment(error, file, onMissingFile)) {
+                missingFiles.add(file);
+                return [file, null];
+              }
+              if (typeof error === 'object' && error != null && 'bufferedData' in error) {
+                delete (error as { bufferedData?: unknown }).bufferedData;
+              }
+              throw new AttachmentStorageError();
+            },
+          ),
+        ),
+      );
       continue;
     }
 
@@ -135,11 +165,13 @@ export async function encodeAndFormatImages(
     }
 
     if (source !== FileSources.local && effectiveEndpoint && base64Only.has(effectiveEndpoint)) {
-      const entry = await runGuardedEncode<ImageEntry>(file.bytes ?? 0, async () => {
+      const entry = runGuardedEncode<ImageEntry>(file.bytes ?? 0, async () => {
         const [preparedFile, imageURL] = await preparePayload(req, file);
+        const fetchTimeoutMs = getOutboundTimeoutMs(req.config, 'imageFetchMs');
         try {
           const response = await httpClient.get<ArrayBuffer>(imageURL, {
             responseType: 'arraybuffer',
+            ...outboundRequestBudget(fetchTimeoutMs, 'imageFetchMs'),
           });
           return [preparedFile, Buffer.from(response.data).toString('base64')];
         } catch (error) {
@@ -147,10 +179,10 @@ export async function encodeAndFormatImages(
           throw new Error(logAxiosError({ message, error }));
         }
       });
-      promises.push(entry);
+      promises.push(track(entry));
       continue;
     }
-    promises.push(preparePayload(req, file));
+    promises.push(track(preparePayload(req, file)));
   }
 
   const detail = params.imageDetail ?? req.body.imageDetail ?? ImageDetail.auto;
@@ -166,6 +198,9 @@ export async function encodeAndFormatImages(
   }
 
   for (const [file, imageContent] of formattedImages) {
+    if (missingFiles.has(file)) {
+      continue;
+    }
     const fileMetadata: ImageResult['files'][number] = {
       type: file.type,
       file_id: file.file_id,
@@ -185,33 +220,38 @@ export async function encodeAndFormatImages(
     }
 
     const isURL = imageContent.startsWith('http');
-    if (file.height && file.width && !isURL) {
+    // Historical uploads may have a stored type that disagrees with their bytes.
+    let mediaType = file.type;
+    if (!isURL) {
       const imageBuffer = Buffer.from(imageContent, 'base64');
-      const validation = await validateImage(
-        imageBuffer,
-        imageBuffer.length,
-        effectiveEndpoint ?? '',
-        configuredFileSizeLimit,
-      );
-      if (!validation.isValid) {
-        throw new Error(`Image validation failed for ${file.filename}: ${validation.error}`);
+      mediaType = sniffImageMimeType(imageBuffer) ?? file.type;
+      if (file.height && file.width) {
+        const validation = await validateImage(
+          imageBuffer,
+          imageBuffer.length,
+          effectiveEndpoint ?? '',
+          configuredFileSizeLimit,
+        );
+        if (!validation.isValid) {
+          throw new Error(`Image validation failed for ${file.filename}: ${validation.error}`);
+        }
       }
     }
 
-    const url = isURL ? imageContent : `data:${file.type};base64,${imageContent}`;
+    const url = isURL ? imageContent : `data:${mediaType};base64,${imageContent}`;
     if (mode === VisionModes.agents) {
       result.image_urls.push({ type: ContentTypes.IMAGE_URL, image_url: { url, detail } });
     } else if (effectiveEndpoint === EModelEndpoint.google && mode === VisionModes.generative) {
       result.image_urls.push({
         type: ContentTypes.IMAGE_URL,
-        inlineData: { mimeType: file.type, data: imageContent },
+        inlineData: { mimeType: mediaType, data: imageContent },
       });
     } else if (effectiveEndpoint === EModelEndpoint.google) {
       result.image_urls.push({ type: ContentTypes.IMAGE_URL, image_url: url });
     } else if (effectiveEndpoint === EModelEndpoint.anthropic) {
       result.image_urls.push({
         type: 'image',
-        source: { type: 'base64', media_type: file.type, data: imageContent },
+        source: { type: 'base64', media_type: mediaType, data: imageContent },
       });
     } else {
       result.image_urls.push({ type: ContentTypes.IMAGE_URL, image_url: { url, detail } });

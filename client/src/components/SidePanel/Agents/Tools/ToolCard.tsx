@@ -126,7 +126,7 @@ function ToolCardImpl({
         onClick={() => onToggle(item)}
         aria-pressed={selected}
         className={cn(
-          'touch:pb-9 flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl p-4 text-left',
+          'touch:pb-9 flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl p-4 text-start',
           'focus-visible:ring-ring-primary focus:outline-hidden focus-visible:ring-2',
         )}
       >
@@ -211,7 +211,7 @@ function ToolCardImpl({
         ) : null}
       </button>
       {(canFavorite || canConfigure || showInfoOnly) && (
-        <div className="absolute right-2 bottom-2 flex items-center gap-1">
+        <div className="absolute inset-e-2 bottom-2 flex items-center gap-1">
           {(canConfigure || showInfoOnly) && (
             <button
               type="button"

@@ -73,7 +73,7 @@ export default function MCPServerMenuItem({
         <div
           aria-hidden="true"
           className={cn(
-            'border-surface-secondary absolute -right-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2',
+            'border-surface-secondary absolute -inset-e-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2',
             statusColor,
           )}
         />

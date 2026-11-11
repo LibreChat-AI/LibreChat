@@ -6,8 +6,8 @@
   background-color: rgb(var(--surface-tooltip, var(--surface-primary)));
   padding-top: var(--theme-tooltip-padding-y, 0.25rem);
   padding-bottom: var(--theme-tooltip-padding-y, 0.25rem);
-  padding-left: var(--theme-tooltip-padding-x, 0.5rem);
-  padding-right: var(--theme-tooltip-padding-x, 0.5rem);
+  padding-inline-start: var(--theme-tooltip-padding-x, 0.5rem);
+  padding-inline-end: var(--theme-tooltip-padding-x, 0.5rem);
   font-size: var(--theme-tooltip-text-size, 1rem);
   line-height: 1.5;
   color: rgb(var(--text-tooltip, var(--text-primary)));
@@ -15,7 +15,7 @@
   /* Enhanced layout for longer descriptions */
   max-width: 320px;
   word-wrap: break-word;
-  text-align: left;
+  text-align: start;
 }
 
 @media (max-width: 640px) {

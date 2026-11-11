@@ -27,7 +27,7 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
 
       - name: Install client dependencies
         run: cd packages/client && npm ci
@@ -77,7 +77,7 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install npm with OIDC support

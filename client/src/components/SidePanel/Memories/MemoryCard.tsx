@@ -41,7 +41,7 @@ export default function MemoryCard({ memory, hasUpdateAccess }: MemoryCardProps)
           </span>
         )}
         {hasUpdateAccess && (
-          <div className="ml-auto shrink-0">
+          <div className="ms-auto shrink-0">
             <MemoryCardActions memory={memory} />
           </div>
         )}

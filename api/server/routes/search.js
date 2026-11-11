@@ -20,7 +20,7 @@ router.get('/enable', async function (req, res) {
 
     const { status } = await client.health();
     return res.send(status === 'available');
-  } catch (error) {
+  } catch {
     return res.send(false);
   }
 });

@@ -222,8 +222,8 @@ describe('Button', () => {
      *  text through itself while every neighbour sits on `bg-presentation`. */
     expect(screen.getByRole('button', { name: 'Toggle' })).toHaveClass(
       'bg-presentation',
-      'border-border-chrome',
-      'rounded-xl',
+      'border-border-light',
+      'rounded-theme-control',
       'duration-0',
       'hover:bg-surface-active-alt',
     );
@@ -241,7 +241,7 @@ describe('Button', () => {
     );
 
     const button = screen.getByRole('button', { name: 'Back' });
-    expect(button).toHaveClass('rounded-xl', 'h-theme-button-sm', 'bg-presentation');
+    expect(button).toHaveClass('rounded-theme-control', 'h-theme-button-sm', 'bg-presentation');
     expect(button).not.toHaveClass('rounded-lg');
 
     rerender(
@@ -425,7 +425,12 @@ describe('Button', () => {
   });
 
   it('offers the sign-in sizes, shape and link variants as roles rather than caller classes', () => {
-    expect(cn(buttonVariants({ shape: 'soft' }))).toContain('rounded-2xl');
+    expect(cn(buttonVariants({ shape: 'soft' }))).toContain('rounded-theme-auth-control');
+    expect(cn(buttonVariants({ shape: 'soft' }))).not.toContain('rounded-lg');
+    expect(cn(buttonVariants({ size: 'auth' }))).toContain('h-theme-auth-button');
+    expect(cn(buttonVariants({ size: 'auth-action' }))).toContain('h-theme-auth-action');
+    expect(cn(buttonVariants({ shape: 'auth-action' }))).toContain('rounded-theme-auth-action');
+    expect(cn(buttonVariants({ shape: 'auth-action' }))).not.toContain('rounded-lg');
     expect(cn(buttonVariants({ size: 'snug' }))).toContain('p-1');
     expect(cn(buttonVariants({ size: 'wide' }))).toContain('px-8');
     expect(cn(buttonVariants({ size: 'bare' }))).toContain('p-0');

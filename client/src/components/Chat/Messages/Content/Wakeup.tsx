@@ -1,21 +1,27 @@
 import { memo, useCallback, useMemo, useState } from 'react';
-import { useRecoilValue } from 'recoil';
 import { Button } from '@librechat/client';
-import type { WakeupDisplay, WakeupTask } from './Parts/wakeup';
-import type { TranslationKeys } from '~/hooks';
-import SystemEventHeader, {
+import { getToolDisplayLabel } from '@librechat/chat';
+import {
+  SystemEventHeader,
   SystemEventIcon,
   systemEventHeaderClasses,
-} from '~/components/Chat/Messages/ui/SystemEvent';
-import { subagentStatusIcon, subagentStatusLabelKey } from '~/components/Chat/Subagents/status';
-import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
-import { useSubagentTaskPanel } from '~/components/Chat/Subagents/task';
+  useExpandCollapse,
+} from '@librechat/chat/components';
+import {
+  useSubagentTaskPanel,
+  subagentStatusIcon,
+  subagentStatusLabelKey,
+  useLazyCollapseBody,
+} from '@librechat/chat/react';
+import type { WakeupDisplay, WakeupTask } from '@librechat/chat';
+import type { TranslationKeys } from '~/hooks';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import BackgroundTaskCard from './BackgroundTaskCard';
-import { cn, getToolDisplayLabel } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
 import MarkdownLite from './MarkdownLite';
-import store from '~/store';
+import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 const SUBAGENT_HEADER_KEYS = {
   completed: 'com_ui_wakeup_subagent_completed',
@@ -60,7 +66,7 @@ function WakeupTaskCard({
   const hasResult = task.result.trim() !== '';
 
   return (
-    <div className="border-border-light bg-surface-secondary/40 my-1.5 rounded-lg border p-3">
+    <div className="my-1.5 min-w-0">
       <div className="text-text-secondary flex min-h-6 items-center gap-1.5 text-xs">
         <StatusIcon
           size={13}
@@ -79,14 +85,14 @@ function WakeupTaskCard({
             data-subagent-tool-call={selection.toolCallId}
             data-subagent-parent-message={selection.parentMessageId}
             data-subagent-part-index={selection.partIndex}
-            className="ml-auto h-6 shrink-0 px-2 text-xs"
+            className="ms-auto h-6 shrink-0 px-2 text-xs"
           >
             {localize('com_ui_wakeup_view_activity')}
           </Button>
         )}
       </div>
       {hasResult && (
-        <div className="markdown prose prose-sm message-content light text-text-primary mt-2 max-h-96 w-full max-w-none overflow-y-auto pr-1 break-words">
+        <div className="markdown prose prose-sm message-content light text-text-primary mt-2 max-h-96 w-full max-w-none overflow-y-auto pe-1 break-words">
           <MarkdownLite content={task.result} codeExecution={false} />
         </div>
       )}
@@ -109,7 +115,7 @@ const Wakeup = memo(function Wakeup({
   const localize = useLocalize();
   const mcpIconMap = useMCPIconMap();
   const mcpServerNames = useMCPServerNames();
-  const autoExpand = useRecoilValue(store.autoExpandTools);
+  const autoExpand = useMessagePartsHost().useAutoExpandTools();
   const [isExpanded, setIsExpanded] = useState(autoExpand);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(isExpanded);
@@ -166,7 +172,7 @@ const Wakeup = memo(function Wakeup({
   return (
     <div className={cn('max-w-full', shouldRenderBody && 'w-[36rem]')}>
       <Button
-        variant="ghost"
+        variant="disclosure"
         type="button"
         className={systemEventHeaderClasses}
         onClick={handleToggle}
@@ -204,7 +210,7 @@ const Wakeup = memo(function Wakeup({
               )}
               {display.tasks.map((task) =>
                 display.kind === 'background_tool' ? (
-                  <div key={task.taskId} className="my-2">
+                  <div key={task.taskId} className="my-2 ps-7">
                     <BackgroundTaskCard
                       task={{
                         taskId: task.taskId,

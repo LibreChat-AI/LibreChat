@@ -23,6 +23,11 @@ export type TaskRow = {
   detail?: string;
   /** Tool cancel target. */
   taskId?: string;
+  messageId?: string;
+  toolCallId?: string;
+  stepId?: string;
+  threadId?: string;
+  eventOrigin?: boolean;
   status: TaskRowStatus;
   startedAt?: number;
   settledAt?: number;
@@ -107,6 +112,9 @@ const toolRow = (
     kind: 'tool',
     name: task.toolName,
     taskId: task.taskId,
+    messageId: task.messageId,
+    toolCallId: task.toolCallId,
+    stepId: task.stepId,
     ...described,
     status: task.status === 'running' && task.cancellationRequested ? 'stopping' : task.status,
     startedAt: time(task.startedAt),
@@ -123,6 +131,11 @@ const subagentRow = (child: ParentSubagentSummary, stopping: ReadonlySet<string>
     id: `subagent:${subagentTaskKey(child.threadId, taskId)}`,
     kind: 'subagent',
     name: child.title,
+    taskId,
+    messageId: child.parentMessageId,
+    toolCallId: child.parentToolCallId,
+    threadId: child.threadId,
+    eventOrigin: child.origin === 'event',
     status: running && stopping.has(subagentTaskKey(child.threadId, taskId)) ? 'stopping' : status,
     startedAt: time(child.tasks.find((task) => task.taskId === taskId)?.createdAt),
     settledAt: running ? undefined : time(child.updatedAt),

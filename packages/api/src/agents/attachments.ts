@@ -44,7 +44,10 @@ export function isToolOwnedAttachment(file: AttachmentTelemetryFile): boolean {
     | undefined;
   return (
     file.context === FileContext.execute_code ||
+    file.context === FileContext.execute_code_snapshot ||
     file.embedded === true ||
+    metadata?.searchDestination === true ||
+    metadata?.codeDestination === true ||
     metadata?.codeEnvRef != null ||
     metadata?.codeEnvRefs != null ||
     metadata?.fileIdentifier != null

@@ -5,7 +5,6 @@ import {
   assertModelBoundContent,
   assertModelBoundProviderContent,
   collectModelBoundHistoricalFileIdState,
-  collectModelBoundHistoricalFileIds,
   createModelBoundChatModelCallback,
   createInitialModelBoundAdmissionCallback,
   hasModelBoundContentProtection,
@@ -2566,7 +2565,7 @@ describe('assertModelBoundProviderContent', () => {
 
   it('collects every provider-supported historical file locator', () => {
     expect(
-      collectModelBoundHistoricalFileIds([
+      collectModelBoundHistoricalFileIdState([
         {
           files: [{ file_id: 'top-file' }],
           attachments: [{ file_id: 'display-file' }],
@@ -2578,7 +2577,7 @@ describe('assertModelBoundProviderContent', () => {
             { type: 'input_file', files: [{ file_id: 'part-file' }] },
           ],
         },
-      ]),
+      ]).fileIds,
     ).toEqual([
       'top-file',
       'display-file',

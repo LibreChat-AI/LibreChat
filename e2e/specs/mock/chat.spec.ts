@@ -341,7 +341,9 @@ test.describe('core chat loop', () => {
 
     await uploadProviderFile(page, csvFixture);
 
-    await expect(page.getByRole('button', { name: filename })).toBeVisible();
+    await expect(
+      page.getByTestId('composer-tray').getByRole('button', { name: filename, exact: true }),
+    ).toBeVisible();
 
     const input = page.getByRole('textbox', { name: 'Message input' });
     await input.click();

@@ -178,7 +178,7 @@ export default function CreateSkillDialog({
               placeholder={localize('com_ui_skill_name_placeholder')}
               aria-invalid={errors.name ? 'true' : 'false'}
               autoComplete="off"
-              className="border-border-medium text-text-primary focus-visible:ring-ring-primary flex h-10 w-full rounded-xl"
+              className="text-text-primary focus-visible:ring-ring-primary flex h-10 w-full rounded-xl"
               {...register('name', {
                 required: localize('com_ui_skill_name_required'),
                 pattern: {

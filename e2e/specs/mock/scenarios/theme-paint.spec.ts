@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import type { IThemeRGB } from '../../../../packages/client/src/theme/types';
+import type { IThemeRGB } from '../../../../packages/data-provider/src/themes/types';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
-import { defaultTheme } from '../../../../packages/client/src/theme/themes/default';
-import { darkTheme } from '../../../../packages/client/src/theme/themes/dark';
+import { defaultTheme } from '../../../../packages/data-provider/src/themes/default';
+import { darkTheme } from '../../../../packages/data-provider/src/themes/dark';
 import {
   sendMessageAndWaitForCompletion,
   selectMockEndpoint,
@@ -152,6 +152,16 @@ function paintRoles(page: Page) {
 const rgb = (channels: string | undefined) => `rgb(${(channels ?? '').split(' ').join(', ')})`;
 
 test.describe('controlled theme paint', () => {
+  /**
+   * The app asks for `/api/config` again once the session resolves, and that request can still be
+   * inside a `serveThemes` handler when a test body returns. Closing the context under it disposes
+   * the fetched response, which fails the finished test from the handler, so each test lets its
+   * handlers settle first.
+   */
+  test.afterEach(async ({ page }) => {
+    await page.unrouteAll({ behavior: 'wait' });
+  });
+
   test("a shared link's first frame of the conversation already wears the link tenant's theme @scenario:shared-link-first-frame-wears-link-theme", async ({
     page,
   }) => {

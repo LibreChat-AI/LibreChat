@@ -1,10 +1,13 @@
 import { useContext } from 'react';
 import { MessageCircleQuestion } from 'lucide-react';
-import parseJsonField, { parseJsonFieldOccurrences } from './Parts/parseJsonField';
-import { collectLiveAskToolCallIds } from '~/utils/approval';
-import { useGetMessagesByConvoId } from '~/data-provider';
+import { useToolPreparation } from '@librechat/chat/components';
+import {
+  parseJsonField,
+  parseJsonFieldOccurrences,
+  collectLiveAskToolCallIds,
+} from '@librechat/chat';
 import { ChatContext } from '~/Providers/ChatContext';
-import { useToolPreparation } from './preparation';
+import { useCachedMessages } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 
 /**
@@ -32,10 +35,10 @@ export default function AskUserQuestionProgress({
   const preparationText = useToolPreparation();
   const conversationId = useContext(ChatContext)?.conversation?.conversationId;
   const enabled = conversationId != null && conversationId !== 'new';
-  const { data: livePauses } = useGetMessagesByConvoId(enabled ? conversationId : '', {
-    enabled,
-    select: collectLiveAskToolCallIds,
-  });
+  const { data: livePauses } = useCachedMessages(
+    enabled ? conversationId : '',
+    collectLiveAskToolCallIds,
+  );
   const legacyQuestion = parseJsonField(args, 'question');
   const batchQuestion = (() => {
     if (typeof args === 'string') {

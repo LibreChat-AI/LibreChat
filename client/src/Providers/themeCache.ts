@@ -1,7 +1,13 @@
-import { themeRoleFingerprint } from 'librechat-data-provider';
 import { resolveTheme, describeResolvedTheme } from '@librechat/client';
+import {
+  themeOwnerKey,
+  parseSessionHint,
+  SESSION_HINT_COOKIE,
+  themeRoleFingerprint,
+  DEPLOYMENT_THEME_BOOT_ID,
+} from 'librechat-data-provider';
+import type { TInterfaceConfig, TUser, DeploymentThemeBoot } from 'librechat-data-provider';
 import type { ResolvedThemeStyle, ThemeDefinition } from '@librechat/client';
-import type { TInterfaceConfig, TUser } from 'librechat-data-provider';
 
 type DeploymentThemeValue = TInterfaceConfig['theme'];
 
@@ -16,6 +22,13 @@ export const THEME_CACHE_KEY = 'deployment-theme';
  * `client/vite.config.ts` writes the same value into the boot script's version check.
  */
 export const THEME_CACHE_VERSION = themeRoleFingerprint();
+/**
+ * The owner this tab last saw signed in. Session storage lives and dies with the tab, so
+ * the cache is replayed only on a reload of a tab that was serving its owner; a new tab,
+ * or one whose identity changed elsewhere, waits for its own answer. The boot script
+ * reads this key too.
+ */
+export const THEME_OWNER_KEY = 'deployment-theme-owner';
 
 export type ThemeCacheEntry = {
   v: string;
@@ -56,16 +69,42 @@ export function appBasePath(): string {
   return base ? new URL(base.href).pathname : '/';
 }
 
+const routePath = (pathname: string, basePath: string): string =>
+  pathname.startsWith(basePath) ? pathname.slice(basePath.length) : pathname.replace(/^\//, '');
+
 /** `pathname` relative to the app's base path. */
 export function isPublicRoute(pathname: string, basePath = '/'): boolean {
-  const path = pathname.startsWith(basePath)
-    ? pathname.slice(basePath.length)
-    : pathname.replace(/^\//, '');
-  return PUBLIC_ROUTE.test(path);
+  return PUBLIC_ROUTE.test(routePath(pathname, basePath));
+}
+
+/** Shared links paint their own tenant's theme, so the deployment's base theme never stands in. */
+const SHARE_ROUTE = /^share(?:\/|$)/i;
+
+/**
+ * The deployment's base `interface.theme`, which the server embeds in the shell
+ * (`DEPLOYMENT_THEME_BOOT_ID`) for the boot script to paint before `/api/config` answers.
+ * Absent on a shared link and wherever no server said (the Vite dev server).
+ */
+export function readShellTheme(
+  pathname: string,
+  basePath = '/',
+): NonNullable<DeploymentThemeValue> | undefined {
+  if (SHARE_ROUTE.test(routePath(pathname, basePath))) {
+    return undefined;
+  }
+  try {
+    const block = document.getElementById(DEPLOYMENT_THEME_BOOT_ID);
+    const boot = block
+      ? (JSON.parse(block.textContent ?? '') as Partial<DeploymentThemeBoot>)
+      : null;
+    return boot?.source ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export const themeOwner = (user?: Pick<TUser, 'id' | 'tenantId'>): string | undefined =>
-  user?.id ? `${user.tenantId ?? ''}:${user.id}` : undefined;
+  user?.id ? themeOwnerKey(user.id, user.tenantId) : undefined;
 
 const isStyle = (value: unknown): value is ResolvedThemeStyle =>
   typeof value === 'object' &&
@@ -95,6 +134,42 @@ export function readThemeCache(): ThemeCacheEntry | undefined {
     // Storage is an optional adapter: denied or corrupt storage paints no cached theme.
   }
   return undefined;
+}
+
+const sessionHintPattern = new RegExp(`(?:^|;\\s*)${SESSION_HINT_COOKIE}=([^;]*)`);
+
+/** Whether the server's readable session hint names a live session of `owner`. */
+export function isLiveSessionOf(owner: string): boolean {
+  const value = sessionHintPattern.exec(document.cookie)?.[1];
+  const hint = value ? parseSessionHint(decodeURIComponent(value)) : undefined;
+  return hint != null && hint.expires > Date.now() && hint.owner === owner;
+}
+
+/**
+ * The cache, only when this tab last saw its owner signed in and the browser's live session is
+ * that owner's, so the replay cannot cross identities or outlive the session.
+ */
+export function readOwnedThemeCache(): ThemeCacheEntry | undefined {
+  try {
+    const tabOwner = sessionStorage.getItem(THEME_OWNER_KEY);
+    const entry = tabOwner && isLiveSessionOf(tabOwner) ? readThemeCache() : undefined;
+    return entry?.owner === tabOwner ? entry : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Records the tab's signed-in owner, or forgets it once no one is signed in. */
+export function setThemeOwner(owner?: string): void {
+  try {
+    if (owner) {
+      sessionStorage.setItem(THEME_OWNER_KEY, owner);
+    } else {
+      sessionStorage.removeItem(THEME_OWNER_KEY);
+    }
+  } catch {
+    // Without session storage no owner is known, so the cache is never replayed.
+  }
 }
 
 export function clearThemeCache(): void {
@@ -145,16 +220,20 @@ export function writeThemeCache(entry: ThemeCacheEntry): void {
  * - otherwise the previous answer keeps painting while it is the signed-out one, which is
  *   the same deployment's; one from another signed-in key may be another identity's, so
  *   nothing paints until the current answer arrives.
+ * Wherever nothing would paint, the deployment's base theme from the shell (`shell`) stands
+ * in, as the signed-out answer does: it is served to everyone, so it is no one else's.
  * A theme that turns out invalid is cleared by the caller, which resolves it.
  */
 export function reconcileThemeCache({
   cached,
   owner,
   answer,
+  shell,
 }: {
   cached?: ThemeCacheEntry;
   owner?: string;
   answer?: ThemeAnswer;
+  shell?: DeploymentThemeValue;
 }): { theme: DeploymentThemeValue; cache: ThemeCacheAction } {
   if (answer?.current) {
     if (!owner) {
@@ -163,16 +242,16 @@ export function reconcileThemeCache({
     return { theme: answer.theme, cache: answer.theme == null ? 'clear' : 'write' };
   }
   if (cached?.disowned) {
-    return { theme: undefined, cache: 'keep' };
+    return { theme: shell, cache: 'keep' };
   }
   if (cached && owner !== undefined && cached.owner !== owner) {
-    return { theme: undefined, cache: 'disown' };
+    return { theme: shell, cache: 'disown' };
   }
   if (cached) {
     return { theme: cached.source, cache: 'keep' };
   }
   if (answer && !answer.current && !answer.signedOut) {
-    return { theme: undefined, cache: 'keep' };
+    return { theme: shell, cache: 'keep' };
   }
-  return { theme: answer?.theme, cache: 'keep' };
+  return { theme: answer ? answer.theme : shell, cache: 'keep' };
 }

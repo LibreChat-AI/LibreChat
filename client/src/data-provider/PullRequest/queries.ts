@@ -9,7 +9,9 @@ import {
 import type { TConversationPullRequestResponse } from 'librechat-data-provider';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { createBatchFetcher, createPullRequestBatcher } from './batch';
+import { resetPullRequestCredentials } from './connection';
 import { useGetStartupConfig } from '../Endpoints';
+import { stopPullRequestSignIns } from './signIn';
 import store from '~/store';
 
 const SETTLED_REFRESH_MS = 60_000;
@@ -90,13 +92,35 @@ const batcherFor = (userId: string): RowBatcher => {
 };
 
 /**
- * Ends the row queue with the session. Called wherever the session's client state is cleared, so
+ * Ends the row queue, any account sign-in watch and the record of which credential cached pull
+ * requests were fetched with, with the session. Called wherever the session's client state is cleared, so
  * signing back in as the same account starts a fresh queue and neither waits behind, nor sends,
  * anything the previous session left.
  */
+/** The account the pull request session belongs to. */
+let sessionOwner: string | undefined;
+
+/**
+ * Records who signed in, and ends the pull request session when it is a different account than
+ * the last one: an account switch without a logout passes no teardown, and the sign-in watch,
+ * credential record and queued lookups would otherwise carry over to the next account.
+ */
+export const setPullRequestSessionOwner = (userId?: string | null): void => {
+  if (!userId) {
+    return;
+  }
+  if (sessionOwner !== undefined && sessionOwner !== userId) {
+    endPullRequestSession();
+  }
+  sessionOwner = userId;
+};
+
 export const endPullRequestSession = (): void => {
   rowBatcher?.batcher.dispose();
   rowBatcher = undefined;
+  /** A sign-in watch left running would ask for, and cache, the next user's connection. */
+  stopPullRequestSignIns();
+  resetPullRequestCredentials();
 };
 
 /**

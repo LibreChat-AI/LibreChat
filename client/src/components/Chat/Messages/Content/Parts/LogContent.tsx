@@ -226,7 +226,10 @@ const LogContent: React.FC<LogContentProps> = ({ output = '', renderImages, atta
                   )}
                 </div>
               )}
-              <pre className="text-text-primary max-h-80 overflow-auto font-mono text-xs leading-5 break-words whitespace-pre-wrap">
+              <pre
+                dir="ltr"
+                className="text-text-primary max-h-80 overflow-auto font-mono text-xs leading-5 break-words whitespace-pre-wrap"
+              >
                 {file.text}
               </pre>
             </div>

@@ -86,10 +86,10 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
                   <button
                     type="button"
                     onClick={() => setMobileDetail(false)}
-                    className="text-text-primary hover:bg-surface-hover focus:ring-border-xheavy -ml-1 flex items-center gap-1 rounded-lg p-1 transition-colors focus:ring-2 focus:outline-hidden"
+                    className="text-text-primary hover:bg-surface-hover focus:ring-border-xheavy -ms-1 flex items-center gap-1 rounded-lg p-1 transition-colors focus:ring-2 focus:outline-hidden"
                     aria-label={localize('com_ui_back')}
                   >
-                    <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+                    <ChevronLeft className="h-5 w-5 rtl:-scale-x-100" aria-hidden="true" />
                     <span className="text-lg font-medium">
                       {activeMeta ? localize(activeMeta.labelKey) : localize('com_nav_settings')}
                     </span>
@@ -133,7 +133,7 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
                     />
                   )}
                   {showContent && (
-                    <div className={cn('flex-1 overflow-y-auto', !isSmallScreen && 'pr-1')}>
+                    <div className={cn('flex-1 overflow-y-auto', !isSmallScreen && 'pe-1')}>
                       {searching ? (
                         <Content activeTab={effectiveTab} query={query} ctx={ctx} />
                       ) : (

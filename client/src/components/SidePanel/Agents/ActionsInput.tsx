@@ -267,7 +267,7 @@ export default function ActionsInput({
           onChange={handleInputChange}
           spellCheck="false"
           placeholder={localize('com_ui_enter_openapi_schema')}
-          className="border-border-light focus-visible:border-border-heavy block min-h-[12rem] w-full resize-y p-3 font-mono text-xs leading-relaxed transition-colors focus-visible:ring-0"
+          className="focus-visible:border-border-heavy block min-h-[12rem] w-full resize-y p-3 font-mono text-xs leading-relaxed transition-colors focus-visible:ring-0"
         />
         {validationError && (
           <div className="text-text-destructive mt-1.5 text-xs">
@@ -305,15 +305,15 @@ export default function ActionsInput({
 
       <OGDialog open={isSchemaDialogOpen} onOpenChange={setIsSchemaDialogOpen}>
         <OGDialogContent className="flex h-[85vh] max-h-[85vh] w-11/12 max-w-5xl flex-col gap-3 p-5">
-          <OGDialogHeader className="space-y-0 pr-10">
-            <OGDialogTitle className="text-left text-sm font-medium">
+          <OGDialogHeader className="space-y-0 pe-10">
+            <OGDialogTitle className="text-start text-sm font-medium">
               {localize('com_ui_schema')}
             </OGDialogTitle>
             <OGDialogDescription className="sr-only">
               {localize('com_ui_enter_openapi_schema')}
             </OGDialogDescription>
           </OGDialogHeader>
-          <div className="border-border-medium bg-surface-secondary focus-within:border-border-heavy flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
+          <div className="border-border-control bg-surface-secondary focus-within:border-border-heavy flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
             <Textarea
               variant="transparent"
               value={inputValue}

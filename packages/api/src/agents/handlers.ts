@@ -1,6 +1,6 @@
 import yaml from 'js-yaml';
 import { Types } from 'mongoose';
-import { GraphEvents, Constants, ToolEndHandler } from '@librechat/agents';
+import { Constants, ToolEndHandler } from '@librechat/agents';
 import {
   logger,
   normalizeSkillFrontmatterKeys,
@@ -56,12 +56,14 @@ import type {
 import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
 import type { InterruptibleToolBatchRequest } from './steering/tools';
+import type { ToolExecutionIdentity } from '~/telemetry/tools';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
 import type { SandboxTextReader } from '~/files/code/text';
 import type { WorkspaceEditMatching } from '~/code/edits';
 import type { CodeExecutionContext } from './execution';
 import type { TextContentFragment } from '~/protection';
+import type { AuthoredSkillBinding } from './authored';
 import type { RunFileSession } from './files/session';
 import type { ServerRequest } from '~/types';
 import type { TextEdit } from './edits';
@@ -157,11 +159,13 @@ import { toolValidationFeedback } from './validationFeedback';
 import { explainWorkspacePathRejection } from '~/code/paths';
 import { createSkillContentDigest } from './compatibility';
 import { isMissingSandboxPathError } from '~/files/code';
+import { observeToolExecution } from '~/telemetry/tools';
 import { applyHostTextEdits } from './files/processing';
 import { deleteSkillWithRetry } from '~/skills/cleanup';
 import { resolveDownloadPath } from '~/storage/path';
 import { parseFrontmatter } from '../skills/import';
 import { HostEditError } from './files/matching';
+import { AuthoredSkillState } from './authored';
 import { cleanCodeToolOutput } from './cleanup';
 import { primeSkillFiles } from './skillFiles';
 import { instrumentPtcToolMap } from './ptc';
@@ -287,6 +291,8 @@ export function createOwnedToolEndHandler(
 }
 
 export interface ToolExecuteOptions {
+  /** Host observer, called only after authoring has bound an authorized identity. */
+  onSkillAuthored?: (binding: Pick<AuthoredSkillBinding, 'name' | 'id' | 'primed'>) => void;
   /** Host-captured authority ceiling, never runnable/model metadata. */
   scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'>;
   /**
@@ -2970,9 +2976,10 @@ async function resolveSkillForAuthoring(
 
   const skillPrimedIdsByName =
     (mergedConfigurable?.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
-  const primedIdString = skillPrimedIdsByName[skillName];
-  if (primedIdString) {
-    return await getSkillByName(skillName, [new Types.ObjectId(primedIdString)], {});
+  const pinnedIdString =
+    getAuthoredSkillId(skillName, mergedConfigurable) ?? skillPrimedIdsByName[skillName];
+  if (pinnedIdString) {
+    return await getSkillByName(skillName, [new Types.ObjectId(pinnedIdString)], {});
   }
 
   const accessibleIds = (mergedConfigurable?.accessibleSkillIds as Types.ObjectId[]) ?? [];
@@ -3003,10 +3010,12 @@ async function resolveAuthorSkillForCurrentUser({
     return null;
   }
   const skill = await options.getAuthorSkillByName({ req, name: skillName });
-  if (!skill) {
+  const authoredId = getAuthoredSkillId(skillName, mergedConfigurable);
+  if (!skill || (authoredId != null && skill._id.toString() !== authoredId)) {
     return null;
   }
   rememberAuthoredSkill([mergedConfigurable, sourceConfigurable], skill, { prime: false });
+  options.onSkillAuthored?.({ name: skill.name, id: skill._id.toString(), primed: false });
   return skill;
 }
 
@@ -3066,7 +3075,9 @@ function isSkillPrimedForAuthoring(
 ): boolean {
   const skillPrimedIdsByName =
     (mergedConfigurable.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
-  return typeof skillPrimedIdsByName[skillName] === 'string';
+  const primedId = skillPrimedIdsByName[skillName];
+  const authoredId = getAuthoredSkillId(skillName, mergedConfigurable);
+  return typeof primedId === 'string' && (authoredId == null || authoredId === primedId);
 }
 
 function isSkillKnownToCurrentRun(
@@ -3659,6 +3670,11 @@ async function writeSkillMd({
       throw error;
     }
     rememberAuthoredSkill([mergedConfigurable, sourceConfigurable], result.skill);
+    options.onSkillAuthored?.({
+      name: result.skill.name,
+      id: result.skill._id.toString(),
+      primed: true,
+    });
     const surfacedWarnings = surfaceSkillAuthoringWarnings(result.warnings);
     const invocationHint = authoredSkillInvocationHint(structured.frontmatter);
     return successResult(
@@ -3836,6 +3852,9 @@ async function writeBundledSkillFile({
           ? `File already exists: ${displayPath}. Re-read it and pass overwrite: true to replace.`
           : `Skill file changed while editing. Re-read ${displayPath} and retry.`,
       );
+    }
+    if (error instanceof Error && 'code' in error && error.code === 'SKILL_DELETING') {
+      return errorResult(tc, `Skill is being deleted. Re-read ${displayPath} before retrying.`);
     }
     throw error;
   }
@@ -4766,13 +4785,13 @@ async function handleReadFileCall(
   let skillPrimedIdsByName =
     (mergedConfigurable?.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
   let primedIdString = skillPrimedIdsByName[skillName];
-  let isPrimedThisTurn = primedIdString != null;
+  let isPrimedThisTurn = isSkillPrimedForAuthoring(skillName, mergedConfigurable);
   const refreshSkillReadScope = () => {
     accessibleIds = (mergedConfigurable?.accessibleSkillIds as Types.ObjectId[]) ?? [];
     skillPrimedIdsByName =
       (mergedConfigurable?.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
     primedIdString = skillPrimedIdsByName[skillName];
-    isPrimedThisTurn = primedIdString != null;
+    isPrimedThisTurn = isSkillPrimedForAuthoring(skillName, mergedConfigurable);
   };
   let recoveredAuthorSkill: AuthoringSkill | null | undefined;
   const recoverAuthorSkill = async () => {
@@ -4899,9 +4918,10 @@ async function handleReadFileCall(
      (rather than relying on mongoose's string auto-cast in `$in` queries)
      keeps the value correct for any future consumer that compares with
      `.equals()` or `===`. */
-  const lookupAccessibleIds = primedIdString ? [new Types.ObjectId(primedIdString)] : accessibleIds;
+  const pinnedIdString = getAuthoredSkillId(skillName, mergedConfigurable) ?? primedIdString;
+  const lookupAccessibleIds = pinnedIdString ? [new Types.ObjectId(pinnedIdString)] : accessibleIds;
   const lookupOptions: { preferUserInvocable?: boolean; preferModelInvocable?: boolean } =
-    primedIdString ? {} : { preferModelInvocable: true };
+    pinnedIdString ? {} : { preferModelInvocable: true };
   let skill = await getSkillByName(skillName, lookupAccessibleIds, lookupOptions);
   if (!skill) {
     skill = await recoverAuthorSkill();
@@ -5643,7 +5663,9 @@ function getToolFailureFeedback(content: ToolExecuteResult['content']): string {
   return messages.join('\n') || 'Tool execution failed.';
 }
 
-export function createToolExecuteHandler(options: ToolExecuteOptions): EventHandler {
+export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): EventHandler {
+  const authoredSkills = new AuthoredSkillState();
+  const resumedSkillConfigurables = new Map<string, Record<string, unknown>>();
   const {
     scheduledMCPExecution,
     runSignal: hostRunSignal,
@@ -5661,9 +5683,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
     ordinaryToolCancellation = false,
     backgroundCompletionResultMaxChars = AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT,
     provisionFiles,
-  } = options;
+  } = handlerOptions;
 
-  return {
+  const handler: EventHandler = {
     handle: async (_event: string, data: ToolExecuteBatchRequest) => {
       const {
         toolCalls,
@@ -5678,6 +5700,11 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
       const executionContext = (
         data as ToolExecuteBatchRequest & { executionContext?: SubagentExecutionContext }
       ).executionContext;
+      const authoredScope = authoredSkills.scope(agentId, executionContext);
+      const options: ToolExecuteOptions = {
+        ...handlerOptions,
+        onSkillAuthored: (binding) => authoredSkills.record(authoredScope, binding),
+      };
       // Only the SDK-owned batch field may establish a child execution. Runtime
       // configurable and callback metadata can otherwise carry inherited values.
       /**
@@ -5798,11 +5825,97 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
             );
             const toolMap = new Map(loadedTools.map((t) => [t.name, t]));
             const loadedConfigurable = toolConfigurable as Record<string, unknown> | undefined;
-            const mergedConfigurable = mergeToolConfigurables(
-              sourceConfigurable,
-              loadedConfigurable,
-            );
+            const authoredScopeKey = JSON.stringify(authoredScope);
+            let resumedSkillConfigurable = resumedSkillConfigurables.get(authoredScopeKey);
+            const baseConfigurable = mergeToolConfigurables(sourceConfigurable, loadedConfigurable);
+            // Restored identity wins; current capability and request fields still come from loadTools.
+            const mergedConfigurable = resumedSkillConfigurable
+              ? mergeToolConfigurables(resumedSkillConfigurable, baseConfigurable)
+              : baseConfigurable;
+            if (authoredSkills.hasPending) {
+              const requestedSkills = new Map<string, ToolCallRequest[]>();
+              for (const tc of allowedToolCalls) {
+                const args = tc.args as { path?: unknown; skillName?: unknown };
+                let skillName: string | undefined;
+                if (tc.name === Constants.SKILL_TOOL && typeof args.skillName === 'string') {
+                  skillName = args.skillName;
+                } else if (
+                  typeof args.path === 'string' &&
+                  (args.path.startsWith(SKILL_FILE_PREFIX) ||
+                    (tc.name === Constants.READ_FILE && !args.path.startsWith('workspace/'))) &&
+                  (tc.name === Constants.READ_FILE ||
+                    isHostFileAuthoringToolCall(tc.name, mergedConfigurable))
+                ) {
+                  const path = args.path.startsWith(SKILL_FILE_PREFIX)
+                    ? args.path.slice(SKILL_FILE_PREFIX.length)
+                    : args.path;
+                  skillName = path.split('/')[0];
+                }
+                if (skillName)
+                  requestedSkills.set(skillName, [...(requestedSkills.get(skillName) ?? []), tc]);
+              }
+              const restored = authoredSkills.take(authoredScope, new Set(requestedSkills.keys()));
+              if (restored.length > 0) {
+                const req = mergedConfigurable.req as ServerRequest | undefined;
+                await Promise.all(
+                  restored.map(async (binding) => {
+                    const skill =
+                      isSkillAuthoringAvailable(mergedConfigurable) &&
+                      req &&
+                      options.getAuthorSkillByName
+                        ? await options.getAuthorSkillByName({ req, name: binding.name })
+                        : null;
+                    const allowed =
+                      skill &&
+                      skill._id.toString() === binding.id &&
+                      req &&
+                      options.canEditSkill &&
+                      (await options.canEditSkill({ req, skillId: skill._id }));
+                    if (!allowed || !skill) {
+                      for (const tc of requestedSkills.get(binding.name) ?? []) {
+                        preloadedNameBlocks.set(
+                          tc,
+                          errorResult(tc, `Skill "${binding.name}" not found or not accessible.`),
+                        );
+                      }
+                      return;
+                    }
+                    if (!resumedSkillConfigurable) {
+                      resumedSkillConfigurable = {};
+                      resumedSkillConfigurables.set(authoredScopeKey, resumedSkillConfigurable);
+                    }
+                    rememberAuthoredSkill([mergedConfigurable, resumedSkillConfigurable], skill, {
+                      prime: binding.primed,
+                    });
+                    authoredSkills.confirm(authoredScope, binding.name);
+                  }),
+                );
+              }
+            }
             if (mergedConfigurable != null) mergedConfigurable.executionContext = executionContext;
+            const telemetryReq = mergedConfigurable?.req as ServerRequest | undefined;
+            const telemetryAncestry =
+              executionContext?.ancestry[executionContext.ancestry.length - 1];
+            const telemetryConversationId = metadata?.thread_id ?? mergedConfigurable?.thread_id;
+            const toolTelemetryIdentity = (
+              tc: ToolCallRequest,
+              mode: ToolExecutionIdentity['mode'],
+            ): ToolExecutionIdentity => ({
+              toolName: tc.name,
+              toolCallId: tc.id,
+              stepId: tc.stepId,
+              agentId,
+              mode,
+              runId: eventRunId,
+              conversationId:
+                typeof telemetryConversationId === 'string' ? telemetryConversationId : undefined,
+              userId: resolveBackgroundUserId(mergedConfigurable),
+              tenantId: telemetryReq?.user?.tenantId,
+              rootRunId: executionContext?.rootRunId,
+              parentRunId: telemetryAncestry?.parentRunId,
+              subagentRunId: telemetryAncestry?.subagentRunId,
+              parentToolCallId: telemetryAncestry?.parentToolCallId,
+            });
             /* The graph populated each call's code-session context from the sessions that
              * existed at run start, before this batch provisioned anything, and nothing
              * downstream refreshes it. buildToolCallConfig reads `_injected_files` from
@@ -5812,6 +5925,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
               for (const tc of allowedToolCalls) {
                 if (
                   !isCodeSessionAwareToolCall(tc.name, mergedConfigurable) &&
+                  tc.name !== Constants.READ_FILE &&
                   !(runFileSharingActive && isCodeFileToolName(tc.name))
                 ) {
                   continue;
@@ -6511,31 +6625,37 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 noteToolApprovalDispatch(approvalDispatch);
                 let invokePromise: Promise<{ content?: unknown; artifact?: unknown }>;
                 try {
-                  invokePromise = Promise.resolve(
-                    tool.invoke(normalizedArgs, {
-                      /** Full invoke config (not just identity): a detached
-                       *  code call still needs `session_id`/`_injected_files`/
-                       *  `_runtime_session_hint` or it runs fileless on the
-                       *  Code API's default runtime session. */
-                      toolCall: buildToolCallConfig(tc, mergedConfigurable),
+                  invokePromise = observeToolExecution(
+                    { ...toolTelemetryIdentity(tc, 'background'), backgroundTaskId: task.id },
+                    () =>
+                      tool.invoke(normalizedArgs, {
+                        /** Full invoke config (not just identity): a detached
+                         *  code call still needs `session_id`/`_injected_files`/
+                         *  `_runtime_session_hint` or it runs fileless on the
+                         *  Code API's default runtime session. */
+                        toolCall: buildToolCallConfig(tc, mergedConfigurable),
+                        signal: backgroundAbortController.signal,
+                        configurable: {
+                          ...mergedConfigurable,
+                          [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true,
+                          ...(detachedReservation?.status === 'reserved'
+                            ? {
+                                eventActorDetachedAction: {
+                                  taskId: detachedReservation.taskId,
+                                  idempotencyKey: detachedReservation.idempotencyKey,
+                                },
+                              }
+                            : {}),
+                        },
+                        metadata: bindToolApprovalInvocation(
+                          { ...metadata, executingAgentId: agentId },
+                          approvalDispatch,
+                        ),
+                      } as Record<string, unknown>),
+                    {
                       signal: backgroundAbortController.signal,
-                      configurable: {
-                        ...mergedConfigurable,
-                        [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true,
-                        ...(detachedReservation?.status === 'reserved'
-                          ? {
-                              eventActorDetachedAction: {
-                                taskId: detachedReservation.taskId,
-                                idempotencyKey: detachedReservation.idempotencyKey,
-                              },
-                            }
-                          : {}),
-                      },
-                      metadata: bindToolApprovalInvocation(
-                        { ...metadata, executingAgentId: agentId },
-                        approvalDispatch,
-                      ),
-                    } as Record<string, unknown>),
+                      getAbortSource: () => backgroundAbortSource,
+                    },
                   ) as Promise<{ content?: unknown; artifact?: unknown }>;
                 } catch (error) {
                   /** Structured tools are permitted to reject synchronously.
@@ -6976,20 +7096,25 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     return reportResult(interruptedToolResult(tc.id));
                   }
                   onResultAdmissionStart?.(tc.id);
-                  const pollContent = await runCheckBackgroundTask({
-                    userId: backgroundUserId,
-                    conversationId: backgroundConversationId,
-                    args: tc.args,
-                    toolCallId: tc.id,
-                    agentId,
-                    runId: `${backgroundRunId ?? ''}:${tc.turn ?? ''}`,
-                    generationId: backgroundRunId,
-                    subagentTasks,
-                    claimBackgroundToolResult: backgroundToolCompletion?.claim,
-                    recoverDeadBackgroundToolClaim: backgroundToolCompletion?.recoverDeadClaim,
-                    pendingCompletions: backgroundToolCompletion?.pending,
-                    ordinaryToolCancellation,
-                  });
+                  const pollContent = await observeToolExecution(
+                    toolTelemetryIdentity(tc, 'foreground'),
+                    () =>
+                      runCheckBackgroundTask({
+                        userId: backgroundUserId,
+                        conversationId: backgroundConversationId,
+                        args: tc.args,
+                        toolCallId: tc.id,
+                        agentId,
+                        runId: `${backgroundRunId ?? ''}:${tc.turn ?? ''}`,
+                        generationId: backgroundRunId,
+                        subagentTasks,
+                        claimBackgroundToolResult: backgroundToolCompletion?.claim,
+                        recoverDeadBackgroundToolClaim: backgroundToolCompletion?.recoverDeadClaim,
+                        pendingCompletions: backgroundToolCompletion?.pending,
+                        ordinaryToolCancellation,
+                      }),
+                    { signal: runSignal },
+                  );
                   const taskSnapshot = getBackgroundTaskSnapshot({
                     userId: backgroundUserId,
                     conversationId: backgroundConversationId,
@@ -7270,65 +7395,71 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     }
                     let handlerResult: ToolExecuteResult;
                     try {
-                      if (tc.name === Constants.SKILL_TOOL) {
-                        handlerResult = await handleSkillToolCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          agentId,
-                          req,
-                          runSignal,
-                          batchCodeApiRateLimitBudget,
-                        );
-                      } else if (tc.name === Constants.READ_FILE) {
-                        handlerResult = await handleReadFileCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          req,
-                          () => {
-                            sandboxReadSucceeded = true;
-                          },
-                          runSignal,
-                        );
-                      } else if (tc.name === SEARCH_WORKSPACE_TOOL_NAME) {
-                        handlerResult = await handleWorkspaceSearchCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          req,
-                          runSignal,
-                        );
-                      } else if (tc.name === LIST_WORKSPACE_FILES_TOOL_NAME) {
-                        handlerResult = await handleWorkspaceListCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          req,
-                          runSignal,
-                        );
-                      } else if (tc.name === CREATE_FILE_TOOL_NAME && isFileAuthoringCall) {
-                        handlerResult = await handleCreateFileCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          req,
-                          sourceConfigurable,
-                          sandboxContext,
-                          runSignal,
-                        );
-                      } else if (tc.name === EDIT_FILE_TOOL_NAME && isFileAuthoringCall) {
-                        handlerResult = await handleEditFileCall(
-                          tc,
-                          mergedConfigurable,
-                          options,
-                          req,
-                          sandboxContext,
-                          runSignal,
-                        );
-                      } else {
-                        handlerResult = errorResult(tc, `Tool ${tc.name} not found`);
-                      }
+                      handlerResult = await observeToolExecution(
+                        toolTelemetryIdentity(tc, 'foreground'),
+                        async () => {
+                          if (tc.name === Constants.SKILL_TOOL) {
+                            return handleSkillToolCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              agentId,
+                              req,
+                              runSignal,
+                              batchCodeApiRateLimitBudget,
+                            );
+                          } else if (tc.name === Constants.READ_FILE) {
+                            return handleReadFileCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              req,
+                              () => {
+                                sandboxReadSucceeded = true;
+                              },
+                              runSignal,
+                            );
+                          } else if (tc.name === SEARCH_WORKSPACE_TOOL_NAME) {
+                            return handleWorkspaceSearchCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              req,
+                              runSignal,
+                            );
+                          } else if (tc.name === LIST_WORKSPACE_FILES_TOOL_NAME) {
+                            return handleWorkspaceListCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              req,
+                              runSignal,
+                            );
+                          } else if (tc.name === CREATE_FILE_TOOL_NAME && isFileAuthoringCall) {
+                            return handleCreateFileCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              req,
+                              sourceConfigurable,
+                              sandboxContext,
+                              runSignal,
+                            );
+                          } else if (tc.name === EDIT_FILE_TOOL_NAME && isFileAuthoringCall) {
+                            return handleEditFileCall(
+                              tc,
+                              mergedConfigurable,
+                              options,
+                              req,
+                              sandboxContext,
+                              runSignal,
+                            );
+                          } else {
+                            return errorResult(tc, `Tool ${tc.name} not found`);
+                          }
+                        },
+                        { signal: runSignal },
+                      );
                     } catch (toolError) {
                       if (toolError instanceof ContentFilterError) {
                         logger.error(`[ON_TOOL_EXECUTE] Tool ${tc.name} error`, {
@@ -7587,29 +7718,27 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                          * must not put their values on the wire. */
                         const ptcReq = mergedConfigurable?.req as ServerRequest | undefined;
                         const ptcArgumentPii = ptcReq?.config?.filters?.toolArguments?.pii;
-                        toolCallConfig.toolMap = emitPtcProgress
-                          ? instrumentPtcToolMap({
-                              toolMap: eligiblePtcToolMap,
-                              toolCallId: tc.id,
-                              runId: (metadata as Record<string, unknown>)?.run_id as
-                                | string
-                                | undefined,
-                              includePreviews: !hasActivePiiFields(ptcArgumentPii, [
-                                'name',
-                                'arguments',
-                                'output',
-                              ]),
-                              traceExclusions: collectFilteredPtcToolNames(
-                                eligiblePtcToolMap.keys(),
-                                ptcReq,
-                              ),
-                              emit: (event) => {
-                                if (!(runSignal?.reason instanceof SteerToolInterrupt)) {
-                                  emitPtcProgress(event);
-                                }
-                              },
-                            })
-                          : eligiblePtcToolMap;
+                        toolCallConfig.toolMap = instrumentPtcToolMap({
+                          toolMap: eligiblePtcToolMap,
+                          toolCallId: tc.id,
+                          telemetry: toolTelemetryIdentity(tc, 'programmatic'),
+                          signal: runSignal,
+                          runId: (metadata as Record<string, unknown>)?.run_id as
+                            | string
+                            | undefined,
+                          includePreviews:
+                            emitPtcProgress != null &&
+                            !hasActivePiiFields(ptcArgumentPii, ['name', 'arguments', 'output']),
+                          traceExclusions: collectFilteredPtcToolNames(
+                            eligiblePtcToolMap.keys(),
+                            ptcReq,
+                          ),
+                          emit: (event) => {
+                            if (!(runSignal?.reason instanceof SteerToolInterrupt)) {
+                              emitPtcProgress?.(event);
+                            }
+                          },
+                        });
                       }
                     }
 
@@ -7636,18 +7765,23 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     if (filtered != null) {
                       return filtered;
                     }
-                    const result = await tool.invoke(normalizedArgs, {
-                      toolCall: toolCallConfig,
-                      configurable: mergedConfigurable,
-                      metadata: { ...metadata, executingAgentId: agentId },
-                      /** The run's cancellation signal. Without it a foreground
-                       *  tool call keeps running after Stop: an MCP call never
-                       *  sends `notifications/cancelled`, and every other
-                       *  signal-aware tool keeps burning quota on a turn the
-                       *  user already abandoned. Detached background calls
-                       *  intentionally use their own controller instead. */
-                      ...(runSignal != null && { signal: runSignal }),
-                    } as Record<string, unknown>);
+                    const result = await observeToolExecution(
+                      toolTelemetryIdentity(tc, 'foreground'),
+                      () =>
+                        tool.invoke(normalizedArgs, {
+                          toolCall: toolCallConfig,
+                          configurable: mergedConfigurable,
+                          metadata: { ...metadata, executingAgentId: agentId },
+                          /** The run's cancellation signal. Without it a foreground
+                           *  tool call keeps running after Stop: an MCP call never
+                           *  sends `notifications/cancelled`, and every other
+                           *  signal-aware tool keeps burning quota on a turn the
+                           *  user already abandoned. Detached background calls
+                           *  intentionally use their own controller instead. */
+                          ...(runSignal != null && { signal: runSignal }),
+                        } as Record<string, unknown>),
+                      { signal: runSignal },
+                    );
 
                     if (runSignal?.reason instanceof SteerToolInterrupt) {
                       return interruptedToolResult(tc.id);
@@ -7859,16 +7993,6 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
       }
     },
   };
-}
-
-/**
- * Creates a handlers object that includes ON_TOOL_EXECUTE.
- * Can be merged with other handler objects.
- */
-export function createToolExecuteHandlers(
-  options: ToolExecuteOptions,
-): Record<string, EventHandler> {
-  return {
-    [GraphEvents.ON_TOOL_EXECUTE]: createToolExecuteHandler(options),
-  };
+  authoredSkills.bind(handler);
+  return handler;
 }

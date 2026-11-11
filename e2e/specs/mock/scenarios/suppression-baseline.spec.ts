@@ -628,6 +628,28 @@ test.describe('the recorded design-rule backlog', () => {
       join(emptyRoot, 'scripts/static-checks.mts'),
     );
     copyFileSync(resolve(repoRoot, 'scripts/i18n.mts'), join(emptyRoot, 'scripts/i18n.mts'));
+    copyFileSync(
+      resolve(repoRoot, 'scripts/diagnostics.mts'),
+      join(emptyRoot, 'scripts/diagnostics.mts'),
+    );
+    copyFileSync(
+      resolve(repoRoot, 'scripts/diagnostics.test.mts'),
+      join(emptyRoot, 'scripts/diagnostics.test.mts'),
+    );
+    copyFileSync(
+      resolve(repoRoot, 'scripts/typecheck.mts'),
+      join(emptyRoot, 'scripts/typecheck.mts'),
+    );
+    copyFileSync(resolve(repoRoot, 'scripts/imports.mts'), join(emptyRoot, 'scripts/imports.mts'));
+    mkdirSync(join(emptyRoot, 'scripts/eslint'), { recursive: true });
+    copyFileSync(
+      resolve(repoRoot, 'scripts/eslint/design.mjs'),
+      join(emptyRoot, 'scripts/eslint/design.mjs'),
+    );
+    copyFileSync(
+      resolve(repoRoot, 'scripts/eslint/chat.mjs'),
+      join(emptyRoot, 'scripts/eslint/chat.mjs'),
+    );
     copyFileSync(resolve(repoRoot, 'package.json'), join(emptyRoot, 'package.json'));
     symlinkSync(resolve(repoRoot, 'node_modules'), join(emptyRoot, 'node_modules'), 'dir');
     const deleted = run(
@@ -1095,7 +1117,15 @@ function syntheticRoot(): string {
 
   for (const file of [
     'scripts/static-checks.mts',
+    'scripts/diagnostics.mts',
+    /** The suppressions check runs the comparison's spec before it reads the baseline. */
+    'scripts/diagnostics.test.mts',
     'scripts/i18n.mts',
+    'scripts/typecheck.mts',
+    'scripts/imports.mts',
+    /** The local design rules the config registers and the runner validates against. */
+    'scripts/eslint/design.mjs',
+    'scripts/eslint/chat.mjs',
     'package.json',
     'package-lock.json',
     'eslint.config.mjs',
@@ -1118,6 +1148,8 @@ function syntheticRoot(): string {
   write('client/src/Other.tsx', 'export default () => <div className="bg-surface-primary" />;\n');
   write('client/src/components/ui/Thing.tsx', 'export const Thing = () => null;\n');
   write('packages/client/src/Primitive.tsx', 'export const Primitive = () => null;\n');
+  /** The third root `lint:design:record` names; ESLint fails on a root that matches nothing. */
+  write('packages/chat/src/index.ts', 'export {};\n');
   /** A spec beside each of them, under both metadata roots. The real roots are
    *  full of these — every primitive in `packages/client/src/components` has
    *  one — and the flat config turns every design rule off inside them, so what

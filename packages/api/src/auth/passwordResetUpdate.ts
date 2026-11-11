@@ -15,7 +15,7 @@ export type PasswordResetUpdate = { password?: string; credentialsChangedAt?: Da
 export function createPasswordResetUpdate(
   passwordHash: string,
   resetAt: Date = new Date(),
-): PasswordResetUpdate {
+): PasswordResetUpdate & { credentialsChangedAt: Date } {
   return {
     password: passwordHash,
     credentialsChangedAt: resetAt,

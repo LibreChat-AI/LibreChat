@@ -10,6 +10,7 @@ import {
   hasTurnFileConsumer,
   isNativelyReadableText,
   hasToolResourceProvisioning,
+  hasToolResourceDestination,
   canToolResourceConsume,
   resolveUploadDestination,
   getCustomEndpointProvider,
@@ -869,6 +870,17 @@ describe('hasToolResourceProvisioning', () => {
   });
 });
 
+describe('hasToolResourceDestination', () => {
+  it('retains search eligibility without claiming vectors or another destination exist', () => {
+    const file = { embedded: false, metadata: { searchDestination: true } };
+    expect(hasToolResourceDestination(file, EToolResources.file_search)).toBe(true);
+    expect(hasToolResourceProvisioning(file, EToolResources.file_search)).toBe(false);
+    expect(hasToolResourceDestination(file, EToolResources.execute_code)).toBe(false);
+    expect(hasToolResourceDestination({}, EToolResources.file_search)).toBe(false);
+    expect(hasToolResourceDestination({ embedded: true }, EToolResources.file_search)).toBe(true);
+  });
+});
+
 describe('hasInferredLLMDeliveryPath', () => {
   it('re-resolves only a route upload inferred', () => {
     expect(hasInferredLLMDeliveryPath({ llmDeliveryPath: 'none' })).toBe(true);
@@ -949,6 +961,22 @@ describe('resolveTurnLLMDeliveryPath', () => {
         endpointConfig,
       }),
     ).toBe('none');
+  });
+
+  it('keeps the search route while confirmed vector cleanup awaits lazy repair', () => {
+    const file = {
+      ...routedCsv,
+      embedded: false,
+      metadata: { searchDestination: true },
+    };
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file,
+        consumers: { executeCode: false, fileSearch: true },
+        endpointConfig,
+      }),
+    ).toBe('none');
+    expect(resolveTurnLLMDeliveryPath({ file, consumers: noReader, endpointConfig })).toBe('text');
   });
 
   it('delivers text when File Search is on but never received the file', () => {
@@ -1079,5 +1107,18 @@ describe('resolveTurnLLMDeliveryPath', () => {
         endpointConfig,
       }),
     ).toBe('none');
+  });
+});
+
+describe('retained code destination', () => {
+  it('preserves chosen code intent without claiming the deleted copy exists', () => {
+    const file: TurnDeliveryFile = {
+      type: 'text/plain',
+      llmDeliveryPath: 'none',
+      metadata: { destinationChosen: true, codeDestination: true },
+    };
+    expect(hasToolResourceProvisioning(file, EToolResources.execute_code)).toBe(false);
+    expect(hasToolResourceDestination(file, EToolResources.execute_code)).toBe(true);
+    expect(hasToolResourceDestination(file, EToolResources.file_search)).toBe(false);
   });
 });

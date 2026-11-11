@@ -465,6 +465,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                   const snapshot = await connection.fetchToolsSnapshot(options.deadlineMs, signal);
                   if (snapshot.authenticationError) throw snapshot.authenticationError;
                   if (execution) {
+                    const authorizations: Array<Promise<unknown>> = [];
                     for (const [toolKey, owners] of toolAgentIds.get(server) ?? []) {
                       const [selectionName] = splitMCPToolKey(toolKey, authoritativeCandidates);
                       const definitions = snapshot.tools.filter(
@@ -474,16 +475,19 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                             selectionName,
                       );
                       for (const ownerId of owners) {
-                        await execution.bind(ownerId, selectionName).authorize({
-                          user,
-                          serverName: server,
-                          serverConfig,
-                          toolName: definitions.length === 1 ? definitions[0].name : '',
-                          loadTools: async () => snapshot,
-                          signal,
-                        });
+                        authorizations.push(
+                          execution.bind(ownerId, selectionName).authorize({
+                            user,
+                            serverName: server,
+                            serverConfig,
+                            toolName: definitions.length === 1 ? definitions[0].name : '',
+                            loadTools: async () => snapshot,
+                            signal,
+                          }),
+                        );
                       }
                     }
+                    await Promise.all(authorizations);
                   }
                   const available = new Set(
                     Object.keys(formatMCPServerTools(server, snapshot.tools)),

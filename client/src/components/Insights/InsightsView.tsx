@@ -174,6 +174,7 @@ function Sparkline({
 
   return (
     <div
+      dir="ltr"
       className="text-status-info relative mt-2 h-14 w-full outline-hidden"
       role="img"
       tabIndex={0}
@@ -304,16 +305,14 @@ function TopUsersTable({
         <EmptyState message={localize('com_insights_no_data')} />
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[26.25rem] text-left text-sm">
+          <table className="w-full min-w-[26.25rem] text-start text-sm">
             <thead className="border-border-medium text-text-secondary border-b text-xs">
               <tr>
                 <th className="px-2 py-2 font-medium">{localize('com_insights_user')}</th>
-                <th className="px-2 py-2 text-right font-medium">
+                <th className="px-2 py-2 text-end font-medium">
                   {localize('com_insights_messages')}
                 </th>
-                <th className="px-2 py-2 text-right font-medium">
-                  {localize('com_insights_chats')}
-                </th>
+                <th className="px-2 py-2 text-end font-medium">{localize('com_insights_chats')}</th>
               </tr>
             </thead>
             <tbody className="divide-border-light divide-y">
@@ -322,10 +321,10 @@ function TopUsersTable({
                   <td className="px-2 py-3">
                     <UserCell {...entry} localize={localize} />
                   </td>
-                  <td className="px-2 py-3 text-right tabular-nums">
+                  <td className="px-2 py-3 text-end tabular-nums">
                     {formatExactValue(entry.messages, locale)}
                   </td>
-                  <td className="px-2 py-3 text-right tabular-nums">
+                  <td className="px-2 py-3 text-end tabular-nums">
                     {formatExactValue(entry.conversations, locale)}
                   </td>
                 </tr>
@@ -372,20 +371,20 @@ function ChurnedUsersTable({
         <EmptyState message={localize('com_insights_no_data')} />
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[35rem] table-fixed text-left text-sm">
+          <table className="w-full min-w-[35rem] table-fixed text-start text-sm">
             <thead className="border-border-medium text-text-secondary border-b text-xs">
               <tr>
                 <th className="w-[34%] px-2 py-2 font-medium">{localize('com_insights_user')}</th>
-                <th className="w-[12%] px-2 py-2 text-right font-medium">
+                <th className="w-[12%] px-2 py-2 text-end font-medium">
                   {localize('com_insights_messages')}
                 </th>
-                <th className="w-[12%] px-2 py-2 text-right font-medium">
+                <th className="w-[12%] px-2 py-2 text-end font-medium">
                   {localize('com_insights_chats')}
                 </th>
-                <th className="w-[21%] px-2 py-2 text-right font-medium">
+                <th className="w-[21%] px-2 py-2 text-end font-medium">
                   {localize('com_insights_first_seen')}
                 </th>
-                <th className="w-[21%] px-2 py-2 text-right font-medium">
+                <th className="w-[21%] px-2 py-2 text-end font-medium">
                   {localize('com_insights_last_seen')}
                 </th>
               </tr>
@@ -396,16 +395,16 @@ function ChurnedUsersTable({
                   <td className="overflow-hidden px-2 py-3">
                     <UserCell {...entry} localize={localize} />
                   </td>
-                  <td className="px-2 py-3 text-right tabular-nums">
+                  <td className="px-2 py-3 text-end tabular-nums">
                     {formatExactValue(entry.messages, locale)}
                   </td>
-                  <td className="px-2 py-3 text-right tabular-nums">
+                  <td className="px-2 py-3 text-end tabular-nums">
                     {formatExactValue(entry.conversations, locale)}
                   </td>
-                  <td className="text-text-secondary px-2 py-3 text-right whitespace-nowrap">
+                  <td className="text-text-secondary px-2 py-3 text-end whitespace-nowrap">
                     {formatDate(entry.firstSeen, locale)}
                   </td>
-                  <td className="text-text-secondary px-2 py-3 text-right whitespace-nowrap">
+                  <td className="text-text-secondary px-2 py-3 text-end whitespace-nowrap">
                     {formatDate(entry.lastSeen, locale)}
                   </td>
                 </tr>
@@ -466,17 +465,17 @@ function LatestConversations({
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[56.25rem] table-fixed text-left text-sm">
+        <table className="w-full min-w-[56.25rem] table-fixed text-start text-sm">
           <thead className="border-border-medium text-text-secondary border-b text-xs">
             <tr>
               <th className="w-[7.5rem] px-2 py-2 font-medium">{localize('com_insights_date')}</th>
               <th className="w-[12rem] px-2 py-2 font-medium">{localize('com_insights_user')}</th>
               <th className="w-[10rem] px-2 py-2 font-medium">{localize('com_insights_agent')}</th>
               <th className="px-2 py-2 font-medium">{localize('com_insights_first_message')}</th>
-              <th className="w-20 px-2 py-2 text-right font-medium">
+              <th className="w-20 px-2 py-2 text-end font-medium">
                 {localize('com_insights_messages')}
               </th>
-              <th className="w-20 px-2 py-2 text-right font-medium">
+              <th className="w-20 px-2 py-2 text-end font-medium">
                 {localize('com_insights_total_tokens')}
               </th>
             </tr>
@@ -499,10 +498,10 @@ function LatestConversations({
                     {conversation.firstMessage || localize('com_insights_no_message')}
                   </span>
                 </td>
-                <td className="px-2 py-3 text-right tabular-nums">
+                <td className="px-2 py-3 text-end tabular-nums">
                   {formatExactValue(conversation.messages, locale)}
                 </td>
-                <td className="px-2 py-3 text-right tabular-nums">
+                <td className="px-2 py-3 text-end tabular-nums">
                   {formatValue(conversation.totalTokens, locale)}
                 </td>
               </tr>

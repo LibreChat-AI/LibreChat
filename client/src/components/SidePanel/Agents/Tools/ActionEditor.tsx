@@ -114,7 +114,7 @@ export default function ActionEditor({
         title={localize('com_ui_delete_action')}
         className="max-w-[28.125rem]"
         main={
-          <Label className="text-left text-sm font-medium">
+          <Label className="text-start text-sm font-medium">
             {localize('com_ui_delete_action_confirm')}
           </Label>
         }

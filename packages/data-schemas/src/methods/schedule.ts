@@ -164,12 +164,6 @@ export interface RecordRunOutcomeParams {
   resumeClaimStaleBefore?: Date;
 }
 
-/** Result of claiming/leasing a schedule: the snapshot plus the fencing token to carry. */
-export interface ScheduleClaim {
-  schedule: ISchedule;
-  claimToken: string;
-}
-
 /** Outcome of reserving the single-active-run slot for a fired occurrence. */
 export type StartedRunReservation =
   | { run: IScheduleRun }
@@ -206,7 +200,6 @@ export type ScheduleMethods = {
     unset?: Record<string, 1>,
     options?: { expectedConfigRevision?: number; preserveMCPConsentRevision?: string },
   ) => Promise<ISchedule | null>;
-  deleteScheduleById: (id: string, userId: string | Types.ObjectId) => Promise<boolean>;
   deleteUnarmedSchedule: (
     id: string,
     userId: string | Types.ObjectId,
@@ -516,15 +509,6 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     return Schedule()
       .findOneAndUpdate(filter, { ...mutation, ...(unset ? { $unset: unset } : {}) }, { new: true })
       .lean<ISchedule>();
-  }
-
-  async function deleteScheduleById(id: string, userId: string | Types.ObjectId): Promise<boolean> {
-    const result = await Schedule().deleteOne({ id, user: userId });
-    if (result.deletedCount > 0) {
-      await ScheduleRun().deleteMany({ scheduleId: id });
-      return true;
-    }
-    return false;
   }
 
   /**
@@ -2315,7 +2299,6 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     createSchedule,
     createScheduleWithSlot,
     updateScheduleById,
-    deleteScheduleById,
     deleteUnarmedSchedule,
     getScheduleById,
     getSchedulesByUser,

@@ -3,7 +3,7 @@ import { Button } from '@librechat/client';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { UIResource } from 'librechat-data-provider';
 import UIResourceRenderer, { isSupportedUIResource } from '~/components/MCPUIResource/Renderer';
-import { useOptionalMessagesOperations } from '~/Providers';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { cn, handleUIAction } from '~/utils';
 import { useLocalize } from '~/hooks';
 
@@ -17,7 +17,7 @@ const UIResourceCarousel: React.FC<UIResourceCarouselProps> = React.memo(({ uiRe
   const [showRightArrow, setShowRightArrow] = useState(true);
   const [isContainerHovered, setIsContainerHovered] = useState(false);
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
-  const { ask } = useOptionalMessagesOperations();
+  const ask = useMessagePartsHost().useMessagesAsk();
   const supportedUIResources = React.useMemo(
     () => uiResources.filter(isSupportedUIResource),
     [uiResources],
@@ -26,9 +26,14 @@ const UIResourceCarousel: React.FC<UIResourceCarouselProps> = React.memo(({ uiRe
   const handleScroll = React.useCallback(() => {
     if (!scrollContainerRef.current) return;
 
-    const { scrollLeft, scrollWidth, clientWidth } = scrollContainerRef.current;
-    setShowLeftArrow(scrollLeft > 0);
-    setShowRightArrow(scrollLeft < scrollWidth - clientWidth - 10);
+    const container = scrollContainerRef.current;
+    const { scrollLeft, scrollWidth, clientWidth } = container;
+    /** In RTL `scrollLeft` is 0 at the right edge and negative toward the left; normalize to the offset from the left edge. */
+    const maxScroll = scrollWidth - clientWidth;
+    const fromLeft =
+      getComputedStyle(container).direction === 'rtl' ? maxScroll + scrollLeft : scrollLeft;
+    setShowLeftArrow(fromLeft > 0);
+    setShowRightArrow(fromLeft < maxScroll - 10);
   }, []);
 
   const scroll = React.useCallback((direction: 'left' | 'right') => {

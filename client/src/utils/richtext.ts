@@ -1,5 +1,6 @@
 import supersub from 'remark-supersub';
 import { gfm } from 'micromark-extension-gfm';
+import { visualParts } from '@librechat/chat';
 import { math } from 'micromark-extension-math';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { mathFromMarkdown } from 'mdast-util-math';
@@ -21,7 +22,6 @@ import type { Extension as MicromarkExtension } from 'micromark-util-types';
 import { mcpUIResourcePlugin } from '~/components/MCPUIResource/plugin';
 import { remarkApproxTilde } from './tilde';
 import { singleDollarMath } from './latex';
-import { visualParts } from './visual';
 
 /**
  * Which message renderer this copy has to match. `Markdown` (assistant turns)

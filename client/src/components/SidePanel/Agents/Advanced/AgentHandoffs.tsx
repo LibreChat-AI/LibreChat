@@ -171,7 +171,7 @@ const AgentHandoffs: React.FC<AgentHandoffsProps> = ({ field, currentAgentId }) 
                 </AgentRow>
 
                 {isExpanded && (
-                  <div className="border-border-light ml-1.5 flex flex-col gap-2.5 border-l pl-3">
+                  <div className="border-border-light ms-1.5 flex flex-col gap-2.5 border-s ps-3">
                     <div>
                       <Label
                         variant="secondary"

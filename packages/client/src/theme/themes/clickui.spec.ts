@@ -2,8 +2,9 @@ import { createElement } from 'react';
 import { join } from 'path';
 import { readFileSync } from 'fs';
 import { cleanup, fireEvent, render } from '@testing-library/react';
+import { resolveTheme, themeAppearanceProperties } from 'librechat-data-provider';
+import type { IThemeAppearance, IThemeRGB, ThemeMode } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
-import type { IThemeAppearance, IThemeRGB, ThemeMode } from '../types';
 import {
   Table,
   TableBody,
@@ -13,7 +14,6 @@ import {
   TableRow,
 } from '../../components/Table';
 import { OGDialog, OGDialogContent, OGDialogTitle } from '../../components/OriginalDialog';
-import { resolveTheme, themeAppearanceProperties } from '../registry';
 import { Tabs, TabsList, TabsTrigger } from '../../components/Tabs';
 import { Checkbox } from '../../components/Checkbox';
 import { Button } from '../../components/Button';
@@ -57,8 +57,8 @@ const modes: ThemeMode[] = ['light', 'dark'];
 const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = {
   light: {
     'rgb-text-primary': 'global.color.text.default',
-    'rgb-text-secondary': 'global.color.text.muted',
-    'rgb-text-secondary-alt': 'global.color.text.muted',
+    'rgb-text-secondary': 'palette.slate.700',
+    'rgb-text-secondary-alt': 'palette.slate.700',
     'rgb-text-tertiary': 'global.color.text.muted',
     'rgb-text-muted': 'global.color.text.muted',
     'rgb-text-warning': 'click.global.color.text.warning',
@@ -82,12 +82,12 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-active-alt': 'palette.slate.200',
     'rgb-surface-hover': 'palette.slate.100',
     'rgb-surface-hover-alt': 'palette.slate.200',
-    'rgb-surface-pressed': 'click.button.iconButton.color.primary.background.active',
+    'rgb-surface-pressed': 'palette.slate.100',
     'rgb-surface-composer-hover': 'palette.slate.100',
     'rgb-surface-primary': 'global.color.background.default',
     'rgb-chart-widget-surface': 'global.color.background.default',
     'rgb-chart-widget-stroke': 'global.color.stroke.default',
-    'rgb-surface-primary-alt': 'global.color.background.split',
+    'rgb-surface-primary-alt': 'global.color.background.default',
     'rgb-surface-primary-contrast': 'palette.slate.100',
     'rgb-surface-secondary': 'global.color.background.muted',
     'rgb-surface-secondary-alt': 'palette.slate.100',
@@ -107,7 +107,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-destructive-hover': 'palette.danger.700',
     'rgb-surface-chat': 'global.color.background.default',
     'rgb-surface-code': 'click.codeblock.lightMode.color.background.default',
-    'rgb-surface-code-body': 'click.codeblock.lightMode.color.background.default',
+    'rgb-surface-code-body': 'global.color.background.default',
     'rgb-surface-code-inline': 'palette.slate.200',
     'rgb-prose-bullet': 'global.color.stroke.intense',
     'rgb-prose-quote-bar': 'global.color.stroke.intense',
@@ -115,7 +115,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-text-on-media': 'palette.neutral.0',
     'rgb-surface-inverted': 'palette.neutral.900',
     'rgb-surface-inverted-hover': 'palette.neutral.712',
-    'rgb-surface-inverted-pressed': 'click.button.basic.color.primary.background.active',
+    'rgb-surface-inverted-pressed': 'palette.neutral.712',
     'rgb-button-primary': 'click.button.basic.color.primary.background.default',
     'rgb-button-primary-hover': 'click.button.basic.color.primary.background.hover',
     'rgb-text-inverted': 'palette.neutral.0',
@@ -148,10 +148,6 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
     'rgb-text-disabled': 'global.color.text.disabled',
     'rgb-border-disabled': 'click.field.color.stroke.disabled',
-    'rgb-status-success': 'global.color.feedback.success.foreground',
-    'rgb-status-success-subtle': 'global.color.feedback.success.background',
-    'rgb-status-success-border': 'palette.success.200',
-    'rgb-status-success-strong': 'global.color.feedback.success.foreground',
     'rgb-status-info': 'global.color.feedback.info.foreground',
     'rgb-status-info-subtle': 'global.color.feedback.info.background',
     'rgb-status-info-border': 'palette.info.200',
@@ -176,7 +172,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-illustration-subtle': 'palette.info.200',
     'rgb-illustration': 'palette.info.400',
     'rgb-illustration-strong': 'palette.info.600',
-    'rgb-page-canvas': 'global.color.background.split',
+    'rgb-page-canvas': 'global.color.background.default',
     'rgb-select-fill': 'click.field.color.background.default',
     'rgb-select-edge': 'click.field.color.stroke.default',
     'rgb-button-neutral-border': 'click.button.basic.color.secondary.stroke.default',
@@ -206,8 +202,15 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-series-6': 'global.color.chart.default.violet',
     'rgb-series-7': 'global.color.chart.default.babyblue',
     'rgb-series-8': 'global.color.chart.default.teal',
+    'rgb-category-icon-1': 'palette.slate.700',
+    'rgb-category-icon-2': 'palette.slate.700',
+    'rgb-category-icon-4': 'palette.slate.700',
+    'rgb-category-icon-5': 'palette.slate.700',
+    'rgb-category-icon-6': 'palette.slate.700',
+    'rgb-category-icon-7': 'palette.slate.700',
     'rgb-switch-unchecked': 'click.switch.color.background.default',
     'rgb-switch-thumb': 'click.switch.color.indicator.default',
+    'rgb-checkbox-fill': 'click.checkbox.color.background.default',
     'rgb-table-header-text': 'click.table.header.color.title.default',
     'rgb-table-header-fill': 'click.table.header.color.background.default',
     'rgb-presentation': 'global.color.background.default',
@@ -216,8 +219,8 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
   },
   dark: {
     'rgb-text-primary': 'global.color.text.default',
-    'rgb-text-secondary': 'global.color.text.muted',
-    'rgb-text-secondary-alt': 'global.color.text.muted',
+    'rgb-text-secondary': 'palette.slate.200',
+    'rgb-text-secondary-alt': 'palette.slate.200',
     'rgb-text-tertiary': 'global.color.text.muted',
     'rgb-text-muted': 'global.color.text.muted',
     'rgb-text-warning': 'click.global.color.text.warning',
@@ -241,12 +244,12 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-active-alt': 'palette.neutral.712',
     'rgb-surface-hover': 'palette.neutral.712',
     'rgb-surface-hover-alt': 'palette.neutral.700',
-    'rgb-surface-pressed': 'click.button.iconButton.color.primary.background.active',
+    'rgb-surface-pressed': 'palette.neutral.712',
     'rgb-surface-composer-hover': 'palette.neutral.712',
     'rgb-surface-primary': 'global.color.background.default',
     'rgb-chart-widget-surface': 'global.color.background.muted',
     'rgb-chart-widget-stroke': 'global.color.stroke.default',
-    'rgb-surface-primary-alt': 'global.color.background.split',
+    'rgb-surface-primary-alt': 'global.color.background.default',
     'rgb-surface-primary-contrast': 'palette.neutral.712',
     'rgb-surface-secondary': 'global.color.background.muted',
     'rgb-surface-secondary-alt': 'palette.neutral.712',
@@ -262,11 +265,11 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-badge-label': 'click.badge.opaque.color.text.default',
     'rgb-surface-submit': 'global.color.accent.default',
     'rgb-surface-submit-hover': 'palette.brand.200',
-    'rgb-surface-destructive': 'palette.danger.300',
-    'rgb-surface-destructive-hover': 'palette.danger.200',
+    'rgb-surface-destructive': 'palette.danger.200',
+    'rgb-surface-destructive-hover': 'click.global.color.text.danger',
     'rgb-surface-chat': 'global.color.background.default',
     'rgb-surface-code': 'click.codeblock.darkMode.color.background.default',
-    'rgb-surface-code-body': 'click.codeblock.darkMode.color.background.default',
+    'rgb-surface-code-body': 'global.color.background.default',
     'rgb-surface-code-inline': 'palette.neutral.700',
     'rgb-prose-bullet': 'global.color.stroke.intense',
     'rgb-prose-quote-bar': 'global.color.stroke.intense',
@@ -274,7 +277,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-text-on-media': 'palette.neutral.0',
     'rgb-surface-inverted': 'click.button.basic.color.primary.background.default',
     'rgb-surface-inverted-hover': 'click.button.basic.color.primary.background.hover',
-    'rgb-surface-inverted-pressed': 'click.button.basic.color.primary.background.active',
+    'rgb-surface-inverted-pressed': 'click.button.basic.color.primary.background.hover',
     'rgb-button-primary': 'click.button.basic.color.primary.background.default',
     'rgb-button-primary-hover': 'click.button.basic.color.primary.background.hover',
     'rgb-text-inverted': 'click.button.basic.color.primary.text.default',
@@ -307,27 +310,20 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
     'rgb-text-disabled': 'global.color.text.disabled',
     'rgb-border-disabled': 'click.field.color.stroke.disabled',
-    'rgb-status-success': 'global.color.feedback.success.foreground',
-    'rgb-status-success-subtle': 'global.color.feedback.success.background',
-    'rgb-status-success-border': 'palette.success.800',
-    'rgb-status-success-strong': 'palette.success.500',
     'rgb-status-info': 'global.color.feedback.info.foreground',
     'rgb-status-info-subtle': 'global.color.feedback.info.background',
     'rgb-status-info-border': 'palette.info.600',
-    'rgb-status-info-strong': 'palette.info.300',
     'rgb-status-warning': 'global.color.feedback.warning.foreground',
     'rgb-status-warning-subtle': 'global.color.feedback.warning.background',
     'rgb-status-warning-border': 'palette.warning.700',
-    'rgb-status-warning-strong': 'palette.warning.300',
     'rgb-status-error': 'global.color.feedback.danger.foreground',
     'rgb-status-error-subtle': 'global.color.feedback.danger.background',
     'rgb-status-error-border': 'palette.danger.700',
-    'rgb-status-error-strong': 'palette.danger.300',
     'rgb-status-neutral': 'global.color.feedback.neutral.foreground',
     'rgb-status-neutral-subtle': 'global.color.feedback.neutral.background',
     'rgb-status-neutral-border': 'global.color.feedback.neutral.stroke',
     'rgb-status-verified': 'palette.info.300',
-    'rgb-text-on-status': 'global.color.iconButton.badge.foreground',
+    'rgb-text-on-status': 'palette.neutral.900',
     'rgb-brand-purple': 'palette.violet.300',
     'rgb-avatar-fill': 'click.avatar.color.background.default',
     'rgb-avatar-text': 'click.avatar.color.text.default',
@@ -335,7 +331,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-illustration-subtle': 'palette.info.200',
     'rgb-illustration': 'palette.info.400',
     'rgb-illustration-strong': 'palette.info.600',
-    'rgb-page-canvas': 'global.color.background.split',
+    'rgb-page-canvas': 'global.color.background.default',
     'rgb-select-fill': 'click.field.color.background.default',
     'rgb-select-edge': 'click.field.color.stroke.default',
     'rgb-button-neutral-border': 'click.button.basic.color.secondary.stroke.default',
@@ -365,8 +361,15 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-series-6': 'global.color.chart.default.violet',
     'rgb-series-7': 'global.color.chart.default.babyblue',
     'rgb-series-8': 'global.color.chart.default.teal',
+    'rgb-category-icon-1': 'palette.slate.200',
+    'rgb-category-icon-2': 'palette.slate.200',
+    'rgb-category-icon-4': 'palette.slate.200',
+    'rgb-category-icon-5': 'palette.slate.200',
+    'rgb-category-icon-6': 'palette.slate.200',
+    'rgb-category-icon-7': 'palette.slate.200',
     'rgb-switch-unchecked': 'click.switch.color.background.default',
     'rgb-switch-thumb': 'click.switch.color.indicator.default',
+    'rgb-checkbox-fill': 'click.checkbox.color.background.default',
     'rgb-table-header-text': 'click.table.header.color.title.default',
     'rgb-table-header-fill': 'click.table.header.color.background.default',
     'rgb-presentation': 'global.color.background.default',
@@ -378,13 +381,18 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
 /** Values the theme sets on purpose without a Click UI source, and why. */
 const MEDIA_OVERLAY_REASON =
   'Click UI has no media scrim; the image frame stays black in both modes';
+const MEDIA_CHIP_REASON =
+  'Click UI has no source badge over media; the theme keeps the stock white and black chip';
 const STYLESHEET_ROLE_REASON =
   'Click UI has no scrollbar, secondary button fill or toast edge; the theme keeps the stock role';
+const STATUS_REASON =
+  "The stock status hues, kept in step with the default theme so success, info, warning and error read as normal feedback colors instead of Click UI's neon tints";
 const STROKE_INK_REASON =
   'Click UI avatars draw no edge ink of their own; the theme keeps the stock ring tint';
 
 const STYLESHEET_ROLES: Partial<Record<keyof IThemeRGB, string>> = {
   'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
+  'rgb-surface-media-chip': MEDIA_CHIP_REASON,
   'rgb-scrollbar-thumb': STYLESHEET_ROLE_REASON,
   'rgb-button-neutral-hover': STYLESHEET_ROLE_REASON,
   'rgb-toast-edge': STYLESHEET_ROLE_REASON,
@@ -392,8 +400,23 @@ const STYLESHEET_ROLES: Partial<Record<keyof IThemeRGB, string>> = {
 };
 
 const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = {
-  light: STYLESHEET_ROLES,
-  dark: STYLESHEET_ROLES,
+  light: {
+    ...STYLESHEET_ROLES,
+    'rgb-status-success': STATUS_REASON,
+    'rgb-status-success-subtle': STATUS_REASON,
+    'rgb-status-success-border': STATUS_REASON,
+    'rgb-status-success-strong': STATUS_REASON,
+  },
+  dark: {
+    ...STYLESHEET_ROLES,
+    'rgb-status-success': STATUS_REASON,
+    'rgb-status-success-subtle': STATUS_REASON,
+    'rgb-status-success-border': STATUS_REASON,
+    'rgb-status-success-strong': STATUS_REASON,
+    'rgb-status-info-strong': STATUS_REASON,
+    'rgb-status-warning-strong': STATUS_REASON,
+    'rgb-status-error-strong': STATUS_REASON,
+  },
 };
 
 /**
@@ -432,9 +455,166 @@ interface Departure {
  * step on the same Click UI ramp in `colorSources`; the status pins how far that step sits from
  * the counterpart. Every other role holds its counterpart, so its status is `match`.
  */
+const PRESS_REASON =
+  'Pressing a button adds no step beyond its hover fill, so the pressed role holds the hover value';
+const ALT_REASON =
+  'The base page surface (agent marketplace, skills, prompts) matches the landing chat instead of stepping off it';
+const CONTRAST_REASON =
+  'The dark destructive fill and the label on every solid fill step apart from Click UI so the label keeps 7:1 or better';
+const CODE_REASON =
+  'The code content area sits on the page background while the header keeps the codeblock fill';
+const TEXT_REASON =
+  'Secondary text steps one slate step past text.muted so it keeps a clear contrast margin on every surface';
 const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>> = {
-  light: {},
-  dark: {},
+  light: {
+    'rgb-surface-code-body': {
+      counterpart: 'click.codeblock.lightMode.color.background.default',
+      status: 'near',
+      reason: CODE_REASON,
+    },
+    'rgb-page-canvas': {
+      counterpart: 'global.color.background.split',
+      status: 'near',
+      reason: ALT_REASON,
+    },
+    'rgb-surface-primary-alt': {
+      counterpart: 'global.color.background.split',
+      status: 'near',
+      reason: ALT_REASON,
+    },
+    'rgb-category-icon-1': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-category-icon-2': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-category-icon-4': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-category-icon-5': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-category-icon-6': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-category-icon-7': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-text-secondary': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-text-secondary-alt': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-surface-pressed': {
+      counterpart: 'click.button.iconButton.color.primary.background.active',
+      status: 'near',
+      reason: PRESS_REASON,
+    },
+    'rgb-surface-inverted-pressed': {
+      counterpart: 'click.button.basic.color.primary.background.active',
+      status: 'mismatch',
+      reason: PRESS_REASON,
+    },
+  },
+  dark: {
+    'rgb-surface-code-body': {
+      counterpart: 'click.codeblock.darkMode.color.background.default',
+      status: 'near',
+      reason: CODE_REASON,
+    },
+    'rgb-page-canvas': {
+      counterpart: 'global.color.background.split',
+      status: 'near',
+      reason: ALT_REASON,
+    },
+    'rgb-surface-destructive': {
+      counterpart: 'palette.danger.300',
+      status: 'mismatch',
+      reason: CONTRAST_REASON,
+    },
+    'rgb-surface-destructive-hover': {
+      counterpart: 'palette.danger.200',
+      status: 'mismatch',
+      reason: CONTRAST_REASON,
+    },
+    'rgb-text-on-status': {
+      counterpart: 'global.color.iconButton.badge.foreground',
+      status: 'near',
+      reason: CONTRAST_REASON,
+    },
+    'rgb-surface-primary-alt': {
+      counterpart: 'global.color.background.split',
+      status: 'near',
+      reason: ALT_REASON,
+    },
+    'rgb-category-icon-1': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-category-icon-2': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-category-icon-4': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-category-icon-5': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-category-icon-6': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-category-icon-7': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-text-secondary': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-text-secondary-alt': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: TEXT_REASON,
+    },
+    'rgb-surface-pressed': {
+      counterpart: 'click.button.iconButton.color.primary.background.active',
+      status: 'near',
+      reason: PRESS_REASON,
+    },
+    'rgb-surface-inverted-pressed': {
+      counterpart: 'click.button.basic.color.primary.background.active',
+      status: 'mismatch',
+      reason: PRESS_REASON,
+    },
+  },
 };
 
 interface AppearanceDecision {
@@ -491,10 +671,10 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
       '0: Click UI draws its select list at var(--radix-popover-trigger-width) (select-popover-content), with no minimum of its own',
   },
   listMaxHeight: {
-    value: '24rem',
-    status: 'mismatch',
+    value: 'none',
+    status: 'match',
     reason:
-      "24rem: Click UI caps its select list only at var(--radix-popover-content-available-height), which a length role cannot express, so the cap keeps LibreChat's; tracked under the not-expressible list",
+      'none: Click UI caps its select list only at var(--radix-popover-content-available-height), the cap the Select list keeps under every value',
   },
   iconButtonSizeSm: {
     value: '1.5rem',
@@ -513,6 +693,16 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     status: 'match',
     reason:
       '3.6876rem: the title field is content-sized like fieldHeight, a 3rem line (typography.font.sizes.6 at line-height 1.5), field.space.y (0.2813rem) twice and a 1px stroke each side',
+  },
+  authFieldHeight: {
+    value: '2rem',
+    status: 'match',
+    reason: '2rem: Click UI draws one field size, so the sign-in field matches fieldHeight',
+  },
+  authButtonHeight: {
+    value: '2rem',
+    status: 'match',
+    reason: '2rem: Click UI draws one button size, so the sign-in button matches buttonHeight',
   },
   fieldFocusStyle: {
     value: 'border',
@@ -550,6 +740,12 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     reason:
       'fill: Click UI InputWrapper paints every field in field.color.background.default; LibreChat fields stay clear by default',
   },
+  checkboxFillStyle: {
+    value: 'fill',
+    status: 'match',
+    reason:
+      'fill: Click UI paints an unchecked checkbox in checkbox.color.background.default; LibreChat checkboxes stay clear by default',
+  },
   focusRingWidth: {
     value: '2px',
     status: 'match',
@@ -574,13 +770,15 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   radius2xl: 'border.radii.2',
   largeSurfaceRadius: 'border.radii.3',
   radius3xl: 'border.radii.3',
-  roundControlRadius: 'border.radii.full',
+  roundControlRadius: 'click.button.radii.all',
   spaceCompact: 'spaces.2',
   spaceNormal: 'spaces.3',
   menuRadius: 'click.genericMenu.panel.radii.all',
   popoverRadius: 'click.genericMenu.panel.radii.all',
   menuPanelRadius: 'click.genericMenu.panel.radii.all',
+  compactPanelRadius: 'click.genericMenu.panel.radii.all',
   composerActionRadius: 'click.button.radii.all',
+  authControlRadius: 'click.button.radii.all',
   inlineCodeWeight: 'typography.font.weights.2',
   tooltipRadius: 'click.tooltip.radii.all',
   tooltipPaddingX: 'click.tooltip.space.x',
@@ -637,6 +835,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   switchWidth: 'click.switch.size.width',
   switchHeight: 'click.switch.size.height',
   checkboxSize: 'click.checkbox.size.all',
+  checkboxRadius: 'click.checkbox.radii.all',
   iconSize: 'click.image.sm.size.width',
   iconSizeMd: 'click.image.md.size.width',
   iconSizeLg: 'click.image.lg.size.width',
@@ -1278,6 +1477,7 @@ const parityProbes: Record<string, ParityProbe> = {
     token: 'click.checkbox.color.background.default',
     kind: 'color',
     utility: 'bg',
+    variant: 'theme-checkbox-fill:',
     element: checkboxProbe(false),
   },
   'Checkbox check, checked': {
@@ -1396,27 +1596,7 @@ interface NotExpressible {
  * close it. Remove an entry when the change that closes it lands, and pin its decisions to what
  * they then measure.
  */
-const notExpressible: Record<string, NotExpressible> = {
-  'Checkbox unchecked fill': {
-    decisions: { light: ['Checkbox fill, unchecked'], dark: ['Checkbox fill, unchecked'] },
-    reason:
-      'the checkbox paints no fill of its own and shows the surface behind it; no role carries checkbox.color.background.default',
-    issue: 'https://github.com/berry-13/LibreChat/issues/250',
-  },
-  'Select list height': {
-    decisions: {},
-    appearance: ['listMaxHeight'],
-    reason:
-      "Click UI caps its select list only at var(--radix-popover-content-available-height), which a length role cannot express, so listMaxHeight keeps LibreChat's 24rem",
-    issue: 'https://github.com/berry-13/LibreChat/issues/282',
-  },
-  'Checkbox corner': {
-    decisions: { light: ['Checkbox corner'], dark: ['Checkbox corner'] },
-    reason:
-      'the checkbox corner reads radiusSm, which the theme sets to border.radii.1 for every small corner; checkbox.radii.all is 0.125rem',
-    issue: 'https://github.com/berry-13/LibreChat/issues/250',
-  },
-};
+const notExpressible: Record<string, NotExpressible> = {};
 
 type Verdict = 'match' | 'near' | 'deviation' | 'not expressible';
 
@@ -1446,6 +1626,7 @@ const radiusRoles: Record<string, keyof IThemeAppearance> = {
   'theme-surface': 'surfaceRadius',
   'theme-surface-lg': 'largeSurfaceRadius',
   'theme-tab': 'tabRadius',
+  'theme-checkbox': 'checkboxRadius',
 };
 
 const fixedRadii: Record<string, string> = { full: '9999px', none: '0px' };

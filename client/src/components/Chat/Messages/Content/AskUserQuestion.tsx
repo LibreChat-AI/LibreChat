@@ -1,16 +1,35 @@
-import { useContext, useMemo, useState } from 'react';
+import { useContext, useMemo, useRef, useState } from 'react';
+import { AskOptions } from '@librechat/chat/components';
+import { useOptionalChatSurface } from '@librechat/chat/react';
 import { Button, TextareaAutosize, TooltipAnchor } from '@librechat/client';
 import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
+import {
+  isCancelKey,
+  isReboundSubmitChord,
+  resolveComposerKeyDown,
+  splitOtherOption,
+  ASK_USER_DECLINED_ANSWER,
+} from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
+import type { KeyboardEvent } from 'react';
 import { useApprovalContext, useAskSubmitStatus, useResumeSubmit } from './ApprovalContext';
-import { splitOtherOption, ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
+import useArrivalFocus, { isFocusIdle } from '~/hooks/Input/useArrivalFocus';
+import { NO_HOST_BINDINGS } from '~/hooks/Input/useComposerBindings';
+import { cn, forceResize, insertTextAtCursor } from '~/utils';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
-import AskOptions from '~/components/Chat/ask/options';
 import { ChatContext } from '~/Providers/ChatContext';
 import AskUserQuestions from './AskUserQuestions';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 
+/**
+ * Single questions whose card has already had its arrival. A card remounts when
+ * its row scrolls back into view or the question moves between the chat and the
+ * composer, and none of those is a new arrival. Holds only action ids, one per
+ * question asked in this tab.
+ */
+const arrivedSingleQuestions = new Set<string>();
+
+/** Stock preferences for a card rendered outside a chat surface. */
 /**
  * Renders an `ask_user_question` pause: the prompt, optional description, any
  * curated option buttons, and a free-form text answer. Single-select options
@@ -81,6 +100,7 @@ function AskUserQuestionsCard({
       <AskUserQuestions
         actionId={actionId}
         questions={questions}
+        focusOnArrival={live}
         headerAction={
           onExpand != null && (
             <TooltipAnchor
@@ -122,12 +142,16 @@ function AskUserQuestionSingle({
   const { submitAskAnswer } = useResumeSubmit();
   const [answer, setAnswer] = useState(() => getAskAnswerDraft(actionId));
   const [localChecked, setLocalChecked] = useState<number[]>([]);
+  const surface = useOptionalChatSurface();
+  const enterToSend = surface?.enterToSend ?? false;
+  const { shortcutsEnabled, submitOverride, yieldedChords } =
+    surface?.composerBindings ?? NO_HOST_BINDINGS;
   /**
-   * The composer popover is the primary answer surface — while it's VISIBLE
-   * for this pause, rendering the card too duplicates the question. The card
-   * takes over once the question is moved to the chat (the popover's chevron,
-   * which also releases the composer; this card's chevron moves it back), and
-   * in contexts without a ChatContext, where the popover can't exist.
+   * This card is the question's default surface, in thread order and at the
+   * thread's width, so it reads the same on a phone as on a desktop. Its
+   * chevron moves a live question into the composer popover; while the
+   * popover is VISIBLE, rendering the card too would duplicate the question,
+   * so the card holds its footprint hidden until the question comes back.
    */
   const { popoverVisible, collapsed, expand, liveAsk } = answerMode;
   const isLivePause = liveAsk?.actionId === actionId;
@@ -142,6 +166,31 @@ function AskUserQuestionSingle({
   const status = getAskStatus(actionId);
   const locked = status === 'submitting' || status === 'submitted' || status === 'expired';
   const showPlaceholder = popoverVisible && isLivePause;
+
+  /**
+   * The question arriving in the chat puts the user on its first option, or on
+   * its answer field when it has none, so keys typed next answer it rather than
+   * going out as an ordinary message. Only once it is on screen, and only when
+   * focus is idle then (nowhere, or the empty composer that sent the turn).
+   */
+  const cardRef = useRef<HTMLDivElement>(null);
+  const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const answerRef = useRef<HTMLTextAreaElement>(null);
+  useArrivalFocus(
+    isLivePause && !showPlaceholder && !locked && !arrivedSingleQuestions.has(actionId),
+    cardRef,
+    () => {
+      if (arrivedSingleQuestions.has(actionId)) {
+        return;
+      }
+      arrivedSingleQuestions.add(actionId);
+      if (!isFocusIdle()) {
+        return;
+      }
+      const target = optionRefs.current.find((option) => option != null && !option.disabled);
+      (target ?? answerRef.current)?.focus({ preventScroll: true });
+    },
+  );
 
   if (status === 'submitted') {
     return null;
@@ -217,6 +266,59 @@ function AskUserQuestionSingle({
   };
 
   /**
+   * The answer box follows the composer's Enter table, so the user's
+   * Enter-to-send preference and any rebound submit chord apply here too. The
+   * run is paused on this question rather than generating, so it resolves as
+   * idle: Ctrl/Cmd+Enter must submit the answer, not reach the during-run
+   * steer/queue actions.
+   */
+  const handleAnswerKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    const isComposing = e.nativeEvent.isComposing || e.key === 'Process' || e.keyCode === 229;
+    if (!isComposing && isReboundSubmitChord(e.nativeEvent, { shortcutsEnabled, submitOverride })) {
+      e.preventDefault();
+      if (canSubmit && !locked) {
+        submitCombined();
+      }
+      return;
+    }
+    const action = resolveComposerKeyDown(e.nativeEvent, {
+      isComposing,
+      isSubmitting: false,
+      allowSubmitWhileGenerating: false,
+      hasDuringRunModifier: false,
+      shortcutsEnabled,
+      enterToSend,
+      submitOverride,
+      yieldedChords,
+    });
+    if (action === 'none') {
+      return;
+    }
+    e.preventDefault();
+    if (action === 'newline') {
+      insertTextAtCursor(e.currentTarget, '\n');
+      forceResize(e.currentTarget);
+      return;
+    }
+    if (action === 'submit' && canSubmit && !locked) {
+      submitCombined();
+    }
+  };
+
+  /** Escape skips, but only before anything is entered, so a stray Escape
+   *  cannot discard an answer and resume the run. */
+  const handleCardKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!isCancelKey(e.nativeEvent) || e.nativeEvent.isComposing) {
+      return;
+    }
+    if (locked || trimmed.length > 0 || (multiSelect && checkedIndices.length > 0)) {
+      return;
+    }
+    e.preventDefault();
+    handleSkip();
+  };
+
+  /**
    * The live card shares its view-transition-name with the popover panel, so
    * collapse/expand morphs one surface into the other. The placeholder copy
    * is `visibility: hidden` (out of the tab order and the a11y tree) and
@@ -227,12 +329,14 @@ function AskUserQuestionSingle({
    */
   const card = (
     <div
+      ref={cardRef}
       className={cn(
         'border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2.5 rounded-2xl border p-3',
         showPlaceholder && 'invisible',
         isLivePause && !showPlaceholder && '[view-transition-name:ask-question]',
       )}
       aria-hidden={showPlaceholder || undefined}
+      onKeyDown={handleCardKeyDown}
     >
       <div className="text-text-secondary flex items-start justify-between gap-2">
         <div className="min-w-0 pt-1">
@@ -273,10 +377,12 @@ function AskUserQuestionSingle({
           checked={checkedIndices}
           locked={locked}
           onActivate={(index) => (multiSelect ? toggleIndex(index) : submitSingle(index))}
+          optionRefs={optionRefs}
         />
       )}
 
       <TextareaAutosize
+        ref={answerRef}
         focusOutline="hidden"
         value={answerValue}
         disabled={locked}
@@ -284,6 +390,7 @@ function AskUserQuestionSingle({
           setAnswerValue(e.target.value);
           setAskAnswerDraft(actionId, e.target.value);
         }}
+        onKeyDown={handleAnswerKeyDown}
         minRows={2}
         maxRows={12}
         placeholder={otherLabel ?? localize('com_ui_your_answer')}
@@ -297,14 +404,14 @@ function AskUserQuestionSingle({
         </Button>
         {(status === 'expired' || status === 'error') && (
           <span className="text-text-warning flex min-w-0 items-center text-xs">
-            <TriangleAlert className="mr-1.5 size-4 shrink-0" aria-hidden="true" />
+            <TriangleAlert className="me-1.5 size-4 shrink-0" aria-hidden="true" />
             {localize(status === 'expired' ? 'com_ui_approval_expired' : 'com_ui_approval_error')}
           </span>
         )}
         <Button
           size="sm"
           variant="submit"
-          className="ml-auto"
+          className="ms-auto"
           disabled={!canSubmit || locked}
           onClick={submitCombined}
         >

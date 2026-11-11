@@ -34,8 +34,12 @@ jest.mock('~/hooks', () => ({
   useLocalize:
     () =>
     (key: string, values?: Record<string, unknown>): string => {
-      const template =
-        (jest.requireActual('~/locales/en/translation.json') as Record<string, string>)[key] ?? key;
+      const catalog = jest.requireActual('~/locales/en/translation.json') as Record<string, string>;
+      /** Mirrors i18next's English plural resolution for a base key with a numeric count. */
+      const count = values?.count;
+      const plural =
+        typeof count === 'number' ? catalog[`${key}_${count === 1 ? 'one' : 'other'}`] : undefined;
+      const template = plural ?? catalog[key] ?? key;
       if (!values) {
         return template;
       }
@@ -44,6 +48,10 @@ jest.mock('~/hooks', () => ({
       );
     },
   useHasAccess: ({ permission }: { permission: string }) => mockAccess[permission] === true,
+}));
+
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   /** Mirrors the real hook's contract — a grid style plus a ref — without pulling `useMediaQuery`
    *  and its `matchMedia` dependency into a spec that asserts copy, not motion. */
   useExpandCollapse: (isExpanded: boolean) => ({
@@ -257,6 +265,18 @@ describe('Error — reader-facing provider and fallback copy', () => {
     expect(screen.getByText(prose)).toBeInTheDocument();
     expect(screen.queryByText(catalog.com_error_unknown)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain('{');
+    expectReadable();
+  });
+
+  it.each([
+    [ErrorTypes.MODEL_RATE_LIMIT, 'com_error_model_rate_limit'],
+    [ErrorTypes.MODEL_NOT_FOUND, 'com_error_model_not_found'],
+  ])('keeps the gateway explanation a classified %s carries as its detail', (type, key) => {
+    const info = 'You reached your assigned budget. Ask for more at the service desk.';
+    renderError({ type, info });
+
+    expect(screen.getByText(catalog[key])).toBeInTheDocument();
+    expect(screen.getByText(info)).toBeInTheDocument();
     expectReadable();
   });
 
@@ -711,7 +731,7 @@ describe('Error — user key and limits', () => {
     );
 
     expect(
-      screen.getByText(localized('com_error_message_limit', '40', '60 minutes')),
+      screen.getByText(localized('com_error_message_limit_other', '40', '60 minutes')),
     ).toBeInTheDocument();
     expect(screen.queryByText(/You can send another message/)).not.toBeInTheDocument();
   });

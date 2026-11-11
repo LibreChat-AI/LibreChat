@@ -148,6 +148,12 @@ const chatV1 = require('./chatV1');
 const chatV2 = require('./chatV2');
 const { logger } = require('@librechat/data-schemas');
 const { ImageVisionTool } = require('librechat-data-provider');
+const {
+  withAssistantRun,
+  InMemoryJobStore,
+  InMemoryEventTransport,
+  GenerationJobManagerClass,
+} = require('@librechat/api');
 
 describe.each([
   ['v1', chatV1],
@@ -943,6 +949,51 @@ ${projectContext.instructions}`;
     expect(mockRunAssistant).not.toHaveBeenCalled();
     expect(mockStreamRunManager).not.toHaveBeenCalled();
   });
+  it('keeps the run registered until a pending thread initialization has saved the user message', async () => {
+    const manager = new GenerationJobManagerClass();
+    manager.configure({
+      jobStore: new InMemoryJobStore({ ttlAfterComplete: 60_000 }),
+      eventTransport: new InMemoryEventTransport(),
+      cleanupOnComplete: false,
+    });
+    manager.initialize();
+    try {
+      let finishThread;
+      mockGetBalanceConfig.mockReturnValueOnce({ enabled: true });
+      mockCheckBalance.mockRejectedValueOnce(new Error('Insufficient balance'));
+      mockInitThread.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishThread = resolve;
+        }),
+      );
+      mockSaveUserMessage.mockResolvedValue({ messageId: 'user-msg' });
+      res.closed = true;
+      const enrolled = withAssistantRun(chatController, {
+        manager,
+        isPrincipalActive: async () => true,
+      });
+
+      let returned = false;
+      const running = enrolled(req, res).then(() => {
+        returned = true;
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      /** The balance check refused the turn while the thread was still being created. */
+      expect(mockCheckBalance).toHaveBeenCalledTimes(1);
+      expect(returned).toBe(false);
+      await expect(manager.getCleanupBlockingJobIdsForUser('user-1')).resolves.toHaveLength(1);
+
+      finishThread({ thread_id: 'thread-new' });
+      await running;
+
+      expect(mockSaveUserMessage).toHaveBeenCalledTimes(1);
+      await expect(manager.getCleanupBlockingJobIdsForUser('user-1')).resolves.toEqual([]);
+    } finally {
+      await manager.destroy();
+    }
+  });
+
   it('includes new authorized project membership in the final conversation payload', async () => {
     const projectContext = {
       projectId: '507f1f77bcf86cd799439012',

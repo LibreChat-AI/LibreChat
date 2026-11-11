@@ -8,7 +8,7 @@ function firstHeaderValue(value: string | string[] | undefined): string | undefi
 }
 
 /** Extracts forensic request context (IP, user agent, correlation id) for an
- * audit record. Fields are undefined when the data isn't available. */
+ * audit record. The server-assigned request id wins over client-supplied headers. Fields are undefined when the data isn't available. */
 export function buildAuditContext(req: ServerRequest): AuditContext {
   const headers = req.headers ?? {};
   const forwarded = firstHeaderValue(headers['x-forwarded-for']);
@@ -16,6 +16,8 @@ export function buildAuditContext(req: ServerRequest): AuditContext {
   return {
     ip: req.ip || forwardedIp || req.socket?.remoteAddress || undefined,
     userAgent: firstHeaderValue(headers['user-agent']),
-    requestId: firstHeaderValue(headers['x-request-id'] ?? headers['x-correlation-id']),
+    requestId:
+      (req as { requestId?: string }).requestId ??
+      firstHeaderValue(headers['x-request-id'] ?? headers['x-correlation-id']),
   };
 }

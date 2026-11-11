@@ -1,8 +1,7 @@
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { directive } from 'micromark-extension-directive';
 import { directiveFromMarkdown } from 'mdast-util-directive';
-import { splitMarkdownIntoBlocks } from '~/components/Chat/Messages/Content/splitMarkdown';
-import { visualParts } from '~/utils/visual';
+import { visualParts, splitMarkdownIntoBlocks } from '@librechat/chat';
 import { isVisualClosed } from '../plugin';
 
 type Node = {

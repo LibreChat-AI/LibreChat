@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
 import * as Tabs from '@radix-ui/react-tabs';
+import { CopyButton } from '@librechat/chat/components';
 import { useSetRecoilState, useResetRecoilState } from 'recoil';
 import { Button, Spinner, useMediaQuery, Radio, useToastContext } from '@librechat/client';
 import {
@@ -22,12 +23,12 @@ import {
   hasSandpackPreview,
   isCodeOnlyArtifact,
   isPreviewOnlyArtifact,
+  normalizeArtifactType,
 } from '~/utils/artifacts';
 import { copyWithinDocument, openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
 import { artifactsOpenedArtifactId, artifactsPaneFocusRequest, undockedArtifacts } from './state';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
 import { useArtifactsContext, useShareContext, useMutationState } from '~/Providers';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import useArtifacts from '~/hooks/Artifacts/useArtifacts';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
@@ -191,7 +192,8 @@ export default function Artifacts() {
     mermaidExportState != null && mermaidExportState.artifactId === currentArtifact?.id
       ? mermaidExportState.data
       : null;
-  const isMermaidArtifact = currentArtifact?.type === TOOL_ARTIFACT_TYPES.MERMAID;
+  const isMermaidArtifact =
+    normalizeArtifactType(currentArtifact?.type ?? '') === TOOL_ARTIFACT_TYPES.MERMAID;
 
   const closeArtifacts = useCallback(() => {
     if (isMobile) {
@@ -486,14 +488,15 @@ export default function Artifacts() {
                   isFullscreen ? 'inset-0 rounded-none' : 'inset-x-0 bottom-0 rounded-t-[20px]',
                   isVisible && !isClosing
                     ? 'translate-y-0 opacity-100'
-                    : 'translate-y-full opacity-0 transition-all',
-                  isDragging ? '' : 'transition-all duration-300',
+                    : 'translate-y-full opacity-0',
+                  !isDragging && 'transition-all',
+                  !isDragging && (isClosing ? 'duration-250' : 'duration-300'),
                 )
               : cn(
                   'h-full overflow-hidden shadow-2xl',
                   isVisible && !isClosing
-                    ? 'translate-x-0 opacity-100 transition-all duration-150'
-                    : 'translate-x-5 opacity-0 transition-all duration-300',
+                    ? 'translate-x-0 opacity-100 transition-all duration-350'
+                    : 'translate-x-5 opacity-0 transition-all duration-300 rtl:-translate-x-5',
                 ),
           )}
           style={isMobile ? { height: isFullscreen ? '100%' : `${height}vh` } : undefined}
@@ -531,7 +534,7 @@ export default function Artifacts() {
                   'flex items-center transition-all duration-500 motion-reduce:transition-none',
                   isVisible && !isClosing
                     ? 'translate-x-0 opacity-100'
-                    : '-translate-x-2 opacity-0',
+                    : '-translate-x-2 opacity-0 rtl:translate-x-2',
                 )}
               >
                 <Radio
@@ -639,7 +642,7 @@ export default function Artifacts() {
                   )}
                 >
                   {isUndocked ? (
-                    <PanelRight className="size-4" aria-hidden="true" />
+                    <PanelRight className="size-4 rtl:-scale-x-100" aria-hidden="true" />
                   ) : (
                     <PictureInPicture2 className="size-4" aria-hidden="true" />
                   )}

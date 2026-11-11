@@ -33,6 +33,8 @@ import UnifiedPeopleSearch from './PeoplePicker/UnifiedPeopleSearch';
 import PeoplePickerAdminSettings from './PeoplePickerAdminSettings';
 import PublicSharingToggle from './PublicSharingToggle';
 import { SelectedPrincipalsList } from './PeoplePicker';
+import { MenuContainerContext } from './container';
+import { permissionErrorKey } from './errors';
 import { cn } from '~/utils';
 
 export default function GenericGrantAccessDialog({
@@ -59,6 +61,7 @@ export default function GenericGrantAccessDialog({
   const { showToast } = useToastContext();
   const [isCopying, setIsCopying] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [menuContainer, setMenuContainer] = useState<HTMLElement | null>(null);
   const peopleSectionId = React.useId();
   const ownerErrorId = React.useId();
   const canSharePublic = useCanSharePublic(resourceType);
@@ -220,7 +223,7 @@ export default function GenericGrantAccessDialog({
     } catch (error) {
       console.error('Error updating permissions:', error);
       showToast({
-        message: localize('com_ui_permissions_failed_update'),
+        message: localize(permissionErrorKey(error)),
         status: 'error',
       });
     }
@@ -311,11 +314,14 @@ export default function GenericGrantAccessDialog({
     </Button>
   );
 
-  return (
+  const dialog = (
     <OGDialog open={isModalOpen} onOpenChange={handleModalOpenChange} modal>
       <OGDialogTrigger asChild>{TriggerComponent}</OGDialogTrigger>
-      <OGDialogContent className="flex max-h-[90dvh] w-11/12 max-w-5xl flex-col gap-0 overflow-hidden p-0">
-        <OGDialogHeader className="shrink-0 px-5 py-5 pr-14 text-left sm:px-6">
+      <OGDialogContent
+        ref={setMenuContainer}
+        className="flex max-h-[90dvh] w-11/12 max-w-5xl flex-col gap-0 overflow-visible p-0"
+      >
+        <OGDialogHeader className="shrink-0 px-5 py-5 pe-14 text-start sm:px-6">
           <div className="flex items-start gap-3">
             <div className="border-border-light bg-surface-secondary text-text-secondary flex size-10 shrink-0 items-center justify-center rounded-xl border">
               <Users className="size-5" aria-hidden="true" />
@@ -485,5 +491,9 @@ export default function GenericGrantAccessDialog({
         </OGDialogFooter>
       </OGDialogContent>
     </OGDialog>
+  );
+
+  return (
+    <MenuContainerContext.Provider value={menuContainer}>{dialog}</MenuContainerContext.Provider>
   );
 }

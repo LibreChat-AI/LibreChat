@@ -53,7 +53,7 @@ html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus-v
 
 .webkit-dark-styles,
 .webkit-dark-styles:focus {
-  background-clip: content-box;
+  background-clip: padding-box;
   box-shadow:
     var(--lc-autofill-mask), var(--tw-ring-offset-shadow, 0 0 transparent),
     var(--tw-ring-shadow, 0 0 transparent), var(--tw-shadow, 0 0 transparent);
@@ -77,5 +77,69 @@ html[data-input-modality='pointer'] .lc-field.webkit-dark-styles:focus-visible {
 @media not (forced-colors: active) {
   html:root:not(.high-contrast) textarea.lc-own-focus:focus-visible {
     outline: none !important;
+  }
+}
+
+/* iOS zooms into a focused field under 16px and the installed PWA never zooms back out. On touch
+   devices every text entry control keeps at least 16px, wherever a caller sizes it. Sizes at
+   text-base or above keep their own value, floored the same way for a small UI scale. This sits in
+   the package stylesheet so standalone consumers get it too. The composer draft sizes itself from
+   the chat font setting, floored here so a consumer without the app stylesheet keeps it too; the
+   app's message editor does the same in the app stylesheet. */
+@media (any-pointer: coarse) {
+  :is(
+    input:not([type]),
+    input:is(
+      [type='text'],
+      [type='email'],
+      [type='password'],
+      [type='search'],
+      [type='url'],
+      [type='tel'],
+      [type='number'],
+      [type='date'],
+      [type='time'],
+      [type='datetime-local'],
+      [type='month'],
+      [type='week']
+    ),
+    textarea,
+    select
+  ) {
+    &:not(
+      .text-base,
+      .text-lg,
+      .text-xl,
+      .text-2xl,
+      .text-3xl,
+      .message-editor-text,
+      .composer-text
+    ) {
+      font-size: max(16px, 0.875rem);
+    }
+
+    &.text-base {
+      font-size: max(16px, var(--text-base, 1rem));
+    }
+
+    &.text-lg {
+      font-size: max(16px, var(--text-lg, 1.125rem));
+    }
+
+    &.text-xl {
+      font-size: max(16px, var(--text-xl, 1.25rem));
+    }
+
+    &.text-2xl {
+      font-size: max(16px, var(--text-2xl, 1.5rem));
+    }
+
+    &.text-3xl {
+      font-size: max(16px, var(--text-3xl, 1.875rem));
+    }
+
+    &.composer-text {
+      font-size: max(16px, var(--markdown-font-size, var(--font-size-base, 1rem)));
+    }
   }
 }

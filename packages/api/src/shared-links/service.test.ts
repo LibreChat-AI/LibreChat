@@ -8,6 +8,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createModels, createMethods } from '@librechat/data-schemas';
 import { PrincipalType, AccessRoleIds } from 'librechat-data-provider';
 import type { IAclEntry, ISharedLink } from '@librechat/data-schemas';
+import { AccessControlService } from '~/acl/accessControlService';
 import {
   autoMigrateLegacyLink,
   grantCreationPermissions,
@@ -389,5 +390,68 @@ describe('deleteAllSharedLinksWithCleanup', () => {
       resourceId: { $in: [link1._id, link2._id] },
     }).lean();
     expect(aclAfter).toHaveLength(0);
+  });
+
+  test('awaits ACL cleanup and keeps the links when it fails', async () => {
+    const link = await createTestLink({ conversationId: 'c1' });
+    await grantCreationPermissions(link._id, userId, true);
+    const failure = jest.spyOn(AclEntry, 'deleteMany').mockRejectedValueOnce(new Error('acl down'));
+
+    await expect(deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true })).rejects.toThrow(
+      'acl down',
+    );
+    failure.mockRestore();
+
+    expect(await SharedLink.countDocuments({ _id: link._id })).toBe(1);
+
+    const result = await deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true });
+    expect(result.deletedCount).toBe(1);
+    expect(await AclEntry.countDocuments({ resourceId: link._id })).toBe(0);
+  });
+});
+
+describe('persistence failures', () => {
+  test.each([1, 2])(
+    'compensates link and ACL after grant %s partially writes then fails',
+    async (failingGrant) => {
+      const link = await createTestLink();
+      const original = AccessControlService.prototype.grantPermission;
+      let calls = 0;
+      const grant = jest
+        .spyOn(AccessControlService.prototype, 'grantPermission')
+        .mockImplementation(async function (this: AccessControlService, params) {
+          const result = await original.call(this, params);
+          if (++calls === failingGrant) {
+            throw new Error('grant failed');
+          }
+          return result;
+        });
+      try {
+        await expect(grantCreationPermissions(link._id, userId, true)).rejects.toThrow(
+          'grant failed',
+        );
+        expect(await SharedLink.findById(link._id)).toBeNull();
+        expect(await AclEntry.countDocuments({ resourceId: link._id })).toBe(0);
+      } finally {
+        grant.mockRestore();
+      }
+    },
+  );
+
+  test('expiration update failures reject instead of reporting success', async () => {
+    const link = await createTestLink();
+    const update = jest.spyOn(AclEntry, 'updateMany').mockRejectedValueOnce(new Error('acl down'));
+    await expect(updateSharedLinkPermissionsExpiration(link._id, null)).rejects.toThrow('acl down');
+    update.mockRestore();
+  });
+
+  test('ordinary deletion remains successful when ACL cleanup fails', async () => {
+    const link = await createTestLink();
+    const cleanup = jest.spyOn(AclEntry, 'deleteMany').mockRejectedValueOnce(new Error('acl down'));
+    await expect(deleteSharedLinkWithCleanup(userId, link.shareId!)).resolves.toMatchObject({
+      success: true,
+    });
+    expect(await SharedLink.findById(link._id)).toBeNull();
+    cleanup.mockRestore();
   });
 });

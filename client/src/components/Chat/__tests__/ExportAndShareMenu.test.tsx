@@ -26,7 +26,7 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks/Chat/useChatOptions', () => ({
+jest.mock('~/hooks/Sharing/useChatOptions', () => ({
   __esModule: true,
   default: (args: unknown) => {
     mockUseChatOptions(args);
@@ -49,7 +49,7 @@ describe('ExportAndShareMenu link status', () => {
     expect(screen.getByTestId('header-shared-link-indicator')).toHaveClass(
       'rounded-full',
       'bg-status-info',
-      '-right-0.5',
+      '-inset-e-0.5',
       '-top-0.5',
       'size-2',
     );

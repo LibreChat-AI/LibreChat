@@ -1,5 +1,4 @@
-import React, { useEffect, memo } from 'react';
-import TagManager from 'react-gtm-module';
+import React, { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Constants, hasConfiguredFooter } from 'librechat-data-provider';
 import type { TStartupConfig } from 'librechat-data-provider';
@@ -19,7 +18,7 @@ type FooterProps = {
   configuredOnly?: boolean;
 };
 
-type FooterStartupConfig = Pick<Partial<TStartupConfig>, 'analyticsGtmId' | 'customFooter'> & {
+type FooterStartupConfig = Pick<Partial<TStartupConfig>, 'customFooter'> & {
   interface?: Pick<NonNullable<TStartupConfig['interface']>, 'privacyPolicy' | 'termsOfService'>;
 };
 
@@ -54,6 +53,22 @@ export function useConfiguredFooter(): boolean {
   return isSuccess ? hasConfiguredFooter(config) : shellHasConfiguredFooter;
 }
 
+/** The deployment's `interface.landingFooter`, as the server said when it served
+ *  this document. A shell that carries no answer reads as the default: on. */
+const shellLandingFooter =
+  typeof window === 'undefined' ? true : (window.__LIBRECHAT_CONFIG__?.landingFooter ?? true);
+
+/** Whether the welcome screen carries the generic disclaimer and policy links, and
+ *  where: `composer` directly under the composer, `true` at the bottom of the page.
+ *  Off, it keeps only a configured footer, the same as a conversation. Until
+ *  `/api/config` answers, the shell's answer holds, so a cold load lays the
+ *  welcome screen out once instead of dropping or moving a footer it painted. */
+export function useLandingFooter(): boolean | 'composer' {
+  const { data: config, isSuccess } = useGetStartupConfig();
+
+  return isSuccess ? (config?.interface?.landingFooter ?? true) : shellLandingFooter;
+}
+
 function Footer({ className, startupConfig, configuredOnly = false }: FooterProps) {
   const shouldFetchConfig = startupConfig === undefined;
   const { data: fetchedConfig } = useGetStartupConfig({ enabled: shouldFetchConfig });
@@ -86,15 +101,6 @@ function Footer({ className, startupConfig, configuredOnly = false }: FooterProp
       localize('com_ui_latest_footer');
   const mainContent = configuredFooter ?? genericFooter;
   const mainContentParts = mainContent === '' ? [] : mainContent.split('|');
-
-  useEffect(() => {
-    if (config?.analyticsGtmId != null && typeof window.google_tag_manager === 'undefined') {
-      const tagManagerArgs = {
-        gtmId: config.analyticsGtmId,
-      };
-      TagManager.initialize(tagManagerArgs);
-    }
-  }, [config?.analyticsGtmId]);
 
   const mainContentRender = mainContentParts.map((text, index) => (
     <React.Fragment key={`main-content-part-${index}`}>
@@ -155,7 +161,7 @@ function Footer({ className, startupConfig, configuredOnly = false }: FooterProp
             <React.Fragment key={`footer-element-${index}`}>
               {contentRender}
               {!isLastElement && (
-                <div key={`separator-${index}`} className="border-border-medium h-2 border-r" />
+                <div key={`separator-${index}`} className="border-border-medium h-2 border-e" />
               )}
             </React.Fragment>
           );

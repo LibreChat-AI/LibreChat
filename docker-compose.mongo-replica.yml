@@ -1,0 +1,26 @@
+# Explicit local opt-in. This reuses the base Compose data directory; back it up
+# and stop the existing stack before converting it. This is not an HA deployment.
+services:
+  api:
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/LibreChat?replicaSet=rs0
+    depends_on:
+      mongodb-init:
+        condition: service_completed_successfully
+  mongodb:
+    command: ['mongod', '--replSet', 'rs0', '--bind_ip_all', '--noauth']
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', 'quit(db.adminCommand({ping:1}).ok ? 0 : 1)']
+      interval: 5s
+      timeout: 5s
+      start_period: 10s
+      retries: 12
+  mongodb-init:
+    image: mongo:8.0.20
+    restart: 'no'
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./utils/docker/init-replica.js:/scripts/init-replica.js:ro
+    entrypoint: ['mongosh', '--quiet', '--host', 'mongodb:27017', '/scripts/init-replica.js']

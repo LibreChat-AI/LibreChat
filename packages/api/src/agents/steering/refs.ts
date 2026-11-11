@@ -1,3 +1,4 @@
+import { MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 
 export interface SteerRequestUser {
@@ -33,6 +34,9 @@ export function toSteerFileRef(raw: unknown): Partial<TFile> | null {
     ...(typeof candidate.type === 'string' && { type: candidate.type }),
     ...(typeof candidate.filepath === 'string' && { filepath: candidate.filepath }),
     ...(typeof candidate.filename === 'string' && { filename: candidate.filename }),
+    ...(typeof candidate.textPreview === 'string' && {
+      textPreview: candidate.textPreview.slice(0, MAX_FILE_TEXT_PREVIEW_LENGTH),
+    }),
     ...(isLlmDeliveryPath(candidate.llmDeliveryPath) && {
       llmDeliveryPath: candidate.llmDeliveryPath,
     }),

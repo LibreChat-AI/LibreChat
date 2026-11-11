@@ -1,4 +1,4 @@
-import type { TConversationPullRequest } from 'librechat-data-provider';
+import type { PullRequestProvider, TConversationPullRequest } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 
 export type PullRequestTone = 'success' | 'error' | 'warning' | 'neutral' | 'merged';
@@ -15,6 +15,33 @@ export type PullRequestPresentation = {
   stateTone: PullRequestTone;
   checksKey: TranslationKeys;
   checksTone: PullRequestTone;
+  provider: PullRequestProvider;
+  /** What the provider calls it ("Merge request" on GitLab), and its short label ("MR !7"). */
+  nounKey: TranslationKeys;
+  labelKey: TranslationKeys;
+  /** Names the provider the card's link opens. */
+  openKey: TranslationKeys;
+};
+
+const PROVIDERS: Record<
+  PullRequestProvider,
+  Pick<PullRequestPresentation, 'nounKey' | 'labelKey' | 'openKey'>
+> = {
+  github: {
+    nounKey: 'com_ui_pull_request',
+    labelKey: 'com_ui_pr_label',
+    openKey: 'com_ui_pr_open_in_github',
+  },
+  gitlab: {
+    nounKey: 'com_ui_merge_request',
+    labelKey: 'com_ui_pr_label_gitlab',
+    openKey: 'com_ui_pr_open_in_gitlab',
+  },
+  bitbucket: {
+    nounKey: 'com_ui_pull_request',
+    labelKey: 'com_ui_pr_label',
+    openKey: 'com_ui_pr_open_in_bitbucket',
+  },
 };
 
 const CHECKS: Record<
@@ -73,8 +100,12 @@ function stateOf(
 /** The one place a pull request becomes icon, dot and badges, so the chip and card never disagree. */
 export function presentPullRequest(pr: TConversationPullRequest): PullRequestPresentation {
   const checks = CHECKS[pr.checks];
+  /** A server from before providers sends none, and only knew GitHub. */
+  const provider = pr.provider ?? 'github';
   return {
     ...stateOf(pr),
+    ...PROVIDERS[provider],
+    provider,
     dotTone: pr.state === 'open' ? checks.dot : null,
     checksKey: checks.key,
     checksTone: checks.tone,

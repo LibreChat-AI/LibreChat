@@ -87,6 +87,17 @@ describe('field variants', () => {
     expect(field.className).toBe(cn(fieldInvalid, 'resize-none'));
   });
 
+  it('TextareaAutosize field takes the control outline and focus ring of a form field', () => {
+    render(<TextareaAutosize aria-label="draft" variant="field" className="resize-none" />);
+    expect(screen.getByLabelText('draft')).toHaveClass(
+      'lc-field',
+      'border-border-control',
+      'focus-visible:ring-focus-control',
+      'theme-field-fill:bg-field-fill',
+      'resize-none',
+    );
+  });
+
   it('TextareaAutosize framed carries the bordered editor box exactly', () => {
     render(<TextareaAutosize aria-label="draft" variant="framed" className="min-h-20" />);
     const field = screen.getByLabelText('draft');
@@ -118,9 +129,10 @@ describe('field variants', () => {
     expect(screen.getByLabelText('key')).toHaveClass(...FLUSH);
   });
 
-  it('paints the floating label chip in the field fill when the theme fills fields', () => {
+  it('paints the floating label chip in the field fill below the border line when the theme fills fields', () => {
     expect(floatingLabel).toContain('bg-surface-primary');
-    expect(floatingLabel).toContain('theme-field-fill:bg-field-fill');
+    expect(floatingLabel).toContain('theme-field-fill:bg-linear-to-b');
+    expect(floatingLabel).toContain('theme-field-fill:to-field-fill');
   });
 
   it('flush and embedded variants drop the base field fill in every control that carries it', () => {

@@ -40,7 +40,6 @@ jest.mock('~/store', () => ({
   __esModule: true,
   default: {
     sidebarExpanded: {},
-    isSubmittingFamily: () => ({}),
     effectiveEndpointByIndex: () => 'effectiveEndpoint',
   },
 }));

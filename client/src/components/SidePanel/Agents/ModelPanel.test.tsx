@@ -203,7 +203,7 @@ describe('ModelPanel', () => {
     expect(queryByRole('status')).toBeNull();
   });
 
-  it('disables model selection until the model catalogue is ready', () => {
+  it('keeps provider choice available while disabling models until their catalogue is ready', () => {
     const { getByTestId } = render(
       <TestForm
         defaultProvider="custom"
@@ -212,9 +212,38 @@ describe('ModelPanel', () => {
       />,
     );
 
-    expect(getByTestId('com_ui_provider-custom')).toBeDisabled();
+    expect(getByTestId('com_ui_provider-custom')).toBeEnabled();
     expect(getByTestId('com_ui_model-custom-model')).toBeDisabled();
   });
+
+  it.each([false, true])(
+    'switches to a healthy provider while selected catalog error is %s',
+    (failed) => {
+      const formRef: React.MutableRefObject<UseFormReturn<AgentForm> | null> = { current: null };
+      const props = {
+        defaultProvider: 'unavailable',
+        defaultModel: 'retained-model',
+        formRef,
+        providers: [
+          { label: 'Unavailable', value: 'unavailable' },
+          { label: 'Healthy', value: 'healthy' },
+        ],
+        models: { healthy: ['healthy-model'] },
+      };
+      const { getByTestId, getByRole, rerender } = render(
+        <TestForm {...props} modelsReady={false} modelsError={failed} />,
+      );
+      expect(getByRole('button', { name: 'com_ui_model' })).toBeDisabled();
+      expect(getByTestId('com_ui_provider-healthy')).toBeEnabled();
+      fireEvent.click(getByTestId('com_ui_provider-healthy'));
+      expect(formRef.current?.getValues('provider')).toBe('healthy');
+      expect(formRef.current?.getValues('model')).toBe('healthy-model');
+      rerender(<TestForm {...props} modelsReady={true} modelsError={false} />);
+      expect(getByTestId('com_ui_model-healthy-model')).toBeEnabled();
+      expect(localStorage.getItem('lastAgentProvider')).toBe('healthy');
+      expect(localStorage.getItem('lastAgentModel')).toBe('healthy-model');
+    },
+  );
 
   it('selects and saves the first model when the provider changes', () => {
     const providers = [
@@ -331,8 +360,8 @@ describe('ModelPanel', () => {
     );
 
     expect(getByRole('alert')).toHaveTextContent('com_error_models_not_loaded');
-    expect(queryByTestId('com_ui_model-placeholder')).toHaveTextContent('com_ui_select_model');
-    expect(getByTestId('com_ui_provider-custom')).toBeDisabled();
+    expect(queryByTestId('com_ui_model-placeholder')).toHaveTextContent('com_agents_select_model');
+    expect(getByTestId('com_ui_provider-custom')).toBeEnabled();
   });
 
   it('labels the provider and model controls', () => {

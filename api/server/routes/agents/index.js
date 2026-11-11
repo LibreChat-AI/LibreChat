@@ -29,6 +29,7 @@ const {
   isConfirmedGenerationRetry,
   generationRetryProbeLimiter,
   generationRetryLimiter,
+  startSseKeepalive,
 } = require('@librechat/api');
 const { createSseStreamTelemetry } = require('@librechat/api/telemetry');
 const { logger } = require('@librechat/data-schemas');
@@ -37,9 +38,11 @@ const {
   checkBan,
   moderateText,
   requireJwtAuth,
+  requireTermsAcceptance,
   messageIpLimiter,
   configMiddleware,
   messageUserLimiter,
+  loadStreamKeepaliveMs,
 } = require('~/server/middleware');
 const SteerController = require('~/server/controllers/agents/steer');
 const {
@@ -69,6 +72,11 @@ const {
   acknowledgeScheduledStopPersistence,
 } = require('~/server/services/Schedules');
 const responses = require('./responses');
+const {
+  reviewBackgroundResponse,
+  submitBackgroundResponseReview,
+  cancelOwnerBackgroundResponse,
+} = require('~/server/services/Responses');
 const management = require('./management');
 const skills = require('./skills');
 const openai = require('./openai');
@@ -174,6 +182,23 @@ router.use(
 );
 router.use(checkBan);
 router.use(uaParser);
+router.get('/responses/:id/review', requireTermsAcceptance, reviewBackgroundResponse);
+router.post(
+  '/responses/:id/review',
+  requireTermsAcceptance,
+  chatConfigMiddleware,
+  ...(isEnabled(LIMIT_MESSAGE_IP) ? [messageIpLimiter] : []),
+  ...(isEnabled(LIMIT_MESSAGE_USER) ? [messageUserLimiter] : []),
+  submitBackgroundResponseReview,
+);
+router.post(
+  '/responses/:id/cancel',
+  requireTermsAcceptance,
+  chatConfigMiddleware,
+  ...(isEnabled(LIMIT_MESSAGE_IP) ? [messageIpLimiter] : []),
+  ...(isEnabled(LIMIT_MESSAGE_USER) ? [messageUserLimiter] : []),
+  cancelOwnerBackgroundResponse,
+);
 
 /**
  * Stream endpoints - mounted before chatRouter to bypass rate limiters
@@ -286,6 +311,9 @@ router.get('/chat/stream/:streamId', async (req, res) => {
   res.setHeader(GENERATION_PROTOCOL_HEADER, String(generationProtocolVersion));
   res.flushHeaders();
   streamTelemetry.recordHeadersFlushed();
+  /** Started only for an authorized attachment, and never awaited: the keepalive runs at
+   * the default interval until the narrow config read resolves. */
+  startSseKeepalive(res, loadStreamKeepaliveMs(req));
 
   logger.debug(`[AgentStream] Client subscribed to ${streamId}, resume: ${isResume}`);
 

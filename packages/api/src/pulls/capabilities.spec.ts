@@ -17,6 +17,19 @@ describe('resolvePullRequestCapabilities', () => {
     });
   });
 
+  it('advertises the provider users can connect to, only when an app is configured', () => {
+    const oauth = { clientId: '${ID}', clientSecret: '${SECRET}' };
+    expect(
+      resolvePullRequestCapabilities(configWith({ provider: 'gitlab', oauth }), {
+        ID: 'i',
+        SECRET: 's',
+      }),
+    ).toMatchObject({ pullRequestsEnabled: true, pullRequestsConnect: 'gitlab' });
+    expect(resolvePullRequestCapabilities(configWith(scoped), env)).not.toHaveProperty(
+      'pullRequestsConnect',
+    );
+  });
+
   it('advertises the configured lookup limit', () => {
     expect(
       resolvePullRequestCapabilities(configWith({ ...scoped, maxConcurrentLookups: 2 }), env),

@@ -1,7 +1,7 @@
+import { visualParts } from '@librechat/chat';
 import { visit, SKIP } from 'unist-util-visit';
 import { VISUAL_DIRECTIVE } from 'librechat-data-provider';
 import type { Pluggable } from 'unified';
-import { visualParts } from '~/utils/visual';
 
 type VisualNode = {
   type: string;

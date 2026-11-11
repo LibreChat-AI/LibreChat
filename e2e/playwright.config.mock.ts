@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { getLocalE2EEnv, getE2EBaseURL } from './setup/env';
@@ -38,6 +39,12 @@ const ragServerPath = path.resolve(rootPath, 'e2e/setup/fake-rag-server.js');
  *  Kept clear of the MCP (8765/8766) and label (8889) fixtures. */
 const CODE_API_PORT = process.env.E2E_CODE_API_PORT || '8790';
 const RAG_API_PORT = process.env.E2E_RAG_API_PORT || '8791';
+/** The fake GitHub Enterprise host pull request lookups reach (`pullRequests.host`). The template
+ *  hard-codes 8793; `writeRuntimeMockConfig` substitutes any override into the generated copy. */
+const gitHostServerPath = path.resolve(rootPath, 'e2e/setup/fake-git-host-server.js');
+const GIT_HOST_PORT = process.env.E2E_GIT_HOST_PORT || '8793';
+const gitHostKeyPath = path.resolve(rootPath, 'e2e/.generated/git-host.key');
+const gitHostCertPath = path.resolve(rootPath, 'e2e/.generated/git-host.crt');
 const fakeModelHookPath = path.resolve(rootPath, 'e2e/setup/fake-model.js');
 /** Model-fixture record mode: the run hook taps the REAL provider stream into a
  *  replayable fixture instead of overriding the model (e2e/setup/model-replay.js). */
@@ -102,6 +109,8 @@ if (modelFixtureRecording) {
 }
 const assistantsServerPath = path.resolve(rootPath, 'e2e/setup/fake-assistants-server.js');
 const ASSISTANTS_PORT = process.env.E2E_ASSISTANTS_PORT || '8890';
+const fluxServerPath = path.resolve(rootPath, 'e2e/setup/fake-flux-server.js');
+const FLUX_PORT = process.env.E2E_FLUX_PORT || '8794';
 const configTemplatePath = path.resolve(rootPath, 'e2e/config/librechat.e2e.yaml');
 const configPath = path.resolve(rootPath, 'e2e/.generated/librechat.e2e.yaml');
 const reportPath = path.resolve(rootPath, 'e2e/playwright-report');
@@ -211,6 +220,12 @@ const baseEnv = {
   ASSISTANTS_API_KEY: 'e2e-mock-assistants-key',
   ASSISTANTS_BASE_URL: `http://127.0.0.1:${ASSISTANTS_PORT}/v1`,
   ASSISTANTS_MODELS: 'gpt-4o-mini',
+  /** The Flux tool talks to the fake BFL endpoint started below. */
+  FLUX_API_KEY: 'e2e-flux-key',
+  FLUX_API_BASE_URL: `http://127.0.0.1:${FLUX_PORT}`,
+  /** Enables the native Google provider for agents. The run hook replaces the model, so the
+   *  key never reaches Google; it only lets attachments take the Google encoding path. */
+  GOOGLE_KEY: 'e2e-mock-google-key',
   ...(process.env.E2E_CODE_BRIDGE_ADMIN_TOKEN
     ? { E2E_CODE_BRIDGE_ADMIN_TOKEN: process.env.E2E_CODE_BRIDGE_ADMIN_TOKEN }
     : {}),
@@ -219,6 +234,11 @@ const baseEnv = {
   ...(externalCodeBaseUrl ? { LIBRECHAT_CODE_BASEURL_STATEFUL: externalCodeBaseUrl } : {}),
   ...codeApiKeyEnv,
   RAG_API_URL: `http://127.0.0.1:${RAG_API_PORT}`,
+  /** Pull request lookups go to the fake git host, which trusts any bearer token. */
+  E2E_GIT_HOST_TOKEN: 'e2e-git-host-token',
+  /** Resolved into the `e2e-memory` MCP server's env reference. */
+  E2E_MCP_DEPLOYMENT: 'e2e-deployment',
+  NODE_EXTRA_CA_CERTS: gitHostCertPath,
   ...vanillaOverrides,
 };
 
@@ -252,8 +272,7 @@ function writeRuntimeMockConfig() {
     ? {
         allowedDomain: '- http://127.0.0.1:8766',
         stdioEnv: [
-          'env:',
-          '      E2E_MCP_LIST_CHANGED: "true"',
+          'E2E_MCP_LIST_CHANGED: "true"',
           `      E2E_MCP_STATE_PATH: ${JSON.stringify(MCP_STATE_PATH)}`,
         ].join('\n'),
         networkServers: [
@@ -383,6 +402,9 @@ function writeRuntimeMockConfig() {
   if (enableDynamicMcp && MCP_DYNAMIC_PORT !== '8766') {
     config = config.split('127.0.0.1:8766').join(`127.0.0.1:${MCP_DYNAMIC_PORT}`);
   }
+  if (GIT_HOST_PORT !== '8793') {
+    config = config.split('localhost:8793').join(`localhost:${GIT_HOST_PORT}`);
+  }
   if (MCP_OAUTH_PORT !== '8767') {
     config = config.split('127.0.0.1:8767').join(`127.0.0.1:${MCP_OAUTH_PORT}`);
   }
@@ -392,6 +414,65 @@ function writeRuntimeMockConfig() {
     fs.mkdirSync(path.dirname(MCP_STATE_PATH), { recursive: true });
     fs.writeFileSync(MCP_STATE_PATH, `${JSON.stringify({ revision: 0, tool: null })}\n`);
   }
+}
+
+/** A kept certificate is replaced when it expires within this window, so no run outlives it. */
+const GIT_HOST_CERT_MIN_SECONDS = 7 * 24 * 60 * 60;
+
+function hasFreshGitHostCertificate(): boolean {
+  if (!fs.existsSync(gitHostKeyPath) || !fs.existsSync(gitHostCertPath)) {
+    return false;
+  }
+  try {
+    /** Exits non-zero when the certificate expires within the window, or cannot be read. */
+    execFileSync(
+      'openssl',
+      ['x509', '-checkend', String(GIT_HOST_CERT_MIN_SECONDS), '-noout', '-in', gitHostCertPath],
+      { stdio: 'ignore' },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The fake git host speaks TLS, as every pull request host must, with a certificate for
+ * `localhost` the app server trusts through `NODE_EXTRA_CA_CERTS`. Node reads that file once at
+ * startup, so it is made here, before any web server starts, and kept while it is valid for a
+ * week more. The config module loads again in every worker, which must not swap the pair under a
+ * running server, so only the main process ever replaces one.
+ */
+function ensureGitHostCertificate() {
+  const exists = fs.existsSync(gitHostKeyPath) && fs.existsSync(gitHostCertPath);
+  if (exists && process.env.TEST_WORKER_INDEX != null) {
+    return;
+  }
+  if (hasFreshGitHostCertificate()) {
+    return;
+  }
+  fs.mkdirSync(path.dirname(gitHostCertPath), { recursive: true });
+  execFileSync(
+    'openssl',
+    [
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-keyout',
+      gitHostKeyPath,
+      '-out',
+      gitHostCertPath,
+      '-days',
+      '30',
+      '-subj',
+      '/CN=localhost',
+      '-addext',
+      'subjectAltName=DNS:localhost',
+    ],
+    { stdio: 'ignore' },
+  );
 }
 
 function neutralizeCredentialEnv(env: NodeJS.ProcessEnv, keep: Set<string>) {
@@ -424,6 +505,7 @@ function neutralizeDotenvSecrets(envFile: string, keep: Set<string>) {
 }
 
 writeRuntimeMockConfig();
+ensureGitHostCertificate();
 neutralizeCredentialEnv(process.env, preservedCredentialEnvKeys);
 Object.assign(process.env, baseEnv);
 neutralizeDotenvSecrets(path.resolve(rootPath, '.env'), preservedCredentialEnvKeys);
@@ -442,9 +524,22 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
+  /** In CI a test that fails and then passes on a retry fails the run. The retries stay for
+   *  what they show: a trace of each failed attempt, video of the first retry, and whether the
+   *  failure is deterministic. Derived profiles inherit this with the rest of the config. */
+  failOnFlakyTests: !!process.env.CI,
   workers: 1,
+  /** In CI the JSON results land beside the HTML report (reporters end in order, after the HTML
+   *  reporter has replaced its folder), so the report artifact also carries the per-file
+   *  timings `.github/scripts/playwright-shards.mjs record` rebuilds the shard plan from.
+   *  The last reporter names each retried pass in the job log and the job summary. */
   reporter: process.env.CI
-    ? [['html', { outputFolder: reportPath, open: 'never' }], ['line']]
+    ? [
+        ['html', { outputFolder: reportPath, open: 'never' }],
+        ['line'],
+        ['json', { outputFile: path.join(reportPath, 'results.json') }],
+        ['./reporters/retried.mjs'],
+      ]
     : [['html', { outputFolder: reportPath }], ['list']],
   use: {
     baseURL,
@@ -540,11 +635,37 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
+      // Fake BFL endpoint for the Flux tool (FLUX_API_BASE_URL).
+      command: `node ${fluxServerPath}`,
+      cwd: rootPath,
+      env: { ...process.env, E2E_FLUX_PORT: FLUX_PORT },
+      url: `http://127.0.0.1:${FLUX_PORT}/`,
+      stdout: 'pipe',
+      timeout: 60_000,
+      reuseExistingServer: false,
+    },
+    {
       // Fake code-execution API for file-provisioning specs (LIBRECHAT_CODE_BASEURL).
       command: `node ${codeServerPath}`,
       cwd: rootPath,
       env: { ...process.env, E2E_CODE_API_PORT: CODE_API_PORT },
       url: `http://127.0.0.1:${CODE_API_PORT}/health`,
+      stdout: 'pipe',
+      timeout: 60_000,
+      reuseExistingServer: false,
+    },
+    {
+      // Fake GitHub Enterprise host for the pull request scenarios (`pullRequests.host`).
+      command: `node ${gitHostServerPath}`,
+      cwd: rootPath,
+      env: {
+        ...process.env,
+        E2E_GIT_HOST_PORT: GIT_HOST_PORT,
+        E2E_GIT_HOST_KEY: gitHostKeyPath,
+        E2E_GIT_HOST_CERT: gitHostCertPath,
+      },
+      url: `https://localhost:${GIT_HOST_PORT}/`,
+      ignoreHTTPSErrors: true,
       stdout: 'pipe',
       timeout: 60_000,
       reuseExistingServer: false,

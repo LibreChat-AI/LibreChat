@@ -126,6 +126,8 @@ test.describe('primitive size roles', () => {
         'select-item': '4px',
         'min-w-theme-tab': '0px',
         'min-w-theme-list': '0px',
+        /** `none`: no cap of its own, so outside a Select's popper only the viewport bounds it. */
+        'max-h-theme-list': `${modePage.viewportSize()?.height}px`,
         'h-theme-field': '32px',
         /** 3.6876rem: the 3rem title line, field.space.y twice and a 1px stroke each side (Click UI field metrics). */
         'h-theme-field-lg': '59px',

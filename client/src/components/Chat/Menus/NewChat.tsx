@@ -1,6 +1,6 @@
 import { TooltipAnchor, NewChatIcon, Button } from '@librechat/client';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
-import useNewChat from '~/hooks/Chat/useNewChat';
+import useNewChat from '~/hooks/Conversations/useNewChat';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

@@ -1,21 +1,22 @@
 import { useMemo } from 'react';
 import { SquareTerminal } from 'lucide-react';
+import { TOOL_ROW_CLASSES, BareStatus, Stdout } from '@librechat/chat/components';
+import { parseBackgroundHandle, splitBackgroundAttachments } from '@librechat/chat';
+import {
+  toolPanelSpacingClassName,
+  useFollowScroll,
+  useToolCallIntent,
+} from '@librechat/chat/react';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { toolPanelSpacingClassName } from '../disclosure';
+import CommandTime, { useCommandClock } from './CommandTime';
 import useLazyHighlight from './useLazyHighlight';
 import useToolCallState from './useToolCallState';
 import CodeWindowHeader from './CodeWindowHeader';
-import useFollowScroll from './useFollowScroll';
 import { AttachmentGroup } from './Attachment';
-import { useToolCallIntent } from './intent';
-import { TOOL_ROW_CLASSES } from '../rows';
 import PtcToolTrace from './PtcToolTrace';
-import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
-import Stdout from './Stdout';
 import { cn } from '~/utils';
 
 interface ParsedArgs {
@@ -71,6 +72,7 @@ export default function ExecuteCode({
   hideAttachments = false,
   onExpand,
   toolCallId,
+  stepId,
 }: {
   initialProgress: number;
   isSubmitting: boolean;
@@ -84,6 +86,7 @@ export default function ExecuteCode({
   hideAttachments?: boolean;
   onExpand?: () => void;
   toolCallId?: string;
+  stepId?: string;
 }) {
   const localize = useLocalize();
   const { lang = 'py', code } = useParseArgs(args) ?? ({} as ParsedArgs);
@@ -128,8 +131,11 @@ export default function ExecuteCode({
       runStepStatus,
       extraError: backgroundFailed,
       extraCancelled: cancelledInBackground,
-      keepRow: backgroundHandle != null || intent != null,
+      keepRow: backgroundHandle != null,
+      keepLabelRow: intent != null,
     });
+  /** Measured once per card, so the time survives moving from the row into the panel. */
+  const commandMs = useCommandClock(phase, runStepDurationMs);
 
   const highlighted = useLazyHighlight(showCode ? code : undefined, lang);
   const { ref: codePaneRef, onScroll: onCodePaneScroll } = useFollowScroll<HTMLPreElement>(
@@ -145,9 +151,14 @@ export default function ExecuteCode({
 
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
-        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
+        <div
+          className={TOOL_ROW_CLASSES}
+          ref={rowRef}
+          data-task-tool-call={toolCallId}
+          data-task-step={stepId}
+        >
           <ProgressText
             phase={phase}
             onClick={toggleCode}
@@ -162,8 +173,10 @@ export default function ExecuteCode({
              *  covers the live card; the persisted `backgrounded` marker covers
              *  the card after harvest replaces the handle with real stdout
              *  (and after any reload), when no transient signal survives. */
-            durationMs={
-              backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
+            timer={
+              backgroundHandle == null && backgrounded !== true ? (
+                <CommandTime phase={phase} ms={commandMs} />
+              ) : undefined
             }
             icon={
               <SquareTerminal
@@ -180,16 +193,24 @@ export default function ExecuteCode({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           <div
             className={cn(
               toolPanelSpacingClassName,
               'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
             )}
           >
+            {bare && code && (
+              <div className="flex items-center justify-end px-4 pt-2">
+                {backgroundHandle == null && backgrounded !== true && (
+                  <CommandTime phase={phase} ms={commandMs} />
+                )}
+              </div>
+            )}
             {code && <CodeWindowHeader language={lang} code={code} />}
             {code && (
               <pre
+                dir="ltr"
                 ref={codePaneRef}
                 onScroll={onCodePaneScroll}
                 className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
