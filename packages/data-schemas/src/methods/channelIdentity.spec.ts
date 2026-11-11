@@ -647,7 +647,7 @@ it('never recreates consent after erasure wins between its lookup and revocation
       'withdrawn',
     );
     try {
-      await started;
+      await waitForPause(started, revocation);
       await retireAgentChannel(mongoose, {
         tenantId,
         channelId: 'channel',
