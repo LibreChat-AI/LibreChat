@@ -19,16 +19,18 @@ async function enableMemoryServer(page: Page) {
 }
 
 /**
- * Counts every time the peek comes on screen from now on, read back through the handle. The page
- * counts them itself because a peek can come and go between two looks from here: the one a
- * settled card used to flash over its finished thought lasted about a tenth of a second.
+ * Counts every time the peek comes on screen in the conversation from now on, read back through
+ * the handle. The page counts them itself because a peek can come and go between two looks from
+ * here: a summary card folding in keeps its rows on screen for about a tenth of a second.
  */
 async function countPeeks(page: Page) {
   return page.evaluateHandle(() => {
     const seen = { shown: 0 };
     let showing = false;
     new MutationObserver(() => {
-      const peek = document.querySelector('[data-testid="streaming-thought-peek"]');
+      const peek = document.querySelector(
+        '[data-testid="messages-view"] [data-testid="streaming-thought-peek"]',
+      );
       const visible = peek != null && peek.getClientRects().length > 0;
       if (visible && !showing) {
         seen.shown += 1;
