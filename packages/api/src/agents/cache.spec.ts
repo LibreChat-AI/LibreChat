@@ -1,5 +1,5 @@
 import { Providers, initializeModel } from '@librechat/agents';
-import { isAIMessage } from '@librechat/agents/langchain/messages';
+import { AIMessage } from '@librechat/agents/langchain/messages';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
 import type { OpenAIConfiguration } from '~/types';
 import { getModelEndUsage, recordCollectedUsage, computeUsageCostUSD } from './usage';
@@ -72,7 +72,7 @@ async function getSDKUsage(
         handleLLMEnd(result) {
           for (const generations of result.generations) {
             for (const generation of generations) {
-              if ('message' in generation && isAIMessage(generation.message)) {
+              if ('message' in generation && AIMessage.isInstance(generation.message)) {
                 const usage = getModelEndUsage(
                   generation.message as Parameters<typeof getModelEndUsage>[0],
                 );
