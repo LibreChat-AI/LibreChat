@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import axios from 'axios';
+import axios, { AxiosHeaders } from 'axios';
 import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import type * as t from './types';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from './config';
@@ -334,12 +334,31 @@ const redirectToLoginOnce = () => {
   window.location.href = href;
 };
 
-const getBearerToken = () => {
-  const authorization = axios.defaults.headers.common['Authorization'];
+const parseBearerToken = (authorization: unknown) => {
   if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) {
     return null;
   }
   return authorization.slice('Bearer '.length);
+};
+
+const getBearerToken = () => parseBearerToken(axios.defaults.headers.common['Authorization']);
+
+const getRequestBearerToken = ({ headers }: AxiosRequestConfig) =>
+  parseBearerToken(
+    headers instanceof AxiosHeaders ? headers.get('Authorization') : headers?.['Authorization'],
+  );
+
+/**
+ * A request dispatched before a refresh settled can be answered after it. That 401 describes the
+ * bearer the request carried, not the one now in use, so the request is replayed with the current
+ * bearer instead of starting a second refresh for a session that has already recovered.
+ */
+const getSupersedingToken = (sentToken: string | null) => {
+  if (!sentToken || getAuthRecoveryState().refreshPromise) {
+    return null;
+  }
+  const currentToken = getBearerToken();
+  return currentToken && currentToken !== sentToken ? currentToken : null;
 };
 
 const getJwtExpiryMs = (token: string) => {
@@ -451,7 +470,7 @@ async function _authenticatedFetch(url: string, options?: RequestInit): Promise<
 
   let refreshedToken: string | null;
   try {
-    refreshedToken = await startAuthRecovery(false);
+    refreshedToken = getSupersedingToken(token) ?? (await startAuthRecovery(false));
   } catch {
     redirectToLoginOnce();
     return response;
@@ -529,6 +548,14 @@ if (typeof window !== 'undefined') {
       }
 
       if (error.response.status === 401 && !originalRequest._retry) {
+        const supersedingToken = isRefreshRequest
+          ? null
+          : getSupersedingToken(getRequestBearerToken(originalRequest));
+        if (supersedingToken) {
+          setRequestAuthorizationHeader(originalRequest, supersedingToken);
+          return axios(originalRequest);
+        }
+
         const hasActiveRecovery = getAuthRecoveryState().refreshPromise != null;
         if (!hasActiveRecovery) {
           console.warn('401 error, refreshing token');
