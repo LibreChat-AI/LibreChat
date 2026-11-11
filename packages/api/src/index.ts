@@ -155,3 +155,5 @@ export type * from './types';
 export * from './tools/approval';
 
 export * from './mcp/approval';
+
+export { createChannelStorageConfigReader } from './channels/config';
