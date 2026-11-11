@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
+import { condition, interpolate } from './expressions.mjs';
 import { SUITES, plan, stale, supersede, verify } from './merge-gate.mjs';
 
 const REPO = 'LibreChat-AI/LibreChat';
@@ -15,151 +16,21 @@ const workflows = Object.fromEntries(
     .map((file) => [file, load(file)]),
 );
 
-/**
- * Evaluates the subset of GitHub Actions expressions the gated workflows use: literals, context
- * lookups, `!`, `==`, `!=`, `&&`, `||`, parentheses and the functions in `functions`.
- */
-const TOKEN =
-  /\s*(?:('(?:[^']|'')*')|(-?\d+(?:\.\d+)?)|(==|!=|&&|\|\||[!(),])|([A-Za-z_][\w-]*(?:\.[\w-]+)*))/y;
-
-function tokenize(source) {
-  const tokens = [];
-  TOKEN.lastIndex = 0;
-  while (TOKEN.lastIndex < source.length) {
-    const start = TOKEN.lastIndex;
-    const match = TOKEN.exec(source);
-    if (!match) {
-      assert.equal(source.slice(start).trim(), '', `unsupported expression: ${source}`);
-      break;
-    }
-    const [, string, number, operator, name] = match;
-    if (string !== undefined) {
-      tokens.push({ value: string.slice(1, -1).replaceAll("''", "'") });
-    } else if (number !== undefined) {
-      tokens.push({ value: Number(number) });
-    } else if (operator !== undefined) {
-      tokens.push({ operator });
-    } else {
-      tokens.push({ name });
-    }
-  }
-  return tokens;
-}
-
-const truthy = (value) => !(value === false || value === 0 || value === '' || value == null);
-
-function toNumber(value) {
-  if (value == null || value === '') return 0;
-  if (typeof value === 'boolean') return Number(value);
-  return typeof value === 'object' ? NaN : Number(value);
-}
-
-function equal(left, right) {
-  if (typeof left === 'string' && typeof right === 'string') {
-    return left.toLowerCase() === right.toLowerCase();
-  }
-  if (typeof left === typeof right && left != null && right != null) {
-    return left === right;
-  }
-  return toNumber(left) === toNumber(right);
-}
-
-const LITERALS = { true: true, false: false, null: null };
-
-function evaluate(source, context, functions) {
-  const tokens = tokenize(source);
-  let position = 0;
-  const peek = () => tokens[position] ?? {};
-  const take = (operator) => {
-    if (peek().operator !== operator) return false;
-    position += 1;
-    return true;
-  };
-  const lookup = (name) =>
-    name in LITERALS
-      ? LITERALS[name]
-      : (name.split('.').reduce((value, key) => value?.[key], context) ?? null);
-
-  function primary() {
-    const token = tokens[position++];
-    assert.ok(token, `unexpected end of expression: ${source}`);
-    if (token.operator === '(') {
-      const value = disjunction();
-      assert.ok(take(')'), `missing ) in: ${source}`);
-      return value;
-    }
-    if (token.operator === '!') return !truthy(primary());
-    if ('value' in token) return token.value;
-    assert.ok(token.name, `unexpected ${token.operator} in: ${source}`);
-    if (!take('(')) return lookup(token.name);
-    const args = [];
-    while (!take(')')) {
-      args.push(disjunction());
-      take(',');
-    }
-    assert.ok(functions[token.name], `unsupported function ${token.name} in: ${source}`);
-    return functions[token.name](...args);
-  }
-  function comparison() {
-    const left = primary();
-    if (take('==')) return equal(left, primary());
-    if (take('!=')) return !equal(left, primary());
-    return left;
-  }
-  function conjunction() {
-    let left = comparison();
-    while (take('&&')) {
-      const right = comparison();
-      left = truthy(left) ? right : left;
-    }
-    return left;
-  }
-  function disjunction() {
-    let left = conjunction();
-    while (take('||')) {
-      const right = conjunction();
-      left = truthy(left) ? left : right;
-    }
-    return left;
-  }
-  const value = disjunction();
-  assert.equal(position, tokens.length, `trailing tokens in: ${source}`);
-  return value;
-}
-
 const unwrap = (text) =>
   String(text)
     .trim()
     .replace(/^\$\{\{([\s\S]*)\}\}$/, '$1');
 const STATUS_FUNCTION = /\b(?:always|cancelled|success|failure)\(/;
 
-function functionsFor(needs) {
+/** The status functions as GitHub resolves them for a job with these `needs`, in a live run. */
+function statusOf(needs) {
   const results = Object.values(needs).map((job) => job.result);
   return {
     always: () => true,
     cancelled: () => false,
     success: () => results.every((result) => result === 'success'),
     failure: () => results.includes('failure'),
-    fromJSON: (text) => JSON.parse(text),
-    toJSON: (value) => JSON.stringify(value),
-    contains: (haystack, needle) =>
-      Array.isArray(haystack)
-        ? haystack.some((item) => equal(item, needle))
-        : String(haystack ?? '')
-            .toLowerCase()
-            .includes(String(needle).toLowerCase()),
   };
-}
-
-function render(value) {
-  if (value == null) return '';
-  return typeof value === 'object' ? JSON.stringify(value) : String(value);
-}
-
-function interpolate(text, context, functions) {
-  return String(text).replace(/\$\{\{([\s\S]*?)\}\}/g, (_, source) =>
-    render(evaluate(source, context, functions)),
-  );
 }
 
 const needsOf = (job) => [job.needs ?? []].flat();
@@ -177,14 +48,14 @@ function simulate(workflow, github, { outputs = {}, forced = {}, inputs = {}, va
     const job = workflow.jobs[id];
     const needs = Object.fromEntries(needsOf(job).map((need) => [need, resolve(need)]));
     const scope = { ...context, needs };
-    const functions = functionsFor(needs);
+    const functions = statusOf(needs);
     const written = job.if === undefined ? 'success()' : unwrap(job.if);
-    const condition = STATUS_FUNCTION.test(written) ? written : `success() && (${written})`;
-    const runs = truthy(evaluate(condition, scope, functions));
+    const guarded = STATUS_FUNCTION.test(written) ? written : `success() && (${written})`;
+    const runs = condition(guarded, scope, functions);
     const result = runs ? (forced[id] ?? 'success') : 'skipped';
     jobs[id] = { result, outputs: result === 'success' ? (outputs[id] ?? {}) : {} };
     if (runs && typeof job.strategy?.matrix === 'string') {
-      jobs[id].matrix = evaluate(unwrap(job.strategy.matrix), scope, functions);
+      jobs[id].matrix = interpolate(job.strategy.matrix, scope, functions);
     }
     return jobs[id];
   };
@@ -199,14 +70,14 @@ function gatePasses(suite, jobs) {
   const needs = Object.fromEntries(
     needsOf(gate).map((need) => [need, { result: jobs[need].result, outputs: jobs[need].outputs }]),
   );
-  const functions = functionsFor(needs);
+  const functions = statusOf(needs);
   const step = gate.steps.at(-1);
   if (step.run === 'exit 1') {
-    return !truthy(evaluate(unwrap(step.if), { needs }, functions));
+    return !condition(step.if, { needs }, functions);
   }
   assert.equal(step.run, 'node .github/scripts/merge-gate.mjs verify');
   assert.equal(step.env.NEEDS, '${{ toJSON(needs) }}');
-  const allowed = interpolate(step.env.ALLOW_SKIPPED ?? '', { needs }, functions);
+  const allowed = String(interpolate(step.env.ALLOW_SKIPPED ?? '', { needs }, functions));
   return (
     verify(JSON.parse(JSON.stringify(needs)), allowed.split(/\s+/).filter(Boolean)).length === 0
   );
@@ -247,20 +118,6 @@ const mergeGroup = (
 const SELECT = 'codegraph_select';
 const ran = (jobs) => Object.keys(jobs).filter((id) => jobs[id].result === 'success');
 const skipped = (jobs) => Object.keys(jobs).filter((id) => jobs[id].result === 'skipped');
-
-test('the expression evaluator follows GitHub semantics for the operators the workflows use', () => {
-  const context = { github: { event_name: 'merge_group', event: {} }, needs: {} };
-  const run = (source) => evaluate(source, context, functionsFor({}));
-  assert.equal(run("github.event_name == 'MERGE_GROUP'"), true);
-  assert.equal(run('github.event.pull_request.number || github.event_name'), 'merge_group');
-  assert.equal(run('github.event.pull_request != null'), false);
-  assert.equal(run("github.event.action == 'synchronize' && 'narrowed' || 'full'"), 'full');
-  assert.equal(run("needs.codegraph_select.outputs.api_run != 'false'"), true);
-  assert.equal(run("!cancelled() && (github.event_name == 'push' || always())"), true);
-  assert.equal(run(`contains(fromJSON('["OWNER", "MEMBER"]'), 'member')`), true);
-  assert.throws(() => run('github.event_name ==='));
-  assert.throws(() => run("startsWith(github.ref, 'refs/')"));
-});
 
 test('every gated workflow starts for a merge group and closes in one gate over all of its jobs', () => {
   for (const suite of SUITES) {
@@ -418,7 +275,7 @@ test('merge group runs never share a concurrency group across queue entries', ()
   for (const file of files) {
     const { concurrency, name } = workflows[file];
     const group = (github) =>
-      interpolate(concurrency.group, { github: { workflow: name, ...github } }, functionsFor({}));
+      interpolate(concurrency.group, { github: { workflow: name, ...github } }, statusOf({}));
     assert.notEqual(group(first), group(second), file);
     assert.equal(group(first), group(mergeGroup()), `${file} re-created group`);
     for (const github of [first, second]) {
