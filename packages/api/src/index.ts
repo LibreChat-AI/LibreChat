@@ -158,6 +158,9 @@ export * from './mcp/approval';
 
 export { createChannelStorageConfigReader } from './channels/config';
 export * from './channels/service';
+export * from './channels/workspaces';
+export * from './channels/workspaceHttp';
+export * from './channels/workspaceRuntime';
 export * from './channels/applicationPolicy';
 export * from './channels/applicationAuthority';
 export * from './channels/runs';

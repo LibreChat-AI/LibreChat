@@ -245,6 +245,11 @@ describe('createEndpointsConfigService', () => {
                 lifecycleReactions: true,
                 signatureToleranceSeconds: 60,
                 socketReconnectDelayMs: 100,
+                slackApp: {
+                  enabled: true,
+                  clientSecret: 'private-slack-client-secret',
+                  signingSecret: 'private-slack-signing-secret',
+                },
               };
         const deps = createMockDeps({
           loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
@@ -261,6 +266,7 @@ describe('createEndpointsConfigService', () => {
         expect(result?.[EModelEndpoint.agents]).toEqual(
           expect.objectContaining({ channels: { enabled: enabled === true } }),
         );
+        expect(JSON.stringify(result)).not.toContain('private-slack');
       },
     );
 

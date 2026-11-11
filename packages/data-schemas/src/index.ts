@@ -11,6 +11,18 @@ export * from './crypto';
 export * from './schema';
 export * from './utils';
 export { createModels } from './models';
+export { createSlackWorkspaceStorage } from './methods/slackWorkspace';
+export type {
+  SlackWorkspaceStorage,
+  SlackWorkspaceMetadata,
+  SlackWorkspaceInstallResult,
+} from './methods/slackWorkspace';
+export type {
+  SlackWorkspaceRecord,
+  SlackInstallRecord,
+  SlackClaimedInstall,
+  SlackInstallGeneration,
+} from './models/slackWorkspace';
 export { createResponseStorage, sameResponseTerminalReceipt } from './methods/response';
 export type {
   ResponseOwner,

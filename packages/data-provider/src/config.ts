@@ -190,6 +190,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'registration.oauthStateTtlMs': 'startup',
   'endpoints.agents.subagentActivity': 'startup',
   'endpoints.agents.eventDriven': 'startup',
+  'endpoints.agents.channels.slackApp': 'operator',
   'endpoints.agents.backgroundTasks.shutdownInterruptGraceMs': 'startup',
   'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
   'endpoints.agents.backgroundTasks.completionReceiptBatching': 'startup',
@@ -1296,6 +1297,26 @@ export const channelConfigSchema = channelStorageConfigSchema.extend({
   ),
   socketReconnectDelayMs: channelGatewayPolicySchema.shape.socketReconnectDelayMs,
   gatewayUrl: z.string().url().optional(),
+  /** Operator enablement and OAuth limits; app credentials are managed by organization admins. */
+  slackApp: z
+    .object({
+      enabled: z.boolean().default(false),
+      flowLifetimeMs: z
+        .number()
+        .int()
+        .min(60_000)
+        .max(60 * 60_000)
+        .default(10 * 60_000),
+      requestTimeoutMs: z.number().int().min(1000).max(30_000).default(10_000),
+      maxResponseBytes: z
+        .number()
+        .int()
+        .min(1024)
+        .max(256 * 1024)
+        .default(64 * 1024),
+    })
+    .strict()
+    .optional(),
   ticketLifetimeMs: z
     .number()
     .int()
