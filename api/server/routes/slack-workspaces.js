@@ -22,6 +22,7 @@ router.post(
   requireSameOrigin,
   handlers.removeApp,
 );
+router.get('/workspaces/:workspaceId', requireJwtAuth, handlers.get);
 router.delete('/workspaces/attempts/:flowId', requireJwtAuth, requireSameOrigin, handlers.cancel);
 router.post(
   '/workspaces/connect',

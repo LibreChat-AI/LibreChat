@@ -1,4 +1,8 @@
 export enum QueryKeys {
+  slackApps = 'slackApps',
+  slackWorkspaces = 'slackWorkspaces',
+  agentChannelWorkspaceRoutes = 'agentChannelWorkspaceRoutes',
+  agentChannelWorkspaceTarget = 'agentChannelWorkspaceTarget',
   messages = 'messages',
   /* Full content of one tool-call part, fetched when its preview is not enough */
   toolCallPart = 'toolCallPart',
@@ -142,6 +146,9 @@ export const DynamicQueryKeys = {
 } as const;
 
 export enum MutationKeys {
+  slackApps = 'slackApps',
+  slackWorkspaces = 'slackWorkspaces',
+  agentChannelWorkspaceRoutes = 'agentChannelWorkspaceRoutes',
   approveCodeSetup = 'approveCodeSetup',
   denyCodeSetup = 'denyCodeSetup',
   responseReviewDecision = 'responseReviewDecision',

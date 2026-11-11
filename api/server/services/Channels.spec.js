@@ -4,6 +4,7 @@ const mockConfig = jest.fn();
 const mockDb = {
   findUser: jest.fn(),
   getAgentChannel: jest.fn(),
+  getActiveAgentChannel: jest.fn(),
   getAgentChannelMetadata: jest.fn(),
   getAgent: jest.fn(),
   getRoleByName: jest.fn(),
@@ -81,6 +82,7 @@ function channel(tenantId) {
     slack: { teamId: 'T1' },
   };
   mockDb.getAgentChannel.mockResolvedValue(value);
+  mockDb.getActiveAgentChannel.mockResolvedValue(value);
   mockDb.findUser.mockResolvedValue({ _id: 'owner', role: 'USER', tenantId });
   return value;
 }
@@ -90,7 +92,7 @@ const call = (tenantId = '_') =>
     .auth(serviceToken, { type: 'bearer' })
     .set('x-tenant-id', tenantId);
 
-it.each(['tenant-a', undefined])(
+it.each(['tenant-a', 'tenant.with.periods', undefined])(
   'establishes canonical application tenant %s before effective owner policy',
   async (tenantId) => {
     channel(tenantId);

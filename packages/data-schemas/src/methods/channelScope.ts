@@ -6,6 +6,8 @@ import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createChannelScopeModel } from '~/models/channelScope';
 import { touchChannelOwnerAdmission } from './channelOwner';
+import { touchSlackWorkspace } from './slackWorkspaceScope';
+import { createSlackRouteModel } from '~/models/slackRoute';
 import { createAgentChannelModel } from '~/models/channel';
 
 export function assertChannelTenant(tenantId: string | undefined): void {
@@ -105,10 +107,8 @@ export async function touchChannelAuthority(
           ? { $in: [null, authority.channelRevision] }
           : authority.channelRevision,
       status: 'active',
-      ...(authority.teamId === undefined ? {} : { 'slack.teamId': authority.teamId }),
-      ...(authority.appId === undefined ? {} : { 'slack.appId': authority.appId }),
     })
-    .select('createdBy tenantId credentialMode')
+    .select('createdBy tenantId credentialMode workspaceId slack')
     .session(session)
     .lean();
   if (
@@ -121,6 +121,26 @@ export async function touchChannelAuthority(
       },
       session,
     ))
+  )
+    return false;
+  if (parent.workspaceId) {
+    if (
+      parent.credentialMode !== 'per_user' ||
+      !(await touchSlackWorkspace(
+        mongoose,
+        {
+          workspaceId: parent.workspaceId,
+          tenantId: parent.tenantId,
+          teamId: authority.teamId,
+          appId: authority.appId,
+        },
+        session,
+      ))
+    )
+      return false;
+  } else if (
+    (authority.teamId !== undefined && parent.slack?.teamId !== authority.teamId) ||
+    (authority.appId !== undefined && parent.slack?.appId !== authority.appId)
   )
     return false;
   const principal = authority.principal;
@@ -217,6 +237,10 @@ export async function retireAgentChannel(
         .lean();
       if (!record) return null;
       await closeChannelScope(mongoose, tenantId, channelId, session);
+      await createSlackRouteModel(mongoose).deleteMany(
+        { tenantId: tenantId || { $in: [null, ''] }, channelId },
+        { session },
+      );
       return record;
     });
     if (!deleting) return null;

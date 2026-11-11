@@ -10,7 +10,8 @@ import type { ChannelBundle, Lease, Logger, ResponseGrant } from './types';
 import type { GatewayConfig } from './config';
 import { durableSlackMessage, makeSlackPlan, supportedRenderer } from './render';
 import { SlackClient, SlackWriteError } from './slack';
-import { ChannelClient, ServiceError } from './client';
+import { ServiceError } from './transport';
+import { ChannelClient } from './client';
 
 const progressRenderer = 'slack-progress-v1';
 const terminalStates = new Set(['delivered', 'failed', 'cancelled']);
@@ -102,6 +103,27 @@ function canYield(run: ChannelRunView): void {
   throw new YieldRun();
 }
 
+/** Bounded diagnostics distinguish recovery causes without retaining remote error text. */
+export function recoveryEvent(error: unknown): string {
+  if (error instanceof ServiceError) {
+    if (error.code === 'transactions_unavailable') return 'channel_storage_transactions_required';
+    if (error.status === 401) return 'channel_service_authentication_failed';
+    if (error.status === 403) return 'channel_service_authority_unavailable';
+    if (error.status === 404) return 'channel_binding_unavailable';
+    if (error.status === 409) return 'channel_state_requires_reconciliation';
+    if (error.status === 429) return 'channel_service_rate_limited';
+    if ([500, 502, 503, 504].includes(error.status)) return 'channel_service_unavailable';
+  }
+  if (error instanceof SlackWriteError) {
+    if (error.outcome === 'permanent') return 'slack_write_rejected';
+    if (error.outcome === 'retryable') return 'slack_write_deferred';
+    return 'slack_write_outcome_unconfirmed';
+  }
+  if (error instanceof DOMException && error.name === 'TimeoutError')
+    return 'channel_operation_timed_out';
+  return 'channel_run_held_for_recovery';
+}
+
 export class ChannelWorker {
   private readonly owner = randomBytes(16).toString('hex');
   constructor(
@@ -113,22 +135,11 @@ export class ChannelWorker {
 
   async run(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
-      let lease: Lease | null = null;
       try {
-        lease = await this.client.claim(this.owner, signal);
-        if (lease) {
-          if (lease.fence.owner !== this.owner) throw new Error('Claim owner changed');
-          await this.process(lease, signal);
-        }
+        await this.tick(signal);
       } catch (error) {
         if (signal.aborted) break;
-        if (error instanceof YieldRun && lease) {
-          try {
-            await this.client.yield(lease.fence, signal);
-          } catch {
-            this.log.warn('channel_yield_unconfirmed');
-          }
-        } else this.log.warn('channel_run_held_for_recovery');
+        this.log.warn(recoveryEvent(error));
       }
       try {
         await delay(1000, undefined, { signal });
@@ -136,6 +147,25 @@ export class ChannelWorker {
         break;
       }
     }
+  }
+
+  /** One durable projection turn, shared by bound loops and the bounded workspace pool. */
+  async tick(signal: AbortSignal): Promise<boolean> {
+    signal.throwIfAborted();
+    const lease = await this.client.claim(this.owner, signal);
+    if (!lease) return false;
+    if (lease.fence.owner !== this.owner) throw new Error('Claim owner changed');
+    try {
+      await this.process(lease, signal);
+    } catch (error) {
+      if (!(error instanceof YieldRun)) throw error;
+      try {
+        await this.client.yield(lease.fence, signal);
+      } catch {
+        this.log.warn('channel_yield_unconfirmed');
+      }
+    }
+    return true;
   }
 
   async process(lease: Lease, parent: AbortSignal): Promise<void> {

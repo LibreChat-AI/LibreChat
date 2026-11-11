@@ -108,7 +108,7 @@ export function resolveSlackWorkspaceApp(
   };
 }
 
-async function readGrant(response: Response, limit: number): Promise<unknown> {
+export async function readSlackJSON(response: Response, limit: number): Promise<unknown> {
   const reader = response.body?.getReader();
   if (!reader) throw new Error('Slack returned an empty OAuth response');
   const chunks: Uint8Array[] = [];
@@ -267,7 +267,7 @@ export function createSlackWorkspaceService(deps: {
         signal: AbortSignal.timeout(app.requestTimeoutMs),
       });
       if (!response.ok) throw new Error('Slack OAuth service unavailable');
-      const grant = grantSchema.safeParse(await readGrant(response, app.maxResponseBytes));
+      const grant = grantSchema.safeParse(await readSlackJSON(response, app.maxResponseBytes));
       if (!grant.success || grant.data.app_id !== app.appId) return failure('slack_refused');
       if (
         grant.data.is_enterprise_install ||
@@ -308,9 +308,12 @@ export function createSlackWorkspaceService(deps: {
     async disconnect(
       principal: SlackWorkspacePrincipal,
       workspaceId: string,
+      expectedRevision: string,
     ): Promise<Result<boolean>> {
       if (!inScope(principal) || !(await deps.canManage(principal))) return failure('forbidden');
-      return { ok: true, value: await deps.storage.disconnect(workspaceId) };
+      return (await deps.storage.disconnect(workspaceId, expectedRevision))
+        ? { ok: true, value: true }
+        : failure('workspace_changed');
     },
   };
 }

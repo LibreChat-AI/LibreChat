@@ -10,6 +10,7 @@ import { applyTenantIsolation } from './plugins/tenantIsolation';
 export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision'> {
   tenantId: string;
   agentId: string;
+  workspaceId?: string;
   laneId: string;
   principal: ChannelRunPrincipal;
   payloadHash: string;
@@ -91,6 +92,7 @@ export function createChannelRunModel(
       tenantId: { type: String, required: true },
       channelId: { type: String, required: true },
       agentId: { type: String, required: true },
+      workspaceId: String,
       laneId: { type: String, required: true },
       runId: { type: String, required: true },
       state: {
@@ -158,6 +160,21 @@ export function createChannelRunModel(
     { name: 'channel_run_fair_claim' },
   );
   schema.index({ state: 1, _id: 1 });
+  schema.index(
+    { state: 1, claimCheckedAt: 1, receivedAt: 1, sequence: 1, leaseExpiresAt: 1 },
+    {
+      name: 'channel_run_shared_discovery',
+      partialFilterExpression: { workspaceId: { $exists: true } },
+    },
+  );
+  schema.index({
+    workspaceId: 1,
+    'admission.actor.externalUserId': 1,
+    'admission.externalThreadKey': 1,
+    receivedAt: -1,
+  });
+  schema.index({ workspaceId: 1, 'receipts.externalMessageKey': 1 });
+  schema.index({ workspaceId: 1, 'progress.externalMessageKey': 1 });
   schema.index({ tenantId: 1, channelId: 1, 'receipts.externalMessageKey': 1 });
   applyTenantIsolation(schema);
   return mongoose.models.ChannelRun ?? mongoose.model<ChannelRunRecord>('ChannelRun', schema);
