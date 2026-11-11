@@ -1,12 +1,14 @@
 # Pull request quality reports
 
-Automatic pull request runs report change risk for added or edited functions in
+PR commands and manual runs report change risk for added or edited functions in
 `packages/data-schemas`, `packages/api`, and the backend `api` folder.
 Mutation testing runs only for added or edited functions in `packages/data-schemas`.
-Only workspaces with changed source get report jobs.
+Only workspaces with changed source get report jobs. PR updates do not start source
+reports. Changes to the quality tooling still run its own verification tests automatically.
 Low scores do not fail a check. Failed tests, invalid reports, and tool errors do.
 Mutation jobs have a 240-minute limit. Change-risk jobs have a 45-minute limit.
-A timeout is a failed run, not a quality score.
+A workflow timeout is a failed run, not a quality score. A Stryker `Timeout` result
+means a mutated program timed out; Stryker counts that mutation as detected.
 
 1. Mutation testing uses Stryker 10.1.1. It mutates only added or edited functions.
    It selects related Jest tests and uses per-test coverage to reduce repeated work.
@@ -85,14 +87,19 @@ node scripts/quality/run.mts --base origin/dev --workspace data-schemas --check 
 node --test scripts/crap.test.mts scripts/quality/*.test.mts
 ```
 
-The automatic scope is `all`: change risk for `data-schemas`, `api` (`packages/api`),
+The default command scope is `all`: change risk for `data-schemas`, `api` (`packages/api`),
 and `server` (the backend `api` folder). A mixed change can run three risk jobs and
 four data-schemas mutation shards. API-only or backend-only changes run no mutation jobs.
 Manual `workflow_dispatch` runs can choose `risk`, `mutation`, or `both`, use `all`
 or a comma-separated scope list, and set static mutants on or off. Mutation testing
 stays limited to data-schemas in all cases. The selection summary
 lists risk workspaces, mutation workspaces, and workspaces outside the scope.
-Related Jest tests supply coverage for the changed files. They can exercise unchanged
+Related Jest tests supply coverage for the changed files. Coverage uses each
+workspace's existing worker count and memory recycling. API Redis integration
+suites run separately with Redis enabled, using the same groups and serial lanes
+as cache CI. The API report runner provides both the single Redis instance and the
+repository's three-node Redis cluster. Istanbul merges the groups' coverage before
+function scores are calculated. Raw Jest results remain in each group's directory. They can exercise unchanged
 code, but only added or edited functions appear in the risk report.
 
 ## PR commands and merge decision
@@ -114,15 +121,25 @@ Mutation supports only `data-schemas`. A `both` request uses the selected scopes
 for risk and includes mutation only when `data-schemas` is selected.
 Unknown scopes, duplicate options, and invalid values are rejected before work starts.
 
+One accepted request can run per PR. Repeating the same effective command for the
+same commit while it runs returns its existing link. Different valid options cancel
+the previous request before new report jobs start. A finished request can be repeated.
+Validation and the repository write-access check happen before cancellation.
+Invalid commands and unauthorized users leave the current run and gate unchanged.
+Cancellation only targets accepted comment requests from this repository and PR.
+Other PRs, unrelated workflows, tooling verification, and standalone manual runs
+are not cancelled by a request.
+
 The bot records the exact PR head and base commits when it accepts a request.
 One bot comment shows the requested checks, effective scopes, static option,
 requester, and Actions link. It updates after selection and tooling verification,
 then again when the workflow ends. The final comment lists job outcomes and links
 to report artifacts. Scores and function details stay in those reports and the
 Actions summaries. Mutation logs provide the detailed 30-second progress updates.
-A failed or cancelled workflow is shown as such. A new PR commit marks earlier
-request comments outdated. Re-running an Actions run keeps its original commits
-and options. Post a new command to measure a new commit or use different options.
+A failed or cancelled workflow is shown as such. A new PR commit cancels old-commit work and marks earlier
+request comments outdated. The current request can be rerun with its original
+commit and options. Reruns of superseded requests or older commits are stopped.
+Post a new command to measure the current commit or use different options.
 
 `Quality decision` is a commit status. It waits for an explicit decision on each
 new PR head; it does not keep a runner idle. The latest accepted request for that
@@ -130,15 +147,15 @@ commit owns the status:
 
 4. A selected run clears the gate only after the workflow succeeds. A successful
    empty selection also clears it. Low scores remain advisory.
-5. Failed tests, tool errors, timeouts, cancellations, or incomplete reports keep
+5. Failed tests, tool errors, workflow timeouts, cancellations, or incomplete reports keep
    the gate closed. Retry the run or make a new explicit decision.
-6. `/quality ignore` clears the gate and records who chose to skip the checks.
-   It does not cancel an existing run. An older run finishing cannot replace it.
-7. A new request for the same commit makes the gate wait again. A new commit
-   requires a new request or a new ignore decision. Automatic reports and manual
-   workflow dispatches do not count as explicit comment decisions.
+6. `/quality ignore` cancels active quality work, then clears the gate and records
+   who chose to skip the checks. An older run finishing cannot replace it.
+7. A new accepted run makes the gate wait again. A duplicate active command does
+   not change it. A new commit requires a new request or a new ignore decision.
+   Manual workflow dispatches do not count as explicit comment decisions.
 
-Status publication jobs share one concurrency group per PR. Each reads the latest
+Request admission and status publication share one queued concurrency group per PR. Each reads the latest
 head and decisions before it writes. This prevents an older result from reopening
 the gate after a newer request has made it pending.
 
@@ -152,15 +169,16 @@ Merging this PR into `dev` alone does not activate those triggers. Follow the no
 After live command tests pass, an administrator can add `Quality decision` as a
 required status in the target branch's protection rule or ruleset. Select GitHub
 Actions as its expected source. The status alone does not block merging until that
-rule exists. Keep automatic quality reports enabled until the comment path has
-passed live checks. The activation work remains part of PR #18025; no automatic
-report trigger is removed by this change.
+rule exists. The activation work remains part of PR #18025. Source reports now
+require an explicit command or manual dispatch. Tooling verification remains
+automatic for changes to the quality scripts, workflows, and dependencies.
 
 Live checks must cover a successful selected run, `static=off`, an invalid command,
 a requester without write access, `/quality ignore`, cancellation, a failed test,
 a newer commit during a run, and a rerun of an older commit. Confirm that comments
 update in place and that only the current commit's latest decision clears the gate.
-Keep automatic tooling verification when retiring the automatic report trigger.
+Also confirm that duplicate requests reuse their run and that replacements never
+cancel another PR, unrelated CI, or standalone manual runs.
 
 Rule sources:
 

@@ -37,7 +37,7 @@ interface Job {
   if?: string;
   permissions?: Record<string, string>;
   needs?: string[];
-  concurrency?: { group: string; 'cancel-in-progress': boolean };
+  concurrency?: { group: string; 'cancel-in-progress': boolean; queue?: string };
   outputs?: Record<string, string>;
   strategy?: { matrix: { include?: string; workspace?: string } };
   defaults?: { run: { 'working-directory': string } };
@@ -46,7 +46,7 @@ interface Job {
 interface Workflow {
   'run-name'?: string;
   on: {
-    pull_request?: null;
+    pull_request?: { paths: string[] };
     issue_comment?: { types: string[] };
     workflow_dispatch: { inputs: { base: { default: string }; scope: { default: string } } };
   };
@@ -138,9 +138,10 @@ test('workflow separates tooling, source, installs and artifacts without changin
 });
 
 test('comment publication is trusted and serialized while PR execution stays read-only', (t) => {
-  assert.ok(
-    Object.hasOwn(workflow.on, 'pull_request'),
-    'keep automatic reports until live verification',
+  assert.ok(workflow.on.pull_request?.paths.includes('scripts/quality/**'));
+  assert.equal(
+    workflow.jobs.select.if,
+    "always() && (github.event_name == 'workflow_dispatch' || needs.request.outputs.accepted == 'true')",
   );
   assert.deepEqual(workflow.on.issue_comment?.types, ['created']);
   assert.match(workflow['run-name']!, /Quality PR #\{0\} request \{1\}/);
@@ -153,16 +154,16 @@ test('comment publication is trusted and serialized while PR execution stays rea
     );
     assert.equal(upload?.with?.overwrite, true, 'reruns replace failed artifacts');
   }
-  for (const name of ['request', 'decision', 'progress']) {
+  for (const name of ['request', 'progress']) {
     const job = workflow.jobs[name];
     assert.equal(checkouts(job)[0].with?.ref, '${{ github.sha }}');
     assert.ok(job.steps.every(({ run }) => !run?.includes('npm')));
     assert.equal(job.permissions?.['pull-requests'], 'write');
-    if (name !== 'request') {
-      assert.equal(job.permissions?.statuses, 'write');
-      assert.equal(job.concurrency?.group, 'quality-decision-${{ github.event.issue.number }}');
-      assert.equal(job.concurrency?.['cancel-in-progress'], false);
-    }
+    assert.equal(job.permissions?.statuses, 'write');
+    assert.equal(job.permissions?.actions, 'write');
+    assert.equal(job.concurrency?.group, 'quality-decision-${{ github.event.issue.number }}');
+    assert.equal(job.concurrency?.['cancel-in-progress'], false);
+    assert.equal(job.concurrency?.queue, 'max');
   }
   const publisher = yaml.load(
     readFileSync(new URL('../../.github/workflows/quality-decision.yml', import.meta.url), 'utf8'),
@@ -173,6 +174,8 @@ test('comment publication is trusted and serialized while PR execution stays rea
     'quality-decision-${{ needs.resolve.outputs.pr }}',
   );
   assert.equal(publisher.jobs.publish.concurrency?.['cancel-in-progress'], false);
+  assert.equal(publisher.jobs.publish.concurrency?.queue, 'max');
+  assert.equal(publisher.permissions.actions, 'write');
   assert.ok(
     publisher.jobs.publish.steps.every(
       ({ run, uses }) => !run?.includes('npm') && !uses?.startsWith('actions/download-artifact'),
@@ -313,7 +316,12 @@ for (const olderHead of [true, false]) {
       `${record} require(${JSON.stringify(require.resolve('jest/bin/jest'))});`,
     );
     write(source, 'node_modules/head-only/index.js', 'module.exports = 2;');
-    for (const dependency of ['jest-cli', 'jest-config', 'jest-environment-node']) {
+    for (const dependency of [
+      'jest-cli',
+      'jest-config',
+      'jest-environment-node',
+      'istanbul-lib-coverage',
+    ]) {
       symlinkSync(
         dirname(createRequire(require.resolve('jest')).resolve(`${dependency}/package.json`)),
         join(source, 'node_modules', dependency),

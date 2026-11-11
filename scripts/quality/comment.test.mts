@@ -49,6 +49,7 @@ const bot = (body: string, id = 100): Comment => ({
 });
 const run = (status = 'completed', conclusion: string | null = 'success') => ({
   id: 55,
+  repository: { full_name: context.repository },
   run_attempt: 1,
   event: 'issue_comment',
   path: '.github/workflows/change-quality.yml',
@@ -59,6 +60,7 @@ const run = (status = 'completed', conclusion: string | null = 'success') => ({
 
 class GitHub implements API {
   permission = 'write';
+  runs = new Map<number, ReturnType<typeof run>>([[55, run()]]);
   head = head;
   state = 'open';
   comments: Comment[] = [];
@@ -91,6 +93,16 @@ class GitHub implements API {
         ...(body as { state: string; description: string }),
       });
       result = {};
+    } else if (method === 'POST' && path.endsWith('/force-cancel')) {
+      const current = this.runs.get(Number(path.split('/')[2]))!;
+      current.status = 'completed';
+      current.conclusion = 'cancelled';
+      result = {};
+    } else if (method === 'GET' && /^actions\/runs\/\d+$/.test(path)) {
+      result = this.runs.get(Number(path.split('/')[2])) ?? {
+        ...run(),
+        id: Number(path.split('/')[2]),
+      };
     } else if (path.includes('/jobs?')) result = { jobs: this.jobs };
     else if (path.includes('/artifacts?')) result = { artifacts: this.artifacts };
     else throw new Error(`Unexpected API call: ${method} ${path}`);
@@ -225,10 +237,9 @@ test('new heads need a fresh decision; old results and ignore decisions are mark
   assert.equal(api.statuses.at(-1)?.state, 'success');
 });
 
-test('reruns reuse the request and original commit; stale attempts cannot overwrite them', async () => {
+test('reruns of the current request preserve its commit; stale attempts cannot overwrite them', async () => {
   const api = new GitHub();
   await accept(api, context, 1, command());
-  api.head = next;
   const second = { ...context, attempt: 2 };
   await accept(api, second, 1, command());
   assert.equal(api.comments.length, 1);
@@ -237,7 +248,7 @@ test('reruns reuse the request and original commit; stale attempts cannot overwr
   assert.equal(readRequest(api.comments[0])?.phase, 'queued');
   await publishRun(api, second, { ...run(), run_attempt: 2 });
   assert.equal(readRequest(api.comments[0])?.phase, 'completed');
-  assert.equal(api.statuses.at(-1)?.state, 'pending');
+  assert.equal(api.statuses.at(-1)?.state, 'success');
 });
 
 test('latest explicit request owns the gate; automatic reports and spoofed records cannot clear it', async () => {
@@ -304,7 +315,7 @@ test('rerunning only failed jobs advances the attempt without reaccepting the co
 test('completion recovers an ignore decision when its status job was cancelled', async () => {
   const api = new GitHub();
   await acceptRequest(api, context, 1, command(10, '/quality ignore'));
-  assert.equal(api.statuses.length, 0);
+  api.statuses = [];
   await publishRun(api, context, run('completed', 'cancelled'));
   assert.equal(api.statuses.at(-1)?.state, 'success');
 });
@@ -333,4 +344,203 @@ test('failed-job reruns show reused successful jobs and the latest retried outco
   assert.match(api.comments[0].body, /job\/88/);
   assert.match(api.comments[0].body, /job\/90/);
   assert.doesNotMatch(api.comments[0].body, /job\/89/);
+});
+
+function running(api: GitHub, value: Request = record, overrides = {}) {
+  api.comments.push(bot(renderRequest(value, context, value.head), 100 + api.comments.length));
+  api.runs.set(value.run, {
+    ...run('in_progress', null),
+    id: value.run,
+    display_title: `Quality PR #${value.pr} request ${value.request}`,
+    ...overrides,
+  });
+}
+const cancellations = (api: GitHub) =>
+  api.calls.filter(({ path }) => path.endsWith('/force-cancel'));
+
+test('a duplicate active command links the existing run without changing its decision', async () => {
+  const api = new GitHub();
+  running(api);
+  const original = api.comments[0].body;
+  const accepted = await acceptRequest(api, { ...context, run: 56 }, 1, command(11));
+  assert.equal(accepted, undefined);
+  assert.equal(api.comments[0].body, original);
+  assert.match(api.comments[1].body, /already running.*actions\/runs\/55/);
+  assert.equal(readRequest(api.comments[1]), undefined);
+  assert.equal(cancellations(api).length, 0);
+  assert.equal(api.statuses.length, 0);
+});
+
+test('different validated options replace the active run only after recording acceptance', async () => {
+  const api = new GitHub();
+  running(api);
+  const accepted = await acceptRequest(
+    api,
+    { ...context, run: 56 },
+    1,
+    command(11, '/quality both scopes=all static=on'),
+  );
+  assert.equal(accepted?.request.staticMutants, true);
+  assert.deepEqual(
+    cancellations(api).map(({ path }) => path),
+    ['actions/runs/55/force-cancel'],
+  );
+  assert.equal(api.runs.get(55)?.status, 'completed');
+  assert.equal(api.statuses.at(-1)?.state, 'pending');
+  const acceptedAt = api.calls.findIndex(
+    ({ method, path }) => method === 'POST' && path === 'issues/1/comments',
+  );
+  const cancelledAt = api.calls.findIndex(({ path }) => path.endsWith('/force-cancel'));
+  assert.ok(acceptedAt < cancelledAt);
+});
+
+test('a finished request can start a fresh run with the same options', async () => {
+  const api = new GitHub();
+  running(api, { ...record, phase: 'completed', conclusion: 'success' }, run());
+  const accepted = await acceptRequest(api, { ...context, run: 56 }, 1, command(11));
+  assert.equal(accepted?.request.run, 56);
+  assert.equal(cancellations(api).length, 0);
+  assert.equal(api.statuses.at(-1)?.state, 'pending');
+});
+
+test('ignore stops accepted quality work before clearing the gate', async () => {
+  const api = new GitHub();
+  running(api);
+  await acceptRequest(api, { ...context, run: 56 }, 1, command(11, '/quality ignore'));
+  assert.equal(cancellations(api).length, 1);
+  const stoppedAt = api.calls.findIndex(({ path }) => path.endsWith('/force-cancel'));
+  const clearedAt = api.calls.findIndex(({ path }) => path.startsWith('statuses/'));
+  assert.ok(stoppedAt < clearedAt);
+  assert.equal(api.statuses.at(-1)?.state, 'success');
+});
+
+test('invalid commands and unauthorized actors cannot disturb an active request', async () => {
+  for (const [permission, body] of [
+    ['read', '/quality ignore'],
+    ['triage', '/quality both static=on'],
+    ['write', '/quality mutation scopes=server'],
+    ['write', '/quality both static=off static=on'],
+  ]) {
+    const api = new GitHub();
+    running(api);
+    api.permission = permission;
+    const original = api.comments[0].body;
+    assert.equal(
+      await acceptRequest(api, { ...context, run: 56 }, 1, command(11, body)),
+      undefined,
+    );
+    assert.equal(api.comments[0].body, original);
+    assert.equal(api.runs.get(55)?.status, 'in_progress');
+    assert.equal(cancellations(api).length, 0);
+    assert.equal(api.statuses.length, 0);
+  }
+});
+
+test('cancellation excludes other repositories, PRs, workflows and standalone manual runs', async () => {
+  for (const overrides of [
+    { repository: { full_name: 'other/repo' } },
+    { display_title: 'Quality PR #2 request 10' },
+    { display_title: 'Quality PR #1 request 999' },
+    { event: 'workflow_dispatch' },
+    { event: 'pull_request' },
+    { path: '.github/workflows/unrelated.yml' },
+    { id: 999 },
+  ]) {
+    const api = new GitHub();
+    running(api, record, overrides);
+    await acceptRequest(api, { ...context, run: 56 }, 1, command(11, '/quality ignore'));
+    assert.equal(cancellations(api).length, 0, JSON.stringify(overrides));
+  }
+  const api = new GitHub();
+  running(api, { ...record, pr: 2 });
+  await acceptRequest(api, { ...context, run: 56 }, 1, command(11, '/quality ignore'));
+  assert.equal(cancellations(api).length, 0);
+});
+
+test('a new head cancels old work and needs a fresh decision', async () => {
+  const api = new GitHub();
+  running(api);
+  api.head = next;
+  await refreshPull(api, { ...context, run: 99 }, 1);
+  assert.equal(cancellations(api).length, 1);
+  assert.match(api.comments[0].body, /Outdated:/);
+  assert.equal(api.statuses.at(-1)?.sha, next);
+  assert.equal(api.statuses.at(-1)?.state, 'pending');
+  await assert.rejects(acceptRequest(api, { ...context, attempt: 2 }, 1, command()), /superseded/);
+});
+
+test('an old Actions rerun cannot replace a newer accepted ignore', async () => {
+  const api = new GitHub();
+  running(api);
+  api.comments.push(
+    bot(
+      renderRequest(
+        { ...record, request: 11, run: 56, check: 'ignore', scopes: [], phase: 'ignored' },
+        context,
+        head,
+      ),
+      101,
+    ),
+  );
+  await publishRun(api, { ...context, run: 99 }, { ...run('in_progress', null), run_attempt: 2 });
+  assert.equal(cancellations(api).length, 1);
+  assert.equal(api.statuses.at(-1)?.state, 'success');
+  assert.equal(readRequest(api.comments[0])?.conclusion, 'cancelled');
+});
+
+test('delayed older comments cannot replace a newer decision', async () => {
+  const api = new GitHub();
+  running(api, { ...record, request: 12 });
+  await assert.rejects(
+    acceptRequest(api, { ...context, run: 56 }, 1, command(11, '/quality ignore')),
+    /superseded/,
+  );
+  assert.equal(cancellations(api).length, 0);
+  assert.equal(api.statuses.length, 0);
+});
+
+test('an older matching run does not hide different options in the current request', async () => {
+  const api = new GitHub();
+  running(api);
+  running(api, { ...record, request: 11, run: 56, staticMutants: true });
+  const accepted = await acceptRequest(api, { ...context, run: 57 }, 1, command(12));
+  assert.equal(accepted?.request.run, 57);
+  assert.deepEqual(
+    cancellations(api).map(({ path }) => path),
+    ['actions/runs/55/force-cancel', 'actions/runs/56/force-cancel'],
+  );
+});
+
+test('failed cancellation blocks the replacement instead of starting duplicate work', async () => {
+  const api = new GitHub();
+  running(api);
+  const request = api.request.bind(api);
+  api.request = async <T,>(method: string, path: string, body?: object): Promise<T> => {
+    if (path.endsWith('/force-cancel')) throw new Error('Cancellation unavailable');
+    return request<T>(method, path, body);
+  };
+  await assert.rejects(
+    acceptRequest(api, { ...context, run: 56 }, 1, command(11, '/quality both static=on')),
+    /Cancellation unavailable/,
+  );
+  assert.equal(api.runs.get(55)?.status, 'in_progress');
+  assert.equal(api.statuses.at(-1)?.state, 'pending');
+});
+
+test('a head change during replacement prevents old-head report jobs from starting', async () => {
+  const api = new GitHub();
+  running(api);
+  const request = api.request.bind(api);
+  api.request = async <T,>(method: string, path: string, body?: object): Promise<T> => {
+    const response = await request<T>(method, path, body);
+    if (path.endsWith('/force-cancel')) api.head = next;
+    return response;
+  };
+  await assert.rejects(
+    acceptRequest(api, { ...context, run: 56 }, 1, command(11, '/quality both static=on')),
+    /PR head changed/,
+  );
+  await refreshPull(api, { ...context, run: 99 }, 1);
+  assert.equal(api.statuses.at(-1)?.sha, next);
+  assert.equal(api.statuses.at(-1)?.state, 'pending');
 });

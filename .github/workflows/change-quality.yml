@@ -4,6 +4,13 @@ run-name: >-
 
 on:
   pull_request:
+    paths:
+      - 'scripts/quality/**'
+      - 'scripts/crap*'
+      - '.github/workflows/change-quality.yml'
+      - '.github/workflows/quality-decision.yml'
+      - 'package.json'
+      - 'package-lock.json'
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -41,6 +48,10 @@ env:
 jobs:
   request:
     name: Accept quality request
+    concurrency:
+      group: quality-decision-${{ github.event.issue.number }}
+      cancel-in-progress: false
+      queue: max
     if: >-
       github.event_name == 'issue_comment' && github.event.issue.pull_request &&
       startsWith(github.event.comment.body, '/quality') && github.event.comment.user.type != 'Bot'
@@ -49,8 +60,9 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      actions: write
+      statuses: write
     outputs:
-      decision: ${{ steps.request.outputs.decision }}
       accepted: ${{ steps.request.outputs.accepted }}
       head: ${{ steps.request.outputs.head }}
       base: ${{ steps.request.outputs.base }}
@@ -70,33 +82,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/quality/comment.mts request
-
-  decision:
-    name: Record quality decision
-    needs: [request]
-    if: needs.request.outputs.decision == 'true'
-    concurrency:
-      group: quality-decision-${{ github.event.issue.number }}
-      cancel-in-progress: false
-      queue: max
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: write
-      statuses: write
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          sparse-checkout: scripts/quality
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '24.22.1'
-      - env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/quality/comment.mts decision
 
   verify:
     needs: [request]
@@ -124,7 +109,7 @@ jobs:
 
   select:
     needs: [request]
-    if: always() && (github.event_name != 'issue_comment' || needs.request.outputs.accepted == 'true')
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.request.outputs.accepted == 'true')
     env:
       QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}
       QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
@@ -198,6 +183,22 @@ jobs:
           ref: ${{ github.sha }}
           path: tooling
           persist-credentials: false
+      - name: Start Redis cluster for API coverage
+        if: matrix.workspace == 'api' && matrix.task.check == 'risk'
+        working-directory: tooling/redis-config
+        timeout-minutes: 5
+        run: |
+          docker run --detach --network host --name quality-redis-cluster \
+            --volume "$PWD:/cluster" --workdir /cluster redis:7 \
+            bash -c 'bash start-cluster.sh && tail -f /dev/null'
+          for attempt in $(seq 1 30); do
+            if docker exec quality-redis-cluster redis-cli -p 7001 cluster info | grep -q 'cluster_state:ok'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs quality-redis-cluster
+          exit 1
       - uses: actions/setup-node@v5
         with:
           node-version: '24.22.1'
@@ -239,6 +240,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
           overwrite: true
+
+      - name: Stop Redis cluster
+        if: always() && matrix.workspace == 'api' && matrix.task.check == 'risk'
+        run: docker rm -f quality-redis-cluster || true
 
   mutation-summary:
     name: Mutation report (${{ matrix.workspace }})
@@ -295,7 +300,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      actions: read
+      actions: write
       pull-requests: write
       statuses: write
     steps:

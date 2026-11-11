@@ -3,18 +3,11 @@ import { createRequire } from 'node:module';
 import { resolve, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Stryker } from '@stryker-mutator/core';
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 import { mutationSelection, riskMarkdown, riskReport } from './risk.mts';
 import { changes, git, WORKSPACES, workspaceFor } from './changes.mts';
-import { coverageArgs } from './jest.mts';
+import { runCoverage } from './jest.mts';
 import { assertMutants, mutantKey, mutationPatterns, planShards } from './shards.mts';
 
 const { values } = parseArgs({
@@ -97,25 +90,24 @@ if (values.check === 'risk') {
     throw new Error('Invalid Jest test selection');
   }
   writeFileSync(`${output}/selected-tests.json`, JSON.stringify(tests, null, 2));
-  const result = tests.length
-    ? spawnSync(
-        process.execPath,
-        [jestBin, ...coverageArgs(workspace.config, localFiles, output, tests)],
-        { cwd: workspace.path, stdio: 'inherit', env },
-      )
-    : { error: undefined, status: 0, signal: null };
-  if (result.error || result.status !== 0) {
+  try {
+    runCoverage({
+      workspace: workspace.name,
+      config: workspace.config,
+      cwd: workspace.path,
+      jestBin,
+      files: localFiles,
+      tests,
+      output,
+      env,
+    });
+  } catch (error) {
     summary(
       `## ${workspace.name}: change risk\n\nCoverage failed. Scores are unavailable. See the test log.\n`,
     );
-    throw result.error ?? new Error(`Jest exited with ${result.status ?? result.signal}`);
+    throw error;
   }
   const coverageFile = `${output}/coverage-final.json`;
-  if (!existsSync(coverageFile)) {
-    // Jest produces no coverage file when no test matches. Keep the lack of evidence explicit.
-    if (tests.length !== 0) throw new Error('Jest did not produce coverage');
-    writeFileSync(coverageFile, '{}');
-  }
   const report = riskReport(coverageFile, files, selection.base);
   writeFileSync(
     `${output}/risk.json`,
