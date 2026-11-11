@@ -360,7 +360,7 @@ describe('ModelPanel', () => {
     );
 
     expect(getByRole('alert')).toHaveTextContent('com_error_models_not_loaded');
-    expect(queryByTestId('com_ui_model-placeholder')).toHaveTextContent('com_ui_select_model');
+    expect(queryByTestId('com_ui_model-placeholder')).toHaveTextContent('com_agents_select_model');
     expect(getByTestId('com_ui_provider-custom')).toBeEnabled();
   });
 

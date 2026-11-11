@@ -101,7 +101,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({
   return (
     <div
       ref={containerRef}
-      className="border-border-inset relative w-full overflow-hidden rounded-xl border text-xs"
+      className="border-border-inset theme-chrome-quiet:border-2 theme-chrome-quiet:border-surface-code theme-chrome-quiet:bg-surface-code relative w-full overflow-hidden rounded-xl border text-xs"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onFocus={handleFocus}

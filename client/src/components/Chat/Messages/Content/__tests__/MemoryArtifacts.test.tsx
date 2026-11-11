@@ -162,7 +162,7 @@ describe('MemoryArtifacts', () => {
       render(<MemoryArtifacts attachments={attachments} />);
 
       const button = screen.getByRole('button');
-      expect(button.parentElement).toHaveClass('my-1', 'h-5');
+      expect(button.parentElement).toHaveClass('my-1.5', 'h-5');
       expect(button).toHaveClass('group/disclosure');
 
       fireEvent.click(button);

@@ -152,6 +152,7 @@ const CreatePromptForm = ({
                     className={cn(
                       'text-text-secondary peer-focus:text-text-primary pointer-events-none absolute inset-s-3 -top-1 origin-[0] translate-y-3 scale-100 rounded px-1 text-base transition-transform duration-200 peer-placeholder-shown:translate-y-3 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-2 peer-[:not(:placeholder-shown)]:scale-75 rtl:origin-right',
                       labelBgClassName,
+                      'theme-field-fill:bg-field-fill',
                     )}
                   >
                     {localize('com_ui_prompt_name')}*

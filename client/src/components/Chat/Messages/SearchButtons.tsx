@@ -61,13 +61,13 @@ export default function SearchButtons({ message }: { message: TMessage }) {
       <button
         type="button"
         className={cn(
-          buttonVariants({ variant: 'ghost', size: 'xs' }),
-          'text-text-secondary hover:text-text-primary max-w-full min-w-0 gap-1.5 font-normal',
+          buttonVariants({ variant: 'message-action' }),
+          'max-w-full min-w-0 gap-1.5 text-sm font-normal',
         )}
         onClick={clickHandler}
         title={localize('com_ui_go_to_conversation')}
       >
-        <Link className="size-3.5 shrink-0" aria-hidden="true" />
+        <Link className="size-4 shrink-0" aria-hidden="true" />
         <span className="truncate">{message.title}</span>
       </button>
     </div>
