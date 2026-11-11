@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { NEW_CHAT_PATH, selectModelSpec } from '../helpers';
+import { expect, test } from '../fixtures';
 import { openPanel } from './panels';
 
 const PROVIDER = 'Mock Provider A';

@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import { FileSources } from 'librechat-data-provider';
 import type {
   TFile,
@@ -10,6 +9,7 @@ import type { Page, Locator } from '@playwright/test';
 import type { AgentSummary } from '../agents.helpers';
 import { getAccessToken, requestJson, uniqueName } from '../helpers';
 import { cleanupAgent } from '../agents.helpers';
+import { expect, test } from '../fixtures';
 import { openPanel } from './panels';
 
 async function seedSchedules(page: Page, count: number) {

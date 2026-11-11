@@ -1,7 +1,7 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
 import { NEW_CHAT_PATH } from '../helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * The colors these tests read now live in `packages/client/src/theme/tokens.css` as

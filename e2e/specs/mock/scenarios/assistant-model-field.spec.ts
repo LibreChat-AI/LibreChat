@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { getAccessToken, requestJson } from '../helpers';
+import { expect, test } from '../fixtures';
 import { openSidebar } from './sidebar';
 
 /**

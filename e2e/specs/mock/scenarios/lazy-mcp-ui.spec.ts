@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import type { SeedMessage } from '../db';
 import {
@@ -18,6 +17,7 @@ import {
   deleteMessagesByConversation,
 } from '../db';
 import { getE2EUser } from '../../../setup/user';
+import { expect, test } from '../fixtures';
 
 /**
  * The legacy MCP UI renderer, the App Bridge and the export helpers load on demand, each in a

@@ -2,7 +2,6 @@ import { UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import mongoose from 'mongoose';
-import { expect, test } from '@playwright/test';
 import { createMethods, createModels } from '@librechat/data-schemas';
 import { Constants } from 'librechat-data-provider';
 import type { TMarkConversationUnreadResponse as MutationResult } from 'librechat-data-provider';
@@ -18,6 +17,7 @@ import {
 } from '../db';
 import { getAccessToken, requestJson } from '../helpers';
 import { openConversationMenu, openSidebar } from './sidebar';
+import { expect, test } from '../fixtures';
 
 type ReadState = Pick<
   IConversation,

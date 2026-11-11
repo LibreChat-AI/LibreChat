@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { CodeSetupAttempt } from 'librechat-data-provider';
 import type { Page, Route } from '@playwright/test';
+import { expect, test } from '../fixtures';
 
 /**
  * Ordinary 2FA completes in the auth context. Safe destinations survive an unavailable store

@@ -121,6 +121,17 @@ done
 node .github/scripts/playwright-shards.mjs record --out e2e/timings.mock.json /tmp/e2e-reports/*
 ```
 
+## Route handlers that fetch
+
+A mock spec whose route handler calls `route.fetch()` takes `test` and `expect` from
+`e2e/specs/mock/fixtures.ts` instead of `@playwright/test`. Closing a browser context disposes the
+responses its handlers fetched, so a handler the app triggered just before the test returned
+throws `Response has been disposed` and fails a test that had already passed, which
+`failOnFlakyTests` turns into a failed shard. The fixture's `context` detaches the routes on the
+context and its pages before Playwright closes it, and what a detached handler throws afterwards
+is ignored. A context the spec opens itself with `browser.newContext()` closes through
+`closeContext(context)` from the same module.
+
 ## Property-based browser testing
 
 Bombadil explores randomized sequences across the core chat loop, message branches,

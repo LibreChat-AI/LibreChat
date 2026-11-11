@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { getE2EUser } from '../../../setup/user';
@@ -18,6 +17,7 @@ import {
   sendMessageAndWaitForCompletion,
 } from '../helpers';
 import { openConversationMenu, openSidebar } from './sidebar';
+import { expect, test } from '../fixtures';
 
 const userEmail = getE2EUser().email;
 const now = () => new Date();

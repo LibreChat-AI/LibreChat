@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import {
   conversationRow,
@@ -12,6 +11,7 @@ import {
   sendMessageAndWaitForCompletion,
 } from './helpers';
 import { openSidebar } from './scenarios/sidebar';
+import { expect, test } from './fixtures';
 
 function uniqueLabel(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;

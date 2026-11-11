@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import { expect, test } from '@playwright/test';
 import type {
   APIRequestContext,
   Browser,
@@ -14,6 +13,7 @@ import {
   enableTwoFactorFlag,
   seedPasswordReset,
 } from '../db';
+import { closeContext, expect, test } from '../fixtures';
 import { NEW_CHAT_PATH } from '../helpers';
 import { getPrimaryE2EUser } from '../../../setup/users.mock';
 
@@ -167,7 +167,9 @@ test.describe('passkeys', () => {
   let context: BrowserContext | undefined;
 
   test.afterEach(async () => {
-    await context?.close();
+    if (context) {
+      await closeContext(context);
+    }
     context = undefined;
     if (user) {
       await deleteUserByEmail(user.email);
