@@ -48,6 +48,24 @@ function holdCatalogs(page: Page, selectedEndpoint?: string) {
 const composer = (page: Page) => page.getByRole('textbox', { name: 'Message input' });
 const trigger = (page: Page) => page.getByRole('button', { name: 'Select a model' }).first();
 
+test('required role requests start before noncritical root discovery', async ({ page }) => {
+  const requests: string[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'GET') requests.push(path);
+  });
+  await page.goto(`${NEW_CHAT_PATH}?spec=e2e-soft-default`);
+  await expect(trigger(page)).toContainText('E2E Soft Default');
+  await expect(composer(page)).toBeEditable();
+  await expect.poll(() => requests.includes('/api/files')).toBe(true);
+  const discovery = requests.indexOf('/api/files');
+  const permissions = requests
+    .map((path, index) => ({ path, index }))
+    .filter(({ path }) => path.startsWith('/api/roles/'));
+  expect(permissions.length).toBeGreaterThan(0);
+  for (const { index } of permissions) expect(index).toBeLessThan(discovery);
+});
+
 test('a configured spec renders and sends while every discovery catalog is pending', async ({
   page,
 }) => {
