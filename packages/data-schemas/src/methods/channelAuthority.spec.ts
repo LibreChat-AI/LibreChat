@@ -6,6 +6,7 @@ import { createChannelIdentityStorage } from './channelIdentity';
 import { createChannelRunStorage } from './channelRun';
 import { closeResponseScopes } from './responseScope';
 import { createAgentChannelMethods } from './channel';
+import { waitForPause } from './test-helpers';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
@@ -241,7 +242,7 @@ it('serializes a revision update already in flight before admitting an older eve
       return update(...args);
     });
     const updating = channels().updateAgentChannel('channel', creatorId, { revision: 'two' });
-    await entered.wait;
+    await waitForPause(entered.wait, updating);
     const admissionReached = gate();
     const fences = mongoose.models.ChannelScope.collection;
     const touch = fences.updateOne.bind(fences);
@@ -250,8 +251,9 @@ it('serializes a revision update already in flight before admitting an older eve
       return touch(...args);
     });
     const admission = runs().admit(event(), Date.now());
+    const drained = Promise.allSettled([updating, admission]);
     try {
-      await admissionReached.wait;
+      await waitForPause(admissionReached.wait, admission);
       release.release();
       await expect(updating).resolves.toMatchObject({ revision: 'two' });
       await expect(admission).rejects.toMatchObject({ code: 'invalid_transition' });
@@ -259,6 +261,7 @@ it('serializes a revision update already in flight before admitting an older eve
       release.release();
       pause.mockRestore();
       observe.mockRestore();
+      await drained;
     }
     expect(await mongoose.models.ChannelRun.countDocuments({})).toBe(0);
   }));
@@ -358,7 +361,7 @@ it('lets an already admitted transaction finish before rotating authority', () =
       return insert(...args);
     });
     const admission = runs().admit(event(), Date.now());
-    await entered.wait;
+    await waitForPause(entered.wait, admission);
     const owners = mongoose.models.ResponseScope.collection;
     const touch = owners.updateOne.bind(owners);
     const observe = jest.spyOn(owners, 'updateOne').mockImplementation(async (...args) => {
@@ -366,8 +369,9 @@ it('lets an already admitted transaction finish before rotating authority', () =
       return touch(...args);
     });
     const updating = channels().updateAgentChannel('channel', creatorId, { revision: 'two' });
+    const drained = Promise.allSettled([admission, updating]);
     try {
-      await attempted.wait;
+      await waitForPause(attempted.wait, updating);
       release.release();
       await expect(admission).resolves.toMatchObject({
         run: { principal: { channelRevision: 'one' } },
@@ -377,6 +381,7 @@ it('lets an already admitted transaction finish before rotating authority', () =
       release.release();
       pause.mockRestore();
       observe.mockRestore();
+      await drained;
     }
     await expect(runs().admit(event(), Date.now())).rejects.toMatchObject({
       code: 'invalid_transition',
@@ -397,7 +402,7 @@ it('serializes linked admission with bulk revocation without creating another ev
       return update(...args);
     });
     const revoking = identities().revokeChannelIdentities(tenantId, 'channel', 'revoked');
-    await entered.wait;
+    await waitForPause(entered.wait, revoking);
     const fences = mongoose.models.ChannelScope.collection;
     const touch = fences.updateOne.bind(fences);
     const observe = jest.spyOn(fences, 'updateOne').mockImplementation(async (...args) => {
@@ -405,8 +410,9 @@ it('serializes linked admission with bulk revocation without creating another ev
       return touch(...args);
     });
     const admission = runs().admit(linkedEvent(), Date.now());
+    const drained = Promise.allSettled([revoking, admission]);
     try {
-      await attempted.wait;
+      await waitForPause(attempted.wait, admission);
       release.release();
       await revoking;
       await expect(admission).rejects.toMatchObject({ code: 'invalid_transition' });
@@ -414,6 +420,7 @@ it('serializes linked admission with bulk revocation without creating another ev
       release.release();
       pause.mockRestore();
       observe.mockRestore();
+      await drained;
     }
     expect(await mongoose.models.ChannelRun.countDocuments({})).toBe(0);
   }));

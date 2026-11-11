@@ -6,6 +6,7 @@ import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
+import { waitForPause } from './test-helpers';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 import { createMethods } from './index';
@@ -114,18 +115,20 @@ it('waits for an inserting admission before deciding whether deletion can finish
       return insert(...args);
     });
     const admission = runs.admit(event(), 100);
-    await started;
+    await waitForPause(started, admission);
     let finished = false;
     const deletion = methods.deleteAgentChannel('channel', 'owner').then((result) => {
       finished = true;
       return result;
     });
+    const drained = Promise.allSettled([admission, deletion]);
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(finished).toBe(false);
     } finally {
       release();
       paused.mockRestore();
+      await drained;
     }
     expect(await admission).toMatchObject({ duplicate: false });
     expect(await deletion).toEqual({ status: 'pending_drain' });
@@ -196,7 +199,7 @@ it('erases a credential creation already admitted before account deletion', () =
       encryptedBotToken: 'private-bot-token',
       encryptedSigningSecret: 'private-signing-secret',
     });
-    await started;
+    await waitForPause(started, creation);
     let finished = false;
     const deletion = createUserMethods(mongoose)
       .deleteUserById(userId)
@@ -204,12 +207,14 @@ it('erases a credential creation already admitted before account deletion', () =
         finished = true;
         return result;
       });
+    const drained = Promise.allSettled([creation, deletion]);
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(finished).toBe(false);
     } finally {
       release();
       paused.mockRestore();
+      await drained;
     }
     await creation;
     await deletion;

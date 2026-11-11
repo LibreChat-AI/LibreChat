@@ -6,6 +6,7 @@ import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
+import { waitForPause } from './test-helpers';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
@@ -228,7 +229,7 @@ it('fences an in-flight personal-link acceptance before erasing its account', ()
       accountLabel: 'Private account',
     };
     const acceptance = storage.saveChannelIdentity(accepted, 'one');
-    await started;
+    await waitForPause(started, acceptance);
     let deleted = false;
     const deletion = createUserMethods(mongoose)
       .deleteUserById(userId)
@@ -236,12 +237,14 @@ it('fences an in-flight personal-link acceptance before erasing its account', ()
         deleted = true;
         return value;
       });
+    const drained = Promise.allSettled([acceptance, deletion]);
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(deleted).toBe(false);
     } finally {
       release();
       paused.mockRestore();
+      await drained;
     }
     expect(await acceptance).toBe(true);
     await deletion;
@@ -288,17 +291,19 @@ it('serializes live identity insertion with channel closure', () =>
       return insert(...args);
     });
     const pending = storage.saveChannelIdentity(identity(), null);
-    await started;
+    await waitForPause(started, pending);
     let closed = false;
     const closure = closeChannelScope(mongoose, tenantId, 'channel').then(() => {
       closed = true;
     });
+    const drained = Promise.allSettled([pending, closure]);
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(closed).toBe(false);
     } finally {
       release();
       paused.mockRestore();
+      await drained;
     }
     expect(await pending).toBe(true);
     await closure;
@@ -466,7 +471,7 @@ it('serializes revoked insertion with retirement and erases its private payload 
       return insert(...args);
     });
     const insertion = storage.saveChannelIdentity(inState('revoked', 'revoked-race'), null);
-    await started;
+    await waitForPause(started, insertion);
     let retired = false;
     const retirement = retireAgentChannel(mongoose, {
       tenantId,
@@ -475,12 +480,14 @@ it('serializes revoked insertion with retirement and erases its private payload 
     }).then(() => {
       retired = true;
     });
+    const drained = Promise.allSettled([insertion, retirement]);
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(retired).toBe(false);
     } finally {
       release();
       paused.mockRestore();
+      await drained;
     }
     expect(await insertion).toBe(true);
     await retirement;
