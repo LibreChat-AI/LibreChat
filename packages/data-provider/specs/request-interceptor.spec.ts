@@ -872,6 +872,43 @@ describe('axios 401 interceptor — Authorization header guard', () => {
     );
   });
 
+  it('still refreshes when the replayed fetch is rejected with the current bearer', async () => {
+    expect.assertions(4);
+    setTokenHeader('expired-token');
+    const lateRejection = createDeferred<Response>();
+    let refreshes = 0;
+
+    mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
+      if (config.url?.includes('/api/auth/refresh') === true) {
+        refreshes += 1;
+        return createAdapterResponse(config, { token: `token-${refreshes}` });
+      }
+      if (String(config.headers?.Authorization) === 'Bearer expired-token') {
+        return create401Error(config);
+      }
+      return createAdapterResponse(config, { ok: true });
+    });
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockReturnValueOnce(lateRejection.promise)
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+    const upload = dataRequest.authenticatedFetch('/api/files', { method: 'POST' });
+    await axios.get('/api/messages');
+    lateRejection.resolve(new Response(null, { status: 401 }));
+    const response = await upload;
+
+    expect(response.status).toBe(200);
+    expect(refreshes).toBe(2);
+    expect(new Headers(fetchSpy.mock.calls[1][1]?.headers).get('Authorization')).toBe(
+      'Bearer token-1',
+    );
+    expect(new Headers(fetchSpy.mock.calls[2][1]?.headers).get('Authorization')).toBe(
+      'Bearer token-2',
+    );
+  });
+
   it('does not wait on the in-flight recovery when the refresh request itself fails', async () => {
     expect.assertions(3);
     setTokenHeader(createJwt(Date.now() + 60_000));

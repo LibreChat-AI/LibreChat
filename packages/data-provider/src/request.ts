@@ -449,28 +449,35 @@ const redirectIfTwoFactorSetupRequired = async (response: Response): Promise<boo
   );
 };
 
+const needsAuthRecovery = (response: Response, url: string) =>
+  response.status === 401 &&
+  !isAuthRecoveryEndpoint(url) &&
+  !isAuthRedirectInProgress() &&
+  getBearerToken() != null;
+
 async function _authenticatedFetch(url: string, options?: RequestInit): Promise<Response> {
   if (typeof window === 'undefined') {
     return fetch(url, options);
   }
 
   const token = (await refreshBeforeRequest(url)) ?? getBearerToken();
-  const response = await fetch(url, withAuthorization(options, token));
-  if (await redirectIfTwoFactorSetupRequired(response)) {
+  let response = await fetch(url, withAuthorization(options, token));
+  if ((await redirectIfTwoFactorSetupRequired(response)) || !needsAuthRecovery(response, url)) {
     return response;
   }
-  if (
-    response.status !== 401 ||
-    isAuthRecoveryEndpoint(url) ||
-    isAuthRedirectInProgress() ||
-    !getBearerToken()
-  ) {
-    return response;
+
+  const supersedingToken = getSupersedingToken(token);
+  if (supersedingToken) {
+    await response.body?.cancel().catch(() => undefined);
+    response = await fetch(url, withAuthorization(options, supersedingToken));
+    if ((await redirectIfTwoFactorSetupRequired(response)) || !needsAuthRecovery(response, url)) {
+      return response;
+    }
   }
 
   let refreshedToken: string | null;
   try {
-    refreshedToken = getSupersedingToken(token) ?? (await startAuthRecovery(false));
+    refreshedToken = await startAuthRecovery(false);
   } catch {
     redirectToLoginOnce();
     return response;
