@@ -92,7 +92,11 @@ export interface TxMetadata {
 
 export interface BulkWriteDeps {
   insertMany: (docs: TransactionData[]) => Promise<unknown>;
-  updateBalance: (params: { user: string; incrementValue: number }) => Promise<unknown>;
+  updateBalance: (params: {
+    user: string;
+    incrementValue: number;
+    balanceConfig?: Partial<TCustomConfig['balance']>;
+  }) => Promise<unknown>;
 }
 
 function calculateTokenValue(
@@ -362,10 +366,10 @@ export async function bulkWriteTransactions(
   }
 
   let totalTokenValue = 0;
-  let balanceEnabled = false;
+  let balanceConfig: Partial<TCustomConfig['balance']> | undefined;
   const plainDocs = docs.map(({ doc, tokenValue, balance }) => {
     if (balance?.enabled) {
-      balanceEnabled = true;
+      balanceConfig ??= balance;
       totalTokenValue += tokenValue;
     }
     return doc;
@@ -377,7 +381,7 @@ export async function bulkWriteTransactions(
    */
   await dbOps.insertMany(plainDocs);
 
-  if (balanceEnabled) {
-    await dbOps.updateBalance({ user, incrementValue: totalTokenValue });
+  if (balanceConfig) {
+    await dbOps.updateBalance({ user, incrementValue: totalTokenValue, balanceConfig });
   }
 }
