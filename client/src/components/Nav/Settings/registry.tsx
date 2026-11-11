@@ -42,6 +42,7 @@ import DuringRunAction from '../SettingsTabs/Chat/DuringRunAction';
 import DeleteAccount from '../SettingsTabs/Account/DeleteAccount';
 import StatefulWorkspaceDefault from './StatefulWorkspaceDefault';
 import { ForkSettings } from '../SettingsTabs/Chat/ForkSettings';
+import LinksSettings from '~/components/Channels/LinksSettings';
 import ChatDirection from '../SettingsTabs/Chat/ChatDirection';
 import { DeleteCache } from '../SettingsTabs/Data/DeleteCache';
 import { ManageFiles } from '../SettingsTabs/Data/ManageFiles';
@@ -831,6 +832,14 @@ export const registry: SettingEntry[] = [
     Component: Passkeys,
   },
   // Account · Connected accounts
+  {
+    id: 'channelLinks',
+    tab: ACCOUNT,
+    section: 'connections',
+    labelKey: 'com_ui_channel_link_personal',
+    keywords: ['slack', 'channel', 'identity', 'link', 'revoke'],
+    Component: LinksSettings,
+  },
   {
     id: 'pullRequestAccount',
     tab: ACCOUNT,
