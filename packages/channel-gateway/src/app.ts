@@ -180,7 +180,15 @@ export class GatewayApp {
             bundle,
             signal,
           );
-        else if (!['channel_link_open', 'channel_run_open'].includes(action.action_id))
+        else if (
+          ![
+            'channel_link_open',
+            'channel_run_open',
+            'channel_presentation_link_0',
+            'channel_presentation_link_1',
+            'channel_presentation_link_2',
+          ].includes(action.action_id)
+        )
           throw new Error('Unsupported Slack action');
         signal.throwIfAborted();
         return;
