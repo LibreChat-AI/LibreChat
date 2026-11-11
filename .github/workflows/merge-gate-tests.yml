@@ -30,7 +30,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
 
       # Same key and path list as the E2E and Static Checks workflows, so the tree they
       # installed for this lockfile is reused; ci-setup.spec.ts holds every job that shares
@@ -49,7 +49,7 @@ jobs:
             packages/api/node_modules
             packages/channel-gateway/node_modules
             api/node_modules
-          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'

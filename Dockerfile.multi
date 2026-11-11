@@ -10,7 +10,7 @@ ARG BUILD_BRANCH=
 ARG BUILD_DATE=
 
 # Base for all builds
-FROM node:24.22.1-alpine AS base-min
+FROM node:24.22.3-alpine AS base-min
 ARG NPM_CI_TIMEOUT_SECONDS=1500
 ARG NPM_CI_ATTEMPTS=2
 RUN apk upgrade --no-cache
