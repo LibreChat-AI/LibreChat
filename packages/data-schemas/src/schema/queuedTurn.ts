@@ -61,6 +61,16 @@ const terminalReceiptSchema = new Schema(
   { _id: false },
 );
 
+const steerSourceSchema = new Schema(
+  {
+    steerId: { type: String, required: true, maxlength: 128 },
+    clientSteerId: { type: String, required: true, maxlength: 128 },
+    generationCreatedAt: { type: Number, required: true, min: 0 },
+    handoffAt: { type: Date },
+  },
+  { _id: false },
+);
+
 const queuedTurnSchema: Schema<IAgentQueuedTurnDocument> = new Schema(
   {
     user: {
@@ -108,6 +118,7 @@ const queuedTurnSchema: Schema<IAgentQueuedTurnDocument> = new Schema(
       default: 'pending',
     },
     scheduledAt: { type: Date },
+    steerSource: { type: steerSourceSchema },
     claimId: { type: String, maxlength: 128 },
     claimBy: { type: String, maxlength: 256 },
     claimUntil: { type: Date },

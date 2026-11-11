@@ -1,4 +1,5 @@
 const { Readable } = require('stream');
+const { createHash } = require('node:crypto');
 // Configurable file size limit for tests - use a getter so it can be changed per test
 const fileSizeLimitConfig = { value: 20 * 1024 * 1024 }; // Default 20MB
 
@@ -427,7 +428,7 @@ describe('Code Process', () => {
       expect(result.file.file_id).toBe('existing-output');
       expect(result.file.messageId).toBe(baseParams.messageId);
       expect(mockCommitCodeFile).toHaveBeenCalledWith(
-        expect.objectContaining({ messageId: 'original-message' }),
+        expect.objectContaining({ messageId: baseParams.messageId }),
         undefined,
       );
       expect(mockCommitFileProvision).toHaveBeenCalledWith(
@@ -646,178 +647,55 @@ describe('Code Process', () => {
     });
   });
 
-  describe('atomic file claim (via processCodeOutput)', () => {
-    it('should reuse file_id from existing record via atomic claim', async () => {
-      mockClaimCodeFile.mockResolvedValue({
-        file_id: 'existing-file-id',
-        filename: 'test-file.txt',
-        usage: 2,
-        createdAt: '2024-01-01T00:00:00.000Z',
-      });
-
-      const smallBuffer = Buffer.alloc(100);
-      mockAxios.mockResolvedValue({ data: smallBuffer });
-
-      const { file: result } = await processCodeOutput(baseParams);
-
-      expect(mockClaimCodeFile).toHaveBeenCalledWith({
-        filename: 'test-file.txt',
-        conversationId: 'conv-123',
-        file_id: 'mock-uuid-1234',
-        user: 'user-123',
-        sourceDispatchedAt: expect.any(Number),
-      });
-
-      expect(result.file_id).toBe('existing-file-id');
-      expect(result.usage).toBe(3);
-      expect(result.createdAt).toBe('2024-01-01T00:00:00.000Z');
+  describe('snapshot reservation', () => {
+    it('binds immutable snapshot bytes to the generating message', async () => {
+      const bytes = Buffer.from('new content');
+      mockAxios.mockResolvedValue({ data: bytes });
+      const { file } = await processCodeOutput({ ...baseParams, messageId: 'current-message' });
+      const codeOutput = {
+        messageId: 'current-message',
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      };
+      expect(mockCommitCodeFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: 'current-message',
+          metadata: expect.objectContaining({ codeOutput }),
+        }),
+        undefined,
+      );
+      expect(file.messageId).toBe('current-message');
+      expect(file.metadata.codeOutput).toEqual(codeOutput);
     });
-
-    it('should create new file when no existing file found', async () => {
-      mockClaimCodeFile.mockResolvedValue({
-        file_id: 'mock-uuid-1234',
-        user: 'user-123',
-      });
-
-      const smallBuffer = Buffer.alloc(100);
-      mockAxios.mockResolvedValue({ data: smallBuffer });
-
-      const { file: result } = await processCodeOutput(baseParams);
-
-      expect(result.file_id).toBe('mock-uuid-1234');
-      expect(result.usage).toBe(1);
+    it('reserves a fresh capture rather than claiming the mutable filename slot', async () => {
+      mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
+      const { file } = await processCodeOutput(baseParams);
+      expect(mockClaimCodeFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filename: 'test-file.txt',
+          conversationId: 'conv-123',
+          file_id: 'mock-uuid-1234',
+          user: 'user-123',
+          snapshot: true,
+        }),
+      );
+      expect(file.usage).toBe(1);
       expect(getRetentionExpiry).toHaveBeenCalledWith(baseParams.req);
     });
 
-    it('skips the file when the claim is newer than the background run (stale-harvest guard)', async () => {
-      /* A newer run owns the filename slot and the (filename, conversationId)
-       * unique index leaves stale bytes nowhere to live — the detached
-       * harvest must not overwrite fresh content. */
-      mockClaimCodeFile.mockResolvedValue({
-        file_id: 'existing-file-id',
-        filename: 'test-file.txt',
-        messageId: 'newer-run-msg',
-        updatedAt: '2024-01-02T00:00:00.000Z',
-      });
+    it('keeps an older background capture instead of discarding its history', async () => {
       mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
-
-      const result = await processCodeOutput({
-        ...baseParams,
-        freshClaimAfter: new Date('2024-01-01T00:00:00.000Z').getTime(),
-      });
-
-      expect(result).toBeNull();
-      expect(mockCommitCodeFile).not.toHaveBeenCalled();
-    });
-
-    it('still reuses the claim when it predates the background run', async () => {
-      mockClaimCodeFile.mockResolvedValue({
-        file_id: 'existing-file-id',
-        filename: 'test-file.txt',
-        updatedAt: '2024-01-01T00:00:00.000Z',
-      });
-      mockCommitCodeFile.mockResolvedValue(true);
-      mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
-
-      const { file: result } = await processCodeOutput({
-        ...baseParams,
-        freshClaimAfter: new Date('2024-01-02T00:00:00.000Z').getTime(),
-      });
-
-      expect(result.file_id).toBe('existing-file-id');
+      const { file } = await processCodeOutput({ ...baseParams, freshClaimAfter: 100 });
+      expect(file.metadata.sourceDispatchedAt).toBe(100);
       expect(mockCommitCodeFile).toHaveBeenCalledWith(
-        expect.objectContaining({ file_id: 'existing-file-id' }),
-        new Date('2024-01-02T00:00:00.000Z').getTime(),
+        expect.objectContaining({ file_id: file.file_id }),
+        100,
       );
     });
 
-    it('skips when a newer task holds an unwritten claim (insert stamp, no updatedAt yet)', async () => {
-      /* A newer task claimed the filename but its content write is still in
-       * flight: the claim-insert stamp alone must trip the guard. */
-      mockClaimCodeFile.mockResolvedValue({
-        file_id: 'existing-file-id',
-        filename: 'test-file.txt',
-        metadata: {
-          sourceDispatchedAt: new Date('2024-01-02T00:00:00.000Z').getTime(),
-        },
-      });
-      mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
-
-      const result = await processCodeOutput({
-        ...baseParams,
-        freshClaimAfter: new Date('2024-01-01T00:00:00.000Z').getTime(),
-      });
-
-      expect(result).toBeNull();
-      expect(mockCommitCodeFile).not.toHaveBeenCalled();
-    });
-
-    it('omits output when the commit boundary rejects an overtaken claim', async () => {
-      mockClaimCodeFile.mockResolvedValue({
-        file_id: 'mock-uuid-1234',
-        user: 'user-123',
-      });
+    it('omits output when the storage commit is not confirmed', async () => {
       mockCommitCodeFile.mockResolvedValue(false);
       mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
-
-      const result = await processCodeOutput({
-        ...baseParams,
-        freshClaimAfter: new Date('2024-01-01T00:00:00.000Z').getTime(),
-      });
-
-      expect(result).toBeNull();
-      expect(mockCommitCodeFile).toHaveBeenCalledWith(
-        expect.objectContaining({
-          file_id: 'mock-uuid-1234',
-          metadata: expect.objectContaining({
-            sourceDispatchedAt: new Date('2024-01-01T00:00:00.000Z').getTime(),
-          }),
-        }),
-        new Date('2024-01-01T00:00:00.000Z').getTime(),
-      );
-    });
-
-    it('commits when the conditional write matches (ownership held through the write)', async () => {
-      mockClaimCodeFile.mockResolvedValue({
-        file_id: 'existing-file-id',
-        filename: 'test-file.txt',
-        updatedAt: '2024-01-01T00:00:00.000Z',
-      });
-      mockCommitCodeFile.mockResolvedValueOnce(true);
-      mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
-
-      const { file: result } = await processCodeOutput({
-        ...baseParams,
-        freshClaimAfter: new Date('2024-01-02T00:00:00.000Z').getTime(),
-      });
-
-      expect(result.file_id).toBe('existing-file-id');
-    });
-
-    it('lets a newer task overwrite an OLDER task that wrote late (writer dispatch order wins)', async () => {
-      /* Old task (dispatched Jan 1) settled late and wrote at Jan 3;
-       * this task was dispatched Jan 2. Wall-clock updatedAt is newer
-       * than our dispatch, but the WRITER is older — overwrite. */
-      mockClaimCodeFile.mockResolvedValue({
-        file_id: 'existing-file-id',
-        filename: 'test-file.txt',
-        updatedAt: '2024-01-03T00:00:00.000Z',
-        metadata: {
-          sourceDispatchedAt: new Date('2024-01-01T00:00:00.000Z').getTime(),
-        },
-      });
-      mockCommitCodeFile.mockResolvedValue(true);
-      mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
-
-      const { file: result } = await processCodeOutput({
-        ...baseParams,
-        freshClaimAfter: new Date('2024-01-02T00:00:00.000Z').getTime(),
-      });
-
-      expect(result.file_id).toBe('existing-file-id');
-      expect(result.metadata.sourceDispatchedAt).toBe(
-        new Date('2024-01-02T00:00:00.000Z').getTime(),
-      );
+      expect(await processCodeOutput({ ...baseParams, freshClaimAfter: 100 })).toBeNull();
     });
   });
 
@@ -849,6 +727,7 @@ describe('Code Process', () => {
         const convertedFile = {
           filepath: '/uploads/converted-image.webp',
           bytes: 400,
+          sha256: createHash('sha256').update('converted image bytes').digest('hex'),
         };
         convertImage.mockResolvedValue(convertedFile);
 
@@ -861,8 +740,12 @@ describe('Code Process', () => {
           'mock-uuid-1234.png',
         );
         expect(result.type).toBe('image/webp');
-        expect(result.context).toBe(FileContext.execute_code);
+        expect(result.context).toBe(FileContext.execute_code_snapshot);
         expect(result.filename).toBe('chart.png');
+        expect(result.metadata.codeOutput).toEqual({
+          messageId: baseParams.messageId,
+          sha256: convertedFile.sha256,
+        });
       });
 
       it('persists tenantId on image code output records when present', async () => {
@@ -888,32 +771,12 @@ describe('Code Process', () => {
         );
       });
 
-      it('should update existing image file with cache-busted filepath', async () => {
-        const imageParams = { ...baseParams, name: 'chart.png' };
-        mockClaimCodeFile.mockResolvedValue({
-          file_id: 'existing-img-id',
-          usage: 1,
-          createdAt: '2024-01-01T00:00:00.000Z',
-        });
-
-        const imageBuffer = Buffer.alloc(500);
-        mockAxios.mockResolvedValue({ data: imageBuffer });
-        convertImage.mockResolvedValue({ filepath: '/images/user-123/existing-img-id.webp' });
-
-        const { file: result } = await processCodeOutput(imageParams);
-
-        expect(convertImage).toHaveBeenCalledWith(
-          mockReq,
-          imageBuffer,
-          'high',
-          'existing-img-id.png',
-        );
-        expect(result.file_id).toBe('existing-img-id');
-        expect(result.usage).toBe(2);
-        expect(result.filepath).toMatch(/^\/images\/user-123\/existing-img-id\.webp\?v=\d+$/);
-        expect(logger.debug).toHaveBeenCalledWith(
-          expect.stringContaining('Updating existing file'),
-        );
+      it('uses the snapshot object URL without mutable cache busting', async () => {
+        mockAxios.mockResolvedValue({ data: Buffer.alloc(500) });
+        convertImage.mockResolvedValue({ filepath: '/images/user-123/mock-uuid-1234.webp' });
+        const { file } = await processCodeOutput({ ...baseParams, name: 'chart.png' });
+        expect(file.filepath).toBe('/images/user-123/mock-uuid-1234.webp');
+        expect(file.usage).toBe(1);
       });
     });
 
@@ -1353,68 +1216,26 @@ describe('Code Process', () => {
       });
     });
 
-    describe('usage counter increment', () => {
-      it('should set usage to 1 for new files', async () => {
-        const smallBuffer = Buffer.alloc(100);
-        mockAxios.mockResolvedValue({ data: smallBuffer });
-
-        const { file: result } = await processCodeOutput(baseParams);
-
-        expect(result.usage).toBe(1);
-      });
-
-      it('should increment usage for existing files', async () => {
-        mockClaimCodeFile.mockResolvedValue({
-          file_id: 'existing-id',
-          usage: 5,
-          createdAt: '2024-01-01',
-        });
-        const smallBuffer = Buffer.alloc(100);
-        mockAxios.mockResolvedValue({ data: smallBuffer });
-
-        const { file: result } = await processCodeOutput(baseParams);
-
-        expect(result.usage).toBe(6);
-      });
-
-      it('should handle existing file with undefined usage', async () => {
-        mockClaimCodeFile.mockResolvedValue({
-          file_id: 'existing-id',
-          createdAt: '2024-01-01',
-        });
-        const smallBuffer = Buffer.alloc(100);
-        mockAxios.mockResolvedValue({ data: smallBuffer });
-
-        const { file: result } = await processCodeOutput(baseParams);
-
-        expect(result.usage).toBe(1);
-      });
-    });
-
     describe('metadata and file properties', () => {
-      it('should include codeEnvRef in metadata with kind: user', async () => {
+      it('should include codeEnvSource in metadata with kind: user', async () => {
         const smallBuffer = Buffer.alloc(100);
         mockAxios.mockResolvedValue({ data: smallBuffer });
 
         const { file: result } = await processCodeOutput(baseParams);
 
         expect(result.metadata).toEqual({
-          codeEnvRef: {
+          codeOutput: {
+            messageId: baseParams.messageId,
+            sha256: createHash('sha256').update(smallBuffer).digest('hex'),
+          },
+          codeEnvSource: {
             kind: 'user',
             id: 'user-123',
             storage_session_id: 'session-123',
             file_id: 'file-id-123',
             executionProfile: 'default',
           },
-          codeEnvRefs: {
-            default: {
-              kind: 'user',
-              id: 'user-123',
-              storage_session_id: 'session-123',
-              file_id: 'file-id-123',
-              executionProfile: 'default',
-            },
-          },
+          codeDestination: true,
           sourceDispatchedAt: expect.any(Number),
         });
       });
@@ -1430,10 +1251,10 @@ describe('Code Process', () => {
           executionRouteKey,
         });
 
-        expect(result.metadata.codeEnvRef).toEqual(
+        expect(result.metadata.codeEnvSource).toEqual(
           expect.objectContaining({ executionProfile: 'stateful', executionRouteKey }),
         );
-        expect(result.metadata.codeEnvRefs[executionRouteKey]).toEqual(result.metadata.codeEnvRef);
+        expect(result.metadata.codeEnvRefs).toBeUndefined();
       });
 
       /* Phase C lock-in: outputs are ALWAYS user-scoped, never skill-scoped.
@@ -1460,14 +1281,14 @@ describe('Code Process', () => {
 
         // Each user's output ref is keyed by their own user id. The
         // `id` field tracks the requesting user, never the skill.
-        expect(outputA.metadata.codeEnvRef).toEqual({
+        expect(outputA.metadata.codeEnvSource).toEqual({
           kind: 'user',
           id: 'user-A',
           storage_session_id: 'session-123',
           file_id: 'file-id-123',
           executionProfile: 'default',
         });
-        expect(outputB.metadata.codeEnvRef).toEqual({
+        expect(outputB.metadata.codeEnvSource).toEqual({
           kind: 'user',
           id: 'user-B',
           storage_session_id: 'session-123',
@@ -1476,8 +1297,8 @@ describe('Code Process', () => {
         });
 
         // No skill identity leaks into the output ref under any property.
-        const refA = outputA.metadata.codeEnvRef;
-        const refB = outputB.metadata.codeEnvRef;
+        const refA = outputA.metadata.codeEnvSource;
+        const refB = outputB.metadata.codeEnvSource;
         expect(refA.kind).not.toBe('skill');
         expect(refB.kind).not.toBe('skill');
         expect(refA).not.toHaveProperty('version');
@@ -1490,7 +1311,7 @@ describe('Code Process', () => {
 
         const { file: result } = await processCodeOutput(baseParams);
 
-        expect(result.context).toBe(FileContext.execute_code);
+        expect(result.context).toBe(FileContext.execute_code_snapshot);
       });
 
       it('should include toolCallId and messageId in result', async () => {
@@ -1512,169 +1333,10 @@ describe('Code Process', () => {
         expect(mockCommitCodeFile).toHaveBeenCalledWith(
           expect.objectContaining({
             file_id: 'mock-uuid-1234',
-            context: FileContext.execute_code,
+            context: FileContext.execute_code_snapshot,
           }),
           undefined,
         );
-      });
-    });
-
-    describe('persistedMessageId (regression for cross-turn priming)', () => {
-      /**
-       * `getCodeGeneratedFiles` filters by `messageId IN <thread message ids>`
-       * to scope files to the current branch. If `processCodeOutput` overwrote
-       * the file's `messageId` with the current run's id on every update, a
-       * file re-touched by a later turn (e.g. a failed read attempt that
-       * re-shells the same filename) would lose its link to the assistant
-       * message that originally produced it. Subsequent turns then can't find
-       * it via `getCodeGeneratedFiles`, the priming chain has nothing to seed,
-       * and the model thinks its own prior-turn artifact disappeared.
-       *
-       * Contract:
-       *  - On UPDATE (claimCodeFile returned an existing record): the persisted
-       *    `messageId` is `claimed.messageId` (preserved). Falls back to the
-       *    current run's `messageId` when the existing record predates the
-       *    `messageId` field (legacy data).
-       *  - On CREATE (new file): the persisted `messageId` is the current run's.
-       *  - The runtime return value ALWAYS uses the current run's `messageId`
-       *    via `Object.assign(file, { messageId, toolCallId })` so the artifact
-       *    attaches to the correct tool_call in the live response.
-       */
-
-      /**
-       * `processCodeOutput` mutates the file object after `commitCodeFile` returns
-       * (`Object.assign(file, { messageId, toolCallId })`) so the runtime
-       * caller sees the live messageId on the response. Reading
-       * `mockCommitCodeFile.mock.calls[0][0]` directly would therefore reflect the
-       * post-mutation state because JS captures by reference. To assert
-       * what was actually PERSISTED, snapshot the args at call time.
-       */
-      function snapshotCommitCodeFileArgs() {
-        const snapshots = [];
-        mockCommitCodeFile.mockImplementation(async (file) => {
-          snapshots.push({ ...file });
-          return true;
-        });
-        return snapshots;
-      }
-
-      it('preserves the original messageId in the persisted record on UPDATE', async () => {
-        mockClaimCodeFile.mockResolvedValue({
-          file_id: 'existing-id',
-          filename: 'sentinel.txt',
-          usage: 1,
-          createdAt: '2024-01-01T00:00:00.000Z',
-          messageId: 'turn-1-original-msg',
-        });
-        const persisted = snapshotCommitCodeFileArgs();
-
-        const smallBuffer = Buffer.alloc(100);
-        mockAxios.mockResolvedValue({ data: smallBuffer });
-
-        await processCodeOutput({
-          ...baseParams,
-          name: 'sentinel.txt',
-          messageId: 'turn-2-current-run-msg',
-        });
-
-        expect(persisted[0].messageId).toBe('turn-1-original-msg');
-      });
-
-      it('falls back to current run messageId on UPDATE when claimed.messageId is undefined (legacy record)', async () => {
-        // Legacy record predates the persistedMessageId tracking.
-        mockClaimCodeFile.mockResolvedValue({
-          file_id: 'legacy-id',
-          filename: 'legacy.txt',
-          usage: 1,
-          createdAt: '2024-01-01T00:00:00.000Z',
-          // messageId intentionally absent
-        });
-        const persisted = snapshotCommitCodeFileArgs();
-
-        const smallBuffer = Buffer.alloc(100);
-        mockAxios.mockResolvedValue({ data: smallBuffer });
-
-        await processCodeOutput({
-          ...baseParams,
-          name: 'legacy.txt',
-          messageId: 'turn-N-current-run-msg',
-        });
-
-        expect(persisted[0].messageId).toBe('turn-N-current-run-msg');
-      });
-
-      it('uses the current run messageId on CREATE (no claimed record)', async () => {
-        mockClaimCodeFile.mockResolvedValue({
-          file_id: 'mock-uuid-1234',
-          user: 'user-123',
-        });
-        const persisted = snapshotCommitCodeFileArgs();
-
-        const smallBuffer = Buffer.alloc(100);
-        mockAxios.mockResolvedValue({ data: smallBuffer });
-
-        await processCodeOutput({
-          ...baseParams,
-          messageId: 'turn-1-create-msg',
-        });
-
-        expect(persisted[0].messageId).toBe('turn-1-create-msg');
-      });
-
-      it('returns the CURRENT run messageId in the runtime response even on UPDATE (artifact attribution)', async () => {
-        // The persisted DB record keeps the original messageId, but the
-        // returned object surfaces the live messageId so the artifact lands
-        // on the correct tool_call in this run's response.
-        mockClaimCodeFile.mockResolvedValue({
-          file_id: 'existing-id',
-          filename: 'sentinel.txt',
-          usage: 1,
-          createdAt: '2024-01-01T00:00:00.000Z',
-          messageId: 'turn-1-original-msg',
-        });
-        const persisted = snapshotCommitCodeFileArgs();
-
-        const smallBuffer = Buffer.alloc(100);
-        mockAxios.mockResolvedValue({ data: smallBuffer });
-
-        const { file: result } = await processCodeOutput({
-          ...baseParams,
-          name: 'sentinel.txt',
-          messageId: 'turn-2-current-run-msg',
-        });
-
-        // DB preserves original
-        expect(persisted[0].messageId).toBe('turn-1-original-msg');
-        // Runtime return surfaces the live (current) messageId
-        expect(result.messageId).toBe('turn-2-current-run-msg');
-      });
-
-      it('preserves the original messageId on UPDATE for image files too', async () => {
-        // Same contract as text files; the image branch builds its own file
-        // record and would silently regress if the ternary diverged there.
-        mockClaimCodeFile.mockResolvedValue({
-          file_id: 'existing-img',
-          filename: 'chart.png',
-          usage: 1,
-          createdAt: '2024-01-01T00:00:00.000Z',
-          messageId: 'turn-1-image-msg',
-        });
-        const persisted = snapshotCommitCodeFileArgs();
-
-        const imageBuffer = Buffer.alloc(500);
-        mockAxios.mockResolvedValue({ data: imageBuffer });
-        convertImage.mockResolvedValue({
-          filepath: '/uploads/chart.webp',
-          bytes: 400,
-        });
-
-        await processCodeOutput({
-          ...baseParams,
-          name: 'chart.png',
-          messageId: 'turn-2-current-img-msg',
-        });
-
-        expect(persisted[0].messageId).toBe('turn-1-image-msg');
       });
     });
 
@@ -4797,6 +4459,63 @@ describe('Code Process', () => {
       } else {
         expect(upload).not.toHaveBeenCalled();
       }
+    });
+
+    it('reuploads a displaced private receipt before mounting a shared snapshot', async () => {
+      setupActiveSessions();
+      const upload = jest.fn(async ({ filename }) => ({
+        storage_session_id: `fresh-${filename}`,
+        file_id: `fresh-${filename}`,
+        filename,
+      }));
+      getStrategyFunctions.mockImplementation(() => ({
+        getDownloadStream: jest.fn().mockResolvedValue('primary-bytes'),
+        handleFileUpload: upload,
+      }));
+      const privateFile = codeFile({
+        file_id: 'private',
+        filename: 'report.txt',
+        sandboxFilename: 'report.txt',
+        storage_session_id: 'private-session',
+      });
+      privateFile.type = 'text/plain';
+      privateFile.metadata.codeEnvRef.kind = 'agent';
+      privateFile.metadata.codeEnvRef.id = 'agent-id';
+      getFiles.mockResolvedValue([
+        privateFile,
+        {
+          file_id: 'shared',
+          user: 'user-123',
+          filename: 'report.txt',
+          type: 'text/plain',
+          context: FileContext.execute_code_snapshot,
+          source: 'local',
+          filepath: '/uploads/shared',
+        },
+      ]);
+      const result = await prime({
+        execute_code: { file_ids: ['private'], files: [{ file_id: 'shared' }] },
+      });
+      expect(result.files).toHaveLength(2);
+      expect(result.files.find((file) => file.kind === 'user')).toMatchObject({
+        name: 'report.txt',
+        id: 'fresh-report.txt',
+      });
+      const privateMount = result.files.find((file) => file.kind === 'agent');
+      expect(privateMount).toMatchObject({
+        name: expect.stringMatching(/^report-.+\.txt$/),
+        resource_id: 'agent-id',
+      });
+      expect(privateMount.id).toBe(`fresh-${privateMount.name}`);
+      expect(upload).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filename: privateMount.name,
+          stream: 'primary-bytes',
+          kind: 'agent',
+          id: 'agent-id',
+        }),
+      );
+      expect(result.toolContext).toContain(privateMount.name);
     });
 
     it('recovers a converted stale image even when its storage session has a fresh sibling', async () => {

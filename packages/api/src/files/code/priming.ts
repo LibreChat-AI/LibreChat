@@ -16,7 +16,9 @@ import {
   claimCodeDestination,
   createCodeDestinationSet,
   reserveCodeDestination,
-  sortCodeFilesByDestinationPriority,
+  selectCodeFileGenerations,
+  getCodeFileDestination,
+  planCodeSnapshotMounts,
 } from './destinations';
 import {
   codeServerHttpAgent,
@@ -92,10 +94,18 @@ export function checkCodeFileActive(dateString: string | undefined): boolean {
   return dateString != null && (Date.now() - new Date(dateString).getTime()) / 3_600_000 < 23;
 }
 
+interface SnapshotCodeOwner {
+  kind: 'user';
+  id: string;
+  storage_session_id?: undefined;
+  file_id?: undefined;
+  sandboxFilename?: undefined;
+}
+
 interface PrimedCodeFile {
   file: TFile;
   ref: CodeEnvRef | undefined;
-  sourceRef: CodeEnvRef;
+  sourceRef: CodeEnvRef | SnapshotCodeOwner;
   sandboxName: string;
   isActive: boolean;
   getUploadTime: () => Promise<string | undefined>;
@@ -118,15 +128,28 @@ export async function selectCodeFiles({
   signal?: AbortSignal;
 }): Promise<{ selected: PrimedCodeFile[]; skippedNoRef: number; skippedSuperseded: number }> {
   let skippedNoRef = 0;
-  let skippedSuperseded = 0;
+  const generations = selectCodeFileGenerations(files, privateFileIds, routeKey);
+  let skippedSuperseded = generations.skippedSuperseded;
+  const snapshotMounts = planCodeSnapshotMounts(generations.files, privateFileIds, routeKey);
   const candidates = [];
   const registry = createCodeApiUploadRegistry();
-  for (const file of sortCodeFilesByDestinationPriority(files, privateFileIds)) {
+  for (const file of generations.files) {
     if (!file) {
       continue;
     }
-    const ref = getCodeEnvRefForProfile(file.metadata, routeKey);
-    const sourceRef = ref ?? getCodeEnvRefs(file.metadata)[0]?.[1];
+    const snapshot = file.context === FileContext.execute_code_snapshot;
+    const ownedRef = getCodeEnvRefForProfile(file.metadata, routeKey);
+    // Snapshot receipts can name mounts, but never prove their current bytes.
+    const ref = snapshot ? undefined : ownedRef;
+    const sourceRef =
+      ownedRef ??
+      getCodeEnvRefs(file.metadata)[0]?.[1] ??
+      (snapshot
+        ? {
+            kind: 'user' as const,
+            id: file.user.toString(),
+          }
+        : undefined);
     if (!sourceRef) {
       skippedNoRef++;
       continue;
@@ -138,7 +161,7 @@ export async function selectCodeFiles({
         scope: routeKey,
         concurrency,
         signal,
-        task: () => getFileInfo(sourceRef),
+        task: () => (ref ? getFileInfo(ref) : Promise.resolve(null)),
       }));
     candidates.push({ file, ref, sourceRef, getInfo });
   }
@@ -147,9 +170,19 @@ export async function selectCodeFiles({
       const { file, ref, sourceRef, getInfo } = candidate;
       const info = ref ? await getInfo() : null;
       signal?.throwIfAborted();
-      const recovering = !ref || !checkCodeFileActive(info?.lastModified);
       const storedName = sourceRef.sandboxFilename ?? info?.originalFilename;
-      const sandboxName = storedName ?? resolveSandboxFilename(file.filename, file.type);
+      const plannedName = snapshotMounts.get(file.file_id);
+      const recovering =
+        !ref ||
+        !checkCodeFileActive(info?.lastModified) ||
+        (plannedName != null &&
+          (plannedName !== (storedName ?? getCodeFileDestination(file, routeKey)) ||
+            (file.context === FileContext.execute_code &&
+              plannedName !== getCodeFileDestination(file, routeKey))));
+      const sandboxName =
+        file.context === FileContext.execute_code_snapshot
+          ? (snapshotMounts.get(file.file_id) ?? getCodeFileDestination(file, routeKey))
+          : (plannedName ?? storedName ?? resolveSandboxFilename(file.filename, file.type));
       const destination = recovering
         ? getCodeEnvUploadFilename(resolveSandboxFilename(sandboxName, file.type))
         : sandboxName;
@@ -287,7 +320,11 @@ export function getCodeFileContextLine(
 
 /** Whether the code-file note mentions this file at `destination` at all. */
 export function isDescribedCodeFile(file: CodeContextFile, destination: string): boolean {
-  return file.context !== FileContext.execute_code || destination !== file.filename;
+  return (
+    (file.context !== FileContext.execute_code &&
+      file.context !== FileContext.execute_code_snapshot) ||
+    destination !== file.filename
+  );
 }
 
 /** Provenance and preview state appended to a file shown under `shownName`. */
@@ -297,7 +334,7 @@ export function getCodeFileContextSuffix(
   shownName: string,
 ): string {
   const origin =
-    file.context === FileContext.execute_code
+    file.context === FileContext.execute_code || file.context === FileContext.execute_code_snapshot
       ? ` (written earlier as ${file.filename})`
       : `${agentScoped ? '' : ' (attached by user)'}${
           shownName !== file.filename ? ` (uploaded as ${file.filename})` : ''

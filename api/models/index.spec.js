@@ -16,6 +16,10 @@ jest.mock('@librechat/api', () => ({
   matchModelName: jest.fn(),
   findMatchingPattern: jest.fn(),
   isDeploymentSkillId: jest.fn(),
+  createChannelStorageConfigReader: jest.fn(() => ({
+    getConfig: jest.fn(),
+    initialize: jest.fn(),
+  })),
   createMessageBudgetReader: jest.fn(() => ({ getBudget: jest.fn(), initialize: jest.fn() })),
 }));
 jest.mock('~/cache/getLogStores', () => jest.fn());
@@ -25,13 +29,19 @@ const {
   createMethods,
   createPostgresFavoriteBackend,
 } = require('@librechat/data-schemas');
-const { createMessageBudgetReader, createFavoriteRuntime } = require('@librechat/api');
+const {
+  createMessageBudgetReader,
+  createFavoriteRuntime,
+  createChannelStorageConfigReader,
+} = require('@librechat/api');
 const models = require('./index');
-const { initializeMessageBudget } = models;
+const { initializeMessageBudget, initializeChannelStorageConfig } = models;
 const reader = createMessageBudgetReader.mock.results[0].value;
+const channelStorageConfigReader = createChannelStorageConfigReader.mock.results[0].value;
 const dependencies = createMethods.mock.calls[0][1];
 const runtimeDependencies = createFavoriteRuntime.mock.calls[0];
-const { getMCPAppMessageBudget } = dependencies;
+const { getMCPAppMessageBudget, getChannelStorageConfig: channelStorageConfigDependency } =
+  dependencies;
 const mongoFavorites = createToolFavoriteMethods.mock.results[0].value;
 
 describe('message App budget dependency wiring', () => {
@@ -59,5 +69,13 @@ describe('favorites composition root', () => {
     expect(models.deleteUserToolFavorites).toBe(captured);
     await models.closeFavorites();
     await expect(captured('user')).rejects.toThrow('not initialized');
+  });
+});
+
+describe('channel storage configuration dependency wiring', () => {
+  it('injects the deployment reader without reading config during module initialization', () => {
+    expect(channelStorageConfigDependency).toBe(channelStorageConfigReader.getConfig);
+    expect(initializeChannelStorageConfig).toBe(channelStorageConfigReader.initialize);
+    expect(channelStorageConfigReader.getConfig).not.toHaveBeenCalled();
   });
 });

@@ -3478,6 +3478,7 @@ describe('Sonnet 5.5 pricing', () => {
 
 describe.each([
   ['gpt-6-sol', 2, 0.2, 2.5, 10],
+  ['gpt-6.1-terra', 1, 0.05, 1.25, 5],
   ['gpt-6-luna', 0.1, 0.01, 0.125, 0.5],
 ] as const)('%s published pricing', (model, input, read, write, output) => {
   it.each([272000, 272001])(
@@ -3503,6 +3504,36 @@ describe.each([
   );
 });
 
+describe('Terra native and Bedrock pricing isolation', () => {
+  it.each([
+    ['us.openai.gpt-6.1-terra', 1.1, 5.5],
+    ['global.openai.gpt-6.1-terra', 1, 5],
+  ] as const)(
+    'keeps %s on Bedrock rates above the native long-context threshold',
+    (model, prompt, completion) => {
+      expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount: 300000 })).toBe(prompt);
+      expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount: 300000 })).toBe(
+        completion,
+      );
+    },
+  );
+  it('preserves administrator pricing overrides', () => {
+    const model = 'gpt-6.1-terra';
+    const endpointTokenConfig = { [model]: { prompt: 3, completion: 9 } };
+    expect(
+      getMultiplier({ model, tokenType: 'prompt', inputTokenCount: 300000, endpointTokenConfig }),
+    ).toBe(3);
+    expect(
+      getMultiplier({
+        model,
+        tokenType: 'completion',
+        inputTokenCount: 300000,
+        endpointTokenConfig,
+      }),
+    ).toBe(9);
+  });
+});
+
 describe('Claude Fable 5.2 pricing', () => {
   it.each(['claude-fable-5-2', 'anthropic/claude-fable-5-2', 'anthropic.claude-fable-5-2'])(
     'uses the release-specific rates for %s at every context length',
@@ -3522,5 +3553,27 @@ describe('Claude Fable 5.2 pricing', () => {
     expect(tokenValues['claude-fable-5']).toEqual({ prompt: 10, completion: 50 });
     expect(tokenValues['claude-fable-5-1']).toEqual({ prompt: 10, completion: 50 });
     expect(cacheTokenValues['claude-fable-5-1']).toEqual({ write: 12.5, read: 0.25 });
+  });
+});
+
+describe('Claude Mythos 5.2 pricing', () => {
+  it.each(['claude-mythos-5-2', 'anthropic/claude-mythos-5-2', 'anthropic.claude-mythos-5-2'])(
+    'uses the release-specific rates for %s at every context length',
+    (model) => {
+      expect(getValueKey(model)).toBe('claude-mythos-5-2');
+      for (const inputTokenCount of [1000, 200001, 999999]) {
+        expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(8);
+        expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(40);
+        expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(0.2);
+        expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(10);
+        expect(getCacheMultiplier({ model, cacheType: 'write1h', inputTokenCount })).toBe(16);
+      }
+    },
+  );
+
+  it('preserves the prices of previous Mythos releases', () => {
+    expect(tokenValues['claude-mythos-5']).toEqual({ prompt: 10, completion: 50 });
+    expect(tokenValues['claude-mythos-5-1']).toEqual({ prompt: 10, completion: 50 });
+    expect(cacheTokenValues['claude-mythos-5-1']).toEqual({ write: 12.5, read: 0.25 });
   });
 });

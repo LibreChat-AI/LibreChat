@@ -1077,8 +1077,13 @@ export function createAgentMethods(
   mongoose: typeof import('mongoose'),
   deps: AgentDeps,
 ): {
+  findAgentIdentity: (agentId: string) => Promise<{ _id: string } | null>;
   getAgent: GetAgent;
-  getAgentName: (id: string, tenantId?: string) => Promise<string | undefined>;
+  getAgentName: (
+    id: string,
+    tenantId?: string,
+    viewer?: { userId: string },
+  ) => Promise<string | undefined>;
   getAgentVersions: (searchParameter: FilterQuery<IAgent>) => Promise<IAgent['versions'] | null>;
   getAgentWithVersionCount: (
     searchParameter: FilterQuery<IAgent>,
@@ -1305,14 +1310,28 @@ export function createAgentMethods(
     return await Agent.findOne(searchParameter, projection).lean<IAgent>();
   };
 
-  /** Storage-neutral display-name lookup for a known execution subject. */
-  async function getAgentName(id: string, tenantId?: string): Promise<string | undefined> {
+  /** Storage-neutral display name; user-facing callers supply a viewer to enforce VIEW ACLs. */
+  async function getAgentName(
+    id: string,
+    tenantId?: string,
+    viewer?: { userId: string },
+  ): Promise<string | undefined> {
     const agent = await getAgent(
       { id, tenantId: tenantId ?? null },
-      { name: 1, tenantId: 1, _id: 0 },
+      { name: 1, tenantId: 1, _id: 1 },
     );
-    if ((agent?.tenantId ?? undefined) !== tenantId) return undefined;
-    return agent?.name || undefined;
+    if (!agent || (agent.tenantId ?? undefined) !== tenantId) return undefined;
+    if (viewer) {
+      const principals = await deps.getUserPrincipals(viewer);
+      const visible = await deps.findAccessibleResources(
+        principals,
+        ResourceType.AGENT,
+        PermissionBits.VIEW,
+        [agent._id],
+      );
+      if (visible.length === 0) return undefined;
+    }
+    return agent.name || undefined;
   }
 
   /**
@@ -2836,7 +2855,14 @@ export function createAgentMethods(
     await evictAuthUserDocsForUsers(deps.getCache, userIds);
   }
 
+  async function findAgentIdentity(agentId: string): Promise<{ _id: string } | null> {
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    const agent = await Agent.findOne({ id: agentId }).select('_id').lean();
+    return agent ? { _id: agent._id.toString() } : null;
+  }
+
   return {
+    findAgentIdentity,
     getAgent,
     getAgentName,
     getAgentVersions,

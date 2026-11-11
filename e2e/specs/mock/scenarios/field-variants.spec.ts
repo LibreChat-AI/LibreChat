@@ -4,7 +4,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { NEW_CHAT_PATH } from '../helpers';
-import { probeStyle } from './style.helpers';
+import { normalizeColor, probeStyle } from './style.helpers';
 
 /**
  * The field and nav variants are rendered from the built primitives (server-side markup, the
@@ -291,8 +291,8 @@ for (const theme of THEMES) {
 
       const secondary = await probeStyle(page, 'text-text-secondary', 'color');
       const primary = await probeStyle(page, 'text-text-primary', 'color');
-      const navHover = await probeStyle(page, 'bg-surface-nav-hover', 'background-color');
-      const navSelected = await probeStyle(page, 'bg-surface-nav-selected', 'background-color');
+      const navHover = await normalizeColor(page, 'rgb(var(--surface-nav-hover))');
+      const navSelected = await normalizeColor(page, 'rgb(var(--surface-nav-selected))');
 
       const rest = await styleOf(page, '#rest', ['color', 'background-color']);
       expect(rest['color']).toBe(secondary);

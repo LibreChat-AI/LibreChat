@@ -11,10 +11,12 @@ const {
   createMessageBudgetReader,
   createFavoriteRuntime,
   getPersistenceConfig,
+  createChannelStorageConfigReader,
 } = require('@librechat/api');
 const getLogStores = require('~/cache/getLogStores');
 
 const messageBudget = createMessageBudgetReader();
+const channelStorageConfig = createChannelStorageConfigReader();
 
 const favorites = createFavoriteRuntime(
   createToolFavoriteMethods(mongoose),
@@ -28,6 +30,7 @@ const methods = createMethods(mongoose, {
   findMatchingPattern,
   isExternalSkillId: isDeploymentSkillId,
   getCache: getLogStores,
+  getChannelStorageConfig: channelStorageConfig.getConfig,
   getMCPAppMessageBudget: messageBudget.getBudget,
 });
 
@@ -43,5 +46,6 @@ module.exports = {
   initializeFavorites: (config) => favorites.initialize(getPersistenceConfig(config)),
   closeFavorites: favorites.close,
   initializeMessageBudget: messageBudget.initialize,
+  initializeChannelStorageConfig: channelStorageConfig.initialize,
   seedDatabase,
 };

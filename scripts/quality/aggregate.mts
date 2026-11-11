@@ -1,7 +1,14 @@
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { parseArgs, isDeepStrictEqual } from 'node:util';
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 
 import { shardTargets } from './shard.mts';
 
@@ -308,6 +315,7 @@ function main() {
   writeFileSync(join(values.output, 'aggregate.json'), JSON.stringify(result, null, 2));
   const markdown = aggregateMarkdown(result);
   writeFileSync(join(values.output, 'summary.md'), markdown);
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
   console.log(markdown);
 }
 

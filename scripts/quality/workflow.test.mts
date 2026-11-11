@@ -33,7 +33,7 @@ interface Job {
   name?: string;
   needs?: string[];
   if?: string;
-  'timeout-minutes'?: number;
+  'timeout-minutes'?: number | string;
   strategy?: { matrix: { report?: { check: string; shard: number }[]; workspace: string } };
   defaults?: { run: { 'working-directory': string } };
   steps: Step[];
@@ -105,7 +105,7 @@ test('workflow separates tooling, source, installs and artifacts without changin
 });
 
 test('mutation shards retain the fixed budget and aggregate all evidence before the existing gate passes', () => {
-  assert.equal(report['timeout-minutes'], 45);
+  assert.equal(report['timeout-minutes'], "${{ matrix.report.check == 'mutation' && 240 || 45 }}");
   assert.deepEqual(report.strategy?.matrix.report, [
     { check: 'risk', shard: 0 },
     { check: 'mutation', shard: 1 },

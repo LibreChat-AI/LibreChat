@@ -6,12 +6,15 @@ const mockCreateSchedulesService = jest.fn(() => ({
 jest.mock('@librechat/api', () => ({
   createSchedulesService: (...args) => mockCreateSchedulesService(...args),
 }));
-jest.mock('mongoose', () => ({ models: {} }));
 jest.mock('~/server/services/Config/app', () => ({ getAppConfig: jest.fn() }));
 jest.mock('~/server/services/Agents/triggers', () => ({ enqueueAgentTrigger: jest.fn() }));
 jest.mock('./mcp', () => jest.fn());
 jest.mock('./access', () => ({ resolveAgentFireAccess: jest.fn() }));
-jest.mock('~/models', () => ({ isAgentTriggerPrincipalActive: jest.fn() }));
+jest.mock('~/models', () => ({
+  isAgentTriggerPrincipalActive: jest.fn(),
+  findScheduleOwner: jest.fn(),
+  initializeNullBalance: jest.fn(),
+}));
 
 const { recordExpiredScheduleApproval } = require('./index');
 
@@ -62,11 +65,9 @@ describe('recordExpiredScheduleApproval', () => {
 
 describe('schedule owner lookup', () => {
   it('selects the terms acceptance flag the fire-time terms check reads', async () => {
-    const mongoose = require('mongoose');
-    const lean = jest.fn().mockResolvedValue({ _id: 'user-1', termsAccepted: false });
-    const select = jest.fn(() => ({ lean }));
-    const findById = jest.fn(() => ({ select }));
-    mongoose.models.User = { findById };
+    const methods = require('~/models');
+    const owner = { _id: 'user-1', termsAccepted: false };
+    methods.findScheduleOwner.mockResolvedValue(owner);
     mockRecordScheduleOutcome.mockResolvedValue(true);
     let facade;
     jest.isolateModules(() => {
@@ -80,11 +81,10 @@ describe('schedule owner lookup', () => {
       scheduledFor: '2026-08-17T12:00:00.000Z',
     });
     const { findUserById } = mockCreateSchedulesService.mock.calls.at(-1)[0];
-    await findUserById('user-1');
-
-    expect(findById).toHaveBeenCalledWith('user-1');
-    expect(select.mock.calls[0][0].split(' ')).toEqual(
-      expect.arrayContaining(['_id', 'tenantId', 'role', 'termsAccepted']),
+    await expect(findUserById('user-1')).resolves.toEqual(owner);
+    expect(methods.findScheduleOwner).toHaveBeenCalledWith('user-1');
+    expect(mockCreateSchedulesService.mock.calls.at(-1)[0].initializeNullBalance).toBe(
+      methods.initializeNullBalance,
     );
   });
 });

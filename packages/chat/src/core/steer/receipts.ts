@@ -1,11 +1,12 @@
-import { MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
+import { MAX_FILE_TEXT_PREVIEW_LENGTH, getPromotedSteerRequestId } from 'librechat-data-provider';
 import type {
   TMessage,
   TAgentQueuedTurnReceipt,
   TAgentQueuedTurnFileRef,
 } from 'librechat-data-provider';
-import type { QueuedMessage, SettledQueuedTurnReceipt } from './types';
+import type { PendingSteer, QueuedMessage, SettledQueuedTurnReceipt } from './types';
 import { hydrateFileDeliveryMetadata } from '../files';
+import { heldSteerClientIds } from './chips';
 
 type AgentQueuedTurnReceipt = TAgentQueuedTurnReceipt;
 
@@ -228,6 +229,58 @@ export function reconcileServerQueuedTurns(
     );
   });
   return [...retained, ...projected].sort(compareQueuedMessages);
+}
+
+/** The receipt list answers for at most this many request ids. */
+const QUEUED_TURN_LOOKUP_LIMIT = 100;
+
+/**
+ * The request ids a pane asks the receipt list about. Besides its server rows,
+ * the pane asks about every steer it still holds a local copy of, because the
+ * server may have promoted one to a turn this pane never heard of (it missed
+ * FINAL). Held steers come first under the limit: an active server row is
+ * listed whether or not it is asked for, while a promoted turn that already
+ * ran is found only by name.
+ */
+export function queuedTurnLookupIds(
+  chips: readonly PendingSteer[],
+  queue: readonly QueuedMessage[],
+): string[] {
+  return Array.from(
+    new Set([
+      ...heldSteerClientIds(chips, queue).map(getPromotedSteerRequestId),
+      ...queue.flatMap((item) =>
+        item.server != null && item.clientRequestId != null ? [item.clientRequestId] : [],
+      ),
+    ]),
+  ).slice(0, QUEUED_TURN_LOOKUP_LIMIT);
+}
+
+/** Whether a promoted turn still answers for its steer's words, so no local
+ * copy of them may send. A live or admitted turn does. A cancelled one handed
+ * the words back. A dead one does only if it held them when it stopped: it was
+ * proven their sole owner, or its admission is indeterminate and may still
+ * settle as admitted. A turn that died before owning the words (its hand-off
+ * was never confirmed) leaves them to whichever surface still has them. */
+function claimsPromotedSteer(receipt: AgentQueuedTurnReceipt): boolean {
+  if (receipt.steer == null || receipt.status === 'cancelled') {
+    return false;
+  }
+  if (receipt.status !== 'dead') {
+    return true;
+  }
+  return receipt.steer.owned === true || receipt.failure?.code === 'ADMISSION_INDETERMINATE';
+}
+
+/** Every id (server and client) of the steers a durable promoted turn answers
+ * for. A local chip or recovery row for any of them must retire instead of
+ * sending again. */
+export function ownedPromotedSteerIds(receipts: readonly AgentQueuedTurnReceipt[]): string[] {
+  return receipts.flatMap((receipt) =>
+    claimsPromotedSteer(receipt) && receipt.steer != null
+      ? [receipt.steer.steerId, receipt.steer.clientSteerId]
+      : [],
+  );
 }
 
 /**

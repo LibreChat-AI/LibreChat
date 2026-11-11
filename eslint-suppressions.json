@@ -779,6 +779,11 @@
       "count": 2
     }
   },
+  "client/src/components/Sharing/PeoplePicker/SearchPicker.tsx": {
+    "shadcn/no-inline-styles": {
+      "count": 1
+    }
+  },
   "client/src/components/Sharing/PeoplePicker/SelectedPrincipalsList.tsx": {
     "shadcn/no-restyle": {
       "count": 4

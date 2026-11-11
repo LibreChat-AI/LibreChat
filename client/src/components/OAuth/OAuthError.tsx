@@ -18,6 +18,21 @@ export default function OAuthError() {
 
   const getErrorMessage = (error: string): string => {
     switch (error) {
+      case 'slack_transactions_unavailable':
+        return localize('com_ui_channels_transaction_required');
+      case 'slack_workspace_in_use':
+        return localize('com_ui_slack_workspaces_in_use');
+      case 'slack_forbidden':
+        return localize('com_ui_slack_workspaces_admin');
+      case 'slack_unsupported_installation':
+        return localize('com_ui_slack_workspaces_unsupported');
+      case 'slack_missing_scopes':
+        return localize('com_ui_slack_workspaces_scopes');
+      case 'slack_workspace_changed':
+        return localize('com_ui_slack_workspaces_changed');
+      case 'slack_stale_install':
+      case 'slack_invalid_install':
+        return localize('com_ui_slack_workspaces_restart');
       case 'missing_code':
         return localize('com_ui_oauth_error_missing_code');
       case 'missing_state':

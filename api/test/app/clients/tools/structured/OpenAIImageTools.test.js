@@ -131,41 +131,47 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
     );
   });
 
-  it.each(['gpt-image-1', 'gpt-image-1.5', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', ' '])(
-    'should preserve the configured generation model %j',
-    async (model) => {
-      process.env.IMAGE_GEN_OAI_MODEL = model;
+  it.each([
+    'gpt-image-1',
+    'gpt-image-1.5',
+    'gpt-image-2',
+    'gpt-image-2.5-flare',
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2.6-sunburst',
+    'gpt-image-2.6-flare',
+    ' ',
+  ])('should preserve the configured generation model %j', async (model) => {
+    process.env.IMAGE_GEN_OAI_MODEL = model;
 
-      const mockGenerate = jest.fn().mockResolvedValue({
-        data: [
-          {
-            b64_json: 'base64-encoded-image-data',
-          },
-        ],
-      });
-
-      OpenAI.mockImplementation(() => ({
-        images: {
-          generate: mockGenerate,
+    const mockGenerate = jest.fn().mockResolvedValue({
+      data: [
+        {
+          b64_json: 'base64-encoded-image-data',
         },
-      }));
+      ],
+    });
 
-      const [imageGenTool] = createOpenAIImageTools({
-        isAgent: true,
-        override: false,
-        req: { user: { id: 'test-user' } },
-      });
+    OpenAI.mockImplementation(() => ({
+      images: {
+        generate: mockGenerate,
+      },
+    }));
 
-      await imageGenTool.func({ prompt: 'test prompt' });
+    const [imageGenTool] = createOpenAIImageTools({
+      isAgent: true,
+      override: false,
+      req: { user: { id: 'test-user' } },
+    });
 
-      expect(mockGenerate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          model,
-        }),
-        expect.any(Object),
-      );
-    },
-  );
+    await imageGenTool.func({ prompt: 'test prompt' });
+
+    expect(mockGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model,
+      }),
+      expect.any(Object),
+    );
+  });
 
   it('should use custom model name from IMAGE_GEN_OAI_MODEL environment variable', async () => {
     process.env.IMAGE_GEN_OAI_MODEL = 'custom-image-model';
@@ -205,8 +211,11 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
     ['', 'gpt-image-2.5-flare'],
     ['gpt-image-1', 'gpt-image-1'],
     ['gpt-image-1.5', 'gpt-image-1.5'],
+    ['gpt-image-2', 'gpt-image-2'],
     ['gpt-image-2.5-flare', 'gpt-image-2.5-flare'],
     ['gpt-image-2.5-sunburst', 'gpt-image-2.5-sunburst'],
+    ['gpt-image-2.6-sunburst', 'gpt-image-2.6-sunburst'],
+    ['gpt-image-2.6-flare', 'gpt-image-2.6-flare'],
     ['custom-image-model', 'custom-image-model'],
     [' ', ' '],
   ])('preserves the editing model for IMAGE_GEN_OAI_MODEL=%j', async (model, expectedModel) => {
@@ -223,6 +232,57 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
       '/images/edits',
       expect.any(FormData),
       expect.any(Object),
+    );
+  });
+
+  describe.each([
+    [undefined, 'gpt-image-2.5-flare'],
+    ['', 'gpt-image-2.5-flare'],
+    ['gpt-image-2.5-flare', 'gpt-image-2.5-flare'],
+    ['gpt-image-2.5-flare-2026-09-08', 'gpt-image-2.5-flare-2026-09-08'],
+    ['gpt-image-2.5-sunburst', 'gpt-image-2.5-sunburst'],
+    ['gpt-image-2.5-sunburst-2026-09-08', 'gpt-image-2.5-sunburst-2026-09-08'],
+    ['gpt-image-2.6-sunburst', 'gpt-image-2.6-sunburst'],
+    ['gpt-image-2.6-flare', 'gpt-image-2.6-flare'],
+  ])('quality forwarding for IMAGE_GEN_OAI_MODEL=%j', (model, expectedModel) => {
+    it.each(['low', 'medium', 'high', 'xhigh', 'max'])(
+      'passes quality %s to generations and edits',
+      async (quality) => {
+        if (model !== undefined) {
+          process.env.IMAGE_GEN_OAI_MODEL = model;
+        }
+        const generate = jest.fn().mockResolvedValue({
+          data: [{ b64_json: 'base64-encoded-image-data' }],
+        });
+        OpenAI.mockImplementation(() => ({ images: { generate } }));
+        const append = jest.spyOn(FormData.prototype, 'append');
+        const [imageGenTool, imageEditTool] = createTools();
+
+        const [, generation] = await imageGenTool.func({ prompt: 'test prompt', quality });
+        const [, edit] = await imageEditTool.func({
+          prompt: 'test prompt',
+          image_ids: ['source-image'],
+          quality,
+        });
+
+        expect(generate).toHaveBeenCalledWith(
+          expect.objectContaining({ model: expectedModel, quality, size: 'auto' }),
+          expect.any(Object),
+        );
+        expect(append).toHaveBeenCalledWith('model', expectedModel);
+        expect(append).toHaveBeenCalledWith('quality', quality);
+        expect(axios.post).toHaveBeenCalledWith(
+          '/images/edits',
+          expect.any(FormData),
+          expect.any(Object),
+        );
+        for (const artifact of [generation, edit]) {
+          expect(artifact.content[0].image_url.url).toBe(
+            'data:image/png;base64,base64-encoded-image-data',
+          );
+          expect(artifact.file_ids).toHaveLength(1);
+        }
+      },
     );
   });
 

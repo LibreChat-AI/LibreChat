@@ -10,8 +10,10 @@ import {
 } from '~/components/Auth';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import ResponseReviewRoute from './ResponseReviewRoute';
 import { importWithRecovery } from '~/lib/assets/lazy';
 import RouteErrorBoundary from './RouteErrorBoundary';
+import ChannelLinkRoute from './ChannelLinkRoute';
 import StartupLayout from './Layouts/Startup';
 import MarketplaceRoute from './Marketplace';
 import { codeSetupRoute } from './CodeSetup';
@@ -61,6 +63,16 @@ const baseHref = baseEl?.getAttribute('href') || '/';
 
 export const router = createBrowserRouter(
   [
+    {
+      path: 'responses/:responseId/review',
+      element: <ResponseReviewRoute />,
+      errorElement: <RouteErrorBoundary />,
+    },
+    {
+      path: 'channels/link',
+      element: <ChannelLinkRoute />,
+      errorElement: <RouteErrorBoundary />,
+    },
     {
       path: 'share/:shareId',
       element: <ShareRoute />,

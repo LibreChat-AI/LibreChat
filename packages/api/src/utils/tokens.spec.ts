@@ -415,11 +415,30 @@ describe('Sonnet 5.5 token limits', () => {
   });
 });
 
-describe.each(['gpt-6-sol', 'gpt-6-luna'])('%s token limits', (model) => {
+describe.each(['gpt-6-sol', 'gpt-6.1-terra', 'gpt-6-luna'])('%s token limits', (model) => {
   it('resolves exact, snapshot, and provider-prefixed IDs', () => {
     for (const name of [model, `${model}-2026-09-22`, `openai/${model}`]) {
       expect(getModelMaxTokens(name, EModelEndpoint.openAI)).toBe(1050000);
     }
+  });
+});
+
+describe('Terra context overrides', () => {
+  const model = 'gpt-6.1-terra';
+  it('honors explicit overrides and falls back for unlisted native models', () => {
+    expect(
+      getModelMaxTokens(model, EModelEndpoint.openAI, {
+        [model]: { context: 64000, prompt: 1, completion: 5 },
+      }),
+    ).toBe(64000);
+    expect(
+      getModelMaxTokens(model, EModelEndpoint.openAI, {
+        'gpt-4.1': { context: 64000, prompt: 1, completion: 1 },
+      }),
+    ).toBe(1050000);
+  });
+  it('keeps the separate Bedrock context window', () => {
+    expect(getModelMaxTokens(`us.openai.${model}`, EModelEndpoint.bedrock)).toBe(950000);
   });
 });
 
@@ -448,6 +467,35 @@ describe('Claude version boundaries', () => {
     'still resolves a complete minor version in %s',
     (model) => {
       expect(findMatchingPattern(model, rates)).toBe('claude-fable-5-2');
+    },
+  );
+});
+
+describe('Claude Mythos 5.2 context window', () => {
+  it.each(['claude-mythos-5-2', 'anthropic/claude-mythos-5-2'])(
+    'resolves the 1M context window for %s',
+    (model) => {
+      expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
+      expect(getModelMaxTokens(model, EModelEndpoint.custom)).toBe(1000000);
+    },
+  );
+});
+
+describe('Claude Mythos version boundaries', () => {
+  const rates = { 'claude-mythos-5': 10, 'claude-mythos-5-1': 10, 'claude-mythos-5-2': 8 };
+
+  it.each([
+    'claude-mythos-5-20260609',
+    'anthropic/claude-mythos-5-20260609',
+    'anthropic.claude-mythos-5-20260609',
+  ])('does not mistake the date in %s for a minor version', (model) => {
+    expect(findMatchingPattern(model, rates)).toBe('claude-mythos-5');
+  });
+
+  it.each(['claude-mythos-5-2', 'claude-mythos-5-2-20261109'])(
+    'still resolves a complete minor version in %s',
+    (model) => {
+      expect(findMatchingPattern(model, rates)).toBe('claude-mythos-5-2');
     },
   );
 });

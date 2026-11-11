@@ -334,10 +334,15 @@ test('CLI uses only built-ins, reads unmerged directories, and fails without a g
     '--output',
     output,
   ];
-  const result = spawnSync(process.execPath, args, { encoding: 'utf8' });
+  const stepSummary = join(directory, 'step-summary.md');
+  const result = spawnSync(process.execPath, args, {
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_STEP_SUMMARY: stepSummary },
+  });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(readFileSync(join(output, 'aggregate.json'), 'utf8')).total, 10);
   assert.match(readFileSync(join(output, 'summary.md'), 'utf8'), /50.00%/);
+  assert.equal(readFileSync(stepSummary, 'utf8'), readFileSync(join(output, 'summary.md'), 'utf8'));
   writeFileSync(join(input, 'artifact-0', 'progress.json'), 'not-json-secret-payload');
   const failed = spawnSync(process.execPath, args, { encoding: 'utf8' });
   assert.equal(failed.status, 1);

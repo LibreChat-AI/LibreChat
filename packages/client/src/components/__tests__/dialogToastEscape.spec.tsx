@@ -35,6 +35,40 @@ function Harness({
 }
 
 describe('dialog Escape', () => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])('honours combobox expansion (expanded=%s, toast=%s)', async (expanded, toast) => {
+    const onOpenChange = jest.fn();
+    render(
+      <RadixToast.Provider>
+        <OGDialog open onOpenChange={onOpenChange}>
+          <OGDialogContent>
+            <input
+              role="combobox"
+              aria-label="People"
+              aria-expanded={expanded}
+              aria-controls="people-results"
+            />
+            <div id="people-results" role="listbox" hidden={!expanded} />
+          </OGDialogContent>
+        </OGDialog>
+        {toast && (
+          <RadixToast.Root open duration={Infinity}>
+            <RadixToast.Description>Saved</RadixToast.Description>
+          </RadixToast.Root>
+        )}
+        <RadixToast.Viewport />
+      </RadixToast.Provider>,
+    );
+    screen.getByRole('combobox', { name: 'People' }).focus();
+    await userEvent.keyboard('{Escape}');
+    if (expanded) expect(onOpenChange).not.toHaveBeenCalled();
+    else expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   /** The fallback must not overrule the guards the dialog already honours: a
    *  popup inside it owns the first Escape (WCAG 2.1.1), and a layer that has
    *  already answered the event owns it outright. */

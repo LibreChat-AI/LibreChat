@@ -1226,6 +1226,28 @@ describe('getLLMConfig', () => {
         expect(result.llmConfig).not.toHaveProperty('topK');
       });
 
+      it('keeps Mythos 5.2 thinking adaptive when a saved preset disables it', () => {
+        const result = getLLMConfig('test-key', {
+          modelOptions: {
+            model: 'claude-mythos-5-2',
+            thinking: false,
+            temperature: 0.7,
+            topP: 0.9,
+            topK: 40,
+          },
+        });
+
+        expect(result.llmConfig.thinking).toMatchObject({
+          type: 'adaptive',
+          display: 'summarized',
+          block_binding: { prefix_mismatch_behavior: 'drop_block' },
+        });
+        expect(result.llmConfig.maxTokens).toBe(128000);
+        expect(result.llmConfig).not.toHaveProperty('temperature');
+        expect(result.llmConfig).not.toHaveProperty('topP');
+        expect(result.llmConfig).not.toHaveProperty('topK');
+      });
+
       it('keeps Fable 5.2 thinking adaptive when a saved preset disables it', () => {
         const result = getLLMConfig('test-key', {
           modelOptions: {
@@ -2597,6 +2619,7 @@ describe('assistant prefill', () => {
     'claude-opus-5-5',
     'claude-fable-5-1',
     'claude-fable-5-2',
+    'claude-mythos-5-2',
   ])('drops the trailing assistant turn for %s', async (model) => {
     expect(await sendAndCaptureMessages(model)).toEqual(['user']);
   });

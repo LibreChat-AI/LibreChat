@@ -66,6 +66,7 @@ const openAIModels = {
   'gpt-5.6-luna': 1050000,
   'gpt-6-astra': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
   'gpt-6-sol': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
+  'gpt-6.1-terra': 1050000,
   'gpt-6-luna': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
   'chat-latest': 400000,
   'gpt-5-mini': 400000,
@@ -199,6 +200,7 @@ const anthropicModels = {
   'claude-fable-5-1': 1000000,
   'claude-fable-5-2': 1000000,
   'claude-mythos-5-1': 1000000,
+  'claude-mythos-5-2': 1000000,
 };
 
 const ANTHROPIC_CONTEXT_1M = 1000000;

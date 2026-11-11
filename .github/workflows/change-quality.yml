@@ -118,7 +118,8 @@ jobs:
     needs: [select, verify]
     if: needs.select.outputs.hasChanges == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Whole edited database functions can produce thousands of mutation cases.
+    timeout-minutes: ${{ matrix.report.check == 'mutation' && 240 || 45 }}
     defaults:
       run:
         working-directory: source

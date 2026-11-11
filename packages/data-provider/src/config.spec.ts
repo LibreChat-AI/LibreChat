@@ -3371,3 +3371,115 @@ describe('directory verification deadline configuration', () => {
     );
   });
 });
+
+describe('channel storage work limit', () => {
+  it('preserves the claim default and exposes an operator override through YAML config', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.claimBatchSize).toBe(25);
+    expect(
+      configSchema.parse({
+        version: '1.3.17',
+        endpoints: { agents: { channels: { claimBatchSize: 60 } } },
+      }).endpoints?.agents?.channels?.claimBatchSize,
+    ).toBe(60);
+  });
+  it.each([0, 101, 1.5, '25'])('rejects invalid claim batch %s', (claimBatchSize) => {
+    expect(agentsEndpointSchema.safeParse({ channels: { claimBatchSize } }).success).toBe(false);
+  });
+});
+
+describe('channel erasure configuration', () => {
+  it('defaults cleanup batches and exposes a deployment override', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.erasureBatchSize).toBe(250);
+    expect(
+      configSchema.parse({
+        version: '1.3.17',
+        endpoints: { agents: { channels: { erasureBatchSize: 12 } } },
+      }).endpoints?.agents?.channels?.erasureBatchSize,
+    ).toBe(12);
+  });
+  it.each([0, 1001, 1.5, '250'])('rejects invalid erasure batch %s', (erasureBatchSize) => {
+    expect(agentsEndpointSchema.safeParse({ channels: { erasureBatchSize } }).success).toBe(false);
+  });
+});
+
+describe('complete channel operator configuration', () => {
+  it('owns gateway feature and signature policy with behavior-preserving defaults', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels).toMatchObject({
+      transport: 'socket_mode',
+      nativeSessions: false,
+      lifecycleReactions: false,
+      signatureToleranceSeconds: 300,
+      socketReconnectDelayMs: 5000,
+    });
+    expect(
+      configSchema.parse({
+        version: '1.2.1',
+        endpoints: {
+          agents: {
+            channels: {
+              enabled: true,
+              transport: 'webhook',
+              nativeSessions: true,
+              lifecycleReactions: true,
+              signatureToleranceSeconds: 60,
+              socketReconnectDelayMs: 100,
+            },
+          },
+        },
+      }).endpoints?.agents?.channels,
+    ).toMatchObject({
+      transport: 'webhook',
+      nativeSessions: true,
+      lifecycleReactions: true,
+      signatureToleranceSeconds: 60,
+      socketReconnectDelayMs: 100,
+    });
+  });
+  it.each([
+    { socketReconnectDelayMs: 99 },
+    { socketReconnectDelayMs: 60001 },
+    { socketReconnectDelayMs: 100.5 },
+    { socketReconnectDelayMs: '5000' },
+    { nativeSessions: 'true' },
+    { lifecycleReactions: 'false' },
+    { signatureToleranceSeconds: 0 },
+    { signatureToleranceSeconds: 301 },
+    { signatureToleranceSeconds: 1.5 },
+  ])('rejects malformed shared gateway policy %p', (channels) => {
+    expect(agentsEndpointSchema.safeParse({ channels }).success).toBe(false);
+  });
+  it('keeps channel execution disabled by default and accepts explicit enablement with runtime limits', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.enabled).toBe(false);
+    const parsed = configSchema.parse({
+      version: '1.2.1',
+      endpoints: {
+        agents: {
+          channels: {
+            enabled: true,
+            transport: 'webhook',
+            gatewayUrl: 'https://gateway.example',
+            cleanup: { batchSize: 12 },
+            ticketLifetimeMs: 180000,
+            artifactAnswerFileThresholdBytes: 8192,
+          },
+        },
+      },
+    });
+    expect(parsed.endpoints?.agents?.channels).toMatchObject({
+      enabled: true,
+      transport: 'webhook',
+      gatewayUrl: 'https://gateway.example',
+      cleanup: { batchSize: 12 },
+      ticketLifetimeMs: 180000,
+      artifactAnswerFileThresholdBytes: 8192,
+    });
+  });
+  it.each([{ artifactMaxBytes: 50 * 1024 * 1024 + 1 }, { ticketLifetimeMs: 0 }, { batchSize: 12 }])(
+    'rejects invalid or unknown runtime configuration %p',
+    (channels) => {
+      expect(
+        agentsEndpointSchema.safeParse({ channels: { enabled: true, ...channels } }).success,
+      ).toBe(false);
+    },
+  );
+});

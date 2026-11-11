@@ -75,6 +75,7 @@ jobs:
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
+            packages/channel-gateway/node_modules
             api/node_modules
           key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
       - name: Install dependencies
@@ -94,6 +95,7 @@ jobs:
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
+            packages/channel-gateway/node_modules
             api/node_modules
           key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
       - run: google-chrome --version
