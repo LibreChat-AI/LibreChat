@@ -21,6 +21,18 @@ if (BASE_URL && BASE_URL.endsWith('/')) {
 }
 
 export const apiBaseUrl = () => BASE_URL;
+export const responseReview = (responseId: string): string =>
+  `${BASE_URL}/api/agents/responses/${encodeURIComponent(responseId)}/review`;
+export const responseCancel = (responseId: string): string =>
+  `${BASE_URL}/api/agents/responses/${encodeURIComponent(responseId)}/cancel`;
+
+export const slackWorkspaces = (workspaceId?: string): string =>
+  `${apiBaseUrl()}/api/channels/workspaces${workspaceId ? `/${encodeURIComponent(workspaceId)}` : ''}`;
+
+export const agentChannels = (agentId: string, channelId?: string): string =>
+  `${BASE_URL}/api/agents/${encodeURIComponent(agentId)}/channels${
+    channelId ? `/${encodeURIComponent(channelId)}` : ''
+  }`;
 
 // Testing this buildQuery function
 const buildQuery = (params: Record<string, unknown>): string => {

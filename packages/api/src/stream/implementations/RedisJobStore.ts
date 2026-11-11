@@ -64,6 +64,7 @@ import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuati
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { RecoveredSteerPayloadMismatchError } from '~/stream/SteerRecovery';
 import { SCHEDULE_MCP_FAILURE_PATCH_LUA } from '../scheduleFailure';
+import { parseTerminalPersistenceOwner } from '~/stream/metadata';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createToolTimingTracker } from '~/agents/toolTiming';
 import { evalScript } from '~/cache/redisScript';
@@ -147,6 +148,7 @@ function assertCreateIdempotencyArguments(
  *     generationEpochGraceTtl,
  *     steerReceiptTtl (0 to leave unchanged),
  *     returnDrainedSteers,
+ *     expectProviderExecutionId | "",
  *     hdelCount,
  *     ...hdelFields,
  *     ...hsetPairs
@@ -158,6 +160,7 @@ const JOB_CAS_LUA =
   'if redis.call("HGET", KEYS[1], "status") ~= ARGV[1] then return 0 end ' +
   'if ARGV[2] ~= "" and redis.call("HGET", KEYS[1], "pendingActionId") ~= ARGV[2] then return 0 end ' +
   'if ARGV[3] ~= "" and redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[3] then return 0 end ' +
+  'if ARGV[13] ~= "" and redis.call("HGET", KEYS[1], "providerExecutionId") ~= ARGV[13] then return 0 end ' +
   'if ARGV[4] ~= "" then local now = redis.call("TIME") ' +
   'local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000) ' +
   'if nowMs >= tonumber(ARGV[4]) then return -1 end end ' +
@@ -201,9 +204,9 @@ const JOB_CAS_LUA =
   'or (item.recoveringCreatedAt and (type(item.recoveringCreatedAt) ~= "number" or item.recoveringCreatedAt < 0)) then return 0 end ' +
   'validatedPrior[#validatedPrior + 1] = item end end end ' +
   'local currentReceipt = redis.call("HGET", KEYS[1], "scheduleOutcomeError") ' +
-  'local clearReceipt = false local hdelCount = tonumber(ARGV[13]) ' +
-  'for i = 14, 13 + hdelCount do if ARGV[i] == "scheduleOutcome" or ARGV[i] == "scheduleOutcomeError" then clearReceipt = true end end ' +
-  'local idx = 14 ' +
+  'local clearReceipt = false local hdelCount = tonumber(ARGV[14]) ' +
+  'for i = 15, 14 + hdelCount do if ARGV[i] == "scheduleOutcome" or ARGV[i] == "scheduleOutcomeError" then clearReceipt = true end end ' +
+  'local idx = 15 ' +
   'for i = 1, hdelCount do redis.call("HDEL", KEYS[1], ARGV[idx]) idx = idx + 1 end ' +
   'local hset = {} ' +
   'for i = idx, #ARGV do hset[#hset + 1] = ARGV[i] end ' +
@@ -729,6 +732,11 @@ const HAS_ACTIVE_SUBSCRIBER_LUA =
 const PROVIDER_DRAIN_LUA =
   'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
   'if redis.call("HGET", KEYS[1], "providerExecutionId") ~= ARGV[2] then return 0 end ' +
+  'if ARGV[3] == "1" then ' +
+  'local status = redis.call("HGET", KEYS[1], "status") ' +
+  'if status ~= "complete" and status ~= "error" and status ~= "aborted" then return 0 end ' +
+  'redis.call("HSET", KEYS[1], "terminalPersistencePending", "1", "terminalPersistenceOwner", "external") ' +
+  'redis.call("HSETNX", KEYS[1], "terminalPersistenceStartedAt", ARGV[4]) end ' +
   'redis.call("HSET", KEYS[1], "providerDrained", "1") return 1';
 
 /** Legacy host-action recovery. Scheduled obligations require exact segment
@@ -761,7 +769,9 @@ const PROVIDER_BEGIN_LUA =
   'if redis.call("HGET", KEYS[1], "providerExecutionId") ~= ARGV[2] then return 0 end ' +
   'if redis.call("HGET", KEYS[1], "status") ~= "running" then return 0 end ' +
   'if redis.call("HGET", KEYS[1], "providerDrained") ~= "1" then return 0 end ' +
-  'redis.call("HSET", KEYS[1], "providerDrained", "0", "providerExecutionStartedId", ARGV[2]) return 1';
+  'redis.call("HSET", KEYS[1], "providerDrained", "0", "providerExecutionStartedId", ARGV[2]) ' +
+  'if ARGV[3] ~= "" then redis.call("HSET", KEYS[1], "providerExecutionOwnerId", ARGV[3]) ' +
+  'else redis.call("HDEL", KEYS[1], "providerExecutionOwnerId") end return 1';
 
 /** Single-winner promotion from abort-persistence pending to a consumable
  * terminal payload. Owner success/failure and stale-owner recovery share this
@@ -1950,6 +1960,9 @@ interface PendingChunkAppendBatch {
 }
 
 export class RedisJobStore implements IJobStoreV2 {
+  readonly providerGuardedStatusTransitions = true as const;
+  readonly providerStartOwnership = true as const;
+  readonly providerTerminalPersistence = true as const;
   readonly durableScheduleReceipts = true;
   readonly detachedAgentEventActionStoreMode = 'distributed' as const;
 
@@ -2688,6 +2701,7 @@ export class RedisJobStore implements IJobStoreV2 {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean> {
     return (
       Number(
@@ -2697,6 +2711,8 @@ export class RedisJobStore implements IJobStoreV2 {
           KEYS.job(streamId),
           String(expectedCreatedAt),
           providerExecutionId,
+          terminalPersistencePending ? '1' : '',
+          String(Date.now()),
         ),
       ) === 1
     );
@@ -2706,6 +2722,7 @@ export class RedisJobStore implements IJobStoreV2 {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    ownerId?: string,
   ): Promise<boolean> {
     return (
       Number(
@@ -2715,6 +2732,7 @@ export class RedisJobStore implements IJobStoreV2 {
           KEYS.job(streamId),
           String(expectedCreatedAt),
           providerExecutionId,
+          ownerId ?? '',
         ),
       ) === 1
     );
@@ -3172,6 +3190,7 @@ export class RedisJobStore implements IJobStoreV2 {
       String(GENERATION_EPOCH_GRACE_TTL_S),
       String(args.steerReceiptTtlSeconds ?? 0),
       returnDrainedSteers ? '1' : '0',
+      args.expectProviderExecutionId ?? '',
       String(clearFields.length),
       ...clearFields,
       ...fields,
@@ -5740,6 +5759,7 @@ export class RedisJobStore implements IJobStoreV2 {
       sender: data.sender || undefined,
       syncSent: data.syncSent === '1',
       finalEvent: data.finalEvent || undefined,
+      terminalPersistenceOwner: parseTerminalPersistenceOwner(data.terminalPersistenceOwner),
       terminalPersistencePending:
         data.terminalPersistencePending != null
           ? data.terminalPersistencePending === '1'
@@ -5753,7 +5773,10 @@ export class RedisJobStore implements IJobStoreV2 {
       promptTokens: data.promptTokens ? parseInt(data.promptTokens, 10) : undefined,
       agent_id: data.agent_id || undefined,
       isTemporary: data.isTemporary != null ? data.isTemporary === '1' : undefined,
-      retentionExpiresAt: data.retentionExpiresAt || undefined,
+      isNewConversation:
+        data.isNewConversation != null ? data.isNewConversation === '1' : undefined,
+      retentionExpiresAt: data.retentionExpiresAt ?? undefined,
+      responseCheckpointConfigJSON: data.responseCheckpointConfigJSON || undefined,
       agentEventDeliveryKey: data.agentEventDeliveryKey || undefined,
       agentEventInvocationKey: data.agentEventInvocationKey || undefined,
       agentEventInvocationGenerationCreatedAt: data.agentEventInvocationGenerationCreatedAt
@@ -5843,6 +5866,7 @@ export class RedisJobStore implements IJobStoreV2 {
         data.providerAbortReady != null ? data.providerAbortReady === '1' : undefined,
       providerExecutionId: data.providerExecutionId || undefined,
       providerExecutionStartedId: data.providerExecutionStartedId || undefined,
+      providerExecutionOwnerId: data.providerExecutionOwnerId || undefined,
       providerDrained: data.providerDrained != null ? data.providerDrained === '1' : undefined,
       titleEvent: data.titleEvent || undefined,
       replayEvents: data.replayEvents || undefined,

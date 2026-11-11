@@ -581,7 +581,7 @@ const ChatForm = memo(function ChatForm({
 
   const approvalSlot = useMemo(
     () => (
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5 empty:hidden">
         <CodeApprovalMenu
           conversation={conversation}
           addedConversation={addedConvo}

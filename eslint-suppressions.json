@@ -139,11 +139,6 @@
       "count": 21
     }
   },
-  "client/src/components/Chat/Menus/PresetsMenu.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Messages/Content/ActivityPhaseGroup.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 2
@@ -412,7 +407,7 @@
   },
   "client/src/components/Conversations/RenameForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 12
+      "count": 10
     }
   },
   "client/src/components/Conversations/UnpinButton.tsx": {
@@ -779,6 +774,11 @@
       "count": 2
     }
   },
+  "client/src/components/Sharing/PeoplePicker/SearchPicker.tsx": {
+    "shadcn/no-inline-styles": {
+      "count": 1
+    }
+  },
   "client/src/components/Sharing/PeoplePicker/SelectedPrincipalsList.tsx": {
     "shadcn/no-restyle": {
       "count": 4
@@ -804,7 +804,7 @@
   },
   "client/src/components/SidePanel/Agents/Advanced/AdvancedPanel.tsx": {
     "shadcn/no-restyle": {
-      "count": 8
+      "count": 4
     }
   },
   "client/src/components/SidePanel/Agents/Advanced/AgentHandoffs.tsx": {
@@ -865,7 +865,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 12
+      "count": 9
     }
   },
   "client/src/components/SidePanel/Agents/OptionToggle.tsx": {
@@ -932,11 +932,6 @@
   "client/src/components/SidePanel/Agents/Version/VersionItem.tsx": {
     "shadcn/no-restyle": {
       "count": 7
-    }
-  },
-  "client/src/components/SidePanel/Agents/Version/VersionPanel.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/SidePanel/ArtifactsPanel.tsx": {
@@ -1044,7 +1039,7 @@
   },
   "client/src/components/SidePanel/Parameters/DynamicTextarea.tsx": {
     "shadcn/no-restyle": {
-      "count": 8
+      "count": 2
     }
   },
   "client/src/components/SidePanel/Parameters/Panel.tsx": {

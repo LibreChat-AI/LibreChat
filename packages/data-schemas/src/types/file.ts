@@ -88,6 +88,24 @@ export type RunArtifactFile = TFile & {
   metadata: NonNullable<TFile['metadata']> & { runFile: RunFileProvenance };
 };
 
+/** Reader metadata only; mutable generated files carry their attachment's expected digest. */
+export type ResponseArtifactFile = Pick<
+  TFile,
+  'file_id' | 'filename' | 'filepath' | 'storageKey' | 'storageRegion' | 'bytes' | 'type' | 'source'
+> & {
+  user: string;
+  tenantId?: string | null;
+  conversationId: string;
+  expiredAt?: Date | null;
+  expiresAt?: TFile['expiresAt'] | null;
+  sha256?: string;
+};
+
+export type ResponseArtifactQuery =
+  | { kind: 'list'; limit: number }
+  | { kind: 'file'; fileId: string }
+  | { kind: 'authorize' };
+
 export type RunArtifactContent = Pick<
   TFile,
   | 'filename'

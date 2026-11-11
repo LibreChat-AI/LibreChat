@@ -1,5 +1,6 @@
 /* eslint jest/no-standalone-expect: ["error", { "additionalTestBlockFunctions": ["testRedis"] }] */
 /* eslint jest/expect-expect: ["error", { "assertFunctionNames": ["expect", "expectSafeTerminalEvent"] }] */
+import type { RedisClientType, RedisClusterType } from '@redis/client';
 import type { Redis, Cluster } from 'ioredis';
 import type { FinalEvent, ServerSentEvent } from '~/types';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
@@ -138,6 +139,8 @@ function expectSafeTerminalEvent(event: unknown): void {
 describe('terminal projection boundary', () => {
   let originalEnv: NodeJS.ProcessEnv;
   let ioredisClient: Redis | Cluster | null = null;
+  let keyvClient: RedisClientType | RedisClusterType | null = null;
+  let keyvReady: Promise<void> | null = null;
   const testPrefix = 'Terminal-Projection-Test';
   const redisConfigured = process.env.USE_REDIS === 'true';
   const describeRedis = redisConfigured ? describe : describe.skip;
@@ -151,10 +154,18 @@ describe('terminal projection boundary', () => {
     jest.resetModules();
     const redisModule = await import('~/cache/redisClients');
     ioredisClient = redisModule.ioredisClient;
+    keyvClient = redisModule.keyvRedisClient;
+    keyvReady = redisModule.keyvRedisClientReady;
   });
 
   afterAll(async () => {
-    process.env = originalEnv;
+    try {
+      await keyvReady;
+      if (keyvClient?.isOpen) await keyvClient.disconnect();
+      await ioredisClient?.quit();
+    } finally {
+      process.env = originalEnv;
+    }
   });
 
   afterEach(async () => {
@@ -400,12 +411,12 @@ describe('terminal projection boundary', () => {
             delivered.push(event);
           },
         );
-        expect(subscription).not.toBeNull();
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        // A completed replay may retire its subscription before attachment returns.
+        await waitFor(() => delivered.length > 0, 'legacy terminal replay');
 
         expect(delivered).toHaveLength(1);
         expectSafeTerminalEvent(delivered[0]);
-        subscription!.unsubscribe();
+        subscription?.unsubscribe();
       } finally {
         await replica.destroy();
         await replicaSubscriber.quit().catch(() => undefined);

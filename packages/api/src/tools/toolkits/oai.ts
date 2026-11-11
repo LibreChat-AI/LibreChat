@@ -76,6 +76,7 @@ const supportsExtendedQuality = [
   'gpt-image-2.5-sunburst',
   'gpt-image-2.5-sunburst-2026-09-08',
   'gpt-image-2.6-sunburst',
+  'gpt-image-2.6-flare',
 ].includes(process.env.IMAGE_GEN_OAI_MODEL || 'gpt-image-2.5-flare');
 
 const imageQualitySchema: ExtendedJsonSchema = {

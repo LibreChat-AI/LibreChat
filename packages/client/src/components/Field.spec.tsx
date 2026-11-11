@@ -93,7 +93,7 @@ describe('field variants', () => {
       'lc-field',
       'border-border-control',
       'focus-visible:ring-focus-control',
-      'bg-transparent',
+      'theme-field-fill:bg-field-fill',
       'resize-none',
     );
   });
@@ -129,9 +129,10 @@ describe('field variants', () => {
     expect(screen.getByLabelText('key')).toHaveClass(...FLUSH);
   });
 
-  it('paints the floating label chip in the field fill when the theme fills fields', () => {
+  it('paints the floating label chip in the field fill below the border line when the theme fills fields', () => {
     expect(floatingLabel).toContain('bg-surface-primary');
-    expect(floatingLabel).toContain('theme-field-fill:bg-field-fill');
+    expect(floatingLabel).toContain('theme-field-fill:bg-linear-to-b');
+    expect(floatingLabel).toContain('theme-field-fill:to-field-fill');
   });
 
   it('flush and embedded variants drop the base field fill in every control that carries it', () => {

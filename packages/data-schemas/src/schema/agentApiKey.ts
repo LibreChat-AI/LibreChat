@@ -1,6 +1,8 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
+import type { AgentApiKeyBinding } from '~/types/agentApiKey';
 
 export interface IAgentApiKey extends Document {
+  binding?: AgentApiKeyBinding;
   userId: Types.ObjectId;
   name: string;
   keyHash: string;
@@ -14,6 +16,16 @@ export interface IAgentApiKey extends Document {
 
 const agentApiKeySchema: Schema<IAgentApiKey> = new Schema(
   {
+    binding: {
+      type: new Schema<AgentApiKeyBinding>(
+        {
+          kind: { type: String, required: true, maxlength: 64 },
+          id: { type: String, required: true, maxlength: 256 },
+        },
+        { _id: false },
+      ),
+      immutable: true,
+    },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

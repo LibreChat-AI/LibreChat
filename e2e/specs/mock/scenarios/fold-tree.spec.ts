@@ -162,6 +162,17 @@ async function openGroup(page: Page, name: RegExp): Promise<Locator> {
     .last();
 }
 
+async function waitForTransitions(page: Page) {
+  await page.waitForFunction(
+    () =>
+      !document
+        .getAnimations()
+        .some(
+          (animation) => animation.playState === 'running' && animation instanceof CSSTransition,
+        ),
+  );
+}
+
 const railOf = (panel: Locator) => panel.locator('> div > [data-testid="fold-rail"]');
 const traceOf = (rail: Locator) => rail.locator('[data-fold-trace]');
 const branchesOf = (rail: Locator) => rail.locator('[data-testid="fold-rail-tree"] > g > path');
@@ -500,12 +511,7 @@ test.describe('tool disclosure polish', () => {
     await openGroup(page, /^Ran 4 actions/);
     const panel = messagesView(page).getByTestId('tool-call-group-panel').last();
     await expect(panel).toBeVisible();
-    await page.waitForFunction(
-      () =>
-        !document
-          .getAnimations()
-          .some((a) => a.playState === 'running' && a instanceof CSSTransition),
-    );
+    await waitForTransitions(page);
     await panel.evaluate((element) => {
       const values: number[] = [];
       (window as unknown as { foldHeights: number[] }).foldHeights = values;

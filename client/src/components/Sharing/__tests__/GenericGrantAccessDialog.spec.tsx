@@ -153,7 +153,7 @@ describe('GenericGrantAccessDialog - permissions load failure', () => {
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_share_var' }));
     const dialog = screen.getByRole('dialog');
 
-    expect(dialog).toHaveClass('max-w-5xl', 'overflow-hidden', 'p-0');
+    expect(dialog).toHaveClass('max-w-5xl', 'overflow-visible', 'p-0');
     expect(
       screen.getByRole('heading', { level: 3, name: 'com_ui_user_group_permissions' }),
     ).toBeInTheDocument();

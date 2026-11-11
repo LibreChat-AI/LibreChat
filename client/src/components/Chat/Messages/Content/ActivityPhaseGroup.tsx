@@ -754,9 +754,9 @@ export default function ActivityPhaseGroup({
              *  the element that depends on it. */
             className={cn(
               'text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle flex h-auto min-h-7 min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-start font-medium hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none focus-visible:ring-inset',
-              /** The open card's title: the one semibold, primary-colour line
-               *  in the fold, so the rows under it read as its contents. */
-              isExpanded && 'text-text-primary font-semibold',
+              /** The open card's title: the one semibold line in the fold, so the
+               *  rows under it read as its contents. Its colour does not change. */
+              isExpanded && 'font-semibold',
             )}
             onClick={handleToggle}
             aria-expanded={isExpanded}

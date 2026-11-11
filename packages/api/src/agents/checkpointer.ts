@@ -912,6 +912,8 @@ export async function deleteAgentCheckpoint(
   }
   const saver = await getAgentCheckpointer(cfg);
   if (!saver) {
+    if (options?.throwOnError && resolveCheckpointerConfig(cfg).type !== 'memory')
+      throw new Error('Checkpoint database is unavailable');
     return;
   }
   try {

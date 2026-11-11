@@ -14,6 +14,7 @@ import type {
   UpdateQuery,
 } from 'mongoose';
 import type { SearchParams } from 'meilisearch';
+import type { ClientSession } from 'mongoose';
 import type {
   IAgentEventActorCheckpoint,
   IAgentEventActorReconciliation,
@@ -29,6 +30,7 @@ import type {
   IMessage,
   ISharedLink,
   ISubagentThreadReservation,
+  IUser,
 } from '~/types';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { MessageMethods } from './message';
@@ -40,6 +42,13 @@ import {
   MAX_AGENT_EVENT_ACTOR_TOOL_NAME_LENGTH,
 } from '~/types/convo';
 import {
+  closeResponseScopes,
+  eraseResponseRecords,
+  createResponseRetention,
+  discoverResponseOwners,
+  createResponseConversationReplacement,
+} from './responseScope';
+import {
   activeExpirationFilter,
   buildRetentionVisibilityFilter,
   createFallbackRetentionDate,
@@ -49,11 +58,13 @@ import {
   updateChatProjectLastConversationForUser,
 } from './chatProject';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
+import { getTenantId, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantContext';
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { prepareSubagentContentDeletion } from './subagentContent';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { runAfterTransaction } from '~/utils/postCommit';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';
 import logger from '~/config/winston';
@@ -649,6 +660,8 @@ export interface ConversationMethods {
 
 export interface ConversationMethodDeps
   extends Pick<MessageMethods, 'getMessages' | 'deleteMessages'> {
+  /** Private data-schemas transaction for canonical response turn saves. */
+  saveSession?: ClientSession;
   searchMessages?: MessageMethods['searchMessages'];
   deleteAgentQueuedTurns?: (
     user: string,
@@ -668,6 +681,8 @@ export function createConversationMethods(
   mongoose: typeof import('mongoose'),
   deps?: ConversationMethodDeps,
 ): ConversationMethods {
+  const retainResponses = createResponseRetention(mongoose, deps?.saveSession);
+  const prepareResponseReplacement = createResponseConversationReplacement(mongoose);
   let legacyReceiptExpiryCursor: Types.ObjectId | undefined;
 
   /**
@@ -2336,12 +2351,13 @@ export function createConversationMethods(
 
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const stored = await Conversation.findOne({ conversationId, user: userId })
-      .select({ _id: 1, isTemporary: 1, expiredAt: 1, tags: 1 })
+      .select({ _id: 1, isTemporary: 1, expiredAt: 1, tags: 1, tenantId: 1 })
       .lean<{
         _id: Types.ObjectId;
         isTemporary?: boolean;
         expiredAt?: Date | null;
         tags?: string[];
+        tenantId?: string;
       } | null>();
     if (!stored) {
       return;
@@ -2357,6 +2373,7 @@ export function createConversationMethods(
       }
     }
 
+    await retainResponses({ userId, tenantId: stored.tenantId }, conversationId, expiredAt);
     let stampedDeadline = stored.expiredAt != null;
     if (stored.isTemporary !== true) {
       /**
@@ -2507,7 +2524,7 @@ export function createConversationMethods(
           const project = await ChatProject.exists({
             _id: new mongoose.Types.ObjectId(candidate),
             user: userId,
-          });
+          }).session(deps?.saveSession ?? null);
           if (project != null) {
             chatProjectIdOnInsert = candidate;
           }
@@ -2578,6 +2595,38 @@ export function createConversationMethods(
       } else if (isTemporary === false) {
         update.isTemporary = false;
         update.expiredAt = null;
+      }
+
+      const responseDeadline =
+        update.expiredAt instanceof Date ? update.expiredAt : retentionOnInsert?.expiredAt;
+      const replacingConversationId = newConversationId && newConversationId !== conversationId;
+      if (responseDeadline || replacingConversationId) {
+        const stored = await Conversation.findOne({ user: userId, conversationId })
+          .session(deps?.saveSession ?? null)
+          .select('tenantId expiredAt')
+          .lean<Pick<IConversation, 'tenantId' | 'expiredAt'>>();
+        const contextTenant = getTenantId();
+        const responseOwner = {
+          userId,
+          tenantId:
+            stored?.tenantId ?? (contextTenant === SYSTEM_TENANT_ID ? undefined : contextTenant),
+        };
+        // Conversation IDs are shared foreign keys for messages, approvals, jobs
+        // and checkpoints. newConversationId assigns an initial ID, never renames
+        // a persisted conversation independently of those resources.
+        if (
+          replacingConversationId &&
+          (stored || !(await prepareResponseReplacement(responseOwner, conversationId)))
+        ) {
+          return { message: 'Conversation ID cannot be replaced after persistence.' };
+        }
+        const deadline = responseDeadline ?? stored?.expiredAt;
+        if (deadline)
+          await retainResponses(
+            responseOwner,
+            newConversationId || conversationId,
+            stored?.expiredAt && stored.expiredAt < deadline ? stored.expiredAt : deadline,
+          );
       }
 
       const createdAtOnInsert =
@@ -2652,6 +2701,9 @@ export function createConversationMethods(
       const baseFilter = {
         conversationId,
         user: userId,
+        // Initial ID assignment must never match a source inserted after the
+        // absence check. Upsert may create the new ID, but cannot rename that row.
+        ...(replacingConversationId ? { _id: { $exists: false } } : {}),
         ...(metadata?.titleSource === 'generated' && {
           titleSetByUser: { $ne: true },
           title: { $in: [null, '', 'New Chat'] },
@@ -2666,6 +2718,7 @@ export function createConversationMethods(
           new: true,
           upsert,
           includeResultMetadata: true,
+          session: deps?.saveSession,
           ...timestampOptions,
         }) as unknown as Promise<ConversationUpdateResult>;
 
@@ -2703,7 +2756,7 @@ export function createConversationMethods(
          * That is a live conversation, so confirm it is really gone before letting the
          * route answer 404, and retry the pair when it is not. */
         for (let attempt = 0; !conversationResult.value && attempt < 2; attempt++) {
-          if (!(await Conversation.exists(baseFilter))) {
+          if (!(await Conversation.exists(baseFilter).session(deps?.saveSession ?? null))) {
             break;
           }
           conversationResult = await runArchiveWrites();
@@ -2715,7 +2768,7 @@ export function createConversationMethods(
           /** Alternating archive and unarchive requests can split every attempt, so
            * exhausting the retries still proves nothing about whether the chat exists.
            * Answer with its actual current state rather than reporting it missing. */
-          const current = await Conversation.findOne(baseFilter);
+          const current = await Conversation.findOne(baseFilter).session(deps?.saveSession ?? null);
           if (current) {
             conversationResult = {
               value: current as unknown as ConversationUpdateResult['value'],
@@ -2755,7 +2808,7 @@ export function createConversationMethods(
             $or: [{ codeWorkspaces: { $in: [null] } }, { codeWorkspaces: { $size: 0 } }],
           },
           { $set: decisionOnInsert },
-          { timestamps: false },
+          { timestamps: false, session: deps?.saveSession },
         );
         if (seeded.modifiedCount > 0) {
           Object.assign(conversation, decisionOnInsert);
@@ -2773,6 +2826,11 @@ export function createConversationMethods(
           interfaceConfig,
           conversation.isTemporary === true,
         );
+        await retainResponses(
+          { userId, tenantId: conversation.tenantId },
+          conversationId,
+          deadline,
+        );
         const result = await Conversation.updateOne(
           {
             _id: conversation._id,
@@ -2780,7 +2838,7 @@ export function createConversationMethods(
             isTemporary: conversation.isTemporary === true ? true : { $ne: true },
           },
           { $set: { expiredAt: deadline } },
-          { timestamps: false },
+          { timestamps: false, session: deps?.saveSession },
         );
         if (result.modifiedCount > 0) {
           conversation.expiredAt = deadline;
@@ -2842,7 +2900,10 @@ export function createConversationMethods(
         await Conversation.updateOne(
           { _id: conversation._id, isTemporary: { $ne: false } },
           { $set: { isTemporary: false } },
-          preserveUpdatedAt || replyStampApplied ? { timestamps: false } : {},
+          {
+            ...(preserveUpdatedAt || replyStampApplied ? { timestamps: false } : {}),
+            session: deps?.saveSession,
+          },
         );
         conversation.isTemporary = false;
       }
@@ -2852,49 +2913,53 @@ export function createConversationMethods(
          on a different collection: letting one of their failures reach the catch below would
          answer a successful save with an error, dropping the stamp from the terminal event and
          presenting a reply the user already watched arrive as unread on the next refresh. */
-      try {
-        if (conversation.chatProjectId) {
-          const isRetentionVisibilityUpdate =
-            typeof update.isTemporary === 'boolean' ||
-            Object.prototype.hasOwnProperty.call(convo, 'expiredAt') ||
-            Object.prototype.hasOwnProperty.call(unsetFields, 'isTemporary') ||
-            Object.prototype.hasOwnProperty.call(unsetFields, 'expiredAt');
-          /**
-           * Saving a conversation that is itself archived or retention-hidden (e.g.
-           * renaming or title generation on an archived project chat) must recompute
-           * stats rather than take the incremental fast path, otherwise the project's
-           * lastConversationAt/Id would point at a chat the project workspace hides.
-           */
-          const isConversationHidden =
-            conversation.isArchived === true ||
-            conversation.isTemporary === true ||
-            (conversation.expiredAt != null &&
-              new Date(conversation.expiredAt).getTime() <= Date.now());
-          const isNewConversation = conversationResult.lastErrorObject?.updatedExisting === false;
-          const shouldRefreshProjectStats =
-            isNewConversation ||
-            typeof update.isArchived === 'boolean' ||
-            Object.prototype.hasOwnProperty.call(unsetFields, 'isArchived') ||
-            isRetentionVisibilityUpdate ||
-            isConversationHidden;
+      const maintainProject = async () => {
+        try {
+          if (conversation.chatProjectId) {
+            const isRetentionVisibilityUpdate =
+              typeof update.isTemporary === 'boolean' ||
+              Object.prototype.hasOwnProperty.call(convo, 'expiredAt') ||
+              Object.prototype.hasOwnProperty.call(unsetFields, 'isTemporary') ||
+              Object.prototype.hasOwnProperty.call(unsetFields, 'expiredAt');
+            /**
+             * Saving a conversation that is itself archived or retention-hidden (e.g.
+             * renaming or title generation on an archived project chat) must recompute
+             * stats rather than take the incremental fast path, otherwise the project's
+             * lastConversationAt/Id would point at a chat the project workspace hides.
+             */
+            const isConversationHidden =
+              conversation.isArchived === true ||
+              conversation.isTemporary === true ||
+              (conversation.expiredAt != null &&
+                new Date(conversation.expiredAt).getTime() <= Date.now());
+            const isNewConversation = conversationResult.lastErrorObject?.updatedExisting === false;
+            const shouldRefreshProjectStats =
+              isNewConversation ||
+              typeof update.isArchived === 'boolean' ||
+              Object.prototype.hasOwnProperty.call(unsetFields, 'isArchived') ||
+              isRetentionVisibilityUpdate ||
+              isConversationHidden;
 
-          if (shouldRefreshProjectStats) {
-            await refreshChatProjectStatsForUser(mongoose, userId, conversation.chatProjectId);
-          } else if (!preserveUpdatedAt) {
-            await updateChatProjectLastConversationForUser(
-              mongoose,
-              userId,
-              conversation.chatProjectId,
-              conversation,
-            );
+            if (shouldRefreshProjectStats) {
+              await refreshChatProjectStatsForUser(mongoose, userId, conversation.chatProjectId);
+            } else if (!preserveUpdatedAt) {
+              await updateChatProjectLastConversationForUser(
+                mongoose,
+                userId,
+                conversation.chatProjectId,
+                conversation,
+              );
+            }
           }
+        } catch (error) {
+          logger.error('[saveConvo] Failed to maintain project statistics', error);
         }
-      } catch (error) {
-        logger.error('[saveConvo] Failed to maintain project statistics', error);
-      }
+      };
+      await runAfterTransaction(deps?.saveSession, maintainProject);
 
       return conversation.toObject();
     } catch (error) {
+      if (deps?.saveSession) throw error;
       logger.error('[saveConvo] Error saving conversation', error);
       if (metadata?.context) {
         logger.info(`[saveConvo] ${metadata.context}`);
@@ -4046,12 +4111,40 @@ export function createConversationMethods(
         .select('conversationId tenantId chatProjectId tags')
         .lean<DeletionConversation[]>();
       const recoveryConversationIds: string[] = [];
+      const recoveryResponseScopes: DeletionConversation[] = [];
+      const responseGroups = (wave: DeletionConversation[]) => {
+        const groups = new Map<string | undefined, string[]>();
+        for (const conversation of wave) {
+          const tenantId = conversation.tenantId || undefined;
+          const ids = groups.get(tenantId) ?? [];
+          ids.push(conversation.conversationId);
+          groups.set(tenantId, ids);
+        }
+        return groups;
+      };
+      const closeResponses = async (wave: DeletionConversation[]) => {
+        for (const [tenantId, ids] of responseGroups(wave))
+          await closeResponseScopes(mongoose, { userId: user, tenantId }, ids);
+      };
+      const eraseResponses = async (wave: DeletionConversation[]) => {
+        for (const [tenantId, ids] of responseGroups(wave))
+          await eraseResponseRecords(mongoose, { userId: user, tenantId }, ids);
+      };
       if (!conversations.length && typeof filter.conversationId === 'string') {
+        // Authorized delayed reservations retain the globally unique user's actual tenant.
+        // Fence it before probing legacy payloads, including when no response exists yet.
+        const owner = isValidObjectIdString(user)
+          ? await (mongoose.models.User as Model<IUser>).findById(user).select('tenantId').lean()
+          : null;
+        if (owner)
+          await closeResponses([
+            { conversationId: filter.conversationId, tenantId: owner.tenantId },
+          ]);
         /** A prior attempt may have deleted the root before a descendant read failed.
          * Resume from immutable root lineage and retain the root id for message,
          * checkpoint, and tool cleanup. The message probe distinguishes that partial
          * commit from a conversation id that never existed. */
-        const [descendants, rootMessages] = await Promise.all([
+        const [descendants, rootMessages, responseOwners] = await Promise.all([
           retryCascadeOperation(() =>
             Conversation.find({
               user,
@@ -4061,8 +4154,20 @@ export function createConversationMethods(
               .lean<DeletionConversation[]>(),
           ),
           getMessages({ user, conversationId: filter.conversationId }, '_id', { limit: 1 }),
+          discoverResponseOwners(mongoose, user, filter.conversationId),
         ]);
-        if (descendants.length === 0 && rootMessages.length === 0 && options?.allowEmpty !== true) {
+        for (const responseOwner of responseOwners) {
+          recoveryResponseScopes.push({
+            conversationId: filter.conversationId,
+            tenantId: responseOwner.tenantId,
+          });
+        }
+        if (
+          descendants.length === 0 &&
+          rootMessages.length === 0 &&
+          recoveryResponseScopes.length === 0 &&
+          options?.allowEmpty !== true
+        ) {
           throw new Error('Conversation not found or already deleted.');
         }
         conversations = descendants;
@@ -4132,6 +4237,7 @@ export function createConversationMethods(
           break;
         }
         const waveIds = wave.map((conversation) => conversation.conversationId);
+        await closeResponses(wave);
         await deps?.deleteAgentQueuedTurns?.(
           user,
           wave.map((conversation) => ({
@@ -4147,6 +4253,8 @@ export function createConversationMethods(
             conversationId: { $in: waveIds },
           }),
         );
+        // Like subagent content, response erasure is an irreversible part of deletion intent.
+        await eraseResponses(wave);
         const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
@@ -4181,6 +4289,12 @@ export function createConversationMethods(
       ];
 
       if (recoveryConversationIds.length > 0) {
+        // Each command retains an explicit owner/partition predicate. Request tenant
+        // middleware must not replace the partitions discovered by recovery.
+        await runAsSystem(async () => {
+          await closeResponses(recoveryResponseScopes);
+          await eraseResponses(recoveryResponseScopes);
+        });
         await deps?.deleteAgentQueuedTurns?.(
           user,
           recoveryConversationIds.map((conversationId) => ({

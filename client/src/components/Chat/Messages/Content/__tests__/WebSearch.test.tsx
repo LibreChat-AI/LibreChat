@@ -538,8 +538,7 @@ describe('WebSearch', () => {
       renderWebSearch({ searchResults });
 
       const button = screen.getByRole('button', { name: /Searched the web/ });
-      expect(button.parentElement).toHaveClass('h-5');
-      expect(button.parentElement?.parentElement).toHaveClass('my-1');
+      expect(button.parentElement).toHaveClass('my-1.5', 'h-5');
       expect(button).not.toHaveClass('py-1');
       expect(button).not.toHaveClass('transition-colors');
       const chevron = screen.getByTestId('chevron-icon');

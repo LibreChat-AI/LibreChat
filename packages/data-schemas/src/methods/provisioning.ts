@@ -1,6 +1,6 @@
 import type { ClientSession, Model, Types } from 'mongoose';
 import { getTransactionSupport } from '~/utils/transactions';
-import { runAfterTransaction } from './userGroup';
+import { runAfterTransaction } from '~/utils/postCommit';
 
 export interface PermissionPrincipalRecord {
   id: string;

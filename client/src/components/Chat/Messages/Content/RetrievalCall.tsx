@@ -476,7 +476,7 @@ export default function RetrievalCall({
         })()}
       </span>
       {!bare && (
-        <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5" ref={rowRef}>
+        <div className="relative my-1.5 flex h-5 shrink-0 items-center gap-2.5" ref={rowRef}>
           <ProgressText
             phase={phase}
             onClick={hasExpandableContent ? handleToggleOutput : undefined}

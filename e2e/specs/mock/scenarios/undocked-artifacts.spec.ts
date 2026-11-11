@@ -60,6 +60,22 @@ async function undock(page: Page) {
   return popup;
 }
 
+/**
+ * Docking closes the window from inside the press that asks for it, so the press can lose
+ * its reply to a page that is already gone. The window closing is the outcome that settles;
+ * a press that fails while the window is still open is a real failure.
+ */
+async function dockBack(popup: Page, press: () => Promise<void>) {
+  await Promise.all([
+    popup.waitForEvent('close'),
+    press().catch((error: Error) => {
+      if (!popup.isClosed()) {
+        throw error;
+      }
+    }),
+  ]);
+}
+
 /** The undock control is desktop-only: it is hidden below 868px. */
 test.use({ viewport: { width: 1280, height: 800 } });
 
@@ -116,11 +132,11 @@ test.describe('undocked artifacts pane', () => {
     await openHtmlArtifact(page);
     const popup = await undock(page);
 
-    await popup.getByRole('button', { name: DOCK }).click();
+    await dockBack(popup, () => popup.getByRole('button', { name: DOCK }).click());
 
+    expect(popup.isClosed()).toBe(true);
     await expect(page.getByRole('region', { name: HTML_ARTIFACT })).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole('button', { name: UNDOCK })).toBeVisible();
-    await expect.poll(() => popup.isClosed(), { timeout: 10000 }).toBe(true);
   });
 
   test('closing the window brings the pane home @scenario:closing-the-undocked-window-returns-the-pane', async ({
@@ -143,13 +159,9 @@ test.describe('undocked artifacts pane', () => {
     await openHtmlArtifact(page);
     const popup = await undock(page);
 
-    /* Keyboard path: the button pressed in the window disappears with it, so
-     * the press resolves against a page that is already gone. */
-    const dockButton = popup.getByRole('button', { name: DOCK });
-    await dockButton.focus();
-    const closed = popup.waitForEvent('close');
-    await popup.keyboard.press('Enter').catch(() => undefined);
-    await closed;
+    /* Keyboard path: the button pressed in the window disappears with it. */
+    await popup.getByRole('button', { name: DOCK }).focus();
+    await dockBack(popup, () => popup.keyboard.press('Enter'));
 
     const undockButton = page.getByRole('button', { name: UNDOCK });
     await expect(undockButton).toBeVisible({ timeout: 20000 });
@@ -317,7 +329,7 @@ test.describe('undocked artifacts pane', () => {
       timeout: 30000,
     });
 
-    await popup.getByRole('button', { name: DOCK }).click();
+    await dockBack(popup, () => popup.getByRole('button', { name: DOCK }).click());
 
     const docked = page.getByRole('region', { name: HTML_ARTIFACT });
     await expect(docked).toBeVisible({ timeout: 20000 });

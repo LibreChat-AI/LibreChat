@@ -102,6 +102,33 @@ test('generation deletion escapes metacharacters and keeps replacement generatio
   expect(rows.map((row) => row.checkpoint_id)).toEqual(['002']);
 });
 
+test('rejects ambiguous empty namespaces before deleting either checkpoints or pending writes', async () => {
+  const checkpoints = mongoose.connection.db!.collection('cp');
+  const writes = mongoose.connection.db!.collection('writes');
+  const rows = [
+    { thread_id: 'child', checkpoint_ns: '', checkpoint_id: '001' },
+    { thread_id: 'child', checkpoint_ns: 'nested|child', checkpoint_id: '002' },
+    { thread_id: 'child', checkpoint_ns: 'lcg:v2:new-generation', checkpoint_id: '003' },
+  ];
+  await checkpoints.insertMany(rows);
+  await writes.insertMany(rows.map((row) => ({ ...row, task_id: 'pending', idx: 0 })));
+  await expect(repository.deleteGeneration('child', undefined, '')).rejects.toThrow(
+    'captured checkpoint generation',
+  );
+  await expect(
+    repository.deleteGeneration('child', {
+      threadId: 'child',
+      checkpointIds: ['001', '002'],
+      checkpointNamespace: '',
+    }),
+  ).rejects.toThrow('captured checkpoint generation');
+  expect(await checkpoints.countDocuments()).toBe(3);
+  expect(await writes.countDocuments()).toBe(3);
+  await repository.deleteGeneration('child', { threadId: 'child', checkpointIds: ['001', '002'] });
+  expect((await checkpoints.find().toArray()).map((row) => row.checkpoint_id)).toEqual(['003']);
+  expect((await writes.find().toArray()).map((row) => row.checkpoint_id)).toEqual(['003']);
+});
+
 test('a captured legacy generation takes precedence over optional namespace hints', async () => {
   await repository.save({ ...key, owner: undefined }, payload('001'), {});
   await repository.deleteGeneration('child', { threadId: 'child', checkpointIds: ['001'] }, '');

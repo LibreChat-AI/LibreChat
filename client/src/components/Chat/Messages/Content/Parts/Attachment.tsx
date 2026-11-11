@@ -262,7 +262,7 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
       </button>
       <div id={panelId} style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef} aria-hidden={!isExpanded}>
-          <div className="flex flex-col gap-2.5 pt-2">
+          <div className="flex flex-col gap-2.5 pt-1">
             {groupedAttachments.files.length > 0 && (
               <div className="flex flex-wrap items-center gap-2.5">
                 {groupedAttachments.files.map((attachment, index) => (

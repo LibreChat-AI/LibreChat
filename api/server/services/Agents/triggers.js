@@ -69,6 +69,7 @@ const queuedTurnLifecycle = createAgentQueuedTurnLifecycle({
 });
 
 service = createAgentTriggerService({
+  sourceDispatchers: require('../Responses').backgroundResponseSourceDispatchers,
   methods,
   reclaimCheckpointDeletions: createCheckpointDeletionReclaimer((userId, tenantId) =>
     GenerationJobManager.getAccountCleanupJobIdsForUser(userId, tenantId),
@@ -104,6 +105,7 @@ const purgeAgentTriggerDeliveriesForUser = async (userId) => {
 };
 
 module.exports = {
+  isAgentTriggerServiceReady: service.isReady,
   initializeAgentTriggerService,
   stopAgentTriggerService,
   dispatchAgentTrigger: service.dispatch,

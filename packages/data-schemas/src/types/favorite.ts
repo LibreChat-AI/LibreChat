@@ -33,3 +33,11 @@ export interface RemoveToolFavoriteResult {
   ok: boolean;
   removed: boolean;
 }
+
+export interface ToolFavoriteMethods {
+  getToolFavorites(userId: string): Promise<IToolFavoriteLean[]>;
+  addToolFavorite(params: ToolFavoriteParams): Promise<AddToolFavoriteResult>;
+  removeToolFavorite(params: ToolFavoriteParams): Promise<RemoveToolFavoriteResult>;
+  deleteUserToolFavorites(userId: string, deletionAttemptId?: string): Promise<number>;
+  cancelUserToolFavoriteDeletion?(userId: string, deletionAttemptId: string): Promise<void>;
+}

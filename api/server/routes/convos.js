@@ -37,6 +37,7 @@ const {
   createRenameConversationHandler,
   createMarkConvoSeenHandler,
   createMarkConvoUnreadHandler,
+  createGetConversationHandler,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
   deleteAllSharedLinksWithCleanup,
@@ -313,16 +314,10 @@ router.post(
 );
 router.get('/:parentConversationId/subagents/:threadId', subagentThreadViewHandler);
 
-router.get('/:conversationId', async (req, res) => {
-  const { conversationId } = req.params;
-  const convo = await db.getConvo(req.user.id, conversationId);
-
-  if (convo && convo.subagentThread == null) {
-    res.status(200).json(convo);
-  } else {
-    res.status(404).end();
-  }
-});
+router.get(
+  '/:conversationId',
+  createGetConversationHandler({ getConvo: db.getConvo, jobs: GenerationJobManager, logger }),
+);
 
 router.get(
   '/gen_title/:conversationId',

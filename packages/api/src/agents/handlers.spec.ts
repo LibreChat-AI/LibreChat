@@ -1493,7 +1493,13 @@ describe('createToolExecuteHandler', () => {
         { name: 'custom_tool', allowed_callers: ['code_execution'] },
       ]);
       expect(capturedConfigs[0].disallowedToolDefs).toEqual([{ name: 'direct_tool' }]);
-      expect(capturedConfigs[0].toolMap).toEqual(new Map([['custom_tool', customTool]]));
+      const innerTools = capturedConfigs[0].toolMap as Map<string, typeof customTool>;
+      expect([...innerTools.keys()]).toEqual(['custom_tool']);
+      expect(innerTools.get('custom_tool')?.name).toBe(customTool.name);
+      const input = { query: 'inner query' };
+      const config = { toolCall: { id: 'inner-call' } };
+      await innerTools.get('custom_tool')?.invoke(input, config);
+      expect(customTool.invoke).toHaveBeenCalledWith(input, config);
     });
 
     it('uses the SDK live projection as the authoritative active PTC policy', async () => {
@@ -1559,9 +1565,12 @@ describe('createToolExecuteHandler', () => {
         { name: 'active_programmatic_tool', allowed_callers: ['code_execution'] },
       ]);
       expect(capturedConfigs[0].disallowedToolDefs).toEqual([{ name: 'active_direct_tool' }]);
-      expect(capturedConfigs[0].toolMap).toEqual(
-        new Map([['active_programmatic_tool', activeProgrammaticTool]]),
-      );
+      const innerTools = capturedConfigs[0].toolMap as Map<string, typeof activeProgrammaticTool>;
+      expect([...innerTools.keys()]).toEqual(['active_programmatic_tool']);
+      const input = { query: 'inner query' };
+      const config = { toolCall: { id: 'inner-call' } };
+      await innerTools.get('active_programmatic_tool')?.invoke(input, config);
+      expect(activeProgrammaticTool.invoke).toHaveBeenCalledWith(input, config);
     });
 
     it('treats an empty versioned projection as authoritative', async () => {

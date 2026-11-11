@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   CacheKeys,
@@ -8,6 +9,9 @@ import {
 import type * as t from '~/types';
 import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
 import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
+import { createStoredResponseModel } from '~/models/response';
+import { runAsSystem } from '~/config/tenantContext';
+import { createResponseStorage } from './response';
 import balanceSchema from '~/schema/balance';
 import userSchema from '~/schema/user';
 
@@ -1553,6 +1557,111 @@ describe('User Methods - Database Tests', () => {
       expect(found).toBeNull();
     });
 
+    test.each(['cancel', 'commit'] as const)(
+      'rejects an old queued delete after an offline handoff and %s',
+      async (outcome) => {
+        const user = await User.create({
+          email: `delayed-${outcome}@example.com`,
+          provider: 'local',
+        });
+        const id = user._id.toString();
+        const attemptId = randomUUID();
+        const startedAt = new Date('2026-01-01');
+        const recoveredAt = new Date(startedAt.getTime() + USER_DELETION_FENCE_STALE_MS + 1);
+        await methods.beginAgentTriggerUserDeletion(id, startedAt, attemptId);
+        let release!: () => void;
+        let entered!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const pendingWrite = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const original = User.collection.deleteOne.bind(User.collection);
+        const write = jest
+          .spyOn(User.collection, 'deleteOne')
+          .mockImplementationOnce(async (filter, options) => {
+            entered();
+            await gate;
+            return original(filter, options);
+          });
+        const pendingDelete = methods.deleteUserById(id, { startedAt, attemptId });
+        try {
+          await pendingWrite;
+          expect(write.mock.calls[0][0]).toMatchObject({
+            agentTriggerDeletionStartedAt: startedAt,
+            agentTriggerDeletionAttemptId: attemptId,
+          });
+          expect(
+            await methods.recoverStaleAgentTriggerUserDeletion(id, recoveredAt, randomUUID()),
+          ).toBe('acquired');
+          expect(await methods.getAgentTriggerUserDeletionAttemptId(id, recoveredAt)).toBe(
+            attemptId,
+          );
+          if (outcome === 'cancel') {
+            expect(await methods.cancelAgentTriggerUserDeletion(id, recoveredAt, attemptId)).toBe(
+              true,
+            );
+          } else {
+            expect(
+              await methods.deleteUserById(id, { startedAt: recoveredAt, attemptId }),
+            ).toMatchObject({ deletedCount: 1 });
+          }
+          release();
+          expect(await pendingDelete).toMatchObject({ deletedCount: 0 });
+          expect(await User.exists({ _id: id })).toEqual(
+            outcome === 'cancel' ? { _id: user._id } : null,
+          );
+        } finally {
+          release();
+          await pendingDelete;
+          write.mockRestore();
+        }
+      },
+    );
+
+    test('rejects the wrong UUID or Date and commits only the current owner', async () => {
+      const user = await User.create({ email: 'fenced-delete@example.com', provider: 'local' });
+      const id = user._id.toString();
+      const attemptId = randomUUID();
+      const startedAt = new Date();
+      await methods.beginAgentTriggerUserDeletion(id, startedAt, attemptId);
+      expect(
+        await methods.deleteUserById(id, { startedAt, attemptId: randomUUID() }),
+      ).toMatchObject({ deletedCount: 0 });
+      expect(
+        await methods.deleteUserById(id, {
+          startedAt: new Date(startedAt.getTime() + 1),
+          attemptId,
+        }),
+      ).toMatchObject({ deletedCount: 0 });
+      expect(await methods.isAgentTriggerUserDeletionOwner(id, startedAt, attemptId)).toBe(true);
+      expect(await methods.deleteUserById(id, { startedAt, attemptId })).toMatchObject({
+        deletedCount: 1,
+      });
+      expect(
+        await methods.recoverStaleAgentTriggerUserDeletion(
+          id,
+          new Date(startedAt.getTime() + USER_DELETION_FENCE_STALE_MS + 1),
+          randomUUID(),
+        ),
+      ).toBe('missing');
+    });
+
+    test('rejects invalid commit fences before any cleanup or delete', async () => {
+      const id = new mongoose.Types.ObjectId().toString();
+      const write = jest.spyOn(User, 'deleteOne');
+      const grants = jest.spyOn(mongoose.models.ToolApprovalGrant, 'deleteMany');
+      await expect(
+        methods.deleteUserById(id, { startedAt: new Date(Number.NaN), attemptId: randomUUID() }),
+      ).rejects.toThrow('startedAt must be a valid Date');
+      await expect(
+        methods.deleteUserById(id, { startedAt: new Date(), attemptId: '' }),
+      ).rejects.toThrow('Invalid user deletion attempt ID');
+      expect(write).not.toHaveBeenCalled();
+      expect(grants).not.toHaveBeenCalled();
+    });
+
     test('should return zero count for non-existent user', async () => {
       const fakeId = new mongoose.Types.ObjectId();
       const result = await methods.deleteUserById(fakeId.toString());
@@ -1585,6 +1694,88 @@ describe('User Methods - Database Tests', () => {
       ).resolves.toBe(false);
       await expect(methods.cancelAgentTriggerUserDeletion(userId, startedAt)).resolves.toBe(true);
       await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(true);
+    });
+
+    test('proves the exact live owner from primary without releasing its fence', async () => {
+      const user = await User.create({ email: 'deletion-owner@example.com', provider: 'local' });
+      const userId = user._id.toString();
+      const startedAt = new Date('2026-11-10T12:00:00.000Z');
+      await expect(methods.isAgentTriggerUserDeletionOwner(userId, startedAt)).resolves.toBe(false);
+      await methods.beginAgentTriggerUserDeletion(userId, startedAt);
+      const read = jest.spyOn(mongoose.Query.prototype, 'read');
+      await expect(methods.isAgentTriggerUserDeletionOwner(userId, startedAt)).resolves.toBe(true);
+      expect(read).toHaveBeenCalledWith('primary');
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(false);
+      await expect(
+        methods.isAgentTriggerUserDeletionOwner(userId, new Date(startedAt.getTime() + 1)),
+      ).resolves.toBe(false);
+      await methods.deleteUserById(userId);
+      await expect(methods.isAgentTriggerUserDeletionOwner(userId, startedAt)).resolves.toBe(false);
+    });
+
+    test('propagates ownership-read errors instead of treating them as absent ownership', async () => {
+      const failure = new Error('ownership read unavailable');
+      jest.spyOn(User.collection, 'findOne').mockRejectedValueOnce(failure);
+      await expect(
+        methods.isAgentTriggerUserDeletionOwner(
+          new mongoose.Types.ObjectId().toString(),
+          new Date(),
+        ),
+      ).rejects.toThrow(failure);
+    });
+
+    test('persists identity across repeated offline recoveries and fences stale Date and UUID owners', async () => {
+      const user = await User.create({ email: 'durable-attempt@example.com', provider: 'local' });
+      const id = user._id.toString();
+      const attempt = randomUUID();
+      const other = randomUUID();
+      const first = new Date('2026-01-01');
+      const second = new Date(first.getTime() + USER_DELETION_FENCE_STALE_MS + 1);
+      const third = new Date(second.getTime() + USER_DELETION_FENCE_STALE_MS + 1);
+      expect(await methods.beginAgentTriggerUserDeletion(id, first, attempt)).toBe('acquired');
+      expect((await User.findById(id).lean())?.agentTriggerDeletionAttemptId).toBeUndefined();
+      expect(await methods.recoverStaleAgentTriggerUserDeletion(id, second, other)).toBe(
+        'acquired',
+      );
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, first)).toBeNull();
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, second)).toBe(attempt);
+      expect(await methods.cancelAgentTriggerUserDeletion(id, first, attempt)).toBe(false);
+      expect(await methods.cancelAgentTriggerUserDeletion(id, second, other)).toBe(false);
+      expect(await methods.isAgentTriggerUserDeletionOwner(id, second, other)).toBe(false);
+      // Recovery can itself crash before adopting the identity; the next process still finds it.
+      expect(await methods.recoverStaleAgentTriggerUserDeletion(id, third, randomUUID())).toBe(
+        'acquired',
+      );
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, third)).toBe(attempt);
+      expect(await methods.cancelAgentTriggerUserDeletion(id, third, attempt)).toBe(true);
+      expect(
+        await User.findById(id)
+          .select('+agentTriggerDeletionAttemptId +agentTriggerDeletionStartedAt')
+          .lean(),
+      ).toEqual(expect.not.objectContaining({ agentTriggerDeletionAttemptId: expect.anything() }));
+      expect(await methods.beginAgentTriggerUserDeletion(id, third, other)).toBe('acquired');
+      expect(await methods.cancelAgentTriggerUserDeletion(id, third, attempt)).toBe(false);
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, third)).toBe(other);
+    });
+    test('initializes only a legacy missing UUID and clears stray identity on a no-token acquisition', async () => {
+      const user = await User.create({ email: 'legacy-attempt@example.com', provider: 'local' });
+      const id = user._id.toString();
+      const first = new Date('2026-01-01');
+      const second = new Date(first.getTime() + USER_DELETION_FENCE_STALE_MS + 1);
+      const fallback = randomUUID();
+      await methods.beginAgentTriggerUserDeletion(id, first);
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, first)).toBeNull();
+      expect(await methods.recoverStaleAgentTriggerUserDeletion(id, second, fallback)).toBe(
+        'acquired',
+      );
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, second)).toBe(fallback);
+      await methods.cancelAgentTriggerUserDeletion(id, second, fallback);
+      await User.updateOne({ _id: id }, { $set: { agentTriggerDeletionAttemptId: randomUUID() } });
+      await methods.beginAgentTriggerUserDeletion(id, second);
+      expect(await methods.getAgentTriggerUserDeletionAttemptId(id, second)).toBeNull();
+      await expect(methods.beginAgentTriggerUserDeletion(id, second, '')).rejects.toThrow(
+        'attempt',
+      );
     });
 
     test('reports a missing principal without creating a deletion fence', async () => {
@@ -2360,5 +2551,115 @@ describe('personal grant cleanup before account deletion', () => {
       cleanup.mockRestore();
       deletion.mockRestore();
     }
+  });
+});
+
+describe('private response cleanup before account deletion', () => {
+  async function createResponses() {
+    const user = await User.create({ email: 'delete-responses@example.com', provider: 'local' });
+    const userId = user._id.toString();
+    const model = createStoredResponseModel(mongoose);
+    await runAsSystem(() =>
+      model.create(
+        [{ userId }, { userId, tenantId: 'another-tenant' }, { userId: 'another-owner' }].map(
+          (scope, index) => ({
+            ...scope,
+            responseId: `response-${index}`,
+            requestKey: `request-${index}`,
+            fingerprint: 'request',
+            agentId: 'agent',
+            requestJSON: '{"input":"private request"}',
+            responseJSON: '{"output":"private reply"}',
+            conversationId: 'conversation',
+            parentMessageId: 'root',
+            status: 'completed',
+          }),
+        ),
+      ),
+    );
+    return { userId, model };
+  }
+
+  it('removes private payloads before committing deletion and preserves other owners and tenants', async () => {
+    const { userId, model } = await createResponses();
+    const cleanup = jest.spyOn(model, 'deleteMany');
+    const deletion = jest.spyOn(User, 'deleteOne');
+    await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+    expect(cleanup).toHaveBeenCalledWith({ userId, tenantId: { $in: [null, ''] } });
+    expect(cleanup.mock.invocationCallOrder[0]).toBeLessThan(deletion.mock.invocationCallOrder[0]);
+    await runAsSystem(async () => {
+      expect(await model.countDocuments({ userId, tenantId: null })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(1);
+      expect(await model.countDocuments({ userId: 'another-owner' })).toBe(1);
+    });
+  });
+
+  it('erases every tenantless spelling when the legacy account stores an empty tenant', async () => {
+    const { userId, model } = await createResponses();
+    await User.updateOne({ _id: userId }, { $set: { tenantId: '' } });
+    const original = (await model.findOne({ userId, responseId: 'response-0' }).lean())!;
+    const { _id: _originalId, ...fields } = original;
+    await runAsSystem(async () => {
+      await model.create([
+        { ...fields, tenantId: '', responseId: 'empty-tenant', requestKey: 'empty-tenant' },
+        { ...fields, tenantId: null, responseId: 'null-tenant', requestKey: 'null-tenant' },
+      ]);
+      await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+      expect(await model.countDocuments({ userId, tenantId: { $in: [null, ''] } })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(1);
+    });
+  });
+
+  it('keeps deletion intent private across cleanup failure, account updates, and retry', async () => {
+    const { userId, model } = await createResponses();
+    jest
+      .spyOn(model.collection, 'deleteMany')
+      .mockRejectedValueOnce(new Error('response-store down'));
+    const deletion = jest.spyOn(User, 'deleteOne');
+    await expect(methods.deleteUserById(userId)).rejects.toThrow('response-store down');
+    expect(deletion).not.toHaveBeenCalled();
+    expect(await User.exists({ _id: userId })).not.toBeNull();
+    const storage = createResponseStorage(mongoose);
+    await runAsSystem(async () => {
+      expect(await model.findOne({ userId, responseId: 'response-0' }).lean()).toMatchObject({
+        requestJSON: '{"input":"private request"}',
+        responseJSON: '{"output":"private reply"}',
+      });
+    });
+    expect(await storage.read({ userId }, 'response-0')).toBeNull();
+    const identity = await storage.readCleanupIdentity({ userId }, 'response-0');
+    expect(identity).toMatchObject({ retirement: 'owner_deleted' });
+    for (const field of [
+      'requestJSON',
+      'responseJSON',
+      'review',
+      'resume',
+      'turnJSON',
+      'preparedTerminal',
+      'pendingTerminal',
+    ]) {
+      expect(identity).not.toHaveProperty(field);
+    }
+    expect(JSON.stringify(identity)).not.toContain('private');
+    await methods.updateUser(userId, { name: 'Still usable' });
+    expect((await User.findById(userId).lean())?.name).toBe('Still usable');
+    expect(await storage.read({ userId }, 'response-0')).toBeNull();
+    await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+    expect(await User.exists({ _id: userId })).toBeNull();
+    await runAsSystem(async () => {
+      expect(await model.countDocuments({ userId, tenantId: { $in: [null, ''] } })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(1);
+      expect(await model.countDocuments({ userId: 'another-owner' })).toBe(1);
+    });
+  });
+
+  it('uses the account tenant when deletion runs under system authority', async () => {
+    const { userId, model } = await createResponses();
+    await User.updateOne({ _id: userId }, { $set: { tenantId: 'another-tenant' } });
+    await runAsSystem(async () => {
+      await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: null })).toBe(1);
+    });
   });
 });
