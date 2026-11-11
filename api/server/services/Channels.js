@@ -86,6 +86,7 @@ const runs = createChannelRunHandlers({
   artifacts,
   storage,
   guard: handlers.service,
+  publicBaseUrl: process.env.DOMAIN_CLIENT || 'http://localhost:3080',
   getLeaseMs: async () => (await getChannelConfig()).leaseMs,
   resolvePrincipal: authority.resolvePrincipal,
   advance: execution.advance,
