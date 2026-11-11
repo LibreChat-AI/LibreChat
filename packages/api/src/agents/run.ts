@@ -142,6 +142,7 @@ import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { buildLangfuseConfig } from '~/langfuse/config';
+import { getCustomEndpointConfig } from '~/app/config';
 import { applyTestRunHook } from '~/agents/testHook';
 import { frameDynamicInstructions } from './tail';
 import { isUserProvided } from '~/utils/common';
@@ -1536,10 +1537,21 @@ function shapeSummarizationConfig(
       azure: targetsAzure ? (agent?.azureOptions ?? {}) : undefined,
     };
     if (isNativeCyberRequest(nativeRequest)) {
+      const endpointConfig =
+        clientOverrides == null && provider === fallbackProvider && appConfig && agentEndpoint
+          ? getCustomEndpointConfig({ endpoint: agentEndpoint, appConfig })
+          : undefined;
+      const endpointDefaults = extractDefaultParams(endpointConfig?.customParams?.paramDefinitions);
+      const endpointApiMode = endpointConfig?.dropParams?.includes('useResponsesApi')
+        ? false
+        : (endpointConfig?.addParams?.useResponsesApi ?? endpointDefaults?.useResponsesApi);
+      const configuredApiMode = typeof endpointApiMode === 'boolean' ? endpointApiMode : undefined;
       const inheritedApiMode =
         model === fallbackModel && typeof inherited.useResponsesApi === 'boolean'
           ? inherited.useResponsesApi
           : undefined;
+      const summaryApiMode =
+        typeof parameters?.useResponsesApi === 'boolean' ? parameters.useResponsesApi : undefined;
       const { llmConfig } = getOpenAILLMConfig({
         apiKey: '',
         streaming: false,
@@ -1550,10 +1562,7 @@ function shapeSummarizationConfig(
         },
         modelOptions: {
           model,
-          useResponsesApi:
-            typeof parameters?.useResponsesApi === 'boolean'
-              ? parameters.useResponsesApi
-              : inheritedApiMode,
+          useResponsesApi: summaryApiMode ?? configuredApiMode ?? inheritedApiMode,
         },
         addParams: {
           ...(isPlainObject(inherited.modelKwargs) ? inherited.modelKwargs : undefined),

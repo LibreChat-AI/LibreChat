@@ -1406,6 +1406,98 @@ describe('Cyber summary SDK URL defaults', () => {
   );
 });
 
+describe.each([false, true])(
+  'Cyber same-endpoint routing policy (explicit provider=%s)',
+  (explicitProvider) => {
+    it.each([
+      { sourceModel: 'gpt-6-sol', policy: false, summary: undefined, expected: false },
+      { sourceModel: 'gpt-4.1-mini', policy: false, summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-cyber', policy: false, summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-sol', policy: true, summary: undefined, expected: true },
+      { sourceModel: 'gpt-6-sol', policy: false, summary: true, expected: true },
+      { sourceModel: 'gpt-6-sol', policy: true, summary: false, expected: false },
+      { sourceModel: 'gpt-4.1-mini', policy: undefined, summary: undefined, expected: true },
+      { sourceModel: 'gpt-6-sol', policy: 'default', summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-sol', policy: 'drop', summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-sol', policy: 'drop', summary: true, expected: true },
+    ])(
+      'preserves the target endpoint policy without changing the agent: %j',
+      async ({ sourceModel, policy, summary, expected }) => {
+        const endpoint: TestCustomEndpoint = {
+          name: 'Daybreak',
+          apiKey: 'endpoint-key',
+          baseURL: 'https://api.openai.com/v1',
+          addParams: {
+            ...(typeof policy === 'boolean' && { useResponsesApi: policy }),
+            ...(policy === 'drop' && { useResponsesApi: true }),
+          },
+          dropParams: policy === 'drop' ? ['useResponsesApi'] : undefined,
+          customParams:
+            policy === 'default'
+              ? {
+                  defaultParamsEndpoint: 'custom',
+                  paramDefinitions: [{ key: 'useResponsesApi', default: false }],
+                }
+              : undefined,
+        };
+        const endpointParams = { ...endpoint.addParams };
+        const user = { id: 'route-user', tenantId: 'route-tenant' } as IUser;
+        const { llmConfig, configOptions } = getOpenAIConfig(
+          endpoint.apiKey,
+          {
+            requestIdentity: { userId: user.id, tenantId: user.tenantId },
+            modelOptions: { model: sourceModel },
+            reverseProxyUrl: endpoint.baseURL,
+            addParams: endpoint.addParams,
+            dropParams: endpoint.dropParams,
+            customParams: endpoint.customParams,
+            headers: { 'X-Route-Transport': 'preserved' },
+          },
+          endpoint.name,
+        );
+        const agents = await callAndCapture({
+          agents: [
+            makeReasoningAgent({
+              provider: Providers.OPENAI,
+              endpoint: endpoint.name,
+              model: sourceModel,
+              model_parameters: { ...llmConfig, configuration: configOptions },
+            }),
+          ],
+          user,
+          tenantId: user.tenantId,
+          appConfig: makeAppConfig([endpoint]),
+          summarizeOnly: true,
+          summarizationConfig: {
+            ...(explicitProvider && { provider: endpoint.name }),
+            model: 'gpt-6-cyber',
+            parameters: {
+              streaming: false,
+              ...(summary !== undefined && { useResponsesApi: summary }),
+            },
+          },
+        });
+        const sourceApiMode = llmConfig.useResponsesApi;
+        const { requests } = await compactSummary(agents);
+        expect(requests).toHaveLength(1);
+        expect(requests[0].url.origin + requests[0].url.pathname).toBe(
+          `https://api.openai.com/v1/${expected ? 'responses' : 'chat/completions'}`,
+        );
+        expect(requests[0].headers.get('X-Route-Transport')).toBe('preserved');
+        expect(requests[0].body).toMatchObject({
+          model: 'gpt-6-cyber',
+          access_programs: { cyber: 'daybreak_red' },
+          safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+        });
+        expect((agents[0].clientOptions as Record<string, unknown>).useResponsesApi).toBe(
+          sourceApiMode,
+        );
+        expect(endpoint.addParams).toEqual(endpointParams);
+      },
+    );
+  },
+);
+
 describe('Cyber summary target shaping', () => {
   it.each([
     { sourceModel: 'gpt-6-sol', baseURL: undefined, endpoint: EModelEndpoint.openAI },

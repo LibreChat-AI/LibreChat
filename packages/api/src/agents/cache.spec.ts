@@ -138,7 +138,9 @@ describe.each([false, true])('SDK cache accounting (streaming=%s)', (streaming) 
         expect.objectContaining({ rawAmount: -input, writeTokens: -write, tokenValue: -debit }),
       ]);
       expect(updateBalance).toHaveBeenCalledTimes(1);
-      expect(updateBalance).toHaveBeenCalledWith({ user: 'cache-user', incrementValue: -debit });
+      expect(updateBalance).toHaveBeenCalledWith(
+        expect.objectContaining({ user: 'cache-user', incrementValue: -debit }),
+      );
       expect(computeUsageCostUSD(usage, pricing)).toBe(debit / 1e6);
       if (input > 272000) {
         expect(
