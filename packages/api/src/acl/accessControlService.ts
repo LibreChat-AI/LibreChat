@@ -144,6 +144,8 @@ export class AccessControlService {
     session?: ClientSession;
     roleId?: string | Types.ObjectId;
     expiredAt?: Date;
+    /** `_id` for the entry if this grant creates it, so concurrent grants cannot both insert. */
+    entryId?: Types.ObjectId;
   }): Promise<IAclEntry | null> {
     const {
       principalType,
@@ -154,6 +156,7 @@ export class AccessControlService {
       grantedBy,
       session,
       expiredAt,
+      entryId,
     } = args;
     try {
       if (!Object.values(PrincipalType).includes(principalType)) {
@@ -207,6 +210,7 @@ export class AccessControlService {
         session,
         role._id,
         expiredAt,
+        entryId,
       );
     } catch (error) {
       logger.error(

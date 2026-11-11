@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { createHash } from 'node:crypto';
 import { logger, createMethods } from '@librechat/data-schemas';
 import {
   PrincipalType,
@@ -34,6 +35,22 @@ interface RawSharedLink {
   expiredAt?: Date;
 }
 
+/**
+ * The share page reads a link's config and its messages together, so the first view of a legacy
+ * link runs the migration twice at once, in one process or two: both find no grant and both
+ * write one. Naming the entry after what it grants lets the database refuse the second insert.
+ */
+function migrationEntryId(
+  resourceId: string,
+  principalType: PrincipalType,
+  principalId?: string,
+): Types.ObjectId {
+  const digest = createHash('sha256')
+    .update(`${ResourceType.SHARED_LINK}:${resourceId}:${principalType}:${principalId ?? ''}`)
+    .digest();
+  return new mongoose.Types.ObjectId(digest.subarray(0, 12));
+}
+
 export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void> {
   const shareId = share._id;
   if (!shareId) {
@@ -62,6 +79,7 @@ export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void>
           accessRoleId: AccessRoleIds.SHARED_LINK_OWNER,
           grantedBy: share.user,
           expiredAt: share.expiredAt,
+          entryId: migrationEntryId(resourceId, PrincipalType.USER, share.user),
         });
         existingOwner = true;
         ownerGranted = true;
@@ -90,6 +108,7 @@ export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void>
           accessRoleId: AccessRoleIds.SHARED_LINK_VIEWER,
           grantedBy: share.user,
           expiredAt: share.expiredAt,
+          entryId: migrationEntryId(resourceId, PrincipalType.PUBLIC),
         });
         publicGranted = true;
       } catch (err) {

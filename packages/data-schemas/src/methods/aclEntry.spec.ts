@@ -520,6 +520,85 @@ describe('AclEntry Model Tests', () => {
     });
   });
 
+  describe('Grants with a caller-supplied entry id', () => {
+    const grantPublic = (entryId?: mongoose.Types.ObjectId) =>
+      methods.grantPermission(
+        PrincipalType.PUBLIC,
+        null,
+        ResourceType.SHARED_LINK,
+        resourceId,
+        PermissionBits.VIEW,
+        grantedById,
+        undefined,
+        undefined,
+        undefined,
+        entryId,
+      );
+    const publicEntries = () =>
+      AclEntry.find({ principalType: PrincipalType.PUBLIC, resourceId }).lean();
+
+    test('creates the entry under the supplied id', async () => {
+      const entryId = new mongoose.Types.ObjectId();
+
+      const entry = await grantPublic(entryId);
+
+      expect(entry?._id.toString()).toBe(entryId.toString());
+      expect(await publicEntries()).toHaveLength(1);
+    });
+
+    test('updates an entry that already exists under another id', async () => {
+      const existing = await grantPublic();
+
+      const entry = await grantPublic(new mongoose.Types.ObjectId());
+
+      expect(entry?._id.toString()).toBe(existing?._id.toString());
+      expect(await publicEntries()).toHaveLength(1);
+    });
+
+    /**
+     * Without an id every one of these finds no entry and inserts its own, because the upsert
+     * matches on fields no unique index covers.
+     */
+    test('leaves one entry when the same grant runs concurrently', async () => {
+      const entryId = new mongoose.Types.ObjectId();
+
+      const entries = await Promise.all(Array.from({ length: 16 }, () => grantPublic(entryId)));
+
+      expect(new Set(entries.map((entry) => entry?._id.toString()))).toEqual(
+        new Set([entryId.toString()]),
+      );
+      expect(await publicEntries()).toHaveLength(1);
+    });
+
+    test('replays the grant as an update when another writer inserted the entry first', async () => {
+      const entryId = new mongoose.Types.ObjectId();
+      await grantPublic(entryId);
+      const findOneAndUpdate = jest.spyOn(AclEntry, 'findOneAndUpdate');
+      findOneAndUpdate.mockImplementationOnce(() => {
+        throw Object.assign(new Error('E11000 duplicate key error'), { code: 11000 });
+      });
+
+      const entry = await grantPublic(entryId);
+
+      expect(findOneAndUpdate).toHaveBeenCalledTimes(2);
+      expect(entry?._id.toString()).toBe(entryId.toString());
+      expect(await publicEntries()).toHaveLength(1);
+      findOneAndUpdate.mockRestore();
+    });
+
+    test('does not replay a duplicate key without a supplied id', async () => {
+      const findOneAndUpdate = jest.spyOn(AclEntry, 'findOneAndUpdate');
+      findOneAndUpdate.mockImplementationOnce(() => {
+        throw Object.assign(new Error('E11000 duplicate key error'), { code: 11000 });
+      });
+
+      await expect(grantPublic()).rejects.toMatchObject({ code: 11000 });
+
+      expect(findOneAndUpdate).toHaveBeenCalledTimes(1);
+      findOneAndUpdate.mockRestore();
+    });
+  });
+
   describe('Resource Access Queries', () => {
     test('should find accessible resources', async () => {
       /** Create multiple resources with different permissions */
