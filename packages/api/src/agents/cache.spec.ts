@@ -1,5 +1,5 @@
 import { Providers, initializeModel } from '@librechat/agents';
-import { AIMessageChunk } from '@librechat/agents/langchain/messages';
+import { isAIMessage } from '@librechat/agents/langchain/messages';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
 import type { OpenAIConfiguration } from '~/types';
 import { getModelEndUsage, recordCollectedUsage, computeUsageCostUSD } from './usage';
@@ -12,7 +12,13 @@ const pricing = createTxMethods({} as typeof import('mongoose'), {
   findMatchingPattern: (name, values) => findMatchingPattern(name, values) ?? undefined,
 });
 
-async function getStreamedUsage(input: number, write: number, twelveHour: number, read = 0) {
+async function getSDKUsage(
+  streaming: boolean,
+  input: number,
+  write: number,
+  twelveHour: number,
+  read = 0,
+) {
   const response = {
     id: 'resp_cache',
     object: 'response',
@@ -34,7 +40,10 @@ async function getStreamedUsage(input: number, write: number, twelveHour: number
     },
   };
   const fetch: NonNullable<NonNullable<OpenAIConfiguration>['fetch']> = async (_url, init) => {
-    expect(JSON.parse(String(init?.body)).prompt_cache_options.ttl).toBe('12h');
+    const body = JSON.parse(String(init?.body));
+    expect(body.prompt_cache_options.ttl).toBe('12h');
+    expect(body.stream).toBe(streaming);
+    if (!streaming) return Response.json(response);
     return new Response(
       [
         { type: 'response.created', response: { ...response, status: 'in_progress' } },
@@ -50,7 +59,7 @@ async function getStreamedUsage(input: number, write: number, twelveHour: number
     clientOptions: {
       model,
       apiKey: 'test-key',
-      streaming: true,
+      streaming,
       useResponsesApi: true,
       modelKwargs: { prompt_cache_options: { ttl: '12h' } },
       configuration: { fetch },
@@ -63,8 +72,7 @@ async function getStreamedUsage(input: number, write: number, twelveHour: number
         handleLLMEnd(result) {
           for (const generations of result.generations) {
             for (const generation of generations) {
-              if ('message' in generation && AIMessageChunk.isInstance(generation.message)) {
-                // SDK message types omit the raw usage retained on streamed metadata.
+              if ('message' in generation && isAIMessage(generation.message)) {
                 const usage = getModelEndUsage(
                   generation.message as Parameters<typeof getModelEndUsage>[0],
                 );
@@ -80,61 +88,67 @@ async function getStreamedUsage(input: number, write: number, twelveHour: number
   const usage = collected[0];
   expect(usage).toEqual(getModelEndUsage(output));
   expect(usage?.input_token_details?.cache_creation).toBe(write);
-  expect(output.usage_metadata?.input_token_details).not.toHaveProperty('cache_creation_12h');
+  expect(output.usage_metadata?.input_token_details).toMatchObject({
+    cache_creation: write,
+    cache_creation_12h: twelveHour,
+  });
+  expect(usage.input_token_details?.cache_creation_12h).toBe(twelveHour);
   return { ...usage, model, provider: Providers.OPENAI };
 }
 
-it.each([
-  { input: 10000, write: 10000, twelveHour: 10000, read: 0, debit: 500000 },
-  { input: 12000, write: 7000, twelveHour: 4000, read: 4000, debit: 303000 },
-  { input: 272000, write: 7000, twelveHour: 4000, read: 4000, debit: 5503000 },
-  { input: 272001, write: 7000, twelveHour: 4000, read: 4000, debit: 10736040 },
-  { input: 10000, write: 10000, twelveHour: 0, read: 0, debit: 250000 },
-])(
-  'bills SDK-reported 12-hour writes once: %j',
-  async ({ input, write, twelveHour, read, debit }) => {
-    const usage = await getStreamedUsage(input, write, twelveHour, read);
-    const spendStructuredTokens = jest.fn().mockResolvedValue(undefined);
-    const insertMany = jest.fn().mockResolvedValue(undefined);
-    const updateBalance = jest.fn().mockResolvedValue(undefined);
-    const deps = { spendTokens: jest.fn(), spendStructuredTokens };
-    const params = {
-      user: 'cache-user',
-      conversationId: 'cache-conversation',
-      model,
-      balance: { enabled: true },
-      collectedUsage: [usage],
-    };
+describe.each([false, true])('SDK cache accounting (streaming=%s)', (streaming) => {
+  it.each([
+    { input: 10000, write: 10000, twelveHour: 10000, read: 0, debit: 500000 },
+    { input: 12000, write: 7000, twelveHour: 4000, read: 4000, debit: 303000 },
+    { input: 272000, write: 7000, twelveHour: 4000, read: 4000, debit: 5503000 },
+    { input: 272001, write: 7000, twelveHour: 4000, read: 4000, debit: 10736040 },
+    { input: 10000, write: 10000, twelveHour: 0, read: 0, debit: 250000 },
+  ])(
+    'bills SDK-reported 12-hour writes once: %j',
+    async ({ input, write, twelveHour, read, debit }) => {
+      const usage = await getSDKUsage(streaming, input, write, twelveHour, read);
+      const spendStructuredTokens = jest.fn().mockResolvedValue(undefined);
+      const insertMany = jest.fn().mockResolvedValue(undefined);
+      const updateBalance = jest.fn().mockResolvedValue(undefined);
+      const deps = { spendTokens: jest.fn(), spendStructuredTokens };
+      const params = {
+        user: 'cache-user',
+        conversationId: 'cache-conversation',
+        model,
+        balance: { enabled: true },
+        collectedUsage: [usage],
+      };
 
-    await recordCollectedUsage(deps, params);
-    expect(spendStructuredTokens).toHaveBeenCalledWith(expect.objectContaining({ model }), {
-      promptTokens: {
-        input: input - write - read,
-        write,
-        read,
-        ...(twelveHour > 0 && { write12h: twelveHour }),
-      },
-      completionTokens: 0,
-    });
-    await recordCollectedUsage(
-      { ...deps, pricing, bulkWriteOps: { insertMany, updateBalance } },
-      params,
-    );
-    expect(insertMany).toHaveBeenCalledTimes(1);
-    expect(insertMany).toHaveBeenCalledWith([
-      expect.objectContaining({ rawAmount: -input, writeTokens: -write, tokenValue: -debit }),
-    ]);
-    expect(updateBalance).toHaveBeenCalledTimes(1);
-    expect(updateBalance).toHaveBeenCalledWith({ user: 'cache-user', incrementValue: -debit });
-    expect(computeUsageCostUSD(usage, pricing)).toBe(debit / 1e6);
-    if (input > 272000) {
-      expect(
-        pricing.getCacheMultiplier({ model, cacheType: 'write12h', inputTokenCount: input }),
-      ).toBeNull();
-      expect(insertMany.mock.calls[0][0][0].rateDetail.write12h).toBe(40);
-    }
-  },
-);
+      await recordCollectedUsage(deps, params);
+      expect(spendStructuredTokens).toHaveBeenCalledWith(expect.objectContaining({ model }), {
+        promptTokens: {
+          input: input - write - read,
+          write,
+          read,
+          ...(twelveHour > 0 && { write12h: twelveHour }),
+        },
+        completionTokens: 0,
+      });
+      await recordCollectedUsage(
+        { ...deps, pricing, bulkWriteOps: { insertMany, updateBalance } },
+        params,
+      );
+      expect(insertMany).toHaveBeenCalledTimes(1);
+      expect(insertMany).toHaveBeenCalledWith([
+        expect.objectContaining({ rawAmount: -input, writeTokens: -write, tokenValue: -debit }),
+      ]);
+      expect(updateBalance).toHaveBeenCalledTimes(1);
+      expect(updateBalance).toHaveBeenCalledWith({ user: 'cache-user', incrementValue: -debit });
+      expect(computeUsageCostUSD(usage, pricing)).toBe(debit / 1e6);
+      if (input > 272000) {
+        expect(
+          pricing.getCacheMultiplier({ model, cacheType: 'write12h', inputTokenCount: input }),
+        ).toBeNull();
+        expect(insertMany.mock.calls[0][0][0].rateDetail.write12h).toBe(40);
+      }
+    },
+  );
+});
 
 it.each([-1, 0, 20000])('bounds the 12-hour subset to aggregate writes: %i', (twelveHour) => {
   const usage = getModelEndUsage({
