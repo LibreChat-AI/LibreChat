@@ -193,7 +193,12 @@ const {
 } = require('../ToolService');
 const { createOnSearchResults } = require('~/server/services/Tools/search');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
-const { ContentFilterError, PENDING_STALE_MS, ToolInputError } = require('@librechat/api');
+const {
+  ContentFilterError,
+  PENDING_STALE_MS,
+  ToolInputError,
+  markRemoteAgentResponse,
+} = require('@librechat/api');
 
 /** Role document shape `checkAccess` reads; all three role-gated tools granted. */
 function buildRole(overrides = {}) {
@@ -2095,6 +2100,39 @@ describe('ToolService - Action Capability Gating', () => {
           expect.objectContaining({ serverName, returnOnOAuth: false }),
         );
         expect(oauthEvents()).toHaveLength(1);
+      });
+
+      it.each([
+        ['a sign-in URL was issued', 'https://auth.example.com/sheets'],
+        ['the server only reported that sign-in is needed', undefined],
+      ])('neither prompts nor waits for a remote agent API client when %s', async (_label, url) => {
+        setUp({ oauthToolCatalog: undefined });
+        reinitMCPServer.mockImplementation(async ({ returnOnOAuth, oauthStart }) => {
+          if (returnOnOAuth === false) {
+            return { availableTools: ownCatalog };
+          }
+          await oauthStart(url);
+          return { availableTools: null };
+        });
+        const res = { writableEnded: false };
+        markRemoteAgentResponse(res);
+
+        /** With its only MCP server unusable the run fails at once, as it did after the wait. */
+        await expect(
+          loadAgentTools({
+            req: createMockReq(capabilities),
+            res,
+            agent: deferredAgent,
+            definitionsOnly: true,
+          }),
+        ).rejects.toMatchObject({ code: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE' });
+
+        expect(reinitMCPServer).toHaveBeenCalledTimes(1);
+        expect(reinitMCPServer).not.toHaveBeenCalledWith(
+          expect.objectContaining({ returnOnOAuth: false }),
+        );
+        expect(oauthEvents()).toHaveLength(0);
+        expect(mockSendEvent).not.toHaveBeenCalled();
       });
 
       it.each([

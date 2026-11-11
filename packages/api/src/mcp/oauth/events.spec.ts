@@ -5,11 +5,14 @@ import {
   createMCPReauthenticationPrompt,
   createMCPAuthStepEmitter,
   createMCPInitializationOAuthPrompts,
+  canPublishOAuthPrompt,
+  shouldAwaitOAuthSignIn,
 } from './events';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import { createOAuthCallback, invokeOAuthStart } from './publication';
+import { markRemoteAgentResponse } from '~/agents/remote/source';
 
 function fixture(toolCallId?: string, stepId?: string) {
   const start = jest.fn(async () => {});
@@ -241,4 +244,117 @@ it('clears startup deduplication before a publication acknowledgement can reente
     'on_run_step_delta',
     'on_run_step_completed',
   ]);
+});
+
+describe('sign-in prompts on a remote agent API response', () => {
+  const step = {
+    runId: 'response',
+    stepId: 'oauth-step',
+    index: 0,
+    toolCall: { id: 'oauth:call', name: 'oauth_mcp_clock', type: 'tool_call_chunk' as const },
+  };
+
+  function response() {
+    const socket = new Socket();
+    return { socket, res: new ServerResponse(new IncomingMessage(socket)) };
+  }
+
+  it('refuses the prompt and writes nothing to the API response', async () => {
+    const { socket, res } = response();
+    const write = jest.spyOn(res, 'write');
+    const sendEvent = jest.fn();
+    const url = jest.fn().mockResolvedValue(undefined);
+    markRemoteAgentResponse(res);
+    try {
+      const start = createOAuthCallback({
+        runStepEmitter: createMCPAuthStepEmitter({
+          res,
+          sendEvent,
+          jobs: { emitChunk: jest.fn() },
+          streamId: null,
+          ...step,
+        }),
+        runStepDeltaEmitter: url,
+      });
+      const publication = invokeOAuthStart(start, 'https://auth.example/authorize');
+      const expected = {
+        code: 'mcp_reauth_required',
+        message: 'MCP sign-in is required and cannot be completed from an API request.',
+      };
+      await expect(publication.published).rejects.toMatchObject(expected);
+      await expect(publication.completed).rejects.toMatchObject(expected);
+      expect(url).not.toHaveBeenCalled();
+      expect(sendEvent).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
+      expect(res.headersSent).toBe(false);
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it('still publishes to the generation stream the owner follows in LibreChat', async () => {
+    const { socket, res } = response();
+    const sendEvent = jest.fn();
+    const emitChunk = jest.fn().mockResolvedValue(undefined);
+    markRemoteAgentResponse(res);
+    try {
+      await createMCPAuthStepEmitter({
+        res,
+        sendEvent,
+        jobs: { emitChunk },
+        streamId: 'resp_background',
+        jobCreatedAt: 1,
+        ...step,
+      })();
+      expect(emitChunk).toHaveBeenCalledTimes(1);
+      expect(emitChunk).toHaveBeenCalledWith('resp_background', expect.anything(), {
+        expectedCreatedAt: 1,
+        durable: true,
+      });
+      expect(sendEvent).not.toHaveBeenCalled();
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it('keeps writing the prompt to a browser response', async () => {
+    const { socket, res } = response();
+    const sendEvent = jest.fn();
+    try {
+      await createMCPAuthStepEmitter({
+        res,
+        sendEvent,
+        jobs: { emitChunk: jest.fn() },
+        streamId: null,
+        ...step,
+      })();
+      expect(sendEvent).toHaveBeenCalledTimes(1);
+      expect(sendEvent.mock.calls[0][0]).toBe(res);
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it.each([
+    ['a browser response', false, null, 2, true, 0],
+    ['a remote response', true, null, 2, false, 1],
+    ['a remote response with a generation stream', true, 'resp_background', 2, true, 0],
+    ['a remote response with nothing pending', true, null, 0, false, 0],
+  ])(
+    'decides whether a turn waits for sign-in on %s',
+    (_name, remote, streamId, pending, waits, warnings) => {
+      const res = {};
+      if (remote) markRemoteAgentResponse(res);
+      const logger = { warn: jest.fn() };
+      expect(shouldAwaitOAuthSignIn({ res, streamId, pending, logger })).toBe(waits);
+      expect(canPublishOAuthPrompt({ res, streamId })).toBe(!remote || streamId != null);
+      expect(logger.warn).toHaveBeenCalledTimes(warnings);
+    },
+  );
+
+  it('does not wait when there is neither a response nor a stream', () => {
+    const logger = { warn: jest.fn() };
+    expect(shouldAwaitOAuthSignIn({ res: null, streamId: null, pending: 1, logger })).toBe(false);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
 });

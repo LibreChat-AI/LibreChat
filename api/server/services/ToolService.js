@@ -31,6 +31,7 @@ const {
   getMCPServerNamesFromTools,
   createMCPOAuthDeferral,
   createMCPInitializationOAuthPrompts,
+  shouldAwaitOAuthSignIn,
   inspectContentWithTraversal,
   ContentFilterError,
   assertModelBoundContent,
@@ -1370,7 +1371,7 @@ async function loadToolDefinitionsWrapper({
     pendingOAuthStarts.set(serverName, pendingOAuthStart);
   }
 
-  if (pendingOAuthServers.size > 0 && (res || streamId)) {
+  if (shouldAwaitOAuthSignIn({ res, streamId, pending: pendingOAuthServers.size, logger })) {
     const serverNames = orderMCPServerNames(pendingOAuthServers, mcpServerLookupOrder);
     logger.info(
       `[Tool Definitions] MCP OAuth required for ${serverNames.length} server(s); emitting events and waiting`,
