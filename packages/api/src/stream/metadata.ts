@@ -29,6 +29,8 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
     patch.terminalPersistenceOwner = parseTerminalPersistenceOwner(
       metadata.terminalPersistenceOwner,
     );
+  if (metadata.responseCheckpointConfigJSON !== undefined)
+    patch.responseCheckpointConfigJSON = metadata.responseCheckpointConfigJSON;
   if (metadata.responseMessageId) {
     patch.responseMessageId = metadata.responseMessageId;
   }
