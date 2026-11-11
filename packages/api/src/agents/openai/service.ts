@@ -460,6 +460,65 @@ export function convertMessages(messages: ChatMessage[]): unknown[] {
   });
 }
 
+/** Text of a system message's content, or `null` when it carries anything but text. */
+function getSystemMessageText(content: unknown): string | null {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (content == null) {
+    return '';
+  }
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const texts: string[] = [];
+  for (const part of content) {
+    if (part == null || typeof part !== 'object' || (part as { type?: unknown }).type !== 'text') {
+      return null;
+    }
+    const text = (part as { text?: unknown }).text;
+    texts.push(typeof text === 'string' ? text : '');
+  }
+  return texts.join('\n');
+}
+
+/**
+ * Moves a request's leading `system` messages into the agent's instructions.
+ *
+ * The run sends the agent's instructions (with any tool context) as its own system
+ * message ahead of the request's messages, so a client system message would reach the
+ * model as a second one. Chat templates that accept a single system message at the
+ * start, such as Qwen's, reject that request. A leading system message with non-text
+ * content stops the merge and stays in place.
+ */
+export function mergeLeadingSystemMessages<T extends { role: string; content?: unknown }>(
+  messages: T[],
+  instructions?: string | null,
+): { messages: T[]; instructions?: string | null } {
+  const texts: string[] = [];
+  for (const message of messages) {
+    if (message.role !== 'system') {
+      break;
+    }
+    const text = getSystemMessageText(message.content);
+    if (text == null) {
+      break;
+    }
+    texts.push(text);
+  }
+  if (texts.length === 0) {
+    return { messages, instructions };
+  }
+  const merged = [instructions ?? '', ...texts]
+    .map((text) => text.trim())
+    .filter((text) => text !== '')
+    .join('\n\n');
+  return {
+    messages: messages.slice(texts.length),
+    instructions: merged !== '' ? merged : instructions,
+  };
+}
+
 /**
  * Create an error response in OpenAI format
  */

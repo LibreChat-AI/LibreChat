@@ -40,6 +40,7 @@ export {
   createAgentChatCompletion,
   listAgentModels,
   convertMessages,
+  mergeLeadingSystemMessages,
   validateRequest,
   isChatCompletionValidationFailure,
   createErrorResponse,

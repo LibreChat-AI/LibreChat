@@ -198,6 +198,8 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  mergeLeadingSystemMessages: (...args) =>
+    jest.requireActual('@librechat/api').mergeLeadingSystemMessages(...args),
   createFileProvisionRecovery: () =>
     jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
@@ -1113,6 +1115,30 @@ describe('createResponse controller', () => {
       );
     },
   );
+
+  it('folds a leading developer message into the agent instructions', async () => {
+    const api = require('@librechat/api');
+    const { formatAgentMessages } = require('@librechat/agents');
+    api.convertInputToMessages.mockReturnValueOnce([
+      { role: 'system', content: 'Answer in German.' },
+      { role: 'user', content: 'Hello' },
+    ]);
+    api.initializeAgent.mockResolvedValueOnce({
+      id: 'agent-123',
+      model: 'claude-3',
+      model_parameters: {},
+      toolRegistry: {},
+      edges: [],
+      agentContextAttachments: [],
+      instructions: 'You are a librarian.',
+    });
+
+    await createResponse(req, res);
+
+    expect(formatAgentMessages.mock.calls.at(-1)[0]).toEqual([{ role: 'user', content: 'Hello' }]);
+    const [{ agents }] = api.createRun.mock.calls.at(-1);
+    expect(agents[0].instructions).toBe('You are a librarian.\n\nAnswer in German.');
+  });
 
   describe('execution envelope', () => {
     it('creates the portable run input before agent initialization', async () => {
