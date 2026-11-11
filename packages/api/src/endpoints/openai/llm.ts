@@ -185,6 +185,28 @@ function isCanonicalOpenAIBaseURL(baseURL?: string | null): boolean {
   }
 }
 
+export function isNativeCyberRequest({
+  model,
+  endpoint,
+  baseURL,
+  azure,
+  useOpenRouter,
+}: {
+  model?: string;
+  endpoint?: string | null;
+  baseURL?: string | null;
+  azure?: false | t.AzureOptions;
+  useOpenRouter?: boolean;
+}): boolean {
+  return (
+    model === 'gpt-6-cyber' &&
+    !useOpenRouter &&
+    !azure &&
+    (endpoint === EModelEndpoint.openAI || baseURL != null) &&
+    isCanonicalOpenAIBaseURL(baseURL)
+  );
+}
+
 function removeReasoningField(target: Record<string, unknown>, field: string) {
   const { reasoning } = target;
   if (reasoning == null || typeof reasoning !== 'object' || Array.isArray(reasoning)) {
@@ -952,12 +974,13 @@ export function getOpenAILLMConfig({
     isCanonicalAzureBaseURL(baseURL, azure);
   const firstPartyEndpoint = firstPartyOpenAI || firstPartyAzure;
   /** Keep GPT-6 model identity on Azure, with the deployment name used on the wire. */
-  const cyber =
-    llmConfig.model === 'gpt-6-cyber' &&
-    !useOpenRouter &&
-    !azure &&
-    (endpoint === EModelEndpoint.openAI || baseURL != null) &&
-    isCanonicalOpenAIBaseURL(baseURL);
+  const cyber = isNativeCyberRequest({
+    model: llmConfig.model,
+    useOpenRouter,
+    azure,
+    endpoint,
+    baseURL,
+  });
   const firstPartyResponsesModel =
     (firstPartyEndpoint && prefersResponsesApiByModel(llmConfig.model)) || cyber;
   if (

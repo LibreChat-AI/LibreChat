@@ -98,6 +98,12 @@ import {
   resolveRecursionLimit,
 } from '~/agents/config';
 import {
+  extractDefaultParams,
+  getOpenAILLMConfig,
+  isNativeCyberRequest,
+  resolveReasoningParams,
+} from '~/endpoints/openai/llm';
+import {
   isSteeringSupported,
   isSteerPreemptSupported,
   isSteerTerminalContinuationSupported,
@@ -106,11 +112,6 @@ import {
   ASK_USER_QUESTION_TOOL_NAME,
   createAskUserQuestionTool,
 } from '~/agents/hitl/askUserQuestionTool';
-import {
-  extractDefaultParams,
-  getOpenAILLMConfig,
-  resolveReasoningParams,
-} from '~/endpoints/openai/llm';
 import {
   createRunFileTools,
   eventOnlyRunFileTools,
@@ -812,7 +813,8 @@ function resolveBuiltInClientOverrides(
     {
       requestIdentity: { userId: user?.id, tenantId: user?.tenantId },
       modelOptions: { model, reasoning_effort: summarizationReasoningEffort(parameters) },
-      reverseProxyUrl: baseURL,
+      reverseProxyUrl:
+        baseURL ?? (model === 'gpt-6-cyber' ? process.env.OPENAI_BASE_URL : undefined),
     },
     provider,
   );
@@ -1510,34 +1512,55 @@ function shapeSummarizationConfig(
   if (
     model === 'gpt-6-cyber' &&
     config?.enabled !== false &&
-    model !== fallbackModel &&
-    provider === Providers.OPENAI &&
-    clientOverrides == null
+    !targetUnavailable &&
+    provider === Providers.OPENAI
   ) {
-    // Reuse the actual transport, not global endpoint defaults, on a model-only switch.
-    const inherited: Record<string, unknown> = { ...agent?.model_parameters, ...parameters };
+    // The SDK inherits source options only for same-provider summaries.
+    const inherited: Record<string, unknown> = {
+      ...(provider === fallbackProvider ? agent?.model_parameters : undefined),
+      ...parameters,
+    };
     const configuration = isPlainObject(inherited.configuration)
       ? inherited.configuration
       : undefined;
     const baseURL = configuration?.baseURL ?? inherited.baseURL;
-    const { llmConfig } = getOpenAILLMConfig({
-      apiKey: '',
-      streaming: false,
-      endpoint: agentEndpoint ?? provider,
-      baseURL: typeof baseURL === 'string' ? baseURL : undefined,
-      azure: agentEndpoint === EModelEndpoint.azureOpenAI ? agent?.azureOptions : undefined,
-      requestIdentity: {
-        userId: headerContext.user?.id,
-        tenantId: headerContext.tenantId ?? headerContext.user?.tenantId,
-      },
-      modelOptions: {
-        model,
-        useResponsesApi:
-          typeof parameters?.useResponsesApi === 'boolean' ? parameters.useResponsesApi : undefined,
-      },
-      addParams: isPlainObject(inherited.modelKwargs) ? inherited.modelKwargs : undefined,
-    });
-    if (llmConfig.modelKwargs?.safety_identifier != null) {
+    if (configuration?.baseURL == null && typeof inherited.baseURL === 'string') {
+      parameters = {
+        ...parameters,
+        configuration: { ...configuration, baseURL: inherited.baseURL },
+      };
+    }
+    const nativeRequest = {
+      model,
+      endpoint: provider,
+      baseURL: typeof baseURL === 'string' ? baseURL : process.env.OPENAI_BASE_URL,
+      azure: targetsAzure ? (agent?.azureOptions ?? {}) : undefined,
+    };
+    if (isNativeCyberRequest(nativeRequest)) {
+      const inheritedApiMode =
+        model === fallbackModel && typeof inherited.useResponsesApi === 'boolean'
+          ? inherited.useResponsesApi
+          : undefined;
+      const { llmConfig } = getOpenAILLMConfig({
+        apiKey: '',
+        streaming: false,
+        ...nativeRequest,
+        requestIdentity: {
+          userId: headerContext.user?.id,
+          tenantId: headerContext.tenantId ?? headerContext.user?.tenantId,
+        },
+        modelOptions: {
+          model,
+          useResponsesApi:
+            typeof parameters?.useResponsesApi === 'boolean'
+              ? parameters.useResponsesApi
+              : inheritedApiMode,
+        },
+        addParams: {
+          ...(isPlainObject(inherited.modelKwargs) ? inherited.modelKwargs : undefined),
+          model,
+        },
+      });
       parameters = {
         ...parameters,
         useResponsesApi: llmConfig.useResponsesApi,
