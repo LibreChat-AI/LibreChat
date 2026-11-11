@@ -813,8 +813,7 @@ function resolveBuiltInClientOverrides(
     {
       requestIdentity: { userId: user?.id, tenantId: user?.tenantId },
       modelOptions: { model, reasoning_effort: summarizationReasoningEffort(parameters) },
-      reverseProxyUrl:
-        baseURL ?? (model === 'gpt-6-cyber' ? process.env.OPENAI_BASE_URL : undefined),
+      reverseProxyUrl: baseURL,
     },
     provider,
   );
@@ -1533,7 +1532,7 @@ function shapeSummarizationConfig(
     const nativeRequest = {
       model,
       endpoint: provider,
-      baseURL: typeof baseURL === 'string' ? baseURL : process.env.OPENAI_BASE_URL,
+      baseURL: typeof baseURL === 'string' ? baseURL : undefined,
       azure: targetsAzure ? (agent?.azureOptions ?? {}) : undefined,
     };
     if (isNativeCyberRequest(nativeRequest)) {

@@ -1280,6 +1280,132 @@ describe('Cyber summary final transport boundaries', () => {
   );
 });
 
+describe('Cyber summary SDK URL defaults', () => {
+  beforeEach(() => {
+    const env: NodeJS.ProcessEnv = { ...process.env, OPENAI_API_KEY: 'summary-key' };
+    for (const key of [
+      'OPENAI_API_BASE',
+      'OPENAI_BASE_URL',
+      'OPENAI_REVERSE_PROXY',
+      'LANGSMITH_GATEWAY',
+    ]) {
+      delete env[key];
+    }
+    jest.replaceProperty(process, 'env', env);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each([
+    {
+      apiBase: 'https://summary-api-base.example/v1',
+      sdkURL: 'https://api.openai.com/v1',
+      explicitURL: undefined,
+      gateway: undefined,
+      origin: 'https://summary-api-base.example',
+      native: false,
+    },
+    {
+      apiBase: '',
+      sdkURL: 'https://summary-sdk-url.example/v1',
+      explicitURL: undefined,
+      gateway: undefined,
+      origin: 'https://summary-sdk-url.example',
+      native: false,
+    },
+    {
+      apiBase: 'https://api.openai.com/v1',
+      sdkURL: 'https://summary-sdk-url.example/v1',
+      explicitURL: undefined,
+      gateway: undefined,
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+    {
+      apiBase: 'https://summary-api-base.example/v1',
+      sdkURL: undefined,
+      explicitURL: 'https://api.openai.com/v1',
+      gateway: undefined,
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+    {
+      apiBase: 'https://api.openai.com/v1',
+      sdkURL: undefined,
+      explicitURL: 'https://summary-explicit.example/v1',
+      gateway: undefined,
+      origin: 'https://summary-explicit.example',
+      native: false,
+    },
+    {
+      apiBase: undefined,
+      sdkURL: undefined,
+      explicitURL: undefined,
+      gateway: 'true',
+      origin: 'https://gateway.smith.langchain.com',
+      native: false,
+    },
+    {
+      apiBase: undefined,
+      sdkURL: undefined,
+      explicitURL: undefined,
+      gateway: 'false',
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+  ])(
+    'shapes cross-provider summaries for the actual SDK destination: %j',
+    async ({ apiBase, sdkURL, explicitURL, gateway, origin, native }) => {
+      for (const [key, value] of Object.entries({
+        OPENAI_API_BASE: apiBase,
+        OPENAI_BASE_URL: sdkURL,
+        LANGSMITH_GATEWAY: gateway,
+      })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      const parameters: TestSummarizationParameters = {
+        streaming: false,
+        apiKey: 'summary-key',
+        ...(explicitURL && { configuration: { baseURL: explicitURL } }),
+      };
+      const agents = await callAndCapture({
+        agents: [
+          makeAgent({
+            provider: Providers.ANTHROPIC,
+            endpoint: EModelEndpoint.anthropic,
+            model: 'claude-sonnet-4.6',
+            model_parameters: { model: 'claude-sonnet-4.6' },
+          }),
+        ],
+        user: { id: 'summary-url-user', tenantId: 'summary-url-tenant' } as IUser,
+        tenantId: 'summary-url-tenant',
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: EModelEndpoint.openAI,
+          model: 'gpt-6-cyber',
+          parameters: parameters as SummarizationConfig['parameters'],
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.origin).toBe(origin);
+      expect(requests[0].url.pathname.endsWith(native ? '/responses' : '/chat/completions')).toBe(
+        true,
+      );
+      if (native) {
+        expect(requests[0].body).toMatchObject({
+          access_programs: { cyber: 'daybreak_red' },
+          safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+        });
+      } else {
+        expect(requests[0].body).not.toHaveProperty('access_programs');
+        expect(requests[0].body).not.toHaveProperty('safety_identifier');
+      }
+    },
+  );
+});
+
 describe('Cyber summary target shaping', () => {
   it.each([
     { sourceModel: 'gpt-6-sol', baseURL: undefined, endpoint: EModelEndpoint.openAI },

@@ -198,13 +198,21 @@ export function isNativeCyberRequest({
   azure?: false | t.AzureOptions;
   useOpenRouter?: boolean;
 }): boolean {
-  return (
-    model === 'gpt-6-cyber' &&
-    !useOpenRouter &&
-    !azure &&
-    (endpoint === EModelEndpoint.openAI || baseURL != null) &&
-    isCanonicalOpenAIBaseURL(baseURL)
-  );
+  if (
+    model !== 'gpt-6-cyber' ||
+    useOpenRouter ||
+    azure ||
+    (endpoint !== EModelEndpoint.openAI && baseURL == null)
+  ) {
+    return false;
+  }
+  // Agents 4.2.2 resolves explicit URLs, API_BASE, BASE_URL, then the SDK gateway.
+  const effectiveURL = baseURL || process.env.OPENAI_API_BASE || process.env.OPENAI_BASE_URL;
+  if (effectiveURL) {
+    return isCanonicalOpenAIBaseURL(effectiveURL);
+  }
+  const gateway = process.env.LANGSMITH_GATEWAY;
+  return !gateway || /^(false|0|no)$/i.test(gateway);
 }
 
 function removeReasoningField(target: Record<string, unknown>, field: string) {
@@ -966,14 +974,6 @@ export function getOpenAILLMConfig({
    */
   const responsesApiExplicitlyOptedOut =
     dropParams != null && dropParams.includes('useResponsesApi');
-  const firstPartyOpenAI =
-    !useOpenRouter && endpoint === EModelEndpoint.openAI && isCanonicalOpenAIBaseURL(baseURL);
-  const firstPartyAzure =
-    !useOpenRouter &&
-    endpoint === EModelEndpoint.azureOpenAI &&
-    isCanonicalAzureBaseURL(baseURL, azure);
-  const firstPartyEndpoint = firstPartyOpenAI || firstPartyAzure;
-  /** Keep GPT-6 model identity on Azure, with the deployment name used on the wire. */
   const cyber = isNativeCyberRequest({
     model: llmConfig.model,
     useOpenRouter,
@@ -981,6 +981,15 @@ export function getOpenAILLMConfig({
     endpoint,
     baseURL,
   });
+  const firstPartyOpenAI =
+    !useOpenRouter &&
+    endpoint === EModelEndpoint.openAI &&
+    (llmConfig.model === 'gpt-6-cyber' ? cyber : isCanonicalOpenAIBaseURL(baseURL));
+  const firstPartyAzure =
+    !useOpenRouter &&
+    endpoint === EModelEndpoint.azureOpenAI &&
+    isCanonicalAzureBaseURL(baseURL, azure);
+  const firstPartyEndpoint = firstPartyOpenAI || firstPartyAzure;
   const firstPartyResponsesModel =
     (firstPartyEndpoint && prefersResponsesApiByModel(llmConfig.model)) || cyber;
   if (

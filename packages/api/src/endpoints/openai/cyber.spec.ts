@@ -248,3 +248,189 @@ it('takes identity from the authenticated runtime, not submitted model fields', 
     else process.env.OPENAI_REVERSE_PROXY = previousURL;
   }
 });
+
+describe('Cyber SDK-effective URL routing', () => {
+  beforeEach(() => {
+    const env: NodeJS.ProcessEnv = { ...process.env, OPENAI_API_KEY: 'test-key' };
+    for (const key of [
+      'OPENAI_API_BASE',
+      'OPENAI_BASE_URL',
+      'OPENAI_REVERSE_PROXY',
+      'LANGSMITH_GATEWAY',
+    ]) {
+      delete env[key];
+    }
+    jest.replaceProperty(process, 'env', env);
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each([
+    {
+      apiBase: undefined,
+      sdkURL: undefined,
+      reverseProxy: undefined,
+      gateway: undefined,
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+    {
+      apiBase: undefined,
+      sdkURL: 'https://sdk-gateway.example/v1',
+      reverseProxy: undefined,
+      gateway: undefined,
+      origin: 'https://sdk-gateway.example',
+      native: false,
+    },
+    {
+      apiBase: 'https://api-base-gateway.example/v1',
+      sdkURL: undefined,
+      reverseProxy: undefined,
+      gateway: undefined,
+      origin: 'https://api-base-gateway.example',
+      native: false,
+    },
+    {
+      apiBase: 'https://api-base-gateway.example/v1',
+      sdkURL: 'https://api.openai.com/v1',
+      reverseProxy: undefined,
+      gateway: undefined,
+      origin: 'https://api-base-gateway.example',
+      native: false,
+    },
+    {
+      apiBase: 'https://api.openai.com/v1',
+      sdkURL: 'https://sdk-gateway.example/v1',
+      reverseProxy: undefined,
+      gateway: undefined,
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+    {
+      apiBase: '',
+      sdkURL: 'https://sdk-gateway.example/v1',
+      reverseProxy: undefined,
+      gateway: undefined,
+      origin: 'https://sdk-gateway.example',
+      native: false,
+    },
+    {
+      apiBase: 'https://api-base-gateway.example/v1',
+      sdkURL: 'https://sdk-gateway.example/v1',
+      reverseProxy: 'https://api.openai.com/v1',
+      gateway: undefined,
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+    {
+      apiBase: 'https://api.openai.com/v1',
+      sdkURL: undefined,
+      reverseProxy: 'https://explicit-gateway.example/v1',
+      gateway: undefined,
+      origin: 'https://explicit-gateway.example',
+      native: false,
+    },
+    {
+      apiBase: undefined,
+      sdkURL: undefined,
+      reverseProxy: undefined,
+      gateway: 'true',
+      origin: 'https://gateway.smith.langchain.com',
+      native: false,
+    },
+    {
+      apiBase: undefined,
+      sdkURL: undefined,
+      reverseProxy: undefined,
+      gateway: 'false',
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+    {
+      apiBase: undefined,
+      sdkURL: undefined,
+      reverseProxy: 'https://api.openai.com/v1',
+      gateway: 'true',
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+  ])(
+    'matches the published SDK endpoint without native-field leakage: %j',
+    async ({ apiBase, sdkURL, reverseProxy, gateway, origin, native }) => {
+      for (const [key, value] of Object.entries({
+        OPENAI_API_BASE: apiBase,
+        OPENAI_BASE_URL: sdkURL,
+        OPENAI_REVERSE_PROXY: reverseProxy,
+        LANGSMITH_GATEWAY: gateway,
+      })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      const options = await initializeOpenAI({
+        req: {
+          user: { id: identity.userId, tenantId: identity.tenantId },
+          body: {},
+          config: {},
+        } as BaseInitializeParams['req'],
+        endpoint: EModelEndpoint.openAI,
+        model_parameters: { model },
+        db: { getUserKey: jest.fn(), getUserKeyValues: jest.fn() },
+      });
+      const llmConfig = options.llmConfig as ReturnType<typeof getOpenAIConfig>['llmConfig'];
+      const requests: { url: URL; body: Record<string, unknown> }[] = [];
+      const fetch: NonNullable<NonNullable<OpenAIConfiguration>['fetch']> = async (url, init) => {
+        requests.push({ url: new URL(String(url)), body: JSON.parse(String(init?.body)) });
+        return Response.json({
+          id: 'resp_url',
+          object: 'response',
+          status: 'completed',
+          model,
+          choices: [
+            { index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' },
+          ],
+          output: [
+            {
+              type: 'message',
+              id: 'msg_url',
+              role: 'assistant',
+              status: 'completed',
+              content: [{ type: 'output_text', text: 'OK', annotations: [] }],
+            },
+          ],
+          usage: {
+            prompt_tokens: 10,
+            completion_tokens: 2,
+            input_tokens: 10,
+            output_tokens: 2,
+            total_tokens: 12,
+          },
+        });
+      };
+      const llm = initializeModel({
+        provider: Providers.OPENAI,
+        clientOptions: {
+          ...llmConfig,
+          verbosity: undefined,
+          streaming: false,
+          configuration: { ...options.configOptions, fetch },
+        },
+      });
+      await llm.invoke('Check endpoint routing');
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.origin).toBe(origin);
+      expect(requests[0].url.pathname.endsWith(native ? '/responses' : '/chat/completions')).toBe(
+        true,
+      );
+      if (native) {
+        expect(requests[0].body).toMatchObject({
+          access_programs: { cyber: 'daybreak_red' },
+          safety_identifier: safetyId(),
+        });
+      } else {
+        expect(requests[0].body).not.toHaveProperty('access_programs');
+        expect(requests[0].body).not.toHaveProperty('safety_identifier');
+        expect(llmConfig.useResponsesApi).not.toBe(true);
+      }
+    },
+  );
+});
