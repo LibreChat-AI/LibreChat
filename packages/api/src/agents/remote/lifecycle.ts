@@ -28,6 +28,8 @@ export interface AgentExecutionEnrollmentParams {
   isPrincipalActive: (userId: string) => Promise<boolean>;
   clientRequestId?: string;
   retainTerminalPersistence?: true;
+  /** Request a rendering outcome captured before transient generation cleanup. */
+  captureTerminalOutcome?: true;
 }
 
 export interface AgentExecutionEnrollmentDeps {
@@ -58,12 +60,19 @@ export class AgentExecutionEnrollment {
   private readonly attemptController?: AbortController;
   private readonly ownerId?: string;
   private readonly retainTerminalPersistence?: true;
+  private readonly captureTerminalOutcome?: true;
   private readonly trailingWrites: Promise<unknown>[] = [];
   private providerStarted = false;
   private providerStartRejected = false;
   private settlement?: Promise<AgentExecutionSettlement>;
   private pendingPause?: string;
   private paused = false;
+  private settledTerminalOutcome?: 'complete' | 'error' | 'aborted';
+
+  /** Rendering outcome only; this is not durable cleanup or journal authority. */
+  get terminalOutcome(): 'complete' | 'error' | 'aborted' | undefined {
+    return this.settledTerminalOutcome;
+  }
 
   get isPaused(): boolean {
     return this.paused;
@@ -82,7 +91,11 @@ export class AgentExecutionEnrollment {
     manager: GenerationJobManagerClass,
     job: GenerationJob,
     private readonly failureMessage: string = REMOTE_EXECUTION_ERROR,
-    options: { ownerId?: string; retainTerminalPersistence?: true } = {},
+    options: {
+      ownerId?: string;
+      retainTerminalPersistence?: true;
+      captureTerminalOutcome?: true;
+    } = {},
   ) {
     const providerExecutionId = job.metadata.providerExecutionId;
     if (!providerExecutionId) {
@@ -91,6 +104,7 @@ export class AgentExecutionEnrollment {
     this.manager = manager;
     this.ownerId = options.ownerId;
     this.retainTerminalPersistence = options.retainTerminalPersistence;
+    this.captureTerminalOutcome = options.captureTerminalOutcome;
     this.runId = job.streamId;
     this.createdAt = job.createdAt;
     this.providerExecutionId = providerExecutionId;
@@ -354,6 +368,26 @@ export class AgentExecutionEnrollment {
       }
     }
 
+    let terminalOutcome: 'complete' | 'error' | 'aborted' | undefined;
+    let outcomeError: unknown;
+    if (this.captureTerminalOutcome && this.providerStarted && terminalError == null) {
+      try {
+        const terminal = await this.manager.getJob(this.runId);
+        if (
+          terminal?.createdAt !== this.createdAt ||
+          terminal.metadata.providerExecutionId !== this.providerExecutionId ||
+          (this.ownerId != null && terminal.metadata.providerExecutionOwnerId !== this.ownerId) ||
+          (terminal.status !== 'complete' &&
+            terminal.status !== 'error' &&
+            terminal.status !== 'aborted')
+        )
+          throw new Error('Agent terminal outcome could not be confirmed');
+        terminalOutcome = terminal.status;
+      } catch (error) {
+        // Disposition readback cannot strand an already-finished provider's drain tracker.
+        outcomeError = error;
+      }
+    }
     let drainError: unknown;
     if (this.providerStarted && terminalError != null) {
       /** Provider work and trailing writes have settled, but terminalization gave up, so no
@@ -391,6 +425,8 @@ export class AgentExecutionEnrollment {
       )
         throw new Error('Agent failed execution outcome could not be confirmed');
     }
+    if (outcomeError != null) throw outcomeError;
+    this.settledTerminalOutcome = terminalOutcome;
     return persistenceError == null ? {} : { persistenceError };
   }
 
@@ -531,6 +567,7 @@ export async function enrollAgentExecution(
 
   return new AgentExecutionEnrollment(deps.manager, job, undefined, {
     retainTerminalPersistence: params.retainTerminalPersistence,
+    captureTerminalOutcome: params.captureTerminalOutcome,
   });
 }
 export interface ResumedAgentExecutionIdentity {
@@ -570,5 +607,6 @@ export async function enrollResumedAgentExecution(
   return new AgentExecutionEnrollment(deps.manager, job, undefined, {
     ownerId: randomUUID(),
     retainTerminalPersistence: params.retainTerminalPersistence,
+    captureTerminalOutcome: params.captureTerminalOutcome,
   });
 }
