@@ -12,7 +12,7 @@ means a mutated program timed out; Stryker counts that mutation as detected.
 
 1. Mutation testing uses Stryker 10.1.1. It mutates only added or edited functions.
    It selects related Jest tests and uses per-test coverage to reduce repeated work.
-   Static mutations are enabled by default. These run outside an individual test,
+   Static mutations are disabled by default. These run outside an individual test,
    such as during module loading or a shared test hook. With `static=on`, Stryker
    reruns the related tests for each mutated file. `static=off` sets Stryker's
    `ignoreStatic: true`. Static-only mutants remain in the report as `Ignored`.
@@ -109,19 +109,24 @@ or edited functions appear in the risk report.
 
 A user with repository write access can post one of these commands as a new PR
 conversation comment. Edited comments do not start or change a request.
+The bot adds an eyes reaction to valid commands from authorized users. This includes
+ignore and duplicate requests. If GitHub cannot add the reaction, processing continues.
 
 ```text
 /quality risk scopes=data-schemas,api,server
 /quality mutation scopes=data-schemas static=off
-/quality both scopes=all static=on
+/quality check-all
+/quality check-all scopes=data-schemas static=on
 /quality ignore
 ```
 
-`scopes` defaults to `all`. `static` defaults to `on` and only affects mutation
+`scopes` defaults to `all`. `static` defaults to `off` and only affects mutation
 runs. `all` means the supported scopes for the chosen check. Risk supports
 `data-schemas`, `api` (`packages/api`), and `server` (the backend `api` folder).
-Mutation supports only `data-schemas`. A `both` request uses the selected scopes
+Mutation supports only `data-schemas`. A `check-all` request runs both checks. It uses the selected scopes
 for risk and includes mutation only when `data-schemas` is selected.
+`/quality both` remains an alias for `/quality check-all`. The manual workflow and
+local runner also default to static mutants off.
 Unknown scopes, duplicate options, and invalid values are rejected before work starts.
 
 One accepted request can run per PR. Repeating the same effective command for the

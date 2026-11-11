@@ -17,7 +17,7 @@ const { values } = parseArgs({
     workspace: { type: 'string' },
     check: { type: 'string' },
     shard: { type: 'string' },
-    static: { type: 'string', default: 'on' },
+    static: { type: 'string', default: 'off' },
   },
 });
 const workspace = WORKSPACES.find(({ name }) => name === values.workspace);

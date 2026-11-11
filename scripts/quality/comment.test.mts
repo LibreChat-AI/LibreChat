@@ -60,6 +60,7 @@ const run = (status = 'completed', conclusion: string | null = 'success') => ({
 
 class GitHub implements API {
   permission = 'write';
+  reactionError = false;
   runs = new Map<number, ReturnType<typeof run>>([[55, run()]]);
   head = head;
   state = 'open';
@@ -83,6 +84,9 @@ class GitHub implements API {
       const comment = bot((body as { body: string }).body, 10000 + this.comments.length);
       this.comments.push(comment);
       result = comment;
+    } else if (method === 'POST' && /^issues\/comments\/\d+\/reactions$/.test(path)) {
+      if (this.reactionError) throw new Error('Reaction unavailable');
+      result = { content: 'eyes' };
     } else if (method === 'PATCH' && path.startsWith('issues/comments/')) {
       const comment = this.comments.find(({ id }) => id === Number(path.split('/').at(-1)))!;
       comment.body = (body as { body: string }).body;
@@ -110,26 +114,42 @@ class GitHub implements API {
   }
 }
 
-test('commands validate choices and lists as data, with static enabled by default', () => {
+test('commands validate choices and lists as data, with all scopes and static off by default', () => {
   assert.deepEqual(parseCommand('/quality mutation'), {
     check: 'mutation',
     scopes: ['data-schemas'],
-    staticMutants: true,
+    staticMutants: false,
   });
   assert.deepEqual(parseCommand('/quality risk scopes=server,api'), {
     check: 'risk',
     scopes: ['api', 'server'],
-    staticMutants: true,
+    staticMutants: false,
   });
   assert.deepEqual(parseCommand('/quality both scopes=data-schemas,server static=off'), {
     check: 'both',
     scopes: ['data-schemas', 'server'],
     staticMutants: false,
   });
+  assert.deepEqual(parseCommand('/quality check-all'), {
+    check: 'both',
+    scopes: ['data-schemas', 'api', 'server'],
+    staticMutants: false,
+  });
+  assert.deepEqual(
+    parseCommand('/quality check-all'),
+    parseCommand('/quality both scopes=all static=off'),
+  );
+  assert.deepEqual(parseCommand('/quality check-all scopes=data-schemas static=on'), {
+    check: 'both',
+    scopes: ['data-schemas'],
+    staticMutants: true,
+  });
   assert.equal(parseCommand('/quality ignore')?.check, 'ignore');
   assert.equal(parseCommand('ordinary comment'), undefined);
   for (const body of [
     '/quality',
+    '/quality check-all static=invalid',
+    '/quality check-all scopes=client',
     '/quality mutation scopes=api',
     '/quality both scopes=all,api',
     '/quality risk scopes=api,api',
@@ -191,6 +211,14 @@ test('one exact-head request comment moves through progress and completion with 
   const api = new GitHub();
   const accepted = await accept(api, context, 1, command());
   assert.equal(accepted?.request.head, head);
+  assert.deepEqual(
+    api.calls.find(({ path }) => path.endsWith('/reactions')),
+    {
+      method: 'POST',
+      path: 'issues/comments/10/reactions',
+      body: { content: 'eyes' },
+    },
+  );
   assert.equal(api.statuses.at(-1)?.state, 'pending');
   assert.match(api.comments[0].body, /Static: \*\*off\*\*/);
   assert.match(api.comments[0].body, /actions\/runs\/55/);
@@ -362,7 +390,12 @@ test('a duplicate active command links the existing run without changing its dec
   const api = new GitHub();
   running(api);
   const original = api.comments[0].body;
-  const accepted = await acceptRequest(api, { ...context, run: 56 }, 1, command(11));
+  const accepted = await acceptRequest(
+    api,
+    { ...context, run: 56 },
+    1,
+    command(11, '/quality check-all'),
+  );
   assert.equal(accepted, undefined);
   assert.equal(api.comments[0].body, original);
   assert.match(api.comments[1].body, /already running.*actions\/runs\/55/);
@@ -433,6 +466,7 @@ test('invalid commands and unauthorized actors cannot disturb an active request'
     assert.equal(api.runs.get(55)?.status, 'in_progress');
     assert.equal(cancellations(api).length, 0);
     assert.equal(api.statuses.length, 0);
+    assert.ok(api.calls.every(({ path }) => !path.endsWith('/reactions')));
   }
 });
 
@@ -543,4 +577,14 @@ test('a head change during replacement prevents old-head report jobs from starti
   await refreshPull(api, { ...context, run: 99 }, 1);
   assert.equal(api.statuses.at(-1)?.sha, next);
   assert.equal(api.statuses.at(-1)?.state, 'pending');
+});
+
+test('reaction failure does not stop an authorized quality request', async (t) => {
+  const warning = t.mock.method(console, 'warn', () => {});
+  const api = new GitHub();
+  api.reactionError = true;
+  const accepted = await acceptRequest(api, context, 1, command(10, '/quality check-all'));
+  assert.equal(accepted?.request.head, head);
+  assert.equal(api.statuses.at(-1)?.state, 'pending');
+  assert.equal(warning.mock.callCount(), 1);
 });

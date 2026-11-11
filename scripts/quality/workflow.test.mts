@@ -33,6 +33,7 @@ interface Step {
   'working-directory'?: string;
 }
 interface Job {
+  env?: Record<string, string>;
   'timeout-minutes'?: string | number;
   if?: string;
   permissions?: Record<string, string>;
@@ -48,7 +49,13 @@ interface Workflow {
   on: {
     pull_request?: { paths: string[] };
     issue_comment?: { types: string[] };
-    workflow_dispatch: { inputs: { base: { default: string }; scope: { default: string } } };
+    workflow_dispatch: {
+      inputs: {
+        base: { default: string };
+        scope: { default: string };
+        static: { default: string };
+      };
+    };
   };
   permissions: Record<string, string>;
   env: Record<string, string>;
@@ -104,6 +111,9 @@ test('workflow separates tooling, source, installs and artifacts without changin
   assert.match(runner.run!, /node \.\.\/tooling\/scripts\/quality\/run\.mts/);
   assert.equal(report['timeout-minutes'], "${{ matrix.task.check == 'mutation' && 240 || 45 }}");
   assert.equal(workflow.on.workflow_dispatch.inputs.scope.default, 'all');
+  assert.equal(workflow.on.workflow_dispatch.inputs.static.default, 'off');
+  assert.match(report.env!.QUALITY_STATIC, /inputs\.static \|\| 'off'/);
+  assert.match(runner.run!, /QUALITY_STATIC:-off/);
   assert.equal(
     workflow.jobs.select.steps.find(({ id }) => id === 'select')?.env?.QUALITY_SCOPE,
     "${{ needs.request.outputs.scope || inputs.scope || 'all' }}",
@@ -144,6 +154,7 @@ test('comment publication is trusted and serialized while PR execution stays rea
     "always() && (github.event_name == 'workflow_dispatch' || needs.request.outputs.accepted == 'true')",
   );
   assert.deepEqual(workflow.on.issue_comment?.types, ['created']);
+  assert.equal(workflow.jobs.request.permissions?.issues, 'write');
   assert.match(workflow['run-name']!, /Quality PR #\{0\} request \{1\}/);
   for (const name of ['verify', 'select', 'reports', 'mutation-summary']) {
     assert.deepEqual(workflow.jobs[name].permissions ?? workflow.permissions, { contents: 'read' });

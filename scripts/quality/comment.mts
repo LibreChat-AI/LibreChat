@@ -12,7 +12,8 @@ const positive = (value: number) => Number.isSafeInteger(value) && value > 0;
 export function parseCommand(body: string) {
   const parts = body.trim().split(/\s+/u);
   if (parts.shift() !== '/quality') return undefined;
-  const check = parts.shift();
+  const command = parts.shift();
+  const check = command === 'check-all' ? 'both' : command;
   if (check === 'ignore' && !parts.length) {
     return { check, scopes: [] as string[], staticMutants: true };
   }
@@ -24,13 +25,13 @@ export function parseCommand(body: string) {
     options.set(match[1], match[2]);
   }
   const selection = reportSelection(check, options.get('scopes') ?? 'all');
-  const mode = options.get('static') ?? 'on';
+  const mode = options.get('static') ?? 'off';
   if (!['on', 'off'].includes(mode)) throw new Error(usage);
   return { ...selection, staticMutants: mode === 'on' };
 }
 
 const usage =
-  'Use `/quality risk|mutation|both scopes=all|data-schemas,api,server static=on|off` or `/quality ignore`. Mutation supports data-schemas only.';
+  'Use `/quality check-all|risk|mutation scopes=all|data-schemas,api,server static=off|on` or `/quality ignore`. Defaults: scopes=all static=off. Mutation supports data-schemas only.';
 type Command = NonNullable<ReturnType<typeof parseCommand>>;
 export interface Request extends Command {
   request: number;
@@ -229,7 +230,7 @@ export function renderRequest(
       ? ['**Outdated: this request is for an earlier PR commit.**', '']
       : []),
     `Commit: \`${request.head}\`. Requested by @${request.actor}.`,
-    `Checks: **${request.check}**. Scopes: **${scopes}**. Static: **${request.staticMutants ? 'on' : 'off'}**${request.check === 'risk' || request.check === 'ignore' ? ' (not used)' : ''}.`,
+    `Checks: **${request.check === 'both' ? 'check-all' : request.check}**. Scopes: **${scopes}**. Static: **${request.staticMutants ? 'on' : 'off'}**${request.check === 'risk' || request.check === 'ignore' ? ' (not used)' : ''}.`,
     `Risk: ${risk}. Mutation: ${mutation}.`,
     '',
     request.check === 'ignore'
@@ -323,6 +324,11 @@ export async function acceptRequest(api: API, context: Context, pr: number, comm
   const previous = existing && readRequest(existing);
   if ((previous && previous.head !== pull.head.sha) || (latest && latest.request > comment.id)) {
     throw new Error('This quality request was superseded. Post a new /quality command.');
+  }
+  try {
+    await api.request('POST', `issues/comments/${comment.id}/reactions`, { content: 'eyes' });
+  } catch {
+    console.warn('Could not add the quality request reaction. Continuing the request.');
   }
   const active = await activeRequests(api, context, records);
   const duplicate = active.find(

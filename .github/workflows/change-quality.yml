@@ -30,7 +30,7 @@ on:
         options: [risk, mutation, both]
       static:
         description: Include static mutants
-        default: 'on'
+        default: 'off'
         type: choice
         options: ['on', 'off']
 
@@ -59,6 +59,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      issues: write
       pull-requests: write
       actions: write
       statuses: write
@@ -167,7 +168,7 @@ jobs:
     env:
       QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}
       QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
-      QUALITY_STATIC: ${{ needs.request.outputs.static || inputs.static || 'on' }}
+      QUALITY_STATIC: ${{ needs.request.outputs.static || inputs.static || 'off' }}
       REDIS_URI: redis://127.0.0.1:6379
       NODE_OPTIONS: --max-old-space-size=6144
     steps:
@@ -230,7 +231,7 @@ jobs:
             args+=(--shard "$QUALITY_SHARD")
           fi
           node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" \
-            --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK" --static "${QUALITY_STATIC:-on}" "${args[@]}"
+            --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK" --static "${QUALITY_STATIC:-off}" "${args[@]}"
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v6
