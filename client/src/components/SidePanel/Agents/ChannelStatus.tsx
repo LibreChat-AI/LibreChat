@@ -16,12 +16,18 @@ const statusColors: Record<AgentChannel['status'], string> = {
   deleting: 'bg-status-info',
 };
 
-export default function ChannelStatus({ status }: { status: AgentChannel['status'] }) {
+export default function ChannelStatus({
+  status,
+  pendingLabel = 'com_ui_channels_pending',
+}: {
+  status: AgentChannel['status'];
+  pendingLabel?: TranslationKeys;
+}) {
   const localize = useLocalize();
   return (
     <span className="text-text-secondary inline-flex shrink-0 items-center gap-1.5 text-xs">
       <span aria-hidden="true" className={`size-1.5 rounded-full ${statusColors[status]}`} />
-      {localize(statusLabels[status])}
+      {localize(status === 'pending_install' ? pendingLabel : statusLabels[status])}
     </span>
   );
 }

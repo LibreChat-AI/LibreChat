@@ -3,7 +3,14 @@ import express from 'express';
 import mongoose from 'mongoose';
 import supertest from 'supertest';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { FileSources, channelConfigSchema } from 'librechat-data-provider';
+import {
+  FileSources,
+  channelConfigSchema,
+  PermissionBits,
+  PrincipalType,
+  PrincipalModel,
+  ResourceType,
+} from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
@@ -32,7 +39,11 @@ describe('shared Slack service routing', () => {
   const serviceToken = 'shared-test-service-token-at-least-32';
   let enabled = true;
   let manageAllowed = true;
+  let principalActive = true;
   let sequence = 0;
+  const readAgentName = jest.fn((...args: Parameters<typeof channels.getAgentName>) =>
+    channels.getAgentName(...args),
+  );
   const config = channelConfigSchema.parse({
     enabled: true,
     transport: 'webhook',
@@ -110,6 +121,7 @@ describe('shared Slack service routing', () => {
       workspaceId,
       channelId,
       userId: 'admin',
+      allowReplaceOthers: true,
       channelRevision: 'consent',
     });
     if (!result.ok) throw new Error(result.code);
@@ -166,6 +178,8 @@ describe('shared Slack service routing', () => {
       routes,
       readSettings,
       canManage: async () => manageAllowed,
+      isPrincipalActive: async () => principalActive,
+      getAgentName: readAgentName,
       logError: jest.fn(),
     });
     app.use('/ui', (req, _res, next) => {
@@ -187,6 +201,8 @@ describe('shared Slack service routing', () => {
   beforeEach(async () => {
     enabled = true;
     manageAllowed = true;
+    principalActive = true;
+    readAgentName.mockClear();
     provider
       .mockReset()
       .mockImplementation(
@@ -194,6 +210,8 @@ describe('shared Slack service routing', () => {
       );
     await runAsSystem(async () => {
       for (const name of [
+        'Agent',
+        'AclEntry',
         'AgentChannel',
         'SlackWorkspace',
         'SlackInstall',
@@ -280,6 +298,141 @@ describe('shared Slack service routing', () => {
     }).expect(400);
   });
 
+  it('lets an ordinary member connect, route and remove their own agent without installation credentials', async () => {
+    const workspace = await scoped(() => install());
+    manageAllowed = false;
+    const member = 'member';
+    const channel = (
+      await request
+        .post('/ui/member-agent/connections')
+        .set('x-test-user', member)
+        .send({ workspaceId: workspace.workspaceId })
+        .expect(201)
+    ).body;
+    const active = (
+      await request
+        .post(`/ui/member-agent/${channel.channelId}/routes`)
+        .set('x-test-user', member)
+        .send({ channelRevision: channel.revision, externalChannelId: 'CMEMBER' })
+        .expect(200)
+    ).body;
+    expect(active.status).toBe('active');
+    expect(JSON.stringify(active)).not.toMatch(/xoxb|encrypted|signing/);
+    const target = (
+      await request
+        .get(`/ui/member-agent/${channel.channelId}/routes?target=CMEMBER`)
+        .set('x-test-user', member)
+        .expect(200)
+    ).body;
+    expect(target).toMatchObject({ assignedToThisChannel: true, canReplace: true });
+    expect(readAgentName).not.toHaveBeenCalled();
+    await request
+      .delete(`/ui/member-agent/${channel.channelId}/routes`)
+      .set('x-test-user', member)
+      .send({ externalChannelId: 'CMEMBER', expectedRevision: target.revision })
+      .expect(204);
+    expect(await scoped(() => routes.read(workspace.workspaceId, 'CMEMBER'))).toBeNull();
+  });
+
+  it('names the assigned agent only with tenant-local VIEW permission, including after permission revocation', async () => {
+    const viewer = '000000000000000000000003';
+    const workspace = await scoped(() => install());
+    const original = await pending(workspace.workspaceId);
+    await browserPost(`agent/${original.channelId}/routes`, {
+      channelRevision: original.revision,
+    }).expect(200);
+    const member = (
+      await request
+        .post('/ui/member-agent/connections')
+        .set('x-test-user', viewer)
+        .send({ workspaceId: workspace.workspaceId })
+        .expect(201)
+    ).body;
+    const agent = await scoped(() =>
+      db.models.Agent.create({
+        id: 'agent',
+        name: 'Research Assistant',
+        author: new mongoose.Types.ObjectId(),
+        provider: 'openAI',
+        model: 'test',
+      }),
+    );
+    const read = () =>
+      request
+        .get(`/ui/member-agent/${member.channelId}/routes?target=default`)
+        .set('x-test-user', viewer)
+        .expect(200);
+    expect((await read()).body).not.toHaveProperty('assignedAgentName');
+    const acl = await scoped(() =>
+      db.models.AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: new mongoose.Types.ObjectId(viewer),
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: agent._id,
+        permBits: PermissionBits.VIEW,
+        grantedBy: new mongoose.Types.ObjectId(viewer),
+        grantedAt: new Date(),
+      }),
+    );
+    expect((await read()).body.assignedAgentName).toBe('Research Assistant');
+    expect(
+      await scoped(() => channels.getAgentName('agent', 'org-b', { userId: viewer })),
+    ).toBeUndefined();
+    await scoped(() => db.models.AclEntry.deleteOne({ _id: acl._id }));
+    expect((await read()).body).not.toHaveProperty('assignedAgentName');
+  });
+
+  it('prevents a member from replacing another creator while permitting a current administrator override', async () => {
+    const workspace = await scoped(() => install());
+    const original = await pending(workspace.workspaceId);
+    await browserPost(`agent/${original.channelId}/routes`, {
+      channelRevision: original.revision,
+    }).expect(200);
+    manageAllowed = false;
+    const member = 'member';
+    const channel = (
+      await request
+        .post('/ui/member-agent/connections')
+        .set('x-test-user', member)
+        .send({ workspaceId: workspace.workspaceId })
+        .expect(201)
+    ).body;
+    const target = (
+      await request
+        .get(`/ui/member-agent/${channel.channelId}/routes?target=default`)
+        .set('x-test-user', member)
+        .expect(200)
+    ).body;
+    expect(target).toMatchObject({ occupied: true, canReplace: false });
+    const change = () =>
+      request
+        .post(`/ui/member-agent/${channel.channelId}/routes`)
+        .set('x-test-user', member)
+        .send({ channelRevision: channel.revision, expectedRevision: target.revision });
+    await change().expect(409, { error: 'route_in_use' });
+    expect((await scoped(() => channels.getAgentChannel(channel.channelId)))?.status).toBe(
+      'pending_install',
+    );
+    expect((await scoped(() => routes.read(workspace.workspaceId)))?.channelId).toBe(
+      original.channelId,
+    );
+    await request
+      .post(`/ui/member-agent/${channel.channelId}/routes`)
+      .set('x-test-user', member)
+      .send({
+        channelRevision: channel.revision,
+        expectedRevision: target.revision,
+        allowReplaceOthers: true,
+      })
+      .expect(400);
+    manageAllowed = true;
+    await change().expect(200);
+    expect((await scoped(() => routes.read(workspace.workspaceId)))?.channelId).toBe(
+      channel.channelId,
+    );
+  });
+
   it('leaves a conflicting connection pending until an explicit route revision is supplied', async () => {
     const workspace = await scoped(() => install());
     const first = await pending(workspace.workspaceId);
@@ -300,6 +453,7 @@ describe('shared Slack service routing', () => {
         .expect(200)
     ).body;
     expect(observed).toEqual({
+      canReplace: true,
       occupied: true,
       assignedToThisChannel: false,
       revision: expect.any(String),
@@ -312,18 +466,18 @@ describe('shared Slack service routing', () => {
     expect((await post('/resolve', query()).expect(200)).body.channelId).toBe(second.channelId);
   });
 
-  it('checks current administration, creator, tenant and binding revision at management boundaries', async () => {
+  it('checks current activity, creator, tenant and binding revision at management boundaries', async () => {
     const workspace = await scoped(() => install());
     await request
       .post('/ui/agent/connections')
       .send({ workspaceId: workspace.workspaceId })
       .expect(401);
     const channel = await pending(workspace.workspaceId);
-    manageAllowed = false;
+    principalActive = false;
     await browserPost(`agent/${channel.channelId}/routes`, {
       channelRevision: channel.revision,
     }).expect(403);
-    manageAllowed = true;
+    principalActive = true;
     await request
       .get(`/ui/agent/${channel.channelId}/routes`)
       .set('x-test-user', 'other-admin')

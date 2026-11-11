@@ -30,6 +30,12 @@ const actionLabels: Record<AgentChannel['status'], TranslationKeys> = {
   deleting: 'com_ui_channels_manage',
 };
 
+function channelActionLabel(channel: AgentChannel, userId: string): TranslationKeys {
+  if (channel.createdBy !== userId) return 'com_ui_channels_read_only';
+  if (channel.workspaceId) return 'com_ui_channels_manage';
+  return actionLabels[channel.status];
+}
+
 function Channel({
   agentId,
   channel,
@@ -410,6 +416,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
   const id = useId();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const [dialog, setDialog] = useState<string | null>(null);
+  const [newWorkspaceConnection, setNewWorkspaceConnection] = useState<string | null>(null);
   const [credentialMode, setCredentialMode] = useState<AgentChannel['credentialMode']>('per_user');
   const [source, setSource] = useState<'workspace' | 'manual'>('workspace');
   const [workspaceId, setWorkspaceId] = useState('');
@@ -442,10 +449,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
     mutationFn: () => {
       if (!agentId || !userId || !channels.isSuccess) throw new Error('Channel owner unavailable');
       if (useWorkspace) {
-        if (
-          !workspaceStatus?.canManage ||
-          !availableWorkspaces.some((workspace) => workspace.workspaceId === workspaceId)
-        )
+        if (!availableWorkspaces.some((workspace) => workspace.workspaceId === workspaceId))
           throw new Error('Workspace unavailable');
         return dataService.createWorkspaceAgentChannel(agentId, workspaceId);
       }
@@ -459,13 +463,15 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
           channel,
         ],
       );
+      setNewWorkspaceConnection(channel.workspaceId ? channel.channelId : null);
       setDialog(channel.channelId);
       await queryClient.invalidateQueries([QueryKeys.agentChannels, userId, tenantId, agentId]);
     },
   });
   const selected = channels.data?.find((channel) => channel.channelId === dialog);
   const connectionTitle =
-    selected?.status === 'pending_install'
+    selected?.status === 'pending_install' &&
+    (!selected.workspaceId || newWorkspaceConnection === selected.channelId)
       ? 'com_ui_channels_setup_title'
       : 'com_ui_channels_manage';
   return (
@@ -531,7 +537,12 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
         <div key={channel.channelId} className="flex items-center justify-between gap-2 text-sm">
           <div className="flex min-w-0 items-center gap-2">
             {localize('com_ui_channels_slack')}
-            <ChannelStatus status={channel.status} />
+            <ChannelStatus
+              status={channel.status}
+              pendingLabel={
+                channel.workspaceId ? 'com_ui_channels_workspace_not_assigned' : undefined
+              }
+            />
           </div>
           <Button
             type="button"
@@ -542,14 +553,11 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
             }
             onClick={(event) => {
               triggerRef.current = event.currentTarget;
+              setNewWorkspaceConnection(null);
               setDialog(channel.channelId);
             }}
           >
-            {localize(
-              channel.createdBy !== userId
-                ? 'com_ui_channels_read_only'
-                : actionLabels[channel.status],
-            )}
+            {localize(channelActionLabel(channel, userId))}
           </Button>
         </div>
       ))}
@@ -629,47 +637,40 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                       <p className="text-text-secondary text-sm">
                         {localize('com_ui_channels_workspace_identity')}
                       </p>
-                      {!workspaceStatus?.canManage && (
-                        <p>{localize('com_ui_slack_workspaces_admin')}</p>
+                      <h4 className="text-sm font-medium">
+                        {localize('com_ui_channels_workspace_choose')}
+                      </h4>
+                      {availableWorkspaces.length === 0 && (
+                        <p>{localize('com_ui_channels_workspace_connect_first')}</p>
                       )}
-                      {workspaceStatus?.canManage && (
-                        <>
-                          <h4 className="text-sm font-medium">
-                            {localize('com_ui_channels_workspace_choose')}
-                          </h4>
-                          {availableWorkspaces.length === 0 && (
-                            <p>{localize('com_ui_channels_workspace_connect_first')}</p>
-                          )}
-                          <div
-                            role="group"
-                            aria-label={localize('com_ui_channels_workspace_choose')}
-                            className="flex max-h-52 flex-col gap-2 overflow-y-auto"
+                      <div
+                        role="group"
+                        aria-label={localize('com_ui_channels_workspace_choose')}
+                        className="flex max-h-52 flex-col gap-2 overflow-y-auto"
+                      >
+                        {availableWorkspaces.map((workspace) => (
+                          <Button
+                            key={workspace.workspaceId}
+                            type="button"
+                            variant="outline-toggle"
+                            className="justify-start text-left break-words whitespace-normal"
+                            aria-pressed={workspaceId === workspace.workspaceId}
+                            disabled={create.isLoading}
+                            onClick={() => setWorkspaceId(workspace.workspaceId)}
                           >
-                            {availableWorkspaces.map((workspace) => (
-                              <Button
-                                key={workspace.workspaceId}
-                                type="button"
-                                variant="outline-toggle"
-                                className="justify-start text-left break-words whitespace-normal"
-                                aria-pressed={workspaceId === workspace.workspaceId}
-                                disabled={create.isLoading}
-                                onClick={() => setWorkspaceId(workspace.workspaceId)}
-                              >
-                                {workspace.teamName}
-                              </Button>
-                            ))}
-                          </div>
-                          {workspaces.hasNextPage && (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              disabled={workspaces.isFetchingNextPage}
-                              onClick={() => void workspaces.fetchNextPage()}
-                            >
-                              {localize('com_ui_slack_workspaces_more')}
-                            </Button>
-                          )}
-                        </>
+                            {workspace.teamName}
+                          </Button>
+                        ))}
+                      </div>
+                      {workspaces.hasNextPage && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={workspaces.isFetchingNextPage}
+                          onClick={() => void workspaces.fetchNextPage()}
+                        >
+                          {localize('com_ui_slack_workspaces_more')}
+                        </Button>
                       )}
                     </div>
                   )}
@@ -735,10 +736,9 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                         workspaces.isLoading ||
                         !channels.isSuccess ||
                         (useWorkspace &&
-                          (!workspaceStatus?.canManage ||
-                            !availableWorkspaces.some(
-                              (workspace) => workspace.workspaceId === workspaceId,
-                            )))
+                          !availableWorkspaces.some(
+                            (workspace) => workspace.workspaceId === workspaceId,
+                          ))
                       }
                       onClick={() => create.mutate()}
                     >
@@ -754,6 +754,7 @@ function OwnedChannels({ agentId, userId, tenantId }: ChannelsProps) {
                   <WorkspaceChannel
                     key={selected.channelId}
                     agentId={agentId}
+                    initialSetup={newWorkspaceConnection === selected.channelId}
                     channel={selected}
                     userId={userId}
                     tenantId={tenantId}
