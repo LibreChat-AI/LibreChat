@@ -38,6 +38,13 @@ import {
 
 const HOME_CACHE = path.join(os.homedir(), '.cache', 'mongodb-binaries');
 const CHECKSUM = '.md5';
+const DOWNLOAD_ATTEMPTS = 2;
+
+/**
+ * Where the library looks for an existing binary: MONGOMS_DOWNLOAD_DIR, the
+ * home cache, `node_modules/.cache` and `./mongodb-binaries`.
+ */
+const LOOKUP_LOCATIONS = 4;
 
 /**
  * The directory the library checks first from any working directory: the home
@@ -124,8 +131,9 @@ function describe(located, binary, cached) {
 }
 
 /**
- * A binary that does not run is deleted wherever it was found, so the next
- * attempt downloads instead of meeting the same file again.
+ * Checks whatever the library resolves. A binary that does not run is deleted
+ * wherever it was found, so the next call resolves something else: another
+ * copy that was already on disk, or a fresh download.
  */
 async function provision({ MongoBinary, DryMongoBinary }) {
   const cached = snapshot(SHARED);
@@ -135,15 +143,43 @@ async function provision({ MongoBinary, DryMongoBinary }) {
   if (!inPlace) {
     copy(located, binary);
   }
+  const source = describe(located, binary, cached);
   try {
-    return { binary, version: version(binary), source: describe(located, binary, cached) };
+    return { binary, source, version: version(binary) };
   } catch (error) {
     if (!SYSTEM_BINARY) {
       remove(binary);
       remove(located);
       DryMongoBinary.binaryCache.clear();
     }
-    throw error;
+    throw Object.assign(error, { preexisting: source !== 'downloaded' });
+  }
+}
+
+/**
+ * Copies that were already on disk and do not run are discarded one at a time
+ * without spending a download, so a broken file in one location cannot hide a
+ * good one, or the download, behind it. The download itself gets two attempts:
+ * a second failure is the mirror or the archive, not chance.
+ */
+async function provisionWithRecovery(library) {
+  let discarded = 0;
+  let downloads = 0;
+  for (;;) {
+    try {
+      return await provision(library);
+    } catch (error) {
+      if (error.preexisting) {
+        discarded += 1;
+      } else {
+        downloads += 1;
+      }
+      if (SYSTEM_BINARY || downloads >= DOWNLOAD_ATTEMPTS || discarded > LOOKUP_LOCATIONS) {
+        throw error;
+      }
+      const next = error.preexisting ? 'Discarded it; resolving again' : 'Retrying the download';
+      console.log(`::warning::${headline(error)}. ${next}.`);
+    }
   }
 }
 
@@ -161,10 +197,7 @@ function prune(binary) {
 
 async function main() {
   const library = loadLibrary();
-  const result = await provision(library).catch((error) => {
-    console.log(`::warning::${headline(error)}. Retrying once with a fresh download.`);
-    return provision(library);
-  });
+  const result = await provisionWithRecovery(library);
   console.log(`mongod ready: ${result.binary}`);
   console.log(`  ${result.version} (${result.source})`);
 
