@@ -12,6 +12,9 @@ export default {
       },
     ],
   },
+  transformIgnorePatterns: [
+    '/node_modules/(?!mdast-util-|micromark|decode-named-character-reference|devlop|longest-streak|unist-util-|zwitch|character-(?:entities|reference)|parse-entities|stringify-entities|is-(?:alphanumerical|alphabetical|decimal|hexadecimal)|ccount|markdown-table|escape-string-regexp)',
+  ],
   testTimeout: 15000,
   restoreMocks: true,
 };
