@@ -4,6 +4,7 @@ import type { ChannelRunSummary } from 'librechat-data-provider';
 import type { ChannelRunRecord } from '~/models/channelRun';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelRunStorage } from './channelRun';
+import { waitForPause } from './test-helpers';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
@@ -505,7 +506,7 @@ it('serializes account erasure with an already inserting channel event', () =>
       return insert(...args);
     });
     const pending = storage.admit({ ...event(), principal: { ...event().principal, userId } }, 100);
-    await started;
+    await waitForPause(started, pending);
     let erased = false;
     const deletion = createUserMethods(mongoose)
       .deleteUserById(userId)
@@ -513,12 +514,14 @@ it('serializes account erasure with an already inserting channel event', () =>
         erased = true;
         return result;
       });
+    const drained = Promise.allSettled([pending, deletion]);
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(erased).toBe(false);
     } finally {
       release();
       paused.mockRestore();
+      await drained;
     }
     await pending;
     await deletion;
