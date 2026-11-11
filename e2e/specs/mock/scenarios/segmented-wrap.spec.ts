@@ -1,8 +1,8 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { MOCK_ENDPOINTS, getAccessToken, requestJson } from '../helpers';
 import { openAgentBuilder } from '../agents.helpers';
 import { openSettings } from './ui-scale.helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * A segmented control keeps each label on one line, so without `wrap` a row of long

@@ -1,5 +1,4 @@
 import { resolve } from 'node:path';
-import { expect, test } from '@playwright/test';
 import { parseSessionHint, formatSessionHint, SESSION_HINT_COOKIE } from 'librechat-data-provider';
 import type { SessionHint, ThemeDefinition } from 'librechat-data-provider';
 import type { Page } from '@playwright/test';
@@ -9,6 +8,7 @@ import {
 } from '../../../../packages/api/src/html/theme';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { resolveTheme } from '../../../../packages/data-provider/src/themes/registry';
+import { expect, test } from '../fixtures';
 
 /**
  * `interface.theme` exists only in the `/api/config` answer, so before this

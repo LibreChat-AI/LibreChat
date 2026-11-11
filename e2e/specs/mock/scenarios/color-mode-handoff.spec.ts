@@ -1,5 +1,5 @@
-import { expect, test } from '@playwright/test';
 import type { Browser, BrowserContext, Page } from '@playwright/test';
+import { closeContext, expect, test } from '../fixtures';
 
 /**
  * Another app links into this one with its colour mode on the URL
@@ -75,7 +75,7 @@ async function landsFresh(browser: Browser, context: BrowserContext, mode: Mode)
     await expectSettled(page, mode);
     expect(await storedMode(page)).toBe(mode);
   } finally {
-    await profile.close();
+    await closeContext(profile);
   }
 }
 
@@ -98,7 +98,7 @@ async function replacesStored(browser: Browser, context: BrowserContext, mode: M
     await page.reload();
     await expectSettled(page, mode);
   } finally {
-    await profile.close();
+    await closeContext(profile);
   }
 }
 
@@ -153,7 +153,7 @@ test.describe('colour-mode handoff', () => {
         expect(await storedMode(page)).toBe('light');
       }
     } finally {
-      await profile.close();
+      await closeContext(profile);
     }
   });
 });

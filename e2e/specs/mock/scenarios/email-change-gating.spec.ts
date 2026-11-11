@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
+import { expect, test } from '../fixtures';
 
 /**
  * Changing the registered address is offered only where it can actually

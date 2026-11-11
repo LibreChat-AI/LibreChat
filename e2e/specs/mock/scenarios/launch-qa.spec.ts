@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import type { AgentDetail } from '../agents.helpers';
 import {
@@ -11,6 +10,7 @@ import {
   sendMessageAndWaitForCompletion,
 } from '../helpers';
 import { cleanupAgent, uniqueAgentName } from '../agents.helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * The chat chrome a deployment review asked for: what a response repeats from the header, what the

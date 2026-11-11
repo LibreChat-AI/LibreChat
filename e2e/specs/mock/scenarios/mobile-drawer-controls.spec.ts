@@ -1,7 +1,7 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { NEW_CHAT_PATH } from '../helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * The mobile drawer keeps one place for each control: new chat sits in the header strip beside

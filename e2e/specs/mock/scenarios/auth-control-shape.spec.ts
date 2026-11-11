@@ -1,5 +1,5 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
+import { expect, test } from '../fixtures';
 
 /**
  * The sign-in form's floating-label field and submit button take their height and corner from

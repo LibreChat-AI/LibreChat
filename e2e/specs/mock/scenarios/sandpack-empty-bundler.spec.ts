@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
 import {
@@ -8,6 +7,7 @@ import {
   seedConversations,
   seedMessages,
 } from '../db';
+import { expect, test } from '../fixtures';
 import { messagesView } from '../helpers';
 
 const ROOT_PARENT = '00000000-0000-0000-0000-000000000000';

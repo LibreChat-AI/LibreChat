@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
@@ -8,6 +7,7 @@ import {
   sendMessage,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * The artifacts pane can leave the side panel for a window of its own. The pane

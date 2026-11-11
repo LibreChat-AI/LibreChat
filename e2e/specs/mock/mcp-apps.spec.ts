@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { expect, test } from '@playwright/test';
 import { encodeEphemeralAgentId } from 'librechat-data-provider';
 import type { FrameLocator, Page, Response, Route } from '@playwright/test';
 import {
@@ -14,6 +13,7 @@ import {
   sendMessage,
   sendMessageAndWaitForCompletion,
 } from './helpers';
+import { expect, test } from './fixtures';
 
 const MCP_SERVER_TITLE = 'E2E MCP App';
 const LEGACY_FRAME_TITLE = 'MCP HTML Resource (Embedded Content)';

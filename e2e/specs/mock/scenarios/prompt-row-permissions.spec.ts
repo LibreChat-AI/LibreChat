@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
-import { expect, test } from '@playwright/test';
 import type { Page, Request } from '@playwright/test';
 import { getAccessToken, requestJson } from '../helpers';
+import { expect, test } from '../fixtures';
 import { openPanel } from './panels';
 
 /**

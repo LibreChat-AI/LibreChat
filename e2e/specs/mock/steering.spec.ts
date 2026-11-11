@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page, Response } from '@playwright/test';
 import type { CancelSteerParams } from '../../../client/src/data-provider/SSE/mutations';
 import {
@@ -13,6 +12,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from './helpers';
+import { expect, test } from './fixtures';
 
 /** Non-spec endpoint from e2e/config/librechat.e2e.yaml — the ephemeral MCP
  *  selection rides the no-spec path, mirroring mcp-ephemeral.spec.ts. */

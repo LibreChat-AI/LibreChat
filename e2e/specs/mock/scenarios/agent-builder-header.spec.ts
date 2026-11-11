@@ -1,8 +1,8 @@
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { installCodeMocks, openCodeChat, singleMachine } from './codeWorkspaceMocks';
 import { openAgentBuilder } from '../agents.helpers';
 import { probeStyle } from './style.helpers';
+import { expect, test } from '../fixtures';
 
 const RIGHT_EDGE_TOLERANCE = 6;
 
