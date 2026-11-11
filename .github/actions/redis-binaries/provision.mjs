@@ -46,13 +46,15 @@ const HOME_CACHE = path.join(os.homedir(), '.cache', 'redis-binaries');
 const BIN = path.join(HOME_CACHE, 'bin');
 
 /**
- * Worst case 30 + 2 + 30 + 6 + 30 + 180 s, which stays inside a five-minute
- * step; a host that cannot be resolved fails in about a minute instead.
+ * An unreachable host fails within 30 + 2 + 30 + 6 + 30 s. Hosted runners
+ * needed 49 to 103 s for the whole cold path, so the build may take about
+ * three times the slowest of those; fetch and build together stay inside an
+ * eight-minute step.
  */
 const FETCH_TIMEOUT_MS = 30_000;
 const FETCH_BACKOFF_MS = [2_000, 6_000];
 const FETCH_ATTEMPTS = FETCH_BACKOFF_MS.length + 1;
-const BUILD_TIMEOUT_MS = 180_000;
+const BUILD_TIMEOUT_MS = 300_000;
 const VERSION_TIMEOUT_MS = 10_000;
 const BUILD_LOG_TAIL = 40;
 
@@ -243,11 +245,13 @@ async function buildFromSource() {
   const root = mkdtempSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'redis-source-'));
   try {
     const directory = await checkout(root);
+    const fetched = Date.now();
     build(directory);
     install(directory);
     const lines = BINARIES.map(identify);
-    const seconds = Math.round((Date.now() - started) / 1000);
-    return { lines, source: `built from ${PIN.repository} at ${SHORT_COMMIT} in ${seconds}s` };
+    const seconds = (from, to) => Math.round((to - from) / 1000);
+    const took = `fetch ${seconds(started, fetched)}s, build ${seconds(fetched, Date.now())}s`;
+    return { lines, source: `built from ${PIN.repository} at ${SHORT_COMMIT}: ${took}` };
   } catch (error) {
     discard(BIN);
     throw error;

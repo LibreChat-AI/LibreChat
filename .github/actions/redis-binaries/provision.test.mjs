@@ -158,7 +158,7 @@ test('a cold cache is filled by one fetch of the pinned commit and one build', p
   assert.match(
     output,
     new RegExp(
-      `Redis 9\\.9\\.9 ready in ${bin} \\(built from .* at ${commit.slice(0, 8)} in \\d+s\\)`,
+      `Redis 9\\.9\\.9 ready in ${bin} \\(built from .* at ${commit.slice(0, 8)}: fetch \\d+s, build \\d+s\\)`,
     ),
   );
   assert.match(output, new RegExp(`Redis server v=9\\.9\\.9 sha=${commit.slice(0, 8)}:0`));

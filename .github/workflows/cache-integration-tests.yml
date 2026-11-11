@@ -53,7 +53,7 @@ jobs:
       # lock contention and an unreachable Ubuntu mirror have each taken this
       # job down before a single test ran.
       - name: Install Redis tools
-        timeout-minutes: 5
+        timeout-minutes: 8
         uses: ./.github/actions/redis-binaries
 
       - name: Start Single Redis Instance

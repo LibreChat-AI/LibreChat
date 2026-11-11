@@ -526,7 +526,7 @@ jobs:
       # Actions cache, or builds them from the pinned commit on a miss; no
       # distro mirror has to resolve for this job to get Redis.
       - name: Install Redis runtime dependencies
-        timeout-minutes: 5
+        timeout-minutes: 8
         uses: ./.github/actions/redis-binaries
 
       # A daemonized redis-server returns before it opens its port, so the
