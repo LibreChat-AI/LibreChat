@@ -184,6 +184,44 @@ describe('autoMigrateLegacyLink', () => {
     }).lean();
     expect(ownerEntries).toHaveLength(1);
   });
+
+  /**
+   * The share page requests a link's config and its messages together, and both requests run the
+   * migration. Each finds no grant, so each used to write its own.
+   */
+  test('grants each principal once when a legacy link is first viewed by concurrent requests', async () => {
+    const links = await Promise.all(Array.from({ length: 40 }, () => createLegacyLink(true)));
+
+    /** One link at a time keeps each link's requests overlapping instead of queueing for a socket. */
+    for (const link of links) {
+      await Promise.all(
+        Array.from({ length: 8 }, () =>
+          autoMigrateLegacyLink({
+            _id: link._id,
+            conversationId: link.conversationId,
+            user: userId,
+            shareId: link.shareId,
+            isPublic: true,
+          }),
+        ),
+      );
+    }
+
+    const entries = await AclEntry.find({
+      resourceId: { $in: links.map((link) => link._id) },
+    }).lean();
+    const grants = new Map<string, number>();
+    for (const entry of entries) {
+      const grant = `${entry.resourceId.toString()}:${entry.principalType}`;
+      grants.set(grant, (grants.get(grant) ?? 0) + 1);
+    }
+    expect(grants.size).toBe(links.length * 2);
+    expect([...grants.values()].every((count) => count === 1)).toBe(true);
+    const migrated = await mongoose.connection
+      .db!.collection('sharedlinks')
+      .countDocuments({ _id: { $in: links.map((link) => link._id) }, isPublic: { $exists: true } });
+    expect(migrated).toBe(0);
+  });
 });
 
 describe('grantCreationPermissions', () => {

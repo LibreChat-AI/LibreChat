@@ -34,6 +34,11 @@ interface RawSharedLink {
   expiredAt?: Date;
 }
 
+/**
+ * The share page reads a link's config and its messages together, so the first view of a legacy
+ * link runs this twice at once, in one process or two: both find no grant and both write one.
+ * The grants are therefore made as unique entries, which the database refuses to insert twice.
+ */
 export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void> {
   const shareId = share._id;
   if (!shareId) {
@@ -62,6 +67,7 @@ export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void>
           accessRoleId: AccessRoleIds.SHARED_LINK_OWNER,
           grantedBy: share.user,
           expiredAt: share.expiredAt,
+          uniqueEntry: true,
         });
         existingOwner = true;
         ownerGranted = true;
@@ -90,6 +96,7 @@ export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void>
           accessRoleId: AccessRoleIds.SHARED_LINK_VIEWER,
           grantedBy: share.user,
           expiredAt: share.expiredAt,
+          uniqueEntry: true,
         });
         publicGranted = true;
       } catch (err) {
