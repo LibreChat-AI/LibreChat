@@ -549,6 +549,12 @@ export default defineConfig({
     headless: true,
     storageState: path.resolve(process.cwd(), 'e2e/storageState.json'),
     screenshot: 'only-on-failure',
+    /** Each test opens a fresh context, so the PWA service worker installs and claims the page
+     *  during that test's first load. A `page.route` installed within a few milliseconds of the
+     *  claim is never consulted, and the request it was meant to hold reaches the server. No
+     *  spec here asserts worker behavior; one that does opts back in with
+     *  `test.use({ serviceWorkers: 'allow' })`. Derived profiles inherit this through `use`. */
+    serviceWorkers: 'block',
   },
   expect: {
     timeout: 10000,
