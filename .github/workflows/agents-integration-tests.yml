@@ -27,6 +27,10 @@ on:
       - '.github/workflows/agents-integration-tests.yml'
       - '.github/actions/mongodb-binary/**'
       - '!**.md'
+  # The merge queue tests the commit about to land on dev. It has no path filter and no
+  # selection: every job below runs in full.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -152,3 +156,23 @@ jobs:
         run: >-
           npx jest src/code/setup/compatibility.integration.spec.ts
           --runInBand --coverage=false --forceExit
+
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. No job here may be skipped.
+  gate:
+    name: integration
+    needs: [agents_integration_tests]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every integration job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/merge-gate.mjs verify

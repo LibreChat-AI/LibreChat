@@ -20,6 +20,11 @@ on:
       - '!**.md'
       - '!.github/workflows/**'
       - '.github/workflows/playwright-mock.yml'
+  # The merge queue tests the commit about to land on dev. It has no path filter and runs
+  # the pull request profile with no lane narrowed, so a failure in the queue is one the
+  # pull request's own checks can reproduce.
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: '0 5 * * *'
   workflow_dispatch:
@@ -185,6 +190,7 @@ jobs:
       (github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
@@ -199,7 +205,7 @@ jobs:
         ${{
           (github.event_name == 'pull_request' && needs.codegraph_select.outputs.e2e_include != '' &&
           fromJSON(needs.codegraph_select.outputs.e2e_include)) ||
-          ((github.event_name == 'pull_request' || github.event_name == 'push' || inputs.coverage == 'pr') &&
+          ((github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'merge_group' || inputs.coverage == 'pr') &&
           fromJSON('{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}')) ||
           fromJSON('{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis, shard 1/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"1/10","artifact":"redis-1-of-10"},{"name":"redis, shard 2/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"2/10","artifact":"redis-2-of-10"},{"name":"redis, shard 3/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"3/10","artifact":"redis-3-of-10"},{"name":"redis, shard 4/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"4/10","artifact":"redis-4-of-10"},{"name":"redis, shard 5/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"5/10","artifact":"redis-5-of-10"},{"name":"redis, shard 6/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"6/10","artifact":"redis-6-of-10"},{"name":"redis, shard 7/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"7/10","artifact":"redis-7-of-10"},{"name":"redis, shard 8/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"8/10","artifact":"redis-8-of-10"},{"name":"redis, shard 9/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"9/10","artifact":"redis-9-of-10"},{"name":"redis, shard 10/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"10/10","artifact":"redis-10-of-10"}]}')
         }}
@@ -245,8 +251,8 @@ jobs:
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
-      - name: Test Playwright matrix selection, the vote gate and the retried-pass reporter
-        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs e2e/reporters/retried.test.mjs
+      - name: Test Playwright matrix selection, the vote gate, the merge gate and the retried-pass reporter
+        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs .github/scripts/merge-gate.test.mjs e2e/reporters/retried.test.mjs
 
       - name: Restore data-provider build cache
         id: cache-data-provider
@@ -465,6 +471,7 @@ jobs:
       (github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
@@ -624,6 +631,7 @@ jobs:
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
@@ -710,6 +718,7 @@ jobs:
       (github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request != null &&
       (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
