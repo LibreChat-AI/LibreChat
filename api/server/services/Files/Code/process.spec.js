@@ -1,4 +1,5 @@
 const { Readable } = require('stream');
+const { createHash } = require('node:crypto');
 // Configurable file size limit for tests - use a getter so it can be changed per test
 const fileSizeLimitConfig = { value: 20 * 1024 * 1024 }; // Default 20MB
 
@@ -647,6 +648,24 @@ describe('Code Process', () => {
   });
 
   describe('snapshot reservation', () => {
+    it('binds immutable snapshot bytes to the generating message', async () => {
+      const bytes = Buffer.from('new content');
+      mockAxios.mockResolvedValue({ data: bytes });
+      const { file } = await processCodeOutput({ ...baseParams, messageId: 'current-message' });
+      const codeOutput = {
+        messageId: 'current-message',
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      };
+      expect(mockCommitCodeFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: 'current-message',
+          metadata: expect.objectContaining({ codeOutput }),
+        }),
+        undefined,
+      );
+      expect(file.messageId).toBe('current-message');
+      expect(file.metadata.codeOutput).toEqual(codeOutput);
+    });
     it('reserves a fresh capture rather than claiming the mutable filename slot', async () => {
       mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
       const { file } = await processCodeOutput(baseParams);
@@ -708,6 +727,7 @@ describe('Code Process', () => {
         const convertedFile = {
           filepath: '/uploads/converted-image.webp',
           bytes: 400,
+          sha256: createHash('sha256').update('converted image bytes').digest('hex'),
         };
         convertImage.mockResolvedValue(convertedFile);
 
@@ -722,6 +742,10 @@ describe('Code Process', () => {
         expect(result.type).toBe('image/webp');
         expect(result.context).toBe(FileContext.execute_code_snapshot);
         expect(result.filename).toBe('chart.png');
+        expect(result.metadata.codeOutput).toEqual({
+          messageId: baseParams.messageId,
+          sha256: convertedFile.sha256,
+        });
       });
 
       it('persists tenantId on image code output records when present', async () => {
@@ -1200,6 +1224,10 @@ describe('Code Process', () => {
         const { file: result } = await processCodeOutput(baseParams);
 
         expect(result.metadata).toEqual({
+          codeOutput: {
+            messageId: baseParams.messageId,
+            sha256: createHash('sha256').update(smallBuffer).digest('hex'),
+          },
           codeEnvSource: {
             kind: 'user',
             id: 'user-123',

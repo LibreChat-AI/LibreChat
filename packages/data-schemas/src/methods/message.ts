@@ -14,6 +14,7 @@ import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
 import { prepareSubagentContentDeletion } from './subagentContent';
+import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { tenantStorage } from '~/config/tenantContext';
 import logger from '~/config/winston';
@@ -528,8 +529,7 @@ const traceTenantScope = (tenantId?: string) =>
 
 const SERVER_AUTHORED_SAMPLED_RESPONSE = {
   langfuseSampled: true,
-  isCreatedByUser: false,
-  isUserSubmitted: { $ne: true },
+  ...SERVER_AUTHORED_MESSAGE_FILTER,
 } as const;
 
 export const CLIENT_MESSAGE_SELECT: string = [

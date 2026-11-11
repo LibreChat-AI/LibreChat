@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import path from 'node:path';
 import mongoose from 'mongoose';
 import { Readable } from 'node:stream';
+import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mockClient } from 'aws-sdk-client-mock';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -103,6 +104,7 @@ describe('Generated file snapshots', () => {
             basePath: 'uploads',
           }),
           bytes: buffer.length,
+          sha256: createHash('sha256').update(buffer).digest('hex'),
         };
       },
       getStrategyFunctions: () => ({ saveBuffer }),
