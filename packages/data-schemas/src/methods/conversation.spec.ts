@@ -21,6 +21,7 @@ import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChatProjectMethods } from './chatProject';
 import { createResponseStorage } from './response';
+import { waitForPause } from './test-helpers';
 import { createModels } from '../models';
 
 jest.mock('~/config/winston', () => ({
@@ -1142,13 +1143,13 @@ describe('Conversation Operations', () => {
             },
           );
 
+        const archive = saveConvo(
+          { userId: 'user123' },
+          { conversationId, isArchived: true },
+          { preserveUpdatedAt: true, noUpsert: true },
+        );
         try {
-          const archive = saveConvo(
-            { userId: 'user123' },
-            { conversationId, isArchived: true },
-            { preserveUpdatedAt: true, noUpsert: true },
-          );
-          await archiveWriteReached;
+          await waitForPause(archiveWriteReached, archive);
 
           const unarchived = await saveConvo(
             { userId: 'user123' },
@@ -1167,6 +1168,7 @@ describe('Conversation Operations', () => {
         } finally {
           releaseArchiveWrite();
           writeSpy.mockRestore();
+          await Promise.allSettled([archive]);
         }
       });
 

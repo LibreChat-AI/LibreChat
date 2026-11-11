@@ -11,6 +11,7 @@ import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createConversationMethods } from './conversation';
 import { createConversationImportMethods } from './import';
 import { createResponseStorage } from './response';
+import { waitForPause } from './test-helpers';
 import { createModels } from '~/models';
 
 let mongo: MongoMemoryReplSet;
@@ -274,12 +275,13 @@ it('fences an in-flight response before import rollback deletes its conversation
       return insert(...args);
     });
     const pending = storage.reserve(reservation());
-    await started;
+    await waitForPause(started, pending);
     const rollback = createConversationImportMethods(mongoose).deleteImportedConversations({
       user: owner.userId,
       tenantId: owner.tenantId,
       conversationIds: ['conversation-one'],
     });
+    const drained = Promise.allSettled([pending, rollback]);
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(
@@ -288,6 +290,7 @@ it('fences an in-flight response before import rollback deletes its conversation
     } finally {
       release();
       paused.mockRestore();
+      await drained;
     }
     expect((await pending).ok).toBe(true);
     await rollback;
@@ -970,7 +973,7 @@ it.each(['owner', 'conversation', 'retention'])(
         return insert(...args);
       });
       const pending = storage.reserve(reservation());
-      await started;
+      await waitForPause(started, pending);
       let erased = false;
       const intent =
         kind === 'retention'
@@ -984,12 +987,14 @@ it.each(['owner', 'conversation', 'retention'])(
         await mongoose.models.StoredResponse.deleteMany({ userId: owner.userId });
         erased = true;
       });
+      const drained = Promise.allSettled([pending, erasure]);
       try {
         await new Promise((resolve) => setTimeout(resolve, 50));
         expect(erased).toBe(false);
       } finally {
         release();
         paused.mockRestore();
+        await drained;
       }
       expect((await pending).ok).toBe(true);
       await erasure;
@@ -1370,7 +1375,7 @@ it('serializes ID replacement with a reservation already inserting private data'
       return insert(...args);
     });
     const pending = storage.reserve(reservation({ conversationId: 'racing-source' }));
-    await started;
+    await waitForPause(started, pending);
     let settled = false;
     const replacement = methods
       .saveConvo(
@@ -1385,12 +1390,14 @@ it('serializes ID replacement with a reservation already inserting private data'
         settled = true;
         return value;
       });
+    const drained = Promise.allSettled([pending, replacement]);
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(settled).toBe(false);
     } finally {
       release();
       paused.mockRestore();
+      await drained;
     }
     expect(await pending).toMatchObject({ ok: true });
     expect(await replacement).toEqual({

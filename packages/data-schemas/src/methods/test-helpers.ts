@@ -1,5 +1,15 @@
 import { gptPointReleaseFamily } from 'librechat-data-provider';
 
+/** Fail promptly if an operation settles without reaching the expected pause. */
+export function waitForPause<T>(pause: Promise<void>, operation: Promise<T>): Promise<void> {
+  return Promise.race([
+    pause,
+    operation.then(() => {
+      throw new Error('Operation completed before reaching its pause');
+    }),
+  ]);
+}
+
 /**
  * Inlined utility functions previously imported from @librechat/api.
  * These are used only by test files in data-schemas.
