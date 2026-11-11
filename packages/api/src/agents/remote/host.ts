@@ -1,6 +1,10 @@
-import type { AgentExecutionEnrollment } from './lifecycle';
+import type {
+  AgentExecutionEnrollment,
+  AgentExecutionEnrollmentDeps,
+  ResumedAgentExecutionIdentity,
+} from './lifecycle';
 import type { AgentRunEnvelope } from '../envelope';
-import { enrollAgentExecution } from './lifecycle';
+import { enrollAgentExecution, enrollResumedAgentExecution } from './lifecycle';
 
 /** Transport connection observed by the execution host for cancellation only. */
 export interface AgentExecutionConnection {
@@ -12,8 +16,14 @@ export interface ExecuteAgentRunParams<Result> {
   envelope: AgentRunEnvelope;
   runId: string;
   conversationId: string;
+  clientRequestId?: string;
+  retainTerminalPersistence?: true;
+  /** Server-validated journal identity only; never copied from an API request body. */
+  resume?: ResumedAgentExecutionIdentity;
   connection?: AgentExecutionConnection;
   isPrincipalActive: (userId: string) => Promise<boolean>;
+  /** Persist exact execution identity before any provider/tool work may start. */
+  onEnrolled?: (execution: AgentExecutionEnrollment) => void | Promise<void>;
   execute: (execution: AgentExecutionEnrollment) => Promise<Result>;
   handleExecutionError?: (error: unknown, signal?: AbortSignal) => Result | Promise<Result>;
   beforeSettle?: (
@@ -21,6 +31,13 @@ export interface ExecuteAgentRunParams<Result> {
     executionError: unknown,
   ) => void | Promise<void>;
   onSettlementError?: (error: unknown) => void;
+  /** Publish terminal output only after provider drain and trailing writes are confirmed. */
+  afterSettle?: (
+    execution: AgentExecutionEnrollment,
+    executionError: unknown,
+  ) => void | Promise<void>;
+  /** A durable pause keeps its checkpoint; it is not a terminal journal outcome. */
+  afterPause?: (execution: AgentExecutionEnrollment) => void | Promise<void>;
 }
 
 /**
@@ -28,20 +45,30 @@ export interface ExecuteAgentRunParams<Result> {
  * validated Agent run. Protocol implementations own only execution semantics;
  * ingress adapters own transport validation and final rendering.
  */
-export async function executeAgentRun<Result>({
-  envelope,
-  runId,
-  conversationId,
-  connection,
-  isPrincipalActive,
-  execute,
-  handleExecutionError,
-  beforeSettle,
-  onSettlementError,
-}: ExecuteAgentRunParams<Result>): Promise<Result> {
+export async function executeAgentRun<Result>(
+  {
+    envelope,
+    runId,
+    conversationId,
+    clientRequestId,
+    retainTerminalPersistence,
+    resume,
+    connection,
+    isPrincipalActive,
+    onEnrolled,
+    execute,
+    handleExecutionError,
+    beforeSettle,
+    onSettlementError,
+    afterSettle,
+    afterPause,
+  }: ExecuteAgentRunParams<Result>,
+  deps?: AgentExecutionEnrollmentDeps,
+): Promise<Result> {
   const agentId = envelope.payload.model;
   let execution: AgentExecutionEnrollment | undefined;
   let executionError: unknown;
+  let settlementFailure: unknown;
   let responseClosed = connection?.isClosed() ?? false;
   const removeCloseListener =
     connection?.onClose(() => {
@@ -49,37 +76,67 @@ export async function executeAgentRun<Result>({
       execution?.abort();
     }) ?? (() => undefined);
 
-  try {
-    execution = await enrollAgentExecution({
-      runId,
-      userId: envelope.principal.userId,
-      conversationId,
-      agentId,
-      protocol: envelope.protocol,
-      isPrincipalActive,
-    });
-    if (responseClosed || connection?.isClosed() === true) {
-      execution.abort();
-    }
-    await execution.beginProviderExecution();
-    return await execute(execution);
-  } catch (error) {
-    executionError = error;
-    if (handleExecutionError != null) {
-      return await handleExecutionError(error, execution?.signal);
-    }
-    throw error;
-  } finally {
-    removeCloseListener();
-    if (execution != null) {
-      try {
-        await beforeSettle?.(execution, executionError);
-      } catch (error) {
-        executionError ??= error;
+  // Capture the provider/renderer outcome; mandatory persistence settles before it escapes.
+  const run = async (): Promise<Result> => {
+    try {
+      const enrollment = {
+        runId,
+        userId: envelope.principal.userId,
+        conversationId,
+        agentId,
+        protocol: envelope.protocol,
+        clientRequestId,
+        retainTerminalPersistence,
+        isPrincipalActive,
+      };
+      execution =
+        resume == null
+          ? await enrollAgentExecution(enrollment, deps)
+          : await enrollResumedAgentExecution(
+              { ...enrollment, ...resume, tenantId: envelope.principal.tenantId },
+              deps,
+            );
+      if (responseClosed || connection?.isClosed() === true) {
+        execution.abort();
       }
-      await execution.settle(executionError).catch((error: unknown) => {
-        onSettlementError?.(error);
-      });
+      await onEnrolled?.(execution);
+      await execution.beginProviderExecution();
+      return await execute(execution);
+    } catch (error) {
+      executionError = error;
+      if (handleExecutionError != null) {
+        return await handleExecutionError(error, execution?.signal);
+      }
+      throw error;
+    } finally {
+      removeCloseListener();
+    }
+  };
+  const outcome = await run().then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  if (execution != null) {
+    try {
+      if (execution.ownsSettlement) await beforeSettle?.(execution, executionError);
+    } catch (error) {
+      executionError ??= error;
+      settlementFailure = error;
+    }
+    try {
+      const settled = await execution.settle(executionError);
+      settlementFailure ??= settled.persistenceError;
+      executionError ??= settled.persistenceError;
+      if (execution.ownsSettlement) {
+        if (execution.isPaused) await afterPause?.(execution);
+        else await afterSettle?.(execution, executionError);
+      }
+      if (settlementFailure != null) throw settlementFailure;
+    } catch (error) {
+      onSettlementError?.(error);
+      throw error;
     }
   }
+  if (!outcome.ok) throw outcome.error;
+  return outcome.value;
 }

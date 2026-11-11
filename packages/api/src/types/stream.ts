@@ -118,6 +118,8 @@ export interface GenerationJobMetadata {
   providerExecutionId?: string;
   /** Exact provider owner that crossed its start fence. */
   providerExecutionStartedId?: string;
+  /** Private receipt for the exact request that won this segment's start CAS. */
+  providerExecutionOwnerId?: string;
   /** False only while that exact provider segment can still mutate user data. */
   providerDrained?: boolean;
   /** Terminal close has atomically stopped new steer acceptance, even if the
@@ -128,6 +130,8 @@ export interface GenerationJobMetadata {
   idempotencyClientRequestId?: string;
   /** Normal FINAL publication is waiting on required durable abort work. */
   terminalPersistencePending?: boolean;
+  /** Server-enrolled external journal owns final publication and barrier release. */
+  terminalPersistenceOwner?: 'external';
   terminalHostActionPending?: boolean;
   terminalPersistenceStartedAt?: number;
   /** Set when the job is paused for human review (status === 'requires_action') */
