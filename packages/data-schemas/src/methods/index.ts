@@ -368,6 +368,7 @@ export type AllMethods = PermissionPrincipalStorage &
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
+  toolFavorites?: ToolFavoriteMethods;
   getChannelStorageConfig?: () => Promise<Partial<ChannelStorageConfig>>;
   /** Matches a model name to a canonical key. From @librechat/api. */
   matchModelName?: (model: string, endpoint?: string) => string | undefined;
@@ -575,7 +576,7 @@ export function createMethods(
     ...createFileMethods(mongoose),
     ...createFileStorageMethods(mongoose),
     ...createMemoryMethods(mongoose),
-    ...createToolFavoriteMethods(mongoose),
+    ...(deps.toolFavorites ?? createToolFavoriteMethods(mongoose)),
     ...createAgentCategoryMethods(mongoose),
     ...createAgentApiKeyMethods(mongoose),
     ...createAgentChannelMethods(mongoose, deps.getChannelStorageConfig),
@@ -730,3 +731,5 @@ export type {
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };
+
+export { createToolFavoriteMethods } from './favorite';

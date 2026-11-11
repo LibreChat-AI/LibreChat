@@ -179,6 +179,7 @@ export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
  * a stored override had no effect rather than a dangerous one.
  */
 export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnlyConfigReason>> = {
+  persistence: 'operator',
   'telemetry.stackTraceLimit': 'operator',
   'telemetry.rum': 'operator',
   clientLimits: 'operator',
@@ -4666,7 +4667,35 @@ export const toolCallPreviewsConfigSchema = z.object({
 
 export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchema>;
 
+export const persistenceConfigSchema = z
+  .object({
+    favorites: z.enum(['mongo', 'postgres']).default('mongo'),
+    postgres: z
+      .object({
+        connectionStringEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+        max: z.number().int().min(1).max(100).default(10),
+        maxWaiting: z.number().int().min(1).max(1000).default(100),
+        acquireTimeoutMs: z.number().int().min(1).max(60000).default(5000),
+        queryTimeoutMs: z.number().int().min(1).max(300000).default(15000),
+        idleTimeoutMs: z.number().int().min(1).max(300000).default(30000),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .default({ favorites: 'mongo' })
+  .superRefine((config, context) => {
+    if (config.favorites === 'postgres' && !config.postgres) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['postgres'],
+        message: 'PostgreSQL configuration is required',
+      });
+    }
+  });
+
 export const configSchema = z.object({
+  persistence: persistenceConfigSchema,
   version: z.string(),
   telemetry: telemetrySchema.optional(),
   clientLimits: clientLimitsSchema.optional(),

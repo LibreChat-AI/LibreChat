@@ -47,6 +47,7 @@ export type {
 } from './methods/response';
 export {
   createMethods,
+  createToolFavoriteMethods,
   createChannelIdentityStorage,
   createChannelFeedbackStorage,
   ChannelFeedbackAuthorityError,
@@ -182,3 +183,10 @@ export type { SearchTokenBackfillResult } from './migrations';
 export { createBrowserSetupStore, createBrowserSetupBackend } from './methods/browserSetup';
 export type * from './types/browserSetup';
 export type * from './types/codeEnvironmentSetup';
+
+export * from './postgres/backend';
+export * from './postgres/pool';
+export * from './postgres/migrations';
+export * from './postgres/favorite';
+export * from './postgres/import';
+export * from './postgres/mongo';

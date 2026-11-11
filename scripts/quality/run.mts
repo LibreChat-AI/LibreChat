@@ -14,6 +14,7 @@ import {
 
 import { mutationSelection, riskMarkdown, riskReport } from './risk.mts';
 import { changes, git, WORKSPACES, workspaceFor } from './changes.mts';
+import { parseShard, shardTargets } from './shard.mts';
 import { coverageArgs } from './jest.mts';
 
 const { values } = parseArgs({
@@ -22,14 +23,17 @@ const { values } = parseArgs({
     head: { type: 'string', default: 'HEAD' },
     workspace: { type: 'string' },
     check: { type: 'string' },
+    shard: { type: 'string' },
   },
 });
 const workspace = WORKSPACES.find(({ name }) => name === values.workspace);
 if (!workspace || !['risk', 'mutation'].includes(values.check ?? '')) {
   throw new Error(
-    'Usage: node scripts/quality/run.mts --base ref --workspace name --check risk|mutation',
+    'Usage: node scripts/quality/run.mts --base ref --workspace name --check risk|mutation [--shard INDEX/COUNT]',
   );
 }
+const shard = parseShard(values.shard, values.check);
+const shardLabel = shard ? ` (shard ${shard.index}/${shard.total})` : '';
 const selection = changes(values.base, values.head);
 if (selection.head !== git(['rev-parse', 'HEAD']).trim()) {
   throw new Error('Check out the selected head before measuring its source');
@@ -38,14 +42,42 @@ const files = selection.files.filter(({ file }) => workspaceFor(file)?.name === 
 const output = resolve('coverage/changes', workspace.name, values.check!);
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
-writeFileSync(`${output}/selection.json`, JSON.stringify({ ...selection, files }, null, 2));
+writeFileSync(
+  `${output}/selection.json`,
+  JSON.stringify(
+    { ...selection, workspace: workspace.name, files, ...(shard ? { shard } : {}) },
+    null,
+    2,
+  ),
+);
 const summary = (markdown: string) => {
   console.log(markdown);
   writeFileSync(`${output}/summary.md`, markdown);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
 };
+const emptyMutationReports = () => {
+  writeFileSync(
+    `${output}/mutation.json`,
+    JSON.stringify({ schemaVersion: '1.0', files: {} }, null, 2),
+  );
+  writeFileSync(
+    `${output}/progress.json`,
+    JSON.stringify(
+      { complete: true, completed: 0, total: 0, staticCompleted: 0, staticTotal: 0 },
+      null,
+      2,
+    ),
+  );
+};
 if (!files.length) {
-  summary(`## ${workspace.name}: ${values.check}\n\nNo changed source files.\n`);
+  if (shard) {
+    writeFileSync(`${output}/all-functions.json`, '[]');
+    writeFileSync(`${output}/functions.json`, '[]');
+    emptyMutationReports();
+  }
+  summary(
+    `## ${workspace.name}: ${values.check}${shardLabel}\n\n${shard ? 'No changed functions for shard.' : 'No changed source files.'}\n`,
+  );
   process.exit(0);
 }
 // Test binaries and configuration belong to the measured head, not the tooling checkout.
@@ -106,10 +138,17 @@ if (values.check === 'risk') {
 } else {
   process.env.NODE_ENV = env.NODE_ENV;
   process.env.BABEL_ENV = env.BABEL_ENV;
-  const targets = mutationSelection(files, selection.base);
+  const allTargets = mutationSelection(files, selection.base);
+  const targets = shardTargets(allTargets, shard);
+  if (shard) {
+    writeFileSync(`${output}/all-functions.json`, JSON.stringify(allTargets, null, 2));
+  }
   writeFileSync(`${output}/functions.json`, JSON.stringify(targets, null, 2));
   if (!targets.length) {
-    summary(`## ${workspace.name}: mutation testing\n\nNo added or edited functions.\n`);
+    if (shard) emptyMutationReports();
+    summary(
+      `## ${workspace.name}: mutation testing${shardLabel}\n\n${shard ? 'No changed functions for shard.' : 'No added or edited functions.'}\n`,
+    );
     process.exit(0);
   }
   const started = Date.now();
@@ -176,7 +215,7 @@ if (values.check === 'risk') {
     const score = tested ? `${((100 * detected) / tested).toFixed(2)}%` : 'N/A (no valid mutants)';
     summary(
       [
-        `## ${workspace.name}: mutation testing (advisory)`,
+        `## ${workspace.name}: mutation testing (advisory)${shardLabel}`,
         '',
         `Changed functions: ${targets.reduce((total, target) => total + target.functions.length, 0)} in ${targets.length} files. Static mutations are included. Duration: ${((Date.now() - started) / 60000).toFixed(1)} minutes.`,
         '',
@@ -198,7 +237,7 @@ if (values.check === 'risk') {
     if (runtimeErrors) process.exitCode = 1;
   } catch (error) {
     summary(
-      `## ${workspace.name}: mutation testing\n\nStryker failed. This is not a mutation score. See the test log.\n`,
+      `## ${workspace.name}: mutation testing${shardLabel}\n\nStryker failed. This is not a mutation score. See the test log.\n`,
     );
     throw error;
   }

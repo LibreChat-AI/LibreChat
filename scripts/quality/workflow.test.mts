@@ -26,8 +26,15 @@ interface Step {
   run?: string;
   with?: Record<string, string | number | boolean>;
   'working-directory'?: string;
+  if?: string;
+  env?: Record<string, string>;
 }
 interface Job {
+  name?: string;
+  needs?: string[];
+  if?: string;
+  'timeout-minutes'?: number | string;
+  strategy?: { matrix: { report?: { check: string; shard: number }[]; workspace: string } };
   defaults?: { run: { 'working-directory': string } };
   steps: Step[];
 }
@@ -84,13 +91,60 @@ test('workflow separates tooling, source, installs and artifacts without changin
     ],
   );
   assert.equal(runner['working-directory'], undefined);
-  assert.equal(
-    runner.run,
-    'node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK"',
+  assert.match(runner.run!, /args=\(\)/);
+  assert.match(runner.run!, /--shard "\$QUALITY_SHARD"/);
+  assert.match(runner.run!, /--base "\$QUALITY_BASE" --head "\$QUALITY_HEAD"/);
+  assert.match(
+    runner.run!,
+    /--workspace "\$QUALITY_WORKSPACE" --check "\$QUALITY_CHECK" "\$\{args\[@\]\}"/,
   );
   assert.equal(
     report.steps.find(({ uses }) => uses === 'actions/upload-artifact@v6')?.with?.path,
-    'source/coverage/changes/${{ matrix.workspace }}/${{ matrix.check }}/',
+    'source/coverage/changes/${{ matrix.workspace }}/${{ matrix.report.check }}/',
+  );
+});
+
+test('mutation shards retain the fixed budget and aggregate all evidence before the existing gate passes', () => {
+  assert.equal(report['timeout-minutes'], "${{ matrix.report.check == 'mutation' && 240 || 45 }}");
+  assert.deepEqual(report.strategy?.matrix.report, [
+    { check: 'risk', shard: 0 },
+    { check: 'mutation', shard: 1 },
+    { check: 'mutation', shard: 2 },
+    { check: 'mutation', shard: 3 },
+  ]);
+  assert.equal(runner.env?.QUALITY_CHECK, '${{ matrix.report.check }}');
+  assert.equal(
+    runner.env?.QUALITY_SHARD,
+    "${{ matrix.report.shard && format('{0}/3', matrix.report.shard) || '' }}",
+  );
+  const aggregate = workflow.jobs.mutation;
+  assert.equal(aggregate.name, 'Mutation testing (${{ matrix.workspace }})');
+  assert.deepEqual(aggregate.needs, ['select', 'reports']);
+  assert.match(aggregate.if!, /^always\(\)/);
+  assert.equal(checkouts(aggregate)[0].with?.ref, '${{ github.sha }}');
+  assert.equal(
+    aggregate.steps.some(({ run }) => run?.includes('npm ci')),
+    false,
+  );
+  const download = aggregate.steps.find(({ uses }) => uses === 'actions/download-artifact@v7');
+  assert.equal(
+    download?.with?.pattern,
+    'change-mutation-${{ matrix.workspace }}-shard-*-${{ env.QUALITY_HEAD }}',
+  );
+  assert.equal(download?.with?.['merge-multiple'], undefined);
+  const verify = aggregate.steps.findIndex(({ name }) => name === 'Verify all mutation shards');
+  const requireSuccess = aggregate.steps.findIndex(
+    ({ name }) => name === 'Require successful report jobs',
+  );
+  assert.ok(verify >= 0 && requireSuccess > verify);
+  assert.match(aggregate.steps[verify].run!, /--head "\$QUALITY_HEAD"/);
+  assert.match(aggregate.steps[verify].run!, /--count 3/);
+  assert.equal(aggregate.steps[requireSuccess].run, 'test "$REPORT_RESULT" = success');
+  const upload = aggregate.steps.find(({ uses }) => uses === 'actions/upload-artifact@v6');
+  assert.equal(upload?.if, 'always()');
+  assert.equal(
+    upload?.with?.name,
+    'change-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}',
   );
 });
 
@@ -189,6 +243,7 @@ for (const olderHead of [true, false]) {
       ...process.env,
       QUALITY_HEAD: head,
       QUALITY_WORKSPACE: 'data-schemas',
+      QUALITY_SHARD: '',
       GITHUB_OUTPUT: '',
       GITHUB_STEP_SUMMARY: '',
     };
@@ -249,6 +304,51 @@ for (const olderHead of [true, false]) {
         const progress = JSON.parse(readFileSync(join(output, 'progress.json'), 'utf8'));
         assert.equal(progress.complete, true);
         assert.ok(progress.completed > 0);
+        const unsharded = JSON.parse(readFileSync(join(output, 'mutation.json'), 'utf8'));
+        const identify = (report: { files: Record<string, { mutants: unknown[] }> }) =>
+          Object.entries(report.files)
+            .flatMap(([file, { mutants }]) =>
+              mutants.map((value) => {
+                const mutant = value as {
+                  location: unknown;
+                  mutatorName: string;
+                  replacement: string;
+                };
+                return JSON.stringify([
+                  file,
+                  mutant.location,
+                  mutant.mutatorName,
+                  mutant.replacement,
+                ]);
+              }),
+            )
+            .sort();
+        const shardReports = join(directory, 'mutation-reports');
+        const selectedMutants: string[] = [];
+        for (let index = 1; index <= 3; index++) {
+          run(runner.run!, source, {
+            QUALITY_BASE: base,
+            QUALITY_CHECK: 'mutation',
+            QUALITY_SHARD: `${index}/3`,
+          });
+          const shard = JSON.parse(readFileSync(join(output, 'selection.json'), 'utf8'));
+          assert.deepEqual(shard.shard, { index, total: 3 });
+          assert.equal(shard.workspace, 'data-schemas');
+          const mutation = JSON.parse(readFileSync(join(output, 'mutation.json'), 'utf8'));
+          selectedMutants.push(...identify(mutation));
+          cpSync(output, join(shardReports, `shard-${index}`), { recursive: true });
+        }
+        assert.deepEqual(selectedMutants.sort(), identify(unsharded));
+        const aggregateOutput = join(directory, 'aggregate');
+        run(
+          `node ../tooling/scripts/quality/aggregate.mts --directory "${shardReports}" --head "${head}" --workspace data-schemas --count 3 --output "${aggregateOutput}"`,
+          source,
+          {},
+        );
+        const aggregate = JSON.parse(readFileSync(join(aggregateOutput, 'aggregate.json'), 'utf8'));
+        assert.equal(aggregate.complete, true);
+        assert.equal(aggregate.head, head);
+        assert.equal(aggregate.total, selectedMutants.length);
       }
       assert.equal(git(['rev-parse', 'HEAD'], source).trim(), head);
       assert.equal(git(['diff', 'HEAD', '--', file], source), '');
