@@ -967,10 +967,7 @@ describe('AuthContextProvider — custom role detection and fetching', () => {
   const mockUseGetRole = jest.requireMock('~/data-provider').useGetRole;
   const staffPermissions = {
     name: 'STAFF',
-    permissions: {
-      ...roleDefaults[SystemRoles.USER].permissions,
-      PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false },
-    },
+    permissions: { PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false } },
   };
 
   beforeEach(() => {
@@ -1395,7 +1392,10 @@ describe('AuthContextProvider: role request priority', () => {
 
   const roleData = (name: string): TRole => ({
     name,
-    permissions: { PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false } },
+    permissions: {
+      ...roleDefaults[SystemRoles.USER].permissions,
+      PROMPTS: { USE: true, CREATE: false, SHARE: false, SHARE_PUBLIC: false },
+    },
   });
 
   function Discovery() {
