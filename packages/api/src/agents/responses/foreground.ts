@@ -1,5 +1,11 @@
-import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
-import type { AppConfig } from '@librechat/data-schemas';
+import { createChatExpirationDate, createFallbackRetentionDate } from '@librechat/data-schemas';
+import {
+  ContentTypes,
+  EModelEndpoint,
+  isAllDataRetention,
+  isForcedTemporaryRetention,
+} from 'librechat-data-provider';
+import type { AppConfig, ResponseTurnWrites } from '@librechat/data-schemas';
 import type { Response as HttpResponse } from 'express';
 import type { RequestHandler } from 'express';
 import type { TurnConversationRequest, ConversationWriteContext } from '~/conversations/save';
@@ -135,7 +141,7 @@ export function projectStoredResponseMessage(
 ): ReturnType<typeof projectResponseMessage> & {
   parentMessageId: string;
   metadata: {
-    responseReceipt: Pick<Response, 'accounting' | 'usage'> & {
+    responseReceipt: Pick<Response, 'accounting' | 'usage' | 'status' | 'error' | 'background'> & {
       previousResponseId: Response['previous_response_id'];
       createdAt: number;
       completedAt: number | null;
@@ -161,6 +167,9 @@ export function projectStoredResponseMessage(
           ];
         }),
         ...(response.accounting && { accounting: response.accounting }),
+        status: response.status,
+        error: response.error,
+        background: response.background,
         usage: response.usage,
         previousResponseId: response.previous_response_id,
         createdAt: response.created_at,
@@ -234,6 +243,8 @@ export interface ForegroundResponseFailure {
 interface ForegroundTerminalFrame<Saved> {
   response: Response;
   save: (response: Response) => Promise<Saved>;
+  prepare?: (response: Response) => Promise<string>;
+  afterCommit?: (response: Response) => Promise<void>;
   afterStore?: (saved: Saved) => Promise<void>;
   publish: (response: Response) => void;
   fail: (failure: ForegroundResponseFailure) => void;
@@ -250,6 +261,12 @@ export interface ForegroundResponseTerminal<Saved> {
     execution: Pick<AgentExecutionEnrollment, 'terminalOutcome'>,
     error: unknown,
   ) => Promise<void>;
+}
+
+export interface ResponseTerminalCompletion<Execution = AgentExecutionEnrollment> {
+  /** Required storage finished; persist a proposal while the provider still owns cleanup. */
+  prepare: (response: Response, turnJSON?: string) => Promise<void>;
+  afterSettle: (execution: Execution, error: unknown) => Promise<Response | void>;
 }
 
 /** Legacy storage can resolve absence/error records; those are not successful persistence. */
@@ -271,21 +288,32 @@ export async function requireResponseStorageWrite<Result>(
 }
 
 /** Persist while the provider owns cleanup; render only after the host confirms drain. */
-export function createForegroundResponseTerminal<Saved>({
+export function createResponseTerminal<
+  Saved,
+  Execution extends Pick<AgentExecutionEnrollment, 'terminalOutcome'> = Pick<
+    AgentExecutionEnrollment,
+    'terminalOutcome'
+  >,
+>({
   context,
   requestedStore,
   logger,
+  completion,
 }: {
   context: ResponseContext;
   requestedStore?: boolean;
   logger: Diagnostics;
-}): ForegroundResponseTerminal<Saved> {
+  completion?: ResponseTerminalCompletion<Execution>;
+}): Omit<ForegroundResponseTerminal<Saved>, 'afterSettle'> & {
+  afterSettle: (execution: Execution, error: unknown) => Promise<void>;
+} {
   let staged: ForegroundTerminalFrame<Saved> | undefined;
   let phase: 'open' | 'staged' | 'prepared' | 'done' = 'open';
   const fail = (cancelled = false): void => {
     const frame = staged;
     staged = undefined;
     phase = 'done';
+    if (completion) return;
     frame?.fail(
       cancelled
         ? {
@@ -301,21 +329,35 @@ export function createForegroundResponseTerminal<Saved>({
     );
   };
   const persist = async (frame: ForegroundTerminalFrame<Saved>): Promise<void> => {
+    if (completion) {
+      if (!frame.prepare) throw new ResponsePersistenceError();
+      try {
+        const turnJSON = await frame.prepare(frame.response);
+        await completion.prepare({ ...frame.response, store: true }, turnJSON);
+      } catch (error) {
+        logger.error('[Responses API] Error preparing response', getSafeErrorMetadata(error));
+        throw new ResponsePersistenceError();
+      }
+      return;
+    }
     let saved: { value: Saved } | undefined;
     try {
       saved = { value: await frame.save(frame.response) };
       context.stored = true;
     } catch (saveError) {
       logger.error('[Responses API] Error saving response', getSafeErrorMetadata(saveError));
+      if (completion) throw new ResponsePersistenceError();
     }
-    if (!saved || !frame.afterStore) return;
-    try {
-      await frame.afterStore(saved.value);
-    } catch (notificationError) {
-      logger.error(
-        '[Responses API] Error announcing stored response',
-        getSafeErrorMetadata(notificationError),
-      );
+    if (!saved) return;
+    if (frame.afterStore) {
+      try {
+        await frame.afterStore(saved.value);
+      } catch (notificationError) {
+        logger.error(
+          '[Responses API] Error announcing stored response',
+          getSafeErrorMetadata(notificationError),
+        );
+      }
     }
   };
   return {
@@ -336,14 +378,28 @@ export function createForegroundResponseTerminal<Saved>({
       if (phase !== 'staged') throw new Error('Response persistence was already prepared');
       phase = 'prepared';
       context.stored = false;
-      if (requestedStore !== true || error != null || execution.signal.aborted) return;
+      if ((!completion && requestedStore !== true) || error != null || execution.signal.aborted)
+        return;
       // Account/conversation cleanup must still see this generation until all data writes finish.
       execution.track(persist(staged));
     },
-    async afterSettle(
-      execution: Pick<AgentExecutionEnrollment, 'terminalOutcome'>,
-      error: unknown,
-    ): Promise<void> {
+    async afterSettle(execution: Execution, error: unknown): Promise<void> {
+      if (completion) {
+        const canonical = await completion.afterSettle(execution, error);
+        if (canonical && staged?.afterCommit) {
+          try {
+            await staged.afterCommit(canonical);
+          } catch (notificationError) {
+            logger.error(
+              '[Responses API] Error announcing stored response',
+              getSafeErrorMetadata(notificationError),
+            );
+          }
+        }
+        staged = undefined;
+        phase = 'done';
+        return;
+      }
       if (!staged) return;
       if (phase !== 'prepared' || error != null || execution.terminalOutcome !== 'complete') {
         fail(execution.terminalOutcome === 'aborted');
@@ -356,6 +412,10 @@ export function createForegroundResponseTerminal<Saved>({
     },
   };
 }
+
+/** Compatibility name for existing foreground callers. */
+export const createForegroundResponseTerminal: typeof createResponseTerminal =
+  createResponseTerminal;
 
 interface CompletionRequest
   extends Omit<TurnConversationRequest, 'config' | 'resolvedConversation'> {
@@ -385,7 +445,7 @@ interface StoredReply extends PersistedReply {
   conversationId: string;
   messageId: string;
 }
-interface CompletionDependencies {
+export interface ResponsePersistenceDependencies {
   saveMessage: (
     context: ConversationWriteContext,
     message: InputMessage | OutputMessage,
@@ -407,12 +467,43 @@ interface CompletionDependencies {
   traceFields: typeof getLangfuseTraceMessageFields;
 }
 
-/** Own storage ordering and transport selection in the same typed completion boundary. */
-export function stageForegroundResponse(
+/** The shared turn's storage and transport inputs; terminal ownership is selected separately. */
+export interface ResponseStageInput {
+  terminal: Pick<ForegroundResponseTerminal<StoredReply>, 'stage'>;
+  request: CompletionRequest;
+  response: Response;
+  conversationId: string;
+  agentId: string;
+  agent: { id?: string; name?: string; model?: string };
+  codeEnvironmentDecision?: ConversationCodeEnvironmentDecision;
+  messages: (InternalMessage & { messageId: string; parentMessageId: string })[];
+  parentMessageId: string;
+  visibleOutputTokens?: number;
+  transport:
+    | { type: 'json'; response: HttpResponse }
+    | {
+        type: 'stream';
+        response: HttpResponse;
+        finalize: (usage?: Usage, accounting?: ResponseAccounting, response?: Response) => void;
+        fail: Parameters<ForegroundResponseTerminal<StoredReply>['stage']>[0]['fail'];
+      };
+}
+
+/** Only missing, immutable projection facts; private output stays in the terminal receipt. */
+export interface ResponseTurnIntent {
+  version: 1;
+  inputs: { index: number; messageId: string; parentMessageId: string }[];
+  parentMessageId: string;
+  context: Omit<ResponseTurnWrites['context'], 'expiredAt'> & { expiredAt?: string };
+  conversation: ResponseTurnWrites['conversation'];
+  initialAgentId: string | null;
+  trace: { langfuseSampled?: boolean; langfuseDestinationIds?: string[]; langfuseRunId?: string };
+  visibleOutputTokens?: number;
+}
+
+export function createResponsePersistence(
   {
-    terminal,
     request,
-    response,
     conversationId,
     agentId,
     agent,
@@ -420,67 +511,107 @@ export function stageForegroundResponse(
     messages,
     parentMessageId,
     visibleOutputTokens,
-    transport,
-  }: {
-    terminal: ForegroundResponseTerminal<StoredReply>;
-    request: CompletionRequest;
-    response: Response;
-    conversationId: string;
-    agentId: string;
-    agent: { id?: string; name?: string; model?: string };
-    codeEnvironmentDecision?: ConversationCodeEnvironmentDecision;
-    messages: (InternalMessage & { messageId: string; parentMessageId: string })[];
-    parentMessageId: string;
-    visibleOutputTokens?: number;
-    transport:
-      | { type: 'json'; response: HttpResponse }
-      | {
-          type: 'stream';
-          response: HttpResponse;
-          finalize: (usage?: Usage, accounting?: ResponseAccounting, response?: Response) => void;
-          fail: Parameters<ForegroundResponseTerminal<StoredReply>['stage']>[0]['fail'];
-        };
-  },
-  deps: CompletionDependencies,
-): void {
-  terminal.stage({
-    response,
-    save: async (result) => {
-      const context = getConversationWriteContext(request);
-      const title = deps.resolveTitle(request, agent.name || 'Open Responses Conversation');
+  }: Omit<ResponseStageInput, 'terminal' | 'response' | 'transport'>,
+  deps: ResponsePersistenceDependencies,
+) {
+  const context = getConversationWriteContext(request);
+  const conversationFields = () => {
+    const title = deps.resolveTitle(request, agent.name || 'Open Responses Conversation');
+    return {
+      conversationId,
+      endpoint: EModelEndpoint.agents,
+      agent_id: agentId,
+      ...resolvePersistableCodeEnvironmentDecision({
+        conversationId,
+        decision: codeEnvironmentDecision,
+        conversation:
+          request.resolvedConversation?.conversationId != null
+            ? {
+                conversationId: request.resolvedConversation.conversationId,
+                codeEnvironmentMode: request.resolvedConversation.codeEnvironmentMode,
+                codeWorkspaces: request.resolvedConversation.codeWorkspaces,
+              }
+            : undefined,
+      }),
+      ...(title != null && { title }),
+      model: agent.model,
+    };
+  };
+  return {
+    async prepare(result: Response): Promise<string> {
+      const interfaceConfig = context.interfaceConfig;
+      const isTemporary =
+        isForcedTemporaryRetention(interfaceConfig?.retentionMode) || context.isTemporary;
+      let expiredAt = context.expiredAt;
+      if (
+        !expiredAt &&
+        (isTemporary === true || isAllDataRetention(interfaceConfig?.retentionMode))
+      ) {
+        try {
+          expiredAt = createChatExpirationDate(interfaceConfig, isTemporary);
+        } catch {
+          expiredAt = createFallbackRetentionDate();
+        }
+      }
+      const intent: ResponseTurnIntent = {
+        version: 1,
+        inputs: messages.map((message, index) => ({
+          index,
+          messageId: message.messageId,
+          parentMessageId: message.parentMessageId,
+        })),
+        parentMessageId,
+        context: {
+          userId: context.userId,
+          isTemporary,
+          ...(expiredAt ? { expiredAt: expiredAt.toISOString() } : {}),
+          ...(interfaceConfig
+            ? {
+                interfaceConfig: {
+                  retentionMode: interfaceConfig.retentionMode,
+                  temporaryChatRetention: interfaceConfig.temporaryChatRetention,
+                  generalChatRetention: interfaceConfig.generalChatRetention,
+                },
+              }
+            : {}),
+        },
+        conversation: conversationFields(),
+        initialAgentId: agent.id === agentId ? agentId : null,
+        trace: await deps.traceFields(request.config, result.id, {
+          isTemporary: isTemporaryTurn(request),
+        }),
+        visibleOutputTokens,
+      };
+      return JSON.stringify(intent);
+    },
+    async announceCanonical(result: Response): Promise<void> {
+      await deps.announceReply({
+        userId: request.user?.id,
+        conversationId,
+        reply: {
+          messageId: result.id,
+          ...projectStoredResponseMessage(result, parentMessageId),
+          isTemporary: isTemporaryTurn(request),
+        },
+        context: 'Responses API - announce canonical reply',
+      });
+    },
+    async saveConversation(): Promise<void> {
       await requireResponseStorageWrite(
-        deps.saveConvo(
-          context,
-          {
-            conversationId,
-            endpoint: EModelEndpoint.agents,
-            agent_id: agentId,
-            ...resolvePersistableCodeEnvironmentDecision({
-              conversationId,
-              decision: codeEnvironmentDecision,
-              conversation:
-                request.resolvedConversation?.conversationId != null
-                  ? {
-                      conversationId: request.resolvedConversation.conversationId,
-                      codeEnvironmentMode: request.resolvedConversation.codeEnvironmentMode,
-                      codeWorkspaces: request.resolvedConversation.codeWorkspaces,
-                    }
-                  : undefined,
-            }),
-            ...(title != null && { title }),
-            model: agent.model,
-          },
-          {
-            context: 'Responses API - save conversation',
-            initialAgentId: agent.id === agentId ? agentId : null,
-          },
-        ),
+        deps.saveConvo(context, conversationFields(), {
+          context: 'Responses API - save conversation',
+          initialAgentId: agent.id === agentId ? agentId : null,
+        }),
         { conversationId },
       );
+    },
+    async saveInput(): Promise<void> {
       await saveForegroundResponseInputs(
         { context, conversationId, messages, agentId },
         { saveMessage: deps.saveMessage },
       );
+    },
+    async saveOutput(result: Response): Promise<StoredReply> {
       const traceFields = await deps.traceFields(request.config, result.id, {
         isTemporary: isTemporaryTurn(request),
       });
@@ -507,7 +638,7 @@ export function stageForegroundResponse(
         return saved;
       });
     },
-    afterStore: async (reply) => {
+    async announce(reply: StoredReply): Promise<void> {
       await deps.announceReply({
         userId: request.user?.id,
         conversationId,
@@ -515,6 +646,24 @@ export function stageForegroundResponse(
         context: 'Responses API - announce stored reply',
       });
     },
+  };
+}
+
+/** Stage one shared persistence frame; the chosen terminal owner publishes after drain. */
+export function stageResponseResult(
+  { terminal, response, transport }: ResponseStageInput,
+  persistence: ReturnType<typeof createResponsePersistence>,
+): void {
+  terminal.stage({
+    response,
+    save: async (result) => {
+      await persistence.saveConversation();
+      await persistence.saveInput();
+      return persistence.saveOutput(result);
+    },
+    prepare: persistence.prepare,
+    afterCommit: persistence.announceCanonical,
+    afterStore: persistence.announce,
     fail: (failure) => {
       if (transport.type === 'stream') return transport.fail(failure);
       sendResponsesErrorResponse(
@@ -534,4 +683,12 @@ export function stageForegroundResponse(
       transport.response.end();
     },
   });
+}
+
+/** Compatibility entry point for existing foreground callers. */
+export function stageForegroundResponse(
+  input: ResponseStageInput,
+  deps: ResponsePersistenceDependencies,
+): void {
+  stageResponseResult(input, createResponsePersistence(input, deps));
 }

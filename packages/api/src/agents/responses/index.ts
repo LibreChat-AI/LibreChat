@@ -232,5 +232,6 @@ export {
 export { createClientToolHandoff, type ClientToolHandoff } from './clientTools';
 
 export * from './foreground';
+export { createResponseTurn, stageResponseTurn } from './turn';
 export * from './stored';
 export type { ResponseCompletion, ResponseCompletionRecord } from './completion';
