@@ -1,7 +1,11 @@
 import { channelStorageConfigSchema } from 'librechat-data-provider';
 import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { ResponseOwner } from '~/models/response';
+import { createAgentChannelModel, createAgentChannelThreadModel } from '~/models/channel';
 import { createChannelRunModel, createChannelLaneModel } from '~/models/channelRun';
+import { createChannelIdentityModel } from '~/models/channelIdentity';
+import { createIndexesWithRetry } from '~/utils/retry';
+import { retireAgentChannel } from './channelScope';
 
 /** Validate operation configuration before the caller closes irreversible admission fences. */
 export function resolveChannelErasureConfig(
@@ -38,4 +42,32 @@ export async function eraseChannelPersistenceForUser(
     await cursor.close();
   }
   await runs.deleteMany(filter);
+  await createChannelIdentityModel(mongoose).deleteMany({ tenantId, userId: owner.userId });
+  const channels = createAgentChannelModel(mongoose);
+  const threads = createAgentChannelThreadModel(mongoose);
+  await createIndexesWithRetry(channels);
+  const partition = owner.tenantId || { $in: [null, ''] };
+  const connections = channels
+    .find({ createdBy: owner.userId, tenantId: partition })
+    .select('channelId tenantId')
+    .lean()
+    .cursor();
+  try {
+    for await (const connection of connections) {
+      // Keep redacted deletion metadata while other principals' runs drain. The
+      // deleted owner's credentials and thread mappings are erased immediately.
+      await retireAgentChannel(mongoose, { ...connection, createdBy: owner.userId }, true);
+      await threads.deleteMany({ channelId: connection.channelId, tenantId: partition });
+      if (
+        !(await runs.exists({
+          channelId: connection.channelId,
+          tenantId,
+          state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
+        }))
+      )
+        await channels.deleteOne({ _id: connection._id, status: 'deleting' });
+    }
+  } finally {
+    await connections.close();
+  }
 }

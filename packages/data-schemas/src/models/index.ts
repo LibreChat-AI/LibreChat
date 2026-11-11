@@ -1,5 +1,5 @@
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
-
+import { createAgentChannelModel, createAgentChannelThreadModel } from './channel';
 import { createChannelRunModel, createChannelLaneModel } from './channelRun';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
 import { createScheduleModel, createScheduleRunModel } from './schedule';
@@ -12,13 +12,14 @@ import { createAgentTriggerDeliveryModel } from './triggerDelivery';
 import { createToolApprovalGrantModel } from './toolApprovalGrant';
 import { createSkillUploadIntentModel } from './skillUploadIntent';
 import { createSubagentContentModel } from './subagentContent';
-
+import { createChannelIdentityModel } from './channelIdentity';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
 import { createConversationTagModel } from './conversationTag';
 import { createCodeEnvironmentModel } from './codeEnvironment';
 import { createSkillDeletionModel } from './skillDeletion';
 import { createAgentCategoryModel } from './agentCategory';
 import { createResponseScopeModel } from './responseScope';
+import { createChannelScopeModel } from './channelScope';
 import { createResourceLockModel } from './resourceLock';
 import { createStoredResponseModel } from './response';
 import { createChatProjectModel } from './chatProject';
@@ -76,6 +77,10 @@ export function createModels(mongoose: typeof import('mongoose')): {
   SubagentContent: ReturnType<typeof createSubagentContentModel>;
   Agent: ReturnType<typeof createAgentModel>;
   AgentApiKey: ReturnType<typeof createAgentApiKeyModel>;
+  AgentChannel: ReturnType<typeof createAgentChannelModel>;
+  AgentChannelThread: ReturnType<typeof createAgentChannelThreadModel>;
+  ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
+  ChannelScope: ReturnType<typeof createChannelScopeModel>;
   ChannelRun: ReturnType<typeof createChannelRunModel>;
   ChannelLane: ReturnType<typeof createChannelLaneModel>;
   AgentCategory: ReturnType<typeof createAgentCategoryModel>;
@@ -135,6 +140,10 @@ export function createModels(mongoose: typeof import('mongoose')): {
     SubagentContent: createSubagentContentModel(mongoose),
     Agent: createAgentModel(mongoose),
     AgentApiKey: createAgentApiKeyModel(mongoose),
+    AgentChannel: createAgentChannelModel(mongoose),
+    AgentChannelThread: createAgentChannelThreadModel(mongoose),
+    ChannelIdentity: createChannelIdentityModel(mongoose),
+    ChannelScope: createChannelScopeModel(mongoose),
     ChannelRun: createChannelRunModel(mongoose),
     ChannelLane: createChannelLaneModel(mongoose),
     AgentCategory: createAgentCategoryModel(mongoose),
