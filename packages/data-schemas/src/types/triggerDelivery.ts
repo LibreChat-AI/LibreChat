@@ -24,7 +24,6 @@ export const AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2 = 'agent_queued_turn
 /** v3 workers prove a promoted steer's ownership before running its turn. */
 export const AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3 = 'agent_queued_turn_v3';
 export const AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1 = 'responses_background_v1';
-export const AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2 = 'responses_background_v2';
 export const AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1 = 'responses_resume_v1';
 export const AGENT_BACKGROUND_TOOL_RESULT_STORAGE_MAX_CHARS: number = 64 * 1024;
 export type AgentTriggerDeliveryOutcome = 'succeeded' | 'retry' | 'dead';

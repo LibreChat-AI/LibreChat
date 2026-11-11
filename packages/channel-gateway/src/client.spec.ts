@@ -34,6 +34,7 @@ const response = {
   status: 'in_progress',
 };
 const bundle: ChannelBundle = {
+  delivery: { maxDeliveryParts: 100 },
   channel: {
     channelId: 'channel-1',
     tenantId: 'tenant-1',
@@ -82,7 +83,7 @@ describe('ChannelClient service boundary', () => {
       'Unsupported channel gateway policy',
     );
   });
-  test.each([0, 101, 1.5, '1', null])(
+  test.each([undefined, 0, 101, 1.5, '1', null])(
     'rejects malformed delivery budget %p',
     async (maxDeliveryParts) => {
       const transport = jest
@@ -93,6 +94,14 @@ describe('ChannelClient service boundary', () => {
       );
     },
   );
+  test('requires the complete current private bundle', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValue(json({ ...bundle, delivery: undefined }));
+    await expect(new ChannelClient(config, transport).channel()).rejects.toThrow(
+      'Invalid channel delivery policy',
+    );
+  });
   test('reads the server-selected reduced delivery budget', async () => {
     const transport = jest
       .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()

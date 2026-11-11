@@ -75,8 +75,6 @@ export type AgentTriggerCompletionExpedite =
 
 export interface AgentTriggerSourceDispatcher {
   workerCapability: string;
-  /** Older persisted delivery formats this source can execute without rewriting their fences. */
-  compatibleWorkerCapabilities?: readonly string[];
   dispatch: AgentTriggerExecutionHost['dispatch'];
   /** Bounded source publication recovery. The canonical queue owns scheduling. */
   recoverPending?: (limit: number, activity: { found: boolean }) => Promise<number>;
@@ -742,7 +740,6 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
               () => purgeRecoveryLoop?.wake(),
               [...(deps.sourceDispatchers?.values() ?? [])].flatMap((source) => [
                 source.workerCapability,
-                ...(source.compatibleWorkerCapabilities ?? []),
               ]),
             ),
             dispatch: dispatchForActivePrincipal,
