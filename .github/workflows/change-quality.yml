@@ -9,8 +9,8 @@ on:
         default: origin/dev
         type: string
       scope:
-        description: Test workspace (all or a workspace name)
-        default: data-schemas
+        description: Report workspace (all, data-schemas, api, or server)
+        default: all
         type: string
 
 permissions:
@@ -52,7 +52,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      workspaces: ${{ steps.select.outputs.workspaces }}
+      reports: ${{ steps.select.outputs.reports }}
+      mutationWorkspaces: ${{ steps.select.outputs.mutationWorkspaces }}
+      hasMutations: ${{ steps.select.outputs.hasMutations }}
       hasChanges: ${{ steps.select.outputs.hasChanges }}
     steps:
       - uses: actions/checkout@v5
@@ -66,7 +68,7 @@ jobs:
       - name: Select workspaces
         id: select
         env:
-          QUALITY_SCOPE: ${{ inputs.scope || 'data-schemas' }}
+          QUALITY_SCOPE: ${{ inputs.scope || 'all' }}
         run: node scripts/quality/changes.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" --scope "$QUALITY_SCOPE"
 
   reports:
@@ -82,13 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        workspace: ${{ fromJSON(needs.select.outputs.workspaces) }}
-        task:
-          - { check: risk, shard: 0 }
-          - { check: mutation, shard: 1 }
-          - { check: mutation, shard: 2 }
-          - { check: mutation, shard: 3 }
-          - { check: mutation, shard: 4 }
+        include: ${{ fromJSON(needs.select.outputs.reports) }}
     services:
       redis:
         image: redis:7-alpine
@@ -127,13 +123,13 @@ jobs:
         run: npm ci --ignore-scripts --workspaces=false
       - name: Build shared packages
         run: |
-          if [ "$QUALITY_SCOPE" = data-schemas ]; then
-            npm run build:data-provider
-          else
-            npm run build:packages
+          npm run build:data-provider
+          if [ "$QUALITY_WORKSPACE" != data-schemas ]; then
+            npm run build:data-schemas
+            npm run build:api
           fi
         env:
-          QUALITY_SCOPE: ${{ inputs.scope || 'data-schemas' }}
+          QUALITY_WORKSPACE: ${{ matrix.workspace }}
       - name: Generate advisory report
         env:
           QUALITY_WORKSPACE: ${{ matrix.workspace }}
@@ -158,13 +154,13 @@ jobs:
   mutation-summary:
     name: Mutation report (${{ matrix.workspace }})
     needs: [select, reports]
-    if: always() && needs.select.outputs.hasChanges == 'true'
+    if: always() && needs.select.outputs.hasMutations == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        workspace: ${{ fromJSON(needs.select.outputs.workspaces) }}
+        workspace: ${{ fromJSON(needs.select.outputs.mutationWorkspaces) }}
     steps:
       - uses: actions/checkout@v5
         with:

@@ -14,6 +14,20 @@ export const WORKSPACES = [
   { name: 'chat', path: 'packages/chat', config: 'jest.config.js' },
 ];
 
+const REPORT_WORKSPACES = ['data-schemas', 'api', 'server'];
+
+/** Risk reports cover backend workspaces; mutation shards only cover data-schemas. */
+export function reportJobs(workspaces: string[]) {
+  return workspaces
+    .filter((name) => REPORT_WORKSPACES.includes(name))
+    .flatMap((workspace) => [
+      { workspace, task: { check: 'risk', shard: 0 } },
+      ...(workspace === 'data-schemas'
+        ? [1, 2, 3, 4].map((shard) => ({ workspace, task: { check: 'mutation', shard } }))
+        : []),
+    ]);
+}
+
 export interface ChangedRange {
   start: number;
   count: number;
@@ -127,20 +141,30 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       scope: { type: 'string', default: 'all' },
     },
   });
-  if (values.scope !== 'all' && !WORKSPACES.some(({ name }) => name === values.scope)) {
-    throw new Error(`Unknown workspace: ${values.scope}`);
+  if (values.scope !== 'all' && !REPORT_WORKSPACES.includes(values.scope)) {
+    throw new Error(`Unsupported report workspace: ${values.scope}`);
   }
   const selection = changes(values.base, values.head);
   const workspaces = WORKSPACES.filter(
     ({ name, path }) =>
+      REPORT_WORKSPACES.includes(name) &&
       (values.scope === 'all' || values.scope === name) &&
       selection.files.some(({ file }) => workspaceFor(file)?.path === path),
   ).map(({ name }) => name);
-  console.log(JSON.stringify({ ...selection, workspaces }, null, 2));
+  const reports = reportJobs(workspaces);
+  const mutationWorkspaces = workspaces.filter((name) => name === 'data-schemas');
+  console.log(JSON.stringify({ ...selection, workspaces, reports, mutationWorkspaces }, null, 2));
   if (process.env.GITHUB_OUTPUT) {
     appendFileSync(
       process.env.GITHUB_OUTPUT,
-      `workspaces=${JSON.stringify(workspaces)}\nhasChanges=${workspaces.length > 0}\n`,
+      [
+        `workspaces=${JSON.stringify(workspaces)}`,
+        `hasChanges=${workspaces.length > 0}`,
+        `reports=${JSON.stringify(reports)}`,
+        `mutationWorkspaces=${JSON.stringify(mutationWorkspaces)}`,
+        `hasMutations=${mutationWorkspaces.length > 0}`,
+        '',
+      ].join('\n'),
     );
   }
   if (process.env.GITHUB_STEP_SUMMARY) {
@@ -151,7 +175,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         '',
         `Base: ${selection.base}. Head: ${selection.head}. Scope: ${values.scope}.`,
         '',
-        `Selected workspaces: ${workspaces.join(', ') || 'none'}.`,
+        `Change-risk workspaces: ${workspaces.join(', ') || 'none'}.`,
+        '',
+        `Mutation workspaces: ${mutationWorkspaces.join(', ') || 'none'} (four shards each).`,
         '',
         `Workspaces outside this run's scope: ${
           WORKSPACES.filter(

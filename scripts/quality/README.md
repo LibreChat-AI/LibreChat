@@ -1,6 +1,9 @@
 # Pull request quality reports
 
-Every pull request runs two advisory checks for changed `packages/data-schemas` source.
+Every pull request reports change risk for added or edited functions in
+`packages/data-schemas`, `packages/api`, and the backend `api` folder.
+Mutation testing runs only for added or edited functions in `packages/data-schemas`.
+Only workspaces with changed source get report jobs.
 Low scores do not fail a check. Failed tests, invalid reports, and tool errors do.
 Mutation jobs have a 240-minute limit. Change-risk jobs have a 45-minute limit.
 A timeout is a failed run, not a quality score.
@@ -76,10 +79,14 @@ node scripts/quality/run.mts --base origin/dev --workspace data-schemas --check 
 node --test scripts/crap.test.mts scripts/quality/*.test.mts
 ```
 
-The automatic scope is `data-schemas`.
-Other workspaces can be selected manually with `workflow_dispatch`; those mutation
-configurations have not been validated by this trial. The selection summary lists the
-workspaces excluded by the selected scope. `all` selects every changed application workspace.
+The automatic scope is `all`: change risk for `data-schemas`, `api` (`packages/api`),
+and `server` (the backend `api` folder). A mixed change can run three risk jobs and
+four data-schemas mutation shards. API-only or backend-only changes run no mutation jobs.
+Manual `workflow_dispatch` runs can use `all` or narrow the scope to one of those names.
+Mutation testing stays limited to data-schemas in both cases. The selection summary
+lists risk workspaces, mutation workspaces, and workspaces outside the scope.
+Related Jest tests supply coverage for the changed files. They can exercise unchanged
+code, but only added or edited functions appear in the risk report.
 
 Rule sources:
 

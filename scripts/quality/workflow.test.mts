@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 
-import { git } from './changes.mts';
+import { git, reportJobs } from './changes.mts';
 
 interface Step {
   id?: string;
@@ -25,16 +25,19 @@ interface Step {
   uses?: string;
   run?: string;
   with?: Record<string, string | number | boolean>;
+  env?: Record<string, string>;
   'working-directory'?: string;
 }
 interface Job {
   'timeout-minutes'?: string | number;
-  strategy?: { matrix: { task: { check: string; shard: number }[] } };
+  if?: string;
+  outputs?: Record<string, string>;
+  strategy?: { matrix: { include?: string; workspace?: string } };
   defaults?: { run: { 'working-directory': string } };
   steps: Step[];
 }
 interface Workflow {
-  on: { workflow_dispatch: { inputs: { base: { default: string } } } };
+  on: { workflow_dispatch: { inputs: { base: { default: string }; scope: { default: string } } } };
   permissions: Record<string, string>;
   env: Record<string, string>;
   jobs: Record<string, Job>;
@@ -88,10 +91,34 @@ test('workflow separates tooling, source, installs and artifacts without changin
   assert.equal(runner['working-directory'], undefined);
   assert.match(runner.run!, /node \.\.\/tooling\/scripts\/quality\/run\.mts/);
   assert.equal(report['timeout-minutes'], "${{ matrix.task.check == 'mutation' && 240 || 45 }}");
-  assert.deepEqual(report.strategy?.matrix.task, [
-    { check: 'risk', shard: 0 },
-    ...[1, 2, 3, 4].map((shard) => ({ check: 'mutation', shard })),
-  ]);
+  assert.equal(workflow.on.workflow_dispatch.inputs.scope.default, 'all');
+  assert.equal(
+    workflow.jobs.select.steps.find(({ id }) => id === 'select')?.env?.QUALITY_SCOPE,
+    "${{ inputs.scope || 'all' }}",
+  );
+  assert.deepEqual(report.strategy?.matrix, {
+    include: '${{ fromJSON(needs.select.outputs.reports) }}',
+  });
+  assert.equal(workflow.jobs.select.outputs?.reports, '${{ steps.select.outputs.reports }}');
+  assert.equal(
+    workflow.jobs.select.outputs?.mutationWorkspaces,
+    '${{ steps.select.outputs.mutationWorkspaces }}',
+  );
+  assert.equal(
+    workflow.jobs.select.outputs?.hasMutations,
+    '${{ steps.select.outputs.hasMutations }}',
+  );
+  assert.equal(
+    workflow.jobs['mutation-summary'].if,
+    "always() && needs.select.outputs.hasMutations == 'true'",
+  );
+  assert.deepEqual(workflow.jobs['mutation-summary'].strategy?.matrix, {
+    workspace: '${{ fromJSON(needs.select.outputs.mutationWorkspaces) }}',
+  });
+  assert.equal(
+    report.steps.find(({ name }) => name === 'Build shared packages')?.env?.QUALITY_WORKSPACE,
+    '${{ matrix.workspace }}',
+  );
   assert.equal(
     report.steps.find(({ uses }) => uses === 'actions/upload-artifact@v6')?.with?.path,
     "source/coverage/changes/${{ matrix.workspace }}/${{ matrix.task.check }}${{ matrix.task.check == 'mutation' && format('-{0}', matrix.task.shard) || '' }}/",
@@ -119,25 +146,34 @@ for (const olderHead of [true, false]) {
     write(upstream, 'package.json', '{"name":"quality-fixture","private":true}');
     write(upstream, 'package-lock.json', '{}');
     write(upstream, '.gitignore', 'node_modules/\ncoverage/\n.stryker-tmp/\n');
-    const file = 'packages/data-schemas/src/feature.js';
-    write(upstream, file, 'module.exports = (value) => value ? 1 : 0;\n');
-    write(
-      upstream,
-      'packages/data-schemas/jest.config.mjs',
-      'export default { testEnvironment: "node" };',
-    );
-    write(
-      upstream,
-      'packages/data-schemas/src/feature.test.js',
-      "const feature = require('./feature'); test('uses head dependency', () => { expect(feature(true)).toBe(require('head-only')); expect(feature(false)).toBe(0); });",
-    );
+    const owners = [
+      { name: 'data-schemas', path: 'packages/data-schemas', config: 'jest.config.mjs' },
+      { name: 'api', path: 'packages/api', config: 'jest.config.mjs' },
+      { name: 'server', path: 'api', config: 'jest.config.js' },
+    ];
+    const sourceCode =
+      'module.exports = (value) => value ? 1 : 0;\nmodule.exports.untouched = () => 3;\n';
+    for (const owner of owners) {
+      write(upstream, `${owner.path}/src/feature.js`, sourceCode);
+      write(
+        upstream,
+        `${owner.path}/${owner.config}`,
+        `${owner.config.endsWith('.mjs') ? 'export default' : 'module.exports ='} { testEnvironment: "node" };`,
+      );
+      write(
+        upstream,
+        `${owner.path}/src/feature.test.js`,
+        "const feature = require('./feature'); test('uses head dependency', () => { expect(feature(true)).toBe(require('head-only')); expect(feature(false)).toBe(0); expect(feature.untouched()).toBe(3); });",
+      );
+    }
     const original = commit();
     mkdirSync(join(upstream, 'scripts'), { recursive: true });
     cpSync(join(root, 'scripts/quality'), join(upstream, 'scripts/quality'), { recursive: true });
     cpSync(join(root, 'scripts/crap.mts'), join(upstream, 'scripts/crap.mts'));
     const base = commit();
     git(['checkout', '-qb', 'pr', olderHead ? original : base], upstream);
-    write(upstream, file, 'module.exports = (value) => value ? 2 : 0;\n');
+    for (const owner of owners)
+      write(upstream, `${owner.path}/src/feature.js`, sourceCode.replace('? 1', '? 2'));
     if (!olderHead) {
       const selector = readFileSync(join(upstream, 'scripts/quality/changes.mts'), 'utf8');
       write(
@@ -213,7 +249,7 @@ for (const olderHead of [true, false]) {
     for (const comparison of ['origin/dev', base]) {
       const output = run(select.run, tooling, {
         QUALITY_BASE: comparison,
-        QUALITY_SCOPE: 'data-schemas',
+        QUALITY_SCOPE: 'all',
       });
       assert.match(output, new RegExp(`"head": "${head}"`));
       assert.match(output, new RegExp(`"base": "${olderHead ? original : base}"`));
@@ -225,21 +261,26 @@ for (const olderHead of [true, false]) {
       const output = run(select.run, tooling, {
         QUALITY_HEAD: merge,
         QUALITY_BASE: comparison,
-        QUALITY_SCOPE: 'data-schemas',
+        QUALITY_SCOPE: 'all',
       });
       assert.match(output, new RegExp(`"head": "${merge}"`));
       assert.match(output, new RegExp(`"base": "${base}"`));
     }
-    for (const { check, shard } of report.strategy!.matrix.task) {
+    for (const {
+      workspace,
+      task: { check, shard },
+    } of reportJobs(owners.map(({ name }) => name))) {
+      const file = `${owners.find(({ name }) => name === workspace)!.path}/src/feature.js`;
       rmSync(marker, { force: true });
       run(runner.run!, source, {
         QUALITY_BASE: check === 'risk' ? 'origin/dev' : base,
+        QUALITY_WORKSPACE: workspace,
         QUALITY_CHECK: check,
         QUALITY_SHARD: String(shard),
       });
       const output = join(
         source,
-        'coverage/changes/data-schemas',
+        `coverage/changes/${workspace}`,
         shard ? `mutation-${shard}` : check,
       );
       const selection = JSON.parse(readFileSync(join(output, 'selection.json'), 'utf8'));
@@ -252,6 +293,7 @@ for (const olderHead of [true, false]) {
       if (check === 'risk') {
         assert.match(readFileSync(marker, 'utf8'), /head Jest/);
         const risk = JSON.parse(readFileSync(join(output, 'risk.json'), 'utf8'));
+        assert.equal(risk.functions.length, 1, 'unchanged sibling must not be scored');
         assert.equal(risk.functions[0].file, file);
         assert.equal(risk.functions[0].statementCoverage, 1);
         assert.equal(risk.head, head);
@@ -281,7 +323,7 @@ for (const olderHead of [true, false]) {
     const combined = JSON.parse(
       readFileSync(join(tooling, 'coverage/changes/data-schemas/mutation/mutation.json'), 'utf8'),
     );
-    assert.ok(combined.files[file].mutants.length > 0);
+    assert.ok(combined.files['packages/data-schemas/src/feature.js'].mutants.length > 0);
     assert.match(
       readFileSync(join(tooling, 'coverage/changes/data-schemas/mutation/summary.md'), 'utf8'),
       /All four shards completed/,
