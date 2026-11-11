@@ -4,6 +4,15 @@ const fs = require('node:fs/promises');
 const test = require('node:test');
 const vm = require('node:vm');
 const path = require('node:path');
+const { z } = require('zod');
+const { tool } = require('@langchain/core/tools');
+const { HumanMessage } = require('@langchain/core/messages');
+const {
+  Run,
+  Providers,
+  createTokenCounter,
+  InMemorySubagentTaskStore,
+} = require('@librechat/agents');
 const history = require('./subagent-history.cjs');
 
 const helpers = {
@@ -24,52 +33,6 @@ function scenario(t, childId) {
   t.after(() => fs.rm(gates.directory, { recursive: true, force: true }));
   const script = history.responsesForText(history.prompt(label, childId), helpers);
   return { label, gates, script };
-}
-
-/** Loads the real hook with the SDK and LangChain classes reduced to what a stream needs. */
-async function loadFakeModelHook() {
-  class FakeChatModel {
-    constructor(options) {
-      Object.assign(this, options);
-    }
-
-    _createResponseChunk(text) {
-      return { text };
-    }
-  }
-  class Chunk {
-    constructor(fields) {
-      Object.assign(this, fields);
-    }
-  }
-  const dependencies = {
-    sharp: () => assert.fail('no history scenario renders an image'),
-    '@librechat/agents': { FakeChatModel },
-    '@langchain/core/outputs': { ChatGenerationChunk: Chunk },
-    '@langchain/core/messages': { AIMessageChunk: Chunk },
-    './model-replay': { tryBindReplay: () => false },
-    './run-files-model': { runFileDeliveryResponses: () => null },
-    './run-files-lifecycle-model': {
-      createRunFileLifecycleResponses: () => ({
-        responsesForText: () => null,
-        resolveInvocation: () => null,
-        isFixtureAgents: () => false,
-      }),
-    },
-    '../fixtures/subagent-history.cjs': history,
-  };
-  const sandbox = {
-    module: { exports: {} },
-    process: { env: {} },
-    setTimeout,
-    require: (name) => {
-      assert.ok(Object.hasOwn(dependencies, name), `Unexpected hook dependency ${name}`);
-      return dependencies[name];
-    },
-  };
-  const source = await fs.readFile(path.resolve(__dirname, '../setup/fake-model.js'), 'utf8');
-  vm.runInNewContext(source, sandbox, { filename: 'fake-model.js' });
-  return sandbox.module.exports;
 }
 
 async function drainHistory(script, messages) {
@@ -191,7 +154,38 @@ test('fixture ignores unrelated prompts and rejects unsafe signal paths', () => 
 });
 
 test('fake-model hook routes the history marker without changing ordinary replies', async () => {
-  const hook = await loadFakeModelHook();
+  class FakeChatModel {
+    constructor(options) {
+      Object.assign(this, options);
+    }
+  }
+  const dependencies = {
+    sharp: () => assert.fail('no history scenario renders an image'),
+    '@librechat/agents': { FakeChatModel },
+    '@langchain/core/outputs': { ChatGenerationChunk: class {} },
+    '@langchain/core/messages': { AIMessageChunk: class {} },
+    './model-replay': { tryBindReplay: () => false },
+    './run-files-model': { runFileDeliveryResponses: () => null },
+    './run-files-lifecycle-model': {
+      createRunFileLifecycleResponses: () => ({
+        responsesForText: () => null,
+        resolveInvocation: () => null,
+        isFixtureAgents: () => false,
+      }),
+    },
+    '../fixtures/subagent-history.cjs': history,
+  };
+  const sandbox = {
+    module: { exports: {} },
+    process: { env: {} },
+    require: (name) => {
+      assert.ok(Object.hasOwn(dependencies, name), `Unexpected hook dependency ${name}`);
+      return dependencies[name];
+    },
+  };
+  const source = await fs.readFile(path.resolve(__dirname, '../setup/fake-model.js'), 'utf8');
+  vm.runInNewContext(source, sandbox, { filename: 'fake-model.js' });
+  const hook = sandbox.module.exports;
   const graph = {
     overrideTestModel() {},
     setSubagentModelOverride(model) {
@@ -216,64 +210,89 @@ test('fake-model hook routes the history marker without changing ordinary replie
   assert.equal(graph.overrideModel.responses[0], 'E2E reply ordinary');
 });
 
-test('a detached child is billed for its own messages whether or not the parent has settled', async (t) => {
-  const hook = await loadFakeModelHook();
-  const { label } = scenario(t, 'self');
-  const agentId = 'agent_e2e_self';
-  const parentRunId = 'run-parent';
-  const system = { type: 'system', content: 'S'.repeat(4096) };
-  const subagentTool = { name: 'subagent', description: 'D'.repeat(2048), parameters: {} };
-  const graph = {
-    runId: parentRunId,
-    overrideTestModel() {},
-    setSubagentModelOverride(model) {
-      this.childModel = model;
-    },
-    agentContexts: new Map([
-      [
-        agentId,
+/**
+ * The SDK run, graph, child graph, task store, tool node and pruner are real, and so is the
+ * hook. Nothing here disposes the parent run, so its graph holds its agent context for the
+ * child's whole life: the case the browser lanes only reach when the child's first call
+ * returns before the host has dropped that context.
+ */
+test('a detached child keeps its tool results while the parent graph still holds its context', async (t) => {
+  const { label, gates } = scenario(t, 'self');
+  const agentId = 'agent_e2e_history';
+  const runId = `run-${randomUUID()}`;
+  const prompt = history.prompt(label, 'self');
+  const instructions = 'Follow the deterministic end-to-end request exactly. '.repeat(40);
+  const echo = tool(async ({ text }) => `E2E slow echo: ${text}`, {
+    name: history.TOOL_NAME,
+    description: 'Echoes text for the retained-history fixture.',
+    schema: z.object({ text: z.string(), delay_ms: z.number().optional() }),
+  });
+  const run = await Run.create({
+    runId,
+    graphConfig: {
+      type: 'standard',
+      agents: [
         {
-          systemRunnable: { invoke: async (messages) => [system, ...messages] },
-          toolDefinitions: [subagentTool],
+          agentId,
+          provider: Providers.OPENAI,
+          clientOptions: { model: 'mock-retained-history', apiKey: 'unused' },
+          instructions,
+          tools: [echo],
+          maxContextTokens: 262_144,
+          maxToolResultChars: 131_072,
+          subagentConfigs: [
+            { self: true, type: 'self', name: 'History Worker', description: 'Runs itself.' },
+          ],
         },
       ],
-    ]),
-  };
-  const billedInput = async (model, messages, runId) => {
+    },
+    tokenCounter: await createTokenCounter(),
+    subagentTasks: { store: new InMemorySubagentTaskStore(), scopeId: `scope-${label}` },
+    returnContent: true,
+  });
+  require('../setup/fake-model.js')(run, { messages: [new HumanMessage(prompt)] });
+
+  /** Spies on what each stream reports, without replacing the model or its script. */
+  const streams = [];
+  const model = run.Graph.overrideModel;
+  const stream = model._streamResponseChunks.bind(model);
+  model._streamResponseChunks = async function* observed(messages, options, runManager) {
     let usage;
-    const runManager = {
-      metadata: { agentId, run_id: runId },
-      handleCustomEvent: async () => {},
-      handleLLMNewToken: async () => {},
-    };
-    for await (const chunk of model._streamResponseChunks(messages, {}, runManager)) {
+    for await (const chunk of stream(messages, options, runManager)) {
       usage = chunk.message?.usage_metadata ?? usage;
+      yield chunk;
     }
-    return usage.input_tokens;
+    streams.push({
+      runId: runManager.metadata.run_id,
+      billed: usage.input_tokens,
+      sent: Math.ceil(messages.reduce((sum, message) => sum + message.content.length, 0) / 4),
+    });
   };
-  const tokens = (...texts) => Math.ceil(texts.reduce((sum, text) => sum + text.length, 0) / 4);
 
-  const parentMessages = [human(history.prompt(label, 'self'))];
-  hook({ Graph: graph }, { messages: parentMessages });
-  assert.equal(graph.childModel, graph.overrideModel, 'the child streams through the parent model');
-  const dispatch = await graph.overrideModel.resolveInvocation(parentMessages);
-  const childMessages = [human(dispatch.toolCalls[0].args.description)];
-  const childRunId = `${parentRunId}:subagent-task:task-1`;
-  const childPrompt = tokens(childMessages[0].content);
+  await run.processStream(
+    { messages: [new HumanMessage(prompt)] },
+    { configurable: { thread_id: `thread-${label}` }, streamMode: 'values', version: 'v2' },
+  );
+  await gates.wait('ready', { timeoutMs: 30_000 });
+  assert.ok(run.Graph.agentContexts.get(agentId), 'the parent graph still holds its context');
 
-  assert.equal(
-    await billedInput(graph.overrideModel, parentMessages, parentRunId),
-    tokens(system.content, parentMessages[0].content, 'subagent', subagentTool.description, '{}'),
-    'the parent run is still billed its system prompt and tool definitions',
+  const parent = streams.filter((entry) => entry.runId === runId);
+  const child = streams.filter((entry) => entry.runId.startsWith(`${runId}:subagent-task:`));
+  assert.equal(parent.length, 2, 'the SDK runs both parent calls under the graph run id');
+  assert.equal(parent.length + child.length, streams.length);
+  assert.ok(
+    parent.every((entry) => entry.billed >= entry.sent + Math.floor(instructions.length / 4)),
+    'the parent run is still billed its system prompt',
   );
-  assert.equal(
-    await billedInput(graph.childModel, childMessages, childRunId),
-    childPrompt,
-    'a parent that is still running does not lend the child its prompt',
+  assert.equal(child.length, history.CALL_COUNT / history.BATCH_SIZE, 'one stream per batch');
+  assert.deepEqual(
+    child.map((entry) => entry.billed),
+    child.map((entry) => entry.sent),
+    'the child is billed for the messages it was sent, not for the parent prompt',
   );
-  /** The host drops the parent's agent contexts once the parent run settles. */
-  graph.agentContexts = null;
-  assert.equal(await billedInput(graph.childModel, childMessages, childRunId), childPrompt);
+
+  await gates.release();
+  await gates.wait('done', { timeoutMs: 30_000 });
 });
 
 test('browser history worker uses an isolated endpoint with enough retained output budget', async () => {
