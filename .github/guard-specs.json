@@ -7,6 +7,7 @@
     ],
     "api/server/experimental.spec.js": ["api/server/experimental.js", "api/server/index.js"],
     "api/server/index.spec.js": ["api/server/index.js", "api/server/experimental.js"],
+    "api/server/persistence.spec.js": ["api/server/index.js", "api/server/experimental.js"],
     "api/server/routes/agents/__tests__/openapi.contract.spec.js": [
       "packages/api/openapi/agents.openapi.json"
     ],
