@@ -285,6 +285,9 @@ jobs:
         if: steps.cache-client-app.outputs.cache-hit != 'true'
         run: npm run build:client
 
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
+
       - name: Verify Chrome is present
         run: google-chrome --version
 
@@ -484,6 +487,9 @@ jobs:
       - name: Build e2e dependencies
         run: npm run e2e:prepare
 
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
+
       - name: Verify Chrome is present
         run: google-chrome --version
 
@@ -628,6 +634,9 @@ jobs:
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
+
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
 
       - name: Verify Chrome is present
         run: google-chrome --version

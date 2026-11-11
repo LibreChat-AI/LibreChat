@@ -133,7 +133,14 @@ const FILTERS = {
     'scripts/static-checks.mts',
     '.github/workflows/static-checks.yml',
   ],
-  config: ['api/**', 'config/**', 'packages/**', '.github/workflows/static-checks.yml', '!**.md'],
+  config: [
+    'api/**',
+    'config/**',
+    'packages/**',
+    '.github/workflows/static-checks.yml',
+    '.github/actions/mongodb-binary/**',
+    '!**.md',
+  ],
   i18n: [
     'scripts/i18n*.mts',
     'scripts/static-checks.mts',

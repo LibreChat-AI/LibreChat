@@ -11,6 +11,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/lighthouse.yml'
+      - '.github/actions/mongodb-binary/**'
       - '!**.md'
   workflow_dispatch:
 
@@ -76,6 +77,8 @@ jobs:
             packages/channel-gateway/node_modules
             api/node_modules
           key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
       - name: Install lockfile-pinned Chromium
         run: npx playwright install --with-deps --no-shell chromium
       - name: Select Lighthouse browser

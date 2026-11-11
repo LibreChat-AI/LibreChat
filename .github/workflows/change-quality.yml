@@ -129,6 +129,12 @@ jobs:
           fi
         env:
           QUALITY_SCOPE: ${{ inputs.scope || 'data-schemas' }}
+      # The action comes from the workflow revision like the rest of the tooling; the binary
+      # is the one the measured source's own install asks for.
+      - name: Provision MongoDB memory-server binary
+        uses: ./tooling/.github/actions/mongodb-binary
+        with:
+          working-directory: source
       - name: Generate advisory report
         env:
           QUALITY_WORKSPACE: ${{ matrix.workspace }}
