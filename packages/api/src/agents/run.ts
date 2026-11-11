@@ -98,6 +98,12 @@ import {
   resolveRecursionLimit,
 } from '~/agents/config';
 import {
+  extractDefaultParams,
+  getOpenAILLMConfig,
+  isNativeCyberRequest,
+  resolveReasoningParams,
+} from '~/endpoints/openai/llm';
+import {
   isSteeringSupported,
   isSteerPreemptSupported,
   isSteerTerminalContinuationSupported,
@@ -117,7 +123,6 @@ import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/a
 import { createAgentToolApprovalSession, bindRunToolApprovalSession } from './hitl/modes';
 import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils/headers';
 import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering/tools';
-import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
@@ -137,6 +142,7 @@ import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { buildLangfuseConfig } from '~/langfuse/config';
+import { getCustomEndpointConfig } from '~/app/config';
 import { applyTestRunHook } from '~/agents/testHook';
 import { frameDynamicInstructions } from './tail';
 import { isUserProvided } from '~/utils/common';
@@ -678,25 +684,27 @@ function agentModelKwargs(
   return isPlainObject(modelParameters.modelKwargs) ? modelParameters.modelKwargs : undefined;
 }
 
-/**
- * `getOpenAILLMConfig` carries an Azure Astra deployment alias in
- * `modelKwargs.model`, which langchain spreads after `model`. The SDK's
- * same-provider summarizer copies the agent's client options and overrides only
- * `model`, so a summarizer on another model would still reach the agent's
- * deployment. Hand it the agent's kwargs without the alias.
- */
+/** The SDK inherits same-provider kwargs. Model switches must drop deployment aliases and Cyber access. */
 function summarizationModelKwargs(
   agentKwargs: Record<string, unknown> | undefined,
   agentModel: string | undefined,
   summarizationModel: string | undefined,
 ): Record<string, unknown> | undefined {
-  if (agentKwargs == null || !('model' in agentKwargs)) {
+  if (
+    agentKwargs == null ||
+    !isNonEmptyString(summarizationModel) ||
+    summarizationModel === agentModel
+  ) {
     return undefined;
   }
-  if (!isNonEmptyString(summarizationModel) || summarizationModel === agentModel) {
+  const cyberAccess = agentModel === 'gpt-6-cyber' && 'access_programs' in agentKwargs;
+  if (!('model' in agentKwargs) && !cyberAccess) {
     return undefined;
   }
   const { model: _alias, ...kwargs } = agentKwargs;
+  if (cyberAccess) {
+    delete kwargs.access_programs;
+  }
   return kwargs;
 }
 
@@ -770,6 +778,7 @@ function resolveBuiltInClientOverrides(
     agentProvider?: string;
   },
   appConfig: AppConfig,
+  user?: IUser,
 ): SummarizationClientOverrides | undefined {
   const { model, parameters } = target;
   /**
@@ -803,6 +812,7 @@ function resolveBuiltInClientOverrides(
   const { llmConfig } = getOpenAIConfig(
     '',
     {
+      requestIdentity: { userId: user?.id, tenantId: user?.tenantId },
       modelOptions: { model, reasoning_effort: summarizationReasoningEffort(parameters) },
       reverseProxyUrl: baseURL,
     },
@@ -959,6 +969,7 @@ function resolveOpenAISummarization(
   const { llmConfig, configOptions } = getOpenAIConfig(
     apiKey,
     {
+      requestIdentity: { userId: headerContext.user?.id, tenantId: headerContext.user?.tenantId },
       modelOptions: {
         model,
         reasoning_effort: summarizationReasoningEffort(parameters),
@@ -1219,7 +1230,12 @@ function resolveSummarizationProvider(
     if (!customEndpointConfig) {
       return {
         provider: overrideProvider,
-        clientOverrides: resolveBuiltInClientOverrides(overrideProvider, target, appConfig),
+        clientOverrides: resolveBuiltInClientOverrides(
+          overrideProvider,
+          target,
+          appConfig,
+          headerContext.user,
+        ),
       };
     }
     const rawApiKey = customEndpointConfig.apiKey ?? '';
@@ -1314,6 +1330,8 @@ function resolveSummarizationProvider(
       apiKey,
       {
         reverseProxyUrl: baseURL,
+        requestIdentity: { userId: headerContext.user?.id, tenantId: headerContext.user?.tenantId },
+        ...(target.model === 'gpt-6-cyber' ? { modelOptions: { model: target.model } } : {}),
         proxy: process.env.PROXY ?? null,
         headers: resolvedHeaders,
         addParams: customEndpointConfig.addParams,
@@ -1490,6 +1508,79 @@ function shapeSummarizationConfig(
     model,
     parameters: modelKwargs != null ? { modelKwargs, ...mergedParameters } : mergedParameters,
   });
+
+  if (
+    model === 'gpt-6-cyber' &&
+    config?.enabled !== false &&
+    !targetUnavailable &&
+    provider === Providers.OPENAI
+  ) {
+    // The SDK inherits source options only for same-provider summaries.
+    const inherited: Record<string, unknown> = {
+      ...(provider === fallbackProvider ? agent?.model_parameters : undefined),
+      ...parameters,
+    };
+    const configuration = isPlainObject(inherited.configuration)
+      ? inherited.configuration
+      : undefined;
+    const baseURL = configuration?.baseURL ?? inherited.baseURL;
+    if (configuration?.baseURL == null && typeof inherited.baseURL === 'string') {
+      parameters = {
+        ...parameters,
+        configuration: { ...configuration, baseURL: inherited.baseURL },
+      };
+    }
+    const nativeRequest = {
+      model,
+      endpoint: provider,
+      baseURL: typeof baseURL === 'string' ? baseURL : undefined,
+      azure: targetsAzure ? (agent?.azureOptions ?? {}) : undefined,
+    };
+    if (isNativeCyberRequest(nativeRequest)) {
+      const endpointConfig =
+        clientOverrides == null && provider === fallbackProvider && appConfig && agentEndpoint
+          ? getCustomEndpointConfig({ endpoint: agentEndpoint, appConfig })
+          : undefined;
+      const endpointDefaults = extractDefaultParams(endpointConfig?.customParams?.paramDefinitions);
+      const endpointApiMode = endpointConfig?.dropParams?.includes('useResponsesApi')
+        ? false
+        : (endpointConfig?.addParams?.useResponsesApi ?? endpointDefaults?.useResponsesApi);
+      const configuredApiMode = typeof endpointApiMode === 'boolean' ? endpointApiMode : undefined;
+      const inheritedApiMode =
+        model === fallbackModel && typeof inherited.useResponsesApi === 'boolean'
+          ? inherited.useResponsesApi
+          : undefined;
+      const summaryApiMode =
+        typeof parameters?.useResponsesApi === 'boolean' ? parameters.useResponsesApi : undefined;
+      const { llmConfig } = getOpenAILLMConfig({
+        apiKey: '',
+        streaming: false,
+        ...nativeRequest,
+        requestIdentity: {
+          userId: headerContext.user?.id,
+          tenantId: headerContext.tenantId ?? headerContext.user?.tenantId,
+        },
+        modelOptions: {
+          model,
+          useResponsesApi: summaryApiMode ?? configuredApiMode ?? inheritedApiMode,
+        },
+        addParams: {
+          ...(isPlainObject(inherited.modelKwargs) ? inherited.modelKwargs : undefined),
+          model,
+        },
+      });
+      parameters = {
+        ...parameters,
+        useResponsesApi: llmConfig.useResponsesApi,
+        modelKwargs: llmConfig.modelKwargs,
+        user: undefined,
+        safety_identifier: undefined,
+        reasoning: undefined,
+        reasoning_effort: undefined,
+        include_reasoning: undefined,
+      };
+    }
+  }
 
   /** The SDK sets maxTokens for this cap, but LangChain spreads modelKwargs after it. */
   const parameterTokenCap = userParameters?.maxSummaryTokens;

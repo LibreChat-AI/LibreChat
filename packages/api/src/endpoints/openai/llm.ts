@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Providers, isOpenAILike } from '@librechat/agents';
 import {
   EModelEndpoint,
@@ -182,6 +183,36 @@ function isCanonicalOpenAIBaseURL(baseURL?: string | null): boolean {
   } catch {
     return false;
   }
+}
+
+export function isNativeCyberRequest({
+  model,
+  endpoint,
+  baseURL,
+  azure,
+  useOpenRouter,
+}: {
+  model?: string;
+  endpoint?: string | null;
+  baseURL?: string | null;
+  azure?: false | t.AzureOptions;
+  useOpenRouter?: boolean;
+}): boolean {
+  if (
+    model !== 'gpt-6-cyber' ||
+    useOpenRouter ||
+    azure ||
+    (endpoint !== EModelEndpoint.openAI && baseURL == null)
+  ) {
+    return false;
+  }
+  // Agents 4.2.2 resolves explicit URLs, API_BASE, BASE_URL, then the SDK gateway.
+  const effectiveURL = baseURL || process.env.OPENAI_API_BASE || process.env.OPENAI_BASE_URL;
+  if (effectiveURL) {
+    return isCanonicalOpenAIBaseURL(effectiveURL);
+  }
+  const gateway = process.env.LANGSMITH_GATEWAY;
+  return !gateway || /^(false|0|no)$/i.test(gateway);
 }
 
 function removeReasoningField(target: Record<string, unknown>, field: string) {
@@ -609,11 +640,13 @@ export function getOpenAILLMConfig({
   defaultParams,
   inferenceParameters,
   useOpenRouter,
+  requestIdentity,
   reasoningFormat = ReasoningParameterFormat.reasoningEffort,
   modelOptions: _modelOptions,
 }: {
   apiKey: string;
   streaming: boolean;
+  requestIdentity?: t.OpenAIConfigOptions['requestIdentity'];
   baseURL?: string | null;
   endpoint?: EModelEndpoint | string | null;
   modelOptions: Partial<t.OpenAIParameters>;
@@ -941,16 +974,24 @@ export function getOpenAILLMConfig({
    */
   const responsesApiExplicitlyOptedOut =
     dropParams != null && dropParams.includes('useResponsesApi');
+  const cyber = isNativeCyberRequest({
+    model: llmConfig.model,
+    useOpenRouter,
+    azure,
+    endpoint,
+    baseURL,
+  });
   const firstPartyOpenAI =
-    !useOpenRouter && endpoint === EModelEndpoint.openAI && isCanonicalOpenAIBaseURL(baseURL);
+    !useOpenRouter &&
+    endpoint === EModelEndpoint.openAI &&
+    (llmConfig.model === 'gpt-6-cyber' ? cyber : isCanonicalOpenAIBaseURL(baseURL));
   const firstPartyAzure =
     !useOpenRouter &&
     endpoint === EModelEndpoint.azureOpenAI &&
     isCanonicalAzureBaseURL(baseURL, azure);
   const firstPartyEndpoint = firstPartyOpenAI || firstPartyAzure;
-  /** Keep GPT-6 model identity on Azure, with the deployment name used on the wire. */
   const firstPartyResponsesModel =
-    firstPartyEndpoint && prefersResponsesApiByModel(llmConfig.model);
+    (firstPartyEndpoint && prefersResponsesApiByModel(llmConfig.model)) || cyber;
   if (
     firstPartyOpenAI &&
     reasoningFormat !== ReasoningParameterFormat.disabled &&
@@ -1111,6 +1152,42 @@ export function getOpenAILLMConfig({
         target.include = target.include.filter((value) => value !== 'message.output_text.logprobs');
       }
     }
+  }
+
+  if (cyber) {
+    if (
+      requestIdentity != null &&
+      dropParams?.some((key) =>
+        ['modelKwargs', 'access_programs', 'safety_identifier'].includes(key),
+      )
+    ) {
+      throw new Error('GPT-6 Cyber requires its access program and safety identifier.');
+    }
+    // No published effort enum: omit restored/user reasoning and leave the provider default.
+    removeReasoningPayload(llmConfig as Record<string, unknown>);
+    removeReasoningPayload(modelKwargs);
+    if (modelKwargs.access_programs === undefined) {
+      modelKwargs.access_programs = { cyber: 'daybreak_red' };
+    }
+    if (requestIdentity != null) {
+      if (!requestIdentity.userId?.trim()) {
+        throw new Error('GPT-6 Cyber requires an authenticated user.');
+      }
+      // Required identity is server-owned, never an administrator's shared literal or a request field.
+      delete (llmConfig as Record<string, unknown>).safety_identifier;
+      delete llmConfig.user;
+      delete modelKwargs.user;
+      modelKwargs.safety_identifier = createHash('sha256')
+        .update(
+          JSON.stringify([
+            'librechat:gpt-6-cyber:v1',
+            requestIdentity.tenantId ?? '',
+            requestIdentity.userId,
+          ]),
+        )
+        .digest('hex');
+    }
+    hasModelKwargs = true;
   }
 
   hasModelKwargs =

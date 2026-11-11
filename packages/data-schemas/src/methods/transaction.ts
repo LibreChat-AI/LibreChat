@@ -30,7 +30,7 @@ type MultiplierParams = {
 };
 
 type CacheMultiplierParams = {
-  cacheType?: 'write' | 'read' | 'write1h';
+  cacheType?: 'write' | 'read' | 'write1h' | 'write12h';
   model?: string;
   endpointTokenConfig?: Record<string, Record<string, number>>;
   inputTokenCount?: number;
@@ -52,6 +52,8 @@ interface InternalTxDoc {
   writeTokens?: number;
   /** Subset of `writeTokens` written to the 1-hour cache */
   write1hTokens?: number;
+  /** Subset of `writeTokens` written to the 12-hour cache */
+  write12hTokens?: number;
   readTokens?: number;
 }
 
@@ -70,6 +72,8 @@ export interface TxData {
   writeTokens?: number;
   /** Subset of `writeTokens` written to the 1-hour cache */
   write1hTokens?: number;
+  /** Subset of `writeTokens` written to the 12-hour cache */
+  write12hTokens?: number;
   readTokens?: number;
   balance?: Partial<TCustomConfig['balance']>;
   transactions?: { enabled?: boolean };
@@ -201,6 +205,7 @@ export function createTransactionMethods(
       const inputAbs = Math.abs(txn.inputTokens ?? 0);
       const writeAbs = Math.abs(txn.writeTokens ?? 0);
       const write1hAbs = Math.min(Math.abs(txn.write1hTokens ?? 0), writeAbs);
+      const write12hAbs = Math.min(Math.abs(txn.write12hTokens ?? 0), writeAbs - write1hAbs);
       const readAbs = Math.abs(txn.readTokens ?? 0);
       const write1hMultiplier =
         write1hAbs > 0
@@ -212,18 +217,31 @@ export function createTransactionMethods(
             }) ?? writeMultiplier)
           : writeMultiplier;
 
+      /** Missing TTL pricing retains the existing write/input fallback. */
+      const write12hMultiplier =
+        write12hAbs > 0
+          ? (txMethods.getCacheMultiplier({
+              cacheType: 'write12h',
+              model,
+              endpointTokenConfig: etConfig,
+              inputTokenCount,
+            }) ?? writeMultiplier)
+          : writeMultiplier;
+
       txn.rateDetail = {
         input: inputMultiplier,
         write: writeMultiplier,
         read: readMultiplier,
         ...(write1hAbs > 0 && { write1h: write1hMultiplier }),
+        ...(write12hAbs > 0 && { write12h: write12hMultiplier }),
       };
 
       const totalPromptTokens = inputAbs + writeAbs + readAbs;
       const promptValue =
         inputAbs * Math.abs(inputMultiplier) +
-        (writeAbs - write1hAbs) * Math.abs(writeMultiplier) +
+        (writeAbs - write1hAbs - write12hAbs) * Math.abs(writeMultiplier) +
         write1hAbs * Math.abs(write1hMultiplier) +
+        write12hAbs * Math.abs(write12hMultiplier) +
         readAbs * Math.abs(readMultiplier);
 
       txn.rate =
@@ -231,8 +249,9 @@ export function createTransactionMethods(
 
       txn.tokenValue = -(
         inputAbs * inputMultiplier +
-        (writeAbs - write1hAbs) * writeMultiplier +
+        (writeAbs - write1hAbs - write12hAbs) * writeMultiplier +
         write1hAbs * write1hMultiplier +
+        write12hAbs * write12hMultiplier +
         readAbs * readMultiplier
       );
 
@@ -704,6 +723,7 @@ export function createTransactionMethods(
     transaction.endpointTokenConfig = txData.endpointTokenConfig;
     transaction.inputTokenCount = txData.inputTokenCount;
     transaction.write1hTokens = txData.write1hTokens;
+    transaction.write12hTokens = txData.write12hTokens;
 
     calculateStructuredTokenValue(transaction);
 

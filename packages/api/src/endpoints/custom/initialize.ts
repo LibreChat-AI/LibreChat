@@ -365,6 +365,7 @@ export async function initializeCustom(
   } else {
     const finalClientOptions = {
       ...clientOptions,
+      requestIdentity: { userId, tenantId },
       modelOptions,
       inferenceParameters,
     };
