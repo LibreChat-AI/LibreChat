@@ -53,12 +53,15 @@ function Harness({
   routePending = false,
   targetReady = true,
   onAsk = ask,
+  refusesWhileSubmitting = false,
   speechSettingsInitialized = false,
 }: {
   conversation: TConversation;
   routePending?: boolean;
   targetReady?: boolean;
   onAsk?: typeof ask;
+  /** Mirrors the real `ask`, which reads `isSubmitting` from the render it was created in. */
+  refusesWhileSubmitting?: boolean;
   speechSettingsInitialized?: boolean;
 }) {
   const [files, setFiles] = useAtom(filesFamily(0));
@@ -89,7 +92,7 @@ function Harness({
       getMappingOptions: () => ({}),
       feedbackEnabled: false,
       setMessages: () => undefined,
-      ask: onAsk,
+      ask: refusesWhileSubmitting && isSubmitting ? () => false : onAsk,
       regenerate: () => undefined,
       setSiblingIdx: () => undefined,
       abortScroll: false,
@@ -101,7 +104,7 @@ function Harness({
       handleRegenerate: () => undefined,
       handleContinue: () => undefined,
     }),
-    [conversation, files, setFiles, isSubmitting, onAsk],
+    [conversation, files, setFiles, isSubmitting, onAsk, refusesWhileSubmitting],
   );
   return (
     <ChatFormProvider {...methods}>
@@ -224,7 +227,12 @@ function mountComposer(
       wrapper,
     },
   );
-  return { ...view, navigate: (to: string) => navigate(to), getLocation: () => location };
+  return {
+    ...view,
+    navigate: (to: string) => navigate(to),
+    getLocation: () => location,
+    setSubmitting: (value: boolean) => jotaiStore.set(isSubmittingFamily(0), value),
+  };
 }
 
 afterEach(() => {
@@ -313,6 +321,32 @@ describe('ChatForm URL submission', () => {
     );
     expect(view.getLocation().search).toBe('');
     expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('sends a queued prompt in a new chat only once the source run has released the composer', async () => {
+    const source = { ...initialConversation, conversationId: 'source-chat' };
+    const view = mountComposer(source, { query: '', liveRun: true });
+    await act(async () => jest.advanceTimersByTime(100));
+    const destinationAsk = jest.fn();
+    const destination = (
+      <Harness conversation={initialConversation} onAsk={destinationAsk} refusesWhileSubmitting />
+    );
+    await act(async () => {
+      view.navigate('/c/new?prompt=queued+words&submit=true');
+      view.rerender(destination);
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(destinationAsk).not.toHaveBeenCalled();
+    expect(view.getLocation().search).toBe('?prompt=queued+words&submit=true');
+    expect(screen.getByTestId('text-input')).toHaveValue('queued words');
+
+    await act(async () => view.setSubmitting(false));
+    expect(destinationAsk).toHaveBeenCalledTimes(1);
+    expect(destinationAsk).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'queued words' }),
+      expect.anything(),
+    );
+    expect(view.getLocation().search).toBe('');
   });
 
   it('processes a new agent URL once after a previous URL request has completed', async () => {
