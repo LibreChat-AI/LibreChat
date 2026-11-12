@@ -30,6 +30,15 @@ export function providerSessionCredentialExpiry(now: Date, ...lifetimesMs: numbe
   return new Date(now.getTime() + longestMs);
 }
 
+/** Spreads to `{ providerSession }` when given one, or to nothing when omitted — lets a caller
+ *  add the field to a plain object (via `Object.assign` or `{ ...rest, ...providerSessionField(x) }`)
+ *  without ever writing an explicit `providerSession: undefined` own-property. */
+export function providerSessionField(
+  providerSession?: ProviderSessionRef | null,
+): { providerSession: ProviderSessionRef } | Record<string, never> {
+  return providerSession ? { providerSession } : {};
+}
+
 /** Extracts the provider-session reference from verified claims. `issuer` keys on the claims'
  *  own `iss` when the configured issuer is a `{tenantid}` template it matches, so each tenant
  *  gets its own reference; otherwise it is the configured issuer, normalized as login lookup
