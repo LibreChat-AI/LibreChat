@@ -1812,6 +1812,89 @@ describe('RedisEventTransport', () => {
     await manager.destroy();
   });
 
+  it.each([
+    { fenced: false, publishDuringRead: false },
+    { fenced: true, publishDuringRead: false },
+    { fenced: false, publishDuringRead: true },
+    { fenced: true, publishDuringRead: true },
+  ])(
+    'preserves resolved skills across preliminary metadata: %p',
+    async ({ fenced, publishDuringRead }) => {
+      const publisher = createMockPublisher();
+      const ownerSubscriber = createMockSubscriber();
+      const readerSubscriber = createMockSubscriber();
+      const ownerTransport = new RedisEventTransport(
+        publisher as unknown as Redis,
+        ownerSubscriber as unknown as Redis,
+      );
+      const readerTransport = new RedisEventTransport(
+        publisher as unknown as Redis,
+        readerSubscriber as unknown as Redis,
+      );
+      const readerHandler = getMessageHandler(readerSubscriber);
+      const streamId = 'cross-replica-preliminary-skills';
+      publisher.publish.mockImplementation(async (channel: string, payload: string) => {
+        if (readerTransport.getSubscriberCount(streamId) > 0) {
+          readerHandler(channel, payload);
+        }
+        return 1;
+      });
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+      const owner = new GenerationJobManagerClass();
+      owner.configure({ jobStore, eventTransport: ownerTransport, isRedis: true });
+      const reader = new GenerationJobManagerClass();
+      reader.configure({ jobStore, eventTransport: readerTransport, isRedis: true });
+      const message = {
+        messageId: 'user-1',
+        parentMessageId: 'parent-1',
+        conversationId: streamId,
+        text: 'Hello',
+      };
+      const job = await owner.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { userMessage: message },
+      });
+      const created = {
+        created: true as const,
+        message: {
+          ...message,
+          sender: 'User',
+          isCreatedByUser: true,
+          alwaysAppliedSkills: ['always-skill'],
+          manualSkills: ['manual-skill'],
+        },
+        streamId,
+      };
+      if (publishDuringRead) {
+        const getJob = jobStore.getJob.bind(jobStore);
+        jest.spyOn(jobStore, 'getJob').mockImplementationOnce(async (id) => {
+          const preliminary = await getJob(id);
+          await owner.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+          return preliminary;
+        });
+      }
+      const received: unknown[] = [];
+      const subscription = await reader.subscribe(
+        streamId,
+        (event) => received.push(event),
+        undefined,
+        undefined,
+        fenced ? { expectedCreatedAt: job.createdAt } : undefined,
+      );
+      try {
+        if (!publishDuringRead) {
+          expect(received).toEqual([]);
+          await owner.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+        }
+        await Promise.resolve();
+        expect(received).toEqual([created]);
+      } finally {
+        subscription?.unsubscribe();
+        await owner.destroy();
+        await reader.destroy();
+      }
+    },
+  );
+
   it('deduplicates a cross-replica created fallback when the original publishes later', async () => {
     const mockPublisher = createMockPublisher();
     const generatingSubscriber = createMockSubscriber();

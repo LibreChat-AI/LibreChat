@@ -1,6 +1,6 @@
 /* eslint jest/no-standalone-expect: ["error", { "additionalTestBlockFunctions": ["testRedis"] }] */
 import type { Redis, Cluster } from 'ioredis';
-import type { ServerSentEvent, StreamEvent, CreatedEvent } from '~/types';
+import type { ServerSentEvent, StreamEvent, CreatedEvent, StreamSubscription } from '~/types';
 import type { IJobStoreV2 } from '~/stream/interfaces/IJobStore';
 import {
   GenerationJobManagerClass,
@@ -872,6 +872,67 @@ describe('GenerationJobManager Integration Tests', () => {
       await jobStore.destroy();
     });
 
+    test.each([false, true])(
+      'waits for initialized skills across replicas (resume: %s)',
+      async (resume) => {
+        const owner = createRedisManager();
+        const reader = createRedisManager();
+        const streamId = `cross-skill-start-${Date.now()}`;
+        const message = {
+          messageId: 'skill-user',
+          parentMessageId: 'parent',
+          conversationId: streamId,
+          text: 'Hello',
+        };
+        const job = await owner.createJob(streamId, 'test-user', streamId, {
+          initialMetadata: { userMessage: message },
+        });
+        const received: ServerSentEvent[] = [];
+        let announceCreated: (event: ServerSentEvent) => void = () => undefined;
+        const announced = new Promise<ServerSentEvent>((resolve) => {
+          announceCreated = resolve;
+        });
+        const onChunk = (event: ServerSentEvent) => {
+          received.push(event);
+          announceCreated(event);
+        };
+        let subscription: StreamSubscription | null;
+        if (resume) {
+          const result = await reader.subscribeWithResume(streamId, onChunk, undefined, undefined, {
+            expectedCreatedAt: job.createdAt,
+          });
+          expect(result.resumeState).toBeNull();
+          result.subscription?.activate();
+          subscription = result.subscription;
+        } else {
+          subscription = await reader.subscribe(streamId, onChunk, undefined, undefined, {
+            expectedCreatedAt: job.createdAt,
+          });
+        }
+        try {
+          expect(received).toEqual([]);
+          const created = {
+            created: true as const,
+            message: {
+              ...message,
+              sender: 'User',
+              isCreatedByUser: true,
+              alwaysAppliedSkills: ['always-skill'],
+              manualSkills: ['manual-skill'],
+            },
+            streamId,
+          };
+          await owner.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+          await expect(announced).resolves.toEqual(created);
+          expect(received).toEqual([created]);
+        } finally {
+          subscription?.unsubscribe();
+          await owner.destroy();
+          await reader.destroy();
+        }
+      },
+    );
+
     test('should emit created event from metadata on cross-replica subscribe', async () => {
       const replicaAJobStore = new RedisJobStore(ioredisClient!);
       await replicaAJobStore.initialize();
@@ -881,6 +942,7 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await replicaAJobStore.createJob(streamId, userId);
       await replicaAJobStore.updateJob(streamId, {
+        createdEventEmitted: true,
         userMessage: {
           messageId: 'msg-123',
           parentMessageId: '00000000-0000-0000-0000-000000000000',
