@@ -166,7 +166,7 @@
     "re2js": "^2.9.1",
     "sanitize-html": "^2.18.1",
     "sharp": "^0.35.5",
-    "undici": "^7.30.1",
+    "undici": "^7.30.2",
     "yauzl": "^3.2.1",
     "zod": "^4.6.7",
     "zod-to-json-schema": "^3.25.1"

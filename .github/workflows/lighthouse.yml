@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
       - name: Test Lighthouse failure reporting
         run: node --test e2e/lighthouse.test.mts
@@ -54,7 +54,7 @@ jobs:
             packages/api/node_modules
             packages/channel-gateway/node_modules
             api/node_modules
-          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+          key: node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
       - name: Install dependencies
         id: install-dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'

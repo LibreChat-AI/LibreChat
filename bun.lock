@@ -139,7 +139,7 @@
         "sharp": "^0.35.5",
         "swagger-ui-dist": "^5.32.15",
         "ua-parser-js": "^1.0.36",
-        "undici": "^7.30.1",
+        "undici": "^7.30.2",
         "winston": "^3.11.0",
         "winston-daily-rotate-file": "^5.0.0",
         "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
@@ -431,7 +431,7 @@
         "re2js": "^2.8.6",
         "sanitize-html": "^2.18.1",
         "sharp": "^0.35.5",
-        "undici": "^7.30.1",
+        "undici": "^7.30.2",
         "yauzl": "^3.2.1",
         "zod": "^4.6.7",
         "zod-to-json-schema": "^3.25.1",
@@ -5025,7 +5025,7 @@
 
     "underscore": ["underscore@1.13.8", "", {}, "sha512-DXtD3ZtEQzc7M8m4cXotyHR+FAS18C64asBYY5vqZexfYryNNnDc02W4hKg3rdQuqOYas1jkseX0+nZXjTXnvQ=="],
 
-    "undici": ["undici@7.30.1", "", {}, "sha512-03KrMbjIFDWQR5RNPrSw3bd1r12JpyFQl9/yxjUbJtqkjmllqC5lFjZh6ujeuJCKr8EOQvRW872Oy/az+nLYxg=="],
+    "undici": ["undici@7.30.2", "", {}, "sha512-mLyPQnHwUxaM/rideoK/+KL8DaAJLRl4aBCfmX444aCSLnIaomqPLtNRe2jdCYcsk5wZzXrDIQC8ZeYNRAYyIA=="],
 
     "undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
 

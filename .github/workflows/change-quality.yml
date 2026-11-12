@@ -36,7 +36,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
       - run: npm ci
       - name: Check reporter types
@@ -63,7 +63,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
       - name: Select workspaces
         id: select
         env:
@@ -104,7 +104,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
       - run: npm ci
       - run: npm run build:data-provider && npm run build:data-schemas && npm run build:api
@@ -170,7 +170,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
           cache-dependency-path: |
             source/package-lock.json
@@ -230,7 +230,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
       - uses: actions/download-artifact@v7
         with:
           pattern: change-mutation-${{ matrix.workspace }}-shard-*-${{ env.QUALITY_HEAD }}

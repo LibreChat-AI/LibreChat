@@ -166,6 +166,28 @@ test('follow-redirects strips cross-realm sensitive headers on cross-origin redi
   }
 });
 
+test('Node and Undici enforce integrity metadata separated by ASCII whitespace', async (t) => {
+  const server = createServer((req, res) => res.end('security-regression'));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/`;
+  const digest = 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=';
+
+  for (const [name, fetch] of [
+    ['Node', globalThis.fetch],
+    ['Undici', require('undici').fetch],
+  ]) {
+    for (const whitespace of [' ', '\t', '\n', '\f', '\r']) {
+      await assert.rejects(
+        fetch(url, { integrity: `${whitespace}${digest}${whitespace}` }),
+        (error) => error.cause?.message === 'integrity mismatch',
+        `${name}: ${JSON.stringify(whitespace)}`,
+      );
+    }
+  }
+});
+
 test('Workbox preserves precache globs and ignores', async (t) => {
   const cwd = fixture(t, {
     'index.html': '<html></html>',

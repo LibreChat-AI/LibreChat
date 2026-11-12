@@ -215,7 +215,7 @@ function installedDirectories(): string[] {
 }
 
 const SHARED_KEY =
-  "node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}";
+  "node-modules-e2e-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}";
 
 const lines = (value: unknown): string[] =>
   String(value ?? '')
@@ -254,7 +254,7 @@ test.describe('the shared installed dependency tree', () => {
         // The key names the OS and Node version; the runner and Node must match it.
         expect(job['runs-on'], where).toBe('ubuntu-latest');
         const node = steps.find((step) => step.uses?.startsWith('actions/setup-node@'));
-        expect(String(node?.with?.['node-version']), where).toBe('24.22.1');
+        expect(String(node?.with?.['node-version']), where).toBe('24.22.3');
 
         const install = steps.find((step) => step.run?.trim() === 'npm ci');
         expect(install, `${where} installs with npm ci`).toBeDefined();

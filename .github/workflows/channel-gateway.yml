@@ -68,7 +68,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.22.1'
+          node-version: '24.22.3'
           cache: npm
       - name: Install gateway and shared contracts
         run: npm ci --ignore-scripts --no-audit --workspace @librechat/channel-gateway --workspace librechat-data-provider --include-workspace-root=false
