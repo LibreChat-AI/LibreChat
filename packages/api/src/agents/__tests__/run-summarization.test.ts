@@ -1498,6 +1498,148 @@ describe.each([false, true])(
   },
 );
 
+describe('Cyber direct endpoint summary routing', () => {
+  it.each([
+    { sourceModel: 'gpt-6-cyber', path: 'chat/completions', responses: false },
+    { sourceModel: 'gpt-4.1-mini', path: 'chat/completions', responses: false },
+    { sourceModel: 'gpt-6-cyber', path: 'responses', responses: true },
+    { sourceModel: 'gpt-4.1-mini', path: 'responses', responses: true },
+    { sourceModel: 'gpt-6-cyber', path: 'chat/completions', summary: true, responses: true },
+    { sourceModel: 'gpt-6-cyber', path: 'responses', summary: false, responses: false },
+    {
+      sourceModel: 'gpt-4.1-mini',
+      path: 'chat/completions',
+      crossEndpoint: true,
+      responses: false,
+    },
+    { sourceModel: 'gpt-4.1-mini', path: 'responses', crossEndpoint: true, responses: true },
+  ])(
+    'matches the exact endpoint API: %j',
+    async ({ sourceModel, path, summary, crossEndpoint, responses }) => {
+      const endpoint: TestCustomEndpoint = {
+        name: 'Daybreak',
+        apiKey: 'test-key',
+        baseURL: `https://api.openai.com/v1/${path}`,
+        directEndpoint: true,
+      };
+      const user = { id: 'direct-user', tenantId: 'direct-tenant' } as IUser;
+      const sourceEndpoint = crossEndpoint ? EModelEndpoint.openAI : endpoint.name;
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        endpoint.apiKey,
+        {
+          reverseProxyUrl: crossEndpoint ? undefined : endpoint.baseURL,
+          directEndpoint: !crossEndpoint,
+          modelOptions: { model: sourceModel },
+          requestIdentity: { userId: user.id, tenantId: user.tenantId },
+        },
+        sourceEndpoint,
+      );
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint: sourceEndpoint,
+            model: sourceModel,
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        user,
+        tenantId: user.tenantId,
+        appConfig: makeAppConfig([endpoint]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: endpoint.name,
+          model: 'gpt-6-cyber',
+          parameters: {
+            streaming: false,
+            ...(typeof summary === 'boolean' ? { useResponsesApi: summary } : {}),
+          },
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body).toHaveProperty(responses ? 'input' : 'messages');
+      expect(requests[0].body).not.toHaveProperty(responses ? 'messages' : 'input');
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'daybreak_red' },
+        safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+    },
+  );
+
+  it.each([
+    { agent: 'anthropic', path: '/chat/completions', responses: false },
+    { agent: 'anthropic', path: '/responses', responses: true },
+    { agent: 'anthropic', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'anthropic', path: '/responses', drop: true, responses: false },
+    { agent: 'anthropic', path: '', drop: true, responses: false },
+    { agent: 'openAI', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'endpoint', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'endpoint', path: '/chat/completions', inferred: true, responses: false },
+    { agent: 'endpoint', path: '/responses', inferred: true, responses: true },
+  ])(
+    'keeps the target endpoint API decision: %j',
+    async ({ agent, path, drop, inferred, responses }) => {
+      const endpoint: TestCustomEndpoint = {
+        name: 'Daybreak',
+        apiKey: 'test-key',
+        baseURL: `https://api.openai.com/v1${path}`,
+        directEndpoint: path !== '',
+        dropParams: drop ? ['useResponsesApi'] : undefined,
+      };
+      const user = { id: 'direct-user', tenantId: 'direct-tenant' } as IUser;
+      const onEndpoint = agent === 'endpoint';
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        endpoint.apiKey,
+        {
+          reverseProxyUrl: onEndpoint ? endpoint.baseURL : undefined,
+          directEndpoint: onEndpoint && endpoint.directEndpoint,
+          dropParams: onEndpoint ? endpoint.dropParams : undefined,
+          modelOptions: { model: 'gpt-4.1-mini' },
+          requestIdentity: { userId: user.id, tenantId: user.tenantId },
+        },
+        onEndpoint ? endpoint.name : EModelEndpoint.openAI,
+      );
+      const source =
+        agent === 'anthropic'
+          ? makeReasoningAgent({
+              provider: Providers.ANTHROPIC,
+              endpoint: EModelEndpoint.anthropic,
+              model: 'claude-sonnet-4.6',
+              model_parameters: { model: 'claude-sonnet-4.6', apiKey: 'anthropic-key' },
+            })
+          : makeReasoningAgent({
+              provider: Providers.OPENAI,
+              endpoint: onEndpoint ? endpoint.name : EModelEndpoint.openAI,
+              model: 'gpt-4.1-mini',
+              model_parameters: { ...llmConfig, configuration: configOptions },
+            });
+      const agents = await callAndCapture({
+        agents: [source],
+        user,
+        tenantId: user.tenantId,
+        appConfig: makeAppConfig([endpoint]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          ...(inferred ? {} : { provider: endpoint.name }),
+          model: 'gpt-6-cyber',
+          parameters: { streaming: false },
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body).toHaveProperty(responses ? 'input' : 'messages');
+      expect(requests[0].body).not.toHaveProperty(responses ? 'messages' : 'input');
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'daybreak_red' },
+        safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+    },
+  );
+});
+
 describe('Cyber summary target shaping', () => {
   it.each([
     { sourceModel: 'gpt-6-sol', baseURL: undefined, endpoint: EModelEndpoint.openAI },
