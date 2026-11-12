@@ -146,6 +146,7 @@ const {
   applyGoogleAdminRefresh,
   storeAndStripChallenge,
   buildOpenIDRefreshParams,
+  exchangeAdminCode,
 } = require('@librechat/api');
 const { getOpenIdConfig } = require('~/strategies');
 const middleware = require('~/server/middleware');
@@ -488,6 +489,55 @@ describe('admin auth OpenID refresh route', () => {
           grantRefreshToken: 'bridged-refresh-token',
         }),
       );
+    });
+  });
+});
+
+describe('admin auth OpenID exchange route', () => {
+  const validCode = 'a'.repeat(64);
+
+  let app;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    app = express();
+    app.use(express.json());
+    app.use('/api/admin', adminAuthRouter);
+
+    getProviderSessionAuthorizer.mockReturnValue({
+      getMode: jest.fn().mockResolvedValue('off'),
+      authorize: jest.fn(),
+      preCheck: jest.fn(),
+      establish: jest.fn(),
+    });
+  });
+
+  it('maps an AdminExchangeError to its status and code', async () => {
+    const { AdminExchangeError } = require('@librechat/api');
+    exchangeAdminCode.mockRejectedValue(
+      new AdminExchangeError('OPENID_SESSION_ENDED', 401, 'Provider session has ended'),
+    );
+
+    const response = await request(app).post('/api/admin/oauth/exchange').send({ code: validCode });
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({
+      error: 'Provider session has ended',
+      error_code: 'OPENID_SESSION_ENDED',
+    });
+  });
+
+  it('maps a ProviderSessionUnavailableError to 503', async () => {
+    const { ProviderSessionUnavailableError } = require('@librechat/api');
+    exchangeAdminCode.mockRejectedValue(new ProviderSessionUnavailableError('db down'));
+
+    const response = await request(app).post('/api/admin/oauth/exchange').send({ code: validCode });
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({
+      error: 'Provider session check unavailable',
+      error_code: 'AUTH_SESSION_CHECK_UNAVAILABLE',
     });
   });
 });

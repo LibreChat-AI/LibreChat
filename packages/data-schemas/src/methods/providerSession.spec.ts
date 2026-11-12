@@ -543,4 +543,178 @@ describe('ProviderSession Methods', () => {
       }
     });
   });
+
+  /**
+   * Every test above keeps exactly one record per `sid`, so a mutation that widens a method's
+   * internal classification/update filter to `{}` would still happen to touch the right
+   * document. Each of these plants an unrelated decoy record sharing `issuer`/`clientId` (a
+   * different `sid`, inserted first so it is also first in natural/insertion order) and asserts
+   * the decoy is left exactly as it was.
+   */
+  describe('decoy-record scoping', () => {
+    it('establish classification and reactivation act on the matching sid record, not an unrelated one', async () => {
+      const decoySid = 'sid-decoy-reactivate';
+      const targetSid = 'sid-target-reactivate';
+      const base = new Date('2026-02-01T00:00:00Z');
+
+      await methods.establishProviderSession({
+        ...ref,
+        sid: decoySid,
+        subject: 'decoy-user',
+        expiresAt: new Date(base.getTime() + 60_000),
+        now: base,
+      });
+      await methods.establishProviderSession({
+        ...ref,
+        sid: targetSid,
+        subject: 'target-user',
+        expiresAt: new Date(base.getTime() + 1_000),
+        now: base,
+      });
+
+      const later = new Date(base.getTime() + 2_000);
+      const reactivated = await methods.establishProviderSession({
+        ...ref,
+        sid: targetSid,
+        subject: 'target-user',
+        expiresAt: new Date(later.getTime() + 60_000),
+        now: later,
+      });
+      expect(reactivated).toEqual({ ok: true });
+
+      const target = await mongoose.models.ProviderSession.findOne({
+        ...ref,
+        sid: targetSid,
+      }).lean<t.IProviderSession>();
+      expect(target?.expiresAt.getTime()).toBe(later.getTime() + 60_000);
+      expect(target?.subject).toBe('target-user');
+
+      const decoy = await mongoose.models.ProviderSession.findOne({
+        ...ref,
+        sid: decoySid,
+      }).lean<t.IProviderSession>();
+      expect(decoy?.expiresAt.getTime()).toBe(base.getTime() + 60_000);
+      expect(decoy?.subject).toBe('decoy-user');
+    });
+
+    it('authorize on a never-established sid reports MISSING and never touches an unrelated record', async () => {
+      const decoySid = 'sid-decoy-authorize';
+      const targetSid = 'sid-target-authorize-missing';
+      const decoyExpiry = new Date(Date.now() + 60_000);
+
+      await methods.establishProviderSession({
+        ...ref,
+        sid: decoySid,
+        subject: 'decoy-user',
+        expiresAt: decoyExpiry,
+      });
+
+      const authorized = await methods.authorizeProviderSession({
+        ...ref,
+        sid: targetSid,
+        subject: 'target-user',
+        expiresAt: new Date(Date.now() + 120_000),
+      });
+      expect(authorized).toEqual({ ok: false, code: 'MISSING' });
+
+      const decoy = await mongoose.models.ProviderSession.findOne({
+        ...ref,
+        sid: decoySid,
+      }).lean<t.IProviderSession>();
+      expect(decoy?.expiresAt.getTime()).toBe(decoyExpiry.getTime());
+      expect(decoy?.subject).toBe('decoy-user');
+      expect(await mongoose.models.ProviderSession.findOne({ ...ref, sid: targetSid })).toBeNull();
+    });
+
+    it('revoke subject-mismatch classification reads the record for the given sid, not an unrelated one', async () => {
+      const decoySid = 'sid-decoy-revoke-classify';
+      const targetSid = 'sid-target-revoke-classify';
+
+      // Decoy has no subject, so a classification read that landed on it instead of the
+      // target would skip the mismatch check entirely.
+      await methods.establishProviderSession({
+        ...ref,
+        sid: decoySid,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      await methods.establishProviderSession({
+        ...ref,
+        sid: targetSid,
+        subject: 'user-1',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+
+      const revoked = await methods.revokeProviderSession({
+        ...ref,
+        sid: targetSid,
+        subject: 'user-2',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(revoked).toEqual({ ok: false, code: 'SUBJECT_MISMATCH' });
+
+      const target = await mongoose.models.ProviderSession.findOne({
+        ...ref,
+        sid: targetSid,
+      }).lean<t.IProviderSession>();
+      expect(target?.revokedAt).toBeUndefined();
+      expect(target?.subject).toBe('user-1');
+    });
+
+    it('revoke force-final update (no real subject conflict) applies to the matching sid record only', async () => {
+      const decoySid = 'sid-decoy-revoke-force-final';
+      const targetSid = 'sid-target-revoke-force-final';
+
+      await methods.establishProviderSession({
+        ...ref,
+        sid: decoySid,
+        subject: 'decoy-user',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      await methods.establishProviderSession({
+        ...ref,
+        sid: targetSid,
+        subject: 'user-1',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+
+      const ProviderSession = mongoose.models.ProviderSession;
+      const findOneAndUpdateSpy = jest
+        .spyOn(ProviderSession, 'findOneAndUpdate')
+        .mockResolvedValueOnce(null) // primary upsert attempt
+        .mockResolvedValueOnce(null); // retry without upsert; falls through to the real final update
+      const findOneSpy = jest.spyOn(ProviderSession, 'findOne').mockReturnValue({
+        read: () => ({
+          // Classification sees no subject on the stored record, so the mismatch check is
+          // skipped and the force-final update (by key alone) is the one that must apply.
+          lean: () => Promise.resolve({ ...ref, sid: targetSid }),
+        }),
+      } as unknown as ReturnType<typeof ProviderSession.findOne>);
+
+      try {
+        const revoked = await methods.revokeProviderSession({
+          ...ref,
+          sid: targetSid,
+          subject: 'user-2',
+          expiresAt: new Date(Date.now() + 120_000),
+        });
+        expect(revoked).toEqual({ ok: true });
+      } finally {
+        findOneAndUpdateSpy.mockRestore();
+        findOneSpy.mockRestore();
+      }
+
+      const target = await mongoose.models.ProviderSession.findOne({
+        ...ref,
+        sid: targetSid,
+      }).lean<t.IProviderSession>();
+      expect(target?.revokedAt).toBeDefined();
+
+      const decoy = await mongoose.models.ProviderSession.findOne({
+        ...ref,
+        sid: decoySid,
+      }).lean<t.IProviderSession>();
+      expect(decoy?.revokedAt).toBeUndefined();
+      expect(decoy?.subject).toBe('decoy-user');
+    });
+  });
 });

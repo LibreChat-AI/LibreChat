@@ -146,6 +146,25 @@ describe('validateLogoutToken', () => {
     expect(result).toEqual({ ok: false, code: 'INVALID', reason: 'missing_jti' });
   });
 
+  it('rejects a token missing iat', async () => {
+    // jwt.sign rejects an explicit `iat: undefined` claim and otherwise auto-fills `iat`, so
+    // producing a token that truly omits it requires both leaving the key out of the payload
+    // and passing `noTimestamp` to suppress the library's own auto-fill.
+    const token = jwt.sign(
+      {
+        iss: ISSUER,
+        aud: CLIENT_ID,
+        jti: 'token-id-1',
+        sid: 'session-1',
+        events: { [BACKCHANNEL_LOGOUT_EVENT]: {} },
+      },
+      keyPair.privateKey,
+      { algorithm: 'RS256', keyid: KID, noTimestamp: true },
+    );
+    const result = await validateLogoutToken(token, baseOptions());
+    expect(result).toEqual({ ok: false, code: 'INVALID', reason: 'missing_iat' });
+  });
+
   it('rejects a token with a stale iat', async () => {
     const staleIat = Math.floor(new Date('2026-01-01T00:00:00Z').getTime() / 1000) - 10_000;
     const token = signToken({ iat: staleIat });

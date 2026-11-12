@@ -40,4 +40,31 @@ describe('upsertSession', () => {
     );
     expect(result).toBe(storedSession);
   });
+
+  it('omits tenantId, providerSession, and authMethod from the update when not supplied', async () => {
+    const storedSession = { _id: 'session-id' };
+    const createIndexes = jest.fn().mockResolvedValue(undefined);
+    const exec = jest.fn().mockResolvedValue(storedSession);
+    const findOneAndUpdate = jest.fn().mockReturnValue({ exec });
+    const mongoose = {
+      models: { Session: { modelName: 'Session', createIndexes, findOneAndUpdate } },
+    } as unknown as typeof import('mongoose');
+    const methods = createSessionMethods(mongoose);
+    const expiration = new Date(Date.now() + 60_000);
+
+    await methods.upsertSession('user-id', 'external-refresh', { expiration });
+
+    const refreshTokenHash = createHash('sha256').update('external-refresh').digest('hex');
+    expect(findOneAndUpdate).toHaveBeenCalledWith(
+      { user: 'user-id', refreshTokenHash },
+      {
+        $set: {
+          user: 'user-id',
+          refreshTokenHash,
+          expiration,
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+  });
 });

@@ -214,6 +214,40 @@ describe('authorizeCachedReuseSession', () => {
       expect.objectContaining({ ref: null, legacy: true }),
     );
   });
+
+  it('clears an Express session bound to the denied ref', async () => {
+    const deps = makeDeps({
+      authorizer: {
+        ...makeDeps().authorizer,
+        authorize: jest.fn().mockResolvedValue({ ok: false }),
+      },
+    });
+    const session = { openidTokens: { providerSession: refA } };
+
+    const error = await authorizeCachedReuseSession(deps, makeInput({ session })).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(isOpenIDSessionEndedError(error)).toBe(true);
+    expect(session.openidTokens).toBeUndefined();
+  });
+
+  it('never wipes an Express session bound to a different provider session', async () => {
+    const deps = makeDeps({
+      authorizer: {
+        ...makeDeps().authorizer,
+        authorize: jest.fn().mockResolvedValue({ ok: false }),
+      },
+    });
+    const session = { openidTokens: { providerSession: refB } };
+
+    const error = await authorizeCachedReuseSession(deps, makeInput({ session })).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(isOpenIDSessionEndedError(error)).toBe(true);
+    expect(session.openidTokens).toEqual({ providerSession: refB });
+  });
 });
 
 describe('respondToProviderSessionError', () => {
