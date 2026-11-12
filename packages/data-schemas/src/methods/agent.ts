@@ -265,8 +265,8 @@ export interface RevertAgentVersionOptions {
 
 export class AgentRevisionConflictError extends Error {
   readonly statusCode = 409;
-  constructor() {
-    super('Agent was modified while reverting; reload and try again');
+  constructor(message = 'Agent was modified while reverting; reload and try again') {
+    super(message);
     this.name = 'AgentRevisionConflictError';
   }
 }
@@ -757,9 +757,13 @@ function extractMCPServerNames(tools: string[] | undefined | null): string[] {
  * ambiguous trailing-segment derivation, which cannot tell a config server's
  * suffix from a real DB server name.
  */
-function rebuildMCPServerNames(tools: string[] | undefined | null, priorNames: string[]): string[] {
+function rebuildMCPServerNames(
+  tools: string[] | undefined | null,
+  priorNames: string[],
+  preserveMCPAccess = false,
+): string[] {
   if (priorNames.length === 0) {
-    return extractMCPServerNames(tools);
+    return preserveMCPAccess ? [] : extractMCPServerNames(tools);
   }
 
   const retained = new Set<string>();
@@ -778,8 +782,10 @@ function rebuildMCPServerNames(tools: string[] | undefined | null, priorNames: s
     }
   }
 
-  for (const name of extractMCPServerNames(unmatched)) {
-    retained.add(name);
+  if (!preserveMCPAccess) {
+    for (const name of extractMCPServerNames(unmatched)) {
+      retained.add(name);
+    }
   }
   return Array.from(retained);
 }
@@ -1110,6 +1116,8 @@ export function createAgentMethods(
       updatingUserId?: string | null;
       forceVersion?: boolean;
       skipVersioning?: boolean;
+      /** Action edits may retain existing MCP grants, but cannot derive new grants from keys. */
+      preserveMCPAccess?: boolean;
     },
   ) => Promise<IAgent | null>;
   updateAgentAvatar: (params: {
@@ -1500,6 +1508,8 @@ export function createAgentMethods(
       updatingUserId?: string | null;
       forceVersion?: boolean;
       skipVersioning?: boolean;
+      /** Action edits may retain existing MCP grants, but cannot derive new grants from keys. */
+      preserveMCPAccess?: boolean;
     } = {},
   ): Promise<IAgent | null> {
     const Agent = mongoose.models.Agent as Model<IAgent>;
@@ -1553,11 +1563,13 @@ export function createAgentMethods(
           | string[]
           | undefined;
         const mcpServerNames =
-          supplied ??
-          rebuildMCPServerNames(
-            (directUpdates as Record<string, unknown>).tools as string[],
-            (currentAgent.mcpServerNames as string[] | undefined) ?? [],
-          );
+          !options.preserveMCPAccess && supplied !== undefined
+            ? supplied
+            : rebuildMCPServerNames(
+                (directUpdates as Record<string, unknown>).tools as string[],
+                (currentAgent.mcpServerNames as string[] | undefined) ?? [],
+                options.preserveMCPAccess,
+              );
         (directUpdates as Record<string, unknown>).mcpServerNames = mcpServerNames;
         updateData.mcpServerNames = mcpServerNames;
       }
@@ -1682,7 +1694,7 @@ export function createAgentMethods(
       nextEnvironmentIds,
       async () =>
         (await Agent.findOneAndUpdate(
-          currentAgent == null || nextEnvironmentIds.length === 0
+          currentAgent == null || (nextEnvironmentIds.length === 0 && !options.preserveMCPAccess)
             ? searchParameter
             : { ...searchParameter, _id: currentAgent._id, updatedAt: currentRevision },
           updateData,
@@ -1699,6 +1711,12 @@ export function createAgentMethods(
         );
       },
     );
+
+    if (currentAgent && options.preserveMCPAccess && !updatedAgent) {
+      throw new AgentRevisionConflictError(
+        'Agent changed during Action update; reload and try again',
+      );
+    }
 
     /** `version` is a response-only field holding the count of `versions`. It is reported
      *  here so a suppressed entry keeps the shape callers saw before the write was fixed.

@@ -3,6 +3,7 @@ const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
 const {
   generateCheckAccess,
+  getAgentActionWriteStatus,
   planAgentActionUpdate,
   isActionDomainAllowed,
   legacyActionDomainEncode,
@@ -236,6 +237,7 @@ router.post(
         {
           updatingUserId: req.user.id,
           forceVersion: true,
+          preserveMCPAccess: true,
         },
       );
       await attachOwnerContacts([updatedAgent]);
@@ -277,7 +279,7 @@ router.post(
     } catch (error) {
       const message = 'Trouble updating the Agent Action';
       logger.error(message, error);
-      res.status(500).json({ message });
+      res.status(getAgentActionWriteStatus(error)).json({ message });
     }
   },
 );
@@ -329,7 +331,7 @@ router.delete(
       await db.updateAgent(
         { id: agent_id },
         { tools: updatedTools, actions: updatedActions },
-        { updatingUserId: req.user.id, forceVersion: true },
+        { updatingUserId: req.user.id, forceVersion: true, preserveMCPAccess: true },
       );
       const deleted = await db.deleteAction({ actionId: action_id, agentId: agent_id });
       if (!deleted) {
@@ -342,7 +344,7 @@ router.delete(
     } catch (error) {
       const message = 'Trouble deleting the Agent Action';
       logger.error(message, error);
-      res.status(500).json({ message });
+      res.status(getAgentActionWriteStatus(error)).json({ message });
     }
   },
 );
