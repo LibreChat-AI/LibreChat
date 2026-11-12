@@ -202,6 +202,7 @@ export function getOpenAIConfig(
       apiKey,
       baseURL,
       endpoint,
+      directEndpoint,
       streaming,
       addParams,
       dropParams,

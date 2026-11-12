@@ -640,6 +640,7 @@ export function getOpenAILLMConfig({
   defaultParams,
   inferenceParameters,
   useOpenRouter,
+  directEndpoint,
   requestIdentity,
   reasoningFormat = ReasoningParameterFormat.reasoningEffort,
   modelOptions: _modelOptions,
@@ -655,6 +656,7 @@ export function getOpenAILLMConfig({
   defaultParams?: Record<string, unknown>;
   inferenceParameters?: Record<string, unknown>;
   useOpenRouter?: boolean;
+  directEndpoint?: boolean;
   reasoningFormat?: ReasoningParameterFormat;
   azure?: false | t.AzureOptions;
 }): Pick<t.LLMConfigResult, 'llmConfig' | 'tools'> & {
@@ -1011,7 +1013,13 @@ export function getOpenAILLMConfig({
     llmConfig.useResponsesApi == null &&
     !responsesApiExplicitlyOptedOut
   ) {
-    llmConfig.useResponsesApi = true;
+    // Exact Chat Completions URLs keep their schema, not just their destination.
+    llmConfig.useResponsesApi = !(
+      cyber &&
+      directEndpoint === true &&
+      baseURL &&
+      /\/chat\/completions\/?$/.test(new URL(baseURL).pathname)
+    );
   }
 
   /**
