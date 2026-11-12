@@ -10,6 +10,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { compression, defineAlgorithm } from 'vite-plugin-compression2';
 import type { Plugin } from 'vite';
+import { sandpackConsoleIsolation } from './src/lib/sandpack.ts';
 import { bundledThemeBoot, injectThemeCacheVersion } from './src/Providers/bootVersion.ts';
 
 const require = createRequire(import.meta.url);
@@ -73,6 +74,7 @@ export default defineConfig(({ command }) => ({
   envDir: '../',
   envPrefix: ['VITE_', 'SCRIPT_', 'DOMAIN_', 'ALLOW_', 'REACT_APP_THEME_'],
   plugins: [
+    sandpackConsoleIsolation(),
     react(),
     {
       name: 'node-polyfills-shims-resolver',
@@ -210,6 +212,7 @@ export default defineConfig(({ command }) => ({
     }),
   ],
   optimizeDeps: {
+    rolldownOptions: { plugins: [sandpackConsoleIsolation()] },
     include: [
       'vite-plugin-node-polyfills/shims/buffer',
       'vite-plugin-node-polyfills/shims/process',
