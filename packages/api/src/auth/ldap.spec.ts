@@ -1,4 +1,4 @@
-import { isLdapAuthEnabled } from './ldap';
+import { isLdapAuthEnabled, resolveDefaultLoginAuthMethod } from './ldap';
 
 describe('isLdapAuthEnabled', () => {
   const originalUrl = process.env.LDAP_URL;
@@ -39,5 +39,35 @@ describe('isLdapAuthEnabled', () => {
     process.env.LDAP_URL = 'ldap://directory.example.com';
     process.env.LDAP_USER_SEARCH_BASE = 'ou=users,dc=example,dc=com';
     expect(isLdapAuthEnabled()).toBe(true);
+  });
+});
+
+describe('resolveDefaultLoginAuthMethod', () => {
+  const originalUrl = process.env.LDAP_URL;
+  const originalSearchBase = process.env.LDAP_USER_SEARCH_BASE;
+
+  afterEach(() => {
+    if (originalUrl === undefined) {
+      delete process.env.LDAP_URL;
+    } else {
+      process.env.LDAP_URL = originalUrl;
+    }
+    if (originalSearchBase === undefined) {
+      delete process.env.LDAP_USER_SEARCH_BASE;
+    } else {
+      process.env.LDAP_USER_SEARCH_BASE = originalSearchBase;
+    }
+  });
+
+  it("resolves to 'local' when the deployment is not LDAP-backed", () => {
+    delete process.env.LDAP_URL;
+    delete process.env.LDAP_USER_SEARCH_BASE;
+    expect(resolveDefaultLoginAuthMethod()).toBe('local');
+  });
+
+  it("resolves to 'ldap' when the deployment is LDAP-backed", () => {
+    process.env.LDAP_URL = 'ldap://directory.example.com';
+    process.env.LDAP_USER_SEARCH_BASE = 'ou=users,dc=example,dc=com';
+    expect(resolveDefaultLoginAuthMethod()).toBe('ldap');
   });
 });
