@@ -646,6 +646,7 @@ const loadTools = async ({
         oboIdentityContext,
         streamId: options.req?._resumableStreamId || null,
         jobCreatedAt: options.jobCreatedAt,
+        unattended: options.unattended,
         model: agent?.model ?? model,
         provider: agent?.provider ?? endpoint,
       },

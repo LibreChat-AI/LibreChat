@@ -5,6 +5,7 @@ import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { OAuthStartHandler } from '../types';
 import type * as t from '~/types';
 import { buildOAuthToolCallName, splitMCPToolKey } from '~/mcp/utils';
+import { OAuthPromptUnattendedError } from './unattended';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { createOAuthCallback } from './publication';
 
@@ -18,6 +19,48 @@ function warnSafely(logger: Diagnostics | undefined, message: string, error: unk
   } catch {
     // Diagnostics cannot become a tool or publication outcome.
   }
+}
+
+/** Where a sign-in prompt would be published, and whether a person is there to read it. */
+export interface OAuthPromptReader {
+  res?: object | null;
+  streamId?: string | null;
+  /**
+   * Supplied by the execution boundary when nobody can follow a prompt: a remote agent API run
+   * whose response answers an API client and that has no generation stream for its owner to
+   * follow in LibreChat.
+   */
+  unattended?: boolean;
+}
+
+/** Whether anyone can read a sign-in prompt sent this way. */
+export function canPublishOAuthPrompt({ res, streamId, unattended }: OAuthPromptReader): boolean {
+  if (unattended) return false;
+  return Boolean(streamId) || res != null;
+}
+
+/**
+ * Whether a turn should publish sign-in prompts for the servers that need one and wait on them.
+ * With no reader the wait cannot end in a sign-in, so those servers are left out of the turn.
+ */
+export function shouldAwaitOAuthSignIn({
+  res,
+  streamId,
+  unattended,
+  pending,
+  logger,
+}: OAuthPromptReader & {
+  pending: number;
+  logger?: { warn: (message: string) => void };
+}): boolean {
+  if (pending === 0) return false;
+  if (canPublishOAuthPrompt({ res, streamId, unattended })) return true;
+  if (unattended) {
+    logger?.warn(
+      `[MCP OAuth] Sign-in required for ${pending} server(s) on a request with no prompt reader; their tools are left out`,
+    );
+  }
+  return false;
 }
 
 class OAuthPromptPublicationError extends Error {
@@ -267,6 +310,8 @@ interface OAuthEventTransport {
   jobs: Pick<GenerationJobManagerClass, 'emitChunk'>;
   streamId?: string | null;
   jobCreatedAt?: number;
+  /** See {@link OAuthPromptReader.unattended}. */
+  unattended?: boolean;
 }
 
 /** One initialization owner per server, shared by reconnect and pending-flow discovery. */
@@ -323,6 +368,7 @@ export function createMCPInitializationOAuthPrompts(
 
 function createOAuthEventEmitter(transport: OAuthEventTransport) {
   return async (event: t.ServerSentEvent): Promise<void> => {
+    if (transport.unattended) throw new OAuthPromptUnattendedError();
     try {
       if (!transport.streamId) {
         transport.sendEvent(transport.res, event);
