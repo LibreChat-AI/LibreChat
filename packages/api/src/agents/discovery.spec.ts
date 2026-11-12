@@ -1,9 +1,16 @@
-import { ErrorTypes, EModelEndpoint, MAX_SUBAGENT_GRAPH_NODES } from 'librechat-data-provider';
+import { Types } from 'mongoose';
+import {
+  ResourceType,
+  ErrorTypes,
+  EModelEndpoint,
+  MAX_SUBAGENT_GRAPH_NODES,
+} from 'librechat-data-provider';
 import type { Agent, GraphEdge } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { GraphSubagentHostConfig } from './discovery';
 import type { InitializedAgent } from './initialize';
 import type { ServerRequest } from '~/types';
+import { modelSpecAgentId } from './specs';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -1897,5 +1904,97 @@ describe('resolveSubagentGraphs', () => {
 
     expect(getAgent).toHaveBeenCalledTimes(firstMemberIds.length);
     expect(primaryConfig.subagentGraphConfigs).toEqual([]);
+  });
+});
+
+describe('model spec handoffs', () => {
+  const targetId = modelSpecAgentId('specialist');
+  const request = () =>
+    ({
+      ...makeReq(),
+      config: {
+        modelSpecs: {
+          list: [
+            {
+              name: 'specialist',
+              label: 'Specialist',
+              handoff: true,
+              preset: {
+                endpoint: 'openAI',
+                model: 'gpt-4o',
+                promptPrefix: 'Specialist instructions',
+              },
+            },
+          ],
+        },
+      },
+    }) as ServerRequest;
+  const params = () => ({
+    req: request(),
+    res: makeRes(),
+    primaryConfig: makeConfig('parent', [
+      { from: 'parent', to: targetId, edgeType: 'handoff' as const },
+    ]),
+    allowedProviders: new Set(['openAI']),
+    getEndpointModels: async () => ({ openAI: ['gpt-4o'] }),
+    loadTools: jest.fn(),
+  });
+  const deps = () => ({
+    getAgent: jest.fn(),
+    checkPermission: jest.fn(),
+    logViolation: jest.fn(),
+    db: {} as never,
+  });
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockValidateAgentModel.mockResolvedValue({ isValid: true });
+    mockInitializeAgent.mockImplementation(async ({ agent }: { agent: Agent }) =>
+      makeConfig(agent.id),
+    );
+  });
+  test('resolves an app handoff from effective config without a database agent or synthetic ACL', async () => {
+    const dependencies = deps();
+    const result = await discoverConnectedAgents(params(), dependencies);
+    expect(result.agentConfigs.has(targetId)).toBe(true);
+    expect(result.edges).toEqual([{ from: 'parent', to: targetId, edgeType: 'handoff' }]);
+    expect(dependencies.getAgent).not.toHaveBeenCalled();
+    expect(dependencies.checkPermission).not.toHaveBeenCalled();
+    expect(mockInitializeAgent.mock.calls[0][0].agent.instructions).toBe('Specialist instructions');
+  });
+  test('resolves a preset skill allowlist only within the caller-accessible catalog', async () => {
+    const options = params();
+    const preset = options.req.config?.modelSpecs?.list?.[0];
+    if (!preset) throw new Error('Missing test preset');
+    preset.skills = ['allowed', 'inaccessible'];
+    const skillId = new Types.ObjectId();
+    const getSkillByName = jest.fn(async (name: string) =>
+      name === 'allowed' ? { _id: skillId } : null,
+    );
+    const dependencies = { ...deps(), db: { getSkillByName } as never };
+    await discoverConnectedAgents(
+      { ...options, computeAccessibleSkillIds: () => [skillId] },
+      dependencies,
+    );
+    expect(getSkillByName).toHaveBeenCalledWith('inaccessible', [skillId], {
+      preferModelInvocable: true,
+    });
+    expect(mockInitializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accessibleSkillIds: [skillId],
+        agent: expect.objectContaining({ skills: [skillId.toString()] }),
+      }),
+      expect.anything(),
+    );
+  });
+  test('does not turn app model spec visibility into remote-agent access', async () => {
+    const dependencies = deps();
+    const result = await discoverConnectedAgents(
+      { ...params(), resourceType: ResourceType.REMOTE_AGENT },
+      dependencies,
+    );
+    expect(result.agentConfigs.size).toBe(0);
+    expect(result.edges).toEqual([]);
+    expect(result.skippedAgentIds.has(targetId)).toBe(true);
+    expect(mockInitializeAgent).not.toHaveBeenCalled();
   });
 });

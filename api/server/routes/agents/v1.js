@@ -1,5 +1,5 @@
 const express = require('express');
-const { generateCheckAccess } = require('@librechat/api');
+const { generateCheckAccess, listModelSpecHandoffs } = require('@librechat/api');
 const { PermissionTypes, Permissions, PermissionBits } = require('librechat-data-provider');
 const { configMiddleware, canAccessAgentResource } = require('~/server/middleware');
 const v1 = require('~/server/controllers/agents/v1');
@@ -40,6 +40,7 @@ router.use('/:agentId/channels', channels);
  * @route GET /agents/categories
  */
 router.get('/categories', v1.getAgentCategories);
+router.get('/handoff-targets', checkAgentAccess, configMiddleware, listModelSpecHandoffs);
 /**
  * Creates an agent.
  * @route POST /agents
