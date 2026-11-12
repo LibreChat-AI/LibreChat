@@ -1,5 +1,5 @@
 const { logger, runAsSystem } = require('@librechat/data-schemas');
-const { createBackchannelLogoutHandlers } = require('@librechat/api');
+const { createBackchannelLogoutHandlers, math, getHttpsProxyAgent } = require('@librechat/api');
 const { getOpenIdConfig } = require('~/strategies/openidStrategy');
 const {
   getBackchannelLogoutConfig,
@@ -12,6 +12,8 @@ const { requireBackchannelLogoutEnabled, parseBackchannelLogoutBody, handleBackc
     getConfig: getBackchannelLogoutConfig,
     getClient: getProviderSessionClient,
     getJwksUri: () => getOpenIdConfig().serverMetadata().jwks_uri,
+    getCacheMaxAgeMs: () => math(process.env.OPENID_JWKS_URL_CACHE_TIME, 60000),
+    getRequestAgent: getHttpsProxyAgent,
     revokeProviderSession: (data) => runAsSystem(() => revokeProviderSession(data)),
     logger,
   });

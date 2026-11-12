@@ -42,8 +42,7 @@ describe('OpenID authentication publication settlement', () => {
       storeOpenIDSession: jest.fn().mockResolvedValue(undefined),
       assertOpenIDRefreshFlightAvailable: jest.fn().mockResolvedValue(true),
       setOpenIDAuthTokens: jest.fn(() => 'app-token'),
-      math: jest.fn((_value: string | undefined, fallback: number) => fallback),
-      defaultRefreshTokenExpiry: 1000 * 60 * 60 * 24 * 90,
+      getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
       providerSessionAuthorizer: {
         establish: jest.fn().mockResolvedValue({ ok: true }),
         authorize: jest.fn().mockResolvedValue({ ok: true }),
@@ -150,6 +149,19 @@ describe('OpenID authentication publication settlement', () => {
     await expect(service.sendOpenIDAuthResponse(input)).resolves.toBe('app-token');
     expect(deps.completeOpenIDRefreshFlight).toHaveBeenCalledTimes(1);
     expect(deps.failOpenIDRefreshFlight).not.toHaveBeenCalled();
+  });
+
+  it('derives the provider-session expiry from the injected refresh-token-expiry getter', async () => {
+    const { deps, service, input } = setup();
+    deps.getRefreshTokenExpiryMs.mockReturnValue(5000);
+    const before = Date.now();
+
+    await expect(service.sendOpenIDAuthResponse(input)).resolves.toBe('app-token');
+
+    expect(deps.getRefreshTokenExpiryMs).toHaveBeenCalled();
+    const { expiresAt } = deps.providerSessionAuthorizer.authorize.mock.calls[0][0];
+    expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + 5000);
+    expect(expiresAt.getTime()).toBeLessThan(before + 5000 + 1000);
   });
 
   describe('with a stale token set left in the Express session', () => {
@@ -313,8 +325,7 @@ describe('sendOpenIDAuthResponse: provider-session denial after a successful gra
       storeOpenIDSession: jest.fn().mockResolvedValue(undefined),
       assertOpenIDRefreshFlightAvailable: jest.fn().mockResolvedValue(true),
       setOpenIDAuthTokens: jest.fn(() => 'app-token'),
-      math: jest.fn((_value: string | undefined, fallback: number) => fallback),
-      defaultRefreshTokenExpiry: 1000 * 60 * 60 * 24 * 90,
+      getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
       providerSessionAuthorizer: {
         establish: jest.fn().mockResolvedValue({ ok: true }),
         authorize: jest.fn().mockResolvedValue({ ok: false }),
@@ -426,8 +437,7 @@ describe('OpenID refresh bridge recovery: provider session while mode is off', (
       storeOpenIDSession: jest.fn().mockResolvedValue(undefined),
       assertOpenIDRefreshFlightAvailable: jest.fn().mockResolvedValue(true),
       setOpenIDAuthTokens: jest.fn(() => 'app-token'),
-      math: jest.fn((_value: string | undefined, fallback: number) => fallback),
-      defaultRefreshTokenExpiry: 1000 * 60 * 60 * 24 * 90,
+      getRefreshTokenExpiryMs: jest.fn(() => 1000 * 60 * 60 * 24 * 90),
       providerSessionAuthorizer: {
         establish: jest.fn().mockResolvedValue({ ok: true }),
         authorize: jest.fn().mockResolvedValue({ ok: true }),

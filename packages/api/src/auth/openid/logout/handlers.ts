@@ -4,6 +4,7 @@ import type {
   ProviderSessionRevokeResult,
 } from '@librechat/data-schemas';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import type { Agent } from 'http';
 import type { ResolvedBackchannelLogoutConfig } from '../providerSession/config';
 import type { BackchannelLogoutClient } from './receiver';
 import type { LogoutTokenKeyResolver } from './token';
@@ -12,6 +13,10 @@ import { isBackchannelLogoutEnabled, receiveBackchannelLogout } from './receiver
 import { createLogoutBodyParser } from './bodyParser';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { createLogoutJwksKeyResolver } from './jwks';
+
+/** `OPENID_JWKS_URL_CACHE_TIME`'s own default; reproduced here only as this factory's fallback
+ *  when a caller omits `getCacheMaxAgeMs` (reads the env var itself, if any). */
+const DEFAULT_JWKS_CACHE_MAX_AGE_MS = 60000;
 
 export interface BackchannelLogoutRequestState {
   config: ResolvedBackchannelLogoutConfig;
@@ -27,6 +32,11 @@ export interface CreateBackchannelLogoutHandlersOptions {
   getClient: () => BackchannelLogoutClient | null;
   /** Builds the JWKS-backed resolver once, at factory construction; ignored when `resolveKey` is given. */
   getJwksUri?: () => string;
+  /** Cache TTL for the JWKS resolver built from `getJwksUri`; defaults to 60 seconds. Ignored
+   *  when `resolveKey` is given. */
+  getCacheMaxAgeMs?: () => number;
+  /** Proxy agent for the JWKS resolver built from `getJwksUri`. Ignored when `resolveKey` is given. */
+  getRequestAgent?: (uri: string) => Agent | undefined;
   resolveKey?: LogoutTokenKeyResolver;
   revokeProviderSession: (
     data: ProviderSessionOperationData,
@@ -58,6 +68,8 @@ export function createBackchannelLogoutHandlers(
         }
         return deps.getJwksUri();
       },
+      getCacheMaxAgeMs: deps.getCacheMaxAgeMs ?? (() => DEFAULT_JWKS_CACHE_MAX_AGE_MS),
+      getRequestAgent: deps.getRequestAgent,
     });
 
   async function requireBackchannelLogoutEnabled(
