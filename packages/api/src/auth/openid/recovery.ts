@@ -1068,10 +1068,13 @@ export function createOpenIDRefreshRecoveryService(
       openidIssuer: acceptedSessionIdentity.openidIssuer,
     };
     let resolvedProviderSession: ProviderSessionRef | null | undefined;
-    if (providerSession !== undefined) {
-      resolvedProviderSession = providerSession;
-    } else if (usesAdvancedSession) {
+    if (usesAdvancedSession) {
+      /** The adopted session owns this publication, so its own provider-session binding wins
+       *  over a stale request's explicit ref — otherwise a live old SID could authorize
+       *  publication of tokens bound to a session it never belonged to. */
       resolvedProviderSession = currentSessionTokens?.providerSession ?? null;
+    } else if (providerSession !== undefined) {
+      resolvedProviderSession = providerSession;
     } else {
       resolvedProviderSession =
         tokenset.providerSession ?? deriveProviderSessionFromClaims(tokenset);

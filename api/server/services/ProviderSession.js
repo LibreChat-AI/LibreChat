@@ -23,6 +23,7 @@ const {
   },
   getAppConfig,
   getOpenIdClient: getOpenIdConfig,
+  getClientId: () => process.env.OPENID_CLIENT_ID,
   logger,
 });
 

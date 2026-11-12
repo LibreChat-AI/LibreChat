@@ -9,16 +9,6 @@ function makeMethods() {
   return { establish: jest.fn(), authorize: jest.fn(), revoke: jest.fn() };
 }
 
-const ORIGINAL_CLIENT_ID = process.env.OPENID_CLIENT_ID;
-
-afterEach(() => {
-  if (ORIGINAL_CLIENT_ID === undefined) {
-    delete process.env.OPENID_CLIENT_ID;
-  } else {
-    process.env.OPENID_CLIENT_ID = ORIGINAL_CLIENT_ID;
-  }
-});
-
 describe('createProviderSessionService', () => {
   it('memoizes getProviderSessionAuthorizer and the config load behind it', async () => {
     const getAppConfig = jest
@@ -28,6 +18,7 @@ describe('createProviderSessionService', () => {
       methods: makeMethods(),
       getAppConfig,
       getOpenIdClient: jest.fn(),
+      getClientId: jest.fn(),
       logger: makeLogger(),
     });
 
@@ -52,6 +43,7 @@ describe('createProviderSessionService', () => {
       methods: makeMethods(),
       getAppConfig,
       getOpenIdClient: jest.fn(),
+      getClientId: jest.fn(),
       logger: makeLogger(),
     });
 
@@ -68,6 +60,7 @@ describe('createProviderSessionService', () => {
       methods: makeMethods(),
       getAppConfig,
       getOpenIdClient: jest.fn(),
+      getClientId: jest.fn(),
       logger,
     });
 
@@ -79,12 +72,12 @@ describe('createProviderSessionService', () => {
   });
 
   describe('getProviderSessionClient', () => {
-    it('is null when OPENID_CLIENT_ID is not set', () => {
-      delete process.env.OPENID_CLIENT_ID;
+    it('is null when the client ID getter returns undefined', () => {
       const service = createProviderSessionService({
         methods: makeMethods(),
         getAppConfig: jest.fn(),
         getOpenIdClient: jest.fn(),
+        getClientId: () => undefined,
         logger: makeLogger(),
       });
 
@@ -92,7 +85,6 @@ describe('createProviderSessionService', () => {
     });
 
     it('is null when the OpenID client has not been initialized', () => {
-      process.env.OPENID_CLIENT_ID = 'librechat';
       const getOpenIdClient = jest.fn(() => {
         throw new Error('OpenID client is not initialized');
       });
@@ -100,6 +92,7 @@ describe('createProviderSessionService', () => {
         methods: makeMethods(),
         getAppConfig: jest.fn(),
         getOpenIdClient,
+        getClientId: () => 'librechat',
         logger: makeLogger(),
       });
 
@@ -107,12 +100,12 @@ describe('createProviderSessionService', () => {
     });
 
     it('is null when the configured client reports no issuer', () => {
-      process.env.OPENID_CLIENT_ID = 'librechat';
       const openidClient: OpenIdIssuerSource = { serverMetadata: () => undefined };
       const service = createProviderSessionService({
         methods: makeMethods(),
         getAppConfig: jest.fn(),
         getOpenIdClient: () => openidClient,
+        getClientId: () => 'librechat',
         logger: makeLogger(),
       });
 
@@ -120,12 +113,13 @@ describe('createProviderSessionService', () => {
     });
 
     it('returns the normalized issuer and configured client id', () => {
-      process.env.OPENID_CLIENT_ID = 'librechat';
       const openidClient: OpenIdIssuerSource = { issuer: 'https://idp.example.com/' };
+      const getClientId = jest.fn(() => 'librechat');
       const service = createProviderSessionService({
         methods: makeMethods(),
         getAppConfig: jest.fn(),
         getOpenIdClient: () => openidClient,
+        getClientId,
         logger: makeLogger(),
       });
 
@@ -133,6 +127,7 @@ describe('createProviderSessionService', () => {
         issuer: 'https://idp.example.com',
         clientId: 'librechat',
       });
+      expect(getClientId).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -143,6 +138,7 @@ describe('createProviderSessionService', () => {
       methods,
       getAppConfig: jest.fn(),
       getOpenIdClient: jest.fn(),
+      getClientId: jest.fn(),
       logger: makeLogger(),
     });
 
