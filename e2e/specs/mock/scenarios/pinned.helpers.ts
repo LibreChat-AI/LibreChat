@@ -105,10 +105,6 @@ export async function removePins(pins: SeededPin[]): Promise<void> {
   await deleteConversations(pins.map((pin) => pin.conversationId));
 }
 
-/** Resolves once the page has run the animation frame after this call. */
-const nextAnimationFrame = (page: Page): Promise<void> =>
-  page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
-
 /**
  * Drags one row onto a point inside another and releases there.
  *
@@ -157,14 +153,12 @@ export async function dragRowOnto(
    *  be rendering the previous one; a real hand keeps sending events. These
    *  repeats are that, bounded.
    *
-   *  react-dnd delivers hover once per animation frame, and judges the release
-   *  against the offset the last delivered hover recorded. Every move here can
-   *  land inside a single frame, which leaves the release judged against where
-   *  the pointer was a frame earlier: short of the row's midpoint, and so no
-   *  swap. Each repeat therefore waits for the frame that delivers it. */
+   *  react-dnd delivers hover once per animation frame, so these moves and the
+   *  release can all land inside one frame, before any hover has seen the final
+   *  position. The drop handler settles that position itself; releasing without
+   *  waiting for a frame keeps that fast-release path under test. */
   for (let settle = 0; settle < 3; settle += 1) {
     await page.mouse.move(endX, endY + settle - 1, { steps: 2 });
-    await nextAnimationFrame(page);
   }
   await page.mouse.up();
 }
