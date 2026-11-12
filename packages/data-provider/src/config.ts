@@ -4667,6 +4667,16 @@ export const toolCallPreviewsConfigSchema = z.object({
 
 export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchema>;
 
+/** Regional role caching. Change streams must be enabled on the roles collection. */
+export const roleCacheConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Keep bounded caching but stop watchers during staged rollout or source failures. */
+  changeStreamsEnabled: z.boolean().default(true),
+  ttlMs: z.number().int().min(1000).max(300_000).default(60_000),
+  retryDelayMs: z.number().int().min(100).max(60_000).default(1000),
+  maxAwaitTimeMs: z.number().int().min(100).max(5000).default(1000),
+});
+
 export const persistenceConfigSchema = z
   .object({
     favorites: z.enum(['mongo', 'postgres']).default('mongo'),
@@ -4707,6 +4717,7 @@ export const configSchema = z.object({
     })
     .optional(),
   cache: z.boolean().default(true),
+  roleCache: roleCacheConfigSchema.optional(),
   projects: chatProjectsConfigSchema,
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
