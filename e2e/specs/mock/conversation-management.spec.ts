@@ -297,7 +297,10 @@ test.describe('conversation management', () => {
     await expect(page.getByRole('button', { name: 'Stop generating' })).toBeVisible();
     const conversationUrl = page.url();
     await openSidebar(page);
-    await page.getByRole('link', { name: 'New chat', exact: true }).click();
+    await page
+      .locator('#mobile-drawer')
+      .getByRole('link', { name: 'New chat', exact: true })
+      .click();
     await expect(page).toHaveURL(/\/c\/new$/);
     await expect(page.locator('#mobile-drawer')).toHaveCSS('visibility', 'hidden');
     await openSidebar(page);
