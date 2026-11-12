@@ -98,8 +98,10 @@ describe('Fork', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
-    fireEvent.click(await screen.findByRole('checkbox', { name: 'com_ui_fork_exclude_files' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_visible' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_fork_more_options' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'com_ui_fork_exclude_files' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'com_ui_fork_mode_visible' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork' }));
 
     expect(forkConversation).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -111,6 +113,68 @@ describe('Fork', () => {
     );
   });
 
+  it('shows and sends the "From here on" scope when it is the stored preference', async () => {
+    render(
+      <ForkHost forkConversation={forkConversation} defaults={{ splitAtTarget: true }}>
+        <Fork
+          messageId="assistant-1"
+          conversationId="convo-1"
+          forkingSupported={true}
+          getLatestMessageId={() => 'assistant-9'}
+        />
+      </ForkHost>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
+    const after = await screen.findByRole('radio', { name: 'com_ui_fork_scope_after' });
+    expect(after).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork' }));
+
+    expect(forkConversation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ splitAtTarget: true, latestMessageId: 'assistant-9' }),
+      expect.anything(),
+    );
+  });
+
+  it('keeps the advanced options collapsed until asked for', async () => {
+    render(
+      <ForkHost forkConversation={forkConversation}>
+        <Fork messageId="assistant-1" conversationId="convo-1" forkingSupported={true} />
+      </ForkHost>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
+    const toggle = await screen.findByRole('button', { name: 'com_ui_fork_more_options' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('checkbox', { name: 'com_ui_fork_exclude_files' })).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('opens the extra options on a collapsing region, turning the chevron with it', async () => {
+    render(
+      <ForkHost forkConversation={forkConversation}>
+        <Fork messageId="assistant-1" conversationId="convo-1" forkingSupported={true} />
+      </ForkHost>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
+    const toggle = await screen.findByRole('button', { name: 'com_ui_fork_more_options' });
+    const chevron = toggle.querySelector('svg');
+    const region = document.getElementById(toggle.getAttribute('aria-controls') ?? '');
+
+    expect(region).toHaveAttribute('aria-hidden', 'true');
+    expect(region).toHaveAttribute('inert');
+    expect(region).toHaveClass('grid-rows-[0fr]');
+    expect(chevron).not.toHaveClass('rotate-180');
+
+    fireEvent.click(toggle);
+    expect(region).not.toHaveAttribute('aria-hidden');
+    expect(region).not.toHaveAttribute('inert');
+    expect(region).toHaveClass('grid-rows-[1fr]');
+    expect(chevron).toHaveClass('rotate-180');
+  });
+
   it('keeps files by default', async () => {
     render(
       <ForkHost forkConversation={forkConversation}>
@@ -119,7 +183,7 @@ describe('Fork', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_fork_visible' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_fork' }));
 
     const calls = forkConversation.mock.calls;
     expect(calls[calls.length - 1]?.[0]).not.toHaveProperty('excludeFiles');
@@ -133,7 +197,7 @@ describe('Fork', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_fork_visible' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_fork' }));
     expect(mockShowToast).toHaveBeenLastCalledWith(
       expect.objectContaining({ message: 'com_ui_fork_processing' }),
     );
