@@ -15,6 +15,7 @@ const {
   createSingleFlight,
   createRegionalRoleCache,
   reportRoleCacheError,
+  shouldSweepMemoryCaches,
 } = require('@librechat/api');
 
 /** No-op store for cache namespaces that are deliberately disabled. */
@@ -179,7 +180,7 @@ async function clearAllExpiredFromCache() {
   }
 }
 
-if (!cacheConfig.USE_REDIS && !cacheConfig.CI) {
+if (shouldSweepMemoryCaches(cacheConfig)) {
   /** @type {Set<NodeJS.Timeout>} */
   const cleanupIntervals = new Set();
 

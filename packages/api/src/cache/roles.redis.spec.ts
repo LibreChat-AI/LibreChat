@@ -68,7 +68,7 @@ integration(
       );
 
       for (let region = 0; region < 3; region++) {
-        const adapter = new KeyvRedis(urls[region], { throwOnErrors: true });
+        const adapter = new KeyvRedis(urls[region]);
         adapters.push(adapter);
         const base = new Keyv({ store: adapter, namespace: `role-integration-${region}` });
         bases.push(base);
@@ -196,6 +196,29 @@ integration(
       // Restore the advertised runtime configuration; the short TTL above accelerates this failure test.
       caches[1].configure(config.ttlMs);
       expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('propagates a real Redis write rejection only after enabling regional caching', async () => {
+      const adapter = new KeyvRedis(urls[0]);
+      const base = new Keyv({ store: adapter, namespace: 'role-adapter-errors' });
+      // Production attaches an error listener; rejection must not depend on an unhandled event.
+      base.on('error', () => undefined);
+      const cache = createRegionalRoleCache({ cache: base, onError: jest.fn() });
+      await base.get('connect');
+      await adapter.client.configSet('maxmemory', '1');
+      try {
+        expect(await cache.set('legacy', {})).toBe(true);
+        expect(await base.get('legacy')).toBeUndefined();
+        cache.configure(config.ttlMs);
+        await expect(cache.invalidate()).rejects.toThrow();
+        await expect(cache.set('USER', {})).rejects.toThrow();
+        const read = await cache.snapshot!();
+        expect(read.primaryReads).toBe(true);
+        expect(await read.get('USER')).toBeUndefined();
+      } finally {
+        await adapter.client.configSet('maxmemory', '0');
+        await adapter.disconnect();
+      }
     });
 
     it('rejects a role update after its DB commit when regional invalidation fails', async () => {
