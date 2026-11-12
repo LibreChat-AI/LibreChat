@@ -17,6 +17,7 @@ import {
   createAppConfigService,
   createMessageBudgetReader,
   DEFAULT_OVERRIDE_CACHE_TTL,
+  BASE_OVERRIDE_SENTINEL,
   _resetOverrideStrictCache,
   getAppConfigOptionsFromUser,
 } from './service';
@@ -1104,6 +1105,43 @@ describe('createAppConfigService', () => {
       await getAppConfig({ role: 'USER' });
 
       expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+    });
+
+    it('caches empty result using sentinel to avoid storing full config duplicates', async () => {
+      const deps = createDeps({ getApplicableConfigs: jest.fn().mockResolvedValue([]) });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      await getAppConfig({ role: 'USER', userId: 'user-empty' });
+
+      const setCalls = deps._cache.set.mock.calls.filter(([key]: [string, unknown]) =>
+        key.includes('_OVERRIDE_'),
+      );
+      expect(setCalls).toHaveLength(1);
+      expect(setCalls[0][1]).toBe(BASE_OVERRIDE_SENTINEL);
+
+      const cached = await getAppConfig({ role: 'USER', userId: 'user-empty' });
+      expect(cached).toEqual(deps._baseConfig);
+      expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+    });
+
+    it('caches merged config object when overrides exist', async () => {
+      const deps = createDeps({
+        getApplicableConfigs: jest
+          .fn()
+          .mockResolvedValue([
+            { priority: 10, overrides: { interface: { modelSelect: false } }, isActive: true },
+          ]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      await getAppConfig({ role: 'ADMIN', userId: 'admin-override' });
+
+      const setCalls = deps._cache.set.mock.calls.filter(([key]: [string, unknown]) =>
+        key.includes('_OVERRIDE_'),
+      );
+      expect(setCalls).toHaveLength(1);
+      expect(setCalls[0][1]).not.toBe(BASE_OVERRIDE_SENTINEL);
+      expect(typeof setCalls[0][1]).toBe('object');
     });
 
     it('merges DB configs when found', async () => {
