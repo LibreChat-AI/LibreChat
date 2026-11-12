@@ -8,7 +8,14 @@ import {
   deleteConversations,
   deleteMessagesByConversation,
 } from '../db';
-import { MOCK_ENDPOINTS, selectMockEndpoint, sendMessage } from '../helpers';
+import {
+  MOCK_ENDPOINTS,
+  replyText,
+  replyPrompt,
+  sendMessage,
+  messagesView,
+  selectMockEndpoint,
+} from '../helpers';
 import { getE2EUser } from '../../../setup/user';
 import { expect, test } from '../fixtures';
 
@@ -173,8 +180,14 @@ async function deliverLateFile(
     });
 
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
-    const response = await sendMessage(page, `E2E_REPLY:late-file-${suffix}`);
+    const label = `late-file-${suffix}`;
+    const response = await sendMessage(page, replyPrompt(label));
     expect(response.ok()).toBeTruthy();
+    /** Stop is withheld from admission until the stream attaches, so its absence right after
+     *  the POST is not the end of the turn. The reply only arrives on that stream. */
+    await expect(messagesView(page).getByText(replyText(label), { exact: true })).toBeVisible({
+      timeout: 60_000,
+    });
     await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
       timeout: 60_000,
     });
