@@ -8,6 +8,7 @@
  */
 const http = require('http');
 const { randomUUID } = require('crypto');
+const { keepIdleConnections } = require('./keepalive');
 
 const PORT = Number(process.env.E2E_ASSISTANTS_PORT) || 8890;
 const DEFAULT_REPLY = process.env.E2E_ASSISTANTS_REPLY || 'E2E mock assistant reply: pong';
@@ -630,6 +631,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+keepIdleConnections(server);
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[e2e] fake assistants server listening on http://127.0.0.1:${PORT}`);
 });

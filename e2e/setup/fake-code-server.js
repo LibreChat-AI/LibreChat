@@ -22,6 +22,7 @@
 const http = require('http');
 const busboy = require('busboy');
 const { randomUUID } = require('crypto');
+const { keepIdleConnections } = require('./keepalive');
 
 const PORT = parseInt(process.env.E2E_CODE_API_PORT || '8790', 10);
 const HOST = '127.0.0.1';
@@ -344,6 +345,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
+keepIdleConnections(server);
 server.listen(PORT, HOST, () => {
   console.log(`[e2e] fake code API listening on http://${HOST}:${PORT}/v1`);
 });

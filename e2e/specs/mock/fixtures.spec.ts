@@ -105,3 +105,35 @@ test.describe('route removal', () => {
     expect(await readConfig(page)).not.toHaveProperty('answeredBy');
   });
 });
+
+/** The servers every mock profile starts, each at the route its readiness check probes. */
+const port = (name: string, fallback: string) => process.env[name] || fallback;
+const HARNESS_SERVERS = [
+  CONFIG_PATH,
+  `http://127.0.0.1:${port('E2E_LABEL_PORT', '8889')}/`,
+  `http://127.0.0.1:${port('E2E_ASSISTANTS_PORT', '8890')}/`,
+  `http://127.0.0.1:${port('E2E_FLUX_PORT', '8794')}/`,
+  `http://127.0.0.1:${port('E2E_CODE_API_PORT', '8790')}/health`,
+  `http://127.0.0.1:${port('E2E_RAG_API_PORT', '8791')}/health`,
+  `http://127.0.0.1:${port('E2E_MCP_HTTP_PORT', '8765')}/`,
+  `http://127.0.0.1:${port('E2E_MCP_OAUTH_PORT', '8767')}/`,
+  `https://localhost:${port('E2E_GIT_HOST_PORT', '8793')}/`,
+];
+
+test.describe('harness connections', () => {
+  /**
+   * Playwright's Node-side requests reuse idle sockets for as long as the worker lives, so a
+   * server that announces an idle deadline (`Keep-Alive: timeout=N`) and closes on it resets
+   * whichever request next reuses the socket at that moment (see `e2e/setup/keepalive.js`).
+   */
+  test('every harness server keeps idle connections open for the client to close', async ({
+    request,
+  }) => {
+    for (const url of HARNESS_SERVERS) {
+      const response = await request.get(url, { ignoreHTTPSErrors: true });
+      const headers = response.headers();
+      expect(headers.connection, url).toBe('keep-alive');
+      expect(headers['keep-alive'], url).toBeUndefined();
+    }
+  });
+});

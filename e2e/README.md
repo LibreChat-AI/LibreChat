@@ -139,6 +139,17 @@ handler in the middle of one throws `Route is already handled!` and fails the te
 first adds a route that matches nothing, which keeps the page intercepting: handlers already
 running answer their requests, and later requests reach the server.
 
+## Harness servers and idle connections
+
+Playwright sends `route.fetch()`, the `request` fixture and `page.request` through one keep-alive
+agent per worker that never closes an idle socket and ignores a server's `Keep-Alive: timeout=N`
+hint. A Node server closes an idle socket after `keepAliveTimeout` plus `keepAliveTimeoutBuffer`
+(6 s by default), so a request that reuses the socket at that moment fails with `read ECONNRESET`
+or `socket hang up`. The harness therefore runs LibreChat with `HTTP_KEEP_ALIVE_TIMEOUT_MS=0`, and
+every fixture server the mock profiles start as a `webServer` passes its server through `keepIdleConnections()` from
+`e2e/setup/keepalive.js`. A new fixture server that specs reach from Node does the same.
+`fixtures.spec.ts` checks that each harness server answers without an idle deadline.
+
 ## Property-based browser testing
 
 Bombadil explores randomized sequences across the core chat loop, message branches,
