@@ -1,6 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** A passing audit needs no traces: at roughly 45 MB a run they only pay off when a budget fails. */
+export function discardLighthouseTraces(directory: string): void {
+  for (const file of fs.existsSync(directory) ? fs.readdirSync(directory) : []) {
+    if (file.endsWith('.trace.json')) fs.rmSync(path.join(directory, file));
+  }
+}
+
 /** Keep measured traces, but never publish their raw network headers or session cookies. */
 export function sanitizeLighthouseArtifacts(
   directory: string,

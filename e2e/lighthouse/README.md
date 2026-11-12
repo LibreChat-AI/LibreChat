@@ -43,9 +43,9 @@ login page, spinner, or empty shell cannot pass.
 2. Open a `.lighthouse/lhr-*.report.html` report. The console also prints API request
    start/end times. A late request start suggests a browser dependency; a long
    request suggests server work or serial database reads.
-   Each audit saves its measured `.lighthouse/lhr-*-0.trace.json` for inspection in
-   Chrome's Performance panel. Raw network logs are removed and cookie values redacted
-   before upload. Failed audits also save `.lighthouse/startup.cpuprofile` from a separate navigation to
+   A failed audit keeps each run's measured `.lighthouse/lhr-*-0.trace.json` for
+   inspection in Chrome's Performance panel; a passing one discards them. Raw network
+   logs are removed and cookie values redacted before upload. Failed audits also save `.lighthouse/startup.cpuprofile` from a separate navigation to
    identify expensive startup functions, including three seconds after the transcript
    appears so later catalog callbacks are sampled. Profiling runs after the measured audits and
    does not change their metrics or budgets.

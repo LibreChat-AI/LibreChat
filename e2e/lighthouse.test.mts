@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 
 import { runLighthouse } from './lighthouse/process.mts';
-import { sanitizeLighthouseArtifacts } from './lighthouse/artifacts.mts';
+import { discardLighthouseTraces, sanitizeLighthouseArtifacts } from './lighthouse/artifacts.mts';
 
 test('Lighthouse retains measured trace timings without publishing network logs or cookies', async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), 'lighthouse-artifacts-'));
@@ -36,6 +36,15 @@ test('Lighthouse retains measured trace timings without publishing network logs 
   assert.equal(JSON.parse(trace).traceEvents[0].ts, 1231);
   assert.equal(JSON.parse(trace).traceEvents[0].dur, 51);
   assert.equal(await readFile(path.join(directory, 'lhr-1.report.html'), 'utf8'), '[redacted]');
+});
+
+test('a passing audit discards its traces and keeps its reports', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'lighthouse-traces-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(path.join(directory, 'lhr-1-0.trace.json'), '{}');
+  await writeFile(path.join(directory, 'lhr-1.report.json'), '{}');
+  discardLighthouseTraces(directory);
+  assert.deepEqual(await readdir(directory), ['lhr-1.report.json']);
 });
 
 for (const [failures, diagnostic, stderr] of [

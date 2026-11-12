@@ -4,6 +4,7 @@ import type { Page } from '@playwright/test';
 
 import { seedConversations, seedMessages } from '../specs/mock/db';
 import { getE2EUser } from '../setup/user';
+import { discardLighthouseTraces } from './artifacts.mts';
 import { auditPage, lcpElement } from './audit';
 
 const conversationId = '16390000-0000-4000-8000-000000000001';
@@ -82,4 +83,5 @@ test('serial database latency stays within web-vitals budgets', async ({ page, b
       'The measured LCP must be the seeded transcript, not the shell or a spinner',
     ).toContain(transcriptMarker);
   }
+  discardLighthouseTraces('.lighthouse');
 });
