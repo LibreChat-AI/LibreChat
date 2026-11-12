@@ -13,7 +13,7 @@ import {
   enableTwoFactorFlag,
   seedPasswordReset,
 } from '../db';
-import { closeContext, expect, test } from '../fixtures';
+import { closeContext, expect, test, unroute } from '../fixtures';
 import { NEW_CHAT_PATH } from '../helpers';
 import { getPrimaryE2EUser } from '../../../setup/users.mock';
 
@@ -503,7 +503,7 @@ test.describe('passkeys', () => {
       cappedDialog.getByText('You have reached the maximum number of passkeys'),
     ).toBeVisible();
 
-    await page.unroute('**/api/config');
+    await unroute(page, '**/api/config');
     await page.keyboard.press('Escape');
     await expect(cappedDialog).toBeHidden();
     await page

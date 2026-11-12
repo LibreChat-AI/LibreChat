@@ -1,5 +1,5 @@
 import { test as base } from '@playwright/test';
-import type { BrowserContext } from '@playwright/test';
+import type { BrowserContext, Page } from '@playwright/test';
 
 /**
  * Detaches every route on `context` and its pages, so a handler still running cannot fail the
@@ -32,6 +32,28 @@ export async function releaseRoutes(context: BrowserContext): Promise<void> {
 export async function closeContext(context: BrowserContext): Promise<void> {
   await releaseRoutes(context);
   await context.close();
+}
+
+/** No request goes to this host, so a route on it only keeps its page intercepting. */
+const IDLE_ROUTE = 'http://unrouted.invalid/**';
+
+/**
+ * Removes a route while the test is still running, in place of `page.unroute()`.
+ *
+ * When `page.unroute()` removes a page's last route, Playwright stops intercepting on that page
+ * and itself continues every request a handler is still working on. That handler's
+ * `route.fulfill()` or `route.continue()` then throws `Route is already handled!` inside the
+ * test, and the app gets the real response where the test expected the handler's. A handler is
+ * mid-request more often than a test can see: the app refetches on its own, and a response the
+ * test just released is still on its way out.
+ *
+ * A route that matches nothing goes in first, so the page never runs out of routes: handlers
+ * already running answer their requests, and only later requests skip the removed route. The idle
+ * route leaves with the rest at teardown.
+ */
+export async function unroute(page: Page, ...route: Parameters<Page['unroute']>): Promise<void> {
+  await page.route(IDLE_ROUTE, (idle) => idle.fallback());
+  await page.unroute(...route);
 }
 
 /**

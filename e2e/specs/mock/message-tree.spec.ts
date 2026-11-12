@@ -9,6 +9,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from './helpers';
+import { unroute } from './fixtures';
 
 const NO_PARENT = '00000000-0000-0000-0000-000000000000';
 
@@ -1268,7 +1269,7 @@ test.describe('message tree stream operations', () => {
     await expect(page.getByRole('textbox', { name: 'Message input' })).toBeEnabled({
       timeout: 30000,
     });
-    await page.unroute('**/api/agents/chat**', failGenerationStart);
+    await unroute(page, '**/api/agents/chat**', failGenerationStart);
 
     await sendAndExpectReply(page, afterFailurePrompt, afterFailureReply);
     const messages = await waitForMessages(
