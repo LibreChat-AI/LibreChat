@@ -1,16 +1,18 @@
 import { useState, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { Spinner } from '@librechat/client';
 import { useParams } from 'react-router-dom';
 import type { TSkillListResponse } from 'librechat-data-provider';
-import { useLocalize, useDebounce, useNavScrolling } from '~/hooks';
+import { PanelContent, ListLoading } from '~/components/ui';
 import SkillListSkeleton from '../lists/SkillListSkeleton';
 import { useSkillsInfiniteQuery } from '~/data-provider';
+import { useDebounce, useNavScrolling } from '~/hooks';
 import SkillListPanel from '../lists/SkillList';
-import { PanelContent } from '~/components/ui';
 import FilterSkills from './FilterSkills';
 import { cn } from '~/utils';
 import store from '~/store';
+
+/** A first page that fills a tall panel, so opening it does not immediately fetch a second one to fill the gap. */
+const PAGE_SIZE = 50;
 
 interface SkillsSidePanelProps {
   className?: string;
@@ -22,13 +24,15 @@ interface SkillsSidePanelProps {
  */
 
 export default function SkillsSidePanel({ className }: SkillsSidePanelProps) {
-  const localize = useLocalize();
   const { skillId: activeSkillId } = useParams();
   const [searchTerm, setSearchTerm] = useState('');
   const [sectionOpen, setSectionOpen] = useState(true);
   const debouncedSearch = useDebounce(searchTerm, 250);
 
-  const listQuery = useSkillsInfiniteQuery({ search: debouncedSearch || undefined, limit: 20 });
+  const listQuery = useSkillsInfiniteQuery({
+    search: debouncedSearch || undefined,
+    limit: PAGE_SIZE,
+  });
 
   const pages = useMemo(() => listQuery.data?.pages ?? [], [listQuery.data]);
   const skills = useMemo(() => pages.flatMap((page) => page.skills), [pages]);
@@ -69,14 +73,7 @@ export default function SkillsSidePanel({ className }: SkillsSidePanelProps) {
           onSectionOpenChange={setSectionOpen}
         />
         {/* Appending the next page, so the loaded rows stay put */}
-        {listQuery.isFetchingNextPage && (
-          <div className="flex shrink-0 justify-center py-2">
-            <Spinner className="size-4" />
-            <span className="sr-only" aria-live="polite" aria-atomic="true">
-              {localize('com_ui_loading')}
-            </span>
-          </div>
-        )}
+        {listQuery.isFetchingNextPage && <ListLoading />}
       </PanelContent>
     </div>
   );

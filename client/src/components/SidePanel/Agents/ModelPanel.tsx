@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { RotateCcw } from 'lucide-react';
 import { Alert, Button, ControlCombobox } from '@librechat/client';
 import { useFormContext, useWatch, Controller } from 'react-hook-form';
@@ -132,9 +132,12 @@ export default function ModelPanel({
     setValue(`model_parameters.${optionKey}`, value);
   };
 
+  /** Remounting the icon with a new key replays its one-turn spin on every press. */
+  const [resetCount, setResetCount] = useState(0);
   const handleResetParameters = () => {
     setValue('model_parameters', {} as t.AgentModelParameters);
     announcePolite({ message: localize('com_ui_model_parameters_reset'), isStatus: true });
+    setResetCount((count) => count + 1);
   };
 
   return (
@@ -301,7 +304,15 @@ export default function ModelPanel({
         onClick={handleResetParameters}
         className="text-text-secondary hover:bg-surface-secondary mt-2 h-9 w-full rounded-xl font-medium"
       >
-        <RotateCcw className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+        <RotateCcw
+          key={resetCount}
+          className={cn(
+            'h-4 w-4 motion-reduce:animate-none',
+            resetCount > 0 && 'animate-reset-spin',
+          )}
+          strokeWidth={1.75}
+          aria-hidden="true"
+        />
         {localize('com_ui_reset_var', { 0: localize('com_ui_model_parameters') })}
       </Button>
     </div>

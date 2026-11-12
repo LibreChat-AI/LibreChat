@@ -1,6 +1,6 @@
 import { Globe } from 'lucide-react';
-import { Button, Spinner } from '@librechat/client';
 import { useWatch, useFormContext } from 'react-hook-form';
+import { Button, Spinner, TooltipAnchor } from '@librechat/client';
 import {
   SystemRoles,
   Permissions,
@@ -85,54 +85,66 @@ export default function AgentFooter({
         </div>
       )}
       {user?.role === SystemRoles.ADMIN && showButtons && <AdminSettings />}
-      {/* Context Button */}
-      <div className="flex items-center justify-end gap-2">
-        {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canDeleteThisAgent) &&
-          !permissionsLoading && (
-            <DeleteButton
-              agent_id={agent_id}
-              setCurrentAgentId={setCurrentAgentId}
-              createMutation={createMutation}
-            />
-          )}
-        {(agent?.author === user?.id || isAdmin || canShareThisAgent) &&
-          (hasAccessToShareAgents || isAdmin) &&
-          !permissionsLoading && (
-            <GenericGrantAccessDialog
-              resourceDbId={agent?._id}
-              resourceId={agent_id}
-              resourceName={agent?.name ?? ''}
-              resourceType={ResourceType.AGENT}
-            />
-          )}
-        {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canShareRemoteAgent) &&
-          hasAccessToShareRemoteAgents &&
-          !remotePermissionsLoading &&
-          agent?._id && (
-            <GenericGrantAccessDialog
-              resourceDbId={agent?._id}
-              resourceId={agent_id}
-              resourceName={agent?.name ?? ''}
-              resourceType={ResourceType.REMOTE_AGENT}
-            >
-              <Button
-                variant="outline"
-                size="dense"
-                type="button"
-                aria-label={localize('com_ui_remote_access')}
-                title={localize('com_ui_remote_access')}
-                className="h-9 w-auto"
+      <div className="flex items-center gap-2">
+        {/* Secondary actions share one group so they read as a set beside the primary Save. */}
+        <div
+          role="group"
+          aria-label={localize('com_ui_agent_actions')}
+          className="flex shrink-0 items-center gap-1.5"
+        >
+          {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canDeleteThisAgent) &&
+            !permissionsLoading && (
+              <DeleteButton
+                agent_id={agent_id}
+                setCurrentAgentId={setCurrentAgentId}
+                createMutation={createMutation}
+              />
+            )}
+          {(agent?.author === user?.id || isAdmin || canShareThisAgent) &&
+            (hasAccessToShareAgents || isAdmin) &&
+            !permissionsLoading && (
+              <GenericGrantAccessDialog
+                resourceDbId={agent?._id}
+                resourceId={agent_id}
+                resourceName={agent?.name ?? ''}
+                resourceType={ResourceType.AGENT}
+              />
+            )}
+          {(agent?.author === user?.id ||
+            user?.role === SystemRoles.ADMIN ||
+            canShareRemoteAgent) &&
+            hasAccessToShareRemoteAgents &&
+            !remotePermissionsLoading &&
+            agent?._id && (
+              <GenericGrantAccessDialog
+                resourceDbId={agent?._id}
+                resourceId={agent_id}
+                resourceName={agent?.name ?? ''}
+                resourceType={ResourceType.REMOTE_AGENT}
               >
-                <Globe className="h-4 w-4" aria-hidden="true" />
-              </Button>
-            </GenericGrantAccessDialog>
-          )}
-        {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canEditThisAgent) &&
-          !permissionsLoading && <DuplicateAgent agent_id={agent_id} />}
+                <TooltipAnchor
+                  description={localize('com_ui_remote_access')}
+                  render={
+                    <Button
+                      variant="outline"
+                      size="dense"
+                      type="button"
+                      aria-label={localize('com_ui_remote_access')}
+                      className="h-9 w-auto"
+                    >
+                      <Globe className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  }
+                />
+              </GenericGrantAccessDialog>
+            )}
+          {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canEditThisAgent) &&
+            !permissionsLoading && <DuplicateAgent agent_id={agent_id} />}
+        </div>
         {/* Submit Button */}
         <Button
           variant="submit"
-          className="h-9 w-full font-semibold"
+          className="h-9 min-w-0 flex-1 font-semibold"
           type="submit"
           disabled={isSaving}
           aria-busy={isSaving}

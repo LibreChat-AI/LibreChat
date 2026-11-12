@@ -154,9 +154,13 @@ export default function VersionItem({
               )}
             </div>
             {versionName && (
-              <span className="text-text-secondary mt-0.5 truncate text-xs" title={versionName}>
-                {versionName}
-              </span>
+              <TooltipAnchor
+                description={versionName}
+                tabIndex={-1}
+                render={
+                  <span className="text-text-secondary mt-0.5 truncate text-xs">{versionName}</span>
+                }
+              />
             )}
           </div>
           {!isActive && (

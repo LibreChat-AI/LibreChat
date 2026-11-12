@@ -357,17 +357,11 @@ function SelectedSection({
   onRemove,
 }: SelectedSectionProps) {
   const localize = useLocalize();
-  const badge = items.length > 0 ? String(items.length) : undefined;
   return (
     <div className="mb-3 flex flex-col">
       <div className="mb-1 flex items-center justify-between">
         <label className="text-text-secondary text-2xs block font-medium tracking-wide uppercase">
           {title}
-          {badge != null && (
-            <span className="bg-surface-tertiary text-text-secondary text-3xs ms-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1.5 font-medium tracking-normal normal-case">
-              {badge}
-            </span>
-          )}
         </label>
         <button
           type="button"

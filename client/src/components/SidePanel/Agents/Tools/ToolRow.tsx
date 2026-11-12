@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
-import { Button } from '@librechat/client';
 import { Info, Settings, X } from 'lucide-react';
+import { Button, TooltipAnchor } from '@librechat/client';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { AgentItem } from './items/types';
 import { hasConfigurableSettings } from './items/configurable';
@@ -78,32 +78,44 @@ function ToolRowImpl({ item, onInfo, onRemove }: Props) {
           'no-touch:opacity-0 group-focus-within:opacity-100 group-hover:opacity-100',
         )}
       >
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          onClick={() => onInfo(item)}
-          aria-label={
+        <TooltipAnchor
+          description={
             configurable ? localize('com_ui_tools_configure') : localize('com_ui_tools_info')
           }
-          className={cn(
-            'text-text-secondary rounded-md',
-            'hover:text-text-secondary focus-visible:opacity-100',
-          )}
-        >
-          <DetailIcon className="size-3.5" aria-hidden="true" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          onClick={() => onRemove(item)}
-          aria-label={localize('com_ui_tools_remove')}
-          className={cn(
-            'text-text-secondary rounded-md',
-            'hover:text-text-secondary focus-visible:opacity-100',
-          )}
-        >
-          <X className="size-3.5" aria-hidden="true" />
-        </Button>
+          render={
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => onInfo(item)}
+              aria-label={
+                configurable ? localize('com_ui_tools_configure') : localize('com_ui_tools_info')
+              }
+              className={cn(
+                'text-text-secondary rounded-md',
+                'hover:text-text-secondary focus-visible:opacity-100',
+              )}
+            >
+              <DetailIcon className="size-3.5" aria-hidden="true" />
+            </Button>
+          }
+        />
+        <TooltipAnchor
+          description={localize('com_ui_tools_remove')}
+          render={
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => onRemove(item)}
+              aria-label={localize('com_ui_tools_remove')}
+              className={cn(
+                'text-text-secondary rounded-md',
+                'hover:text-text-secondary focus-visible:opacity-100',
+              )}
+            >
+              <X className="size-3.5" aria-hidden="true" />
+            </Button>
+          }
+        />
       </div>
     </div>
   );
