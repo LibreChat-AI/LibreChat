@@ -544,7 +544,7 @@ export default defineConfig({
   use: {
     baseURL,
     video: 'on-first-retry',
-    trace: 'retain-on-failure',
+    trace: 'on-first-retry',
     ignoreHTTPSErrors: true,
     headless: true,
     storageState: path.resolve(process.cwd(), 'e2e/storageState.json'),
