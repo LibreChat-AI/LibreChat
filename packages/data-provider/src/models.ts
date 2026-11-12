@@ -48,6 +48,8 @@ export type TModelSpec = {
    * Defaults to true (listed).
    */
   showInMenu?: boolean;
+  /** Offer this preset as a handoff target, independently of model-menu visibility. */
+  handoff?: boolean;
   iconURL?: string | EModelEndpoint; // Allow using project-included icons
   authType?: AuthType;
   /** Hide the chat input tool badge row while this model spec is active. */
@@ -213,6 +215,7 @@ export const tModelSpecSchema = z.object({
   showOnLanding: z.boolean().optional(),
   conversation_starters: z.array(z.string()).optional(),
   showInMenu: z.boolean().optional(),
+  handoff: z.boolean().optional(),
   iconURL: z.union([z.string(), eModelEndpointSchema]).optional(),
   authType: authTypeSchema.optional(),
   hideBadgeRow: z.boolean().optional(),

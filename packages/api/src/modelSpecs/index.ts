@@ -209,7 +209,7 @@ export function applyModelSpecPreset({
 
 export function resolveModelSpecPromptPrefixVariables<T extends { promptPrefix?: string | null }>(
   parsedBody: T,
-  user?: TUser | null,
+  user?: Partial<Pick<TUser, 'name'>> | null,
   now?: string | number | Date,
 ): T {
   if (typeof parsedBody.promptPrefix !== 'string') {

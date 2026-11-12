@@ -79,6 +79,7 @@ export enum QueryKeys {
   categories = 'categories',
   randomPrompts = 'randomPrompts',
   agentCategories = 'agentCategories',
+  modelSpecHandoffs = 'modelSpecHandoffs',
   marketplaceAgents = 'marketplaceAgents',
   roles = 'roles',
   rolesList = 'rolesList',

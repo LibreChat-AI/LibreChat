@@ -18,6 +18,7 @@ import {
 } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
+import { useModelSpecHandoffsQuery } from '~/data-provider';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
@@ -133,12 +134,15 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
     return name.replace(Constants.LC_TRANSFER_TO_, '');
   }, [name]);
 
+  const { data: configuredTargets } = useModelSpecHandoffsQuery(
+    targetAgentId?.startsWith(Constants.MODEL_SPEC_AGENT_PREFIX) === true,
+  );
   const targetAgent = useMemo(() => {
-    if (!targetAgentId || !agentsMap) {
-      return null;
-    }
-    return agentsMap[targetAgentId];
-  }, [agentsMap, targetAgentId]);
+    if (!targetAgentId) return null;
+    return (
+      agentsMap?.[targetAgentId] ?? configuredTargets?.find((target) => target.id === targetAgentId)
+    );
+  }, [agentsMap, configuredTargets, targetAgentId]);
 
   const fields = useMemo(() => parseHandoffFields(_args), [_args]);
   const copyText = useMemo(

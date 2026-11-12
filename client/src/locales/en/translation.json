@@ -1327,6 +1327,7 @@
   "com_ui_agent_description": "Agent description",
   "com_ui_agent_duplicate_error": "There was an error duplicating the agent",
   "com_ui_agent_duplicated": "Agent duplicated successfully",
+  "com_ui_agent_handoff_load_error": "Could not load model preset handoffs.",
   "com_ui_agent_handoff_add": "Add handoff agent",
   "com_ui_agent_handoff_description": "Handoff description",
   "com_ui_agent_handoff_description_placeholder": "Transfer to data analyst for statistical analysis",

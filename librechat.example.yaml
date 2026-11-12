@@ -1853,3 +1853,21 @@ endpoints:
 #   maxWriteAttempts: 3 # Integer 1-100, including the first attempt.
 #   leaseTtlMs: 30000 # Integer 1000-600000. Sharing updates on deployments without transactions hold a per-resource lease this long between renewals.
 #   leaseWaitMs: 3000 # Integer 0-60000. How long an update waits for a contended lease before answering 409.
+
+# Provider presets can be offered as handoff targets in the agent builder:
+# modelSpecs:
+#   list:
+#     - name: research-assistant
+#       label: Research Assistant
+#       handoff: true
+#       showInMenu: false  # independent of handoff availability
+#       webSearch: true
+#       skills: true
+#       preset:
+#         endpoint: openAI
+#         model: gpt-4o
+#         promptPrefix: You are a research assistant. Cite your sources.
+# Handoffs resolve the current user's effective config on every run. Removing
+# the preset or disabling handoff makes existing references unavailable. Saved
+# agents retain their existing ACL checks. Model preset handoffs are available
+# to in-app agent runs; remote APIs require separately shared saved agents.

@@ -1059,6 +1059,9 @@ export const deleteAgent = ({ agent_id }: m.DeleteAgentBody): Promise<void> => {
   );
 };
 
+export const getModelSpecHandoffs = (): Promise<ag.ModelSpecHandoffTarget[]> =>
+  request.get(endpoints.agents({ path: 'handoff-targets' }));
+
 export const listAgents = (params: ag.AgentListParams): Promise<ag.AgentListResponse> => {
   return request.get(
     endpoints.agents({

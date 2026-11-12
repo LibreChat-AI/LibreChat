@@ -5923,6 +5923,7 @@ export enum Constants {
   LC_TRANSFER_TO_ = 'lc_transfer_to_',
   /** Placeholder Agent ID for Ephemeral Agents */
   EPHEMERAL_AGENT_ID = 'ephemeral',
+  MODEL_SPEC_AGENT_PREFIX = 'model_spec__',
   /** Programmatic Tool Calling tool name */
   PROGRAMMATIC_TOOL_CALLING = 'run_tools_with_code',
   /** Bash Programmatic Tool Calling tool name */

@@ -403,6 +403,15 @@ modelSpecs:
     - 'Mock Gemini'
     - 'agents'
   list:
+    - name: 'e2e-handoff-specialist'
+      label: 'Preset Specialist'
+      showInMenu: false
+      handoff: true
+      preset:
+        endpoint: 'Mock Provider A'
+        model: 'mock-model-a'
+        promptPrefix: 'Use the specialist preset instructions.'
+
     - name: 'e2e-mock-provider-a'
       label: 'Mock Provider A'
       preset:

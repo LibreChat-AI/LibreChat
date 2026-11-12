@@ -482,7 +482,7 @@ export function replaceSpecialVars({
   timezone,
 }: {
   text: string;
-  user?: t.TUser | null;
+  user?: Partial<Pick<t.TUser, 'name'>> | null;
   now?: string | number | Date;
   timezone?: string;
 }) {

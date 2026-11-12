@@ -1310,3 +1310,6 @@ export type AgentFile = {
   object: string;
   purpose: 'fine-tune' | 'fine-tune-results' | 'agents' | 'agents_output';
 };
+
+/** Safe display metadata for a server-configured model preset handoff. */
+export type ModelSpecHandoffTarget = Pick<Agent, 'id' | 'name' | 'provider' | 'model' | 'avatar'>;
